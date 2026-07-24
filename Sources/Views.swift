@@ -2,6 +2,9 @@ import SwiftUI
 
 private enum COSPalette {
     static let ink = Color(red: 0.12, green: 0.09, blue: 0.07)
+    static let panel = Color(red: 0.09, green: 0.07, blue: 0.05)
+    static let card = Color(red: 0.15, green: 0.115, blue: 0.085)
+    static let line = Color(red: 0.79, green: 0.66, blue: 0.43).opacity(0.16)
     static let cream = Color(red: 0.96, green: 0.94, blue: 0.90)
     static let amber = Color(red: 0.79, green: 0.50, blue: 0.27)
     static let green = Color(red: 0.20, green: 0.58, blue: 0.34)
@@ -23,7 +26,8 @@ struct ControlPanel: View {
             .padding(16)
         }
         .frame(width: 390, height: 610)
-        .background(COSPalette.cream.opacity(0.42))
+        .background(COSPalette.panel)
+        .preferredColorScheme(.dark)
         .alert("COS Control", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
         } message: { Text(model.error ?? "") }
@@ -70,7 +74,8 @@ struct ControlPanel: View {
             }
         }
         .padding(13)
-        .background(.background, in: RoundedRectangle(cornerRadius: 13))
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
+        .overlay(RoundedRectangle(cornerRadius: 13).stroke(COSPalette.line, lineWidth: 1))
     }
 
     private var controls: some View {
@@ -134,7 +139,8 @@ struct ControlPanel: View {
             }
         }
         .padding(13)
-        .background(.background, in: RoundedRectangle(cornerRadius: 13))
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
+        .overlay(RoundedRectangle(cornerRadius: 13).stroke(COSPalette.line, lineWidth: 1))
     }
 
     private var utilities: some View {
@@ -178,7 +184,7 @@ struct ControlPanel: View {
 
     private var footer: some View {
         HStack {
-            Text("Controller 0.1.0  •  Server target \(ControllerModel.releaseServerVersion)")
+            Text("Controller 0.1.1  •  Server target \(ControllerModel.releaseServerVersion)")
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.link)
         }.font(.caption2).foregroundStyle(.secondary)
