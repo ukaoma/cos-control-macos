@@ -75,11 +75,19 @@ enum LaunchAgentKind: String {
     case unknown
 }
 
+struct InPlaceRecord: Codable {
+    let plistPath: String
+    let appDir: String?
+    let serverInstanceId: String?
+    let adoptedAt: String
+}
+
 enum RuntimeState: String {
     case notInstalled
     case stopped
     case managedHealthy
     case managedDegraded
+    case managedInPlace
     case legacyService
     case legacyStopped
     case legacyForeground
@@ -161,6 +169,7 @@ final class COSControlHelper {
     private lazy var generations = runtimeRoot.appendingPathComponent("generations", isDirectory: true)
     private lazy var stagingRoot = runtimeRoot.appendingPathComponent("staging", isDirectory: true)
     private lazy var manifestURL = runtimeRoot.appendingPathComponent("active.json")
+    private lazy var inPlaceURL = runtimeRoot.appendingPathComponent("in-place.json")
     private lazy var transactionURL = runtimeRoot.appendingPathComponent("transaction.json")
     private lazy var maintenanceLeaseURL = runtimeRoot.appendingPathComponent("maintenance-lease.json")
     private lazy var mutationLockURL = runtimeRoot.appendingPathComponent("operation.lock")
@@ -175,6 +184,7 @@ final class COSControlHelper {
     private lazy var recoveryPlistURL = home.appendingPathComponent("Library/LaunchAgents/\(recoveryLabel).plist")
     private lazy var configDir = home.appendingPathComponent(".cos-glasses", isDirectory: true)
     private lazy var envURL = configDir.appendingPathComponent(".env")
+    private lazy var certsDir = configDir.appendingPathComponent("certs", isDirectory: true)
 
     func run() throws {
         let args = Array(CommandLine.arguments.dropFirst())
@@ -193,6 +203,8 @@ final class COSControlHelper {
             let requested = option("--version", in: args) ?? "latest"
             try adoptLegacy(requestedVersion: requested)
         }
+        case "adopt-in-place": try withMutationLock { try adoptLegacyInPlace() }
+        case "release-in-place": try withMutationLock { try releaseInPlace() }
         case "operation-status": emit(ok: true, message: "Operation status refreshed", details: operationStatusDetails())
         case "reconcile": try withMutationLock { try reconcile() }
         case "reconcile-automatic": try withMutationLock { try automaticReconcile() }
@@ -231,7 +243,7 @@ final class COSControlHelper {
     }
 
     private func ensureDirectories() throws {
-        for url in [support, runtimeRoot, generations, stagingRoot, stableBin, logs, configDir, plistURL.deletingLastPathComponent()] {
+        for url in [support, runtimeRoot, generations, stagingRoot, stableBin, logs, configDir, certsDir, plistURL.deletingLastPathComponent()] {
             try ensurePrivateDirectory(url)
         }
     }
@@ -617,6 +629,7 @@ final class COSControlHelper {
 
     private func install(requestedVersion: String, workDirectory: String?) throws {
         try ensureDirectories()
+        try? fm.removeItem(at: inPlaceURL)  // installing a managed generation exits in-place mode
         guard loadTransaction() == nil else {
             throw HelperError.message("A previous update needs repair before another install can begin.")
         }
@@ -626,6 +639,12 @@ final class COSControlHelper {
         progress("Resolving npm release…")
         let release = try resolveVersion(requestedVersion)
         let generation = try stageGeneration(version: release.version, integrity: release.integrity)
+        // Populate the stable cert store AND the API token now, before the legacy
+        // LaunchAgent is unloaded/overwritten, so the exact HTTPS certificate and
+        // COS_API_TOKEN the glasses already use are carried over verbatim (the
+        // glasses reach the server over HTTPS 3143 and auth with X-Cos-Token).
+        ensureManagedCerts()
+        ensureManagedToken()
         try installStableHelper()
         try installRecoveryLaunchAgent()
         try ensureConfig()
@@ -673,6 +692,7 @@ final class COSControlHelper {
                 timeout: 60
             )
             try requireMaintenanceRelease(activeLease)
+            try assertManagedHTTPS()
             clearTransaction()
             cleanupGenerations(keeping: Set([manifest.generationPath] + (manifest.retainedGenerations ?? []).map(\.path)))
             emit(ok: true, message: "COS Glasses Server \(manifest.version) installed and verified", details: statusDetails())
@@ -796,6 +816,192 @@ final class COSControlHelper {
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: envURL.path)
     }
 
+    // MARK: - HTTPS certificates
+    //
+    // Even Hub's iOS WebView reaches the server over HTTPS on 3143, which only
+    // turns on when server/certs/{cert,key}.pem exist. The published npm package
+    // ships no certs, so a managed runtime silently bound HTTP only and dropped
+    // every glasses connection on adoption. We keep a stable pair in configDir —
+    // carried over verbatim from an existing legacy install when possible, else
+    // generated — and copy it into each staged generation before launch.
+
+    private var managedCert: URL { certsDir.appendingPathComponent("cert.pem") }
+    private var managedKey: URL { certsDir.appendingPathComponent("key.pem") }
+
+    private func isNonEmptyFile(_ url: URL) -> Bool {
+        guard let size = (try? fm.attributesOfItem(atPath: url.path))?[.size] as? Int else { return false }
+        return size > 0
+    }
+
+    private func haveManagedCerts() -> Bool { isNonEmptyFile(managedCert) && isNonEmptyFile(managedKey) }
+
+    /// Populate the stable configDir cert store. Called early in install (while a
+    /// legacy LaunchAgent is still readable) so the exact certificate the glasses
+    /// already trust can be carried over; falls back to a generated self-signed
+    /// pair. Never throws — HTTPS is best-effort here and the post-health guard
+    /// (`assertManagedHTTPS`) fails closed if a cert is present but 3143 is down.
+    @discardableResult
+    private func ensureManagedCerts() -> Bool {
+        if haveManagedCerts() { return true }
+        do { try ensurePrivateDirectory(certsDir) } catch { return false }
+        if let source = legacyCertSource() {
+            do {
+                try? fm.removeItem(at: managedCert)
+                try? fm.removeItem(at: managedKey)
+                try fm.copyItem(at: source.appendingPathComponent("cert.pem"), to: managedCert)
+                try fm.copyItem(at: source.appendingPathComponent("key.pem"), to: managedKey)
+                try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: managedCert.path)
+                try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: managedKey.path)
+                progress("Carried over the existing HTTPS certificate the glasses already trust.")
+                return true
+            } catch {
+                progress("Could not carry over the legacy HTTPS certificate (\(error)); generating a new one.")
+            }
+        }
+        return generateSelfSignedCerts()
+    }
+
+    /// The legacy server's app directory, from its LaunchAgent (COS_GLASSES_APP_DIR
+    /// or WorkingDirectory). Shared by the cert and token carry-over.
+    private func legacyAppDir() -> String? {
+        guard let plist = launchAgentPropertyList() else { return nil }
+        if let env = plist["EnvironmentVariables"] as? [String: String], let dir = env["COS_GLASSES_APP_DIR"], !dir.isEmpty {
+            return dir
+        }
+        if let wd = plist["WorkingDirectory"] as? String, !wd.isEmpty {
+            return wd
+        }
+        return nil
+    }
+
+    /// Locate an existing HTTPS cert from the currently-installed legacy server so
+    /// adoption preserves the exact certificate the glasses already trust.
+    private func legacyCertSource() -> URL? {
+        guard let appDir = legacyAppDir() else { return nil }
+        let certs = URL(fileURLWithPath: appDir, isDirectory: true).appendingPathComponent("server/certs", isDirectory: true)
+        let hasPair = isNonEmptyFile(certs.appendingPathComponent("cert.pem")) && isNonEmptyFile(certs.appendingPathComponent("key.pem"))
+        return hasPair ? certs : nil
+    }
+
+    // MARK: - API token carry-over
+    //
+    // The glasses authenticate with COS_API_TOKEN (X-Cos-Token header). A legacy
+    // server may read its token from its own checkout .env or its LaunchAgent env
+    // rather than ~/.cos-glasses/.env, which the managed server uses. If they
+    // differ, every migrating user is silently locked out (401) even though the
+    // server is "healthy" (the /api/health check is unauthenticated). Carry the
+    // legacy token into ~/.cos-glasses/.env before the managed server starts so
+    // the glasses' saved token keeps authenticating with no re-pairing.
+
+    private func readEnvToken(_ url: URL) -> String? {
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        for raw in content.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            for key in ["COS_API_TOKEN=", "API_TOKEN="] where line.hasPrefix(key) {
+                let value = String(line.dropFirst(key.count)).trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
+                if !value.isEmpty { return value }
+            }
+        }
+        return nil
+    }
+
+    private func legacyApiToken() -> String? {
+        if let plist = launchAgentPropertyList(),
+           let env = plist["EnvironmentVariables"] as? [String: String],
+           let token = env["COS_API_TOKEN"], !token.isEmpty {
+            return token
+        }
+        guard let appDir = legacyAppDir() else { return nil }
+        return readEnvToken(URL(fileURLWithPath: appDir, isDirectory: true).appendingPathComponent(".env"))
+    }
+
+    @discardableResult
+    private func ensureManagedToken() -> Bool {
+        guard let legacyToken = legacyApiToken() else { return false }
+        if readEnvToken(envURL) == legacyToken { return true }
+        do {
+            try ensurePrivateDirectory(configDir)
+            var kept: [String] = []
+            if let existing = try? String(contentsOf: envURL, encoding: .utf8) {
+                kept = existing.split(separator: "\n", omittingEmptySubsequences: false).map(String.init).filter { line in
+                    let t = line.trimmingCharacters(in: .whitespaces)
+                    return !t.hasPrefix("COS_API_TOKEN=") && !t.hasPrefix("API_TOKEN=") && !t.hasPrefix("# auto-generated by the server")
+                }
+                while kept.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { kept.removeLast() }
+            }
+            let out = (["COS_API_TOKEN=\(legacyToken)"] + kept).joined(separator: "\n") + "\n"
+            try atomicWriteData(Data(out.utf8), to: envURL, permissions: 0o600)
+            progress("Carried over the existing COS_API_TOKEN so the glasses keep authenticating.")
+            return true
+        } catch {
+            progress("Could not carry over the legacy COS_API_TOKEN (\(error)); the glasses may need re-pairing.")
+            return false
+        }
+    }
+
+    private func generateSelfSignedCerts() -> Bool {
+        let openssl = findExecutable("openssl") ?? (fm.isExecutableFile(atPath: "/usr/bin/openssl") ? "/usr/bin/openssl" : nil)
+        guard let openssl else {
+            progress("openssl not found; HTTPS 3143 stays disabled (HTTP only). Run mkcert to enable.")
+            return false
+        }
+        do {
+            let result = try execute(openssl, [
+                "req", "-x509", "-newkey", "rsa:2048", "-sha256",
+                "-keyout", managedKey.path, "-out", managedCert.path,
+                "-days", "3650", "-nodes",
+                "-subj", "/O=COS Control/CN=cos-glasses.local",
+                "-addext", "subjectAltName=DNS:localhost,DNS:cos-glasses.local,IP:127.0.0.1",
+            ], timeout: 60)
+            guard result.code == 0, haveManagedCerts() else {
+                progress("openssl could not generate an HTTPS certificate; HTTP only.")
+                return false
+            }
+            try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: managedCert.path)
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: managedKey.path)
+            progress("Generated a self-signed HTTPS certificate for the glasses.")
+            return true
+        } catch {
+            progress("HTTPS certificate generation failed (\(error)); HTTP only.")
+            return false
+        }
+    }
+
+    /// Copy the stable cert store into a staged generation's server/certs so the
+    /// server binds HTTPS on launch. Safe for the integrity check — never touches
+    /// package.json, the launcher, or the registry artifact.
+    @discardableResult
+    private func provisionCerts(intoGeneration generationPath: String) -> Bool {
+        guard haveManagedCerts() else { return false }
+        let destDir = packageRoot(for: generationPath).appendingPathComponent("server/certs", isDirectory: true)
+        do {
+            try fm.createDirectory(at: destDir, withIntermediateDirectories: true, attributes: nil)
+            let destCert = destDir.appendingPathComponent("cert.pem")
+            let destKey = destDir.appendingPathComponent("key.pem")
+            try? fm.removeItem(at: destCert)
+            try? fm.removeItem(at: destKey)
+            try fm.copyItem(at: managedCert, to: destCert)
+            try fm.copyItem(at: managedKey, to: destKey)
+            try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: destCert.path)
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destKey.path)
+            return true
+        } catch {
+            progress("Could not stage HTTPS certs into the generation (\(error)); HTTP only.")
+            return false
+        }
+    }
+
+    /// Fail closed: if a cert is present but HTTPS 3143 never bound, the glasses
+    /// would be unreachable, so roll the switch back instead of shipping HTTP-only.
+    private func assertManagedHTTPS() throws {
+        guard haveManagedCerts() else { return }
+        for _ in 0..<20 {
+            if !(ownershipSnapshot().listeners[3143] ?? []).isEmpty { return }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        throw HelperError.message("The managed server bound HTTP 3141 but not HTTPS 3143, though a certificate is present. The glasses require HTTPS, so the change was rolled back.")
+    }
+
     private func isUnsupportedExecutionEnvironmentKey(_ key: String) -> Bool {
         key == "NODE_OPTIONS" || key == "NODE_PATH" || key == "TMPDIR" ||
         key == "HTTP_PROXY" || key == "HTTPS_PROXY" || key == "ALL_PROXY" || key == "NO_PROXY" ||
@@ -851,6 +1057,10 @@ final class COSControlHelper {
         guard let node = manifest.nodePath ?? findExecutable("node") else { throw HelperError.message("Node.js not found") }
         guard nodeVersion(at: node).valid else { throw HelperError.message("Configured Node.js is unavailable or too old.") }
         let paths = runtimePaths(for: verified.path)
+        // Every managed launch flows through here (install, rollback-restore,
+        // repair, reconcile, start), so this is the single point that guarantees
+        // the generation has its HTTPS certs before the server binds its ports.
+        provisionCerts(intoGeneration: verified.path)
         let plist: [String: Any] = [
             "Label": label,
             // Direct listener ownership: launchd owns the Node process that imports server/index.ts.
@@ -1117,6 +1327,9 @@ final class COSControlHelper {
     private func runtimeState(snapshot: OwnershipSnapshot, maintenance: [String: Any]?, health: [String: Any]?) -> RuntimeState {
         let installed = loadManifest() != nil
         let managed = hasLifecycleContract(maintenance)
+        if inPlaceActive() {
+            return snapshot.allListenerPIDs.isEmpty ? .stopped : .managedInPlace
+        }
         if snapshot.allListenerPIDs.isEmpty {
             if snapshot.launchAgentKind == .knownLegacy { return .legacyStopped }
             if snapshot.serviceLoaded && snapshot.servicePID != nil { return .managedDegraded }
@@ -1151,6 +1364,7 @@ final class COSControlHelper {
             "ownershipVerified": directOwner,
             "ownerConflict": state == .ownerConflict,
             "launchAgentKind": snapshot.launchAgentKind.rawValue,
+            "managedInPlace": inPlaceActive(),
             "servicePID": snapshot.servicePID ?? NSNull(),
             "listenerPIDs": snapshot.allListenerPIDs.sorted(),
             "version": maintenance?["serverVersion"] ?? health?["server_version"] ?? manifest?.version ?? NSNull(),
@@ -1469,6 +1683,88 @@ final class COSControlHelper {
         try install(requestedVersion: requestedVersion, workDirectory: nil)
     }
 
+    // MARK: - Manage in place
+    //
+    // Adopts the user's EXISTING glasses server for lifecycle management WITHOUT
+    // replacing it: no generation, no npm install, no server-identity change (so
+    // the glasses never have to re-pair). Records a lightweight marker; lifecycle
+    // uses plain launchctl on the existing plist plus a health poll. Kept fully
+    // separate from the generation-bound managed path.
+
+    private func inPlaceActive() -> Bool { fm.fileExists(atPath: inPlaceURL.path) }
+
+    private func loadInPlace() -> InPlaceRecord? {
+        guard let data = try? Data(contentsOf: inPlaceURL) else { return nil }
+        return try? JSONDecoder().decode(InPlaceRecord.self, from: data)
+    }
+
+    private func adoptLegacyInPlace() throws {
+        let snapshot = ownershipSnapshot()
+        guard snapshot.launchAgentKind == .knownLegacy else {
+            throw HelperError.message("In-place management requires your recognized COS glasses server (the legacy LaunchAgent).")
+        }
+        guard loadManifest() == nil else {
+            throw HelperError.message("A managed generation is installed. Roll back or stop it before switching to in-place management.")
+        }
+        let record = InPlaceRecord(
+            plistPath: plistURL.path,
+            appDir: legacyAppDir(),
+            serverInstanceId: request("/api/models", timeout: 8)?.body?["serverInstanceId"] as? String,
+            adoptedAt: ISO8601DateFormatter().string(from: Date())
+        )
+        try atomicWrite(record, to: inPlaceURL, permissions: 0o600)
+        try installStableHelper()
+        try installRecoveryLaunchAgent()
+        emit(ok: true, message: "COS Control now manages your server in place", details: statusDetails())
+    }
+
+    private func releaseInPlace() throws {
+        try? fm.removeItem(at: inPlaceURL)
+        _ = try? launchctl(["bootout", recoveryServiceTarget])
+        try? fm.removeItem(at: recoveryPlistURL)
+        emit(ok: true, message: "COS Control released your server; it keeps running untouched", details: statusDetails())
+    }
+
+    private func waitForInPlaceHealth(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if request("/api/health", timeout: 6)?.status == 200 { return true }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        return false
+    }
+
+    private func restartInPlace() throws {
+        guard serviceLoaded() else { try startInPlace(); return }
+        let result = try launchctl(["kickstart", "-k", serviceTarget])
+        guard result.code == 0 else { throw HelperError.message("Restart failed: \(result.output)") }
+        guard waitForInPlaceHealth(timeout: 60) else { throw HelperError.message("Server restarted but did not report healthy in time.") }
+        emit(ok: true, message: "Your server was restarted", details: statusDetails())
+    }
+
+    private func stopInPlace() throws {
+        if serviceLoaded() {
+            let result = try launchctl(["bootout", serviceTarget])
+            if result.code != 0 && serviceLoaded() {
+                throw HelperError.message("Stop failed: \(result.output)")
+            }
+        }
+        try? waitForPortsClear(timeout: 12)
+        emit(ok: true, message: "Your server was stopped", details: statusDetails())
+    }
+
+    private func startInPlace() throws {
+        if serviceLoaded() && !ownershipSnapshot().allListenerPIDs.isEmpty {
+            emit(ok: true, message: "Your server is already running", details: statusDetails())
+            return
+        }
+        let plist = loadInPlace()?.plistPath ?? plistURL.path
+        let result = try launchctl(["bootstrap", launchDomain, plist])
+        guard result.code == 0 || serviceLoaded() else { throw HelperError.message("Start failed: \(result.output)") }
+        guard waitForInPlaceHealth(timeout: 60) else { throw HelperError.message("Server started but did not report healthy in time.") }
+        emit(ok: true, message: "Your server was started", details: statusDetails())
+    }
+
     private func operationStatusDetails() -> [String: Any] {
         var details = statusDetails()
         if let transaction = loadTransaction() {
@@ -1574,6 +1870,20 @@ final class COSControlHelper {
     }
 
     private func automaticReconcile() throws {
+        if inPlaceActive() {
+            // In-place recovery: only act if the server is actually down/hung. Never
+            // installs or replaces anything — just brings the existing server back.
+            if ownershipSnapshot().allListenerPIDs.isEmpty {
+                if serviceLoaded() {
+                    _ = try? launchctl(["kickstart", "-k", serviceTarget])
+                } else {
+                    try? startInPlace()
+                }
+                _ = waitForInPlaceHealth(timeout: 30)
+            }
+            emit(ok: true, message: "In-place recovery check complete", details: statusDetails())
+            return
+        }
         if loadTransaction() != nil || loadMaintenanceLease() != nil {
             try reconcile()
             return
@@ -1592,6 +1902,7 @@ final class COSControlHelper {
     }
 
     private func start() throws {
+        if inPlaceActive() { try startInPlace(); return }
         guard var manifest = loadManifest() else { throw HelperError.message("Install the managed server first.") }
         _ = try verifyGeneration(
             at: manifest.generationPath,
@@ -1630,6 +1941,7 @@ final class COSControlHelper {
     }
 
     private func stop() throws {
+        if inPlaceActive() { try stopInPlace(); return }
         guard var manifest = loadManifest(), let generationID = manifest.generationID else {
             throw HelperError.message("A verified managed generation is required before Stop.")
         }
@@ -1652,6 +1964,7 @@ final class COSControlHelper {
     }
 
     private func restart() throws {
+        if inPlaceActive() { try restartInPlace(); return }
         guard let manifest = loadManifest() else { throw HelperError.message("Install the managed server first.") }
         let lease = try acquireMaintenanceLeaseIfNeeded(
             operationKind: "server_restart",

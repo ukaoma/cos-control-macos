@@ -1,11 +1,54 @@
 import SwiftUI
+import AppKit
+
+/// An NSColor that resolves differently in light vs dark appearance.
+private func adaptiveNSColor(light: NSColor, dark: NSColor) -> NSColor {
+    NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+    }
+}
+
+/// Appearance-adaptive backgrounds. Bg flips with the Mac's light/dark setting;
+/// accents stay put (they read on both). Used by both SwiftUI (Color) and the
+/// window backing (NSColor).
+private enum COSInk {
+    static let panelNS = adaptiveNSColor(
+        light: NSColor(red: 0.96, green: 0.94, blue: 0.90, alpha: 1),   // cream
+        dark:  NSColor(red: 0.09, green: 0.07, blue: 0.05, alpha: 1))   // espresso
+    static let cardNS = adaptiveNSColor(
+        light: NSColor(red: 1.00, green: 1.00, blue: 1.00, alpha: 1),   // white
+        dark:  NSColor(red: 0.15, green: 0.115, blue: 0.085, alpha: 1)) // dark card
+    static let lineNS = adaptiveNSColor(
+        light: NSColor(red: 0.45, green: 0.34, blue: 0.16, alpha: 0.20),
+        dark:  NSColor(red: 0.79, green: 0.66, blue: 0.43, alpha: 0.16))
+}
+
+/// MenuBarExtra(.window) is a translucent vibrancy window by default, so the
+/// desktop bleeds through. Make it opaque with an appearance-adaptive backing —
+/// we do NOT force an appearance, so it follows the Mac's light/dark setting and
+/// stays legible in both modes.
+private struct WindowOpaquer: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { NSView() }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        guard let window = nsView.window else { return }
+        window.isOpaque = true
+        window.backgroundColor = COSInk.panelNS
+        window.hasShadow = true
+        opaquify(window.contentView)
+    }
+    private func opaquify(_ view: NSView?) {
+        guard let view else { return }
+        if let effect = view as? NSVisualEffectView { effect.alphaValue = 0 }
+        for sub in view.subviews { opaquify(sub) }
+    }
+}
 
 private enum COSPalette {
-    static let ink = Color(red: 0.12, green: 0.09, blue: 0.07)
-    static let panel = Color(red: 0.09, green: 0.07, blue: 0.05)
-    static let card = Color(red: 0.15, green: 0.115, blue: 0.085)
-    static let line = Color(red: 0.79, green: 0.66, blue: 0.43).opacity(0.16)
-    static let cream = Color(red: 0.96, green: 0.94, blue: 0.90)
+    static let ink = Color(red: 0.12, green: 0.09, blue: 0.07)   // dark brand tile (both modes)
+    static let panel = Color(nsColor: COSInk.panelNS)            // adaptive
+    static let card = Color(nsColor: COSInk.cardNS)              // adaptive
+    static let line = Color(nsColor: COSInk.lineNS)              // adaptive
+    static let cream = Color(red: 0.96, green: 0.94, blue: 0.90) // glasses mark on the ink tile
     static let amber = Color(red: 0.79, green: 0.50, blue: 0.27)
     static let green = Color(red: 0.20, green: 0.58, blue: 0.34)
 }
@@ -27,7 +70,7 @@ struct ControlPanel: View {
         }
         .frame(width: 390, height: 610)
         .background(COSPalette.panel)
-        .preferredColorScheme(.dark)
+        .background(WindowOpaquer())
         .alert("COS Control", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
         } message: { Text(model.error ?? "") }
@@ -81,7 +124,7 @@ struct ControlPanel: View {
     private var controls: some View {
         VStack(spacing: 9) {
             HStack {
-                if model.status.runtimeState == "managedHealthy" {
+                if model.status.runtimeState == "managedHealthy" || model.status.runtimeState == "managedInPlace" {
                     Button("Restart", systemImage: "arrow.clockwise") { model.perform("restart") }
                     Button("Stop", systemImage: "stop.fill", role: .destructive) { model.perform("stop") }
                 } else if model.status.runtimeState == "stopped" {
@@ -107,8 +150,12 @@ struct ControlPanel: View {
                 }.font(.caption).foregroundStyle(COSPalette.amber)
             }
             if model.status.runtimeState == "legacyService" {
-                Label("Running legacy adoption is unsupported. Stop the legacy service first; COS Control will not risk in-flight work without an exact rollback generation.", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(COSPalette.amber)
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Your server is running. COS Control can manage it in place — status, restart, and recovery — without replacing it.", systemImage: "checkmark.seal")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Manage in place") { model.perform("adopt-in-place") }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
+                }.frame(maxWidth: .infinity, alignment: .leading)
             }
             if model.status.ownerConflict {
                 Label("Ownership conflict detected. COS Control will not stop or replace the unknown listener.", systemImage: "exclamationmark.octagon.fill")
@@ -184,7 +231,7 @@ struct ControlPanel: View {
 
     private var footer: some View {
         HStack {
-            Text("Controller 0.1.1  •  Server target \(ControllerModel.releaseServerVersion)")
+            Text("Controller 0.1.6  •  Server target \(ControllerModel.releaseServerVersion)")
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.link)
         }.font(.caption2).foregroundStyle(.secondary)
@@ -193,6 +240,7 @@ struct ControlPanel: View {
     private var runtimeLabel: String {
         switch model.status.runtimeState {
         case "managedHealthy": "Running · managed"
+        case "managedInPlace": "Running · your server"
         case "managedDegraded": "Managed · degraded"
         case "legacyService": "Legacy LaunchAgent"
         case "legacyStopped": "Legacy LaunchAgent · stopped"
