@@ -2,3 +2,7 @@
 dist/
 .DS_Store
 
+
+# icon build intermediates (regenerated from Resources/AppIcon.svg)
+icon/icon_1024.png
+icon/AppIcon.iconset/

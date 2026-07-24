@@ -31,13 +31,31 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   -o "$APP/Contents/MacOS/COS Control"
 
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 chmod 700 "$APP/Contents/MacOS/COS Control" "$APP/Contents/Resources/cos-control-helper"
 /usr/bin/xattr -cr "$APP"
-/usr/bin/codesign --force --deep --sign - "$APP"
+# COS_SIGN_IDENTITY: "Developer ID Application: NAME (TEAMID)" enables notarization-grade signing.
+# Unset -> ad-hoc (local/dev only; Gatekeeper will block a downloaded copy).
+SIGN_ID="${COS_SIGN_IDENTITY:-}"
+if [ -n "$SIGN_ID" ]; then
+  /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP/Contents/Resources/cos-control-helper"
+  /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP/Contents/MacOS/COS Control"
+  /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP"
+else
+  /usr/bin/codesign --force --deep --sign - "$APP"
+fi
 /usr/bin/codesign --verify --deep --strict "$APP"
 /usr/bin/vtool -show-build "$APP/Contents/MacOS/COS Control" | /usr/bin/grep -q 'minos 14.0'
 /usr/bin/vtool -show-build "$APP/Contents/Resources/cos-control-helper" | /usr/bin/grep -q 'minos 14.0'
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$STAGED_ZIP"
+# COS_NOTARY_PROFILE: a `xcrun notarytool store-credentials` keychain profile name.
+if [ -n "$SIGN_ID" ] && [ -n "${COS_NOTARY_PROFILE:-}" ]; then
+  /usr/bin/xcrun notarytool submit "$STAGED_ZIP" --keychain-profile "$COS_NOTARY_PROFILE" --wait
+  /usr/bin/xcrun stapler staple "$APP"
+  /usr/bin/xcrun stapler validate "$APP"
+  rm -f "$STAGED_ZIP"
+  /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$STAGED_ZIP"
+fi
 /usr/bin/ditto "$APP" "$DIST_APP"
 /bin/mv "$STAGED_ZIP" "$ZIP"
 /usr/bin/shasum -a 256 "$ZIP" | tee "$ZIP.sha256"
