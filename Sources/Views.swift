@@ -99,7 +99,7 @@ struct ControlPanel: View {
             statusRow("Ownership", value: ownershipLabel, good: model.status.ownershipVerified)
             statusRow("Recovery", value: model.status.recoveryLoaded ? "Scheduled" : "Needs repair", good: model.status.recoveryInstalled && model.status.recoveryLoaded)
             statusRow("Local Whisper", value: model.status.whisperReady ? "Ready" : "Unavailable", good: model.status.whisperReady)
-            statusRow("Version", value: model.status.version ?? model.status.installedVersion ?? "Not installed", good: model.status.installed)
+            statusRow("Version", value: model.status.runtimeState == "managedInPlace" ? "Self-managed" : (model.status.version ?? model.status.installedVersion ?? "Not installed"), good: model.status.installed || model.status.runtimeState == "managedInPlace")
             Divider()
             HStack(alignment: .top) {
                 Text("Work folder").foregroundStyle(.secondary)
@@ -231,7 +231,7 @@ struct ControlPanel: View {
 
     private var footer: some View {
         HStack {
-            Text("Controller 0.1.6  •  Server target \(ControllerModel.releaseServerVersion)")
+            Text("Controller 0.1.7  •  Server target \(ControllerModel.releaseServerVersion)")
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.link)
         }.font(.caption2).foregroundStyle(.secondary)
