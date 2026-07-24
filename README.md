@@ -24,3 +24,25 @@ one LaunchAgent, `com.cos.glasses-server`, as the sole server owner.
 
 Existing data remains under the standard COS Glasses locations. The existing
 `npx @gotcos/glasses-server` foreground workflow remains supported.
+
+## Lifecycle safety
+
+COS Control stages and verifies an immutable npm generation before touching the
+running service. Updates, restarts, stops, repairs, and rollbacks use the
+authenticated rev4 maintenance gate. The controller persists a private local
+operation credential, authorizes only exact successor and rollback generation
+IDs, and never expiry-opens a committed cross-boot gate. A successor must adopt
+the gate before the controller verifies launchd listener ownership, version,
+generation, boot identity, and health; only then does it release admissions.
+
+Stop intentionally leaves that gate committed. The next authorized Start adopts
+and releases it. Recognized legacy LaunchAgents can be adopted only while
+stopped; running legacy and unknown owners are refused because they cannot offer
+an exact transactional rollback. Pairing tokens are copied by the helper without
+crossing helper output or app state and are cleared after 60 seconds only when
+the pasteboard still contains the matching token.
+
+An unknown foreground process, mismatched listener PID, incompatible maintenance
+contract, or interrupted transaction is shown as a conflict instead of being
+silently replaced. Doctor and Copy Report redact pairing credentials, process
+IDs, and the selected workspace path.

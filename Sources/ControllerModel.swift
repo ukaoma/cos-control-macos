@@ -9,6 +9,7 @@ final class ControllerModel: ObservableObject {
     @Published var status = ServerStatus()
     @Published var doctorChecks: [DoctorCheck] = []
     @Published var busy = false
+    @Published var operationProgress: String?
     @Published var notice: String?
     @Published var error: String?
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -44,12 +45,18 @@ final class ControllerModel: ObservableObject {
     func perform(_ command: String, arguments: [String] = []) {
         guard !busy else { return }
         busy = true
+        operationProgress = "Starting \(command.replacingOccurrences(of: "-", with: " "))…"
         notice = nil
         error = nil
         Task {
-            defer { busy = false }
+            defer {
+                busy = false
+                operationProgress = nil
+            }
             do {
-                let response = try await helper.run([command] + arguments)
+                let response = try await helper.run([command] + arguments) { [weak self] message in
+                    Task { @MainActor in self?.operationProgress = message }
+                }
                 notice = response.message
                 if command == "doctor" {
                     doctorChecks = Self.parseChecks(response.details["checks"])
@@ -58,11 +65,6 @@ final class ControllerModel: ObservableObject {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(report, forType: .string)
                     notice = "Redacted report copied"
-                }
-                if let token = response.details["token"]?.string {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(token, forType: .string)
-                    notice = "Pairing token copied"
                 }
                 if let nestedStatus = response.details["status"]?.object {
                     status = ServerStatus(nestedStatus)

@@ -48,6 +48,15 @@ struct ServerStatus: Sendable {
     var serviceLoaded = false
     var running = false
     var managedContract = false
+    var runtimeState = "unknown"
+    var ownershipVerified = false
+    var ownerConflict = false
+    var launchAgentKind = "absent"
+    var transactionPending = false
+    var desiredState = "running"
+    var serviceDisabled = false
+    var recoveryInstalled = false
+    var recoveryLoaded = false
     var version: String?
     var installedVersion: String?
     var workDirectory: String?
@@ -55,6 +64,7 @@ struct ServerStatus: Sendable {
     var activeJobs: Int?
     var activeTranscriptionSessions: Int?
     var whisperReady = false
+    var whisperCircuitOpen = false
     var apiURL = "http://127.0.0.1:3141"
 
     init() {}
@@ -64,6 +74,15 @@ struct ServerStatus: Sendable {
         serviceLoaded = details["serviceLoaded"]?.bool ?? false
         running = details["running"]?.bool ?? false
         managedContract = details["managedContract"]?.bool ?? false
+        runtimeState = details["runtimeState"]?.string ?? "unknown"
+        ownershipVerified = details["ownershipVerified"]?.bool ?? false
+        ownerConflict = details["ownerConflict"]?.bool ?? false
+        launchAgentKind = details["launchAgentKind"]?.string ?? "absent"
+        transactionPending = details["transactionPending"]?.bool ?? false
+        desiredState = details["desiredState"]?.string ?? "running"
+        serviceDisabled = details["serviceDisabled"]?.bool ?? false
+        recoveryInstalled = details["recoveryInstalled"]?.bool ?? false
+        recoveryLoaded = details["recoveryLoaded"]?.bool ?? false
         version = details["version"]?.string
         installedVersion = details["installedVersion"]?.string
         workDirectory = details["workDirectory"]?.string
@@ -71,6 +90,7 @@ struct ServerStatus: Sendable {
         activeJobs = details["activeJobs"]?.int
         activeTranscriptionSessions = details["activeTranscriptionSessions"]?.int
         whisperReady = details["whisperReady"]?.bool ?? false
+        whisperCircuitOpen = details["whisperCircuitOpen"]?.bool ?? false
         apiURL = details["apiURL"]?.string ?? apiURL
     }
 }
@@ -81,4 +101,3 @@ struct DoctorCheck: Identifiable, Sendable {
     let state: String
     let detail: String
 }
-

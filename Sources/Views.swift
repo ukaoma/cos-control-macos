@@ -48,8 +48,9 @@ struct ControlPanel: View {
 
     private var statusCard: some View {
         VStack(spacing: 9) {
-            statusRow("Server", value: model.status.running ? "Running" : "Stopped", good: model.status.running)
-            statusRow("Managed", value: model.status.managedContract ? "Ready" : (model.status.running ? "Migration needed" : "Not connected"), good: model.status.managedContract)
+            statusRow("Server", value: runtimeLabel, good: model.status.runtimeState == "managedHealthy")
+            statusRow("Ownership", value: ownershipLabel, good: model.status.ownershipVerified)
+            statusRow("Recovery", value: model.status.recoveryLoaded ? "Scheduled" : "Needs repair", good: model.status.recoveryInstalled && model.status.recoveryLoaded)
             statusRow("Local Whisper", value: model.status.whisperReady ? "Ready" : "Unavailable", good: model.status.whisperReady)
             statusRow("Version", value: model.status.version ?? model.status.installedVersion ?? "Not installed", good: model.status.installed)
             Divider()
@@ -63,6 +64,10 @@ struct ControlPanel: View {
                 Label("\(jobs) job(s), \(recordings) recording(s) active. Restart is locked.", systemImage: "lock.fill")
                     .font(.caption).foregroundStyle(COSPalette.amber)
             }
+            if model.status.transactionPending {
+                Label("An interrupted server change needs Repair.", systemImage: "wrench.and.screwdriver.fill")
+                    .font(.caption).foregroundStyle(.red)
+            }
         }
         .padding(13)
         .background(.background, in: RoundedRectangle(cornerRadius: 13))
@@ -71,20 +76,41 @@ struct ControlPanel: View {
     private var controls: some View {
         VStack(spacing: 9) {
             HStack {
-                if model.status.running {
+                if model.status.runtimeState == "managedHealthy" {
                     Button("Restart", systemImage: "arrow.clockwise") { model.perform("restart") }
                     Button("Stop", systemImage: "stop.fill", role: .destructive) { model.perform("stop") }
-                } else {
+                } else if model.status.runtimeState == "stopped" {
                     Button("Start", systemImage: "play.fill") { model.perform("start") }.buttonStyle(.borderedProminent)
                 }
                 Spacer()
-                if model.status.installed { Button("Update Server") { model.perform("update") } }
-                else { Button("Install Server") { model.installCurrentRelease() }.buttonStyle(.borderedProminent) }
+                if model.status.installed && model.status.managedContract && model.status.ownershipVerified {
+                    Button("Update Server") { model.perform("update") }
+                } else if !model.status.installed && model.status.runtimeState == "notInstalled" {
+                    Button("Install Server") { model.installCurrentRelease() }.buttonStyle(.borderedProminent)
+                }
             }
             .disabled(model.busy)
-            if model.status.running && !model.status.managedContract {
-                Label("A legacy or foreground server is active. Stop it before installing the managed runtime.", systemImage: "exclamationmark.triangle.fill")
+            if model.status.runtimeState == "legacyForeground" {
+                Label("A foreground server owns the ports. Finish active work and stop it in Terminal before installing.", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption).foregroundStyle(COSPalette.amber)
+            }
+            if model.status.runtimeState == "legacyStopped" {
+                HStack {
+                    Label("A recognized stopped legacy LaunchAgent can be adopted exactly.", systemImage: "arrow.triangle.2.circlepath")
+                    Spacer()
+                    Button("Adopt Safely") { model.perform("adopt", arguments: ["--version", ControllerModel.releaseServerVersion]) }
+                }.font(.caption).foregroundStyle(COSPalette.amber)
+            }
+            if model.status.runtimeState == "legacyService" {
+                Label("Running legacy adoption is unsupported. Stop the legacy service first; COS Control will not risk in-flight work without an exact rollback generation.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(COSPalette.amber)
+            }
+            if model.status.ownerConflict {
+                Label("Ownership conflict detected. COS Control will not stop or replace the unknown listener.", systemImage: "exclamationmark.octagon.fill")
+                    .font(.caption).foregroundStyle(.red)
+            }
+            if let progress = model.operationProgress {
+                Text(progress).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }
             if let notice = model.notice {
                 Text(notice).font(.caption).foregroundStyle(COSPalette.green).frame(maxWidth: .infinity, alignment: .leading)
@@ -119,8 +145,16 @@ struct ControlPanel: View {
                 Button("Guided Setup", systemImage: "terminal") { model.runGuidedSetup() }
             }
             HStack {
+                Button("Repair Managed Runtime", systemImage: "wrench.and.screwdriver") { model.perform("repair") }
+                    .disabled(!model.status.installed || model.status.ownerConflict || model.status.runtimeState == "legacyForeground")
+                if model.status.managedContract && model.status.ownershipVerified && (!model.status.whisperReady || model.status.whisperCircuitOpen) {
+                    Button("Repair Whisper", systemImage: "waveform.badge.exclamationmark") { model.perform("restart-whisper") }
+                }
+            }
+            HStack {
                 Button("Choose Folder", systemImage: "folder") { model.selectWorkFolder() }
                 Button("Copy Pairing Token", systemImage: "key") { model.perform("token") }
+                    .disabled(model.status.runtimeState != "managedHealthy")
             }
             HStack {
                 Button("Copy Report", systemImage: "doc.on.doc") { model.perform("report") }
@@ -132,6 +166,7 @@ struct ControlPanel: View {
             DisclosureGroup("Advanced") {
                 HStack {
                     Button("Rollback Server") { model.perform("rollback") }
+                    Button("Reconcile Change") { model.perform("reconcile") }
                     Button("Setup Guide") { model.openSetupGuide() }
                 }.padding(.top, 6)
             }.font(.caption)
@@ -149,6 +184,31 @@ struct ControlPanel: View {
         }.font(.caption2).foregroundStyle(.secondary)
     }
 
+    private var runtimeLabel: String {
+        switch model.status.runtimeState {
+        case "managedHealthy": "Running · managed"
+        case "managedDegraded": "Managed · degraded"
+        case "legacyService": "Legacy LaunchAgent"
+        case "legacyStopped": "Legacy LaunchAgent · stopped"
+        case "legacyForeground": "Foreground process"
+        case "ownerConflict": "Ownership conflict"
+        case "stopped": "Stopped"
+        case "notInstalled": "Not installed"
+        default: "Unknown"
+        }
+    }
+
+    private var ownershipLabel: String {
+        if model.status.ownerConflict { return "Conflict" }
+        if model.status.ownershipVerified { return "Verified direct PID" }
+        switch model.status.launchAgentKind {
+        case "knownLegacy": return "Recognized legacy"
+        case "cosControl": return "Managed · unverified"
+        case "absent": return "No LaunchAgent"
+        default: return "Unknown"
+        }
+    }
+
     private func statusRow(_ label: String, value: String, good: Bool) -> some View {
         HStack {
             Text(label).foregroundStyle(.secondary)
@@ -158,4 +218,3 @@ struct ControlPanel: View {
         }.font(.callout)
     }
 }
-
