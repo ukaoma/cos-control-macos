@@ -46,3 +46,15 @@ An unknown foreground process, mismatched listener PID, incompatible maintenance
 contract, or interrupted transaction is shown as a conflict instead of being
 silently replaced. Doctor and Copy Report redact pairing credentials, process
 IDs, and the selected workspace path.
+
+## 0.2.1 reliability fixes
+
+- Managed LaunchAgents retain discovered Claude, Codex, and Cursor CLI bin
+  directories, including `~/.local/bin`, across install, update, rollback, and
+  repair.
+- Managed updates, restarts, and in-place adoption are not accepted as healthy
+  from HTTP 200 alone. COS Control verifies the provider capability payload and
+  marks the runtime degraded when an installed provider is unavailable inside
+  the service environment.
+- The bundled server target is 6.15.1, which provisions Kokoro with a compatible
+  Python 3.11 or 3.12 runtime.

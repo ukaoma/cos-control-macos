@@ -317,6 +317,44 @@ final class COSControlHelper {
         executableCandidates(name).first { fm.isExecutableFile(atPath: $0) }
     }
 
+    /// Build the one PATH used by every managed launch. Provider directories
+    /// come from actual executable discovery, while common user install roots
+    /// remain present even when COS Control itself was opened from Finder with
+    /// a minimal GUI environment. Existing absolute LaunchAgent entries are
+    /// preserved so an upgrade cannot erase a working custom CLI location.
+    private func launchPathDirectories(node: String) -> [String] {
+        var directories = [URL(fileURLWithPath: node).deletingLastPathComponent().path]
+        for name in ["claude", "codex", "agent"] {
+            if let executable = findExecutable(name) {
+                directories.append(URL(fileURLWithPath: executable).deletingLastPathComponent().path)
+            }
+        }
+        directories += [
+            home.appendingPathComponent(".local/bin", isDirectory: true).path,
+            home.appendingPathComponent(".volta/bin", isDirectory: true).path,
+            home.appendingPathComponent(".asdf/shims", isDirectory: true).path,
+            "/Applications/ChatGPT.app/Contents/Resources",
+            "/Applications/Codex.app/Contents/Resources",
+        ]
+        if let plist = launchAgentPropertyList(),
+           let environment = plist["EnvironmentVariables"] as? [String: String],
+           let priorPath = environment["PATH"] {
+            directories += priorPath.split(separator: ":").map(String.init).filter { directory in
+                directory.hasPrefix("/") && ["claude", "codex", "agent"].contains {
+                    fm.isExecutableFile(atPath: URL(fileURLWithPath: directory).appendingPathComponent($0).path)
+                }
+            }
+        }
+        directories += ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+
+        var seen = Set<String>()
+        return directories.compactMap { raw in
+            let value = URL(fileURLWithPath: raw).standardizedFileURL.path
+            guard !value.isEmpty, seen.insert(value).inserted else { return nil }
+            return value
+        }
+    }
+
     /// Match glasses-app `resolveAgentBinary`: env → PATH → ~/.local/bin/agent.
     private func resolveAgentBinary() -> String? {
         if let configured = ProcessInfo.processInfo.environment["COS_CURSOR_AGENT_BIN"]?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1052,10 +1090,7 @@ final class COSControlHelper {
         environment["COS_SERVER_VERSION"] = manifest.version
         environment["COS_SERVER_GENERATION_ID"] = manifest.generationID ?? String((manifest.launcherSHA256 ?? manifest.version).prefix(24))
         if let work = manifest.workDirectory { environment["COS_WORKDIR"] = work }
-        let codexDir = findExecutable("codex").map { URL(fileURLWithPath: $0).deletingLastPathComponent().path }
-        environment["PATH"] = ([URL(fileURLWithPath: node).deletingLastPathComponent().path, codexDir]
-            .compactMap { $0 } + ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"])
-            .joined(separator: ":")
+        environment["PATH"] = launchPathDirectories(node: node).joined(separator: ":")
         return environment
     }
 
@@ -1337,11 +1372,51 @@ final class COSControlHelper {
         isManagedContract(maintenance) && maintenance?["contractVersion"] as? Int == leaseManagedContractVersion
     }
 
+    private func detectedManagedProviders() -> Set<String> {
+        Set(["claude", "codex"].filter { findExecutable($0) != nil })
+    }
+
+    /// A reachable health endpoint is not enough: the managed service must see
+    /// the same installed AI providers that COS Control sees. This catches a
+    /// LaunchAgent PATH regression before an update is committed as healthy.
+    private func providerCapabilityFailure(
+        _ health: [String: Any]?,
+        expectedProviders: Set<String>? = nil
+    ) -> String? {
+        guard let health else { return "health endpoint returned no JSON payload" }
+        guard health["status"] as? String == "ok", health["server"] as? String == "ok" else {
+            return "health payload does not report an operational server"
+        }
+        guard let features = health["features"] as? [String: Any] else {
+            return "health payload is missing provider capabilities"
+        }
+
+        let expected = expectedProviders ?? detectedManagedProviders()
+        for provider in expected.sorted() where features[provider] as? Bool != true {
+            return provider.capitalized + " is installed but unavailable to the managed server"
+        }
+        let reportedProviders = ["claude", "codex", "cursor"]
+        guard reportedProviders.contains(where: { features[$0] as? Bool == true }) else {
+            return "managed server reports no available AI provider"
+        }
+        return nil
+    }
+
+    private func managedHealthFailure(
+        _ response: HTTPResponse?,
+        expectedProviders: Set<String>? = nil
+    ) -> String? {
+        guard let response else { return "health endpoint did not answer" }
+        guard response.status == 200 else { return "health endpoint returned HTTP " + String(response.status) }
+        return providerCapabilityFailure(response.body, expectedProviders: expectedProviders)
+    }
+
     private func runtimeState(snapshot: OwnershipSnapshot, maintenance: [String: Any]?, health: [String: Any]?) -> RuntimeState {
         let installed = loadManifest() != nil
         let managed = hasLifecycleContract(maintenance)
         if inPlaceActive() {
-            return snapshot.allListenerPIDs.isEmpty ? .stopped : .managedInPlace
+            if snapshot.allListenerPIDs.isEmpty { return .stopped }
+            return health.map { providerCapabilityFailure($0) == nil } == true ? .managedInPlace : .managedDegraded
         }
         if snapshot.allListenerPIDs.isEmpty {
             if snapshot.launchAgentKind == .knownLegacy { return .legacyStopped }
@@ -1355,7 +1430,8 @@ final class COSControlHelper {
         if snapshot.launchAgentKind == .knownLegacy { return .legacyService }
         guard snapshot.launchAgentKind == .cosControl else { return .ownerConflict }
         let accepting = (maintenance?["lifecycle"] as? [String: Any])?["state"] as? String == "accepting"
-        return managed && health != nil && accepting ? .managedHealthy : .managedDegraded
+        let providerReady = health.map { providerCapabilityFailure($0) == nil } ?? false
+        return managed && providerReady && accepting ? .managedHealthy : .managedDegraded
     }
 
     private func statusDetails() -> [String: Any] {
@@ -1364,6 +1440,9 @@ final class COSControlHelper {
         let maintenance = maintenanceStatus()
         let healthResponse = request("/api/health", timeout: 12)
         let health = healthResponse?.status == 200 ? healthResponse?.body : nil
+        let providerFailure = (snapshot.launchAgentKind == .cosControl || inPlaceActive())
+            ? managedHealthFailure(healthResponse)
+            : nil
         let state = runtimeState(snapshot: snapshot, maintenance: maintenance, health: health)
         let directOwner = launchdOwnsListeners(snapshot, requireDirect: true)
         let managed = hasLifecycleContract(maintenance)
@@ -1383,6 +1462,8 @@ final class COSControlHelper {
             "version": maintenance?["serverVersion"] ?? health?["server_version"] ?? manifest?.version ?? NSNull(),
             "installedVersion": manifest?.version ?? NSNull(),
             "desiredState": manifest?.desiredState ?? "running",
+            "providerCapabilitiesReady": providerFailure == nil && health != nil,
+            "providerCapabilityError": providerFailure ?? NSNull(),
             "serviceDisabled": serviceDisabled(),
             "recoveryInstalled": recoveryLaunchAgentValid(),
             "recoveryLoaded": recoveryServiceLoaded(),
@@ -1670,8 +1751,8 @@ final class COSControlHelper {
                 } else if inheritedLease != nil,
                           (status["lifecycle"] as? [String: Any])?["state"] as? String != "draining" {
                     lastReason = "candidate did not inherit the non-accepting maintenance drain"
-                } else if request("/api/health", timeout: 12)?.status != 200 {
-                    lastReason = "health endpoint did not return HTTP 200"
+                } else if let failure = managedHealthFailure(request("/api/health", timeout: 12)) {
+                    lastReason = failure
                 } else {
                     guard let inheritedLease else {
                         guard (status["lifecycle"] as? [String: Any])?["state"] as? String == "accepting" else {
@@ -1723,6 +1804,9 @@ final class COSControlHelper {
         guard loadManifest() == nil else {
             throw HelperError.message("A managed generation is installed. Roll back or stop it before switching to in-place management.")
         }
+        if let failure = managedHealthFailure(request("/api/health", timeout: 12)) {
+            throw HelperError.message("In-place adoption requires a working AI provider bridge: " + failure)
+        }
         let record = InPlaceRecord(
             plistPath: plistURL.path,
             appDir: legacyAppDir(),
@@ -1745,7 +1829,7 @@ final class COSControlHelper {
     private func waitForInPlaceHealth(timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if request("/api/health", timeout: 6)?.status == 200 { return true }
+            if managedHealthFailure(request("/api/health", timeout: 6)) == nil { return true }
             Thread.sleep(forTimeInterval: 0.5)
         }
         return false
@@ -1772,6 +1856,9 @@ final class COSControlHelper {
 
     private func startInPlace() throws {
         if serviceLoaded() && !ownershipSnapshot().allListenerPIDs.isEmpty {
+            if let failure = managedHealthFailure(request("/api/health", timeout: 12)) {
+                throw HelperError.message("The in-place server is running but degraded: " + failure)
+            }
             emit(ok: true, message: "Your server is already running", details: statusDetails())
             return
         }
@@ -1857,7 +1944,7 @@ final class COSControlHelper {
                 guard launchdOwnsListeners(snapshot, requireDirect: true),
                       status["generationId"] as? String == manifest.generationID,
                       status["serverVersion"] as? String == manifest.version,
-                      request("/api/health", timeout: 12)?.status == 200 else {
+                      managedHealthFailure(request("/api/health", timeout: 12)) == nil else {
                     throw HelperError.message("Server reports an open gate, but exact managed runtime proof failed. Receipt preserved.")
                 }
                 clearMaintenanceLease()
@@ -2554,6 +2641,13 @@ final class COSControlHelper {
         let details = statusDetails()
         let state = details["runtimeState"] as? String ?? RuntimeState.unknown.rawValue
         add("Runtime ownership", state == RuntimeState.managedHealthy.rawValue ? "ok" : (state == RuntimeState.ownerConflict.rawValue ? "error" : "warning"), state)
+        if loadManifest() != nil || inPlaceActive() {
+            let providerReady = details["providerCapabilitiesReady"] as? Bool == true
+            let providerDetail = details["providerCapabilityError"] as? String ?? "Installed providers are available to the service"
+            add("AI provider bridge", providerReady ? "ok" : "error", providerDetail)
+        } else {
+            add("AI provider bridge", "warning", "Managed server not installed")
+        }
         if let manifest = loadManifest() {
             do {
                 _ = try verifyGeneration(
@@ -2631,6 +2725,33 @@ final class COSControlHelper {
         let filtered = try captureProviderEnvironment(previous: manifest)
         try expect(filtered["COS_HARNESS"] == "codex" && filtered["COS_API_TOKEN"] == nil, "provider allowlist")
         try expect(redactPath(home.appendingPathComponent("workspace").path) == "~/workspace", "home path redaction")
+        let launchPaths = launchPathDirectories(node: "/opt/homebrew/bin/node")
+        let localBin = home.appendingPathComponent(".local/bin", isDirectory: true).path
+        try expect(launchPaths.contains(localBin), "managed PATH includes the user-local bin")
+        try expect(launchPaths.filter { $0 == "/opt/homebrew/bin" }.count == 1, "managed PATH removes duplicate directories")
+
+        let healthyClaude: [String: Any] = [
+            "status": "ok", "server": "ok",
+            "features": ["claude": true, "codex": false],
+        ]
+        let missingClaude: [String: Any] = [
+            "status": "ok", "server": "ok",
+            "features": ["claude": false, "codex": false],
+        ]
+        try expect(providerCapabilityFailure(healthyClaude, expectedProviders: Set(["claude"])) == nil, "available expected provider passes health gate")
+        try expect(providerCapabilityFailure(missingClaude, expectedProviders: Set(["claude"]))?.contains("installed but unavailable") == true, "HTTP-green provider failure is rejected")
+        try expect(providerCapabilityFailure(["status": "ok", "server": "ok"], expectedProviders: [])?.contains("missing provider capabilities") == true, "malformed provider health fails closed")
+        try expect(managedHealthFailure(HTTPResponse(status: 503, body: healthyClaude), expectedProviders: Set(["claude"])) == "health endpoint returned HTTP 503", "non-200 managed health fails closed")
+        let inPlaceRecord = InPlaceRecord(plistPath: plistURL.path, appDir: nil, serverInstanceId: nil, adoptedAt: "test")
+        try atomicWrite(inPlaceRecord, to: inPlaceURL, permissions: 0o600)
+        let inPlaceSnapshot = OwnershipSnapshot(serviceLoaded: true, servicePID: 42, listeners: [3141: [42], 3143: []], launchAgentKind: .knownLegacy)
+        let allProvidersHealthy: [String: Any] = [
+            "status": "ok", "server": "ok",
+            "features": ["claude": true, "codex": true],
+        ]
+        try expect(runtimeState(snapshot: inPlaceSnapshot, maintenance: nil, health: allProvidersHealthy) == .managedInPlace, "in-place runtime requires provider capabilities")
+        try expect(runtimeState(snapshot: inPlaceSnapshot, maintenance: nil, health: missingClaude) == .managedDegraded, "in-place HTTP-green provider failure is degraded")
+        try? fm.removeItem(at: inPlaceURL)
 
         let secret = "unit-test-secret-that-must-never-be-emitted-1234567890"
         let digest = tokenDigest(secret)

@@ -352,7 +352,7 @@ struct ControlPanel: View {
 
     private var footer: some View {
         HStack {
-            Text("Controller 0.2.0  •  Server target \(ControllerModel.releaseServerVersion)")
+            Text("Controller 0.2.1  •  Server target \(ControllerModel.releaseServerVersion)")
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.link)
         }.font(.caption2).foregroundStyle(.secondary)
