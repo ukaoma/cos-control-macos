@@ -66,6 +66,9 @@ struct ServerStatus: Sendable {
     var whisperReady = false
     var whisperCircuitOpen = false
     var apiURL = "http://127.0.0.1:3141"
+    var cursorReady = false
+    var cursorState = "unavailable"
+    var cursorDetail: String?
 
     init() {}
 
@@ -92,7 +95,75 @@ struct ServerStatus: Sendable {
         whisperReady = details["whisperReady"]?.bool ?? false
         whisperCircuitOpen = details["whisperCircuitOpen"]?.bool ?? false
         apiURL = details["apiURL"]?.string ?? apiURL
+        cursorReady = details["cursorReady"]?.bool ?? false
+        cursorState = details["cursorState"]?.string ?? "unavailable"
+        cursorDetail = details["cursorDetail"]?.string
     }
+}
+
+struct GlassesTurn: Identifiable, Sendable, Equatable {
+    let id: String
+    let no: Int?
+    let timestamp: TimeInterval?
+    let query: String
+    let text: String
+    let sessionId: String
+    let source: String
+
+    init(id: String, no: Int?, timestamp: TimeInterval?, query: String, text: String, sessionId: String, source: String) {
+        self.id = id
+        self.no = no
+        self.timestamp = timestamp
+        self.query = query
+        self.text = text
+        self.sessionId = sessionId
+        self.source = source
+    }
+
+    init?(_ object: [String: JSONValue]) {
+        let query = object["query"]?.string ?? ""
+        let text = object["text"]?.string ?? ""
+        let sessionId = object["sessionId"]?.string ?? ""
+        let source = object["source"]?.string ?? ""
+        let no = object["no"]?.int
+        let timestamp: TimeInterval?
+        if let number = object["timestamp"]?.int {
+            timestamp = TimeInterval(number) / (number > 10_000_000_000 ? 1000 : 1)
+        } else {
+            timestamp = nil
+        }
+        let idBase = [no.map(String.init) ?? "x", sessionId, object["timestamp"]?.int.map(String.init) ?? UUID().uuidString].joined(separator: "|")
+        self.init(id: idBase, no: no, timestamp: timestamp, query: query, text: text, sessionId: sessionId, source: source)
+    }
+
+    var previewQuery: String {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count <= 60 { return trimmed.isEmpty ? "(empty query)" : trimmed }
+        return String(trimmed.prefix(57)) + "…"
+    }
+
+    var timeLabel: String {
+        guard let timestamp else { return "--:--" }
+        let date = Date(timeIntervalSince1970: timestamp)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+
+    var turnClipboardText: String {
+        let label = no.map { "Msg \($0)" } ?? "Msg"
+        return "[\(label)] User: \(query)\n[\(label)] COS: \(text)"
+    }
+}
+
+enum RecentGlassesStatus: String, Sendable {
+    case idle
+    case loading
+    case ready
+    case empty
+    case serverStopped
+    case unauthorized
+    case error
 }
 
 struct DoctorCheck: Identifiable, Sendable {

@@ -62,13 +62,14 @@ struct ControlPanel: View {
                 header
                 statusCard
                 controls
+                recentGlassesCard
                 if !model.doctorChecks.isEmpty { doctorCard }
                 utilities
                 footer
             }
             .padding(16)
         }
-        .frame(width: 390, height: 610)
+        .frame(width: 390, height: 640)
         .background(COSPalette.panel)
         .background(WindowOpaquer())
         .alert("COS Control", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
@@ -99,6 +100,7 @@ struct ControlPanel: View {
             statusRow("Ownership", value: ownershipLabel, good: model.status.ownershipVerified)
             statusRow("Recovery", value: model.status.recoveryLoaded ? "Scheduled" : "Needs repair", good: model.status.recoveryInstalled && model.status.recoveryLoaded)
             statusRow("Local Whisper", value: model.status.whisperReady ? "Ready" : "Unavailable", good: model.status.whisperReady)
+            statusRow("Cursor CLI", value: cursorLabel, good: model.status.cursorReady)
             statusRow("Version", value: model.status.runtimeState == "managedInPlace" ? "Self-managed" : (model.status.version ?? model.status.installedVersion ?? "Not installed"), good: model.status.installed || model.status.runtimeState == "managedInPlace")
             Divider()
             HStack(alignment: .top) {
@@ -170,6 +172,74 @@ struct ControlPanel: View {
         }
     }
 
+    private var recentGlassesCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            DisclosureGroup(
+                isExpanded: Binding(
+                    get: { model.recentGlassesExpanded },
+                    set: { model.setRecentGlassesExpanded($0) }
+                )
+            ) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text(recentGlassesStatusLabel)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Refresh") { Task { await model.refreshRecentMessages() } }
+                            .controlSize(.mini)
+                        Button("Copy handoff") { model.copyHandoff() }
+                            .controlSize(.mini)
+                            .disabled(model.recentMessages.isEmpty)
+                    }
+                    if model.recentGlassesStatus == .loading {
+                        ProgressView().controlSize(.small)
+                    } else if model.recentMessages.isEmpty {
+                        Text(recentGlassesEmptyCopy)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(model.recentMessages.prefix(30)) { turn in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(turnRowTitle(turn))
+                                        .font(.caption.weight(.semibold))
+                                    Spacer()
+                                    Button("Copy turn") { model.copyTurn(turn) }
+                                        .controlSize(.mini)
+                                }
+                                Text("User: \(turn.query)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(3)
+                                    .textSelection(.enabled)
+                                Text("COS: \(turn.text)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(4)
+                                    .textSelection(.enabled)
+                            }
+                            .padding(.vertical, 4)
+                            if turn.id != model.recentMessages.prefix(30).last?.id {
+                                Divider()
+                            }
+                        }
+                    }
+                }
+                .padding(.top, 6)
+            } label: {
+                Text("Recent Glasses")
+                    .font(.caption2.weight(.bold))
+                    .tracking(1.3)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(13)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
+        .overlay(RoundedRectangle(cornerRadius: 13).stroke(COSPalette.line, lineWidth: 1))
+        .buttonStyle(.bordered)
+    }
+
     private var doctorCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("DOCTOR").font(.caption2.weight(.bold)).tracking(1.3).foregroundStyle(.secondary)
@@ -206,6 +276,7 @@ struct ControlPanel: View {
             }
             HStack {
                 Button("Choose Folder", systemImage: "folder") { model.selectWorkFolder() }
+                Button("Open Cursor", systemImage: "chevron.left.forwardslash.chevron.right") { model.openCursor() }
                 Button("Copy Pairing Token", systemImage: "key") { model.perform("token") }
                     .disabled(model.status.runtimeState != "managedHealthy")
             }
@@ -231,10 +302,46 @@ struct ControlPanel: View {
 
     private var footer: some View {
         HStack {
-            Text("Controller 0.1.7  •  Server target \(ControllerModel.releaseServerVersion)")
+            Text("Controller 0.1.8  •  Server target \(ControllerModel.releaseServerVersion)")
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.link)
         }.font(.caption2).foregroundStyle(.secondary)
+    }
+
+    private var cursorLabel: String {
+        switch model.status.cursorState {
+        case "connected": "Connected"
+        case "signInRequired": "Sign-in required"
+        case "notInstalled": "Not installed"
+        default: "Unavailable"
+        }
+    }
+
+    private var recentGlassesStatusLabel: String {
+        switch model.recentGlassesStatus {
+        case .idle: "Expand to load today’s last 30 turns"
+        case .loading: "Loading…"
+        case .ready: "Newest first · \(model.recentMessages.count) turn(s)"
+        case .empty: "Empty today"
+        case .serverStopped: "Server stopped"
+        case .unauthorized: "Unauthorized"
+        case .error: "Could not load messages"
+        }
+    }
+
+    private var recentGlassesEmptyCopy: String {
+        switch model.recentGlassesStatus {
+        case .serverStopped: "Server stopped"
+        case .unauthorized: "Pairing token missing or unauthorized"
+        case .empty: "No glasses turns yet today"
+        case .error: "Could not load recent glasses messages"
+        default: "No messages"
+        }
+    }
+
+    private func turnRowTitle(_ turn: GlassesTurn) -> String {
+        let number = turn.no.map { "#\($0)" } ?? "#"
+        return "\(number) · \(turn.timeLabel) · \(turn.previewQuery)"
     }
 
     private var runtimeLabel: String {

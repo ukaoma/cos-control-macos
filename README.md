@@ -9,7 +9,7 @@ It starts, stops, updates, diagnoses, and safely rolls back the public
 - macOS 14 or newer
 - Apple Silicon
 - Node.js 20.11 or newer
-- Claude Code or Codex CLI
+- Claude Code, Codex CLI, or Cursor Agent (`agent`)
 
 ## Build
 
