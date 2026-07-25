@@ -17,9 +17,20 @@ final class ControllerModel: ObservableObject {
     @Published var recentGlassesExpanded = false
     @Published var recentGlassesStatus: RecentGlassesStatus = .idle
     @Published var recentGlassesDate: String?
+    @Published var appUpdate = AppUpdateInfo()
+
+    /// This build's identity, handed to the helper so the answer can never depend on
+    /// WHICH helper copy ran (bundled vs stable, HelperClient.helperURL():55-64).
+    static var currentVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+    }
+    static var currentBuild: Int {
+        Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
+    }
 
     private let helper = HelperClient()
     private var refreshTask: Task<Void, Never>?
+    private var updateCheckTask: Task<Void, Never>?
 
     init() {
         refreshTask = Task { [weak self] in
@@ -29,9 +40,45 @@ final class ControllerModel: ObservableObject {
                 await self?.refresh(quiet: true)
             }
         }
+        // Update check: once at launch, then every 6h. Deliberately NOT on the 12s
+        // status loop -- this is a network call to a static file, not live state.
+        updateCheckTask = Task { [weak self] in
+            await self?.checkForAppUpdate()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(6 * 60 * 60))
+                await self?.checkForAppUpdate()
+            }
+        }
     }
 
-    deinit { refreshTask?.cancel() }
+    /// P1 check-only. Never mutates anything, never blocks the UI, and stays SILENT on
+    /// failure: offline or a bad appcast leaves the previous state untouched rather than
+    /// raising an error the user has to dismiss.
+    func checkForAppUpdate() async {
+        do {
+            let response = try await helper.run([
+                "check-app-update",
+                "--current-version", Self.currentVersion,
+                "--current-build", String(Self.currentBuild),
+            ])
+            appUpdate = AppUpdateInfo(response.details)
+        } catch {
+            // Intentionally swallowed: a failed check is not a user-facing problem.
+        }
+    }
+
+    /// The ONLY action a check-only build offers. Opens the download page; it does not
+    /// download, stage, or swap anything (that is P1.5/P2, gated on P0 notarization).
+    func openUpdatePage() {
+        let target = appUpdate.url.flatMap(URL.init(string:))
+            ?? URL(string: "https://www.gotcos.com/control/")
+        if let target { NSWorkspace.shared.open(target) }
+    }
+
+    deinit {
+        refreshTask?.cancel()
+        updateCheckTask?.cancel()
+    }
 
     func refresh(quiet: Bool = false) async {
         if !quiet { busy = true }

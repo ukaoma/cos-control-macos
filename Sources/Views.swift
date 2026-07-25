@@ -60,6 +60,7 @@ struct ControlPanel: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header
+                updateBanner
                 statusCard
                 controls
                 recentGlassesCard
@@ -320,9 +321,38 @@ struct ControlPanel: View {
         .disabled(model.busy)
     }
 
+    /// P1 check-only banner. Renders ONLY when the appcast advertises a genuinely newer
+    /// build; offline, up-to-date, killSwitch and malformed all render nothing at all.
+    /// The button opens the download page. This build cannot download or swap anything.
+    @ViewBuilder private var updateBanner: some View {
+        if model.appUpdate.shouldSurface {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: "arrow.down.circle.fill").foregroundStyle(COSPalette.amber)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Update available: \(model.appUpdate.latestVersion ?? "")")
+                        .font(.caption.weight(.semibold))
+                    if let notes = model.appUpdate.notes, !notes.isEmpty {
+                        Text(notes)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 8)
+                Button("Get it") { model.openUpdatePage() }
+                    .controlSize(.small)
+                    .layoutPriority(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(11)
+            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).stroke(COSPalette.amber.opacity(0.45), lineWidth: 1))
+        }
+    }
+
     private var footer: some View {
         HStack {
-            Text("Controller 0.1.9  •  Server target \(ControllerModel.releaseServerVersion)")
+            Text("Controller 0.2.0  •  Server target \(ControllerModel.releaseServerVersion)")
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.link)
         }.font(.caption2).foregroundStyle(.secondary)

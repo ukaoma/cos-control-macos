@@ -223,6 +223,7 @@ final class COSControlHelper {
         case "expire-clipboard": try expireClipboard(args: args)
         case "report": emit(ok: true, message: "Redacted report ready", details: ["report": redactedReport()])
         case "recent-messages": try emitRecentMessages(args: args)
+        case "check-app-update": try emitAppUpdateCheck(args: args)
         case "run-server": try runServer()
         default: throw HelperError.message("unknown command: \(command)")
         }
@@ -2389,6 +2390,107 @@ final class COSControlHelper {
     private func sliceRecentMessages(_ messages: [[String: Any]], limit: Int) -> [[String: Any]] {
         let capped = max(1, min(limit, 100))
         return Array(messages.reversed().prefix(capped)).map(normalizeRecentMessage)
+    }
+
+    // MARK: - App update check (P1: CHECK ONLY)
+    //
+    // Read-only by construction. This command MUST NOT:
+    //   - take withMutationLock (it mutates nothing, and must never block lifecycle work)
+    //   - touch com.cos.glasses-server or any launchd verb            [plan R1]
+    //   - write under ~/.cos-glasses/ (token, certs, .env)            [plan R9]
+    //   - download, stage, or swap anything                          [that is P1.5/P2, gated on P0 notarization]
+    // It fetches one static JSON over HTTPS and reports a comparison. Nothing else.
+    //
+    // The APP supplies its own identity (--current-build/--current-version) rather than the
+    // helper inferring it: the helper runs from BOTH the app bundle and the stable path
+    // (HelperClient.swift:55-64), so self-inference would report different answers depending
+    // on which copy ran. Caller-supplied identity removes that skew entirely.
+    private static let defaultAppcastURL = "https://www.gotcos.com/control/appcast.json"
+
+    private func fetchAppcast(_ urlString: String, timeout: Int = 6) -> [String: Any]? {
+        guard let url = URL(string: urlString), url.scheme == "https" || url.isFileURL else { return nil }
+        if url.isFileURL {
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        }
+        var request = URLRequest(url: url, timeoutInterval: TimeInterval(timeout))
+        request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let box = HTTPResultBox()
+        let completion = DispatchSemaphore(value: 0)
+        let task = URLSession.shared.dataTask(with: request) { data, response, _ in
+            box.store(data: data, response: response)
+            completion.signal()
+        }
+        task.resume()
+        guard completion.wait(timeout: .now() + .seconds(timeout + 2)) == .success else {
+            task.cancel()
+            return nil
+        }
+        let (data, response) = box.load()
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200, let data else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    /// Ordered-pair comparison. Build is authoritative; version breaks ties only when
+    /// builds are equal. Guarantees monotonicity, so a republished or rolled-back
+    /// appcast can never advertise a downgrade as an update. [plan R6, R11]
+    static func appUpdateIsNewer(latestBuild: Int, currentBuild: Int) -> Bool {
+        latestBuild > currentBuild
+    }
+
+    private func emitAppUpdateCheck(args: [String]) throws {
+        let currentVersion = option("--current-version", in: args) ?? ""
+        let currentBuild = Int(option("--current-build", in: args) ?? "") ?? 0
+        let source = option("--appcast-url", in: args)
+            ?? ProcessInfo.processInfo.environment["COS_APPCAST_URL"]
+            ?? Self.defaultAppcastURL
+
+        var details: [String: Any] = [
+            "updateAvailable": false,
+            "currentVersion": currentVersion,
+            "currentBuild": currentBuild,
+            "source": source,
+        ]
+
+        // Offline / DNS failure / 5xx / malformed is a SILENT no-op, never an error the
+        // user has to dismiss. A checker that nags when the network blips is a regression. [plan R-offline]
+        guard let appcast = fetchAppcast(source) else {
+            details["reason"] = "unreachable"
+            emit(ok: true, message: "Update check unavailable", details: details)
+            return
+        }
+
+        if let kill = appcast["killSwitch"] as? [String: Any], kill["disableAutoUpdate"] as? Bool == true {
+            details["reason"] = "killSwitch"
+            details["killSwitch"] = true
+            emit(ok: true, message: "Update checks paused by publisher", details: details)
+            return
+        }
+
+        guard let channels = appcast["channels"] as? [String: Any],
+              let stable = channels["stable"] as? [String: Any],
+              let latestVersion = stable["version"] as? String,
+              let latestBuild = stable["build"] as? Int,
+              let url = stable["url"] as? String else {
+            details["reason"] = "malformed"
+            emit(ok: true, message: "Update check unavailable", details: details)
+            return
+        }
+
+        details["latestVersion"] = latestVersion
+        details["latestBuild"] = latestBuild
+        details["url"] = url
+        if let notes = stable["notes"] as? String { details["notes"] = notes }
+
+        if Self.appUpdateIsNewer(latestBuild: latestBuild, currentBuild: currentBuild) {
+            details["updateAvailable"] = true
+            details["reason"] = "newer"
+            emit(ok: true, message: "Update available: \(latestVersion)", details: details)
+        } else {
+            details["reason"] = "upToDate"
+            emit(ok: true, message: "COS Control is up to date", details: details)
+        }
     }
 
     private func emitRecentMessages(args: [String]) throws {

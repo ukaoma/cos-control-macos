@@ -172,3 +172,29 @@ struct DoctorCheck: Identifiable, Sendable {
     let state: String
     let detail: String
 }
+
+/// Result of the P1 check-only update probe. Carries no ability to apply anything:
+/// the only action it enables is opening the download page in a browser.
+struct AppUpdateInfo: Sendable {
+    var updateAvailable = false
+    var latestVersion: String?
+    var latestBuild: Int?
+    var url: String?
+    var notes: String?
+    /// newer / upToDate / killSwitch / unreachable / malformed / idle
+    var reason: String = "idle"
+
+    init() {}
+
+    init(_ details: [String: JSONValue]) {
+        updateAvailable = details["updateAvailable"]?.bool ?? false
+        latestVersion = details["latestVersion"]?.string
+        latestBuild = details["latestBuild"]?.int
+        url = details["url"]?.string
+        notes = details["notes"]?.string
+        reason = details["reason"]?.string ?? "idle"
+    }
+
+    /// Only a reachable, well-formed, genuinely-newer appcast may surface UI.
+    var shouldSurface: Bool { updateAvailable && latestVersion != nil }
+}
