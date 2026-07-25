@@ -199,31 +199,51 @@ struct ControlPanel: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(model.recentMessages.prefix(30)) { turn in
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text(turnRowTitle(turn))
-                                        .font(.caption.weight(.semibold))
-                                    Spacer()
-                                    Button("Copy turn") { model.copyTurn(turn) }
-                                        .controlSize(.mini)
+                        // Turns render in FULL inside a bounded, scrollable viewport.
+                        // Two rules keep this honest:
+                        //  1. `.fixedSize(horizontal: false, vertical: true)` — inside the
+                        //     panel's outer ScrollView a wrapping Text is offered unbounded
+                        //     height and does NOT reserve its true laid-out height, so it
+                        //     painted over the Divider and the next row (clipped/overlapping
+                        //     bodies). fixedSize makes each Text claim exactly the height it
+                        //     needs, so rows push each other down instead of colliding.
+                        //  2. The list gets its own maxHeight + ScrollView so a long day of
+                        //     turns cannot push the rest of the panel off-screen.
+                        ScrollView(.vertical) {
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                ForEach(model.recentMessages.prefix(30)) { turn in
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        HStack(alignment: .firstTextBaseline) {
+                                            Text(turnRowTitle(turn))
+                                                .font(.caption.weight(.semibold))
+                                                .fixedSize(horizontal: false, vertical: true)
+                                            Spacer(minLength: 8)
+                                            Button("Copy turn") { model.copyTurn(turn) }
+                                                .controlSize(.mini)
+                                                .layoutPriority(1)
+                                        }
+                                        Text("User: \(turn.query)")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                            .textSelection(.enabled)
+                                        Text("COS: \(turn.text)")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                            .textSelection(.enabled)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.vertical, 6)
+                                    if turn.id != model.recentMessages.prefix(30).last?.id {
+                                        Divider()
+                                    }
                                 }
-                                Text("User: \(turn.query)")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(3)
-                                    .textSelection(.enabled)
-                                Text("COS: \(turn.text)")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(4)
-                                    .textSelection(.enabled)
                             }
-                            .padding(.vertical, 4)
-                            if turn.id != model.recentMessages.prefix(30).last?.id {
-                                Divider()
-                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
+                        .frame(maxHeight: 300)
+                        .scrollIndicatorsFlash(onAppear: true)
                     }
                 }
                 .padding(.top, 6)
@@ -302,7 +322,7 @@ struct ControlPanel: View {
 
     private var footer: some View {
         HStack {
-            Text("Controller 0.1.8  •  Server target \(ControllerModel.releaseServerVersion)")
+            Text("Controller 0.1.9  •  Server target \(ControllerModel.releaseServerVersion)")
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.link)
         }.font(.caption2).foregroundStyle(.secondary)

@@ -17,7 +17,7 @@ SELF_TEST="$(COS_CONTROL_TEST_HOME="$TMP/home" "$TMP/cos-control-helper" self-te
 /usr/bin/python3 -c 'import json,sys; value=json.loads(sys.argv[1]); assert value["ok"] and value["details"]["tests"] >= 22' "$SELF_TEST"
 /usr/bin/grep -q 'cursor-probe-cache.json' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'recent-messages' "$ROOT/HelperSources/main.swift"
-/usr/bin/grep -q 'Controller 0.1.8' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Controller 0.1.9' "$ROOT/Sources/Views.swift"
 
 /usr/bin/grep -q 'com.cos.glasses-control-recovery' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q '"StartInterval": 60' "$ROOT/HelperSources/main.swift"
