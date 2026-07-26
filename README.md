@@ -14,11 +14,15 @@ It starts, stops, updates, diagnoses, and safely rolls back the public
 ## Build
 
 ```bash
+COS_SIGN_IDENTITY="Developer ID Application: NAME (TEAMID)" \
+COS_NOTARY_PROFILE="cos-control-notary" \
 ./scripts/build-release.sh
 ```
 
-The app is ad-hoc signed for the open-source MVP. On first launch, right-click
-the app, choose Open, then confirm Open. The controller stores immutable npm
+Public builds fail closed unless Developer ID signing and notarization are both
+configured. The script verifies the extracted final ZIP with codesign, stapler,
+and Gatekeeper. For local QA only, use `COS_ALLOW_ADHOC=1`; never publish that
+artifact. The controller stores immutable npm
 server generations under `~/Library/Application Support/COS Control` and uses
 one LaunchAgent, `com.cos.glasses-server`, as the sole server owner.
 
@@ -46,6 +50,18 @@ An unknown foreground process, mismatched listener PID, incompatible maintenance
 contract, or interrupted transaction is shown as a conflict instead of being
 silently replaced. Doctor and Copy Report redact pairing credentials, process
 IDs, and the selected workspace path.
+
+## 0.2.4 local-service recovery
+
+- Server 6.15.4 starts Whisper and Kokoro while a replacement remains behind
+  the maintenance gate, then starts durable/background work once admissions are
+  released.
+- Managed verification waits for local Whisper when its persistent
+  whisper-server/model prerequisites are installed. Repair Whisper cannot
+  report success until the persistent
+  server is ready.
+- Drain progress identifies the active work class and remaining deadline.
+- The bundled server target is 6.15.4.
 
 ## 0.2.3 workspace activation
 

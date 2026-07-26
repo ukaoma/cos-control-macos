@@ -67,6 +67,8 @@ struct ServerStatus: Sendable {
     var activeTranscriptionSessions: Int?
     var whisperReady = false
     var whisperCircuitOpen = false
+    var whisperStartupState: String?
+    var whisperError: String?
     var apiURL = "http://127.0.0.1:3141"
     var cursorReady = false
     var cursorState = "unavailable"
@@ -98,6 +100,8 @@ struct ServerStatus: Sendable {
         activeTranscriptionSessions = details["activeTranscriptionSessions"]?.int
         whisperReady = details["whisperReady"]?.bool ?? false
         whisperCircuitOpen = details["whisperCircuitOpen"]?.bool ?? false
+        whisperStartupState = details["whisperStartupState"]?.string
+        whisperError = details["whisperError"]?.string
         apiURL = details["apiURL"]?.string ?? apiURL
         cursorReady = details["cursorReady"]?.bool ?? false
         cursorState = details["cursorState"]?.string ?? "unavailable"

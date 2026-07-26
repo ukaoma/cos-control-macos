@@ -4,7 +4,7 @@ import ServiceManagement
 
 @MainActor
 final class ControllerModel: ObservableObject {
-    static let releaseServerVersion = "6.15.3"
+    static let releaseServerVersion = "6.15.4"
 
     @Published var status = ServerStatus()
     @Published var doctorChecks: [DoctorCheck] = []

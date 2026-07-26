@@ -111,7 +111,15 @@ struct ControlPanel: View {
             statusRow("Server", value: runtimeLabel, good: model.status.runtimeState == "managedHealthy")
             statusRow("Ownership", value: ownershipLabel, good: model.status.ownershipVerified)
             statusRow("Recovery", value: model.status.recoveryLoaded ? "Scheduled" : "Needs repair", good: model.status.recoveryInstalled && model.status.recoveryLoaded)
-            statusRow("Local Whisper", value: model.status.whisperReady ? "Ready" : "Unavailable", good: model.status.whisperReady)
+            statusRow("Local Whisper", value: whisperLabel, good: model.status.whisperReady)
+            if !model.status.whisperReady, let error = model.status.whisperError, !error.isEmpty {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(COSPalette.amber)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .textSelection(.enabled)
+            }
             statusRow("Cursor CLI", value: cursorLabel, good: model.status.cursorReady)
             statusRow("Version", value: model.status.runtimeState == "managedInPlace" ? "Self-managed" : (model.status.version ?? model.status.installedVersion ?? "Not installed"), good: model.status.installed || model.status.runtimeState == "managedInPlace")
             Divider()
@@ -380,7 +388,7 @@ struct ControlPanel: View {
 
     private var footer: some View {
         HStack {
-            Text("Controller 0.2.3  •  Server target \(ControllerModel.releaseServerVersion)")
+            Text("Controller 0.2.4  •  Server target \(ControllerModel.releaseServerVersion)")
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.link)
         }.font(.caption2).foregroundStyle(.secondary)
@@ -392,6 +400,18 @@ struct ControlPanel: View {
         case "signInRequired": "Sign-in required"
         case "notInstalled": "Not installed"
         default: "Unavailable"
+        }
+    }
+
+    private var whisperLabel: String {
+        if model.status.whisperReady { return "Ready" }
+        switch model.status.whisperStartupState {
+        case "preflight": return "Checking"
+        case "loading": return "Loading"
+        case "failed": return "Failed"
+        case "unavailable": return "Not installed"
+        case "stopped": return "Stopped"
+        default: return "Unavailable"
         }
     }
 
@@ -410,7 +430,7 @@ struct ControlPanel: View {
     private var recentGlassesEmptyCopy: String {
         switch model.recentGlassesStatus {
         case .serverStopped: "Server stopped"
-        case .unauthorized: "Pairing token missing or unauthorized"
+        case .unauthorized: "Use Copy Pairing Token and paste the complete value (existing tokens need at least 16 characters)"
         case .empty: "No glasses turns yet today"
         case .error: "Could not load recent glasses messages"
         default: "No messages"

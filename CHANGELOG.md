@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.4 (build 15)
+
+- Target server 6.15.4 and require an installed local Whisper runtime to report
+  ready before a managed candidate is accepted. Repair Whisper now releases the
+  maintenance gate before its final readiness check, so a failed optional audio
+  repair never strands the otherwise healthy server offline.
+- Show Whisper preflight/loading/failure state instead of a generic unavailable
+  label and include the bounded startup error in diagnostics.
+- Report the actual maintenance work classes and countdown while draining,
+  replacing the indefinite-looking “Draining active work” message.
+- Bound candidate verification, provider queries, and Kokoro playback to one
+  monotonic operation deadline with explicit proof-phase progress.
+- Add boundary coverage for migrated pairing tokens and prove both stale PID
+  text and a SIGKILLed lock-holder process cannot block a later helper.
+- Gate persistent Whisper readiness on whisper-server/model prerequisites, not
+  batch-only whisper-cli, and show the bounded startup error in the main status
+  card, Doctor, and Copy Report.
+- Public packaging now fails closed without Developer ID signing and
+  notarization, then validates the extracted ZIP with codesign, stapler, and
+  Gatekeeper. Ad-hoc output requires an explicit local-QA override.
+
 ## 0.2.3 (build 14)
 
 - Fix Choose Folder for adopted self-managed LaunchAgents. The selected

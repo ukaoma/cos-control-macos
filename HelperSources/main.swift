@@ -161,7 +161,7 @@ final class COSControlHelper {
     private let fm = FileManager.default
     private let home: URL = {
         let environment = ProcessInfo.processInfo.environment
-        if CommandLine.arguments.dropFirst().first == "self-test",
+        if CommandLine.arguments.dropFirst().first?.hasPrefix("self-test") == true,
            let testHome = environment["COS_CONTROL_TEST_HOME"],
            testHome.hasPrefix("/tmp/") {
             return URL(fileURLWithPath: testHome, isDirectory: true).standardizedFileURL
@@ -221,6 +221,7 @@ final class COSControlHelper {
         guard let command = args.first else { throw HelperError.message("missing command") }
         switch command {
         case "self-test": try selfTest()
+        case "self-test-lock-crash": try selfTestLockCrash()
         case "status": emit(ok: true, message: "Status refreshed", details: statusDetails())
         case "doctor": emit(ok: true, message: "Doctor complete", details: doctorDetails(redacted: false))
         case "install": try withMutationLock {
@@ -301,6 +302,21 @@ final class COSControlHelper {
         identity.withCString { pointer in _ = write(descriptor, pointer, strlen(pointer)) }
         _ = fsync(descriptor)
         return try body()
+    }
+
+    /// Test-only crash harness. It is unreachable against a real home and
+    /// proves that kernel flock ownership disappears when a helper is killed.
+    private func selfTestLockCrash() throws {
+        guard let testHome = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"],
+              testHome.hasPrefix("/tmp/") else {
+            throw HelperError.message("self-test lock harness requires an isolated temporary home")
+        }
+        try withMutationLock {
+            let marker = runtimeRoot.appendingPathComponent("lock-holder-crashed")
+            try Data("locked\n".utf8).write(to: marker, options: .atomic)
+            _ = Darwin.kill(getpid(), SIGKILL)
+            Thread.sleep(forTimeInterval: 1)
+        }
     }
 
     private func ensurePrivateDirectory(_ url: URL) throws {
@@ -1403,10 +1419,15 @@ final class COSControlHelper {
         maintenanceOperation: String? = nil,
         maintenanceNonce: String? = nil,
         body: String? = nil,
-        timeout: Int = 5
+        timeout: Int = 5,
+        deadlineUptime: TimeInterval? = nil
     ) -> HTTPResponse? {
         guard let url = URL(string: "http://127.0.0.1:3141\(path)") else { return nil }
-        var request = URLRequest(url: url, timeoutInterval: TimeInterval(timeout))
+        let now = ProcessInfo.processInfo.systemUptime
+        let remaining = deadlineUptime.map { $0 - now }
+        if let remaining, remaining <= 0 { return nil }
+        let requestTimeout = min(TimeInterval(timeout), remaining ?? TimeInterval(timeout))
+        var request = URLRequest(url: url, timeoutInterval: max(0.1, requestTimeout))
         request.httpMethod = method
         if let token { request.setValue(token, forHTTPHeaderField: "X-COS-Token") }
         if let maintenanceLease { request.setValue(maintenanceLease, forHTTPHeaderField: "X-COS-Maintenance-Lease") }
@@ -1423,7 +1444,11 @@ final class COSControlHelper {
             completion.signal()
         }
         task.resume()
-        guard completion.wait(timeout: .now() + .seconds(timeout + 2)) == .success else {
+        let waitBudget = deadlineUptime.map {
+            max(0, $0 - ProcessInfo.processInfo.systemUptime)
+        } ?? TimeInterval(timeout + 2)
+        guard waitBudget > 0,
+              completion.wait(timeout: .now() + waitBudget) == .success else {
             task.cancel()
             return nil
         }
@@ -1455,11 +1480,13 @@ final class COSControlHelper {
         health: [String: Any],
         expectedProviders: Set<String>,
         requireProviderEndpoint: Bool,
-        operation: MaintenanceLease? = nil
+        operation: MaintenanceLease? = nil,
+        deadlineUptime: TimeInterval? = nil
     ) -> String? {
         guard let token = try? readToken() else { return "pairing token is unavailable for transactional proof" }
         for provider in expectedProviders.sorted() {
             guard provider == "claude" || provider == "codex" else { continue }
+            progress("Proving \(provider.capitalized)…")
             let body = try? jsonBody(["provider": provider])
             guard let response = request(
                 "/api/diagnostics/provider-proof",
@@ -1469,7 +1496,8 @@ final class COSControlHelper {
                 maintenanceOperation: operation?.operationId,
                 maintenanceNonce: operation?.nonce,
                 body: body,
-                timeout: 130
+                timeout: 130,
+                deadlineUptime: deadlineUptime
             ) else { return provider.capitalized + " transactional proof did not answer" }
             if response.status == 404 && !requireProviderEndpoint { continue }
             guard response.status == 200, response.body?["ok"] as? Bool == true else {
@@ -1480,6 +1508,7 @@ final class COSControlHelper {
 
         let localTTS = health["tts_local"] as? [String: Any]
         guard localTTS?["ready"] as? Bool == true else { return nil }
+        progress("Proving Kokoro generation…")
         let prepareBody = try? jsonBody([
             "text": "COS speech check.",
             "voice": "am_echo",
@@ -1495,13 +1524,15 @@ final class COSControlHelper {
             maintenanceOperation: operation?.operationId,
             maintenanceNonce: operation?.nonce,
             body: prepareBody,
-            timeout: 45
+            timeout: 45,
+            deadlineUptime: deadlineUptime
         ), prepared.status == 200,
               let playPath = prepared.body?["url"] as? String,
               playPath.range(of: #"^/api/tts/play/[0-9a-fA-F-]{36}$"#, options: .regularExpression) != nil else {
             return "Kokoro prepare proof failed"
         }
-        guard let playback = request(playPath, timeout: 45),
+        progress("Proving Kokoro playback…")
+        guard let playback = request(playPath, timeout: 45, deadlineUptime: deadlineUptime),
               playback.status == 200,
               (playback.data?.count ?? 0) > 100,
               playback.headers["content-type"]?.lowercased().hasPrefix("audio/") == true else {
@@ -1510,14 +1541,18 @@ final class COSControlHelper {
         return nil
     }
 
-    private func maintenanceStatus(operation: MaintenanceLease? = nil) -> [String: Any]? {
+    private func maintenanceStatus(
+        operation: MaintenanceLease? = nil,
+        deadlineUptime: TimeInterval? = nil
+    ) -> [String: Any]? {
         guard let token = try? readToken(),
               let response = request(
                 "/api/maintenance/status",
                 token: token,
                 maintenanceLease: operation?.id,
                 maintenanceOperation: operation?.operationId,
-                maintenanceNonce: operation?.nonce
+                maintenanceNonce: operation?.nonce,
+                deadlineUptime: deadlineUptime
               ),
               response.status == 200 else { return nil }
         return response.body
@@ -1570,6 +1605,21 @@ final class COSControlHelper {
         guard let response else { return "health endpoint did not answer" }
         guard response.status == 200 else { return "health endpoint returned HTTP " + String(response.status) }
         return providerCapabilityFailure(response.body, expectedProviders: expectedProviders)
+    }
+
+    /// Server 6.15.4+ starts non-admitting local speech services while a
+    /// candidate is still behind the maintenance gate. When Whisper is
+    /// configured (`serverConfigured=true`), managed verification must not call that
+    /// candidate healthy until the persistent server is actually ready.
+    private func localWhisperReadinessFailure(_ health: [String: Any], serverVersion: String) -> String? {
+        guard versionAtLeast(serverVersion, "6.15.4"),
+              let whisper = health["whisper_health"] as? [String: Any],
+              whisper["serverConfigured"] as? Bool == true,
+              whisper["server"] as? Bool != true else { return nil }
+        let state = whisper["startupState"] as? String ?? "not_started"
+        let error = whisper["lastError"] as? String
+        return error.map { "Local Whisper \(state): \($0)" }
+            ?? "Local Whisper is \(state)"
     }
 
     private func runtimeState(snapshot: OwnershipSnapshot, maintenance: [String: Any]?, health: [String: Any]?) -> RuntimeState {
@@ -1641,6 +1691,8 @@ final class COSControlHelper {
             "activeTranscriptionSessions": maintenance?["activeTranscriptionSessions"] ?? NSNull(),
             "whisperReady": ((health?["whisper_health"] as? [String: Any])?["server"] as? Bool) ?? false,
             "whisperCircuitOpen": ((health?["whisper_health"] as? [String: Any])?["circuitOpen"] as? Bool) ?? false,
+            "whisperStartupState": (health?["whisper_health"] as? [String: Any])?["startupState"] ?? NSNull(),
+            "whisperError": (health?["whisper_health"] as? [String: Any])?["lastError"] ?? NSNull(),
             "transactionPending": loadTransaction() != nil || loadInPlaceConfigurationTransaction() != nil,
             "apiURL": "http://127.0.0.1:3141",
         ]
@@ -1733,6 +1785,8 @@ final class COSControlHelper {
     private func waitForRestartProof(_ operation: MaintenanceLease, timeout: TimeInterval = 90) throws -> MaintenanceLease {
         progress("Draining active work safely…")
         let deadline = Date().addingTimeInterval(timeout)
+        var nextProgress = Date()
+        var lastBlockers = "unknown active work"
         while Date() < deadline {
             guard let status = maintenanceStatus(operation: operation), hasLifecycleContract(status),
                   maintenanceOperationMatches(status, operation: operation) else {
@@ -1745,9 +1799,21 @@ final class COSControlHelper {
                 throw HelperError.message("The source server identity changed before the maintenance drain was committed.")
             }
             if restartProofMatches(status, operation: operation) { return operation }
+            if Date() >= nextProgress {
+                let lifecycle = status["lifecycle"] as? [String: Any]
+                let activeByKind = lifecycle?["activeByKind"] as? [String: Any] ?? [:]
+                let blockers = activeByKind.compactMap { key, value -> String? in
+                    guard let count = value as? Int, count > 0 else { return nil }
+                    return "\(key)=\(count)"
+                }.sorted()
+                lastBlockers = blockers.isEmpty ? "restart proof" : blockers.joined(separator: ", ")
+                let remaining = max(0, Int(ceil(deadline.timeIntervalSinceNow)))
+                progress("Draining: \(lastBlockers) · \(remaining)s remaining…")
+                nextProgress = Date().addingTimeInterval(3)
+            }
             Thread.sleep(forTimeInterval: 0.5)
         }
-        throw HelperError.message("Timed out draining active work. The committed operation remains closed and persisted for Repair.")
+        throw HelperError.message("Timed out draining \(lastBlockers). The committed operation remains closed and persisted for Repair.")
     }
 
     private func acquireMaintenanceLeaseIfNeeded(
@@ -1896,17 +1962,19 @@ final class COSControlHelper {
         inheritedLease: MaintenanceLease?,
         timeout: TimeInterval,
         requireDirectOwnership: Bool = true,
-        requireTransactionalProof: Bool = true
+        requireTransactionalProof: Bool = true,
+        requireLocalWhisper: Bool = true
     ) throws -> MaintenanceLease? {
-        let deadline = Date().addingTimeInterval(timeout)
+        let deadlineUptime = ProcessInfo.processInfo.systemUptime + timeout
         var lastReason = "server did not answer"
-        while Date() < deadline {
+        progress("Starting candidate server…")
+        while ProcessInfo.processInfo.systemUptime < deadlineUptime {
             let snapshot = ownershipSnapshot()
             if !launchdOwnsListeners(snapshot, requireDirect: requireDirectOwnership) {
                 lastReason = requireDirectOwnership
                     ? "launchd does not directly own the listener PID"
                     : "launchd does not own the listener process tree"
-            } else if let status = maintenanceStatus(operation: inheritedLease) {
+            } else if let status = maintenanceStatus(operation: inheritedLease, deadlineUptime: deadlineUptime) {
                 if !hasLifecycleContract(status) {
                     lastReason = "managed contract is missing or incompatible"
                 } else if let inheritedLease, !maintenanceOperationMatches(status, operation: inheritedLease) {
@@ -1923,16 +1991,32 @@ final class COSControlHelper {
                 } else if inheritedLease != nil,
                           (status["lifecycle"] as? [String: Any])?["state"] as? String != "draining" {
                     lastReason = "candidate did not inherit the non-accepting maintenance drain"
-                } else if let failure = managedHealthFailure(request("/api/health", timeout: 12)) {
-                    lastReason = failure
                 } else {
+                    let healthResponse = request("/api/health", timeout: 12, deadlineUptime: deadlineUptime)
+                    if let failure = managedHealthFailure(healthResponse) {
+                        lastReason = failure
+                        Thread.sleep(forTimeInterval: 0.5)
+                        continue
+                    }
+                    let proofHealth = healthResponse?.body ?? [:]
+                    if requireLocalWhisper,
+                       let whisperFailure = localWhisperReadinessFailure(proofHealth, serverVersion: expectedVersion) {
+                        let state = ((proofHealth["whisper_health"] as? [String: Any])?["startupState"] as? String) ?? "not_started"
+                        if state == "failed" {
+                            throw HelperError.message("Managed server verification failed: \(whisperFailure).")
+                        }
+                        lastReason = whisperFailure
+                        progress("Waiting for \(whisperFailure.lowercased())…")
+                        Thread.sleep(forTimeInterval: 0.5)
+                        continue
+                    }
                     if requireTransactionalProof {
-                        let proofHealth = request("/api/health", timeout: 12)?.body ?? [:]
                         if let failure = transactionalRuntimeProofFailure(
                             health: proofHealth,
                             expectedProviders: detectedManagedProviders(),
                             requireProviderEndpoint: versionAtLeast(expectedVersion, "6.15.2"),
-                            operation: inheritedLease
+                            operation: inheritedLease,
+                            deadlineUptime: deadlineUptime
                         ) {
                             throw HelperError.message("Managed server transactional verification failed: \(failure).")
                         }
@@ -1948,9 +2032,34 @@ final class COSControlHelper {
                     return try adoptMaintenanceOperation(inheritedLease, status: status)
                 }
             }
-            Thread.sleep(forTimeInterval: 0.5)
+            let remaining = deadlineUptime - ProcessInfo.processInfo.systemUptime
+            if remaining > 0 { Thread.sleep(forTimeInterval: min(0.5, remaining)) }
         }
         throw HelperError.message("Managed server verification timed out: \(lastReason).")
+    }
+
+    private func waitForLocalWhisper(timeout: TimeInterval = 60) throws {
+        progress("Verifying local Whisper…")
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastReason = "Whisper health did not answer"
+        while Date() < deadline {
+            if let response = request("/api/health", timeout: 12), response.status == 200,
+               let health = response.body,
+               let whisper = health["whisper_health"] as? [String: Any] {
+                if whisper["server"] as? Bool == true { return }
+                guard whisper["serverConfigured"] as? Bool == true else {
+                    throw HelperError.message("Local Whisper prerequisites are not installed; the server remains available.")
+                }
+                let state = whisper["startupState"] as? String ?? "not_started"
+                let error = whisper["lastError"] as? String
+                lastReason = error.map { "\(state): \($0)" } ?? state
+                if state == "failed" || state == "unavailable" {
+                    throw HelperError.message("Local Whisper failed to recover (\(lastReason)); the server remains available.")
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        throw HelperError.message("Local Whisper did not become ready (\(lastReason)); the server remains available.")
     }
 
     private func adoptLegacy(requestedVersion: String) throws {
@@ -2471,9 +2580,11 @@ final class COSControlHelper {
             expectedVersion: manifest.version,
             expectedGenerationID: manifest.generationID,
             inheritedLease: lease,
-            timeout: 60
+            timeout: 60,
+            requireLocalWhisper: false
         )
         try requireMaintenanceRelease(activeLease)
+        try waitForLocalWhisper()
         emit(ok: true, message: "Server and local Whisper restarted safely", details: statusDetails())
     }
 
@@ -3144,7 +3255,15 @@ final class COSControlHelper {
         add("Codex CLI", codex.state, codex.detail)
         let cursor = cursorDoctorCheck(redacted: redacted)
         add("Cursor Agent", cursor.state, cursor.detail)
-        add("Whisper", findExecutable("whisper-cli") == nil ? "warning" : "ok", findExecutable("whisper-cli") == nil ? "Not installed" : "Available")
+        add("Whisper CLI", findExecutable("whisper-cli") == nil ? "warning" : "ok", findExecutable("whisper-cli") == nil ? "Not installed" : "Available")
+        if let whisper = (request("/api/health", timeout: 12)?.body?["whisper_health"] as? [String: Any]) {
+            let ready = whisper["server"] as? Bool == true
+            let configured = whisper["serverConfigured"] as? Bool == true
+            let state = whisper["startupState"] as? String ?? "unknown"
+            let error = (whisper["lastError"] as? String)?.prefix(240)
+            let detail = error.map { "\(state): \($0)" } ?? state
+            add("Whisper server", ready ? "ok" : (configured ? "error" : "warning"), detail)
+        }
         add("ffmpeg", findExecutable("ffmpeg") == nil ? "warning" : "ok", findExecutable("ffmpeg") == nil ? "Not installed" : "Available")
 
         let details = statusDetails()
@@ -3156,10 +3275,12 @@ final class COSControlHelper {
             add("AI provider bridge", providerReady ? "ok" : "error", providerDetail)
             if providerReady, let health = request("/api/health", timeout: 12)?.body {
                 let version = (details["version"] as? String) ?? "0.0.0"
+                let proofDeadline = ProcessInfo.processInfo.systemUptime + 60
                 if let failure = transactionalRuntimeProofFailure(
                     health: health,
                     expectedProviders: detectedManagedProviders(),
-                    requireProviderEndpoint: versionAtLeast(version, "6.15.2")
+                    requireProviderEndpoint: versionAtLeast(version, "6.15.2"),
+                    deadlineUptime: proofDeadline
                 ) {
                     add("Query + playback proof", "error", failure)
                 } else {
@@ -3185,7 +3306,7 @@ final class COSControlHelper {
         add("Update recovery", recoveryPending ? "error" : "ok", recoveryPending ? "Repair required" : "No interrupted transaction")
         let recoveryReady = recoveryLaunchAgentValid() && recoveryServiceLoaded()
         add("Recovery controller", recoveryReady ? "ok" : "error", recoveryReady ? "Loaded · checks every 60 seconds" : "Missing or not loaded · run Repair")
-        add("Private config", (try? readToken()) == nil ? "warning" : "ok", (try? readToken()) == nil ? "Pairing token missing or invalid" : "Configured")
+        add("Private config", (try? readToken()) == nil ? "warning" : "ok", (try? readToken()) == nil ? "Use Copy Pairing Token and paste the complete value (existing tokens need at least 16 characters)" : "Configured")
 
         var status = details
         if redacted {
@@ -3275,6 +3396,19 @@ final class COSControlHelper {
         try expect(providerCapabilityFailure(missingClaude, expectedProviders: Set(["claude"]))?.contains("installed but unavailable") == true, "HTTP-green provider failure is rejected")
         try expect(providerCapabilityFailure(["status": "ok", "server": "ok"], expectedProviders: [])?.contains("missing provider capabilities") == true, "malformed provider health fails closed")
         try expect(managedHealthFailure(HTTPResponse(status: 503, body: healthyClaude), expectedProviders: Set(["claude"])) == "health endpoint returned HTTP 503", "non-200 managed health fails closed")
+        let whisperLoading = healthyClaude.merging([
+            "whisper_health": ["server": false, "serverConfigured": true, "cli": true, "startupState": "loading", "lastError": NSNull()],
+        ]) { _, new in new }
+        let whisperReady = healthyClaude.merging([
+            "whisper_health": ["server": true, "serverConfigured": true, "cli": true, "startupState": "ready", "lastError": NSNull()],
+        ]) { _, new in new }
+        let whisperBatchOnly = healthyClaude.merging([
+            "whisper_health": ["server": false, "serverConfigured": false, "cli": true, "startupState": "unavailable", "lastError": NSNull()],
+        ]) { _, new in new }
+        try expect(localWhisperReadinessFailure(whisperLoading, serverVersion: "6.15.3") == nil, "legacy server remains compatible with pre-readiness health")
+        try expect(localWhisperReadinessFailure(whisperLoading, serverVersion: "6.15.4")?.contains("loading") == true, "eligible local Whisper blocks candidate verification while loading")
+        try expect(localWhisperReadinessFailure(whisperReady, serverVersion: "6.15.4") == nil, "ready local Whisper passes candidate verification")
+        try expect(localWhisperReadinessFailure(whisperBatchOnly, serverVersion: "6.15.4") == nil, "batch-only Whisper does not falsely block persistent-server readiness")
         let inPlaceRecord = InPlaceRecord(plistPath: plistURL.path, appDir: nil, serverInstanceId: nil, adoptedAt: "test")
         try atomicWrite(inPlaceRecord, to: inPlaceURL, permissions: 0o600)
         let inPlaceSnapshot = OwnershipSnapshot(serviceLoaded: true, servicePID: 42, listeners: [3141: [42], 3143: []], launchAgentKind: .knownLegacy)
@@ -3386,6 +3520,27 @@ final class COSControlHelper {
             catch { contended = true }
         }
         try expect(contended, "live lifecycle lock contention")
+        try Data("dead-pid=999999\n".utf8).write(to: mutationLockURL)
+        try withMutationLock { }
+        let clearedLockMetadata = (try? Data(contentsOf: mutationLockURL)).map { String(decoding: $0, as: UTF8.self) } ?? "missing"
+        try expect(clearedLockMetadata.isEmpty, "stale lock metadata cannot block and is truncated after acquisition")
+
+        let crashMarker = runtimeRoot.appendingPathComponent("lock-holder-crashed")
+        try? fm.removeItem(at: crashMarker)
+        let crashHolder = Process()
+        crashHolder.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        crashHolder.arguments = ["self-test-lock-crash"]
+        crashHolder.environment = ProcessInfo.processInfo.environment
+        try crashHolder.run()
+        crashHolder.waitUntilExit()
+        try expect(
+            crashHolder.terminationReason == .uncaughtSignal
+                && crashHolder.terminationStatus == SIGKILL
+                && fm.fileExists(atPath: crashMarker.path),
+            "lock-holder subprocess acquired the lock and crashed under SIGKILL"
+        )
+        try withMutationLock { }
+        try expect(true, "kernel lock is immediately reacquired after holder crash")
 
         let aboutWithEmail = """
         About Cursor CLI
@@ -3452,6 +3607,17 @@ final class COSControlHelper {
         try atomicWriteData(Data("COS_API_TOKEN=1234567890abcdefgh\n".utf8), to: envURL, permissions: 0o600)
         let migratedToken = try readToken()
         try expect(migratedToken == "1234567890abcdefgh", "migrated 18-character pairing token remains valid")
+        try atomicWriteData(Data("COS_API_TOKEN=123456789012345\n".utf8), to: envURL, permissions: 0o600)
+        var shortTokenGuidance = false
+        do { _ = try readToken() }
+        catch {
+            let message = String(describing: error)
+            shortTokenGuidance = message.contains("at least 16") && message.contains("64 hexadecimal")
+        }
+        try expect(shortTokenGuidance, "15-character token returns actionable migration guidance")
+        try atomicWriteData(Data("COS_API_TOKEN=1234567890123456\n".utf8), to: envURL, permissions: 0o600)
+        let boundaryToken = try readToken()
+        try expect(boundaryToken == "1234567890123456", "16-character pairing token boundary remains valid")
         try fm.removeItem(at: envURL)
 
         // Fail-closed when pairing token is absent under the test home.
