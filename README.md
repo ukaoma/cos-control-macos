@@ -53,7 +53,7 @@ IDs, and the selected workspace path.
 
 ## 0.2.4 local-service recovery
 
-- Server 6.15.4 starts Whisper and Kokoro while a replacement remains behind
+- Server 6.15.4+ starts Whisper and Kokoro while a replacement remains behind
   the maintenance gate, then starts durable/background work once admissions are
   released.
 - Managed verification waits for local Whisper when its persistent
@@ -61,7 +61,7 @@ IDs, and the selected workspace path.
   report success until the persistent
   server is ready.
 - Drain progress identifies the active work class and remaining deadline.
-- The bundled server target is 6.15.4.
+- The bundled server target is 6.15.5.
 
 ## 0.2.3 workspace activation
 

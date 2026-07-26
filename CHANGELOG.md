@@ -2,7 +2,7 @@
 
 ## 0.2.4 (build 15)
 
-- Target server 6.15.4 and require an installed local Whisper runtime to report
+- Target server 6.15.5 and require an installed local Whisper runtime to report
   ready before a managed candidate is accepted. Repair Whisper now releases the
   maintenance gate before its final readiness check, so a failed optional audio
   repair never strands the otherwise healthy server offline.
