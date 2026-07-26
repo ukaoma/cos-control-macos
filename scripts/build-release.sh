@@ -2,7 +2,12 @@
 set -euo pipefail
 
 ROOT="${0:A:h:h}"
-VERSION="${1:-0.1.0}"
+PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/Resources/Info.plist")"
+VERSION="${1:-$PLIST_VERSION}"
+if [ "$VERSION" != "$PLIST_VERSION" ]; then
+  echo "Release version $VERSION does not match Info.plist $PLIST_VERSION" >&2
+  exit 64
+fi
 TARGET="arm64-apple-macosx14.0"
 BUILD_DIR="$(mktemp -d /tmp/cos-control-release.XXXXXX)"
 DIST_DIR="$ROOT/dist"

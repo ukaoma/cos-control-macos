@@ -47,6 +47,15 @@ struct CommandResult {
 struct HTTPResponse {
     let status: Int
     let body: [String: Any]?
+    let data: Data?
+    let headers: [String: String]
+
+    init(status: Int, body: [String: Any]?, data: Data? = nil, headers: [String: String] = [:]) {
+        self.status = status
+        self.body = body
+        self.data = data
+        self.headers = headers
+    }
 }
 
 private final class HTTPResultBox: @unchecked Sendable {
@@ -159,9 +168,15 @@ final class COSControlHelper {
         "COS_CODEX_SANDBOX",
         "COS_CODEX_EXEC_READY",
         "COS_CLAUDE_TRUST_MODE",
+        "COS_EXTRA_TOOLS",
+        "COS_CLAUDE_MCP_CONFIG",
         "COS_SCRIPTS_DIR",
         "CODEX_GLASSES_WORKDIR",
         "COS_DURABLE_QUERY_JOBS",
+        "COS_TTS_BOOTSTRAP_PYTHON",
+        "COS_TTS_PYTHON",
+        "COS_TTS_ENGINE",
+        "COS_TTS_KOKORO_VOICE",
     ]
 
     private lazy var support = home.appendingPathComponent("Library/Application Support/COS Control", isDirectory: true)
@@ -257,9 +272,16 @@ final class COSControlHelper {
         guard descriptor >= 0 else { throw HelperError.message("Could not open the lifecycle operation lock.") }
         defer { close(descriptor) }
         guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
-            throw HelperError.message("Another COS Control lifecycle operation is already running.")
+            // flock is kernel-owned and automatically released when a helper
+            // exits. File contents may describe an old PID, but can never keep
+            // the lock held. Never unlink this inode while a live helper owns it.
+            throw HelperError.message("Another COS Control lifecycle operation is running. This lock is crash-safe; retry after the current helper exits.")
         }
-        defer { flock(descriptor, LOCK_UN) }
+        defer {
+            _ = ftruncate(descriptor, 0)
+            _ = fsync(descriptor)
+            flock(descriptor, LOCK_UN)
+        }
         _ = ftruncate(descriptor, 0)
         let identity = "pid=\(getpid()) started=\(ISO8601DateFormatter().string(from: Date()))\n"
         identity.withCString { pointer in _ = write(descriptor, pointer, strlen(pointer)) }
@@ -1346,7 +1368,84 @@ final class COSControlHelper {
         let (data, response) = box.load()
         guard let http = response as? HTTPURLResponse else { return nil }
         let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
-        return HTTPResponse(status: http.statusCode, body: object)
+        var headers: [String: String] = [:]
+        for (key, value) in http.allHeaderFields {
+            headers[String(describing: key).lowercased()] = String(describing: value)
+        }
+        return HTTPResponse(status: http.statusCode, body: object, data: data, headers: headers)
+    }
+
+    private func versionAtLeast(_ value: String, _ minimum: String) -> Bool {
+        let lhs = value.split(separator: ".").compactMap { Int($0) }
+        let rhs = minimum.split(separator: ".").compactMap { Int($0) }
+        guard lhs.count == 3, rhs.count == 3 else { return false }
+        for index in 0..<3 {
+            if lhs[index] != rhs[index] { return lhs[index] > rhs[index] }
+        }
+        return true
+    }
+
+    /// Prove the actual managed request paths, not just process/version flags.
+    /// Provider output is never returned by the server proof endpoint. When
+    /// Kokoro reports ready, the second half deliberately fetches the minted
+    /// playback capability without X-COS-Token, exactly like native iOS audio.
+    private func transactionalRuntimeProofFailure(
+        health: [String: Any],
+        expectedProviders: Set<String>,
+        requireProviderEndpoint: Bool,
+        operation: MaintenanceLease? = nil
+    ) -> String? {
+        guard let token = try? readToken() else { return "pairing token is unavailable for transactional proof" }
+        for provider in expectedProviders.sorted() {
+            guard provider == "claude" || provider == "codex" else { continue }
+            let body = try? jsonBody(["provider": provider])
+            guard let response = request(
+                "/api/diagnostics/provider-proof",
+                method: "POST",
+                token: token,
+                maintenanceLease: operation?.id,
+                maintenanceOperation: operation?.operationId,
+                maintenanceNonce: operation?.nonce,
+                body: body,
+                timeout: 130
+            ) else { return provider.capitalized + " transactional proof did not answer" }
+            if response.status == 404 && !requireProviderEndpoint { continue }
+            guard response.status == 200, response.body?["ok"] as? Bool == true else {
+                let detail = response.body?["error"] as? String ?? "HTTP \(response.status)"
+                return provider.capitalized + " real query failed: " + detail
+            }
+        }
+
+        let localTTS = health["tts_local"] as? [String: Any]
+        guard localTTS?["ready"] as? Bool == true else { return nil }
+        let prepareBody = try? jsonBody([
+            "text": "COS speech check.",
+            "voice": "am_echo",
+            "format": "mp3",
+            "engine": "local",
+            "fast": false,
+        ])
+        guard let prepared = request(
+            "/api/tts/prepare",
+            method: "POST",
+            token: token,
+            maintenanceLease: operation?.id,
+            maintenanceOperation: operation?.operationId,
+            maintenanceNonce: operation?.nonce,
+            body: prepareBody,
+            timeout: 45
+        ), prepared.status == 200,
+              let playPath = prepared.body?["url"] as? String,
+              playPath.range(of: #"^/api/tts/play/[0-9a-fA-F-]{36}$"#, options: .regularExpression) != nil else {
+            return "Kokoro prepare proof failed"
+        }
+        guard let playback = request(playPath, timeout: 45),
+              playback.status == 200,
+              (playback.data?.count ?? 0) > 100,
+              playback.headers["content-type"]?.lowercased().hasPrefix("audio/") == true else {
+            return "Kokoro native playback proof failed"
+        }
+        return nil
     }
 
     private func maintenanceStatus(operation: MaintenanceLease? = nil) -> [String: Any]? {
@@ -1754,6 +1853,15 @@ final class COSControlHelper {
                 } else if let failure = managedHealthFailure(request("/api/health", timeout: 12)) {
                     lastReason = failure
                 } else {
+                    let proofHealth = request("/api/health", timeout: 12)?.body ?? [:]
+                    if let failure = transactionalRuntimeProofFailure(
+                        health: proofHealth,
+                        expectedProviders: detectedManagedProviders(),
+                        requireProviderEndpoint: versionAtLeast(expectedVersion, "6.15.2"),
+                        operation: inheritedLease
+                    ) {
+                        throw HelperError.message("Managed server transactional verification failed: \(failure).")
+                    }
                     guard let inheritedLease else {
                         guard (status["lifecycle"] as? [String: Any])?["state"] as? String == "accepting" else {
                             lastReason = "fresh server did not open admissions after verification"
@@ -2247,7 +2355,9 @@ final class COSControlHelper {
         for line in content.split(separator: "\n", omittingEmptySubsequences: false) {
             if line.hasPrefix("COS_API_TOKEN=") {
                 let token = String(line.dropFirst("COS_API_TOKEN=".count)).trimmingCharacters(in: .whitespaces)
-                guard token.count >= 32 else { throw HelperError.message("The configured pairing token is invalid.") }
+                guard token.count >= 16 else {
+                    throw HelperError.message("The configured pairing token is too short. COS accepts existing tokens with at least 16 characters; a newly generated token is 64 hexadecimal characters.")
+                }
                 return token
             }
         }
@@ -2645,6 +2755,18 @@ final class COSControlHelper {
             let providerReady = details["providerCapabilitiesReady"] as? Bool == true
             let providerDetail = details["providerCapabilityError"] as? String ?? "Installed providers are available to the service"
             add("AI provider bridge", providerReady ? "ok" : "error", providerDetail)
+            if providerReady, let health = request("/api/health", timeout: 12)?.body {
+                let version = (details["version"] as? String) ?? "0.0.0"
+                if let failure = transactionalRuntimeProofFailure(
+                    health: health,
+                    expectedProviders: detectedManagedProviders(),
+                    requireProviderEndpoint: versionAtLeast(version, "6.15.2")
+                ) {
+                    add("Query + playback proof", "error", failure)
+                } else {
+                    add("Query + playback proof", "ok", "Real provider query passed; ready Kokoro playback was fetched without an API header")
+                }
+            }
         } else {
             add("AI provider bridge", "warning", "Managed server not installed")
         }
@@ -2715,7 +2837,11 @@ final class COSControlHelper {
             packageJSONSHA256: String(repeating: "b", count: 64),
             generationID: "generation-test",
             nodePath: "/opt/homebrew/bin/node",
-            providerEnvironment: ["COS_HARNESS": "codex", "COS_API_TOKEN": "must-not-survive"],
+            providerEnvironment: [
+                "COS_HARNESS": "codex",
+                "COS_EXTRA_TOOLS": "mcp__calendar__*",
+                "COS_API_TOKEN": "must-not-survive",
+            ],
             retainedGenerations: [],
             desiredState: "running"
         )
@@ -2723,7 +2849,14 @@ final class COSControlHelper {
         try expect(roundTrip.generationID == "generation-test" && roundTrip.providerEnvironment?["COS_HARNESS"] == "codex", "manifest round trip")
         try expect(roundTrip.desiredState == "running", "persistent desired state round trip")
         let filtered = try captureProviderEnvironment(previous: manifest)
-        try expect(filtered["COS_HARNESS"] == "codex" && filtered["COS_API_TOKEN"] == nil, "provider allowlist")
+        try expect(
+            filtered["COS_HARNESS"] == "codex"
+                && filtered["COS_EXTRA_TOOLS"] == "mcp__calendar__*"
+                && filtered["COS_API_TOKEN"] == nil,
+            "provider allowlist"
+        )
+        try expect(versionAtLeast("6.15.2", "6.15.2") && versionAtLeast("6.16.0", "6.15.2"), "transactional proof version gate")
+        try expect(!versionAtLeast("6.15.1", "6.15.2") && !versionAtLeast("invalid", "6.15.2"), "legacy proof compatibility gate")
         try expect(redactPath(home.appendingPathComponent("workspace").path) == "~/workspace", "home path redaction")
         let launchPaths = launchPathDirectories(node: "/opt/homebrew/bin/node")
         let localBin = home.appendingPathComponent(".local/bin", isDirectory: true).path
@@ -2825,7 +2958,7 @@ final class COSControlHelper {
             do { try withMutationLock { } }
             catch { contended = true }
         }
-        try expect(contended, "crash-released lifecycle lock contention")
+        try expect(contended, "live lifecycle lock contention")
 
         let aboutWithEmail = """
         About Cursor CLI
@@ -2888,6 +3021,11 @@ final class COSControlHelper {
         try expect((sliced.first?["no"] as? Int) == 35 && (sliced.last?["no"] as? Int) == 6, "recent-messages newest-first")
         let slicedNos = Set(sliced.compactMap { $0["no"] as? Int })
         try expect(!slicedNos.contains(1) && !slicedNos.contains(5) && slicedNos.contains(6), "full-day dump must not emit oldest beyond slice")
+
+        try atomicWriteData(Data("COS_API_TOKEN=1234567890abcdefgh\n".utf8), to: envURL, permissions: 0o600)
+        let migratedToken = try readToken()
+        try expect(migratedToken == "1234567890abcdefgh", "migrated 18-character pairing token remains valid")
+        try fm.removeItem(at: envURL)
 
         // Fail-closed when pairing token is absent under the test home.
         var unauthorized = false

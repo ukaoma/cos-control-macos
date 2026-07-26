@@ -47,6 +47,17 @@ contract, or interrupted transaction is shown as a conflict instead of being
 silently replaced. Doctor and Copy Report redact pairing credentials, process
 IDs, and the selected workspace path.
 
+## 0.2.2 transactional verification
+
+- Install, update, restart, repair, and rollback now prove one real no-tool
+  turn through every managed Claude/Codex provider before reporting success.
+- If Kokoro is ready, Control prepares local speech and fetches the native
+  capability URL without an API header, catching playback-only 401 failures.
+- Managed launches preserve the COS work folder, MCP selectors/config, local
+  Python overrides, and user-local provider paths.
+- Migrated pairing tokens of 16 characters or longer remain valid.
+- The bundled server target is 6.15.2.
+
 ## 0.2.1 reliability fixes
 
 - Managed LaunchAgents retain discovered Claude, Codex, and Cursor CLI bin
