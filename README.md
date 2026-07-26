@@ -47,6 +47,21 @@ contract, or interrupted transaction is shown as a conflict instead of being
 silently replaced. Doctor and Copy Report redact pairing credentials, process
 IDs, and the selected workspace path.
 
+## 0.2.3 workspace activation
+
+- Choose Folder now applies to managed and explicitly adopted self-managed
+  LaunchAgents; unadopted and unknown services are never rewritten.
+- Workspace changes drain active work when the server supports the lifecycle
+  contract, reload launchd from the rewritten plist, require a replacement
+  process with verified ownership, and restore the prior plist/runtime on
+  failure. Older adopted servers save the selection without interruption; a
+  confirmation-gated manual Restart uses bootout/bootstrap to activate it.
+- `COS_WORKDIR` is authoritative for Claude, Codex, and Cursor. Pipeline scripts
+  remain configured separately by `COS_SCRIPTS_DIR`.
+- Server `WorkingDirectory` and `COS_GLASSES_APP_DIR` stay on the server package;
+  they never change to the selected agent workspace.
+- The bundled server target is 6.15.3.
+
 ## 0.2.2 transactional verification
 
 - Install, update, restart, repair, and rollback now prove one real no-tool

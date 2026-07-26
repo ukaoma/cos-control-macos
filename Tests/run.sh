@@ -17,7 +17,7 @@ SELF_TEST="$(COS_CONTROL_TEST_HOME="$TMP/home" "$TMP/cos-control-helper" self-te
 /usr/bin/python3 -c 'import json,sys; value=json.loads(sys.argv[1]); assert value["ok"] and value["details"]["tests"] >= 22' "$SELF_TEST"
 /usr/bin/grep -q 'cursor-probe-cache.json' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'recent-messages' "$ROOT/HelperSources/main.swift"
-/usr/bin/grep -q 'Controller 0.2.2' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Controller 0.2.3' "$ROOT/Sources/Views.swift"
 
 # --- P1 app-update checker: behavior, not just needles -----------------------
 # Each case is a regression the plan names. Failures print WHICH case broke, so this
@@ -25,7 +25,7 @@ SELF_TEST="$(COS_CONTROL_TEST_HOME="$TMP/home" "$TMP/cos-control-helper" self-te
 AC_DIR="$TMP/appcast"
 /bin/mkdir -p "$AC_DIR"
 /bin/cat > "$AC_DIR/newer.json" <<'JSON'
-{"schemaVersion":1,"channels":{"stable":{"version":"0.3.0","build":14,"url":"https://x/y.zip","sha256":"a"}},"killSwitch":{"disableAutoUpdate":false}}
+{"schemaVersion":1,"channels":{"stable":{"version":"0.3.0","build":15,"url":"https://x/y.zip","sha256":"a"}},"killSwitch":{"disableAutoUpdate":false}}
 JSON
 /bin/cat > "$AC_DIR/older.json" <<'JSON'
 {"schemaVersion":1,"channels":{"stable":{"version":"0.1.0","build":1,"url":"https://x/y.zip","sha256":"a"}},"killSwitch":{"disableAutoUpdate":false}}
@@ -39,7 +39,7 @@ JSON
 
 assert_update () {  # <label> <fixture-url> <expected-available> <expected-reason>
   local out
-  out="$("$TMP/cos-control-helper" check-app-update --current-version 0.2.2 --current-build 13 --appcast-url "$2")"
+  out="$("$TMP/cos-control-helper" check-app-update --current-version 0.2.3 --current-build 14 --appcast-url "$2")"
   /usr/bin/python3 - "$1" "$out" "$3" "$4" <<'PY'
 import json,sys
 label, raw, want_avail, want_reason = sys.argv[1], sys.argv[2], sys.argv[3]=="true", sys.argv[4]
@@ -68,6 +68,8 @@ fi
 /usr/bin/grep -q 'flock(descriptor, LOCK_EX | LOCK_NB)' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'setServiceEnabled(false)' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'desiredState = "stopped"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'Restart this self-managed server?' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'retains the old LaunchAgent environment' "$ROOT/HelperSources/main.swift"
 
 if /usr/bin/grep -RE 'details\["token"\]|"token"[[:space:]]*:[[:space:]]*try readToken' "$ROOT/Sources" "$ROOT/HelperSources"; then
   echo "Token material must never cross helper JSON or controller state" >&2

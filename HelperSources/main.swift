@@ -91,6 +91,18 @@ struct InPlaceRecord: Codable {
     let adoptedAt: String
 }
 
+struct InPlaceConfigurationTransaction: Codable {
+    var previousPlist: Data
+    var candidatePlist: Data
+    var previousPermissions: Int
+    var previousServicePID: Int?
+    var selectedWorkDirectory: String
+    var serverVersion: String?
+    var generationID: String?
+    var phase: String
+    var startedAt: String
+}
+
 enum RuntimeState: String {
     case notInstalled
     case stopped
@@ -170,6 +182,7 @@ final class COSControlHelper {
         "COS_CLAUDE_TRUST_MODE",
         "COS_EXTRA_TOOLS",
         "COS_CLAUDE_MCP_CONFIG",
+        "COS_CURSOR_AGENT_BIN",
         "COS_SCRIPTS_DIR",
         "CODEX_GLASSES_WORKDIR",
         "COS_DURABLE_QUERY_JOBS",
@@ -186,6 +199,7 @@ final class COSControlHelper {
     private lazy var manifestURL = runtimeRoot.appendingPathComponent("active.json")
     private lazy var inPlaceURL = runtimeRoot.appendingPathComponent("in-place.json")
     private lazy var transactionURL = runtimeRoot.appendingPathComponent("transaction.json")
+    private lazy var inPlaceConfigurationURL = runtimeRoot.appendingPathComponent("in-place-configuration.json")
     private lazy var maintenanceLeaseURL = runtimeRoot.appendingPathComponent("maintenance-lease.json")
     private lazy var mutationLockURL = runtimeRoot.appendingPathComponent("operation.lock")
     private lazy var clipboardReceiptURL = support.appendingPathComponent("clipboard-receipt.json")
@@ -445,6 +459,11 @@ final class COSControlHelper {
         return try? JSONDecoder().decode(RuntimeTransaction.self, from: data)
     }
 
+    private func loadInPlaceConfigurationTransaction() -> InPlaceConfigurationTransaction? {
+        guard let data = try? Data(contentsOf: inPlaceConfigurationURL) else { return nil }
+        return try? JSONDecoder().decode(InPlaceConfigurationTransaction.self, from: data)
+    }
+
     private func fsyncDirectory(_ directory: URL) throws {
         let descriptor = Darwin.open(directory.path, O_RDONLY)
         guard descriptor >= 0 else { throw HelperError.message("Could not open state directory for durability sync.") }
@@ -487,10 +506,21 @@ final class COSControlHelper {
         try atomicWrite(transaction, to: transactionURL, permissions: 0o600)
     }
 
+    private func saveInPlaceConfigurationTransaction(_ transaction: InPlaceConfigurationTransaction) throws {
+        try ensureDirectories()
+        try atomicWrite(transaction, to: inPlaceConfigurationURL, permissions: 0o600)
+    }
+
     private func clearTransaction() {
         guard fm.fileExists(atPath: transactionURL.path) else { return }
         try? fm.removeItem(at: transactionURL)
         try? fsyncDirectory(transactionURL.deletingLastPathComponent())
+    }
+
+    private func clearInPlaceConfigurationTransaction() {
+        guard fm.fileExists(atPath: inPlaceConfigurationURL.path) else { return }
+        try? fm.removeItem(at: inPlaceConfigurationURL)
+        try? fsyncDirectory(inPlaceConfigurationURL.deletingLastPathComponent())
     }
 
     private func loadMaintenanceLease() -> MaintenanceLease? {
@@ -702,6 +732,9 @@ final class COSControlHelper {
 
     private func install(requestedVersion: String, workDirectory: String?) throws {
         try ensureDirectories()
+        // Capture a legacy/in-place selection before removing its ownership
+        // marker or replacing the plist during adoption.
+        let inheritedWorkDirectory = try validatedWorkDirectory(workDirectory) ?? configuredWorkDirectory()
         try? fm.removeItem(at: inPlaceURL)  // installing a managed generation exits in-place mode
         guard loadTransaction() == nil else {
             throw HelperError.message("A previous update needs repair before another install can begin.")
@@ -725,7 +758,7 @@ final class COSControlHelper {
         let old = loadManifest()
         let manifest = try makeManifest(
             generation: generation,
-            workDirectory: workDirectory ?? old?.workDirectory,
+            workDirectory: inheritedWorkDirectory ?? old?.workDirectory,
             previous: old
         )
         var transaction = RuntimeTransaction(
@@ -818,6 +851,12 @@ final class COSControlHelper {
         )
         try saveManifest(previous)
         try writeLaunchAgent(for: previous)
+        if previous.desiredState == "stopped" {
+            try setServiceEnabled(false)
+            clearMaintenanceLease()
+            clearTransaction()
+            return "The previous stopped server \(previous.version) configuration was restored."
+        }
         try loadService(forceRestart: false)
         let activeLease = try waitForManagedHealth(
             expectedVersion: previous.version,
@@ -855,10 +894,13 @@ final class COSControlHelper {
 
     private func validatedWorkDirectory(_ value: String?) throws -> String? {
         guard let value, !value.isEmpty else { return nil }
-        let url = URL(fileURLWithPath: value).standardizedFileURL
+        let url = URL(fileURLWithPath: value).standardizedFileURL.resolvingSymlinksInPath()
         var isDirectory: ObjCBool = false
         guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw HelperError.message("Selected work folder does not exist.")
+        }
+        guard access(url.path, R_OK | X_OK) == 0 else {
+            throw HelperError.message("Selected work folder is not readable and traversable by COS.")
         }
         let markers = [
             url.appendingPathComponent("AGENTS.md").path,
@@ -1111,7 +1153,12 @@ final class COSControlHelper {
         environment["COS_ENTRYPOINT"] = "cos-control"
         environment["COS_SERVER_VERSION"] = manifest.version
         environment["COS_SERVER_GENERATION_ID"] = manifest.generationID ?? String((manifest.launcherSHA256 ?? manifest.version).prefix(24))
-        if let work = manifest.workDirectory { environment["COS_WORKDIR"] = work }
+        if let work = manifest.workDirectory {
+            environment["COS_WORKDIR"] = work
+            // Keep the legacy Codex/Cursor override coherent until every
+            // supported server resolves the provider-neutral key first.
+            environment["CODEX_GLASSES_WORKDIR"] = work
+        }
         environment["PATH"] = launchPathDirectories(node: node).joined(separator: ":")
         return environment
     }
@@ -1131,6 +1178,8 @@ final class COSControlHelper {
         // repair, reconcile, start), so this is the single point that guarantees
         // the generation has its HTTPS certs before the server binds its ports.
         provisionCerts(intoGeneration: verified.path)
+        var environment = try launchEnvironment(for: manifest)
+        environment["COS_GLASSES_APP_DIR"] = paths.root.path
         let plist: [String: Any] = [
             "Label": label,
             // Direct listener ownership: launchd owns the Node process that imports server/index.ts.
@@ -1142,7 +1191,7 @@ final class COSControlHelper {
             "ProcessType": "Interactive",
             "StandardOutPath": serverLog.path,
             "StandardErrorPath": serverErrorLog.path,
-            "EnvironmentVariables": try launchEnvironment(for: manifest),
+            "EnvironmentVariables": environment,
         ]
         let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
         try atomicWriteData(data, to: plistURL, permissions: 0o600)
@@ -1178,6 +1227,19 @@ final class COSControlHelper {
 
     private func servicePrint() -> CommandResult? {
         try? launchctl(["print", serviceTarget])
+    }
+
+    private func loadedEnvironmentValue(_ key: String) -> String? {
+        guard let output = servicePrint()?.output else { return nil }
+        let escaped = NSRegularExpression.escapedPattern(for: key)
+        guard let expression = try? NSRegularExpression(pattern: "(?m)^\\s*\(escaped)\\s*=>\\s*(.+?)\\s*$"),
+              let match = expression.firstMatch(
+                in: output,
+                range: NSRange(output.startIndex..<output.endIndex, in: output)
+              ),
+              let valueRange = Range(match.range(at: 1), in: output) else { return nil }
+        let value = String(output[valueRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
 
     private func serviceLoaded() -> Bool { servicePrint()?.code == 0 }
@@ -1545,6 +1607,11 @@ final class COSControlHelper {
         let state = runtimeState(snapshot: snapshot, maintenance: maintenance, health: health)
         let directOwner = launchdOwnsListeners(snapshot, requireDirect: true)
         let managed = hasLifecycleContract(maintenance)
+        let configuredWork = configuredWorkDirectory()
+        let activeWork = ["COS_WORKDIR", "CODEX_GLASSES_WORKDIR", "COS_LAUNCH_DIR"]
+            .compactMap(loadedEnvironmentValue)
+            .compactMap { try? validatedWorkDirectory($0) }
+            .first
         var details: [String: Any] = [
             "installed": manifest != nil,
             "serviceLoaded": snapshot.serviceLoaded,
@@ -1566,13 +1633,15 @@ final class COSControlHelper {
             "serviceDisabled": serviceDisabled(),
             "recoveryInstalled": recoveryLaunchAgentValid(),
             "recoveryLoaded": recoveryServiceLoaded(),
-            "workDirectory": manifest?.workDirectory ?? NSNull(),
-            "safeToRestart": managed ? (maintenance?["safeToRestart"] ?? false) : false,
+            "workDirectory": configuredWork ?? NSNull(),
+            "activeWorkDirectory": activeWork ?? NSNull(),
+            "workDirectoryPending": snapshot.serviceLoaded && configuredWork != nil && configuredWork != activeWork,
+            "safeToRestart": (managed || inPlaceActive()) ? (maintenance?["safeToRestart"] ?? false) : false,
             "activeJobs": maintenance?["activeJobs"] ?? NSNull(),
             "activeTranscriptionSessions": maintenance?["activeTranscriptionSessions"] ?? NSNull(),
             "whisperReady": ((health?["whisper_health"] as? [String: Any])?["server"] as? Bool) ?? false,
             "whisperCircuitOpen": ((health?["whisper_health"] as? [String: Any])?["circuitOpen"] as? Bool) ?? false,
-            "transactionPending": loadTransaction() != nil,
+            "transactionPending": loadTransaction() != nil || loadInPlaceConfigurationTransaction() != nil,
             "apiURL": "http://127.0.0.1:3141",
         ]
         for (key, value) in cursorStatusFields(force: false) {
@@ -1825,14 +1894,18 @@ final class COSControlHelper {
         expectedVersion: String,
         expectedGenerationID: String?,
         inheritedLease: MaintenanceLease?,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        requireDirectOwnership: Bool = true,
+        requireTransactionalProof: Bool = true
     ) throws -> MaintenanceLease? {
         let deadline = Date().addingTimeInterval(timeout)
         var lastReason = "server did not answer"
         while Date() < deadline {
             let snapshot = ownershipSnapshot()
-            if !launchdOwnsListeners(snapshot, requireDirect: true) {
-                lastReason = "launchd does not directly own the listener PID"
+            if !launchdOwnsListeners(snapshot, requireDirect: requireDirectOwnership) {
+                lastReason = requireDirectOwnership
+                    ? "launchd does not directly own the listener PID"
+                    : "launchd does not own the listener process tree"
             } else if let status = maintenanceStatus(operation: inheritedLease) {
                 if !hasLifecycleContract(status) {
                     lastReason = "managed contract is missing or incompatible"
@@ -1853,14 +1926,16 @@ final class COSControlHelper {
                 } else if let failure = managedHealthFailure(request("/api/health", timeout: 12)) {
                     lastReason = failure
                 } else {
-                    let proofHealth = request("/api/health", timeout: 12)?.body ?? [:]
-                    if let failure = transactionalRuntimeProofFailure(
-                        health: proofHealth,
-                        expectedProviders: detectedManagedProviders(),
-                        requireProviderEndpoint: versionAtLeast(expectedVersion, "6.15.2"),
-                        operation: inheritedLease
-                    ) {
-                        throw HelperError.message("Managed server transactional verification failed: \(failure).")
+                    if requireTransactionalProof {
+                        let proofHealth = request("/api/health", timeout: 12)?.body ?? [:]
+                        if let failure = transactionalRuntimeProofFailure(
+                            health: proofHealth,
+                            expectedProviders: detectedManagedProviders(),
+                            requireProviderEndpoint: versionAtLeast(expectedVersion, "6.15.2"),
+                            operation: inheritedLease
+                        ) {
+                            throw HelperError.message("Managed server transactional verification failed: \(failure).")
+                        }
                     }
                     guard let inheritedLease else {
                         guard (status["lifecycle"] as? [String: Any])?["state"] as? String == "accepting" else {
@@ -1909,6 +1984,11 @@ final class COSControlHelper {
         guard snapshot.launchAgentKind == .knownLegacy else {
             throw HelperError.message("In-place management requires your recognized COS glasses server (the legacy LaunchAgent).")
         }
+        guard snapshot.serviceLoaded,
+              !snapshot.allListenerPIDs.isEmpty,
+              launchdOwnsListeners(snapshot, requireDirect: false) else {
+            throw HelperError.message("In-place management requires the canonical LaunchAgent to own the active listeners.")
+        }
         guard loadManifest() == nil else {
             throw HelperError.message("A managed generation is installed. Roll back or stop it before switching to in-place management.")
         }
@@ -1944,11 +2024,78 @@ final class COSControlHelper {
     }
 
     private func restartInPlace() throws {
-        guard serviceLoaded() else { try startInPlace(); return }
-        let result = try launchctl(["kickstart", "-k", serviceTarget])
-        guard result.code == 0 else { throw HelperError.message("Restart failed: \(result.output)") }
-        guard waitForInPlaceHealth(timeout: 60) else { throw HelperError.message("Server restarted but did not report healthy in time.") }
-        emit(ok: true, message: "Your server was restarted", details: statusDetails())
+        let snapshot = ownershipSnapshot()
+        guard snapshot.launchAgentKind == .knownLegacy,
+              snapshot.serviceLoaded,
+              launchdOwnsListeners(snapshot, requireDirect: false) else {
+            throw HelperError.message("The adopted server lacks verified LaunchAgent ownership.")
+        }
+        let priorPID = snapshot.servicePID
+        guard let status = maintenanceStatus(),
+              let version = status["serverVersion"] as? String,
+              let generation = status["generationId"] as? String else {
+            // Older recognized servers predate the credentialed drain contract.
+            // The UI requires a deliberate confirmation before reaching this
+            // path. A full bootout/bootstrap is mandatory because kickstart -k
+            // retains the old LaunchAgent environment.
+            do {
+                progress("Restarting the confirmed-idle legacy server…")
+                try strictBootoutInPlace()
+                try strictBootstrapInPlace()
+                guard waitForInPlaceHealth(timeout: 60) else {
+                    throw HelperError.message("the replacement server did not report healthy in time")
+                }
+                guard let newPID = servicePID(), newPID != priorPID else {
+                    throw HelperError.message("launchd did not replace the prior server process")
+                }
+                emit(
+                    ok: true,
+                    message: "Your self-managed server was restarted and the LaunchAgent folder is active",
+                    details: statusDetails()
+                )
+                return
+            } catch {
+                if !serviceLoaded() { try? strictBootstrapInPlace() }
+                if serviceLoaded() { _ = waitForInPlaceHealth(timeout: 60) }
+                throw HelperError.message("Legacy restart failed and recovery was attempted: \(error)")
+            }
+        }
+        let lease = try acquireMaintenanceLeaseIfNeeded(
+            snapshot: snapshot,
+            operationKind: "server_restart",
+            successorGenerations: [generation]
+        )
+        do {
+            try strictBootoutInPlace()
+            try strictBootstrapInPlace()
+            let activeLease = try waitForManagedHealth(
+                expectedVersion: version,
+                expectedGenerationID: generation,
+                inheritedLease: lease,
+                timeout: 60,
+                requireDirectOwnership: false,
+                requireTransactionalProof: versionAtLeast(version, "6.15.2")
+            )
+            guard let newPID = servicePID(), newPID != priorPID else {
+                throw HelperError.message("launchd did not replace the prior server process.")
+            }
+            try requireMaintenanceRelease(activeLease)
+            emit(ok: true, message: "Your server was restarted and verified", details: statusDetails())
+        } catch {
+            if !serviceLoaded() { try? strictBootstrapInPlace() }
+            if serviceLoaded(),
+               let recovered = try? waitForManagedHealth(
+                    expectedVersion: version,
+                    expectedGenerationID: generation,
+                    inheritedLease: loadMaintenanceLease(),
+                    timeout: 60,
+                    requireDirectOwnership: false,
+                    requireTransactionalProof: false
+               ) {
+                try? requireMaintenanceRelease(recovered)
+            }
+            throw HelperError.message("Restart failed and recovery was attempted: \(error)")
+        }
     }
 
     private func stopInPlace() throws {
@@ -2007,6 +2154,11 @@ final class COSControlHelper {
     }
 
     private func reconcile() throws {
+        if inPlaceActive(), let transaction = loadInPlaceConfigurationTransaction() {
+            let message = try restoreInPlaceConfiguration(transaction)
+            emit(ok: true, message: message, details: statusDetails())
+            return
+        }
         if loadTransaction() != nil {
             try repair()
             return
@@ -2083,6 +2235,11 @@ final class COSControlHelper {
 
     private func automaticReconcile() throws {
         if inPlaceActive() {
+            if let transaction = loadInPlaceConfigurationTransaction() {
+                let message = try restoreInPlaceConfiguration(transaction)
+                emit(ok: true, message: message, details: statusDetails())
+                return
+            }
             // In-place recovery: only act if the server is actually down/hung. Never
             // installs or replaces anything — just brings the existing server back.
             if ownershipSnapshot().allListenerPIDs.isEmpty {
@@ -2321,10 +2478,252 @@ final class COSControlHelper {
     }
 
     private func setWorkDirectory(_ path: String) throws {
-        guard var manifest = loadManifest() else { throw HelperError.message("Install the managed server first.") }
-        manifest.workDirectory = try validatedWorkDirectory(path)
-        try saveManifest(manifest)
-        emit(ok: true, message: "Work folder saved. Restart when no work is active to apply it.", details: statusDetails())
+        guard let validated = try validatedWorkDirectory(path) else {
+            throw HelperError.message("Selected work folder does not exist.")
+        }
+        if let manifest = loadManifest() {
+            try applyManagedWorkDirectory(validated, current: manifest)
+            return
+        }
+        guard inPlaceActive() else {
+            throw HelperError.message("Choose Manage in place first. COS Control will not rewrite an unadopted LaunchAgent.")
+        }
+        try applyInPlaceWorkDirectory(validated)
+    }
+
+    /// Read the effective COS work folder from managed manifest or in-place plist.
+    private func configuredWorkDirectory() -> String? {
+        if let work = loadManifest()?.workDirectory,
+           let validated = try? validatedWorkDirectory(work) { return validated }
+        guard let environment = launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String] else {
+            return nil
+        }
+        for key in ["COS_WORKDIR", "CODEX_GLASSES_WORKDIR", "COS_LAUNCH_DIR"] {
+            if let value = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               let validated = try? validatedWorkDirectory(value) {
+                return validated
+            }
+        }
+        return nil
+    }
+
+    private func applyManagedWorkDirectory(_ path: String, current: RuntimeManifest) throws {
+        guard loadTransaction() == nil else {
+            throw HelperError.message("A previous runtime change needs Repair before the work folder can change.")
+        }
+        var candidate = current
+        candidate.workDirectory = path
+        var provider = candidate.providerEnvironment ?? [:]
+        provider["CODEX_GLASSES_WORKDIR"] = path
+        candidate.providerEnvironment = provider
+        var transaction = RuntimeTransaction(
+            previous: current,
+            candidate: candidate,
+            previousLaunchAgentPlist: try? Data(contentsOf: plistURL),
+            phase: "workdir_staged",
+            startedAt: ISO8601DateFormatter().string(from: Date())
+        )
+        try saveTransaction(transaction)
+        let snapshot = ownershipSnapshot()
+        guard snapshot.launchAgentKind == .cosControl || snapshot.allListenerPIDs.isEmpty else {
+            clearTransaction()
+            throw HelperError.message("Work folder change refused because COS Control does not own the active LaunchAgent.")
+        }
+        let shouldRun = current.desiredState != "stopped"
+        var switchStarted = false
+        do {
+            let lease = shouldRun ? try acquireMaintenanceLeaseIfNeeded(
+                snapshot: snapshot,
+                operationKind: "workdir_update",
+                successorGenerations: [candidate.generationID, current.generationID].compactMap { $0 }
+            ) : nil
+            transaction.phase = "workdir_switching"
+            try saveTransaction(transaction)
+            switchStarted = true
+            if snapshot.serviceLoaded { try unloadService() }
+            try waitForPortsClear(timeout: 12)
+            try saveManifest(candidate)
+            try writeLaunchAgent(for: candidate)
+            if shouldRun {
+                try setServiceEnabled(true)
+                try loadService(forceRestart: false)
+                let activeLease = try waitForManagedHealth(
+                    expectedVersion: candidate.version,
+                    expectedGenerationID: candidate.generationID,
+                    inheritedLease: lease,
+                    timeout: 60
+                )
+                try requireMaintenanceRelease(activeLease)
+            }
+            clearTransaction()
+            let message = shouldRun
+                ? "Work folder applied and the managed server was verified"
+                : "Work folder saved and will apply on the next Start"
+            emit(ok: true, message: message, details: statusDetails())
+        } catch {
+            if !switchStarted {
+                clearTransaction()
+                throw error
+            }
+            let restored = try restoreAfterFailedSwitch(transaction)
+            throw HelperError.message("Work folder change failed. \(restored) Original error: \(error)")
+        }
+    }
+
+    private func inPlaceCandidatePlist(workDirectory: String) throws -> Data {
+        guard var plist = launchAgentPropertyList(),
+              plist["Label"] as? String == label,
+              launchAgentKind() == .knownLegacy else {
+            throw HelperError.message("The adopted glasses LaunchAgent no longer matches the recognized server shape.")
+        }
+        var environment = (plist["EnvironmentVariables"] as? [String: String]) ?? [:]
+        environment["COS_WORKDIR"] = workDirectory
+        environment["CODEX_GLASSES_WORKDIR"] = workDirectory
+        plist["EnvironmentVariables"] = environment
+        return try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+    }
+
+    private func strictBootoutInPlace() throws {
+        guard serviceLoaded() else { return }
+        let result = try launchctl(["bootout", serviceTarget])
+        guard result.code == 0 else {
+            throw HelperError.message("launchd could not unload the adopted server: \(result.output)")
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while serviceLoaded(), Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
+        guard !serviceLoaded() else { throw HelperError.message("launchd still reports the adopted server as loaded.") }
+        try waitForPortsClear(timeout: 12)
+    }
+
+    private func strictBootstrapInPlace() throws {
+        let recordPath = loadInPlace()?.plistPath ?? plistURL.path
+        guard URL(fileURLWithPath: recordPath).standardizedFileURL.path == plistURL.standardizedFileURL.path else {
+            throw HelperError.message("The in-place ownership record points at an unexpected plist.")
+        }
+        let result = try launchctl(["bootstrap", launchDomain, recordPath])
+        guard result.code == 0 else { throw HelperError.message("launchd could not load the adopted server: \(result.output)") }
+    }
+
+    private func applyInPlaceWorkDirectory(_ path: String) throws {
+        guard let record = loadInPlace(),
+              URL(fileURLWithPath: record.plistPath).standardizedFileURL.path == plistURL.standardizedFileURL.path else {
+            throw HelperError.message("Manage in place must be completed before changing this LaunchAgent.")
+        }
+        let snapshot = ownershipSnapshot()
+        guard snapshot.launchAgentKind == .knownLegacy else {
+            throw HelperError.message("The adopted LaunchAgent shape changed; folder selection was not applied.")
+        }
+        if !snapshot.allListenerPIDs.isEmpty {
+            guard snapshot.serviceLoaded, launchdOwnsListeners(snapshot, requireDirect: false) else {
+                throw HelperError.message("Folder selection refused because launchd does not own the active listeners.")
+            }
+        } else if snapshot.serviceLoaded {
+            throw HelperError.message("The adopted server is loaded but not healthy. Repair it before changing the work folder.")
+        }
+        let previous = try Data(contentsOf: plistURL)
+        let permissions = ((try? fm.attributesOfItem(atPath: plistURL.path)[.posixPermissions] as? NSNumber)?.intValue) ?? 0o600
+        let candidate = try inPlaceCandidatePlist(workDirectory: path)
+        let status = maintenanceStatus()
+        let transaction = InPlaceConfigurationTransaction(
+            previousPlist: previous,
+            candidatePlist: candidate,
+            previousPermissions: min(permissions, 0o600),
+            previousServicePID: snapshot.servicePID,
+            selectedWorkDirectory: path,
+            serverVersion: status?["serverVersion"] as? String,
+            generationID: status?["generationId"] as? String,
+            phase: "staged",
+            startedAt: ISO8601DateFormatter().string(from: Date())
+        )
+        try saveInPlaceConfigurationTransaction(transaction)
+        let activeWork = ["COS_WORKDIR", "CODEX_GLASSES_WORKDIR", "COS_LAUNCH_DIR"]
+            .compactMap(loadedEnvironmentValue)
+            .compactMap { try? validatedWorkDirectory($0) }
+            .first
+        if activeWork == path {
+            try atomicWriteData(candidate, to: plistURL, permissions: 0o600)
+            clearInPlaceConfigurationTransaction()
+            emit(ok: true, message: "Work folder saved and already active", details: statusDetails())
+            return
+        }
+        if snapshot.allListenerPIDs.isEmpty {
+            try atomicWriteData(candidate, to: plistURL, permissions: 0o600)
+            clearInPlaceConfigurationTransaction()
+            emit(ok: true, message: "Work folder saved and will apply when your server starts", details: statusDetails())
+            return
+        }
+        if status == nil {
+            // Older self-managed servers do not expose the credentialed drain
+            // contract. Persist the exact plist change, but never guess that it
+            // is safe to kill recordings or provider turns to activate it.
+            try atomicWriteData(candidate, to: plistURL, permissions: 0o600)
+            clearInPlaceConfigurationTransaction()
+            emit(
+                ok: true,
+                message: "Work folder saved to your LaunchAgent. This legacy server cannot prove idle state, so restart it when no work is active to apply the folder.",
+                details: statusDetails()
+            )
+            return
+        }
+        guard let version = transaction.serverVersion,
+              let generation = transaction.generationID else {
+            clearInPlaceConfigurationTransaction()
+            throw HelperError.message("The adopted server lacks the lifecycle identity required for a safe folder reload.")
+        }
+        do {
+            let lease = try acquireMaintenanceLeaseIfNeeded(
+                snapshot: snapshot,
+                operationKind: "workdir_update",
+                successorGenerations: [generation]
+            )
+            var switching = transaction
+            switching.phase = "switching"
+            try saveInPlaceConfigurationTransaction(switching)
+            try strictBootoutInPlace()
+            try atomicWriteData(candidate, to: plistURL, permissions: 0o600)
+            try strictBootstrapInPlace()
+            let activeLease = try waitForManagedHealth(
+                expectedVersion: version,
+                expectedGenerationID: generation,
+                inheritedLease: lease,
+                timeout: 60,
+                requireDirectOwnership: false,
+                requireTransactionalProof: versionAtLeast(version, "6.15.2")
+            )
+            guard let newPID = servicePID(), newPID != transaction.previousServicePID else {
+                throw HelperError.message("launchd did not replace the prior server process.")
+            }
+            try requireMaintenanceRelease(activeLease)
+            clearInPlaceConfigurationTransaction()
+            emit(ok: true, message: "Work folder applied to your LaunchAgent and the server was verified", details: statusDetails())
+        } catch {
+            let recovery = try restoreInPlaceConfiguration(transaction)
+            throw HelperError.message("Work folder change failed. \(recovery) Original error: \(error)")
+        }
+    }
+
+    private func restoreInPlaceConfiguration(_ transaction: InPlaceConfigurationTransaction) throws -> String {
+        if serviceLoaded() { try strictBootoutInPlace() }
+        try atomicWriteData(transaction.previousPlist, to: plistURL, permissions: transaction.previousPermissions)
+        if transaction.previousServicePID != nil {
+            try strictBootstrapInPlace()
+            guard let version = transaction.serverVersion,
+                  let generation = transaction.generationID else {
+                throw HelperError.message("The previous LaunchAgent was restored, but its lifecycle identity is missing.")
+            }
+            let stored = loadMaintenanceLease()
+            let activeLease = try waitForManagedHealth(
+                expectedVersion: version,
+                expectedGenerationID: generation,
+                inheritedLease: stored,
+                timeout: 60,
+                requireDirectOwnership: false,
+                requireTransactionalProof: false
+            )
+            if stored != nil { try requireMaintenanceRelease(activeLease) }
+        }
+        clearInPlaceConfigurationTransaction()
+        return "The previous LaunchAgent configuration was restored and verified."
     }
 
     private func runServer() throws {
@@ -2782,7 +3181,8 @@ final class COSControlHelper {
                 add("Runtime integrity", "ok", "Active generation verified")
             } catch { add("Runtime integrity", "error", "Active generation failed verification") }
         } else { add("Runtime integrity", "warning", "Not installed") }
-        add("Update recovery", loadTransaction() == nil ? "ok" : "error", loadTransaction() == nil ? "No interrupted transaction" : "Repair required")
+        let recoveryPending = loadTransaction() != nil || loadInPlaceConfigurationTransaction() != nil
+        add("Update recovery", recoveryPending ? "error" : "ok", recoveryPending ? "Repair required" : "No interrupted transaction")
         let recoveryReady = recoveryLaunchAgentValid() && recoveryServiceLoaded()
         add("Recovery controller", recoveryReady ? "ok" : "error", recoveryReady ? "Loaded · checks every 60 seconds" : "Missing or not loaded · run Repair")
         add("Private config", (try? readToken()) == nil ? "warning" : "ok", (try? readToken()) == nil ? "Pairing token missing or invalid" : "Configured")
@@ -2796,7 +3196,7 @@ final class COSControlHelper {
         return ["checks": checks, "status": status]
     }
 
-    private func manifestConfiguredWorkDirectory() -> Bool { loadManifest()?.workDirectory != nil }
+    private func manifestConfiguredWorkDirectory() -> Bool { configuredWorkDirectory() != nil }
 
     private func redactPath(_ value: String) -> String {
         if value == home.path { return "~" }
@@ -2885,6 +3285,33 @@ final class COSControlHelper {
         try expect(runtimeState(snapshot: inPlaceSnapshot, maintenance: nil, health: allProvidersHealthy) == .managedInPlace, "in-place runtime requires provider capabilities")
         try expect(runtimeState(snapshot: inPlaceSnapshot, maintenance: nil, health: missingClaude) == .managedDegraded, "in-place HTTP-green provider failure is degraded")
         try? fm.removeItem(at: inPlaceURL)
+
+        let selectedWorkspace = home.appendingPathComponent("selected-workspace", isDirectory: true)
+        try fm.createDirectory(at: selectedWorkspace, withIntermediateDirectories: true)
+        try Data("# selected\n".utf8).write(to: selectedWorkspace.appendingPathComponent("AGENTS.md"))
+        let legacyPlist: [String: Any] = [
+            "Label": label,
+            "ProgramArguments": ["/bin/bash", home.appendingPathComponent("Library/Application Support/COS Glasses/runtime/start-server.sh").path],
+            "WorkingDirectory": home.appendingPathComponent("cos-glasses-app").path,
+            "EnvironmentVariables": [
+                "COS_GLASSES_APP_DIR": home.appendingPathComponent("cos-glasses-app").path,
+                "COS_SCRIPTS_DIR": home.appendingPathComponent("pipeline/operations/scripts").path,
+                "COS_API_TOKEN": "secret-must-remain-private",
+            ],
+        ]
+        let legacyData = try PropertyListSerialization.data(fromPropertyList: legacyPlist, format: .xml, options: 0)
+        try atomicWriteData(legacyData, to: plistURL, permissions: 0o600)
+        let candidateData = try inPlaceCandidatePlist(workDirectory: selectedWorkspace.path)
+        let candidatePlist = try PropertyListSerialization.propertyList(from: candidateData, options: [], format: nil) as! [String: Any]
+        let candidateEnvironment = candidatePlist["EnvironmentVariables"] as! [String: String]
+        try expect(candidateEnvironment["COS_WORKDIR"] == selectedWorkspace.path, "in-place candidate writes provider-neutral workspace")
+        try expect(candidateEnvironment["CODEX_GLASSES_WORKDIR"] == selectedWorkspace.path, "in-place candidate keeps legacy provider workspace coherent")
+        try expect(candidateEnvironment["COS_SCRIPTS_DIR"] == legacyPlist["EnvironmentVariables"].flatMap { ($0 as? [String: String])?["COS_SCRIPTS_DIR"] }, "workspace selection does not mutate the pipeline root")
+        try expect(candidatePlist["WorkingDirectory"] as? String == legacyPlist["WorkingDirectory"] as? String, "workspace selection preserves server WorkingDirectory")
+        try expect(candidateEnvironment["COS_GLASSES_APP_DIR"] == home.appendingPathComponent("cos-glasses-app").path, "workspace selection preserves server app directory")
+        try atomicWriteData(candidateData, to: plistURL, permissions: 0o600)
+        try expect(configuredWorkDirectory() == selectedWorkspace.path, "status reads and validates the selected LaunchAgent workspace")
+        try? fm.removeItem(at: plistURL)
 
         let secret = "unit-test-secret-that-must-never-be-emitted-1234567890"
         let digest = tokenDigest(secret)

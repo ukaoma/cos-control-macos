@@ -60,6 +60,8 @@ struct ServerStatus: Sendable {
     var version: String?
     var installedVersion: String?
     var workDirectory: String?
+    var activeWorkDirectory: String?
+    var workDirectoryPending = false
     var safeToRestart = false
     var activeJobs: Int?
     var activeTranscriptionSessions: Int?
@@ -89,6 +91,8 @@ struct ServerStatus: Sendable {
         version = details["version"]?.string
         installedVersion = details["installedVersion"]?.string
         workDirectory = details["workDirectory"]?.string
+        activeWorkDirectory = details["activeWorkDirectory"]?.string
+        workDirectoryPending = details["workDirectoryPending"]?.bool ?? false
         safeToRestart = details["safeToRestart"]?.bool ?? false
         activeJobs = details["activeJobs"]?.int
         activeTranscriptionSessions = details["activeTranscriptionSessions"]?.int

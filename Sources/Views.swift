@@ -55,6 +55,7 @@ private enum COSPalette {
 
 struct ControlPanel: View {
     @ObservedObject var model: ControllerModel
+    @State private var confirmLegacyRestart = false
 
     var body: some View {
         ScrollView {
@@ -76,6 +77,16 @@ struct ControlPanel: View {
         .alert("COS Control", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
         } message: { Text(model.error ?? "") }
+        .confirmationDialog(
+            "Restart this self-managed server?",
+            isPresented: $confirmLegacyRestart,
+            titleVisibility: .visible
+        ) {
+            Button("Restart now", role: .destructive) { model.perform("restart") }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This older server cannot prove that meetings and agent jobs are idle. Continue only when no work is active. COS Control will reload the LaunchAgent so the selected folder becomes active.")
+        }
     }
 
     private var header: some View {
@@ -110,6 +121,10 @@ struct ControlPanel: View {
                 Text(model.status.workDirectory ?? "Default COS context")
                     .lineLimit(2).multilineTextAlignment(.trailing).textSelection(.enabled)
             }.font(.caption)
+            if model.status.workDirectoryPending {
+                Label("Saved to LaunchAgent · pending a safe server restart", systemImage: "clock.badge.exclamationmark")
+                    .font(.caption).foregroundStyle(COSPalette.amber)
+            }
             if let jobs = model.status.activeJobs, let recordings = model.status.activeTranscriptionSessions, jobs + recordings > 0 {
                 Label("\(jobs) job(s), \(recordings) recording(s) active. Restart is locked.", systemImage: "lock.fill")
                     .font(.caption).foregroundStyle(COSPalette.amber)
@@ -128,8 +143,17 @@ struct ControlPanel: View {
         VStack(spacing: 9) {
             HStack {
                 if model.status.runtimeState == "managedHealthy" || model.status.runtimeState == "managedInPlace" {
-                    Button("Restart", systemImage: "arrow.clockwise") { model.perform("restart") }
+                    Button("Restart", systemImage: "arrow.clockwise") {
+                        if model.status.runtimeState == "managedInPlace" && !model.status.safeToRestart {
+                            confirmLegacyRestart = true
+                        } else {
+                            model.perform("restart")
+                        }
+                    }
+                        .disabled((model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0
+                                  || model.status.transactionPending)
                     Button("Stop", systemImage: "stop.fill", role: .destructive) { model.perform("stop") }
+                        .disabled(model.status.runtimeState == "managedInPlace" && !model.status.safeToRestart)
                 } else if model.status.runtimeState == "stopped" {
                     Button("Start", systemImage: "play.fill") { model.perform("start") }.buttonStyle(.borderedProminent)
                 }
@@ -297,6 +321,10 @@ struct ControlPanel: View {
             }
             HStack {
                 Button("Choose Folder", systemImage: "folder") { model.selectWorkFolder() }
+                    .disabled(!model.status.installed && model.status.runtimeState != "managedInPlace")
+                    .help(model.status.installed || model.status.runtimeState == "managedInPlace"
+                          ? "Choose the workspace used by Claude, Codex, and Cursor"
+                          : "Install the managed server or choose Manage in place first")
                 Button("Open Cursor", systemImage: "chevron.left.forwardslash.chevron.right") { model.openCursor() }
                 Button("Copy Pairing Token", systemImage: "key") { model.perform("token") }
                     .disabled(model.status.runtimeState != "managedHealthy")
@@ -352,7 +380,7 @@ struct ControlPanel: View {
 
     private var footer: some View {
         HStack {
-            Text("Controller 0.2.2  •  Server target \(ControllerModel.releaseServerVersion)")
+            Text("Controller 0.2.3  •  Server target \(ControllerModel.releaseServerVersion)")
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.link)
         }.font(.caption2).foregroundStyle(.secondary)
