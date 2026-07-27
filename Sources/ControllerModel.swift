@@ -4,11 +4,9 @@ import ServiceManagement
 
 @MainActor
 final class ControllerModel: ObservableObject {
-    /// Known-good server this Control build was verified against (footer / release notes).
-    /// Install, adopt, and Update Server always resolve npm `@gotcos/glasses-server@latest`
-    /// so the same UI path picks up new server releases without a Control rebuild.
-    /// Footer "verified" string is the last release we validated against — keep in
-    /// lockstep when shipping a known-good `@gotcos/glasses-server` cut.
+    /// Known-good server this Control build was QA'd against (release notes only).
+    /// Install / Adopt / Update Server always resolve npm `@latest` — the panel
+    /// footer shows the *live* managed server version from status, not this constant.
     static let releaseServerVersion = "6.16.9"
     static let managedServerInstallVersion = "latest"
 

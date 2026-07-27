@@ -420,10 +420,24 @@ struct ControlPanel: View {
 
     private var footer: some View {
         HStack {
-            Text("Controller 0.2.7  •  Server install: npm latest (verified \(ControllerModel.releaseServerVersion))")
+            Text(footerLabel)
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.link)
         }.font(.caption2).foregroundStyle(.secondary)
+    }
+
+    /// Controller build from Info.plist; server version from live status (never a
+    /// compile-time "verified" pin that drifts behind npm / Update Server).
+    private var footerLabel: String {
+        let controller = ControllerModel.currentVersion
+        let live = model.status.version ?? model.status.installedVersion
+        if let live, !live.isEmpty {
+            return "Controller \(controller)  •  Server \(live) (npm latest)"
+        }
+        if model.status.runtimeState == "managedInPlace" {
+            return "Controller \(controller)  •  Server self-managed"
+        }
+        return "Controller \(controller)  •  Server not installed"
     }
 
     private var cursorLabel: String {

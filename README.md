@@ -19,10 +19,18 @@ COS_NOTARY_PROFILE="cos-control-notary" \
 ./scripts/build-release.sh
 ```
 
-Public builds fail closed unless Developer ID signing and notarization are both
-configured. The script verifies the extracted final ZIP with codesign, stapler,
-and Gatekeeper. For local QA only, use `COS_ALLOW_ADHOC=1`; never publish that
-artifact. The controller stores immutable npm
+Signed builds fail closed unless Developer ID signing and notarization are both
+configured, and the script then verifies the extracted ZIP with codesign,
+stapler, and Gatekeeper. Those post-checks run on the signed path only.
+
+**Current release state:** Developer ID enrollment is not in place yet, so
+published releases (0.2.3 onward) are built with `COS_ALLOW_ADHOC=1` and ship
+ad-hoc signed and unnotarized. Gatekeeper rejects them on first open, which is
+why the download page walks users through `xattr -dr com.apple.quarantine` and
+"Open Anyway". Drop the ad-hoc path and delete this note once Developer ID is
+available.
+
+The controller stores immutable npm
 server generations under `~/Library/Application Support/COS Control` and uses
 one LaunchAgent, `com.cos.glasses-server`, as the sole server owner.
 
@@ -50,6 +58,23 @@ An unknown foreground process, mismatched listener PID, incompatible maintenance
 contract, or interrupted transaction is shown as a conflict instead of being
 silently replaced. Doctor and Copy Report redact pairing credentials, process
 IDs, and the selected workspace path.
+
+## 0.2.8 live server version in the footer
+
+- The footer reads the **live** managed server version from status
+  (`status.version`, falling back to `installedVersion`), not a compile-time
+  "verified 6.16.x" constant that drifted behind Update Server.
+- Controller version in the footer comes from `Info.plist` via `currentVersion`.
+- `releaseServerVersion` is now release-notes metadata only. Install, Adopt, and
+  Update Server have always resolved npm `@latest` and still do.
+- QA'd against `@gotcos/glasses-server` 6.16.9. Note that 6.15.4 and
+  6.16.6–6.16.8 exist in git but were never published to npm; their changes are
+  folded into 6.16.9, so 6.16.9 is the version to name in any instruction.
+
+## 0.2.7 folder pickers
+
+- Separate **Work Folder** (agent workspace) from **Meetings Library** (the COS
+  `operations/` tree used for G2 Review Meetings), each on its own tool row.
 
 ## 0.2.6 meetings library
 

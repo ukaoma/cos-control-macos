@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.8 (build 19)
+
+- Footer shows the **live** managed server version from status (e.g. 6.16.9),
+  not a compile-time "verified 6.16.x" pin that lagged behind Update Server.
+- Controller version in the footer comes from `Info.plist` (`currentVersion`).
+- Verified baseline for this cut: `@gotcos/glasses-server` **6.16.9** (message
+  era + per-exchange model stamps). Install/Update still resolve npm `latest`.
+
 ## 0.2.7 (build 18)
 
 - Clarify folder pickers: **Work Folder** (agent workspace) vs **Meetings
