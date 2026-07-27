@@ -56,6 +56,7 @@ private enum COSPalette {
 struct ControlPanel: View {
     @ObservedObject var model: ControllerModel
     @State private var confirmLegacyRestart = false
+    @State private var confirmInstallManaged = false
 
     var body: some View {
         ScrollView {
@@ -86,6 +87,18 @@ struct ControlPanel: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This older server cannot prove that meetings and agent jobs are idle. Continue only when no work is active. COS Control will reload the LaunchAgent so the selected folder becomes active.")
+        }
+        .confirmationDialog(
+            "Install the latest managed server?",
+            isPresented: $confirmInstallManaged,
+            titleVisibility: .visible
+        ) {
+            Button("Stop legacy and install", role: .destructive) {
+                model.installLatestManagedFromLegacy()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This stops your checkout LaunchAgent, then installs the current npm latest (@gotcos/glasses-server@latest). When 6.16.2+ publishes, this same button installs it. Finish active glasses work first. Prefer Manage in place if you only want status/restart without replacing the server.")
         }
     }
 
@@ -181,15 +194,22 @@ struct ControlPanel: View {
                 HStack {
                     Label("A recognized stopped legacy LaunchAgent can be adopted exactly.", systemImage: "arrow.triangle.2.circlepath")
                     Spacer()
-                    Button("Adopt Safely") { model.perform("adopt", arguments: ["--version", ControllerModel.releaseServerVersion]) }
+                    Button("Adopt Safely") { model.installLatestManagedFromLegacy() }
                 }.font(.caption).foregroundStyle(COSPalette.amber)
             }
             if model.status.runtimeState == "legacyService" {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 8) {
                     Label("Your server is running. COS Control can manage it in place — status, restart, and recovery — without replacing it.", systemImage: "checkmark.seal")
                         .font(.caption).foregroundStyle(.secondary)
-                    Button("Manage in place") { model.perform("adopt-in-place") }
-                        .buttonStyle(.borderedProminent).controlSize(.small)
+                    HStack(spacing: 8) {
+                        Button("Manage in place") { model.perform("adopt-in-place") }
+                            .buttonStyle(.borderedProminent).controlSize(.small)
+                        Button("Install managed server") {
+                            confirmInstallManaged = true
+                        }
+                        .controlSize(.small)
+                        .disabled((model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0)
+                    }
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
             if model.status.ownerConflict {
@@ -388,7 +408,7 @@ struct ControlPanel: View {
 
     private var footer: some View {
         HStack {
-            Text("Controller 0.2.5  •  Server target \(ControllerModel.releaseServerVersion)")
+            Text("Controller 0.2.5  •  Server install: npm latest (verified \(ControllerModel.releaseServerVersion))")
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.link)
         }.font(.caption2).foregroundStyle(.secondary)

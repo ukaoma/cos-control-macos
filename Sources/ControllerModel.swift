@@ -4,7 +4,11 @@ import ServiceManagement
 
 @MainActor
 final class ControllerModel: ObservableObject {
+    /// Known-good server this Control build was verified against (footer / release notes).
+    /// Install, adopt, and Update Server always resolve npm `@gotcos/glasses-server@latest`
+    /// so the same UI path picks up 6.16.2+ without a Control rebuild.
     static let releaseServerVersion = "6.16.1"
+    static let managedServerInstallVersion = "latest"
 
     @Published var status = ServerStatus()
     @Published var doctorChecks: [DoctorCheck] = []
@@ -223,7 +227,12 @@ final class ControllerModel: ObservableObject {
     }
 
     func installCurrentRelease() {
-        perform("install", arguments: ["--version", Self.releaseServerVersion])
+        perform("install", arguments: ["--version", Self.managedServerInstallVersion])
+    }
+
+    /// Stop recognized legacy (if needed) and install the current npm latest managed server.
+    func installLatestManagedFromLegacy() {
+        perform("adopt", arguments: ["--version", Self.managedServerInstallVersion])
     }
 
     func selectWorkFolder() {

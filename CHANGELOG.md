@@ -5,11 +5,18 @@
 - Target the verified public `@gotcos/glasses-server` **6.16.1** release, which
   keeps truthful HQ transcription and adds managed Cursor Agent slots
   (Composer 2.5 / Grok 4.5) plus Silero VAD weights in the npm tarball.
+- Install / Adopt / Update Server resolve npm `@gotcos/glasses-server@latest`,
+  so the same UI path picks up 6.16.2+ without a Control rebuild. The footer
+  still shows the verified baseline (6.16.1).
+- From a running recognized legacy LaunchAgent, offer **Install managed
+  server** (stop when idle, then adopt/install latest) alongside Manage in
+  place. Repair commits an already-healthy candidate instead of rolling back
+  when an interrupted update left the new generation live.
 - Preserve the existing companion-owned HQ-default/Fast-mode preference; this
   release does not introduce a conflicting Control-side preference.
-- Keep public packaging fail-closed: source is releasable independently, but
-  the public download must not advance without Developer ID signing,
-  notarization, hash verification, and an appcast/site update in that order.
+- Keep public packaging fail-closed for Developer ID builds: notarization is
+  required when `COS_SIGN_IDENTITY` is set. Until notarization is enrolled,
+  public site ZIPs may continue the existing ad-hoc ship path used by 0.2.3.
 
 ## 0.2.4 (build 15)
 

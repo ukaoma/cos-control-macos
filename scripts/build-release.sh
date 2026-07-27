@@ -84,7 +84,14 @@ if [ -n "$SIGN_ID" ]; then
   /usr/bin/xcrun stapler validate "$VERIFY_DIR/COS Control.app"
   /usr/sbin/spctl -a -vv --type execute "$VERIFY_DIR/COS Control.app"
 fi
-COS_CONTROL_TEST_HOME="$BUILD_DIR/test-home" "$VERIFY_DIR/COS Control.app/Contents/Resources/cos-control-helper" self-test >/dev/null
+# Isolate self-test from the caller's COS_* / provider env so live harness
+# variables (e.g. COS_HARNESS=foreground) cannot pollute allowlist assertions.
+env -i \
+  HOME="$HOME" \
+  PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin" \
+  TMPDIR="${TMPDIR:-/tmp}" \
+  COS_CONTROL_TEST_HOME="$BUILD_DIR/test-home" \
+  "$VERIFY_DIR/COS Control.app/Contents/Resources/cos-control-helper" self-test >/dev/null
 if [ -z "$SIGN_ID" ] && /usr/bin/unzip -Z1 "$ZIP" | /usr/bin/grep -q '^__MACOSX/'; then
   echo "Release archive contains forbidden __MACOSX metadata" >&2
   exit 65

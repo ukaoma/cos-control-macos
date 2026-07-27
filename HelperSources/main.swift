@@ -829,6 +829,33 @@ final class COSControlHelper {
         }
     }
 
+    /// When an interrupted update left the candidate already live and healthy,
+    /// commit that candidate instead of rolling back to the previous generation.
+    private func commitHealthyCandidateIfPresent(_ transaction: RuntimeTransaction) throws -> String? {
+        let candidate = transaction.candidate
+        guard let generationID = candidate.generationID else { return nil }
+        let snapshot = ownershipSnapshot()
+        guard snapshot.launchAgentKind == .cosControl,
+              snapshot.serviceLoaded,
+              !snapshot.allListenerPIDs.isEmpty,
+              launchdOwnsListeners(snapshot, requireDirect: true) else { return nil }
+        guard let status = maintenanceStatus(),
+              hasLifecycleContract(status),
+              (status["lifecycle"] as? [String: Any])?["state"] as? String == "accepting",
+              status["serverVersion"] as? String == candidate.version,
+              status["generationId"] as? String == generationID else { return nil }
+        guard managedHealthFailure(request("/api/health", timeout: 12)) == nil else { return nil }
+        // Persist the candidate manifest if a partial restore already rewound it.
+        if loadManifest()?.generationPath != candidate.generationPath
+            || loadManifest()?.version != candidate.version {
+            try saveManifest(candidate)
+            try writeLaunchAgent(for: candidate)
+        }
+        clearMaintenanceLease()
+        clearTransaction()
+        return "Interrupted update recovered: managed server \(candidate.version) was already healthy and is now committed."
+    }
+
     private func restoreAfterFailedSwitch(_ transaction: RuntimeTransaction) throws -> String {
         let snapshot = ownershipSnapshot()
         if transaction.previous == nil {
@@ -849,7 +876,17 @@ final class COSControlHelper {
             clearTransaction()
             return legacyPlistMessage(transaction.previousLaunchAgentPlist != nil)
         }
-        let lease = try acquireMaintenanceLeaseIfNeeded(snapshot: snapshot)
+        // Always authorize both candidate + previous generations. An empty
+        // successor list throws when listeners are still up (common when the
+        // candidate actually booted but verification failed later).
+        let lease = try acquireMaintenanceLeaseIfNeeded(
+            snapshot: snapshot,
+            operationKind: "server_update",
+            successorGenerations: [
+                transaction.previous?.generationID,
+                transaction.candidate.generationID,
+            ].compactMap { $0 }
+        )
         if serviceLoaded() {
             do { try unloadService() }
             catch {
@@ -2063,12 +2100,28 @@ final class COSControlHelper {
     }
 
     private func adoptLegacy(requestedVersion: String) throws {
-        let snapshot = ownershipSnapshot()
+        var snapshot = ownershipSnapshot()
         guard snapshot.launchAgentKind == .knownLegacy else {
             throw HelperError.message("Adoption requires the exact recognized legacy LaunchAgent shape.")
         }
         if !snapshot.allListenerPIDs.isEmpty {
-            throw HelperError.message("Running legacy adoption is unsupported. Stop the recognized legacy LaunchAgent first so adoption has no in-flight work to lose.")
+            // Guided stop→install for the recognized LaunchAgent only. Refuse
+            // when ownership is fuzzy or work is in flight so we cannot strand
+            // an active glasses turn mid-cutover.
+            guard snapshot.serviceLoaded, launchdOwnsListeners(snapshot, requireDirect: false) else {
+                throw HelperError.message("Running legacy adoption is unsupported. Stop the recognized legacy LaunchAgent first so adoption has no in-flight work to lose.")
+            }
+            if let maintenance = maintenanceStatus(),
+               ((maintenance["activeJobs"] as? Int) ?? 0) + ((maintenance["activeTranscriptionSessions"] as? Int) ?? 0) > 0 {
+                throw HelperError.message("Finish active glasses work before switching the running legacy server to managed npm.")
+            }
+            progress("Stopping the recognized legacy LaunchAgent…")
+            try unloadService()
+            try waitForPortsClear(timeout: 12)
+            snapshot = ownershipSnapshot()
+            guard snapshot.allListenerPIDs.isEmpty else {
+                throw HelperError.message("Legacy LaunchAgent stopped, but ports 3141/3143 are still owned. Clear them before adoption.")
+            }
         }
         try install(requestedVersion: requestedVersion, workDirectory: nil)
     }
@@ -2514,6 +2567,13 @@ final class COSControlHelper {
         progress("Inspecting managed runtime…")
         if let transaction = loadTransaction() {
             progress("Recovering an interrupted update…")
+            // If the candidate is already the live verified runtime, commit it
+            // instead of rolling back — this recovers the "false failure" case
+            // where restore threw after the candidate had already taken over.
+            if let committed = try commitHealthyCandidateIfPresent(transaction) {
+                emit(ok: true, message: committed, details: statusDetails())
+                return
+            }
             let message = try restoreAfterFailedSwitch(transaction)
             emit(ok: true, message: message, details: statusDetails())
             return
