@@ -2,9 +2,9 @@
 
 ## 0.2.5 (build 16)
 
-- Target the verified public `@gotcos/glasses-server` 6.16.0 release, which
-  reports whether requested HQ transcription actually used local large-v3 and
-  exposes bounded degradation metadata to the companion.
+- Target the verified public `@gotcos/glasses-server` **6.16.1** release, which
+  keeps truthful HQ transcription and adds managed Cursor Agent slots
+  (Composer 2.5 / Grok 4.5) plus Silero VAD weights in the npm tarball.
 - Preserve the existing companion-owned HQ-default/Fast-mode preference; this
   release does not introduce a conflicting Control-side preference.
 - Keep public packaging fail-closed: source is releasable independently, but
