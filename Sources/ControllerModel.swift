@@ -7,7 +7,7 @@ final class ControllerModel: ObservableObject {
     /// Known-good server this Control build was verified against (footer / release notes).
     /// Install, adopt, and Update Server always resolve npm `@gotcos/glasses-server@latest`
     /// so the same UI path picks up 6.16.2+ without a Control rebuild.
-    static let releaseServerVersion = "6.16.6"
+    static let releaseServerVersion = "6.16.7"
     static let managedServerInstallVersion = "latest"
 
     @Published var status = ServerStatus()
