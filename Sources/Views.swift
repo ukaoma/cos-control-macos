@@ -98,7 +98,7 @@ struct ControlPanel: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This stops your checkout LaunchAgent, then installs the current npm latest (@gotcos/glasses-server@latest). When 6.16.2+ publishes, this same button installs it. Finish active glasses work first. Prefer Manage in place if you only want status/restart without replacing the server.")
+            Text("This stops your checkout LaunchAgent, then installs the current npm latest (@gotcos/glasses-server@latest). Finish active glasses work first. Prefer Manage in place if you only want status/restart without replacing the server.")
         }
     }
 
