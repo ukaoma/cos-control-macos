@@ -215,12 +215,22 @@ final class COSControlHelper {
     private lazy var plistURL = home.appendingPathComponent("Library/LaunchAgents/\(label).plist")
     private lazy var recoveryPlistURL = home.appendingPathComponent("Library/LaunchAgents/\(recoveryLabel).plist")
     private lazy var configDir = home.appendingPathComponent(".cos-glasses", isDirectory: true)
+    /// "0.2.9 (build 20)" when the app passed its identity; nil for a bare CLI run.
+    private var appIdentity: String?
     private lazy var envURL = configDir.appendingPathComponent(".env")
     private lazy var certsDir = configDir.appendingPathComponent("certs", isDirectory: true)
 
     func run() throws {
         let args = Array(CommandLine.arguments.dropFirst())
         guard let command = args.first else { throw HelperError.message("missing command") }
+        // The app hands over its own identity (same contract as check-app-update)
+        // so Doctor and Copy Report can name the build. The helper cannot read it
+        // itself: the stable copy under Application Support has no sibling
+        // Info.plist, so a bundle lookup would be right only half the time.
+        if let version = option("--current-version", in: args), !version.isEmpty {
+            let build = option("--current-build", in: args).flatMap(Int.init)
+            appIdentity = build.map { "\(version) (build \($0))" } ?? version
+        }
         switch command {
         case "self-test": try selfTest()
         case "self-test-lock-crash": try selfTestLockCrash()
@@ -757,7 +767,13 @@ final class COSControlHelper {
         // Capture a legacy/in-place selection before removing its ownership
         // marker or replacing the plist during adoption.
         let inheritedWorkDirectory = try validatedWorkDirectory(workDirectory) ?? configuredWorkDirectory()
-        try? fm.removeItem(at: inPlaceURL)  // installing a managed generation exits in-place mode
+        // Installing a managed generation exits in-place mode, but the marker is
+        // NOT dropped here: every throw below this point (pending transaction,
+        // unadoptable ownership, npm unreachable, staging failure) must leave a
+        // healthy in-place install exactly as it was. Deleting it early meant a
+        // transient npm outage permanently disabled inPlaceActive() — and with it
+        // the per-minute in-place recovery watchdog — with nothing to restore it.
+        let inPlaceMarker = try? Data(contentsOf: inPlaceURL)
         guard loadTransaction() == nil else {
             throw HelperError.message("A previous update needs repair before another install can begin.")
         }
@@ -802,6 +818,10 @@ final class COSControlHelper {
             transaction.phase = "switching"
             try saveTransaction(transaction)
             switchStarted = true
+            // Point of no return: the managed plist is about to replace the
+            // adopted one, so in-place mode ends here. Restored below if the
+            // switch fails and we roll back to the previous runtime.
+            try? fm.removeItem(at: inPlaceURL)
             if ownership.serviceLoaded {
                 do { try unloadService() }
                 catch {
@@ -831,6 +851,10 @@ final class COSControlHelper {
             }
             progress("Candidate failed; restoring the previous runtime…")
             let recoveryMessage = try restoreAfterFailedSwitch(transaction)
+            // The previous runtime is back, so in-place ownership comes back with
+            // it. Without this the rollback would look successful while
+            // inPlaceActive() stayed false and the in-place watchdog stayed off.
+            if let inPlaceMarker { try? inPlaceMarker.write(to: inPlaceURL, options: .atomic) }
             throw HelperError.message("Update failed. \(recoveryMessage) Original error: \(error)")
         }
     }
@@ -3466,6 +3490,10 @@ final class COSControlHelper {
         func add(_ name: String, _ state: String, _ detail: String) {
             checks.append(["name": name, "state": state, "detail": stripEmails(detail)])
         }
+        // First row on purpose: a support report that cannot say which Control
+        // produced it is unusable, and version strings have been reused across
+        // builds before, so the build number is the identifying part.
+        add("COS Control", "ok", appIdentity ?? "Unknown (run from the app to record it)")
         if let node = findExecutable("node") {
             let probe = nodeVersion(at: node)
             add("Node.js", probe.valid ? "ok" : "error", redacted ? probe.display : "\(probe.display) · \(redactPath(node))")

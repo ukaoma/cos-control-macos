@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.9 (build 20)
+
+- **A failed install no longer strands in-place mode.** `install()` deleted the
+  in-place ownership marker before four throw sites (pending transaction,
+  unadoptable ownership, npm unreachable, staging failure) and never restored
+  it, so a transient npm outage permanently turned `inPlaceActive()` off — and
+  with it the per-minute in-place recovery watchdog — while otherwise appearing
+  to fail safely. The marker is now captured up front, dropped only at the point
+  of no return, and written back if the switch rolls back.
+- **Doctor and Copy Report name the Control build.** The report carried no app
+  version at all, so a support report could not identify which build produced
+  it — worse given that 0.2.7 shipped as two different binaries. The app passes
+  its identity the same way it already does for the update check, because the
+  stable helper copy has no sibling `Info.plist` to read.
+- **Restored a version-touchpoint assertion.** Making the footer dynamic in
+  0.2.8 removed the only test that could catch a wrong `Info.plist`. The suite
+  now pins `Info.plist` to the CHANGELOG heading rather than to a UI string.
+
 ## 0.2.8 (build 19)
 
 - Footer shows the **live** managed server version from status (e.g. 6.16.9),

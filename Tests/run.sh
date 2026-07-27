@@ -26,6 +26,38 @@ SELF_TEST="$(COS_CONTROL_TEST_HOME="$TMP/home" "$TMP/cos-control-helper" self-te
 /usr/bin/grep -q 'set-operations-dir' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'COS_OPERATIONS_DIR' "$ROOT/HelperSources/main.swift"
 
+# --- Version touchpoints agree ----------------------------------------------
+# The footer went dynamic in 0.2.8, which removed the only assertion that could
+# catch a wrong Info.plist. Version strings HAVE been reused across two different
+# shipped binaries before (0.2.7/build 18), so pin Info.plist to the CHANGELOG
+# heading instead of to any user-visible string.
+/usr/bin/python3 - "$ROOT" <<'PY'
+import plistlib, re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+info = plistlib.loads((root / "Resources/Info.plist").read_bytes())
+version, build = info["CFBundleShortVersionString"], info["CFBundleVersion"]
+head = (root / "CHANGELOG.md").read_text().splitlines()
+entry = next((l for l in head if l.startswith("## ")), "")
+m = re.match(r"## (\d+\.\d+\.\d+) \(build (\d+)\)", entry)
+if not m:
+    sys.exit(f"CHANGELOG top entry is not '## X.Y.Z (build N)': {entry!r}")
+if (m.group(1), m.group(2)) != (version, build):
+    sys.exit(
+        f"version touchpoints disagree: Info.plist {version} (build {build}) "
+        f"vs CHANGELOG {m.group(1)} (build {m.group(2)})"
+    )
+PY
+
+# --- 0.2.9 fixes -------------------------------------------------------------
+# A failed install must not strand in-place mode off: the marker is captured
+# before the throw sites, dropped only at the point of no return, and restored
+# when the switch rolls back.
+/usr/bin/grep -q 'let inPlaceMarker = try? Data(contentsOf: inPlaceURL)' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'if let inPlaceMarker { try? inPlaceMarker.write(to: inPlaceURL' "$ROOT/HelperSources/main.swift"
+# A support report must name the build that produced it.
+/usr/bin/grep -q 'add("COS Control", "ok", appIdentity' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q '"--current-version", Self.currentVersion' "$ROOT/Sources/ControllerModel.swift"
+
 # --- P1 app-update checker: behavior, not just needles -----------------------
 # Each case is a regression the plan names. Failures print WHICH case broke, so this
 # can never fail silently the way a bare `grep -q` does.

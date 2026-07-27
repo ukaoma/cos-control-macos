@@ -195,13 +195,18 @@ final class ControllerModel: ObservableObject {
         operationProgress = "Starting \(command.replacingOccurrences(of: "-", with: " "))…"
         notice = nil
         error = nil
+        // Doctor and Copy Report name this build. Injected here, not at the call
+        // sites, so a new caller cannot ship a report that omits its version.
+        let identity = ["doctor", "report"].contains(command)
+            ? ["--current-version", Self.currentVersion, "--current-build", String(Self.currentBuild)]
+            : []
         Task {
             defer {
                 busy = false
                 operationProgress = nil
             }
             do {
-                let response = try await helper.run([command] + arguments) { [weak self] message in
+                let response = try await helper.run([command] + arguments + identity) { [weak self] message in
                     Task { @MainActor in self?.operationProgress = message }
                 }
                 notice = response.message
