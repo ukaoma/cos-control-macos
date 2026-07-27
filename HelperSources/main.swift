@@ -184,6 +184,8 @@ final class COSControlHelper {
         "COS_CLAUDE_MCP_CONFIG",
         "COS_CURSOR_AGENT_BIN",
         "COS_SCRIPTS_DIR",
+        "COS_OPERATIONS_DIR",
+        "COS_MEETINGS_ROOT",
         "CODEX_GLASSES_WORKDIR",
         "COS_DURABLE_QUERY_JOBS",
         "COS_TTS_BOOTSTRAP_PYTHON",
@@ -248,6 +250,10 @@ final class COSControlHelper {
         case "set-workdir": try withMutationLock {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing work directory") }
             try setWorkDirectory(value)
+        }
+        case "set-operations-dir": try withMutationLock {
+            guard let value = args.dropFirst().first else { throw HelperError.message("missing operations directory") }
+            try setOperationsDirectory(value)
         }
         case "token": try copyPairingToken()
         case "expire-clipboard": try expireClipboard(args: args)
@@ -1723,6 +1729,7 @@ final class COSControlHelper {
             "workDirectory": configuredWork ?? NSNull(),
             "activeWorkDirectory": activeWork ?? NSNull(),
             "workDirectoryPending": snapshot.serviceLoaded && configuredWork != nil && configuredWork != activeWork,
+            "operationsDirectory": configuredOperationsDirectory() ?? NSNull(),
             "safeToRestart": (managed || inPlaceActive()) ? (maintenance?["safeToRestart"] ?? false) : false,
             "activeJobs": maintenance?["activeJobs"] ?? NSNull(),
             "activeTranscriptionSessions": maintenance?["activeTranscriptionSessions"] ?? NSNull(),
@@ -2660,6 +2667,161 @@ final class COSControlHelper {
             throw HelperError.message("Choose Manage in place first. COS Control will not rewrite an unadopted LaunchAgent.")
         }
         try applyInPlaceWorkDirectory(validated)
+    }
+
+    /// Point G2 Review Meetings at a COS operations/ tree
+    /// (`{dir}/{quilt|personal|…}/meetings/YYYY-MM/*.md`). Each COS layout can differ.
+    private func setOperationsDirectory(_ path: String) throws {
+        guard let validated = try validatedOperationsDirectory(path) else {
+            throw HelperError.message("Selected meetings folder must exist and contain at least one domain meetings/ tree (e.g. quilt/meetings).")
+        }
+        if let manifest = loadManifest() {
+            try applyManagedProviderEnvironment(["COS_OPERATIONS_DIR": validated], current: manifest, operationLabel: "Meetings library")
+            return
+        }
+        guard inPlaceActive() else {
+            throw HelperError.message("Install the managed server or choose Manage in place first.")
+        }
+        try applyInPlaceProviderEnvironment(["COS_OPERATIONS_DIR": validated], operationLabel: "Meetings library")
+    }
+
+    private func validatedOperationsDirectory(_ path: String?) throws -> String? {
+        guard let path, !path.isEmpty else { return nil }
+        let url = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
+            return nil
+        }
+        let domains = ["quilt", "sprocket_rocket", "hermit_crabs", "personal"]
+        let hasMeetingsTree = domains.contains { domain in
+            let meetings = url.appendingPathComponent(domain).appendingPathComponent("meetings", isDirectory: true)
+            var meetingsIsDir: ObjCBool = false
+            return FileManager.default.fileExists(atPath: meetings.path, isDirectory: &meetingsIsDir) && meetingsIsDir.boolValue
+        }
+        guard hasMeetingsTree else { return nil }
+        return url.path
+    }
+
+    private func configuredOperationsDirectory() -> String? {
+        if let value = loadManifest()?.providerEnvironment?["COS_OPERATIONS_DIR"]
+            ?? loadManifest()?.providerEnvironment?["COS_MEETINGS_ROOT"],
+           let validated = try? validatedOperationsDirectory(value) {
+            return validated
+        }
+        if let environment = launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String] {
+            for key in ["COS_OPERATIONS_DIR", "COS_MEETINGS_ROOT"] {
+                if let value = environment[key], let validated = try? validatedOperationsDirectory(value) {
+                    return validated
+                }
+            }
+            if let scripts = environment["COS_SCRIPTS_DIR"], !scripts.isEmpty {
+                let inferred = URL(fileURLWithPath: scripts, isDirectory: true)
+                    .deletingLastPathComponent().path
+                if let validated = try? validatedOperationsDirectory(inferred) { return validated }
+            }
+        }
+        return nil
+    }
+
+    private func applyManagedProviderEnvironment(
+        _ values: [String: String],
+        current: RuntimeManifest,
+        operationLabel: String
+    ) throws {
+        guard loadTransaction() == nil else {
+            throw HelperError.message("A previous runtime change needs Repair before \(operationLabel.lowercased()) can change.")
+        }
+        var candidate = current
+        var provider = candidate.providerEnvironment ?? [:]
+        for (key, value) in values {
+            guard providerEnvironmentKeys.contains(key) else {
+                throw HelperError.message("Unsupported environment key: \(key)")
+            }
+            provider[key] = value
+        }
+        candidate.providerEnvironment = provider
+        var transaction = RuntimeTransaction(
+            previous: current,
+            candidate: candidate,
+            previousLaunchAgentPlist: try? Data(contentsOf: plistURL),
+            phase: "provider_env_staged",
+            startedAt: ISO8601DateFormatter().string(from: Date())
+        )
+        try saveTransaction(transaction)
+        let snapshot = ownershipSnapshot()
+        guard snapshot.launchAgentKind == .cosControl || snapshot.allListenerPIDs.isEmpty else {
+            clearTransaction()
+            throw HelperError.message("\(operationLabel) change refused because COS Control does not own the active LaunchAgent.")
+        }
+        let shouldRun = current.desiredState != "stopped"
+        var switchStarted = false
+        do {
+            let lease = shouldRun ? try acquireMaintenanceLeaseIfNeeded(
+                snapshot: snapshot,
+                operationKind: "provider_env_update",
+                successorGenerations: [candidate.generationID, current.generationID].compactMap { $0 }
+            ) : nil
+            transaction.phase = "provider_env_switching"
+            try saveTransaction(transaction)
+            switchStarted = true
+            if snapshot.serviceLoaded { try unloadService() }
+            try waitForPortsClear(timeout: 12)
+            try saveManifest(candidate)
+            try writeLaunchAgent(for: candidate)
+            if shouldRun {
+                try setServiceEnabled(true)
+                try loadService(forceRestart: false)
+                let activeLease = try waitForManagedHealth(
+                    expectedVersion: candidate.version,
+                    expectedGenerationID: candidate.generationID,
+                    inheritedLease: lease,
+                    timeout: 60
+                )
+                try requireMaintenanceRelease(activeLease)
+            }
+            clearTransaction()
+            let message = shouldRun
+                ? "\(operationLabel) applied and the managed server was verified"
+                : "\(operationLabel) saved and will apply on the next Start"
+            emit(ok: true, message: message, details: statusDetails())
+        } catch {
+            if !switchStarted {
+                clearTransaction()
+                throw error
+            }
+            let restored = try restoreAfterFailedSwitch(transaction)
+            throw HelperError.message("\(operationLabel) change failed. \(restored) Original error: \(error)")
+        }
+    }
+
+    private func applyInPlaceProviderEnvironment(_ values: [String: String], operationLabel: String) throws {
+        // In-place (legacy) path: persist env into the adopted LaunchAgent. Safe
+        // reload reuse is workdir-shaped; for provider keys we write the plist
+        // and ask the user to restart when idle (same as legacy folder save).
+        guard let record = loadInPlace(),
+              URL(fileURLWithPath: record.plistPath).standardizedFileURL.path == plistURL.standardizedFileURL.path else {
+            throw HelperError.message("Manage in place must be completed before changing \(operationLabel.lowercased()).")
+        }
+        guard var plist = launchAgentPropertyList(),
+              plist["Label"] as? String == label,
+              launchAgentKind() == .knownLegacy else {
+            throw HelperError.message("The adopted glasses LaunchAgent no longer matches the recognized server shape.")
+        }
+        var environment = (plist["EnvironmentVariables"] as? [String: String]) ?? [:]
+        for (key, value) in values {
+            guard providerEnvironmentKeys.contains(key) else {
+                throw HelperError.message("Unsupported environment key: \(key)")
+            }
+            environment[key] = value
+        }
+        plist["EnvironmentVariables"] = environment
+        let candidate = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        try atomicWriteData(candidate, to: plistURL, permissions: 0o600)
+        emit(
+            ok: true,
+            message: "\(operationLabel) saved to your LaunchAgent. Restart the server when idle to apply it.",
+            details: statusDetails()
+        )
     }
 
     /// Read the effective COS work folder from managed manifest or in-place plist.

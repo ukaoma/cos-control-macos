@@ -51,6 +51,14 @@ contract, or interrupted transaction is shown as a conflict instead of being
 silently replaced. Doctor and Copy Report redact pairing credentials, process
 IDs, and the selected workspace path.
 
+## 0.2.6 meetings library
+
+- **Meetings Folder** sets `COS_OPERATIONS_DIR` to each user's COS `operations/`
+  tree for G2 Review Meetings. Unset keeps standalone local recordings.
+- Server also accepts `COS_MEETINGS_ROOT` (alias) or infers from
+  `COS_SCRIPTS_DIR/..`. Do not hardcode one user's COS path as a product default.
+- Verified baseline server target: 6.16.2 (Install/Update still use npm `latest`).
+
 ## 0.2.5 truthful HQ target
 
 - The bundled server target is 6.16.0, published on npm before this source pin.

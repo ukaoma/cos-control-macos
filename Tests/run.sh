@@ -17,7 +17,11 @@ SELF_TEST="$(COS_CONTROL_TEST_HOME="$TMP/home" "$TMP/cos-control-helper" self-te
 /usr/bin/python3 -c 'import json,sys; value=json.loads(sys.argv[1]); assert value["ok"] and value["details"]["tests"] >= 22' "$SELF_TEST"
 /usr/bin/grep -q 'cursor-probe-cache.json' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'recent-messages' "$ROOT/HelperSources/main.swift"
-/usr/bin/grep -q 'Controller 0.2.5' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Controller 0.2.7' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Work Folder' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Meetings Library' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'set-operations-dir' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'COS_OPERATIONS_DIR' "$ROOT/HelperSources/main.swift"
 
 # --- P1 app-update checker: behavior, not just needles -----------------------
 # Each case is a regression the plan names. Failures print WHICH case broke, so this

@@ -7,7 +7,7 @@ final class ControllerModel: ObservableObject {
     /// Known-good server this Control build was verified against (footer / release notes).
     /// Install, adopt, and Update Server always resolve npm `@gotcos/glasses-server@latest`
     /// so the same UI path picks up 6.16.2+ without a Control rebuild.
-    static let releaseServerVersion = "6.16.1"
+    static let releaseServerVersion = "6.16.5"
     static let managedServerInstallVersion = "latest"
 
     @Published var status = ServerStatus()
@@ -237,13 +237,26 @@ final class ControllerModel: ObservableObject {
 
     func selectWorkFolder() {
         let panel = NSOpenPanel()
-        panel.title = "Choose the folder COS should work in"
-        panel.prompt = "Use Folder"
+        panel.title = "Work Folder — COS agent workspace"
+        panel.message = "This is the repo/workdir Claude, Codex, and Cursor use for tools and edits. It is not the meetings library."
+        panel.prompt = "Use as Work Folder"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         perform("set-workdir", arguments: [url.path])
+    }
+
+    func selectOperationsFolder() {
+        let panel = NSOpenPanel()
+        panel.title = "Meetings Library — COS operations folder"
+        panel.message = "Select the operations/ directory that contains quilt/meetings, personal/meetings, etc. This is only for G2 Review Meetings — not the agent work folder."
+        panel.prompt = "Use as Meetings Library"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        perform("set-operations-dir", arguments: [url.path])
     }
 
     func openLogs() {

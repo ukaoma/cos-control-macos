@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.7 (build 18)
+
+- Clarify folder pickers: **Work Folder** (agent workspace) vs **Meetings
+  Library** (COS `operations/` for G2 Review Meetings). Own tool row so labels
+  no longer truncate to ambiguous "Choose…" / "Meeting…".
+
+## 0.2.6 (build 17)
+
+- Add **Meetings Folder** so each install can point G2 Review Meetings at its
+  own COS `operations/` tree (`COS_OPERATIONS_DIR`). Status shows the active
+  meetings library; unset keeps standalone local recordings.
+- Allowlist `COS_OPERATIONS_DIR` / `COS_MEETINGS_ROOT` on the managed
+  LaunchAgent. Server fallback remains `COS_SCRIPTS_DIR/..` when set.
+- Verified baseline server: `@gotcos/glasses-server` **6.16.2** (Update Server
+  still resolves npm `latest`).
+
 ## 0.2.5 (build 16)
 
 - Target the verified public `@gotcos/glasses-server` **6.16.1** release, which

@@ -146,6 +146,12 @@ struct ControlPanel: View {
                 Label("Saved to LaunchAgent · pending a safe server restart", systemImage: "clock.badge.exclamationmark")
                     .font(.caption).foregroundStyle(COSPalette.amber)
             }
+            HStack(alignment: .top) {
+                Text("Meetings library").foregroundStyle(.secondary)
+                Spacer()
+                Text(model.status.operationsDirectory ?? "Not set (standalone recordings)")
+                    .lineLimit(2).multilineTextAlignment(.trailing).textSelection(.enabled)
+            }.font(.caption)
             if let jobs = model.status.activeJobs, let recordings = model.status.activeTranscriptionSessions, jobs + recordings > 0 {
                 Label("\(jobs) job(s), \(recordings) recording(s) active. Restart is locked.", systemImage: "lock.fill")
                     .font(.caption).foregroundStyle(COSPalette.amber)
@@ -347,12 +353,18 @@ struct ControlPanel: View {
                     Button("Repair Whisper", systemImage: "waveform.badge.exclamationmark") { model.perform("restart-whisper") }
                 }
             }
+            // Own row so labels don't truncate into ambiguous "Choose…" / "Meeting…"
             HStack {
-                Button("Choose Folder", systemImage: "folder") { model.selectWorkFolder() }
+                Button("Work Folder", systemImage: "folder") { model.selectWorkFolder() }
                     .disabled(!model.status.installed && model.status.runtimeState != "managedInPlace")
                     .help(model.status.installed || model.status.runtimeState == "managedInPlace"
-                          ? "Choose the workspace used by Claude, Codex, and Cursor"
+                          ? "COS workspace for Claude, Codex, and Cursor (Work folder above)"
                           : "Install the managed server or choose Manage in place first")
+                Button("Meetings Library", systemImage: "calendar") { model.selectOperationsFolder() }
+                    .disabled(!model.status.installed && model.status.runtimeState != "managedInPlace")
+                    .help("COS operations/ tree for G2 Review Meetings (Meetings library above) — quilt/personal/…/meetings")
+            }
+            HStack {
                 Button("Open Cursor", systemImage: "chevron.left.forwardslash.chevron.right") { model.openCursor() }
                 Button("Copy Pairing Token", systemImage: "key") { model.perform("token") }
                     .disabled(model.status.runtimeState != "managedHealthy")
@@ -408,7 +420,7 @@ struct ControlPanel: View {
 
     private var footer: some View {
         HStack {
-            Text("Controller 0.2.5  •  Server install: npm latest (verified \(ControllerModel.releaseServerVersion))")
+            Text("Controller 0.2.7  •  Server install: npm latest (verified \(ControllerModel.releaseServerVersion))")
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.link)
         }.font(.caption2).foregroundStyle(.secondary)
