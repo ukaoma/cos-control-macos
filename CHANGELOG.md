@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.5 (build 16)
+
+- Target the verified public `@gotcos/glasses-server` 6.16.0 release, which
+  reports whether requested HQ transcription actually used local large-v3 and
+  exposes bounded degradation metadata to the companion.
+- Preserve the existing companion-owned HQ-default/Fast-mode preference; this
+  release does not introduce a conflicting Control-side preference.
+- Keep public packaging fail-closed: source is releasable independently, but
+  the public download must not advance without Developer ID signing,
+  notarization, hash verification, and an appcast/site update in that order.
+
 ## 0.2.4 (build 15)
 
 - Target server 6.15.5 and require an installed local Whisper runtime to report

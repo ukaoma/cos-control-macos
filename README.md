@@ -51,6 +51,12 @@ contract, or interrupted transaction is shown as a conflict instead of being
 silently replaced. Doctor and Copy Report redact pairing credentials, process
 IDs, and the selected workspace path.
 
+## 0.2.5 truthful HQ target
+
+- The bundled server target is 6.16.0, published on npm before this source pin.
+- The existing HQ-default/Fast-mode preference remains companion-owned; Control
+  installs the server capability metadata and truthful fallback reporting it uses.
+
 ## 0.2.4 local-service recovery
 
 - Server 6.15.4+ starts Whisper and Kokoro while a replacement remains behind
@@ -61,7 +67,7 @@ IDs, and the selected workspace path.
   report success until the persistent
   server is ready.
 - Drain progress identifies the active work class and remaining deadline.
-- The bundled server target is 6.15.5.
+- The bundled server target for that release was 6.15.5.
 
 ## 0.2.3 workspace activation
 
