@@ -48,6 +48,13 @@ if (m.group(1), m.group(2)) != (version, build):
     )
 PY
 
+# --- 0.3.0 meeting sync status ----------------------------------------------
+/usr/bin/grep -q 'Meeting sync' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'meetingSyncActive' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'meetingSyncStatusFields' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'pending-batch' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q '_batch_progress.json' "$ROOT/HelperSources/main.swift"
+
 # --- 0.2.9 fixes -------------------------------------------------------------
 # A failed install must not strand in-place mode off: the marker is captured
 # before the throw sites, dropped only at the point of no return, and restored

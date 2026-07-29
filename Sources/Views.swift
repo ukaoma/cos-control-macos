@@ -133,6 +133,15 @@ struct ControlPanel: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
                     .textSelection(.enabled)
             }
+            statusRow("Meeting sync", value: meetingSyncLabel, good: !model.status.meetingSyncActive)
+            if model.status.meetingSyncActive {
+                Text(model.status.meetingSyncBlocksRestart
+                     ? "Blocks Update / Restart until HQ polish finishes."
+                     : "Meeting polish in progress.")
+                    .font(.caption2)
+                    .foregroundStyle(COSPalette.amber)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
             statusRow("Cursor CLI", value: cursorLabel, good: model.status.cursorReady)
             statusRow("Version", value: model.status.runtimeState == "managedInPlace" ? "Self-managed" : (model.status.version ?? model.status.installedVersion ?? "Not installed"), good: model.status.installed || model.status.runtimeState == "managedInPlace")
             Divider()
@@ -459,6 +468,12 @@ struct ControlPanel: View {
         case "stopped": return "Stopped"
         default: return "Unavailable"
         }
+    }
+
+    private var meetingSyncLabel: String {
+        let raw = model.status.meetingSyncLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !raw.isEmpty { return raw }
+        return model.status.meetingSyncActive ? "Syncing…" : "Idle"
     }
 
     private var recentGlassesStatusLabel: String {

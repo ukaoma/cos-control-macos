@@ -74,6 +74,11 @@ struct ServerStatus: Sendable {
     var cursorReady = false
     var cursorState = "unavailable"
     var cursorDetail: String?
+    var meetingSyncActive = false
+    var meetingSyncPercent: Int?
+    var meetingSyncLabel = "Idle"
+    var meetingSyncBlocksRestart = false
+    var meetingSyncCount = 0
 
     init() {}
 
@@ -108,6 +113,11 @@ struct ServerStatus: Sendable {
         cursorReady = details["cursorReady"]?.bool ?? false
         cursorState = details["cursorState"]?.string ?? "unavailable"
         cursorDetail = details["cursorDetail"]?.string
+        meetingSyncActive = details["meetingSyncActive"]?.bool ?? false
+        meetingSyncPercent = details["meetingSyncPercent"]?.int
+        meetingSyncLabel = details["meetingSyncLabel"]?.string ?? (meetingSyncActive ? "Syncing…" : "Idle")
+        meetingSyncBlocksRestart = details["meetingSyncBlocksRestart"]?.bool ?? meetingSyncActive
+        meetingSyncCount = details["meetingSyncCount"]?.int ?? 0
     }
 }
 

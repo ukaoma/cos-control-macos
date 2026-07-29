@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 (build 21)
+
+- **Meeting sync status.** The status card now shows **Meeting sync** — Idle, or
+  HQ polish progress with a percent when the server publishes it (glasses-server
+  6.18.4+). On older servers Control falls back to scanning
+  `~/.cos-glasses/data/pending-batch`, so a long post-meeting Whisper polish no
+  longer looks like a mysterious "degraded" hang while Update waits to drain.
+  Active sync captions that Update / Restart stay blocked until polish finishes.
+
 ## 0.2.9 (build 20)
 
 - **A failed install no longer strands in-place mode.** `install()` deleted the

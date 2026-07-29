@@ -1764,10 +1764,116 @@ final class COSControlHelper {
             "transactionPending": loadTransaction() != nil || loadInPlaceConfigurationTransaction() != nil,
             "apiURL": "http://127.0.0.1:3141",
         ]
+        for (key, value) in meetingSyncStatusFields(health: health) {
+            details[key] = value
+        }
         for (key, value) in cursorStatusFields(force: false) {
             details[key] = value
         }
         return details
+    }
+
+    /// Prefer server `meeting_sync` (6.18.4+). Fall back to scanning
+    /// `~/.cos-glasses/data/pending-batch` so Control still shows HQ polish
+    /// progress on older servers / mid-drain saves.
+    private func meetingSyncStatusFields(health: [String: Any]?) -> [String: Any] {
+        if let sync = health?["meeting_sync"] as? [String: Any],
+           let active = sync["active"] as? Bool {
+            let percent = sync["percent"] as? Int
+            let label = (sync["label"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let blocks = sync["blocksRestart"] as? Bool ?? active
+            let meetings = sync["meetings"] as? [[String: Any]] ?? []
+            return [
+                "meetingSyncActive": active,
+                "meetingSyncPercent": percent.map { $0 as Any } ?? NSNull(),
+                "meetingSyncLabel": (label?.isEmpty == false ? label! : (active ? "Syncing…" : "Idle")),
+                "meetingSyncBlocksRestart": blocks,
+                "meetingSyncCount": meetings.count,
+            ]
+        }
+        return meetingSyncStatusFromPendingBatch()
+    }
+
+    private func meetingSyncStatusFromPendingBatch() -> [String: Any] {
+        let root = configDir.appendingPathComponent("data/pending-batch", isDirectory: true)
+        guard fm.fileExists(atPath: root.path) else {
+            return [
+                "meetingSyncActive": false,
+                "meetingSyncPercent": NSNull(),
+                "meetingSyncLabel": "Idle",
+                "meetingSyncBlocksRestart": false,
+                "meetingSyncCount": 0,
+            ]
+        }
+        let now = Date()
+        var activeMeetings = 0
+        var chunkTotal = 0
+        var bestPercent: Int?
+        var labels: [String] = []
+        guard let dirs = try? fm.contentsOfDirectory(atPath: root.path) else {
+            return [
+                "meetingSyncActive": false,
+                "meetingSyncPercent": NSNull(),
+                "meetingSyncLabel": "Idle",
+                "meetingSyncBlocksRestart": false,
+                "meetingSyncCount": 0,
+            ]
+        }
+        for name in dirs {
+            let dir = root.appendingPathComponent(name, isDirectory: true)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { continue }
+            let marker = dir.appendingPathComponent("_batch_pending.marker")
+            let progressURL = dir.appendingPathComponent("_batch_progress.json")
+            let wavs = (try? fm.contentsOfDirectory(atPath: dir.path))?.filter { $0.hasSuffix(".wav") }.count ?? 0
+            var markerFresh = false
+            if let attrs = try? fm.attributesOfItem(atPath: marker.path),
+               let mtime = attrs[.modificationDate] as? Date {
+                markerFresh = now.timeIntervalSince(mtime) <= 15 * 60
+            }
+            var percent: Int?
+            var label: String?
+            if let data = try? Data(contentsOf: progressURL),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let done = obj["segmentsDone"] as? Int ?? 0
+                let total = obj["segmentsTotal"] as? Int ?? 0
+                if total > 0 {
+                    percent = max(0, min(100, Int(round(Double(done) / Double(total) * 100))))
+                    label = "HQ polish \(percent!)% (\(done)/\(total))"
+                }
+            }
+            if !markerFresh && percent == nil && wavs == 0 { continue }
+            activeMeetings += 1
+            chunkTotal += wavs
+            if let percent {
+                bestPercent = bestPercent.map { ($0 + percent) / 2 } ?? percent
+            }
+            if let label {
+                labels.append(label)
+            } else if wavs > 0 {
+                labels.append("HQ polish · \(wavs) chunk\(wavs == 1 ? "" : "s")")
+            } else {
+                labels.append("HQ polish · pending")
+            }
+        }
+        let active = activeMeetings > 0
+        let label: String
+        if !active {
+            label = "Idle"
+        } else if activeMeetings == 1, let only = labels.first {
+            label = only
+        } else if let bestPercent {
+            label = "\(activeMeetings) meetings syncing · \(bestPercent)%"
+        } else {
+            label = "\(activeMeetings) meetings syncing · \(chunkTotal) chunk\(chunkTotal == 1 ? "" : "s")"
+        }
+        return [
+            "meetingSyncActive": active,
+            "meetingSyncPercent": bestPercent.map { $0 as Any } ?? NSNull(),
+            "meetingSyncLabel": label,
+            "meetingSyncBlocksRestart": active,
+            "meetingSyncCount": activeMeetings,
+        ]
     }
 
     private func maintenanceIdentity(_ status: [String: Any]) throws -> (serverInstanceId: String, bootId: String, generationId: String) {
