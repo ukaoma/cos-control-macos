@@ -4,10 +4,12 @@ import ServiceManagement
 
 @MainActor
 final class ControllerModel: ObservableObject {
-    /// Known-good server this Control build was QA'd against (release notes only).
     /// Install / Adopt / Update Server always resolve npm `@latest` — the panel
-    /// footer shows the *live* managed server version from status, not this constant.
-    static let releaseServerVersion = "6.20.1"
+    /// footer shows the *live* managed server version from status. The old
+    /// `releaseServerVersion` "QA'd against" constant was removed 2026-08-02:
+    /// nothing referenced it, and a hardcoded server version is exactly the
+    /// stale-pin class the 0.2.8 footer fix retired — it read "6.20.1" forever
+    /// while npm latest moves on without a Control rebuild.
     static let managedServerInstallVersion = "latest"
 
     @Published var status = ServerStatus()
