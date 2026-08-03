@@ -268,8 +268,13 @@ struct ControlPanel: View {
                     .font(.caption).foregroundStyle(COSPalette.amber)
             }
             if model.status.transactionPending {
-                Label("An interrupted server change needs Repair.", systemImage: "wrench.and.screwdriver.fill")
-                    .font(.caption).foregroundStyle(.red)
+                if model.busy {
+                    Label("Server change in progress · recovery is armed", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                        .font(.caption).foregroundStyle(COSPalette.amber)
+                } else {
+                    Label("An interrupted server change needs Repair.", systemImage: "wrench.and.screwdriver.fill")
+                        .font(.caption).foregroundStyle(.red)
+                }
             }
         }
         .padding(13)

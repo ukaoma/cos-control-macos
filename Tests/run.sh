@@ -51,6 +51,17 @@ PY
 /usr/bin/grep -q 'Update Server to 6.21.0 or newer to enable transcription tier controls' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'onAppear' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -Fq 'transcription-tier \(normalized)' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -Fq 'Proving \(provider.capitalized) (up to \(proofWindow))' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'Server change in progress · recovery is armed' "$ROOT/Sources/Views.swift"
+/usr/bin/python3 - "$ROOT" <<'PY'
+import pathlib, sys
+views = (pathlib.Path(sys.argv[1]) / "Sources/Views.swift").read_text()
+pending = views.index("if model.status.transactionPending")
+busy = views.index("if model.busy", pending)
+interrupted = views.index("An interrupted server change needs Repair.", busy)
+if not pending < busy < interrupted:
+    raise SystemExit("active transactions must not render as interrupted")
+PY
 
 # --- 0.3.4 provider-proof and mixed-version hardening -----------------------
 # Startup/ownership keeps its 60s gate, but the real provider/Kokoro requests

@@ -73,7 +73,7 @@ IDs, and the selected workspace path.
   download separate from the lifecycle transaction.
 - Agent CLI diagnostics use the local Cursor `agent about` version when server
   health cannot parse a real Cursor build number.
-- QA target: `@gotcos/glasses-server` 6.21.0.
+- QA target: `@gotcos/glasses-server` 6.21.1.
 
 ## 0.3.4 update-proof and mixed-version hardening
 

@@ -1561,7 +1561,8 @@ final class COSControlHelper {
         guard let token = try? readToken() else { return "pairing token is unavailable for transactional proof" }
         for provider in expectedProviders.sorted() {
             guard provider == "claude" || provider == "codex" else { continue }
-            progress("Proving \(provider.capitalized)…")
+            let proofWindow = provider == "claude" ? "45s" : "120s"
+            progress("Proving \(provider.capitalized) (up to \(proofWindow))…")
             let body = try? jsonBody(["provider": provider])
             guard let response = request(
                 "/api/diagnostics/provider-proof",

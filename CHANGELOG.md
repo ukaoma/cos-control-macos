@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.5 (build 27)
+
+- **Fast, truthful Claude readiness.** Server 6.21.1 uses Haiku for the
+  no-tool transactional proof and returns within a 45-second bound instead of
+  inheriting a potentially heavyweight user default such as Opus.
+- **Correct timeout errors.** Provider timeout/close races no longer surface as
+  the misleading “provider process exited before launch.”
+- **Truthful transaction state.** While Control itself owns a live change, the
+  panel says the change is in progress and recovery is armed. “Interrupted” is
+  reserved for persisted transactions with no active helper.
+- Same public Control version, higher build number, so existing 0.3.5 build 26
+  installs can discover this replacement through the appcast.
+- Verified against `@gotcos/glasses-server` 6.21.1.
+
 ## 0.3.5 (build 26)
 
 - **Balanced and Max transcription presets.** Control owns one machine-wide
