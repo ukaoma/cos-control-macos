@@ -1744,6 +1744,13 @@ final class COSControlHelper {
         let requestedTier = liveTranscription?["requestedTier"] as? String
         let effectiveTier = liveTranscription?["effectiveTier"] as? String
         let commitReason = liveTranscription?["commitReason"] as? String
+        let supportsManagedTier = manifest.map { versionAtLeast($0.version, "6.21.0") } ?? false
+        let configuredRequestedTier = requestedTier
+            ?? manifest?.providerEnvironment?["COS_WHISPER_TRANSCRIPTION_TIER"]
+            ?? (supportsManagedTier ? "balanced" : nil)
+        let configuredCommitModel = (liveTranscription?["requestedCommitModel"] as? String)
+            ?? manifest?.providerEnvironment?["COS_WHISPER_COMMIT_MODEL"]
+            ?? (configuredRequestedTier == "max" ? "large-v3" : (supportsManagedTier ? "turbo" : nil))
         let tierDegraded = (liveTranscription?["commitDegraded"] as? Bool)
             ?? (requestedTier != nil && requestedTier != effectiveTier)
         // Server 6.21 separates cosmetic preview degradation from commit-tier
@@ -1787,9 +1794,9 @@ final class COSControlHelper {
             "livePreviewReady": liveTranscription?["ready"] ?? NSNull(),
             "livePreviewDegraded": previewDegraded,
             "liveCommitModel": liveTranscription?["committedModel"] ?? NSNull(),
-            "transcriptionRequestedTier": liveTranscription?["requestedTier"] ?? NSNull(),
+            "transcriptionRequestedTier": configuredRequestedTier ?? NSNull(),
             "transcriptionEffectiveTier": liveTranscription?["effectiveTier"] ?? NSNull(),
-            "transcriptionRequestedCommitModel": liveTranscription?["requestedCommitModel"] ?? NSNull(),
+            "transcriptionRequestedCommitModel": configuredCommitModel ?? NSNull(),
             "transcriptionTierDegraded": tierDegraded,
             "transcriptionTierReason": commitReason ?? liveTranscription?["reason"] ?? NSNull(),
             // 6.20.0+ always targets Large-v3 for HQ. When its weights are

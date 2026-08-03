@@ -32,6 +32,7 @@ SELF_TEST="$(COS_CONTROL_TEST_HOME="$TMP/home" "$TMP/cos-control-helper" self-te
 /usr/bin/grep -q 'COS_WHISPER_COMMIT_MODEL' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'requireTranscriptionTier' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'stoppedCompatibleManagedServer' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'configuredRequestedTier' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'running Balanced fallback because Large-v3 is unavailable' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'commitDegraded' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'previewDegraded' "$ROOT/HelperSources/main.swift"
