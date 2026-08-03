@@ -79,6 +79,9 @@ struct ServerStatus: Sendable {
     var meetingSyncLabel = "Idle"
     var meetingSyncBlocksRestart = false
     var meetingSyncCount = 0
+    /// Quarantined unsaved meeting captures (server 6.19.0+). 0 on older
+    /// servers — the key is simply absent from health.
+    var unsavedCaptures = 0
 
     init() {}
 
@@ -118,6 +121,7 @@ struct ServerStatus: Sendable {
         meetingSyncLabel = details["meetingSyncLabel"]?.string ?? (meetingSyncActive ? "Syncing…" : "Idle")
         meetingSyncBlocksRestart = details["meetingSyncBlocksRestart"]?.bool ?? meetingSyncActive
         meetingSyncCount = details["meetingSyncCount"]?.int ?? 0
+        unsavedCaptures = details["unsavedCaptures"]?.int ?? 0
     }
 }
 

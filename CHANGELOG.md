@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1 (build 22)
+
+- **Unsaved captures row.** Server 6.19.0 quarantines meeting audio whose save
+  never landed instead of deleting it, and reports it on health as
+  `unsaved_captures`. Control now surfaces that count in the status card with a
+  recovery hint (open COS on the phone to let a deferred save land, or drive
+  `/api/meeting/orphans/:id/recover`). The row hides at zero and on older
+  servers, where the key is simply absent. Display only — Control never drives
+  recovery itself.
+- The retained-batch state ("Idle · 1 retained batch") flows through the
+  existing Meeting sync label automatically; no change was needed for it.
+
 ## 0.3.0 (build 21)
 
 - **Meeting sync status.** The status card now shows **Meeting sync** — Idle, or

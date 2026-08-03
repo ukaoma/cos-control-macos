@@ -142,6 +142,22 @@ struct ControlPanel: View {
                     .foregroundStyle(COSPalette.amber)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
+            // Server 6.19.0+: meeting audio whose save never landed is
+            // quarantined instead of deleted. Surface it — a hidden lost
+            // meeting is the failure this exists to end. Row hides at zero.
+            if model.status.unsavedCaptures > 0 {
+                statusRow(
+                    "Unsaved captures",
+                    value: "\(model.status.unsavedCaptures) recoverable",
+                    good: false
+                )
+                Text("Meeting audio was captured but never saved. Open COS on the phone to let a deferred save land, or recover via the server's /api/meeting/orphans route before retention expires.")
+                    .font(.caption2)
+                    .foregroundStyle(COSPalette.amber)
+                    .lineLimit(3)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .textSelection(.enabled)
+            }
             statusRow("Cursor CLI", value: cursorLabel, good: model.status.cursorReady)
             statusRow("Version", value: model.status.runtimeState == "managedInPlace" ? "Self-managed" : (model.status.version ?? model.status.installedVersion ?? "Not installed"), good: model.status.installed || model.status.runtimeState == "managedInPlace")
             Divider()

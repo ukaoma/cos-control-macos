@@ -96,6 +96,8 @@ if [ -z "$SIGN_ID" ] && /usr/bin/unzip -Z1 "$ZIP" | /usr/bin/grep -q '^__MACOSX/
   echo "Release archive contains forbidden __MACOSX metadata" >&2
   exit 65
 fi
-/usr/bin/shasum -a 256 "$ZIP" | tee "$ZIP.sha256"
+# Relative basename in the sidecar: an absolute author path both leaks the
+# local layout and breaks `shasum -c` against a downloaded copy (2026-07-27).
+(cd "$DIST_DIR" && /usr/bin/shasum -a 256 "$(basename "$ZIP")" | tee "$(basename "$ZIP").sha256")
 
 echo "Built $ZIP"

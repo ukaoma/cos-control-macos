@@ -1767,6 +1767,10 @@ final class COSControlHelper {
         for (key, value) in meetingSyncStatusFields(health: health) {
             details[key] = value
         }
+        // Server 6.19.0+ quarantines unsaved meeting audio and reports it on
+        // health. Absent key (older server) reads as zero — no fallback scan.
+        details["unsavedCaptures"] =
+            ((health?["unsaved_captures"] as? [String: Any])?["count"] as? Int) ?? 0
         for (key, value) in cursorStatusFields(force: false) {
             details[key] = value
         }
