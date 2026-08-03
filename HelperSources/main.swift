@@ -3046,7 +3046,7 @@ final class COSControlHelper {
         do {
             let lease = shouldRun ? try acquireMaintenanceLeaseIfNeeded(
                 snapshot: snapshot,
-                operationKind: "provider_env_update",
+                operationKind: "server_restart",
                 successorGenerations: [candidate.generationID, current.generationID].compactMap { $0 }
             ) : nil
             transaction.phase = "provider_env_switching"
@@ -3173,7 +3173,7 @@ final class COSControlHelper {
         do {
             let lease = try acquireMaintenanceLeaseIfNeeded(
                 snapshot: snapshot,
-                operationKind: "provider_env_update",
+                operationKind: "server_restart",
                 successorGenerations: [generation]
             )
             var switching = transaction
@@ -3249,7 +3249,7 @@ final class COSControlHelper {
         do {
             let lease = shouldRun ? try acquireMaintenanceLeaseIfNeeded(
                 snapshot: snapshot,
-                operationKind: "workdir_update",
+                operationKind: "server_restart",
                 successorGenerations: [candidate.generationID, current.generationID].compactMap { $0 }
             ) : nil
             transaction.phase = "workdir_switching"
@@ -3388,7 +3388,7 @@ final class COSControlHelper {
         do {
             let lease = try acquireMaintenanceLeaseIfNeeded(
                 snapshot: snapshot,
-                operationKind: "workdir_update",
+                operationKind: "server_restart",
                 successorGenerations: [generation]
             )
             var switching = transaction

@@ -33,6 +33,13 @@ SELF_TEST="$(COS_CONTROL_TEST_HOME="$TMP/home" "$TMP/cos-control-helper" self-te
 /usr/bin/grep -q 'requireTranscriptionTier' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'stoppedCompatibleManagedServer' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'configuredRequestedTier' "$ROOT/HelperSources/main.swift"
+/usr/bin/python3 - "$ROOT" <<'PY'
+import pathlib, re, sys
+source = (pathlib.Path(sys.argv[1]) / "HelperSources/main.swift").read_text()
+invalid = re.findall(r'operationKind:\s*"(provider_env_update|workdir_update)"', source)
+if invalid:
+    raise SystemExit(f"internal labels leaked into maintenance operation contract: {invalid}")
+PY
 /usr/bin/grep -q 'running Balanced fallback because Large-v3 is unavailable' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'commitDegraded' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'previewDegraded' "$ROOT/HelperSources/main.swift"
