@@ -7,7 +7,7 @@ final class ControllerModel: ObservableObject {
     /// Known-good server this Control build was QA'd against (release notes only).
     /// Install / Adopt / Update Server always resolve npm `@latest` — the panel
     /// footer shows the *live* managed server version from status, not this constant.
-    static let releaseServerVersion = "6.16.9"
+    static let releaseServerVersion = "6.20.0"
     static let managedServerInstallVersion = "latest"
 
     @Published var status = ServerStatus()
@@ -279,14 +279,14 @@ final class ControllerModel: ObservableObject {
     }
 
     func runGuidedSetup() {
-        let command = "npx --yes @gotcos/glasses-server@latest --prepare-only"
+        let command = "npx --yes @gotcos/glasses-server@latest --setup-transcription --prepare-only"
         let escaped = command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         let script = "tell application \"Terminal\" to do script \"\(escaped)\""
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", script]
         try? process.run()
-        notice = "Guided setup opened in Terminal"
+        notice = "Guided setup opened in Terminal. When it finishes, return here and Restart (or install/update) so the selected transcription lanes become active."
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {

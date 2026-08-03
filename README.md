@@ -59,6 +59,18 @@ contract, or interrupted transaction is shown as a conflict instead of being
 silently replaced. Doctor and Copy Report redact pairing credentials, process
 IDs, and the selected workspace path.
 
+## 0.3.3 adaptive transcription setup
+
+- Guided Setup provisions three separate local transcription lanes: Small.en
+  for provisional lens text, Large-v3-Turbo for committed live text, and
+  Large-v3 for HQ polish. A preview failure falls back to Turbo without
+  changing the committed transcript or recovery ledger.
+- The status card reports all three effective models from live server health.
+  Older servers omit the rows instead of being mislabeled.
+- Empty transcription vocabulary is visible so users are prompted to add their
+  actual names and specialist terminology instead of living with factory bias.
+- QA target: `@gotcos/glasses-server` 6.20.0.
+
 ## 0.2.8 live server version in the footer
 
 - The footer reads the **live** managed server version from status

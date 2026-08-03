@@ -133,6 +133,29 @@ struct ControlPanel: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
                     .textSelection(.enabled)
             }
+            if model.status.livePreviewModel != nil || model.status.liveCommitModel != nil || model.status.hqPolishModel != nil {
+                statusRow(
+                    "Live preview",
+                    value: transcriptionModelLabel(model.status.livePreviewModel, degraded: model.status.livePreviewDegraded),
+                    good: model.status.livePreviewReady == true
+                )
+                statusRow(
+                    "Live commit",
+                    value: transcriptionModelLabel(model.status.liveCommitModel),
+                    good: model.status.whisperReady
+                )
+                statusRow(
+                    "HQ polish",
+                    value: transcriptionModelLabel(model.status.hqPolishModel),
+                    good: model.status.hqPolishReady == true
+                )
+                if let vocabularyTerms = model.status.transcriptionVocabularyTerms, vocabularyTerms == 0 {
+                    Text("Add names and specialist terms in the setup wizard to improve accuracy.")
+                        .font(.caption2)
+                        .foregroundStyle(COSPalette.amber)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            }
             statusRow("Meeting sync", value: meetingSyncLabel, good: !model.status.meetingSyncActive)
             if model.status.meetingSyncActive {
                 Text(model.status.meetingSyncBlocksRestart
@@ -537,6 +560,18 @@ struct ControlPanel: View {
         case "stopped": return "Stopped"
         default: return "Unavailable"
         }
+    }
+
+    private func transcriptionModelLabel(_ raw: String?, degraded: Bool = false) -> String {
+        let label: String
+        switch raw {
+        case "small.en": label = "Small.en"
+        case "large-v3-turbo": label = "Large-v3-Turbo"
+        case "large-v3": label = "Large-v3"
+        case .some(let value): label = value
+        case nil: label = "Unreported"
+        }
+        return degraded ? "\(label) fallback" : label
     }
 
     private var meetingSyncLabel: String {

@@ -192,6 +192,8 @@ final class COSControlHelper {
         "COS_TTS_PYTHON",
         "COS_TTS_ENGINE",
         "COS_TTS_KOKORO_VOICE",
+        "COS_WHISPER_PREVIEW_MODEL",
+        "COS_WHISPER_REALTIME_MODEL",
     ]
 
     private lazy var support = home.appendingPathComponent("Library/Application Support/COS Control", isDirectory: true)
@@ -1729,6 +1731,10 @@ final class COSControlHelper {
             .compactMap(loadedEnvironmentValue)
             .compactMap { try? validatedWorkDirectory($0) }
             .first
+        let transcription = (health?["capabilities"] as? [String: Any])?["transcription"] as? [String: Any]
+        let liveTranscription = transcription?["live"] as? [String: Any]
+        let hqTranscription = transcription?["hq"] as? [String: Any]
+        let transcriptionProfile = transcription?["profile"] as? [String: Any]
         var details: [String: Any] = [
             "installed": manifest != nil,
             "serviceLoaded": snapshot.serviceLoaded,
@@ -1761,6 +1767,17 @@ final class COSControlHelper {
             "whisperCircuitOpen": ((health?["whisper_health"] as? [String: Any])?["circuitOpen"] as? Bool) ?? false,
             "whisperStartupState": (health?["whisper_health"] as? [String: Any])?["startupState"] ?? NSNull(),
             "whisperError": (health?["whisper_health"] as? [String: Any])?["lastError"] ?? NSNull(),
+            "livePreviewModel": liveTranscription?["effectiveModel"] ?? NSNull(),
+            "livePreviewReady": liveTranscription?["ready"] ?? NSNull(),
+            "livePreviewDegraded": liveTranscription?["degraded"] ?? false,
+            "liveCommitModel": liveTranscription?["committedModel"] ?? NSNull(),
+            // 6.20.0+ always targets Large-v3 for HQ. When its weights are
+            // absent the model field is null, but Control should report the
+            // intended lane as unavailable instead of the ambiguous
+            // "Unreported" label.
+            "hqPolishModel": hqTranscription?["model"] ?? (hqTranscription == nil ? NSNull() : "large-v3"),
+            "hqPolishReady": hqTranscription?["hqAvailable"] ?? NSNull(),
+            "transcriptionVocabularyTerms": transcriptionProfile?["vocabularyTerms"] ?? NSNull(),
             "transactionPending": loadTransaction() != nil || loadInPlaceConfigurationTransaction() != nil,
             "apiURL": "http://127.0.0.1:3141",
         ]

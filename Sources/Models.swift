@@ -70,6 +70,13 @@ struct ServerStatus: Sendable {
     var whisperCircuitOpen = false
     var whisperStartupState: String?
     var whisperError: String?
+    var livePreviewModel: String?
+    var livePreviewReady: Bool?
+    var livePreviewDegraded = false
+    var liveCommitModel: String?
+    var hqPolishModel: String?
+    var hqPolishReady: Bool?
+    var transcriptionVocabularyTerms: Int?
     var apiURL = "http://127.0.0.1:3141"
     var cursorReady = false
     var cursorState = "unavailable"
@@ -120,6 +127,13 @@ struct ServerStatus: Sendable {
         whisperCircuitOpen = details["whisperCircuitOpen"]?.bool ?? false
         whisperStartupState = details["whisperStartupState"]?.string
         whisperError = details["whisperError"]?.string
+        livePreviewModel = details["livePreviewModel"]?.string
+        livePreviewReady = details["livePreviewReady"]?.bool
+        livePreviewDegraded = details["livePreviewDegraded"]?.bool ?? false
+        liveCommitModel = details["liveCommitModel"]?.string
+        hqPolishModel = details["hqPolishModel"]?.string
+        hqPolishReady = details["hqPolishReady"]?.bool
+        transcriptionVocabularyTerms = details["transcriptionVocabularyTerms"]?.int
         apiURL = details["apiURL"]?.string ?? apiURL
         cursorReady = details["cursorReady"]?.bool ?? false
         cursorState = details["cursorState"]?.string ?? "unavailable"

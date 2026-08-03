@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.3 (build 24)
+
+- **Adaptive transcription status.** Control now shows the effective model and
+  readiness for all three server 6.20.0 transcription lanes: Small.en live
+  preview, Large-v3-Turbo live commit, and Large-v3 HQ polish. Preview fallback
+  is labeled instead of being presented as healthy Small.en.
+- **Accuracy setup.** Guided Setup provisions the adaptive local models and
+  warns when the transcription profile has no real names or specialist terms.
+  Existing servers that do not publish the 6.20.0 health contract keep the new
+  rows hidden rather than receiving guessed labels.
+- Verified against `@gotcos/glasses-server` 6.20.0.
+
 ## 0.3.2 (build 23)
 
 - **Agent CLI row.** One quick-glance line for all three backends COS routes
