@@ -59,6 +59,15 @@ contract, or interrupted transaction is shown as a conflict instead of being
 silently replaced. Doctor and Copy Report redact pairing credentials, process
 IDs, and the selected workspace path.
 
+## 0.3.4 update-proof and mixed-version hardening
+
+- Provider and Kokoro transactional checks retain their individual bounded
+  timeouts instead of sharing the candidate server's 60-second startup budget.
+- Live transcription rows render only when the server reports that lane; a
+  6.19.x server with HQ support no longer displays misleading “Unreported”
+  preview and commit rows.
+- QA target: `@gotcos/glasses-server` 6.20.1.
+
 ## 0.3.3 adaptive transcription setup
 
 - Guided Setup provisions three separate local transcription lanes: Small.en

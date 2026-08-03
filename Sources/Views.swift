@@ -134,21 +134,27 @@ struct ControlPanel: View {
                     .textSelection(.enabled)
             }
             if model.status.livePreviewModel != nil || model.status.liveCommitModel != nil || model.status.hqPolishModel != nil {
+                if model.status.livePreviewModel != nil {
                 statusRow(
                     "Live preview",
                     value: transcriptionModelLabel(model.status.livePreviewModel, degraded: model.status.livePreviewDegraded),
                     good: model.status.livePreviewReady == true
                 )
+                }
+                if model.status.liveCommitModel != nil {
                 statusRow(
                     "Live commit",
                     value: transcriptionModelLabel(model.status.liveCommitModel),
                     good: model.status.whisperReady
                 )
+                }
+                if model.status.hqPolishModel != nil {
                 statusRow(
                     "HQ polish",
                     value: transcriptionModelLabel(model.status.hqPolishModel),
                     good: model.status.hqPolishReady == true
                 )
+                }
                 if let vocabularyTerms = model.status.transcriptionVocabularyTerms, vocabularyTerms == 0 {
                     Text("Add names and specialist terms in the setup wizard to improve accuracy.")
                         .font(.caption2)

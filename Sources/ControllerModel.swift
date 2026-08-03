@@ -7,7 +7,7 @@ final class ControllerModel: ObservableObject {
     /// Known-good server this Control build was QA'd against (release notes only).
     /// Install / Adopt / Update Server always resolve npm `@latest` — the panel
     /// footer shows the *live* managed server version from status, not this constant.
-    static let releaseServerVersion = "6.20.0"
+    static let releaseServerVersion = "6.20.1"
     static let managedServerInstallVersion = "latest"
 
     @Published var status = ServerStatus()

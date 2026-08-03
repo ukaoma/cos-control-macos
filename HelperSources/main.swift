@@ -2243,12 +2243,18 @@ final class COSControlHelper {
                         continue
                     }
                     if requireTransactionalProof {
+                        // The startup deadline proves listener ownership, health,
+                        // and local Whisper readiness. Do not reuse its remaining
+                        // seconds for real provider and Kokoro transactions: each
+                        // request already has its own bounded timeout, and sharing
+                        // the 60-second startup budget falsely rejects healthy
+                        // Claude + Codex installs after a normal cold start.
                         if let failure = transactionalRuntimeProofFailure(
                             health: proofHealth,
                             expectedProviders: detectedManagedProviders(),
                             requireProviderEndpoint: versionAtLeast(expectedVersion, "6.15.2"),
                             operation: inheritedLease,
-                            deadlineUptime: deadlineUptime
+                            deadlineUptime: nil
                         ) {
                             throw HelperError.message("Managed server transactional verification failed: \(failure).")
                         }

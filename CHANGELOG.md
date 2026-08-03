@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.4 (build 25)
+
+- **No false update rollback on healthy providers.** Candidate startup keeps its
+  60-second ownership/health deadline, but real Claude, Codex, and Kokoro
+  transactions now use their own existing bounded timeouts. A normal 38-second
+  Codex proof can no longer inherit only the seconds left after startup and
+  Claude, then falsely reject an otherwise healthy server update.
+- **Mixed-version status stays truthful.** A server that reports HQ capability
+  but predates the 6.20 live-model fields shows only HQ. Control no longer
+  renders “Unreported” Live Preview and Live Commit rows on server 6.19.0.
+- Verified against `@gotcos/glasses-server` 6.20.1.
+
 ## 0.3.3 (build 24)
 
 - **Adaptive transcription status.** Control now shows the effective model and

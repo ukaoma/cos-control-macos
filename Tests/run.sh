@@ -26,6 +26,25 @@ SELF_TEST="$(COS_CONTROL_TEST_HOME="$TMP/home" "$TMP/cos-control-helper" self-te
 /usr/bin/grep -q 'set-operations-dir' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'COS_OPERATIONS_DIR' "$ROOT/HelperSources/main.swift"
 
+# --- 0.3.4 provider-proof and mixed-version hardening -----------------------
+# Startup/ownership keeps its 60s gate, but the real provider/Kokoro requests
+# must use their own bounded timeouts after startup. Reusing deadlineUptime here
+# falsely rejected Codex after Claude consumed most of the shared budget.
+/usr/bin/python3 - "$ROOT" <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+source = (root / "HelperSources/main.swift").read_text()
+needle = '''requireProviderEndpoint: versionAtLeast(expectedVersion, "6.15.2"),
+                            operation: inheritedLease,
+                            deadlineUptime: nil'''
+if needle not in source:
+    raise SystemExit("managed candidate proofs must not inherit the startup deadline")
+views = (root / "Sources/Views.swift").read_text()
+for field in ("livePreviewModel", "liveCommitModel", "hqPolishModel"):
+    if f"if model.status.{field} != nil" not in views:
+        raise SystemExit(f"mixed-version transcription row is not gated: {field}")
+PY
+
 # --- Version touchpoints agree ----------------------------------------------
 # The footer went dynamic in 0.2.8, which removed the only assertion that could
 # catch a wrong Info.plist. Version strings HAVE been reused across two different
