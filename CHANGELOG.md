@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.2 (build 23)
+
+- **Agent CLI row.** One quick-glance line for all three backends COS routes
+  to: `Claude ✓ · Codex ✓ · Cursor ✓`. Previously only Cursor had a row, so a
+  signed-out Claude or Codex CLI was invisible until a query failed on the
+  glasses. Ready state comes from the server's own per-binary probe
+  (`features.claude` / `features.codex`); a server too old to publish it shows
+  `?` rather than a confident cross. When all three are ready the caption
+  shows their versions; when one is not it names the exact login command
+  instead. CLI version strings are parsed for a real version token, because
+  the Cursor probe reports "About Cursor CLI" rather than a number.
+- Cursor keeps its own detailed row: the helper probes it locally and can
+  distinguish sign-in-required from not-installed, which health cannot.
+
 ## 0.3.1 (build 22)
 
 - **Unsaved captures row.** Server 6.19.0 quarantines meeting audio whose save

@@ -82,6 +82,14 @@ struct ServerStatus: Sendable {
     /// Quarantined unsaved meeting captures (server 6.19.0+). 0 on older
     /// servers — the key is simply absent from health.
     var unsavedCaptures = 0
+    /// Per-CLI readiness for the three agent backends. nil = unknown (server
+    /// too old to publish `features`, or unreachable) — deliberately distinct
+    /// from false so the UI never shows a confident red on missing data.
+    var claudeCliReady: Bool?
+    var claudeCliVersion: String?
+    var codexCliReady: Bool?
+    var codexCliVersion: String?
+    var cursorCliVersion: String?
 
     init() {}
 
@@ -122,6 +130,11 @@ struct ServerStatus: Sendable {
         meetingSyncBlocksRestart = details["meetingSyncBlocksRestart"]?.bool ?? meetingSyncActive
         meetingSyncCount = details["meetingSyncCount"]?.int ?? 0
         unsavedCaptures = details["unsavedCaptures"]?.int ?? 0
+        claudeCliReady = details["claudeCliReady"]?.bool
+        claudeCliVersion = details["claudeCliVersion"]?.string
+        codexCliReady = details["codexCliReady"]?.bool
+        codexCliVersion = details["codexCliVersion"]?.string
+        cursorCliVersion = details["cursorCliVersion"]?.string
     }
 }
 

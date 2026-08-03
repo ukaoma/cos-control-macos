@@ -1771,10 +1771,47 @@ final class COSControlHelper {
         // health. Absent key (older server) reads as zero — no fallback scan.
         details["unsavedCaptures"] =
             ((health?["unsaved_captures"] as? [String: Any])?["count"] as? Int) ?? 0
+        for (key, value) in agentCliStatusFields(health: health) {
+            details[key] = value
+        }
         for (key, value) in cursorStatusFields(force: false) {
             details[key] = value
         }
         return details
+    }
+
+    /// Per-CLI readiness for the three agent backends COS can route to.
+    /// `features.{claude,codex,cursor}` is the boolean truth (the server
+    /// probes each binary at health time); `checks.*` carries a version
+    /// string that is NOT always a version — the Cursor probe returns
+    /// "About Cursor CLI" — so the string is only surfaced when it actually
+    /// contains a version-looking token. A server too old to publish
+    /// `features` reports all three unknown rather than falsely green.
+    private func agentCliStatusFields(health: [String: Any]?) -> [String: Any] {
+        let features = health?["features"] as? [String: Any]
+        func ready(_ key: String) -> Any {
+            guard let value = features?[key] as? Bool else { return NSNull() }
+            return value
+        }
+        return [
+            "claudeCliReady": ready("claude"),
+            "claudeCliVersion": versionToken(health?["claude"]) ?? NSNull(),
+            "codexCliReady": ready("codex"),
+            "codexCliVersion": versionToken(health?["codex"]) ?? NSNull(),
+            "cursorCliVersion": versionToken(health?["cursor"]) ?? NSNull(),
+        ]
+    }
+
+    /// First dotted-numeric token in a CLI's self-reported version line, or
+    /// nil when the line carries no version (e.g. "About Cursor CLI").
+    private func versionToken(_ raw: Any?) -> String? {
+        guard let text = raw as? String, !text.isEmpty else { return nil }
+        for piece in text.split(whereSeparator: { " ()\t".contains($0) }) {
+            let candidate = String(piece)
+            let head = candidate.prefix(while: { $0.isNumber || $0 == "." })
+            if head.contains("."), head.first?.isNumber == true { return candidate }
+        }
+        return nil
     }
 
     /// Prefer server `meeting_sync` (6.18.4+). Fall back to scanning

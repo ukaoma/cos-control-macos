@@ -158,6 +158,18 @@ struct ControlPanel: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
                     .textSelection(.enabled)
             }
+            // One quick-glance row for all three agent backends. Cursor keeps
+            // its own detailed row below because the helper probes it locally
+            // (sign-in state, not just presence) — richer than health's flag.
+            statusRow("Agent CLIs", value: agentCliSummary, good: agentCliAllReady)
+            if let detail = agentCliDetail {
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(agentCliAllReady ? .secondary : COSPalette.amber)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .textSelection(.enabled)
+            }
             statusRow("Cursor CLI", value: cursorLabel, good: model.status.cursorReady)
             statusRow("Version", value: model.status.runtimeState == "managedInPlace" ? "Self-managed" : (model.status.version ?? model.status.installedVersion ?? "Not installed"), good: model.status.installed || model.status.runtimeState == "managedInPlace")
             Divider()
@@ -463,6 +475,47 @@ struct ControlPanel: View {
             return "Controller \(controller)  •  Server self-managed"
         }
         return "Controller \(controller)  •  Server not installed"
+    }
+
+    /// Compact per-CLI state: "Claude ✓ · Codex ✓ · Cursor ✓". A CLI whose
+    /// readiness is unknown (server too old to publish `features`, or
+    /// unreachable) shows "?" — never a confident cross on missing data.
+    private var agentCliSummary: String {
+        func mark(_ ready: Bool?) -> String {
+            guard let ready else { return "?" }
+            return ready ? "✓" : "✕"
+        }
+        return "Claude \(mark(model.status.claudeCliReady))"
+            + " · Codex \(mark(model.status.codexCliReady))"
+            + " · Cursor \(mark(model.status.cursorReady))"
+    }
+
+    private var agentCliAllReady: Bool {
+        (model.status.claudeCliReady ?? false)
+            && (model.status.codexCliReady ?? false)
+            && model.status.cursorReady
+    }
+
+    /// When everything is ready, show versions (the "which build am I on"
+    /// glance). When something is not, name what to fix instead — the
+    /// actionable line beats a version list.
+    private var agentCliDetail: String? {
+        var missing: [String] = []
+        if model.status.claudeCliReady == false { missing.append("claude (run: claude auth login)") }
+        if model.status.codexCliReady == false { missing.append("codex (run: codex login)") }
+        if !model.status.cursorReady { missing.append("cursor (run: agent login)") }
+        if !missing.isEmpty { return "Not signed in: " + missing.joined(separator: ", ") }
+
+        var unknown: [String] = []
+        if model.status.claudeCliReady == nil { unknown.append("Claude") }
+        if model.status.codexCliReady == nil { unknown.append("Codex") }
+        if !unknown.isEmpty { return "Unreported by this server: " + unknown.joined(separator: ", ") }
+
+        var versions: [String] = []
+        if let v = model.status.claudeCliVersion { versions.append("Claude \(v)") }
+        if let v = model.status.codexCliVersion { versions.append("Codex \(v)") }
+        if let v = model.status.cursorCliVersion { versions.append("Cursor \(v)") }
+        return versions.isEmpty ? nil : versions.joined(separator: " · ")
     }
 
     private var cursorLabel: String {
