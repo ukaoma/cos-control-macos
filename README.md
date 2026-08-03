@@ -59,6 +59,22 @@ contract, or interrupted transaction is shown as a conflict instead of being
 silently replaced. Doctor and Copy Report redact pairing credentials, process
 IDs, and the selected workspace path.
 
+## 0.3.5 transcription tiers and Cursor diagnostics
+
+- The status card identifies the effective transcription tier and all three
+  lanes: preview while dictating, authoritative live-meeting commit, and polish
+  on save.
+- Balanced is recommended. Max is an explicit opt-in for powerful Macs and
+  reuses the existing Large-v3 process; it does not add a third Whisper worker.
+- Apply is a transactional server restart. A failed activation restores the
+  prior LaunchAgent environment and verifies the old server before returning.
+- Guided Setup provisions Balanced or Max explicitly. Install or Update Server
+  follows when needed; Apply then activates the choice, keeping the model
+  download separate from the lifecycle transaction.
+- Agent CLI diagnostics use the local Cursor `agent about` version when server
+  health cannot parse a real Cursor build number.
+- QA target: `@gotcos/glasses-server` 6.21.0.
+
 ## 0.3.4 update-proof and mixed-version hardening
 
 - Provider and Kokoro transactional checks retain their individual bounded

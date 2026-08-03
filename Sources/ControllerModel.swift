@@ -280,15 +280,20 @@ final class ControllerModel: ObservableObject {
         if let url = URL(string: "http://127.0.0.1:3141/api/health") { NSWorkspace.shared.open(url) }
     }
 
-    func runGuidedSetup() {
-        let command = "npx --yes @gotcos/glasses-server@latest --setup-transcription --prepare-only"
+    func setTranscriptionTier(_ tier: String) {
+        perform("set-transcription-tier", arguments: [tier])
+    }
+
+    func runGuidedSetup(tier: String) {
+        let normalized = tier.lowercased() == "max" ? "max" : "balanced"
+        let command = "npx --yes @gotcos/glasses-server@latest --setup-transcription --transcription-tier \(normalized) --prepare-only"
         let escaped = command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         let script = "tell application \"Terminal\" to do script \"\(escaped)\""
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", script]
         try? process.run()
-        notice = "Guided setup opened in Terminal. When it finishes, return here and Restart (or install/update) so the selected transcription lanes become active."
+        notice = "\(normalized == "max" ? "Max" : "Balanced") setup opened in Terminal. When provisioning finishes, install or update the server if needed, then Apply that tier so Control can restart and verify it transactionally."
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {

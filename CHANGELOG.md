@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.5 (build 26)
+
+- **Balanced and Max transcription presets.** Control owns one machine-wide
+  setting instead of asking users to hand-edit three environment variables.
+  Balanced keeps Small.en preview, Turbo live commit, and Large-v3 polish. Max
+  reuses Large-v3 for preview and commit; it never creates a third worker.
+- **Transactional tier changes.** Managed and adopted in-place LaunchAgents are
+  restarted with bootout/bootstrap, authenticated health is checked, and the
+  prior environment is restored if the requested policy is not reported.
+- **Truthful tier status.** The panel shows requested/effective policy and a
+  visible Turbo fallback when Max weights are missing. Older servers hide the
+  controls and direct the user to update instead of guessing.
+- **Independent safety diagnostics.** A missing Turbo recovery model warns on
+  Max without falsely labeling its active Large-v3 preview as a fallback.
+- **Tier-aware Guided Setup.** Users choose Balanced (recommended) or Max before
+  provisioning. The setup command downloads the matching models, then Control
+  performs the verified activation.
+- **Cursor version for support.** The Agent CLIs caption now uses Control's
+  local Cursor probe, so it can show Cursor's real build even when server
+  health only returns “About Cursor CLI.”
+- Verified against `@gotcos/glasses-server` 6.21.0.
+
 ## 0.3.4 (build 25)
 
 - **No false update rollback on healthy providers.** Candidate startup keeps its

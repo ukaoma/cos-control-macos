@@ -74,6 +74,11 @@ struct ServerStatus: Sendable {
     var livePreviewReady: Bool?
     var livePreviewDegraded = false
     var liveCommitModel: String?
+    var transcriptionRequestedTier: String?
+    var transcriptionEffectiveTier: String?
+    var transcriptionRequestedCommitModel: String?
+    var transcriptionTierDegraded = false
+    var transcriptionTierReason: String?
     var hqPolishModel: String?
     var hqPolishReady: Bool?
     var transcriptionVocabularyTerms: Int?
@@ -131,6 +136,11 @@ struct ServerStatus: Sendable {
         livePreviewReady = details["livePreviewReady"]?.bool
         livePreviewDegraded = details["livePreviewDegraded"]?.bool ?? false
         liveCommitModel = details["liveCommitModel"]?.string
+        transcriptionRequestedTier = details["transcriptionRequestedTier"]?.string
+        transcriptionEffectiveTier = details["transcriptionEffectiveTier"]?.string
+        transcriptionRequestedCommitModel = details["transcriptionRequestedCommitModel"]?.string
+        transcriptionTierDegraded = details["transcriptionTierDegraded"]?.bool ?? false
+        transcriptionTierReason = details["transcriptionTierReason"]?.string
         hqPolishModel = details["hqPolishModel"]?.string
         hqPolishReady = details["hqPolishReady"]?.bool
         transcriptionVocabularyTerms = details["transcriptionVocabularyTerms"]?.int

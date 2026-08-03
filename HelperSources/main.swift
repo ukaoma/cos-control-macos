@@ -96,7 +96,7 @@ struct InPlaceConfigurationTransaction: Codable {
     var candidatePlist: Data
     var previousPermissions: Int
     var previousServicePID: Int?
-    var selectedWorkDirectory: String
+    var selectedWorkDirectory: String?
     var serverVersion: String?
     var generationID: String?
     var phase: String
@@ -194,6 +194,8 @@ final class COSControlHelper {
         "COS_TTS_KOKORO_VOICE",
         "COS_WHISPER_PREVIEW_MODEL",
         "COS_WHISPER_REALTIME_MODEL",
+        "COS_WHISPER_TRANSCRIPTION_TIER",
+        "COS_WHISPER_COMMIT_MODEL",
     ]
 
     private lazy var support = home.appendingPathComponent("Library/Application Support/COS Control", isDirectory: true)
@@ -266,6 +268,10 @@ final class COSControlHelper {
         case "set-operations-dir": try withMutationLock {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing operations directory") }
             try setOperationsDirectory(value)
+        }
+        case "set-transcription-tier": try withMutationLock {
+            guard let value = args.dropFirst().first else { throw HelperError.message("missing transcription tier") }
+            try setTranscriptionTier(value)
         }
         case "token": try copyPairingToken()
         case "expire-clipboard": try expireClipboard(args: args)
@@ -1735,6 +1741,16 @@ final class COSControlHelper {
         let liveTranscription = transcription?["live"] as? [String: Any]
         let hqTranscription = transcription?["hq"] as? [String: Any]
         let transcriptionProfile = transcription?["profile"] as? [String: Any]
+        let requestedTier = liveTranscription?["requestedTier"] as? String
+        let effectiveTier = liveTranscription?["effectiveTier"] as? String
+        let commitReason = liveTranscription?["commitReason"] as? String
+        let tierDegraded = (liveTranscription?["commitDegraded"] as? Bool)
+            ?? (requestedTier != nil && requestedTier != effectiveTier)
+        // Server 6.21 separates cosmetic preview degradation from commit-tier
+        // safety. Older servers expose only aggregate `degraded`, so retain it
+        // as the backward-compatible fallback.
+        let previewDegraded = (liveTranscription?["previewDegraded"] as? Bool)
+            ?? ((liveTranscription?["degraded"] as? Bool) ?? false)
         var details: [String: Any] = [
             "installed": manifest != nil,
             "serviceLoaded": snapshot.serviceLoaded,
@@ -1769,8 +1785,13 @@ final class COSControlHelper {
             "whisperError": (health?["whisper_health"] as? [String: Any])?["lastError"] ?? NSNull(),
             "livePreviewModel": liveTranscription?["effectiveModel"] ?? NSNull(),
             "livePreviewReady": liveTranscription?["ready"] ?? NSNull(),
-            "livePreviewDegraded": liveTranscription?["degraded"] ?? false,
+            "livePreviewDegraded": previewDegraded,
             "liveCommitModel": liveTranscription?["committedModel"] ?? NSNull(),
+            "transcriptionRequestedTier": liveTranscription?["requestedTier"] ?? NSNull(),
+            "transcriptionEffectiveTier": liveTranscription?["effectiveTier"] ?? NSNull(),
+            "transcriptionRequestedCommitModel": liveTranscription?["requestedCommitModel"] ?? NSNull(),
+            "transcriptionTierDegraded": tierDegraded,
+            "transcriptionTierReason": commitReason ?? liveTranscription?["reason"] ?? NSNull(),
             // 6.20.0+ always targets Large-v3 for HQ. When its weights are
             // absent the model field is null, but Control should report the
             // intended lane as unavailable instead of the ambiguous
@@ -2849,6 +2870,72 @@ final class COSControlHelper {
         emit(ok: true, message: "Server and local Whisper restarted safely", details: statusDetails())
     }
 
+    /// One machine-owned transcription policy. Balanced is the public default;
+    /// Max is opt-in and reuses the resident Large-v3 worker instead of adding a
+    /// third process. Keep every legacy per-lane key coherent so older private
+    /// installs cannot override only half of a preset.
+    private func transcriptionTierEnvironment(_ raw: String) throws -> [String: String] {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "balanced":
+            return [
+                "COS_WHISPER_TRANSCRIPTION_TIER": "balanced",
+                "COS_WHISPER_PREVIEW_MODEL": "small.en",
+                "COS_WHISPER_COMMIT_MODEL": "turbo",
+            ]
+        case "max":
+            return [
+                "COS_WHISPER_TRANSCRIPTION_TIER": "max",
+                "COS_WHISPER_PREVIEW_MODEL": "turbo",
+                "COS_WHISPER_COMMIT_MODEL": "large-v3",
+            ]
+        default:
+            throw HelperError.message("Unknown transcription tier. Choose Balanced or Max.")
+        }
+    }
+
+    private func setTranscriptionTier(_ raw: String) throws {
+        let values = try transcriptionTierEnvironment(raw)
+        let tier = values["COS_WHISPER_TRANSCRIPTION_TIER"]!
+        let health = request("/api/health", timeout: 12)?.body
+        let live = ((health?["capabilities"] as? [String: Any])?["transcription"] as? [String: Any])?["live"] as? [String: Any]
+        let stoppedCompatibleManagedServer = loadManifest().map {
+            $0.desiredState == "stopped" && versionAtLeast($0.version, "6.21.0")
+        } ?? false
+        guard live?["requestedTier"] != nil || stoppedCompatibleManagedServer else {
+            throw HelperError.message("Update the managed server to 6.21.0 or newer before changing the transcription tier.")
+        }
+        let label = tier == "max" ? "Max transcription" : "Balanced transcription"
+        if let manifest = loadManifest() {
+            try applyManagedProviderEnvironment(values, current: manifest, operationLabel: label)
+            return
+        }
+        guard inPlaceActive() else {
+            throw HelperError.message("Install the managed server or choose Manage in place first.")
+        }
+        try applyInPlaceProviderEnvironment(values, operationLabel: label)
+    }
+
+    /// Verify the persisted policy after restart and return the model tier that
+    /// is actually active. Max may truthfully degrade to Balanced when the
+    /// Large-v3 weights are unavailable; callers must surface that fallback
+    /// instead of claiming Max is active.
+    private func requireTranscriptionTier(_ expected: String) throws -> String {
+        let health = request("/api/health", timeout: 12)?.body
+        let live = ((health?["capabilities"] as? [String: Any])?["transcription"] as? [String: Any])?["live"] as? [String: Any]
+        guard live?["requestedTier"] as? String == expected else {
+            throw HelperError.message("the restarted server did not report the requested \(expected) transcription tier")
+        }
+        let expectedCommit = expected == "max" ? "large-v3" : "turbo"
+        guard live?["requestedCommitModel"] as? String == expectedCommit else {
+            throw HelperError.message("the restarted server did not report the expected \(expectedCommit) commit policy")
+        }
+        guard let effective = live?["effectiveTier"] as? String,
+              effective == expected || (expected == "max" && effective == "balanced") else {
+            throw HelperError.message("the restarted server did not report a valid effective transcription tier")
+        }
+        return effective
+    }
+
     private func setWorkDirectory(_ path: String) throws {
         guard let validated = try validatedWorkDirectory(path) else {
             throw HelperError.message("Selected work folder does not exist.")
@@ -2962,6 +3049,7 @@ final class COSControlHelper {
             try waitForPortsClear(timeout: 12)
             try saveManifest(candidate)
             try writeLaunchAgent(for: candidate)
+            var effectiveTier: String?
             if shouldRun {
                 try setServiceEnabled(true)
                 try loadService(forceRestart: false)
@@ -2971,12 +3059,20 @@ final class COSControlHelper {
                     inheritedLease: lease,
                     timeout: 60
                 )
+                if let tier = values["COS_WHISPER_TRANSCRIPTION_TIER"] {
+                    effectiveTier = try requireTranscriptionTier(tier)
+                }
                 try requireMaintenanceRelease(activeLease)
             }
             clearTransaction()
-            let message = shouldRun
-                ? "\(operationLabel) applied and the managed server was verified"
-                : "\(operationLabel) saved and will apply on the next Start"
+            let message: String
+            if shouldRun, values["COS_WHISPER_TRANSCRIPTION_TIER"] == "max", effectiveTier == "balanced" {
+                message = "Max transcription saved; running Balanced fallback because Large-v3 is unavailable"
+            } else if shouldRun {
+                message = "\(operationLabel) applied and the managed server was verified"
+            } else {
+                message = "\(operationLabel) saved and will apply on the next Start"
+            }
             emit(ok: true, message: message, details: statusDetails())
         } catch {
             if !switchStarted {
@@ -2989,9 +3085,9 @@ final class COSControlHelper {
     }
 
     private func applyInPlaceProviderEnvironment(_ values: [String: String], operationLabel: String) throws {
-        // In-place (legacy) path: persist env into the adopted LaunchAgent. Safe
-        // reload reuse is workdir-shaped; for provider keys we write the plist
-        // and ask the user to restart when idle (same as legacy folder save).
+        // Adopted self-managed installs get the same reversible bootout /
+        // bootstrap transaction as work-folder changes. launchctl kickstart is
+        // not sufficient: it retains stale LaunchAgent environment values.
         guard let record = loadInPlace(),
               URL(fileURLWithPath: record.plistPath).standardizedFileURL.path == plistURL.standardizedFileURL.path else {
             throw HelperError.message("Manage in place must be completed before changing \(operationLabel.lowercased()).")
@@ -3001,6 +3097,16 @@ final class COSControlHelper {
               launchAgentKind() == .knownLegacy else {
             throw HelperError.message("The adopted glasses LaunchAgent no longer matches the recognized server shape.")
         }
+        let snapshot = ownershipSnapshot()
+        if !snapshot.allListenerPIDs.isEmpty {
+            guard snapshot.serviceLoaded, launchdOwnsListeners(snapshot, requireDirect: false) else {
+                throw HelperError.message("\(operationLabel) refused because launchd does not own the active listeners.")
+            }
+        } else if snapshot.serviceLoaded {
+            throw HelperError.message("The adopted server is loaded but not healthy. Repair it before changing \(operationLabel.lowercased()).")
+        }
+        let previous = try Data(contentsOf: plistURL)
+        let permissions = ((try? fm.attributesOfItem(atPath: plistURL.path)[.posixPermissions] as? NSNumber)?.intValue) ?? 0o600
         var environment = (plist["EnvironmentVariables"] as? [String: String]) ?? [:]
         for (key, value) in values {
             guard providerEnvironmentKeys.contains(key) else {
@@ -3010,12 +3116,87 @@ final class COSControlHelper {
         }
         plist["EnvironmentVariables"] = environment
         let candidate = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
-        try atomicWriteData(candidate, to: plistURL, permissions: 0o600)
-        emit(
-            ok: true,
-            message: "\(operationLabel) saved to your LaunchAgent. Restart the server when idle to apply it.",
-            details: statusDetails()
+        let status = maintenanceStatus()
+        let transaction = InPlaceConfigurationTransaction(
+            previousPlist: previous,
+            candidatePlist: candidate,
+            previousPermissions: min(permissions, 0o600),
+            previousServicePID: snapshot.servicePID,
+            selectedWorkDirectory: nil,
+            serverVersion: status?["serverVersion"] as? String,
+            generationID: status?["generationId"] as? String,
+            phase: "staged",
+            startedAt: ISO8601DateFormatter().string(from: Date())
         )
+        try saveInPlaceConfigurationTransaction(transaction)
+
+        let alreadyActive = values.allSatisfy { loadedEnvironmentValue($0.key) == $0.value }
+        if alreadyActive || snapshot.allListenerPIDs.isEmpty {
+            try atomicWriteData(candidate, to: plistURL, permissions: 0o600)
+            clearInPlaceConfigurationTransaction()
+            let effectiveTier = alreadyActive
+                ? try values["COS_WHISPER_TRANSCRIPTION_TIER"].map { try requireTranscriptionTier($0) }
+                : nil
+            let message: String
+            if alreadyActive, values["COS_WHISPER_TRANSCRIPTION_TIER"] == "max", effectiveTier == "balanced" {
+                message = "Max transcription is saved; running Balanced fallback because Large-v3 is unavailable"
+            } else if alreadyActive {
+                message = "\(operationLabel) is already active"
+            } else {
+                message = "\(operationLabel) saved and will apply when your server starts"
+            }
+            emit(
+                ok: true,
+                message: message,
+                details: statusDetails()
+            )
+            return
+        }
+        guard let version = transaction.serverVersion,
+              let generation = transaction.generationID else {
+            try atomicWriteData(candidate, to: plistURL, permissions: 0o600)
+            clearInPlaceConfigurationTransaction()
+            emit(
+                ok: true,
+                message: "\(operationLabel) saved to your LaunchAgent. This legacy server cannot prove idle state, so restart it when no work is active to apply it.",
+                details: statusDetails()
+            )
+            return
+        }
+        do {
+            let lease = try acquireMaintenanceLeaseIfNeeded(
+                snapshot: snapshot,
+                operationKind: "provider_env_update",
+                successorGenerations: [generation]
+            )
+            var switching = transaction
+            switching.phase = "switching"
+            try saveInPlaceConfigurationTransaction(switching)
+            try strictBootoutInPlace()
+            try atomicWriteData(candidate, to: plistURL, permissions: 0o600)
+            try strictBootstrapInPlace()
+            let activeLease = try waitForManagedHealth(
+                expectedVersion: version,
+                expectedGenerationID: generation,
+                inheritedLease: lease,
+                timeout: 60,
+                requireDirectOwnership: false,
+                requireTransactionalProof: versionAtLeast(version, "6.15.2")
+            )
+            guard let newPID = servicePID(), newPID != transaction.previousServicePID else {
+                throw HelperError.message("launchd did not replace the prior server process.")
+            }
+            let effectiveTier = try values["COS_WHISPER_TRANSCRIPTION_TIER"].map { try requireTranscriptionTier($0) }
+            try requireMaintenanceRelease(activeLease)
+            clearInPlaceConfigurationTransaction()
+            let message = values["COS_WHISPER_TRANSCRIPTION_TIER"] == "max" && effectiveTier == "balanced"
+                ? "Max transcription saved; running Balanced fallback because Large-v3 is unavailable"
+                : "\(operationLabel) applied and the adopted server was verified"
+            emit(ok: true, message: message, details: statusDetails())
+        } catch {
+            let recovery = try restoreInPlaceConfiguration(transaction)
+            throw HelperError.message("\(operationLabel) change failed. \(recovery) Original error: \(error)")
+        }
     }
 
     /// Read the effective COS work folder from managed manifest or in-place plist.
@@ -3473,6 +3654,7 @@ final class COSControlHelper {
             "cursorReady": probe.ready,
             "cursorState": probe.state,
             "cursorDetail": probe.version ?? NSNull(),
+            "cursorCliVersion": probe.version ?? NSNull(),
         ]
     }
 
@@ -3795,6 +3977,18 @@ final class COSControlHelper {
                 && filtered["COS_EXTRA_TOOLS"] == "mcp__calendar__*"
                 && filtered["COS_API_TOKEN"] == nil,
             "provider allowlist"
+        )
+        let balancedTier = try transcriptionTierEnvironment("balanced")
+        let maxTier = try transcriptionTierEnvironment("MAX")
+        try expect(
+            balancedTier["COS_WHISPER_PREVIEW_MODEL"] == "small.en"
+                && balancedTier["COS_WHISPER_COMMIT_MODEL"] == "turbo",
+            "Balanced transcription mapping"
+        )
+        try expect(
+            maxTier["COS_WHISPER_PREVIEW_MODEL"] == "turbo"
+                && maxTier["COS_WHISPER_COMMIT_MODEL"] == "large-v3",
+            "Max transcription mapping"
         )
         try expect(versionAtLeast("6.15.2", "6.15.2") && versionAtLeast("6.16.0", "6.15.2"), "transactional proof version gate")
         try expect(!versionAtLeast("6.15.1", "6.15.2") && !versionAtLeast("invalid", "6.15.2"), "legacy proof compatibility gate")

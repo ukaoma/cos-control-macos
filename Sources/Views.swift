@@ -57,6 +57,8 @@ struct ControlPanel: View {
     @ObservedObject var model: ControllerModel
     @State private var confirmLegacyRestart = false
     @State private var confirmInstallManaged = false
+    @State private var showGuidedSetupTier = false
+    @State private var selectedTranscriptionTier = "balanced"
 
     var body: some View {
         ScrollView {
@@ -75,6 +77,15 @@ struct ControlPanel: View {
         .frame(width: 390, height: 640)
         .background(COSPalette.panel)
         .background(WindowOpaquer())
+        .onAppear {
+            if let tier = model.status.transcriptionRequestedTier,
+               tier == "max" || tier == "balanced" {
+                selectedTranscriptionTier = tier
+            }
+        }
+        .onChange(of: model.status.transcriptionRequestedTier) { _, tier in
+            if let tier, tier == "max" || tier == "balanced" { selectedTranscriptionTier = tier }
+        }
         .alert("COS Control", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
         } message: { Text(model.error ?? "") }
@@ -99,6 +110,23 @@ struct ControlPanel: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This stops your checkout LaunchAgent, then installs the current npm latest (@gotcos/glasses-server@latest). Finish active glasses work first. Prefer Manage in place if you only want status/restart without replacing the server.")
+        }
+        .confirmationDialog(
+            "Choose transcription setup",
+            isPresented: $showGuidedSetupTier,
+            titleVisibility: .visible
+        ) {
+            Button("Balanced (Recommended)") {
+                selectedTranscriptionTier = "balanced"
+                model.runGuidedSetup(tier: "balanced")
+            }
+            Button("Max") {
+                selectedTranscriptionTier = "max"
+                model.runGuidedSetup(tier: "max")
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Balanced uses fast Small.en previews, Turbo commits, and Large-v3 polish. Max uses Large-v3 for live preview and commit too; choose it only on a powerful Mac.")
         }
     }
 
@@ -134,23 +162,40 @@ struct ControlPanel: View {
                     .textSelection(.enabled)
             }
             if model.status.livePreviewModel != nil || model.status.liveCommitModel != nil || model.status.hqPolishModel != nil {
+                if let tier = model.status.transcriptionEffectiveTier {
+                    statusRow(
+                        "Transcription tier",
+                        value: transcriptionTierLabel(
+                            requested: model.status.transcriptionRequestedTier,
+                            effective: tier,
+                            degraded: model.status.transcriptionTierDegraded
+                        ),
+                        good: !model.status.transcriptionTierDegraded && model.status.whisperReady
+                    )
+                    if model.status.transcriptionTierDegraded {
+                        Text(transcriptionTierReason)
+                            .font(.caption2)
+                            .foregroundStyle(COSPalette.amber)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                }
                 if model.status.livePreviewModel != nil {
                 statusRow(
-                    "Live preview",
+                    "Preview, while dictating",
                     value: transcriptionModelLabel(model.status.livePreviewModel, degraded: model.status.livePreviewDegraded),
                     good: model.status.livePreviewReady == true
                 )
                 }
                 if model.status.liveCommitModel != nil {
                 statusRow(
-                    "Live commit",
+                    "Commit, live meeting",
                     value: transcriptionModelLabel(model.status.liveCommitModel),
                     good: model.status.whisperReady
                 )
                 }
                 if model.status.hqPolishModel != nil {
                 statusRow(
-                    "HQ polish",
+                    "Polish, on save",
                     value: transcriptionModelLabel(model.status.hqPolishModel),
                     good: model.status.hqPolishReady == true
                 )
@@ -410,7 +455,26 @@ struct ControlPanel: View {
             Text("TOOLS").font(.caption2.weight(.bold)).tracking(1.3).foregroundStyle(.secondary)
             HStack {
                 Button("Run Doctor", systemImage: "stethoscope") { model.perform("doctor") }
-                Button("Guided Setup", systemImage: "terminal") { model.runGuidedSetup() }
+                Button("Guided Setup", systemImage: "terminal") { showGuidedSetupTier = true }
+            }
+            if model.status.transcriptionRequestedTier != nil {
+                HStack(spacing: 8) {
+                    Picker("Transcription", selection: $selectedTranscriptionTier) {
+                        Text("Balanced").tag("balanced")
+                        Text("Max").tag("max")
+                    }
+                    .pickerStyle(.segmented)
+                    Button("Apply") { model.setTranscriptionTier(selectedTranscriptionTier) }
+                        .disabled(model.busy
+                            || (!model.status.installed && model.status.runtimeState != "managedInPlace"))
+                }
+                Text("Balanced is recommended. Max keeps Large-v3 resident for live commit and may use substantially more memory.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if model.status.installed || model.status.runtimeState == "managedInPlace" {
+                Label("Update Server to 6.21.0 or newer to enable transcription tier controls.", systemImage: "arrow.down.circle")
+                    .font(.caption2)
+                    .foregroundStyle(COSPalette.amber)
             }
             HStack {
                 Button("Repair Managed Runtime", systemImage: "wrench.and.screwdriver") { model.perform("repair") }
@@ -578,6 +642,21 @@ struct ControlPanel: View {
         case nil: label = "Unreported"
         }
         return degraded ? "\(label) fallback" : label
+    }
+
+    private func transcriptionTierLabel(requested: String?, effective: String, degraded: Bool) -> String {
+        let effectiveLabel = effective == "max" ? "Max" : "Balanced"
+        guard degraded, let requested else { return effectiveLabel }
+        let requestedLabel = requested == "max" ? "Max" : "Balanced"
+        return "\(requestedLabel) → \(effectiveLabel)"
+    }
+
+    private var transcriptionTierReason: String {
+        switch model.status.transcriptionTierReason {
+        case "large_v3_model_missing": return "Large-v3 is missing; live commit safely fell back to Turbo. Run Guided Setup, then Apply Max again."
+        case "turbo_model_missing": return "Turbo fallback weights are missing. Run Guided Setup before changing tiers."
+        default: return "The requested tier could not be activated; the safe fallback remains in use."
+        }
     }
 
     private var meetingSyncLabel: String {

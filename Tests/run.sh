@@ -14,7 +14,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   -o "$TMP/cos-control-helper"
 
 SELF_TEST="$(COS_CONTROL_TEST_HOME="$TMP/home" "$TMP/cos-control-helper" self-test)"
-/usr/bin/python3 -c 'import json,sys; value=json.loads(sys.argv[1]); assert value["ok"] and value["details"]["tests"] >= 22' "$SELF_TEST"
+/usr/bin/python3 -c 'import json,sys; value=json.loads(sys.argv[1]); assert value["ok"] and value["details"]["tests"] >= 24' "$SELF_TEST"
 /usr/bin/grep -q 'cursor-probe-cache.json' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'recent-messages' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'footerLabel' "$ROOT/Sources/Views.swift"
@@ -25,6 +25,24 @@ SELF_TEST="$(COS_CONTROL_TEST_HOME="$TMP/home" "$TMP/cos-control-helper" self-te
 /usr/bin/grep -q 'Meetings Library' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'set-operations-dir' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'COS_OPERATIONS_DIR' "$ROOT/HelperSources/main.swift"
+
+# --- 0.3.5 transcription policy + Cursor diagnostic contract ---------------
+/usr/bin/grep -q 'case "set-transcription-tier"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'COS_WHISPER_TRANSCRIPTION_TIER' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'COS_WHISPER_COMMIT_MODEL' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'requireTranscriptionTier' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'stoppedCompatibleManagedServer' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'running Balanced fallback because Large-v3 is unavailable' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'commitDegraded' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'previewDegraded' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'strictBootoutInPlace()' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q '"cursorCliVersion": probe.version' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'Preview, while dictating' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Commit, live meeting' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Polish, on save' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Update Server to 6.21.0 or newer to enable transcription tier controls' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'onAppear' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -Fq 'transcription-tier \(normalized)' "$ROOT/Sources/ControllerModel.swift"
 
 # --- 0.3.4 provider-proof and mixed-version hardening -----------------------
 # Startup/ownership keeps its 60s gate, but the real provider/Kokoro requests
