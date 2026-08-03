@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 enum JSONValue: Codable, Sendable {
@@ -33,6 +34,7 @@ enum JSONValue: Codable, Sendable {
     var string: String? { if case .string(let value) = self { value } else { nil } }
     var bool: Bool? { if case .bool(let value) = self { value } else { nil } }
     var int: Int? { if case .number(let value) = self { Int(value) } else { nil } }
+    var double: Double? { if case .number(let value) = self { value } else { nil } }
     var object: [String: JSONValue]? { if case .object(let value) = self { value } else { nil } }
     var array: [JSONValue]? { if case .array(let value) = self { value } else { nil } }
 }
@@ -162,6 +164,76 @@ struct ServerStatus: Sendable {
     }
 }
 
+struct GlassesAttachmentRef: Identifiable, Sendable, Equatable {
+    let id: String
+    let kind: String
+    let mime: String
+    let width: Int
+    let height: Int
+    let createdAt: String
+    let label: String?
+
+    init?(object: [String: JSONValue]) {
+        guard let id = object["id"]?.string,
+              id.count == 26, id.hasPrefix("m_"),
+              id.dropFirst(2).allSatisfy({ "0123456789abcdef".contains($0) }),
+              let kind = object["kind"]?.string,
+              ["user_photo", "traffic_frame", "generated_visual"].contains(kind),
+              let mime = object["mime"]?.string,
+              ["image/jpeg", "image/png"].contains(mime),
+              let widthValue = object["width"]?.double,
+              widthValue.isFinite, widthValue.rounded() == widthValue,
+              (1.0...65_535.0).contains(widthValue),
+              let heightValue = object["height"]?.double,
+              heightValue.isFinite, heightValue.rounded() == heightValue,
+              (1.0...65_535.0).contains(heightValue),
+              let createdAt = object["createdAt"]?.string,
+              Self.validTimestamp(createdAt) else { return nil }
+        self.id = id
+        self.kind = kind
+        self.mime = mime
+        self.width = Int(widthValue)
+        self.height = Int(heightValue)
+        self.createdAt = createdAt
+        self.label = object["label"]?.string.map { String($0.prefix(120)) }
+    }
+
+    private static func validTimestamp(_ value: String) -> Bool {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if fractional.date(from: value) != nil { return true }
+        let wholeSecond = ISO8601DateFormatter()
+        wholeSecond.formatOptions = [.withInternetDateTime]
+        return wholeSecond.date(from: value) != nil
+    }
+
+    var isUserPhoto: Bool { kind == "user_photo" }
+    var displayLabel: String { isUserPhoto ? "Your image" : "Answer image" }
+}
+
+enum RecentMediaPreviewState {
+    case loading
+    case ready(NSImage)
+    case unavailable(String)
+}
+
+enum RecentMediaImageDecoder {
+    static func decode(url: URL, expectedBytes: Int) -> NSImage? {
+        guard expectedBytes > 0, expectedBytes <= 12 * 1_024 * 1_024,
+              let data = try? Data(contentsOf: url), data.count == expectedBytes,
+              let image = NSImage(data: data), image.isValid else { return nil }
+        var proposedRect = NSRect(origin: .zero, size: image.size)
+        guard image.cgImage(forProposedRect: &proposedRect, context: nil, hints: nil) != nil else { return nil }
+        return image
+    }
+}
+
+struct SelectedMediaPreview: Identifiable {
+    let attachment: GlassesAttachmentRef
+    let image: NSImage
+    var id: String { attachment.id }
+}
+
 struct GlassesTurn: Identifiable, Sendable, Equatable {
     let id: String
     let no: Int?
@@ -170,8 +242,9 @@ struct GlassesTurn: Identifiable, Sendable, Equatable {
     let text: String
     let sessionId: String
     let source: String
+    let attachments: [GlassesAttachmentRef]
 
-    init(id: String, no: Int?, timestamp: TimeInterval?, query: String, text: String, sessionId: String, source: String) {
+    init(id: String, no: Int?, timestamp: TimeInterval?, query: String, text: String, sessionId: String, source: String, attachments: [GlassesAttachmentRef] = []) {
         self.id = id
         self.no = no
         self.timestamp = timestamp
@@ -179,6 +252,7 @@ struct GlassesTurn: Identifiable, Sendable, Equatable {
         self.text = text
         self.sessionId = sessionId
         self.source = source
+        self.attachments = Array(attachments.prefix(5))
     }
 
     init?(_ object: [String: JSONValue]) {
@@ -187,6 +261,18 @@ struct GlassesTurn: Identifiable, Sendable, Equatable {
         let sessionId = object["sessionId"]?.string ?? ""
         let source = object["source"]?.string ?? ""
         let no = object["no"]?.int
+        var seen = Set<String>()
+        let attachments: [GlassesAttachmentRef]
+        if let values = object["attachments"]?.array {
+            attachments = Array(values.compactMap { item -> GlassesAttachmentRef? in
+                guard let value = item.object,
+                      let attachment = GlassesAttachmentRef(object: value),
+                      seen.insert(attachment.id).inserted else { return nil }
+                return attachment
+            }.prefix(5))
+        } else {
+            attachments = []
+        }
         let timestamp: TimeInterval?
         if let number = object["timestamp"]?.int {
             timestamp = TimeInterval(number) / (number > 10_000_000_000 ? 1000 : 1)
@@ -194,7 +280,7 @@ struct GlassesTurn: Identifiable, Sendable, Equatable {
             timestamp = nil
         }
         let idBase = [no.map(String.init) ?? "x", sessionId, object["timestamp"]?.int.map(String.init) ?? UUID().uuidString].joined(separator: "|")
-        self.init(id: idBase, no: no, timestamp: timestamp, query: query, text: text, sessionId: sessionId, source: source)
+        self.init(id: idBase, no: no, timestamp: timestamp, query: query, text: text, sessionId: sessionId, source: source, attachments: attachments)
     }
 
     var previewQuery: String {

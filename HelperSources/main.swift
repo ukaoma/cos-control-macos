@@ -77,6 +77,94 @@ private final class HTTPResultBox: @unchecked Sendable {
     }
 }
 
+/// Media uses an incrementally capped delegate instead of the generic JSON
+/// request helper. A compromised/malformed local endpoint therefore cannot
+/// make Control buffer an unbounded response before the size check runs.
+private final class BoundedMediaRequestDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let maximumBytes: Int
+    private let lock = NSLock()
+    private let completion = DispatchSemaphore(value: 0)
+    private var data = Data()
+    private var response: URLResponse?
+    private var expectedLength: Int64?
+    private var tooLarge = false
+    private var transportFailed = false
+    private var finished = false
+
+    init(maximumBytes: Int) {
+        self.maximumBytes = maximumBytes
+        super.init()
+    }
+
+    func acceptsExpectedLength(_ length: Int64) -> Bool {
+        length < 0 || length <= Int64(maximumBytes)
+    }
+
+    @discardableResult
+    func prepareExpectedLength(_ length: Int64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let allowed = acceptsExpectedLength(length)
+        expectedLength = length >= 0 ? length : nil
+        if !allowed { tooLarge = true }
+        return allowed
+    }
+
+    @discardableResult
+    func accept(_ chunk: Data) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !tooLarge, chunk.count <= maximumBytes - data.count else {
+            tooLarge = true
+            data.removeAll(keepingCapacity: false)
+            return false
+        }
+        data.append(chunk)
+        return true
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        lock.lock()
+        self.response = response
+        lock.unlock()
+        let allowed = prepareExpectedLength(response.expectedContentLength)
+        completionHandler(allowed ? .allow : .cancel)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        if !accept(data) { dataTask.cancel() }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        finish(error: error)
+    }
+
+    func finish(error: Error?) {
+        lock.lock()
+        let truncated = expectedLength.map { Int64(data.count) != $0 } ?? false
+        if !tooLarge, error != nil || truncated {
+            transportFailed = true
+            data.removeAll(keepingCapacity: false)
+        }
+        let shouldSignal = !finished
+        finished = true
+        lock.unlock()
+        if shouldSignal { completion.signal() }
+    }
+
+    func wait(timeout: TimeInterval) -> (Data, URLResponse?, Bool, Bool)? {
+        guard completion.wait(timeout: .now() + timeout) == .success else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        return (data, response, tooLarge, transportFailed)
+    }
+}
+
 enum LaunchAgentKind: String {
     case absent
     case cosControl
@@ -210,6 +298,8 @@ final class COSControlHelper {
     private lazy var mutationLockURL = runtimeRoot.appendingPathComponent("operation.lock")
     private lazy var clipboardReceiptURL = support.appendingPathComponent("clipboard-receipt.json")
     private lazy var cursorProbeCacheURL = support.appendingPathComponent("cursor-probe-cache.json")
+    private lazy var controlCache = home.appendingPathComponent("Library/Caches/com.gotcos.COSControl", isDirectory: true)
+    private lazy var mediaTransferRoot = controlCache.appendingPathComponent("MediaTransfers", isDirectory: true)
     private lazy var stableBin = support.appendingPathComponent("bin", isDirectory: true)
     private lazy var stableHelper = stableBin.appendingPathComponent("cos-control-helper")
     private lazy var logs = home.appendingPathComponent("Library/Logs/COS Glasses", isDirectory: true)
@@ -277,6 +367,7 @@ final class COSControlHelper {
         case "expire-clipboard": try expireClipboard(args: args)
         case "report": emit(ok: true, message: "Redacted report ready", details: ["report": redactedReport()])
         case "recent-messages": try emitRecentMessages(args: args)
+        case "fetch-media": try emitFetchedMedia(args: args)
         case "check-app-update": try emitAppUpdateCheck(args: args)
         case "run-server": try runServer()
         default: throw HelperError.message("unknown command: \(command)")
@@ -1535,6 +1626,38 @@ final class COSControlHelper {
             headers[String(describing: key).lowercased()] = String(describing: value)
         }
         return HTTPResponse(status: http.statusCode, body: object, data: data, headers: headers)
+    }
+
+    private func boundedMediaRequest(
+        _ path: String,
+        token: String,
+        timeout: Int,
+        maximumBytes: Int
+    ) -> HTTPResponse? {
+        guard let url = URL(string: "http://127.0.0.1:3141\(path)") else { return nil }
+        var request = URLRequest(url: url, timeoutInterval: TimeInterval(timeout))
+        request.setValue(token, forHTTPHeaderField: "X-COS-Token")
+        let delegate = BoundedMediaRequestDelegate(maximumBytes: maximumBytes)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = TimeInterval(timeout)
+        configuration.timeoutIntervalForResource = TimeInterval(timeout + 2)
+        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        let task = session.dataTask(with: request)
+        task.resume()
+        guard let (data, response, tooLarge, transportFailed) = delegate.wait(timeout: TimeInterval(timeout + 2)) else {
+            task.cancel()
+            session.invalidateAndCancel()
+            return nil
+        }
+        session.finishTasksAndInvalidate()
+        guard let http = response as? HTTPURLResponse else { return nil }
+        var headers: [String: String] = [:]
+        for (key, value) in http.allHeaderFields {
+            headers[String(describing: key).lowercased()] = String(describing: value)
+        }
+        if tooLarge { return HTTPResponse(status: 413, body: nil, headers: headers) }
+        if transportFailed { return nil }
+        return HTTPResponse(status: http.statusCode, body: nil, data: data, headers: headers)
     }
 
     private func versionAtLeast(_ value: String, _ minimum: String) -> Bool {
@@ -3689,7 +3812,7 @@ final class COSControlHelper {
 
     private func normalizeRecentMessage(_ raw: [String: Any]) -> [String: Any] {
         let no = raw["no"] ?? raw["globalMsgNum"] ?? NSNull()
-        return [
+        var normalized: [String: Any] = [
             "no": no is NSNull ? NSNull() : no,
             "timestamp": raw["timestamp"] ?? NSNull(),
             "query": (raw["query"] as? String) ?? "",
@@ -3697,6 +3820,62 @@ final class COSControlHelper {
             "sessionId": (raw["sessionId"] as? String) ?? "",
             "source": (raw["source"] as? String) ?? "",
         ]
+        let attachments = normalizeAttachments(raw["attachments"])
+        if !attachments.isEmpty { normalized["attachments"] = attachments }
+        return normalized
+    }
+
+    private func validMediaID(_ value: String) -> Bool {
+        guard value.count == 26, value.hasPrefix("m_") else { return false }
+        return value.dropFirst(2).allSatisfy { "0123456789abcdef".contains($0) }
+    }
+
+    private func normalizeAttachment(_ raw: Any) -> [String: Any]? {
+        guard let value = raw as? [String: Any],
+              let id = value["id"] as? String, validMediaID(id),
+              let kind = value["kind"] as? String,
+              ["user_photo", "traffic_frame", "generated_visual"].contains(kind),
+              let mime = value["mime"] as? String,
+              ["image/jpeg", "image/png"].contains(mime),
+              let width = value["width"] as? Int, (1...65_535).contains(width),
+              let height = value["height"] as? Int, (1...65_535).contains(height),
+              let createdAt = value["createdAt"] as? String,
+              validMediaTimestamp(createdAt) else { return nil }
+        var out: [String: Any] = [
+            "id": id,
+            "kind": kind,
+            "mime": mime,
+            "width": width,
+            "height": height,
+            "createdAt": createdAt,
+        ]
+        if let label = value["label"] as? String, !label.isEmpty {
+            out["label"] = String(label.prefix(120))
+        }
+        return out
+    }
+
+    private func validMediaTimestamp(_ value: String) -> Bool {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if fractional.date(from: value) != nil { return true }
+        let wholeSecond = ISO8601DateFormatter()
+        wholeSecond.formatOptions = [.withInternetDateTime]
+        return wholeSecond.date(from: value) != nil
+    }
+
+    private func normalizeAttachments(_ raw: Any?) -> [[String: Any]] {
+        guard let values = raw as? [Any] else { return [] }
+        var result: [[String: Any]] = []
+        var seen = Set<String>()
+        for value in values {
+            guard let attachment = normalizeAttachment(value),
+                  let id = attachment["id"] as? String,
+                  seen.insert(id).inserted else { continue }
+            result.append(attachment)
+            if result.count == 5 { break }
+        }
+        return result
     }
 
     /// Server returns oldest-first; emit newest-first and slice before serialize.
@@ -3842,6 +4021,102 @@ final class COSControlHelper {
             "messages": messages,
             "count": messages.count,
             "date": body["date"] ?? NSNull(),
+        ])
+    }
+
+    private func mediaState(for status: Int) -> String {
+        switch status {
+        case 401, 403: return "unauthorized"
+        case 404: return "missing"
+        case 410: return "expired"
+        case 503: return "unavailable"
+        default: return "unavailable"
+        }
+    }
+
+    private func imageMIME(_ data: Data) -> String? {
+        let bytes = [UInt8](data.prefix(8))
+        if bytes.count >= 3, bytes[0] == 0xff, bytes[1] == 0xd8, bytes[2] == 0xff { return "image/jpeg" }
+        if bytes == [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] { return "image/png" }
+        return nil
+    }
+
+    private func pruneMediaTransfers(now: Date = Date()) throws {
+        try ensurePrivateDirectory(controlCache)
+        try ensurePrivateDirectory(mediaTransferRoot)
+        let cutoff = now.addingTimeInterval(-15 * 60)
+        let entries = try fm.contentsOfDirectory(
+            at: mediaTransferRoot,
+            includingPropertiesForKeys: [.isSymbolicLinkKey, .isRegularFileKey, .contentModificationDateKey],
+            options: []
+        )
+        for entry in entries {
+            let values = try entry.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey, .contentModificationDateKey])
+            guard values.isSymbolicLink != true, values.isRegularFile == true,
+                  (values.contentModificationDate ?? .distantFuture) < cutoff else { continue }
+            try? fm.removeItem(at: entry)
+        }
+    }
+
+    /// Authenticated, bounded media transfer for the GUI. The helper returns a
+    /// private local file path, never a token, URL, server path, or base64 body.
+    private func emitFetchedMedia(args: [String]) throws {
+        guard let id = option("--id", in: args), validMediaID(id) else {
+            throw HelperError.message("Invalid media id")
+        }
+        guard let variant = option("--variant", in: args), ["thumb", "phone"].contains(variant) else {
+            throw HelperError.message("Invalid media variant")
+        }
+        guard let purpose = option("--purpose", in: args), ["preview", "handoff"].contains(purpose) else {
+            throw HelperError.message("Invalid media purpose")
+        }
+        let token: String
+        do { token = try readToken() }
+        catch {
+            emit(ok: true, message: "Media unavailable", details: ["state": "unauthorized"])
+            return
+        }
+        let maximumBytes = variant == "thumb" ? 2 * 1_024 * 1_024 : 12 * 1_024 * 1_024
+        // Sweep crash-orphaned transfers even when this attempt fails before a
+        // new file is committed.
+        try pruneMediaTransfers()
+        guard let response = boundedMediaRequest(
+            "/api/media/\(id)/content?variant=\(variant)",
+            token: token,
+            timeout: 12,
+            maximumBytes: maximumBytes
+        ) else {
+            emit(ok: true, message: "Media unavailable", details: ["state": "offline"])
+            return
+        }
+        if response.status == 413 {
+            emit(ok: true, message: "Media unavailable", details: ["state": "invalid"])
+            return
+        }
+        guard response.status == 200 else {
+            emit(ok: true, message: "Media unavailable", details: ["state": mediaState(for: response.status)])
+            return
+        }
+        guard let data = response.data else {
+            emit(ok: true, message: "Media unavailable", details: ["state": "unavailable"])
+            return
+        }
+        guard !data.isEmpty, data.count <= maximumBytes,
+              let sniffed = imageMIME(data),
+              let declared = response.headers["content-type"]?.lowercased().split(separator: ";").first.map(String.init),
+              declared == sniffed else {
+            emit(ok: true, message: "Media unavailable", details: ["state": "invalid"])
+            return
+        }
+        let ext = sniffed == "image/png" ? "png" : "jpg"
+        let destination = mediaTransferRoot.appendingPathComponent("\(UUID().uuidString.lowercased()).\(ext)")
+        try atomicWriteData(data, to: destination, permissions: 0o600)
+        emit(ok: true, message: "Media ready", details: [
+            "state": "ready",
+            "path": destination.path,
+            "mime": sniffed,
+            "bytes": data.count,
+            "purpose": purpose,
         ])
     }
 
@@ -4225,6 +4500,44 @@ final class COSControlHelper {
         try expect((sliced.first?["no"] as? Int) == 35 && (sliced.last?["no"] as? Int) == 6, "recent-messages newest-first")
         let slicedNos = Set(sliced.compactMap { $0["no"] as? Int })
         try expect(!slicedNos.contains(1) && !slicedNos.contains(5) && slicedNos.contains(6), "full-day dump must not emit oldest beyond slice")
+
+        var mediaFixture: [[String: Any]] = []
+        for index in 0..<6 {
+            let entry: [String: Any] = [
+                "id": "m_" + String(repeating: String(index), count: 24),
+                "kind": index == 0 ? "user_photo" : "generated_visual",
+                "mime": index.isMultiple(of: 2) ? "image/jpeg" : "image/png",
+                "width": 640,
+                "height": 480,
+                "createdAt": index == 0 ? "2026-08-03T12:00:00.123Z" : "2026-08-03T12:00:00Z",
+                "label": String(repeating: "x", count: 140),
+            ]
+            mediaFixture.append(entry)
+        }
+        let normalizedMedia = normalizeAttachments(mediaFixture)
+        try expect(normalizedMedia.count == 5, "recent media refs are validated, deduplicated, and capped at five")
+        try expect((normalizedMedia.first?["createdAt"] as? String) == "2026-08-03T12:00:00.123Z", "server fractional-second media timestamps remain valid")
+        try expect((normalizedMedia.first?["label"] as? String)?.count == 120, "recent media labels are bounded")
+        let invalidMedia: [[String: Any]] = [
+            ["id": "m_" + String(repeating: "G", count: 24), "kind": "user_photo", "mime": "image/jpeg", "width": 1, "height": 1, "createdAt": "2026-08-03T12:00:00Z"],
+            ["id": "m_" + String(repeating: "a", count: 24), "kind": "unknown", "mime": "image/jpeg", "width": 1, "height": 1, "createdAt": "2026-08-03T12:00:00Z"],
+        ]
+        try expect(normalizeAttachments(invalidMedia).isEmpty, "malformed or unsupported recent media refs fail closed")
+        try expect(
+            imageMIME(Data([0xff, 0xd8, 0xff, 0x00])) == "image/jpeg"
+                && imageMIME(Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) == "image/png"
+                && imageMIME(Data("not-an-image".utf8)) == nil,
+            "media transfer validates image signatures"
+        )
+        let bounded = BoundedMediaRequestDelegate(maximumBytes: 4)
+        try expect(bounded.acceptsExpectedLength(4) && !bounded.acceptsExpectedLength(5), "media transfer rejects an oversized declared response")
+        try expect(bounded.accept(Data([1, 2])) && bounded.accept(Data([3, 4])) && !bounded.accept(Data([5])), "media transfer cancels when streamed bytes cross the cap")
+        let interrupted = BoundedMediaRequestDelegate(maximumBytes: 4)
+        try expect(interrupted.prepareExpectedLength(4), "media transfer accepts an in-budget declared response")
+        try expect(interrupted.accept(Data([1, 2])), "media transfer accepts a partial in-budget chunk")
+        interrupted.finish(error: URLError(.networkConnectionLost))
+        let interruptedResult = interrupted.wait(timeout: 0.1)
+        try expect(interruptedResult?.3 == true && interruptedResult?.0.isEmpty == true, "media transfer rejects truncated or interrupted responses")
 
         try atomicWriteData(Data("COS_API_TOKEN=1234567890abcdefgh\n".utf8), to: envURL, permissions: 0o600)
         let migratedToken = try readToken()

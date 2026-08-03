@@ -8,6 +8,35 @@ private func adaptiveNSColor(light: NSColor, dark: NSColor) -> NSColor {
     }
 }
 
+private struct MediaPreviewSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let preview: SelectedMediaPreview
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(preview.attachment.displayLabel)
+                        .font(.headline)
+                    Text("\(preview.attachment.width) × \(preview.attachment.height)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            Image(nsImage: preview.image)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+        }
+        .padding(16)
+        .frame(minWidth: 520, idealWidth: 720, minHeight: 380, idealHeight: 540)
+    }
+}
+
 /// Appearance-adaptive backgrounds. Bg flips with the Mac's light/dark setting;
 /// accents stay put (they read on both). Used by both SwiftUI (Color) and the
 /// window backing (NSColor).
@@ -77,6 +106,14 @@ struct ControlPanel: View {
         .frame(width: 390, height: 640)
         .background(COSPalette.panel)
         .background(WindowOpaquer())
+        .sheet(
+            item: Binding(
+                get: { model.selectedMediaPreview },
+                set: { model.selectedMediaPreview = $0 }
+            )
+        ) { preview in
+            MediaPreviewSheet(preview: preview)
+        }
         .onAppear {
             if let tier = model.status.transcriptionRequestedTier,
                tier == "max" || tier == "balanced" {
@@ -396,17 +433,36 @@ struct ControlPanel: View {
                                             Button("Copy turn") { model.copyTurn(turn) }
                                                 .controlSize(.mini)
                                                 .layoutPriority(1)
+                                            if !turn.attachments.isEmpty {
+                                                if model.mediaExportingTurnIDs.contains(turn.id) {
+                                                    ProgressView()
+                                                        .controlSize(.mini)
+                                                        .help("Preparing a private local image handoff")
+                                                } else {
+                                                    Button("Copy + images") { model.copyTurnWithImages(turn) }
+                                                        .controlSize(.mini)
+                                                        .layoutPriority(1)
+                                                }
+                                            }
                                         }
                                         Text("User: \(turn.query)")
                                             .font(.caption2)
                                             .foregroundStyle(.secondary)
                                             .fixedSize(horizontal: false, vertical: true)
                                             .textSelection(.enabled)
+                                        attachmentStrip(
+                                            title: "Your image",
+                                            attachments: turn.attachments.filter(\.isUserPhoto)
+                                        )
                                         Text("COS: \(turn.text)")
                                             .font(.caption2)
                                             .foregroundStyle(.secondary)
                                             .fixedSize(horizontal: false, vertical: true)
                                             .textSelection(.enabled)
+                                        attachmentStrip(
+                                            title: "Answer image",
+                                            attachments: turn.attachments.filter { !$0.isUserPhoto }
+                                        )
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.vertical, 6)
@@ -433,6 +489,57 @@ struct ControlPanel: View {
         .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
         .overlay(RoundedRectangle(cornerRadius: 13).stroke(COSPalette.line, lineWidth: 1))
         .buttonStyle(.bordered)
+    }
+
+    @ViewBuilder
+    private func attachmentStrip(title: String, attachments: [GlassesAttachmentRef]) -> some View {
+        if !attachments.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title.uppercased())
+                    .font(.system(size: 9, weight: .semibold))
+                    .tracking(1)
+                    .foregroundStyle(.secondary)
+                ScrollView(.horizontal) {
+                    LazyHStack(spacing: 6) {
+                        ForEach(attachments) { attachment in
+                            Button {
+                                model.openMediaPreview(attachment)
+                            } label: {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 7)
+                                        .fill(COSPalette.panel)
+                                    switch model.mediaPreviewStates[attachment.id] {
+                                    case .ready(let image):
+                                        Image(nsImage: image)
+                                            .resizable()
+                                            .aspectRatio(contentMode: .fill)
+                                    case .unavailable(let reason):
+                                        Image(systemName: "photo.badge.exclamationmark")
+                                            .foregroundStyle(.secondary)
+                                            .help(reason)
+                                    case .loading, nil:
+                                        ProgressView().controlSize(.mini)
+                                    }
+                                    if model.previewingMediaID == attachment.id {
+                                        Color.black.opacity(0.18)
+                                        ProgressView().controlSize(.mini)
+                                    }
+                                }
+                                .frame(width: 72, height: 54)
+                                .clipShape(RoundedRectangle(cornerRadius: 7))
+                                .overlay(RoundedRectangle(cornerRadius: 7).stroke(COSPalette.line, lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(model.previewingMediaID != nil)
+                            .help("Open \(attachment.displayLabel.lowercased())")
+                            .onAppear { model.loadThumbnail(attachment) }
+                            .onDisappear { model.cancelThumbnail(attachment) }
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
+            }
+        }
     }
 
     private var doctorCard: some View {

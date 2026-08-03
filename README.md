@@ -59,6 +59,18 @@ contract, or interrupted transaction is shown as a conflict instead of being
 silently replaced. Doctor and Copy Report redact pairing credentials, process
 IDs, and the selected workspace path.
 
+## 0.3.6 photo-aware Recent Glasses
+
+- Recent turns render bounded thumbnails for user photos and generated answer
+  images. Selecting a thumbnail opens a larger local preview.
+- “Copy turn” remains text-only. “Copy + images” explicitly exports a private
+  handoff manifest plus up to five images for a local agent to inspect.
+- Media transfers use the authenticated server route, validate type and size,
+  never return tokens or server storage paths to the UI, and prune stale
+  transfer files on the next media request. Handoff bundles older than 24 hours
+  are pruned on the next Control launch or image export. QA target:
+  `@gotcos/glasses-server` 6.21.4.
+
 ## 0.3.5 transcription tiers and Cursor diagnostics
 
 - The status card identifies the effective transcription tier and all three

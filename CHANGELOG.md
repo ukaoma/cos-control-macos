@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.6 (build 28)
+
+- **Photo-aware Recent Glasses.** Turns now show bounded thumbnails for user
+  photos and answer images. Select one for a larger local preview without
+  exposing the pairing token or server storage paths to the app.
+- **Explicit media handoff.** “Copy + images” creates a private local bundle
+  with the turn text and up to five images so Cursor, Codex, or Claude can
+  inspect the original visual context. Bundles older than 24 hours are pruned
+  on the next Control launch or image export. “Copy turn” remains text-only.
+- **Fail-closed media transport.** Helper downloads are authenticated, capped,
+  MIME/signature checked, written with private permissions, and cleaned up.
+  Missing or expired media stays visibly unavailable without breaking the row.
+- Verified against `@gotcos/glasses-server` 6.21.4.
+
 ## 0.3.5 (build 27)
 
 - **Fast, truthful Claude readiness.** Server 6.21.1 uses Haiku for the

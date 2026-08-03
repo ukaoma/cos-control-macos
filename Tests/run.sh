@@ -15,8 +15,21 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
 
 SELF_TEST="$(COS_CONTROL_TEST_HOME="$TMP/home" "$TMP/cos-control-helper" self-test)"
 /usr/bin/python3 -c 'import json,sys; value=json.loads(sys.argv[1]); assert value["ok"] and value["details"]["tests"] >= 24' "$SELF_TEST"
+
+swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
+  "$ROOT/Sources/Models.swift" \
+  "$ROOT/Tests/ModelsContract.swift" \
+  -framework AppKit \
+  -o "$TMP/models-contract"
+"$TMP/models-contract"
 /usr/bin/grep -q 'cursor-probe-cache.json' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'recent-messages' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "fetch-media"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q '/api/media/\\(id)/content?variant=\\(variant)' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'Copy + images' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'MediaTransfers' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'Handoffs' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'inspect only its generated image-NN.jpg/png files before responding' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'footerLabel' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'npm latest' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'ControllerModel.currentVersion' "$ROOT/Sources/Views.swift"

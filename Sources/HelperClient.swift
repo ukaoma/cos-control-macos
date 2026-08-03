@@ -51,6 +51,53 @@ private final class ProgressLineCollector: @unchecked Sendable {
     }
 }
 
+private final class HelperProcessCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+    private var cancelled = false
+
+    func launch(_ process: Process) throws {
+        lock.lock()
+        if cancelled {
+            lock.unlock()
+            throw CancellationError()
+        }
+        self.process = process
+        do {
+            // Launch while holding the same lock used by cancel(). Cancellation
+            // can therefore occur before launch (and abort), or after launch
+            // (and terminate), but never disappear in between those states.
+            try process.run()
+            lock.unlock()
+        } catch {
+            self.process = nil
+            lock.unlock()
+            throw error
+        }
+    }
+
+    func clear() {
+        lock.lock()
+        process = nil
+        lock.unlock()
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let running = process
+        lock.unlock()
+        if running?.isRunning == true { running?.terminate() }
+    }
+
+    func checkCancellation() throws {
+        lock.lock()
+        let value = cancelled
+        lock.unlock()
+        if value { throw CancellationError() }
+    }
+}
+
 actor HelperClient {
     private func helperURL() throws -> URL {
         if let bundled = Bundle.main.resourceURL?.appendingPathComponent("cos-control-helper"),
@@ -68,31 +115,40 @@ actor HelperClient {
         progress: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> HelperResponse {
         let executable = try helperURL()
-        return try await Task.detached(priority: .userInitiated) {
-            let process = Process()
-            let outputPipe = Pipe()
-            let progressPipe = Pipe()
-            let collector = ProgressLineCollector(callback: progress)
-            process.executableURL = executable
-            process.arguments = arguments
-            process.standardOutput = outputPipe
-            process.standardError = progressPipe
-            progressPipe.fileHandleForReading.readabilityHandler = { handle in
-                collector.consume(handle.availableData)
-            }
-            try process.run()
-            let data = try outputPipe.fileHandleForReading.readToEnd() ?? Data()
-            process.waitUntilExit()
-            progressPipe.fileHandleForReading.readabilityHandler = nil
-            collector.consume(progressPipe.fileHandleForReading.availableData)
-            collector.finish()
-            guard let response = try? JSONDecoder().decode(HelperResponse.self, from: data) else {
-                throw HelperClientError.invalidResponse(String(decoding: data, as: UTF8.self))
-            }
-            guard process.terminationStatus == 0, response.ok else {
-                throw HelperClientError.commandFailed(response.message)
-            }
-            return response
-        }.value
+        let cancellation = HelperProcessCancellation()
+        return try await withTaskCancellationHandler {
+            try await Task.detached(priority: .userInitiated) {
+                try Task.checkCancellation()
+                let process = Process()
+                try cancellation.checkCancellation()
+                defer { cancellation.clear() }
+                let outputPipe = Pipe()
+                let progressPipe = Pipe()
+                let collector = ProgressLineCollector(callback: progress)
+                process.executableURL = executable
+                process.arguments = arguments
+                process.standardOutput = outputPipe
+                process.standardError = progressPipe
+                progressPipe.fileHandleForReading.readabilityHandler = { handle in
+                    collector.consume(handle.availableData)
+                }
+                try cancellation.launch(process)
+                let data = try outputPipe.fileHandleForReading.readToEnd() ?? Data()
+                process.waitUntilExit()
+                progressPipe.fileHandleForReading.readabilityHandler = nil
+                collector.consume(progressPipe.fileHandleForReading.availableData)
+                collector.finish()
+                try cancellation.checkCancellation()
+                guard let response = try? JSONDecoder().decode(HelperResponse.self, from: data) else {
+                    throw HelperClientError.invalidResponse(String(decoding: data, as: UTF8.self))
+                }
+                guard process.terminationStatus == 0, response.ok else {
+                    throw HelperClientError.commandFailed(response.message)
+                }
+                return response
+            }.value
+        } onCancel: {
+            cancellation.cancel()
+        }
     }
 }

@@ -2,6 +2,43 @@ import AppKit
 import Foundation
 import ServiceManagement
 
+private actor MediaFetchGate {
+    private var available = 2
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if available > 0 {
+            available -= 1
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        if waiters.isEmpty { available = min(2, available + 1) }
+        else { waiters.removeFirst().resume() }
+    }
+}
+
+private enum MediaFetchError: LocalizedError {
+    case unavailable(String)
+    case invalidResponse
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable(let state):
+            switch state {
+            case "expired": return "This image has expired."
+            case "missing": return "This image is no longer available."
+            case "unauthorized": return "Image access is unauthorized. Refresh the pairing token."
+            case "offline": return "The COS server is offline."
+            default: return "This image is unavailable."
+            }
+        case .invalidResponse: return "COS returned an invalid image response."
+        }
+    }
+}
+
 @MainActor
 final class ControllerModel: ObservableObject {
     /// Install / Adopt / Update Server always resolve npm `@latest` — the panel
@@ -24,6 +61,10 @@ final class ControllerModel: ObservableObject {
     @Published var recentGlassesStatus: RecentGlassesStatus = .idle
     @Published var recentGlassesDate: String?
     @Published var appUpdate = AppUpdateInfo()
+    @Published var mediaPreviewStates: [String: RecentMediaPreviewState] = [:]
+    @Published var selectedMediaPreview: SelectedMediaPreview?
+    @Published var previewingMediaID: String?
+    @Published var mediaExportingTurnIDs: Set<String> = []
 
     /// This build's identity, handed to the helper so the answer can never depend on
     /// WHICH helper copy ran (bundled vs stable, HelperClient.helperURL():55-64).
@@ -35,10 +76,14 @@ final class ControllerModel: ObservableObject {
     }
 
     private let helper = HelperClient()
+    private let mediaFetchGate = MediaFetchGate()
     private var refreshTask: Task<Void, Never>?
     private var updateCheckTask: Task<Void, Never>?
+    private var thumbnailTasks: [String: Task<Void, Never>] = [:]
+    private var thumbnailLoadIDs: [String: UUID] = [:]
 
     init() {
+        try? Self.pruneMediaHandoffs()
         refreshTask = Task { [weak self] in
             await self?.refresh()
             while !Task.isCancelled {
@@ -84,6 +129,7 @@ final class ControllerModel: ObservableObject {
     deinit {
         refreshTask?.cancel()
         updateCheckTask?.cancel()
+        thumbnailTasks.values.forEach { $0.cancel() }
     }
 
     func refresh(quiet: Bool = false) async {
@@ -103,15 +149,19 @@ final class ControllerModel: ObservableObject {
         recentGlassesExpanded = expanded
         if expanded {
             Task { await refreshRecentMessages() }
+        } else {
+            cancelAllThumbnailLoads()
         }
     }
 
     func refreshRecentMessages(quiet: Bool = false) async {
+        cancelAllThumbnailLoads()
         if !quiet { recentGlassesStatus = .loading }
         do {
             let response = try await helper.run(["recent-messages", "--limit", "30"])
             let messages = Self.parseMessages(response.details["messages"])
             recentMessages = messages
+            reconcilePreviewCache(with: messages)
             recentGlassesDate = response.details["date"]?.string
             if messages.isEmpty || response.details["state"]?.string == "empty" {
                 recentGlassesStatus = .empty
@@ -137,6 +187,256 @@ final class ControllerModel: ObservableObject {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(turn.turnClipboardText, forType: .string)
         notice = "Copied"
+    }
+
+    func loadThumbnail(_ attachment: GlassesAttachmentRef) {
+        guard mediaPreviewStates[attachment.id] == nil, thumbnailTasks[attachment.id] == nil else { return }
+        let loadID = UUID()
+        thumbnailLoadIDs[attachment.id] = loadID
+        mediaPreviewStates[attachment.id] = .loading
+        thumbnailTasks[attachment.id] = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if thumbnailLoadIDs[attachment.id] == loadID {
+                    thumbnailTasks[attachment.id] = nil
+                    thumbnailLoadIDs[attachment.id] = nil
+                }
+            }
+            do {
+                let file = try await fetchMediaFile(attachment, variant: "thumb", purpose: "preview")
+                defer { try? FileManager.default.removeItem(at: file.url) }
+                guard !Task.isCancelled, thumbnailLoadIDs[attachment.id] == loadID,
+                      let image = RecentMediaImageDecoder.decode(url: file.url, expectedBytes: file.bytes) else {
+                    if !Task.isCancelled, thumbnailLoadIDs[attachment.id] == loadID {
+                        mediaPreviewStates[attachment.id] = .unavailable("Invalid image")
+                    }
+                    return
+                }
+                mediaPreviewStates[attachment.id] = .ready(image)
+            } catch {
+                if !Task.isCancelled, thumbnailLoadIDs[attachment.id] == loadID {
+                    mediaPreviewStates[attachment.id] = .unavailable(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    func cancelThumbnail(_ attachment: GlassesAttachmentRef) {
+        guard case .loading? = mediaPreviewStates[attachment.id] else { return }
+        thumbnailLoadIDs.removeValue(forKey: attachment.id)
+        thumbnailTasks.removeValue(forKey: attachment.id)?.cancel()
+        mediaPreviewStates.removeValue(forKey: attachment.id)
+    }
+
+    func openMediaPreview(_ attachment: GlassesAttachmentRef) {
+        guard previewingMediaID == nil else { return }
+        previewingMediaID = attachment.id
+        Task { [weak self] in
+            guard let self else { return }
+            defer { previewingMediaID = nil }
+            do {
+                let file = try await fetchMediaFile(attachment, variant: "phone", purpose: "preview")
+                defer { try? FileManager.default.removeItem(at: file.url) }
+                guard let image = RecentMediaImageDecoder.decode(url: file.url, expectedBytes: file.bytes) else {
+                    throw MediaFetchError.invalidResponse
+                }
+                selectedMediaPreview = SelectedMediaPreview(attachment: attachment, image: image)
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    func copyTurnWithImages(_ turn: GlassesTurn) {
+        guard !turn.attachments.isEmpty, mediaExportingTurnIDs.insert(turn.id).inserted else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            defer { mediaExportingTurnIDs.remove(turn.id) }
+            do {
+                let manifest = try await exportMediaHandoff(for: turn)
+                let copy = "Continue from this COS Glasses handoff:\n\(manifest.path)\n\nOpen the handoff and inspect only its generated image-NN.jpg/png files before responding."
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(copy, forType: .string)
+                notice = "Image handoff copied · pruned after 24h on next launch or export"
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    private func cancelAllThumbnailLoads() {
+        for (id, task) in thumbnailTasks {
+            task.cancel()
+            if case .loading? = mediaPreviewStates[id] { mediaPreviewStates.removeValue(forKey: id) }
+        }
+        thumbnailTasks.removeAll()
+        thumbnailLoadIDs.removeAll()
+    }
+
+    private func reconcilePreviewCache(with turns: [GlassesTurn]) {
+        let activeIDs = Set(turns.flatMap { $0.attachments.map(\.id) })
+        mediaPreviewStates = mediaPreviewStates.filter { id, state in
+            guard activeIDs.contains(id) else { return false }
+            if case .ready = state { return true }
+            return false
+        }
+    }
+
+    private func fetchMediaFile(
+        _ attachment: GlassesAttachmentRef,
+        variant: String,
+        purpose: String
+    ) async throws -> (url: URL, mime: String, bytes: Int) {
+        await mediaFetchGate.acquire()
+        let response: HelperResponse
+        do {
+            try Task.checkCancellation()
+            response = try await helper.run([
+                "fetch-media", "--id", attachment.id,
+                "--variant", variant,
+                "--purpose", purpose,
+            ])
+            await mediaFetchGate.release()
+        } catch {
+            await mediaFetchGate.release()
+            throw error
+        }
+        let state = response.details["state"]?.string ?? "invalid"
+        guard state == "ready" else { throw MediaFetchError.unavailable(state) }
+        guard let path = response.details["path"]?.string,
+              let mime = response.details["mime"]?.string,
+              ["image/jpeg", "image/png"].contains(mime),
+              let bytes = response.details["bytes"]?.int, bytes > 0 else {
+            throw MediaFetchError.invalidResponse
+        }
+        let file = URL(fileURLWithPath: path).standardizedFileURL
+        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("com.gotcos.COSControl/MediaTransfers", isDirectory: true)
+            .standardizedFileURL
+        guard file.path.hasPrefix(root.path + "/") else { throw MediaFetchError.invalidResponse }
+        let values = try file.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey, .fileSizeKey])
+        guard values.isSymbolicLink != true, values.isRegularFile == true,
+              values.fileSize == bytes else { throw MediaFetchError.invalidResponse }
+        return (file, mime, bytes)
+    }
+
+    private func exportMediaHandoff(for turn: GlassesTurn) async throws -> URL {
+        try Self.pruneMediaHandoffs()
+        let fm = FileManager.default
+        let root = try Self.privateHandoffRoot()
+        let suffix = String(UUID().uuidString.lowercased().prefix(8))
+        let number = turn.no.map(String.init) ?? "turn"
+        let staging = root.appendingPathComponent(".staging-\(suffix)", isDirectory: true)
+        let final = root.appendingPathComponent("msg-\(number)-\(suffix)", isDirectory: true)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        var committed = false
+        defer { if !committed { try? fm.removeItem(at: staging) } }
+
+        var imageLines: [String] = []
+        var totalBytes = 0
+        for (index, attachment) in turn.attachments.prefix(5).enumerated() {
+            do {
+                let file = try await fetchMediaFile(attachment, variant: "phone", purpose: "handoff")
+                defer { if fm.fileExists(atPath: file.url.path) { try? fm.removeItem(at: file.url) } }
+                guard totalBytes + file.bytes <= 25 * 1_024 * 1_024 else {
+                    imageLines.append("- \(attachment.displayLabel) (\(attachment.mime), \(attachment.width)×\(attachment.height)): omitted (25 MiB handoff limit)")
+                    continue
+                }
+                guard RecentMediaImageDecoder.decode(url: file.url, expectedBytes: file.bytes) != nil else {
+                    throw MediaFetchError.invalidResponse
+                }
+                let ext = file.mime == "image/png" ? "png" : "jpg"
+                let name = String(format: "image-%02d.%@", index + 1, ext)
+                let destination = staging.appendingPathComponent(name)
+                try fm.moveItem(at: file.url, to: destination)
+                try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+                totalBytes += file.bytes
+                let safeLabel = Self.safeManifestLabel(attachment.label ?? attachment.displayLabel)
+                imageLines.append("- \(attachment.displayLabel) (\(attachment.mime), \(attachment.width)×\(attachment.height), \(safeLabel))\n\n  ![\(attachment.displayLabel)](\(name))")
+            } catch {
+                imageLines.append("- \(attachment.displayLabel) (\(attachment.mime), \(attachment.width)×\(attachment.height)): unavailable (\(error.localizedDescription))")
+            }
+        }
+
+        let label = turn.no.map { "Msg \($0)" } ?? "Msg"
+        let manifest = """
+        # COS Glasses image handoff
+
+        Temporary local export. Bundles older than 24 hours are pruned on the
+        next COS Control launch or image export.
+
+        ## \(label)
+
+        **User**
+
+        \(Self.inertManifestText(turn.query))
+
+        **COS**
+
+        \(Self.inertManifestText(turn.text))
+
+        ## Images
+
+        \(imageLines.isEmpty ? "- No image bytes were available." : imageLines.joined(separator: "\n"))
+        """
+        let manifestURL = staging.appendingPathComponent("handoff.md")
+        try manifest.write(to: manifestURL, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: manifestURL.path)
+        try fm.moveItem(at: staging, to: final)
+        committed = true
+        return final.appendingPathComponent("handoff.md")
+    }
+
+    private static func inertManifestText(_ value: String) -> String {
+        let normalized = value.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        return normalized.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { "    \($0)" }
+            .joined(separator: "\n")
+    }
+
+    private static func safeManifestLabel(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(.whitespaces).union(CharacterSet(charactersIn: "-_."))
+        let sanitized = String(value.unicodeScalars.map { allowed.contains($0) ? Character(String($0)) : " " })
+            .replacingOccurrences(of: "  ", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return String((sanitized.isEmpty ? "image" : sanitized).prefix(120))
+    }
+
+    private static func privateHandoffRoot() throws -> URL {
+        let fm = FileManager.default
+        let cache = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("com.gotcos.COSControl", isDirectory: true)
+        let root = cache.appendingPathComponent("Handoffs", isDirectory: true)
+        for directory in [cache, root] {
+            if fm.fileExists(atPath: directory.path) {
+                let values = try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                guard values.isDirectory == true, values.isSymbolicLink != true else { throw MediaFetchError.invalidResponse }
+            } else {
+                try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            }
+            try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        }
+        return root.standardizedFileURL
+    }
+
+    private static func pruneMediaHandoffs(now: Date = Date()) throws {
+        let fm = FileManager.default
+        let root = try privateHandoffRoot()
+        let cutoff = now.addingTimeInterval(-24 * 60 * 60)
+        let entries = try fm.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey],
+            options: []
+        )
+        for entry in entries {
+            let normalized = entry.standardizedFileURL
+            guard normalized.path.hasPrefix(root.path + "/") else { continue }
+            let values = try normalized.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true,
+                  (values.contentModificationDate ?? .distantFuture) < cutoff else { continue }
+            try? fm.removeItem(at: normalized)
+        }
     }
 
     func copyHandoff() {
