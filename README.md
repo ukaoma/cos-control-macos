@@ -37,6 +37,21 @@ one LaunchAgent, `com.cos.glasses-server`, as the sole server owner.
 Existing data remains under the standard COS Glasses locations. The existing
 `npx @gotcos/glasses-server` foreground workflow remains supported.
 
+## 0.3.7 background jobs control
+
+- Background jobs are enabled by default on compatible servers so accepted
+  queries can finish while the phone is locked, disconnected, or browsing
+  elsewhere.
+- The machine-wide toggle applies `COS_DURABLE_QUERY_JOBS=0` when disabled.
+  Apply uses the same safe drain, immutable restart, authenticated health proof,
+  and verified rollback contract as other provider-environment changes.
+- COS Control is the single user-facing policy surface. The phone companion
+  follows the authenticated server capability and does not carry a second
+  opt-out that can drift between devices.
+- Cancellation remains deliberate: double-tap once to arm and again within
+  three seconds to confirm. The controller does not change that gesture.
+- QA target: `@gotcos/glasses-server` 6.21.6 and COS Glasses 6.8.278.
+
 ## Lifecycle safety
 
 COS Control stages and verifies an immutable npm generation before touching the

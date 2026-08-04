@@ -88,6 +88,7 @@ struct ControlPanel: View {
     @State private var confirmInstallManaged = false
     @State private var showGuidedSetupTier = false
     @State private var selectedTranscriptionTier = "balanced"
+    @State private var selectedBackgroundJobs = true
 
     var body: some View {
         ScrollView {
@@ -119,9 +120,13 @@ struct ControlPanel: View {
                tier == "max" || tier == "balanced" {
                 selectedTranscriptionTier = tier
             }
+            if let enabled = model.status.backgroundJobsEnabled { selectedBackgroundJobs = enabled }
         }
         .onChange(of: model.status.transcriptionRequestedTier) { _, tier in
             if let tier, tier == "max" || tier == "balanced" { selectedTranscriptionTier = tier }
+        }
+        .onChange(of: model.status.backgroundJobsEnabled) { _, enabled in
+            if let enabled { selectedBackgroundJobs = enabled }
         }
         .alert("COS Control", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
@@ -190,6 +195,9 @@ struct ControlPanel: View {
             statusRow("Ownership", value: ownershipLabel, good: model.status.ownershipVerified)
             statusRow("Recovery", value: model.status.recoveryLoaded ? "Scheduled" : "Needs repair", good: model.status.recoveryInstalled && model.status.recoveryLoaded)
             statusRow("Local Whisper", value: whisperLabel, good: model.status.whisperReady)
+            if model.status.backgroundJobsSupported, let enabled = model.status.backgroundJobsEnabled {
+                statusRow("Background jobs", value: enabled ? "Allowed" : "Off", good: enabled)
+            }
             if !model.status.whisperReady, let error = model.status.whisperError, !error.isEmpty {
                 Text(error)
                     .font(.caption2)
@@ -587,6 +595,18 @@ struct ControlPanel: View {
                 Label("Update Server to 6.21.0 or newer to enable transcription tier controls.", systemImage: "arrow.down.circle")
                     .font(.caption2)
                     .foregroundStyle(COSPalette.amber)
+            }
+            if model.status.backgroundJobsSupported {
+                HStack(spacing: 8) {
+                    Toggle("Background jobs", isOn: $selectedBackgroundJobs)
+                    Button("Apply") { model.setBackgroundJobsEnabled(selectedBackgroundJobs) }
+                        .disabled(model.busy
+                            || (!model.status.installed && model.status.runtimeState != "managedInPlace")
+                            || (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0)
+                }
+                Text("On by default. Replies keep running when the companion closes or you browse elsewhere. Existing work must finish before this machine-wide setting changes.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
             HStack {
                 Button("Repair Managed Runtime", systemImage: "wrench.and.screwdriver") { model.perform("repair") }

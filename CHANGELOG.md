@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.7 (build 29)
+
+- Add a machine-wide Background jobs control. It writes the existing
+  `COS_DURABLE_QUERY_JOBS` policy through Control's transactional provider-env
+  path, drains active work, restarts under launchd, verifies authenticated
+  capability truth, and rolls back automatically if proof fails.
+- Show Background jobs status in the main health card. On is the server 6.21.6
+  default; Off remains the immediate machine-wide rollback for new prompts.
+- Keep one policy owner: COS Control changes the server capability, and every
+  companion follows that authenticated result. No per-device opt-out can drift
+  between phones; accepted jobs remain recoverable and cancellable.
+
 ## 0.3.6 (build 28)
 
 - **Photo-aware Recent Glasses.** Turns now show bounded thumbnails for user

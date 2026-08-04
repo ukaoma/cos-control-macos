@@ -363,6 +363,10 @@ final class COSControlHelper {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing transcription tier") }
             try setTranscriptionTier(value)
         }
+        case "set-background-jobs": try withMutationLock {
+            guard let value = args.dropFirst().first else { throw HelperError.message("missing background jobs setting") }
+            try setBackgroundJobs(value)
+        }
         case "token": try copyPairingToken()
         case "expire-clipboard": try expireClipboard(args: args)
         case "report": emit(ok: true, message: "Redacted report ready", details: ["report": redactedReport()])
@@ -1865,6 +1869,7 @@ final class COSControlHelper {
         let liveTranscription = transcription?["live"] as? [String: Any]
         let hqTranscription = transcription?["hq"] as? [String: Any]
         let transcriptionProfile = transcription?["profile"] as? [String: Any]
+        let featureFlags = health?["features"] as? [String: Any]
         let requestedTier = liveTranscription?["requestedTier"] as? String
         let effectiveTier = liveTranscription?["effectiveTier"] as? String
         let commitReason = liveTranscription?["commitReason"] as? String
@@ -1882,6 +1887,16 @@ final class COSControlHelper {
         // as the backward-compatible fallback.
         let previewDegraded = (liveTranscription?["previewDegraded"] as? Bool)
             ?? ((liveTranscription?["degraded"] as? Bool) ?? false)
+        let reportedBackgroundJobs = featureFlags?["durableQueryJobs"] as? Bool
+        let reportedVersion = (maintenance?["serverVersion"] as? String)
+            ?? (health?["server_version"] as? String)
+            ?? manifest?.version
+        let backgroundJobsSupported = reportedBackgroundJobs != nil
+            || reportedVersion.map { versionAtLeast($0, "6.21.5") } == true
+        let configuredBackgroundJobs = manifest?.providerEnvironment?["COS_DURABLE_QUERY_JOBS"]
+            ?? (launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String])?["COS_DURABLE_QUERY_JOBS"]
+        let backgroundJobsEnabled = reportedBackgroundJobs
+            ?? (backgroundJobsSupported ? configuredBackgroundJobs != "0" : nil)
         var details: [String: Any] = [
             "installed": manifest != nil,
             "serviceLoaded": snapshot.serviceLoaded,
@@ -1910,6 +1925,8 @@ final class COSControlHelper {
             "safeToRestart": (managed || inPlaceActive()) ? (maintenance?["safeToRestart"] ?? false) : false,
             "activeJobs": maintenance?["activeJobs"] ?? NSNull(),
             "activeTranscriptionSessions": maintenance?["activeTranscriptionSessions"] ?? NSNull(),
+            "backgroundJobsSupported": backgroundJobsSupported,
+            "backgroundJobsEnabled": backgroundJobsEnabled ?? NSNull(),
             "whisperReady": ((health?["whisper_health"] as? [String: Any])?["server"] as? Bool) ?? false,
             "whisperCircuitOpen": ((health?["whisper_health"] as? [String: Any])?["circuitOpen"] as? Bool) ?? false,
             "whisperStartupState": (health?["whisper_health"] as? [String: Any])?["startupState"] ?? NSNull(),
@@ -3046,6 +3063,41 @@ final class COSControlHelper {
         try applyInPlaceProviderEnvironment(values, operationLabel: label)
     }
 
+    private func setBackgroundJobs(_ raw: String) throws {
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard ["on", "off"].contains(normalized) else {
+            throw HelperError.message("Unknown background jobs setting. Choose On or Off.")
+        }
+        let health = request("/api/health", timeout: 12)?.body
+        let features = health?["features"] as? [String: Any]
+        let stoppedCompatibleManagedServer = loadManifest().map {
+            $0.desiredState == "stopped" && versionAtLeast($0.version, "6.21.5")
+        } ?? false
+        guard features?["durableQueryJobs"] != nil || stoppedCompatibleManagedServer else {
+            throw HelperError.message("Update the managed server to 6.21.5 or newer before changing Background jobs.")
+        }
+        let enabled = normalized == "on"
+        let values = ["COS_DURABLE_QUERY_JOBS": enabled ? "1" : "0"]
+        let operationLabel = enabled ? "Background jobs" : "Background jobs off"
+        if let manifest = loadManifest() {
+            try applyManagedProviderEnvironment(values, current: manifest, operationLabel: operationLabel)
+            return
+        }
+        guard inPlaceActive() else {
+            throw HelperError.message("Install the managed server or choose Manage in place first.")
+        }
+        try applyInPlaceProviderEnvironment(values, operationLabel: operationLabel)
+    }
+
+    private func requireBackgroundJobs(_ raw: String) throws {
+        let expected = raw != "0"
+        let health = request("/api/health", timeout: 12)?.body
+        let features = health?["features"] as? [String: Any]
+        guard features?["durableQueryJobs"] as? Bool == expected else {
+            throw HelperError.message("the restarted server did not report Background jobs as \(expected ? "enabled" : "disabled")")
+        }
+    }
+
     /// Verify the persisted policy after restart and return the model tier that
     /// is actually active. Max may truthfully degrade to Balanced when the
     /// Large-v3 weights are unavailable; callers must surface that fallback
@@ -3193,6 +3245,9 @@ final class COSControlHelper {
                 if let tier = values["COS_WHISPER_TRANSCRIPTION_TIER"] {
                     effectiveTier = try requireTranscriptionTier(tier)
                 }
+                if let backgroundJobs = values["COS_DURABLE_QUERY_JOBS"] {
+                    try requireBackgroundJobs(backgroundJobs)
+                }
                 try requireMaintenanceRelease(activeLease)
             }
             clearTransaction()
@@ -3268,6 +3323,9 @@ final class COSControlHelper {
             let effectiveTier = alreadyActive
                 ? try values["COS_WHISPER_TRANSCRIPTION_TIER"].map { try requireTranscriptionTier($0) }
                 : nil
+            if alreadyActive, let backgroundJobs = values["COS_DURABLE_QUERY_JOBS"] {
+                try requireBackgroundJobs(backgroundJobs)
+            }
             let message: String
             if alreadyActive, values["COS_WHISPER_TRANSCRIPTION_TIER"] == "max", effectiveTier == "balanced" {
                 message = "Max transcription is saved; running Balanced fallback because Large-v3 is unavailable"
@@ -3318,6 +3376,9 @@ final class COSControlHelper {
                 throw HelperError.message("launchd did not replace the prior server process.")
             }
             let effectiveTier = try values["COS_WHISPER_TRANSCRIPTION_TIER"].map { try requireTranscriptionTier($0) }
+            if let backgroundJobs = values["COS_DURABLE_QUERY_JOBS"] {
+                try requireBackgroundJobs(backgroundJobs)
+            }
             try requireMaintenanceRelease(activeLease)
             clearInPlaceConfigurationTransaction()
             let message = values["COS_WHISPER_TRANSCRIPTION_TIER"] == "max" && effectiveTier == "balanced"

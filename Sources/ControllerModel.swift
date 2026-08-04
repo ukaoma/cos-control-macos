@@ -584,6 +584,10 @@ final class ControllerModel: ObservableObject {
         perform("set-transcription-tier", arguments: [tier])
     }
 
+    func setBackgroundJobsEnabled(_ enabled: Bool) {
+        perform("set-background-jobs", arguments: [enabled ? "on" : "off"])
+    }
+
     func runGuidedSetup(tier: String) {
         let normalized = tier.lowercased() == "max" ? "max" : "balanced"
         let command = "npx --yes @gotcos/glasses-server@latest --setup-transcription --transcription-tier \(normalized) --prepare-only"

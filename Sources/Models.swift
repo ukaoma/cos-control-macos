@@ -68,6 +68,8 @@ struct ServerStatus: Sendable {
     var safeToRestart = false
     var activeJobs: Int?
     var activeTranscriptionSessions: Int?
+    var backgroundJobsSupported = false
+    var backgroundJobsEnabled: Bool?
     var whisperReady = false
     var whisperCircuitOpen = false
     var whisperStartupState: String?
@@ -130,6 +132,8 @@ struct ServerStatus: Sendable {
         safeToRestart = details["safeToRestart"]?.bool ?? false
         activeJobs = details["activeJobs"]?.int
         activeTranscriptionSessions = details["activeTranscriptionSessions"]?.int
+        backgroundJobsSupported = details["backgroundJobsSupported"]?.bool ?? false
+        backgroundJobsEnabled = details["backgroundJobsEnabled"]?.bool
         whisperReady = details["whisperReady"]?.bool ?? false
         whisperCircuitOpen = details["whisperCircuitOpen"]?.bool ?? false
         whisperStartupState = details["whisperStartupState"]?.string
