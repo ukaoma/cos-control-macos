@@ -89,6 +89,7 @@ struct ControlPanel: View {
     @State private var showGuidedSetupTier = false
     @State private var selectedTranscriptionTier = "balanced"
     @State private var selectedBackgroundJobs = true
+    @State private var selectedMeetingPreview = false
 
     var body: some View {
         ScrollView {
@@ -121,12 +122,16 @@ struct ControlPanel: View {
                 selectedTranscriptionTier = tier
             }
             if let enabled = model.status.backgroundJobsEnabled { selectedBackgroundJobs = enabled }
+            if let enabled = model.status.meetingPreviewEnabled { selectedMeetingPreview = enabled }
         }
         .onChange(of: model.status.transcriptionRequestedTier) { _, tier in
             if let tier, tier == "max" || tier == "balanced" { selectedTranscriptionTier = tier }
         }
         .onChange(of: model.status.backgroundJobsEnabled) { _, enabled in
             if let enabled { selectedBackgroundJobs = enabled }
+        }
+        .onChange(of: model.status.meetingPreviewEnabled) { _, enabled in
+            if let enabled { selectedMeetingPreview = enabled }
         }
         .alert("COS Control", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
@@ -197,6 +202,9 @@ struct ControlPanel: View {
             statusRow("Local Whisper", value: whisperLabel, good: model.status.whisperReady)
             if model.status.backgroundJobsSupported, let enabled = model.status.backgroundJobsEnabled {
                 statusRow("Background jobs", value: enabled ? "Allowed" : "Off", good: enabled)
+            }
+            if model.status.meetingPreviewSupported, let enabled = model.status.meetingPreviewEnabled {
+                statusRow("Meeting preview", value: enabled ? "Turbo · On" : "Off", good: enabled)
             }
             if !model.status.whisperReady, let error = model.status.whisperError, !error.isEmpty {
                 Text(error)
@@ -605,6 +613,18 @@ struct ControlPanel: View {
                             || (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0)
                 }
                 Text("On by default. Replies keep running when the companion closes or you browse elsewhere. Existing work must finish before this machine-wide setting changes.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if model.status.meetingPreviewSupported {
+                HStack(spacing: 8) {
+                    Toggle("Meeting Turbo preview", isOn: $selectedMeetingPreview)
+                    Button("Apply") { model.setMeetingPreviewEnabled(selectedMeetingPreview) }
+                        .disabled(model.busy
+                            || (!model.status.installed && model.status.runtimeState != "managedInPlace")
+                            || (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0)
+                }
+                Text("Shows fast provisional meeting text, then replaces it with the canonical speaker-attributed transcript. Disable for immediate rollback.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

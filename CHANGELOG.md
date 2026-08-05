@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.8 (build 30)
+
+- Add a machine-wide Meeting Turbo preview control for server 6.21.7+. It
+  persists `COS_WHISPER_MEETING_PREVIEW` through Control's managed provider
+  environment instead of relying on a hand-edited LaunchAgent.
+- Apply uses the existing drain, bootout/bootstrap, lifecycle proof, and
+  rollback transaction. Control verifies the replacement launchd process
+  loaded the requested setting before reporting success.
+- Show the active meeting-preview policy in the health card. Turbo provisional
+  text remains cosmetic; Large-v3 stays canonical and speaker-attributed.
+
 ## 0.3.7 (build 29)
 
 - Add a machine-wide Background jobs control. It writes the existing

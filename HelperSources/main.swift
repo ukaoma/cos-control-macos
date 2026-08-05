@@ -284,6 +284,7 @@ final class COSControlHelper {
         "COS_WHISPER_REALTIME_MODEL",
         "COS_WHISPER_TRANSCRIPTION_TIER",
         "COS_WHISPER_COMMIT_MODEL",
+        "COS_WHISPER_MEETING_PREVIEW",
     ]
 
     private lazy var support = home.appendingPathComponent("Library/Application Support/COS Control", isDirectory: true)
@@ -366,6 +367,10 @@ final class COSControlHelper {
         case "set-background-jobs": try withMutationLock {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing background jobs setting") }
             try setBackgroundJobs(value)
+        }
+        case "set-meeting-preview": try withMutationLock {
+            guard let value = args.dropFirst().first else { throw HelperError.message("missing meeting preview setting") }
+            try setMeetingPreview(value)
         }
         case "token": try copyPairingToken()
         case "expire-clipboard": try expireClipboard(args: args)
@@ -1897,6 +1902,12 @@ final class COSControlHelper {
             ?? (launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String])?["COS_DURABLE_QUERY_JOBS"]
         let backgroundJobsEnabled = reportedBackgroundJobs
             ?? (backgroundJobsSupported ? configuredBackgroundJobs != "0" : nil)
+        let meetingPreviewSupported = reportedVersion.map { versionAtLeast($0, "6.21.7") } == true
+        let configuredMeetingPreview = manifest?.providerEnvironment?["COS_WHISPER_MEETING_PREVIEW"]
+            ?? (launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String])?["COS_WHISPER_MEETING_PREVIEW"]
+        let meetingPreviewEnabled = meetingPreviewSupported
+            ? ((health != nil ? loadedEnvironmentValue("COS_WHISPER_MEETING_PREVIEW") : configuredMeetingPreview) == "1")
+            : nil
         var details: [String: Any] = [
             "installed": manifest != nil,
             "serviceLoaded": snapshot.serviceLoaded,
@@ -1927,6 +1938,8 @@ final class COSControlHelper {
             "activeTranscriptionSessions": maintenance?["activeTranscriptionSessions"] ?? NSNull(),
             "backgroundJobsSupported": backgroundJobsSupported,
             "backgroundJobsEnabled": backgroundJobsEnabled ?? NSNull(),
+            "meetingPreviewSupported": meetingPreviewSupported,
+            "meetingPreviewEnabled": meetingPreviewEnabled ?? NSNull(),
             "whisperReady": ((health?["whisper_health"] as? [String: Any])?["server"] as? Bool) ?? false,
             "whisperCircuitOpen": ((health?["whisper_health"] as? [String: Any])?["circuitOpen"] as? Bool) ?? false,
             "whisperStartupState": (health?["whisper_health"] as? [String: Any])?["startupState"] ?? NSNull(),
@@ -3098,6 +3111,39 @@ final class COSControlHelper {
         }
     }
 
+    private func setMeetingPreview(_ raw: String) throws {
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard ["on", "off"].contains(normalized) else {
+            throw HelperError.message("Unknown meeting preview setting. Choose On or Off.")
+        }
+        let health = request("/api/health", timeout: 12)?.body
+        let runningVersion = health?["server_version"] as? String
+        let stoppedCompatibleManagedServer = loadManifest().map {
+            $0.desiredState == "stopped" && versionAtLeast($0.version, "6.21.7")
+        } ?? false
+        guard runningVersion.map({ versionAtLeast($0, "6.21.7") }) == true || stoppedCompatibleManagedServer else {
+            throw HelperError.message("Update the managed server to 6.21.7 or newer before changing Meeting Turbo preview.")
+        }
+        let enabled = normalized == "on"
+        let values = ["COS_WHISPER_MEETING_PREVIEW": enabled ? "1" : "0"]
+        let operationLabel = enabled ? "Meeting Turbo preview" : "Meeting Turbo preview off"
+        if let manifest = loadManifest() {
+            try applyManagedProviderEnvironment(values, current: manifest, operationLabel: operationLabel)
+            return
+        }
+        guard inPlaceActive() else {
+            throw HelperError.message("Install the managed server or choose Manage in place first.")
+        }
+        try applyInPlaceProviderEnvironment(values, operationLabel: operationLabel)
+    }
+
+    private func requireMeetingPreview(_ raw: String) throws {
+        let expected = raw == "1"
+        guard loadedEnvironmentValue("COS_WHISPER_MEETING_PREVIEW") == (expected ? "1" : "0") else {
+            throw HelperError.message("the restarted server did not load Meeting Turbo preview as \(expected ? "enabled" : "disabled")")
+        }
+    }
+
     /// Verify the persisted policy after restart and return the model tier that
     /// is actually active. Max may truthfully degrade to Balanced when the
     /// Large-v3 weights are unavailable; callers must surface that fallback
@@ -3248,6 +3294,9 @@ final class COSControlHelper {
                 if let backgroundJobs = values["COS_DURABLE_QUERY_JOBS"] {
                     try requireBackgroundJobs(backgroundJobs)
                 }
+                if let meetingPreview = values["COS_WHISPER_MEETING_PREVIEW"] {
+                    try requireMeetingPreview(meetingPreview)
+                }
                 try requireMaintenanceRelease(activeLease)
             }
             clearTransaction()
@@ -3326,6 +3375,9 @@ final class COSControlHelper {
             if alreadyActive, let backgroundJobs = values["COS_DURABLE_QUERY_JOBS"] {
                 try requireBackgroundJobs(backgroundJobs)
             }
+            if alreadyActive, let meetingPreview = values["COS_WHISPER_MEETING_PREVIEW"] {
+                try requireMeetingPreview(meetingPreview)
+            }
             let message: String
             if alreadyActive, values["COS_WHISPER_TRANSCRIPTION_TIER"] == "max", effectiveTier == "balanced" {
                 message = "Max transcription is saved; running Balanced fallback because Large-v3 is unavailable"
@@ -3378,6 +3430,9 @@ final class COSControlHelper {
             let effectiveTier = try values["COS_WHISPER_TRANSCRIPTION_TIER"].map { try requireTranscriptionTier($0) }
             if let backgroundJobs = values["COS_DURABLE_QUERY_JOBS"] {
                 try requireBackgroundJobs(backgroundJobs)
+            }
+            if let meetingPreview = values["COS_WHISPER_MEETING_PREVIEW"] {
+                try requireMeetingPreview(meetingPreview)
             }
             try requireMaintenanceRelease(activeLease)
             clearInPlaceConfigurationTransaction()
@@ -4307,6 +4362,7 @@ final class COSControlHelper {
             providerEnvironment: [
                 "COS_HARNESS": "codex",
                 "COS_EXTRA_TOOLS": "mcp__calendar__*",
+                "COS_WHISPER_MEETING_PREVIEW": "1",
                 "COS_API_TOKEN": "must-not-survive",
             ],
             retainedGenerations: [],
@@ -4319,6 +4375,7 @@ final class COSControlHelper {
         try expect(
             filtered["COS_HARNESS"] == "codex"
                 && filtered["COS_EXTRA_TOOLS"] == "mcp__calendar__*"
+                && filtered["COS_WHISPER_MEETING_PREVIEW"] == "1"
                 && filtered["COS_API_TOKEN"] == nil,
             "provider allowlist"
         )

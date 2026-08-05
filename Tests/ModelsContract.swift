@@ -35,6 +35,12 @@ struct ModelsContract {
         ])
         precondition(turn?.attachments.count == 5)
 
+        let status = ServerStatus([
+            "meetingPreviewSupported": .bool(true),
+            "meetingPreviewEnabled": .bool(true),
+        ])
+        precondition(status.meetingPreviewSupported && status.meetingPreviewEnabled == true)
+
         // Decode into an owned in-memory image before deleting the source.
         let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")!
         let source = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".png")

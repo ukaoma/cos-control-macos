@@ -37,6 +37,17 @@ one LaunchAgent, `com.cos.glasses-server`, as the sole server owner.
 Existing data remains under the standard COS Glasses locations. The existing
 `npx @gotcos/glasses-server` foreground workflow remains supported.
 
+## 0.3.8 meeting Turbo preview control
+
+- Meeting Turbo preview is a machine-wide canary for server 6.21.7 or newer.
+  It renders provisional text from the still-open phrase, then atomically gives
+  way to the canonical speaker-attributed Large-v3 transcript.
+- Control persists `COS_WHISPER_MEETING_PREVIEW` in the managed runtime and
+  applies changes with the same safe drain, verified launchd restart, and
+  automatic rollback used by transcription tiers and Background jobs.
+- Off is the immediate rollback. It does not alter saved audio, canonical
+  chunks, speaker attribution, HQ polish, recovery, or meeting sync.
+
 ## 0.3.7 background jobs control
 
 - Background jobs are enabled by default on compatible servers so accepted

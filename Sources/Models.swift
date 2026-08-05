@@ -70,6 +70,8 @@ struct ServerStatus: Sendable {
     var activeTranscriptionSessions: Int?
     var backgroundJobsSupported = false
     var backgroundJobsEnabled: Bool?
+    var meetingPreviewSupported = false
+    var meetingPreviewEnabled: Bool?
     var whisperReady = false
     var whisperCircuitOpen = false
     var whisperStartupState: String?
@@ -134,6 +136,8 @@ struct ServerStatus: Sendable {
         activeTranscriptionSessions = details["activeTranscriptionSessions"]?.int
         backgroundJobsSupported = details["backgroundJobsSupported"]?.bool ?? false
         backgroundJobsEnabled = details["backgroundJobsEnabled"]?.bool
+        meetingPreviewSupported = details["meetingPreviewSupported"]?.bool ?? false
+        meetingPreviewEnabled = details["meetingPreviewEnabled"]?.bool
         whisperReady = details["whisperReady"]?.bool ?? false
         whisperCircuitOpen = details["whisperCircuitOpen"]?.bool ?? false
         whisperStartupState = details["whisperStartupState"]?.string

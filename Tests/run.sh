@@ -46,6 +46,10 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
 /usr/bin/grep -q 'requireTranscriptionTier' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "set-background-jobs"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'requireBackgroundJobs' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "set-meeting-preview"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'COS_WHISPER_MEETING_PREVIEW' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'requireMeetingPreview' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'Meeting Turbo preview' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'stoppedCompatibleManagedServer' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'configuredRequestedTier' "$ROOT/HelperSources/main.swift"
 /usr/bin/python3 - "$ROOT" <<'PY'
