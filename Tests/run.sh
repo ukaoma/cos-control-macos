@@ -248,6 +248,11 @@ done
 # The ribbon aggregates into fixed columns. One rect per span needed 1,079pt in a
 # 358pt panel and overflowed on 133 of 133 meetings over 200 segments.
 /usr/bin/grep -q 'private func columns(width' "$ROOT/Sources/Views.swift"
+# The ribbon must not render at all without spans. An older server returns none,
+# and the unguarded version drew a blank strip plus "Hover the bar to see who is
+# speaking" for a bar that was not there.
+/usr/bin/grep -q 'if !review.timeline.isEmpty {' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'needs glasses-server 6.21.18 or newer' "$ROOT/Sources/Views.swift"
 
 # The playback note is keyed to ONE row: a shared string printed the same failure
 # under all eleven voices at once.

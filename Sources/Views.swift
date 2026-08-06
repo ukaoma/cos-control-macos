@@ -1445,14 +1445,34 @@ struct SpeakerReviewPane: View {
             } else if let review = model.openReview {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("WHO SPOKE, IN ORDER")
-                                .font(.system(size: 9, design: .monospaced))
-                                .tracking(1.4)
-                                .foregroundStyle(.tertiary)
-                            TurnRibbon(review: review, hovered: $hoveredSpan)
+                        // The whole block is gated on there BEING a timeline.
+                        // A server older than 6.21.18 returns no spans, and the
+                        // unguarded version drew a 34pt blank strip under a
+                        // heading, with "Hover the bar to see who is speaking"
+                        // beneath a bar that was not there. QA flagged exactly
+                        // this and the release notes claimed the panel would
+                        // "behave as 0.4.2 did" — 0.4.2 drew a share bar, this
+                        // drew nothing.
+                        if !review.timeline.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("WHO SPOKE, IN ORDER")
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .tracking(1.4)
+                                    .foregroundStyle(.tertiary)
+                                TurnRibbon(review: review, hovered: $hoveredSpan)
+                            }
+                            .padding(.horizontal, 16).padding(.vertical, 12)
+                        } else if review.attributed {
+                            // Say WHY it is missing, and what to do. Silence here
+                            // reads as a broken panel.
+                            HStack(spacing: 7) {
+                                Image(systemName: "arrow.up.circle").font(.system(size: 11))
+                                Text("The speaking timeline needs glasses-server 6.21.18 or newer. Use Update Server in Settings.")
+                                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .padding(.horizontal, 16).padding(.vertical, 10)
                         }
-                        .padding(.horizontal, 16).padding(.vertical, 12)
 
                         if !review.attributed {
                             VStack(alignment: .leading, spacing: 6) {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 (build 37)
+
+- Hotfix: the speaking timeline drew an empty bar on a server older than
+  6.21.18, under a heading, with "Hover the bar to see who is speaking"
+  underneath — for a bar that was not there. The block is now hidden entirely,
+  replaced by a line saying the timeline needs a newer server and to use Update
+  Server.
+
 ## 0.5.0 (build 36)
 
 - **Renaming a voice now corrects one meeting, not your whole history.** Until
