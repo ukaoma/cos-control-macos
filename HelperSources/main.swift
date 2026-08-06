@@ -285,6 +285,9 @@ final class COSControlHelper {
         "COS_WHISPER_TRANSCRIPTION_TIER",
         "COS_WHISPER_COMMIT_MODEL",
         "COS_WHISPER_MEETING_PREVIEW",
+        "COS_MEETING_EARLY_SYNC",
+        "COS_MEETING_PROGRESSIVE_HQ",
+        "COS_MEETING_PROGRESSIVE_HQ_THREADS",
     ]
 
     private lazy var support = home.appendingPathComponent("Library/Application Support/COS Control", isDirectory: true)
@@ -1966,6 +1969,9 @@ final class COSControlHelper {
         for (key, value) in meetingSyncStatusFields(health: health) {
             details[key] = value
         }
+        for (key, value) in meetingLifecycleStatusFields(health: health) {
+            details[key] = value
+        }
         // Server 6.19.0+ quarantines unsaved meeting audio and reports it on
         // health. Absent key (older server) reads as zero — no fallback scan.
         details["unsavedCaptures"] =
@@ -2032,6 +2038,66 @@ final class COSControlHelper {
             ]
         }
         return meetingSyncStatusFromPendingBatch()
+    }
+
+    private func meetingLifecycleStatusFields(health: [String: Any]?) -> [String: Any] {
+        guard let capabilities = health?["capabilities"] as? [String: Any],
+              let lifecycle = capabilities["meetingLifecycle"] as? [String: Any] else {
+            return [
+                "earlyMeetingSyncEnabled": NSNull(),
+                "earlyMeetingSyncRequested": NSNull(),
+                "earlyMeetingSyncAvailable": NSNull(),
+                "earlyMeetingSyncReason": NSNull(),
+                "earlyMeetingSyncInFlight": false,
+                "earlyMeetingSyncPendingCount": 0,
+                "earlyMeetingSyncLastOutcome": NSNull(),
+                "earlyMeetingSyncLastError": NSNull(),
+                "earlyMeetingSyncLastAt": NSNull(),
+                "progressiveHqEnabled": NSNull(),
+                "progressiveHqRequested": NSNull(),
+                "progressiveHqTier": NSNull(),
+                "progressiveHqMode": NSNull(),
+                "progressiveHqThreads": NSNull(),
+                "progressiveHqReason": NSNull(),
+                "progressiveHqActive": false,
+                "progressiveHqSealedDone": 0,
+                "progressiveHqSealedTotal": 0,
+                "meetingFinalizationPending": 0,
+                "meetingFinalizationFailed": 0,
+                "meetingFinalizationLastError": NSNull(),
+                "meetingFinalizationMalformed": 0,
+            ]
+        }
+        let early = lifecycle["earlySyncClaim"] as? [String: Any]
+        let progressive = lifecycle["progressiveHq"] as? [String: Any]
+        let finalization = lifecycle["finalization"] as? [String: Any]
+        let sessions = progressive?["sessions"] as? [[String: Any]] ?? []
+        let sealedDone = sessions.reduce(0) { $0 + (($1["sealedDone"] as? Int) ?? 0) }
+        let sealedTotal = sessions.reduce(0) { $0 + (($1["sealedTotal"] as? Int) ?? 0) }
+        return [
+            "earlyMeetingSyncEnabled": early?["enabled"] ?? NSNull(),
+            "earlyMeetingSyncRequested": early?["requested"] ?? NSNull(),
+            "earlyMeetingSyncAvailable": early?["available"] ?? NSNull(),
+            "earlyMeetingSyncReason": early?["reason"] ?? NSNull(),
+            "earlyMeetingSyncInFlight": early?["inFlight"] ?? false,
+            "earlyMeetingSyncPendingCount": early?["pendingCount"] ?? 0,
+            "earlyMeetingSyncLastOutcome": early?["lastOutcome"] ?? NSNull(),
+            "earlyMeetingSyncLastError": early?["lastError"] ?? NSNull(),
+            "earlyMeetingSyncLastAt": early?["lastAt"] ?? NSNull(),
+            "progressiveHqEnabled": progressive?["enabled"] ?? NSNull(),
+            "progressiveHqRequested": progressive?["requested"] ?? NSNull(),
+            "progressiveHqTier": progressive?["tier"] ?? NSNull(),
+            "progressiveHqMode": progressive?["mode"] ?? NSNull(),
+            "progressiveHqThreads": progressive?["threads"] ?? NSNull(),
+            "progressiveHqReason": progressive?["reason"] ?? NSNull(),
+            "progressiveHqActive": progressive?["activeSessionId"] is String,
+            "progressiveHqSealedDone": sealedDone,
+            "progressiveHqSealedTotal": sealedTotal,
+            "meetingFinalizationPending": finalization?["pending"] ?? 0,
+            "meetingFinalizationFailed": finalization?["failed"] ?? 0,
+            "meetingFinalizationLastError": finalization?["lastError"] ?? NSNull(),
+            "meetingFinalizationMalformed": finalization?["malformed"] ?? 0,
+        ]
     }
 
     private func meetingSyncStatusFromPendingBatch() -> [String: Any] {
@@ -3042,12 +3108,14 @@ final class COSControlHelper {
                 "COS_WHISPER_TRANSCRIPTION_TIER": "balanced",
                 "COS_WHISPER_PREVIEW_MODEL": "small.en",
                 "COS_WHISPER_COMMIT_MODEL": "turbo",
+                "COS_MEETING_PROGRESSIVE_HQ_THREADS": "2",
             ]
         case "max":
             return [
                 "COS_WHISPER_TRANSCRIPTION_TIER": "max",
                 "COS_WHISPER_PREVIEW_MODEL": "turbo",
                 "COS_WHISPER_COMMIT_MODEL": "large-v3",
+                "COS_MEETING_PROGRESSIVE_HQ_THREADS": "6",
             ]
         default:
             throw HelperError.message("Unknown transcription tier. Choose Balanced or Max.")
@@ -4383,12 +4451,14 @@ final class COSControlHelper {
         let maxTier = try transcriptionTierEnvironment("MAX")
         try expect(
             balancedTier["COS_WHISPER_PREVIEW_MODEL"] == "small.en"
-                && balancedTier["COS_WHISPER_COMMIT_MODEL"] == "turbo",
+                && balancedTier["COS_WHISPER_COMMIT_MODEL"] == "turbo"
+                && balancedTier["COS_MEETING_PROGRESSIVE_HQ_THREADS"] == "2",
             "Balanced transcription mapping"
         )
         try expect(
             maxTier["COS_WHISPER_PREVIEW_MODEL"] == "turbo"
-                && maxTier["COS_WHISPER_COMMIT_MODEL"] == "large-v3",
+                && maxTier["COS_WHISPER_COMMIT_MODEL"] == "large-v3"
+                && maxTier["COS_MEETING_PROGRESSIVE_HQ_THREADS"] == "6",
             "Max transcription mapping"
         )
         try expect(versionAtLeast("6.15.2", "6.15.2") && versionAtLeast("6.16.0", "6.15.2"), "transactional proof version gate")

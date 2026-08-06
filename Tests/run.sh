@@ -129,6 +129,11 @@ PY
 /usr/bin/grep -q 'meetingSyncStatusFields' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'pending-batch' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q '_batch_progress.json' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'Early meeting sync' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'HQ prefill' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'COS_MEETING_PROGRESSIVE_HQ_THREADS' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'Balanced CPU guardrail\|tier.*CPU guardrail' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'meetingLifecycleStatusFields' "$ROOT/HelperSources/main.swift"
 
 # --- 0.2.9 fixes -------------------------------------------------------------
 # A failed install must not strand in-place mode off: the marker is captured

@@ -37,6 +37,17 @@ one LaunchAgent, `com.cos.glasses-server`, as the sole server owner.
 Existing data remains under the standard COS Glasses locations. The existing
 `npx @gotcos/glasses-server` foreground workflow remains supported.
 
+## 0.3.9 progressive HQ canary reporting
+
+- Server 6.21.8 can claim a durable G2 meeting in Operations before its
+  post-meeting Large-v3 pass finishes, then enrich the same identity.
+- Progressive HQ remains an explicit canary. Balanced uses at most two
+  background CPU threads for fanless M1/M2 Air-class hardware; Max defaults to
+  six and remains capped by the CPUs available to the process.
+- Control reports the effective tier, thread budget, sealed-window progress,
+  early-sync result, and retained finalization work. Switching tiers updates the
+  safe thread budget but does not silently enable the canary.
+
 ## 0.3.8 meeting Turbo preview control
 
 - Meeting Turbo preview is a machine-wide canary for server 6.21.7 or newer.

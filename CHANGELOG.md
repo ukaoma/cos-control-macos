@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.9 (build 31)
+
+- Show Early meeting sync, tier-aware HQ prefill progress, and durable
+  finalization recovery reported by server 6.21.8.
+- Preserve the private canary flags across managed updates without enabling them
+  for public users. Balanced caps progressive HQ at two CPU threads for M1/M2
+  Air-class hardware; Max defaults to six on stronger Macs.
+- Keep Early Sync available to both tiers because it performs stable-identity
+  handoff rather than transcription compute.
+
 ## 0.3.8 (build 30)
 
 - Add a machine-wide Meeting Turbo preview control for server 6.21.7+. It

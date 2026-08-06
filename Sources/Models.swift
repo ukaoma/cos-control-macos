@@ -97,6 +97,28 @@ struct ServerStatus: Sendable {
     var meetingSyncLabel = "Idle"
     var meetingSyncBlocksRestart = false
     var meetingSyncCount = 0
+    var earlyMeetingSyncEnabled: Bool?
+    var earlyMeetingSyncRequested: Bool?
+    var earlyMeetingSyncAvailable: Bool?
+    var earlyMeetingSyncReason: String?
+    var earlyMeetingSyncInFlight = false
+    var earlyMeetingSyncPendingCount = 0
+    var earlyMeetingSyncLastOutcome: String?
+    var earlyMeetingSyncLastError: String?
+    var earlyMeetingSyncLastAt: String?
+    var progressiveHqEnabled: Bool?
+    var progressiveHqRequested: Bool?
+    var progressiveHqTier: String?
+    var progressiveHqMode: String?
+    var progressiveHqThreads: Int?
+    var progressiveHqReason: String?
+    var progressiveHqActive = false
+    var progressiveHqSealedDone = 0
+    var progressiveHqSealedTotal = 0
+    var meetingFinalizationPending = 0
+    var meetingFinalizationFailed = 0
+    var meetingFinalizationLastError: String?
+    var meetingFinalizationMalformed = 0
     /// Quarantined unsaved meeting captures (server 6.19.0+). 0 on older
     /// servers — the key is simply absent from health.
     var unsavedCaptures = 0
@@ -163,6 +185,28 @@ struct ServerStatus: Sendable {
         meetingSyncLabel = details["meetingSyncLabel"]?.string ?? (meetingSyncActive ? "Syncing…" : "Idle")
         meetingSyncBlocksRestart = details["meetingSyncBlocksRestart"]?.bool ?? meetingSyncActive
         meetingSyncCount = details["meetingSyncCount"]?.int ?? 0
+        earlyMeetingSyncEnabled = details["earlyMeetingSyncEnabled"]?.bool
+        earlyMeetingSyncRequested = details["earlyMeetingSyncRequested"]?.bool
+        earlyMeetingSyncAvailable = details["earlyMeetingSyncAvailable"]?.bool
+        earlyMeetingSyncReason = details["earlyMeetingSyncReason"]?.string
+        earlyMeetingSyncInFlight = details["earlyMeetingSyncInFlight"]?.bool ?? false
+        earlyMeetingSyncPendingCount = details["earlyMeetingSyncPendingCount"]?.int ?? 0
+        earlyMeetingSyncLastOutcome = details["earlyMeetingSyncLastOutcome"]?.string
+        earlyMeetingSyncLastError = details["earlyMeetingSyncLastError"]?.string
+        earlyMeetingSyncLastAt = details["earlyMeetingSyncLastAt"]?.string
+        progressiveHqEnabled = details["progressiveHqEnabled"]?.bool
+        progressiveHqRequested = details["progressiveHqRequested"]?.bool
+        progressiveHqTier = details["progressiveHqTier"]?.string
+        progressiveHqMode = details["progressiveHqMode"]?.string
+        progressiveHqThreads = details["progressiveHqThreads"]?.int
+        progressiveHqReason = details["progressiveHqReason"]?.string
+        progressiveHqActive = details["progressiveHqActive"]?.bool ?? false
+        progressiveHqSealedDone = details["progressiveHqSealedDone"]?.int ?? 0
+        progressiveHqSealedTotal = details["progressiveHqSealedTotal"]?.int ?? 0
+        meetingFinalizationPending = details["meetingFinalizationPending"]?.int ?? 0
+        meetingFinalizationFailed = details["meetingFinalizationFailed"]?.int ?? 0
+        meetingFinalizationLastError = details["meetingFinalizationLastError"]?.string
+        meetingFinalizationMalformed = details["meetingFinalizationMalformed"]?.int ?? 0
         unsavedCaptures = details["unsavedCaptures"]?.int ?? 0
         claudeCliReady = details["claudeCliReady"]?.bool
         claudeCliVersion = details["claudeCliVersion"]?.string

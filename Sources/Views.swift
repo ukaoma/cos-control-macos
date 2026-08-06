@@ -269,6 +269,84 @@ struct ControlPanel: View {
                     .foregroundStyle(COSPalette.amber)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
+            if let earlySync = model.status.earlyMeetingSyncEnabled {
+                let failed = model.status.earlyMeetingSyncLastOutcome == "failed"
+                let unavailable = model.status.earlyMeetingSyncRequested == true
+                    && model.status.earlyMeetingSyncAvailable == false
+                let earlyValue = unavailable
+                    ? model.status.earlyMeetingSyncReason == "sync_script_upgrade_required"
+                        ? "Workspace update required"
+                        : "Unavailable"
+                    : !earlySync
+                    ? "Off"
+                    : model.status.earlyMeetingSyncInFlight || model.status.earlyMeetingSyncPendingCount > 0
+                        ? "Claiming · \(model.status.earlyMeetingSyncPendingCount) pending"
+                        : failed
+                            ? "Final sync pending"
+                            : model.status.earlyMeetingSyncLastOutcome == "finalized"
+                                ? "Final sync verified"
+                            : model.status.earlyMeetingSyncLastOutcome == "claimed"
+                                ? "Claim verified"
+                                : "Ready"
+                statusRow(
+                    "Early meeting sync",
+                    value: earlyValue,
+                    good: earlySync && !failed && !unavailable
+                )
+                if failed, let error = model.status.earlyMeetingSyncLastError {
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundStyle(COSPalette.amber)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            }
+            if let progressive = model.status.progressiveHqEnabled {
+                let total = model.status.progressiveHqSealedTotal
+                let done = model.status.progressiveHqSealedDone
+                let tier = model.status.progressiveHqTier == "max" ? "Max" : "Balanced"
+                let threadLabel = model.status.progressiveHqThreads.map { " · \($0)t" } ?? ""
+                let unavailable = model.status.progressiveHqRequested == true && !progressive
+                statusRow(
+                    "HQ prefill",
+                    value: progressive
+                        ? "\(done)/\(total) sealed · \(tier)\(threadLabel)"
+                        : unavailable ? "Unavailable" : "Off",
+                    good: progressive
+                )
+                if model.status.progressiveHqActive {
+                    Text("\(tier) CPU guardrail\(threadLabel) · canonical meeting text is unchanged.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                } else if unavailable {
+                    Text(model.status.progressiveHqReason == "hq_unavailable"
+                        ? "Large-v3 HQ is unavailable; live transcription remains unchanged."
+                        : "Progressive HQ was not admitted on this server.")
+                        .font(.caption2)
+                        .foregroundStyle(COSPalette.amber)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            }
+            if model.status.meetingFinalizationPending > 0 || model.status.meetingFinalizationMalformed > 0 {
+                statusRow(
+                    "Finalization recovery",
+                    value: model.status.meetingFinalizationMalformed > 0
+                        ? "Repair required"
+                        : model.status.meetingFinalizationFailed > 0
+                        ? "\(model.status.meetingFinalizationFailed) retrying"
+                        : "\(model.status.meetingFinalizationPending) pending",
+                    good: model.status.meetingFinalizationFailed == 0
+                        && model.status.meetingFinalizationMalformed == 0
+                )
+                if let error = model.status.meetingFinalizationLastError {
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundStyle(COSPalette.amber)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            }
             // Server 6.19.0+: meeting audio whose save never landed is
             // quarantined instead of deleted. Surface it — a hidden lost
             // meeting is the failure this exists to end. Row hides at zero.
