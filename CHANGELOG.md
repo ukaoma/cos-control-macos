@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0 (build 35)
+## 0.5.0 (build 36)
 
 - **Renaming a voice now corrects one meeting, not your whole history.** Until
   now the panel only ever called the global merge, so fixing one call rewrote
@@ -20,12 +20,32 @@
   which settles an identity question faster than any score. Meeting audio is kept
   for a week, so a segment can be played back during review; after that the panel
   says the audio is no longer held rather than looking broken.
+- **Play the line you are looking at.** Each quoted phrase gets a play button
+  that plays that exact segment of the meeting, so you hear the voice before
+  deciding who it was. The button appears only where the server still holds the
+  audio, so a click never fails; after the seven-day window the row simply has no
+  button. An earlier build played a stored profile sample instead, which does not
+  exist for 71 of 77 profiles because training audio is deleted once enrolled.
+- **You are no longer labelled "Unidentified voice" in your own meetings.** The
+  wearer is verified at exactly the confidence floor, so any confusion between two
+  voices flipped you below it — measured on four of nine recent meetings, one with
+  285 of your own segments. The confusion warning still shows.
+- **Removing several wrong names keeps those voices apart.** They become
+  "Unidentified 1", "Unidentified 2" and so on rather than merging into one row,
+  so you can still tell them apart and play each one back.
+- **Saving now reports what actually happened.** A refused correction said
+  "Removed X from this meeting" while the server changed nothing. If an earlier
+  correction on that meeting never finished, there is now an "Apply anyway"
+  button instead of a dead end.
 - **The ribbon is a real timeline.** It used to draw one rectangle per voice sized
   by share of segments while labelled "who spoke, in order" — there was no
   ordering in it, and a voice that spoke twice appeared once. It now reads the
   server's spans, so widths are durations, a voice can appear more than once, and
   hovering says who is speaking at that point. Added a legend mapping each colour
-  to a speaker, and hovering a legend entry finds that speaker on the bar.
+  to a speaker, and hovering a legend entry finds that speaker on the bar. The bar
+  aggregates into fixed columns so a long meeting fits: drawn one-rectangle-per-turn
+  it needed three times the panel width, and the later half of every long meeting
+  was simply clipped off.
 
 ## 0.4.2 (build 34)
 

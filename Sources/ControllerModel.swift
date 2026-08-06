@@ -86,7 +86,13 @@ final class ControllerModel: ObservableObject {
     /// Why playback could not happen — shown on the row rather than as a dialog,
     /// because "no longer held" is ordinary information after the retention
     /// window, not an error the user did anything to cause.
-    @Published var playbackNote: String?
+    /// Keyed so a failure prints under the row that caused it, not all of them.
+    @Published var playbackNote: (key: String, text: String)?
+    /// Raw chunk indices this meeting still has audio for. Empty until asked, and
+    /// empty forever for meetings recorded before retention existed.
+    @Published var retainedAudioChunks: Set<Int> = []
+    /// How long audio is kept, straight from the server rather than assumed.
+    @Published var audioRetentionDays: Int?
     @Published var mergeInFlight = false
     /// The session the open review asked for. Held separately from `openReview`
     /// because a retry has to work when the review failed to load and there is
@@ -691,6 +697,9 @@ final class ControllerModel: ObservableObject {
     }
 
     func openSpeakerReview(_ meeting: ReviewableMeeting) {
+        stopPlayback()
+        playbackNote = nil
+        correctionScope = .thisMeeting
         namingVoice = nil
         pendingCorrection = nil
         openReview = nil
@@ -712,6 +721,7 @@ final class ControllerModel: ObservableObject {
             }
             openReview = review
             if voiceProfiles.isEmpty { await loadVoiceProfiles() }
+            await loadRetainedAudio(sessionId: sessionId)
         } catch {
             reviewError = error.localizedDescription
         }
@@ -723,6 +733,15 @@ final class ControllerModel: ObservableObject {
     }
 
     func closeSpeakerReview() {
+        // Audio kept playing after the panel closed, and a stale note followed the
+        // user into the next meeting's rows.
+        stopPlayback()
+        playbackNote = nil
+        retainedAudioChunks = []
+        audioRetentionDays = nil
+        // Scope is per-correction, not per-launch: leaving it on "Every meeting"
+        // is the irreversible global fold this release exists to prevent.
+        correctionScope = .thisMeeting
         openReview = nil
         namingVoice = nil
         pendingCorrection = nil
@@ -843,21 +862,35 @@ final class ControllerModel: ObservableObject {
             surfaces: CorrectionSurfaces(response.details["result"]?.object?["surfaces"]),
             similarity: result?["similarity"]?.object?[from]?.double,
             refused: refused || pendingEarlier,
+            forceable: pendingEarlier,
             proseStale: result?["proseStale"]?.bool ?? false,
             wouldRetract: training?["wouldRetract"]?.int ?? 0,
             untraceable: training?["untraceable"]?.int ?? 0
         )
     }
 
-    func confirmCorrection(_ correction: PendingCorrection) {
-        guard !correction.refused else { pendingCorrection = nil; return }
+    /// Retry a correction the server refused because an EARLIER one never
+    /// finished, passing --force.
+    ///
+    /// Without this the 409 was a permanent dead end: nothing in the panel ever
+    /// passed --force, no route closes a stalled intent, and the message told the
+    /// user to "re-open the meeting", which touches no server state. The only
+    /// exit was a terminal.
+    func forceCorrection(_ correction: PendingCorrection) {
+        confirmCorrection(correction, force: true)
+    }
+
+    func confirmCorrection(_ correction: PendingCorrection, force: Bool = false) {
+        // A refusal that is only a stalled predecessor CAN be forced; a genuine
+        // decline cannot.
+        guard !correction.refused || force else { pendingCorrection = nil; return }
         guard let session = openReview?.sessionId else { return }
         mergeInFlight = true
         Task { [weak self] in
             guard let self else { return }
             defer { mergeInFlight = false }
             do {
-                let args: [String]
+                var args: [String]
                 if correction.isDeattribution {
                     args = ["meeting-deattribute", "--session", session, "--from", correction.from, "--confirm"]
                 } else if correction.scope == .thisMeeting {
@@ -866,13 +899,35 @@ final class ControllerModel: ObservableObject {
                 } else {
                     args = ["voice-merge", "--into", correction.to ?? "", "--from", correction.from, "--confirm"]
                 }
-                _ = try await helper.run(args)
+                if force { args.append("--force") }
+                let response = try await helper.run(args)
+                // READ the outcome. The helper deliberately does not throw on
+                // 400/409/422 — it reports them as a state — so discarding the
+                // response reported "Removed X from this meeting" for a server
+                // that refused and changed nothing. Same defect 0.4.2 fixed one
+                // layer down, reintroduced here.
+                let state = response.details["state"]?.string ?? ""
+                guard state == "applied" else {
+                    let detail = response.details["result"]?.object?["message"]?.string
+                        ?? response.details["message"]?.string
+                    switch state {
+                    case "route_missing":
+                        reviewError = "This needs glasses-server 6.21.18 or newer — use Update Server."
+                    case "pending_correction":
+                        reviewError = detail ?? "An earlier correction on this meeting never finished."
+                    default:
+                        reviewError = detail ?? "The server did not apply that (\(state))."
+                    }
+                    // The card STAYS so the user can retry or cancel deliberately.
+                    return
+                }
                 notice = correction.isDeattribution
                     ? "Removed \(correction.from) from this meeting"
                     : (correction.scope == .thisMeeting
                         ? "\(correction.from) is now \(correction.to ?? "") in this meeting"
                         : "Saved — \(correction.from) is now \(correction.to ?? "") everywhere")
                 pendingCorrection = nil
+                correctionScope = .thisMeeting
                 await loadVoiceProfiles()
                 // The review is now stale — a label may have changed or gone, so
                 // re-read it rather than leave a row describing the old state.
@@ -884,6 +939,27 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    /// Which segments of this meeting can actually be played.
+    ///
+    /// Asked up front so a play button appears only where it will work. Before
+    /// this, every row offered playback and 92% of clicks failed — the affordance
+    /// was where the data was not.
+    private func loadRetainedAudio(sessionId: String) async {
+        retainedAudioChunks = []
+        audioRetentionDays = nil
+        do {
+            let response = try await helper.run(["review-audio-list", "--session", sessionId])
+            let chunks = (response.details["chunks"]?.array ?? []).compactMap { $0.int }
+            retainedAudioChunks = Set(chunks)
+            audioRetentionDays = response.details["retentionDays"]?.int
+        } catch {
+            // An older server has no such route. Silence is right here: the
+            // buttons simply do not appear, rather than an error for something
+            // the user did not ask for.
+            retainedAudioChunks = []
+        }
+    }
+
     // MARK: - Review playback (0.5.0)
 
     /// Held so playback is not garbage-collected mid-sound, and so a second click
@@ -891,23 +967,24 @@ final class ControllerModel: ObservableObject {
     /// drops, which makes a local variable silently play nothing.
     private var audioPlayer: AVAudioPlayer?
 
-    /// Play what a stored PROFILE sounds like.
+    /// Play THIS line's audio, from the meeting under review.
     ///
-    /// Miles: hearing the voice settles an identity question that a similarity
-    /// score cannot. This is the version that needs no retention change — the
-    /// training audio already exists — and it answers the question the panel is
-    /// actually asking: is this person really who the system named?
-    func playProfileSample(_ speaker: String) {
-        play(key: speaker, args: ["review-audio", "--speaker", speaker],
-             missing: "No retained audio for \(speaker).")
+    /// Miles: "profile playback is for the stored audio for the chunk we're
+    /// training on." Hearing the actual segment is what settles an identity
+    /// question — a stored profile sample answers a different, weaker question,
+    /// and for 71 of 77 profiles no such sample exists, because train-g2 deletes
+    /// the audio it enrolls from.
+    func playPhrase(_ phrase: SpeakerPhrase, voice: String) {
+        guard let session = openReview?.sessionId, let index = phrase.chunkIndex else { return }
+        play(key: "\(voice)#\(index)",
+             args: ["review-audio", "--session", session, "--chunk", String(index)],
+             missing: "That segment's audio is no longer held.")
     }
 
-    /// Play one segment of THIS meeting, from the 7-day review archive.
-    func playMeetingSegment(chunkIndex: Int, key: String) {
-        guard let session = openReview?.sessionId else { return }
-        play(key: key,
-             args: ["review-audio", "--session", session, "--chunk", String(chunkIndex)],
-             missing: "That segment's audio is no longer held.")
+    /// Whether this line can be played: the server must still hold its chunk.
+    func canPlay(_ phrase: SpeakerPhrase) -> Bool {
+        guard let index = phrase.chunkIndex else { return false }
+        return retainedAudioChunks.contains(index)
     }
 
     func stopPlayback() {
@@ -928,8 +1005,16 @@ final class ControllerModel: ObservableObject {
                 let response = try await helper.run(args)
                 let state = response.details["state"]?.string ?? ""
                 guard state == "ready", let path = response.details["path"]?.string else {
-                    // `expired` is the ordinary outcome once retention has passed.
-                    playbackNote = state == "expired" ? missing : "Audio unavailable (\(state))."
+                    // `expired` is the ordinary outcome once retention has passed;
+                    // `route_missing` means the server predates this panel and must
+                    // say so rather than claim the audio is gone.
+                    let text: String
+                    switch state {
+                    case "expired": text = missing
+                    case "route_missing": text = "This needs glasses-server 6.21.18 or newer — use Update Server."
+                    default: text = "Audio unavailable (\(state))."
+                    }
+                    playbackNote = (key: key, text: text)
                     playingVoice = nil
                     return
                 }
@@ -951,11 +1036,14 @@ final class ControllerModel: ObservableObject {
                 // remove once loaded into the player.
                 try? FileManager.default.removeItem(at: url)
             } catch {
-                playbackNote = "Could not play that: \(error.localizedDescription)"
+                playbackNote = (key: key, text: "Could not play that: \(error.localizedDescription)")
                 playingVoice = nil
             }
         }
     }
 
-    func cancelCorrection() { pendingCorrection = nil }
+    func cancelCorrection() {
+        pendingCorrection = nil
+        correctionScope = .thisMeeting
+    }
 }

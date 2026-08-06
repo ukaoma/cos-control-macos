@@ -427,6 +427,17 @@ struct ReviewableMeeting: Identifiable, Sendable, Hashable {
 struct SpeakerPhrase: Identifiable, Sendable, Hashable {
     let text: String
     let atMs: Int
+    /**
+     RAW capture index for this line's audio, or nil when the sidecar could not
+     supply one.
+
+     NOT the position in the chunk array. Those differ and the gap grows through a
+     meeting — measured on the 2026-08-06 Ditto sidecar, position 884 is really
+     raw chunk 940. nil means DO NOT offer playback: a guessed index plays a
+     different speaker, which is worse than no button on a screen whose entire
+     purpose is confirming who spoke.
+     */
+    let chunkIndex: Int?
     var id: String { "\(atMs)-\(text.prefix(24))" }
 
     /// The sidecar stores milliseconds. Rendered as a meeting timestamp so a
@@ -440,6 +451,7 @@ struct SpeakerPhrase: Identifiable, Sendable, Hashable {
         guard let o = value?.object, let text = o["text"]?.string, !text.isEmpty else { return nil }
         self.text = text
         atMs = o["atMs"]?.int ?? 0
+        chunkIndex = o["chunkIndex"]?.int
     }
 }
 
@@ -515,7 +527,15 @@ struct SpeakerTimelineSpan: Identifiable, Sendable, Hashable {
     let endMs: Int
     let segments: Int
 
-    var id: String { "\(startMs)-\(speaker)" }
+    /// POSITIONAL identity.
+    ///
+    /// A value-based id collided badly: `speakerTimeline` clamps non-monotonic
+    /// `elapsed` forward, and 48 of 381 real sidecars have a backwards step that
+    /// pins many spans to the same start. On 2026-05-11 that produced 161
+    /// duplicate ids across 509 spans, which SwiftUI answers with dropped or
+    /// misdrawn rows. The index makes duplicates impossible by construction.
+    let index: Int
+    var id: Int { index }
     var durationMs: Int { max(0, endMs - startMs) }
 
     var stamp: String {
@@ -523,8 +543,9 @@ struct SpeakerTimelineSpan: Identifiable, Sendable, Hashable {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 
-    init?(_ value: JSONValue?) {
+    init?(_ value: JSONValue?, index: Int) {
         guard let o = value?.object, let speaker = o["speaker"]?.string else { return nil }
+        self.index = index
         self.speaker = speaker
         startMs = o["startMs"]?.int ?? 0
         endMs = o["endMs"]?.int ?? 0
@@ -549,7 +570,7 @@ struct SpeakerReview: Sendable {
         attributed = o["attributed"]?.bool ?? false
         durationMs = o["durationMs"]?.int ?? 0
         voices = (o["voices"]?.array ?? []).compactMap(ReviewVoice.init)
-        timeline = (o["timeline"]?.array ?? []).compactMap(SpeakerTimelineSpan.init)
+        timeline = (o["timeline"]?.array ?? []).enumerated().compactMap { SpeakerTimelineSpan($1, index: $0) }
     }
 
     /// Whether a name may be shown for a label, from the voice rows. The ribbon
@@ -599,7 +620,10 @@ enum CorrectionScope: String, Sendable, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .thisMeeting:
-            return "Corrects this meeting only, and teaches the voice profile from it."
+            // Deliberately does NOT claim to train the profile. The
+            // correction-to-enrolment path is not built: the per-chunk embedding
+            // store is write-only today and nothing writes `correction:` provenance.
+            return "Corrects this meeting only. Other meetings are left alone."
         case .everywhere:
             return "Folds one profile into the other across every meeting. Cannot be undone here."
         }
@@ -635,6 +659,10 @@ struct PendingCorrection: Identifiable, Sendable {
     let similarity: Double?
     /// Server declined — shown with its reason instead of read as a failure.
     let refused: Bool
+    /// True when the refusal is only a STALLED earlier correction, which the user
+    /// can override. A genuine decline (wrong label, no such chunk) cannot be
+    /// forced, so the two are kept distinct rather than both being "refused".
+    let forceable: Bool
     /// Narrative prose still names the old speaker and is deliberately not
     /// rewritten, because summaries refer to people by first name.
     let proseStale: Bool

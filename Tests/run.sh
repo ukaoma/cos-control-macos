@@ -213,6 +213,61 @@ done
 /usr/bin/grep -q 'Not in this meeting' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'previewDeattribution' "$ROOT/Sources/ControllerModel.swift"
 
+# --- 0.5.1 QA blocker fixes ----------------------------------------------------
+# Confirming a correction must READ the outcome. The helper reports 400/409/422 as
+# a state rather than throwing, so discarding the response reported "Removed X"
+# for a server that refused and changed nothing — the same defect 0.4.2 fixed one
+# layer down.
+/usr/bin/grep -q 'guard state == "applied" else' "$ROOT/Sources/ControllerModel.swift"
+# A stalled earlier correction must have a reachable exit. Nothing passed --force
+# before, and the message told the user to re-open the meeting, which changes no
+# server state.
+/usr/bin/grep -q 'func forceCorrection' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'Apply anyway' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'if force { args.append("--force") }' "$ROOT/Sources/ControllerModel.swift"
+
+# Playback plays THIS LINE's audio, addressed by the RAW capture index. Position
+# in the chunk array is a different number — on the 2026-08-06 Ditto sidecar
+# position 884 is raw chunk 940, so the array position plays the wrong speaker.
+/usr/bin/grep -q 'chunkIndex = o\["chunkIndex"\]' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'func playPhrase' "$ROOT/Sources/ControllerModel.swift"
+# A button only appears where the server still HOLDS that chunk.
+/usr/bin/grep -A4 'func canPlay' "$ROOT/Sources/ControllerModel.swift" | /usr/bin/grep -q 'retainedAudioChunks.contains'
+/usr/bin/grep -q 'model.canPlay(phrase)' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'review-audio-list' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'case "review-audio-list"' "$ROOT/HelperSources/main.swift"
+# A 404 from a MISSING ROUTE must not claim the audio expired — that is a
+# confident false statement about retention on any older server.
+[ "$(/usr/bin/grep -c 'route_missing' "$ROOT/HelperSources/main.swift")" -ge 2 ]
+/usr/bin/grep -q 'route_missing' "$ROOT/Sources/ControllerModel.swift"
+
+# Span identity is POSITIONAL. Value-based ids collided on 28 real sidecars (161
+# duplicates on one), which SwiftUI answers with dropped or misdrawn rows.
+/usr/bin/grep -q 'var id: Int { index }' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'SpeakerTimelineSpan($1, index: $0)' "$ROOT/Sources/Models.swift"
+# The ribbon aggregates into fixed columns. One rect per span needed 1,079pt in a
+# 358pt panel and overflowed on 133 of 133 meetings over 200 segments.
+/usr/bin/grep -q 'private func columns(width' "$ROOT/Sources/Views.swift"
+
+# The playback note is keyed to ONE row: a shared string printed the same failure
+# under all eleven voices at once.
+/usr/bin/grep -q 'note.key.hasPrefix(voice.label)' "$ROOT/Sources/Views.swift"
+# Closing the panel stops audio and resets scope. Audio kept playing after close,
+# and a sticky "Every meeting" is the irreversible global fold this release removes.
+/usr/bin/grep -A12 'func closeSpeakerReview' "$ROOT/Sources/ControllerModel.swift" | /usr/bin/grep -q 'stopPlayback()'
+# COUNTED rather than pinned to a line offset: scope must be reset on open, on
+# close, on cancel and after a successful save. A `grep -A8` guard broke the
+# moment a comment moved the line, which is the wrong thing to be sensitive to.
+[ "$(/usr/bin/grep -c 'correctionScope = .thisMeeting' "$ROOT/Sources/ControllerModel.swift")" -ge 4 ]
+
+# The scope copy must not claim profile training. The correction-to-enrolment path
+# is not built: the per-chunk embedding store is write-only and nothing writes
+# `correction:` provenance.
+if /usr/bin/grep -q 'teaches the voice profile' "$ROOT/Sources/Models.swift"; then
+  echo "COS Control: the scope copy claims profile training that no code performs" >&2
+  exit 1
+fi
+
 # --- 0.4.1 overlay regression ---------------------------------------------------
 # MenuBarExtra(.window) is a transient panel that closes when it loses key status,
 # so ANY sheet presented from it dismisses the panel mid-interaction. This is the

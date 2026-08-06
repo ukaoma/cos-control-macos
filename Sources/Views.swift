@@ -1057,6 +1057,8 @@ private struct TurnRibbon: View {
     /// Lifted to the pane so the legend can highlight the same span the pointer
     /// is over.
     @Binding var hovered: SpeakerTimelineSpan?
+    /// Which aggregated column the pointer is in, so the bar can dim the rest.
+    @State private var hoveredColumn: Int?
 
     /// Distinct speakers in the order they first speak. Stable, so a colour does
     /// not move between renders of the same meeting.
@@ -1084,21 +1086,70 @@ private struct TurnRibbon: View {
         return palette[at % palette.count]
     }
 
+    /// The bar is aggregated into fixed-width COLUMNS, each coloured by the
+    /// speaker holding most of that slice of time.
+    ///
+    /// A span-per-rectangle bar cannot fit. Measured on real sidecars: 509 spans
+    /// with a 1.5pt minimum width need 1,079pt inside a 358pt panel — 3x over —
+    /// and 237 of 238 meetings over 200 segments overflow. The excess was simply
+    /// clipped by the window, so the later half of every long meeting was
+    /// invisible on a bar whose entire purpose is showing the whole meeting in
+    /// order. Columns keep every minute on screen at honest proportions.
+    private struct Column: Identifiable {
+        let id: Int
+        let speaker: String
+        let startMs: Int
+        let endMs: Int
+    }
+
+    private func columns(width: CGFloat, order: [String]) -> [Column] {
+        guard !review.timeline.isEmpty, spanMs > 0 else { return [] }
+        // ~2.5pt per column: fine enough to read as a timeline, wide enough that
+        // a pointer can land on one.
+        let count = max(1, min(Int(width / 2.5), 200))
+        let slice = Double(spanMs) / Double(count)
+        var out: [Column] = []
+        var cursor = 0
+        for i in 0..<count {
+            let from = Int(Double(i) * slice)
+            let to = Int(Double(i + 1) * slice)
+            // Whoever holds the most milliseconds of this slice wins it.
+            var best = ""
+            var bestMs = 0
+            var j = cursor
+            while j < review.timeline.count, review.timeline[j].startMs < to {
+                let s = review.timeline[j]
+                let overlap = min(s.endMs, to) - max(s.startMs, from)
+                if overlap > bestMs { bestMs = overlap; best = s.speaker }
+                if s.endMs <= to { j += 1 } else { break }
+            }
+            cursor = max(cursor, j - 1)
+            if best.isEmpty, let carried = out.last?.speaker { best = carried }
+            out.append(Column(id: i, speaker: best, startMs: from, endMs: to))
+        }
+        return out
+    }
+
     var body: some View {
         let order = speakerOrder
         VStack(alignment: .leading, spacing: 5) {
             GeometryReader { geo in
-                HStack(spacing: 0.5) {
-                    ForEach(review.timeline) { span in
-                        let width = geo.size.width * CGFloat(span.durationMs) / CGFloat(spanMs)
+                let cols = columns(width: geo.size.width, order: order)
+                HStack(spacing: 0) {
+                    ForEach(cols) { col in
                         Rectangle()
-                            .fill(Self.tint(for: span.speaker, order: order, review: review))
-                            // The hovered span lifts; everything else dims, so the
-                            // pointer's position is unambiguous on a busy bar.
-                            .opacity(hovered == nil || hovered == span ? 1 : 0.35)
-                            .frame(width: max(width, 1.5))
+                            .fill(Self.tint(for: col.speaker, order: order, review: review))
+                            .opacity(hoveredColumn == nil || hoveredColumn == col.id ? 1 : 0.4)
+                            .frame(width: geo.size.width / CGFloat(max(cols.count, 1)))
                             .onHover { inside in
-                                hovered = inside ? span : (hovered == span ? nil : hovered)
+                                if inside {
+                                    hoveredColumn = col.id
+                                    hovered = review.timeline.last(where: { $0.startMs <= col.startMs })
+                                        ?? review.timeline.first
+                                } else if hoveredColumn == col.id {
+                                    hoveredColumn = nil
+                                    hovered = nil
+                                }
                             }
                     }
                 }
@@ -1123,8 +1174,8 @@ private struct TurnRibbon: View {
             // The legend. Reads the same tint function as the bar, so the two can
             // never drift apart.
             if !order.isEmpty {
-                let columns = [GridItem(.adaptive(minimum: 108), spacing: 8)]
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 3) {
+                let gridColumns = [GridItem(.adaptive(minimum: 108), spacing: 8)]
+                LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 3) {
                     ForEach(order, id: \.self) { speaker in
                         HStack(spacing: 5) {
                             RoundedRectangle(cornerRadius: 2)
@@ -1135,8 +1186,8 @@ private struct TurnRibbon: View {
                                 .foregroundStyle(review.assertsName(speaker) ? .secondary : .tertiary)
                                 .lineLimit(1)
                         }
-                        // Hovering a legend entry highlights that speaker's FIRST
-                        // span, which is how you find someone on a long bar.
+                        // Hovering a legend entry finds that speaker's FIRST span,
+                        // which is how you locate someone on a long bar.
                         .onHover { inside in
                             hovered = inside ? review.timeline.first(where: { $0.speaker == speaker }) : nil
                         }
@@ -1146,7 +1197,6 @@ private struct TurnRibbon: View {
         }
     }
 }
-
 
 private struct ConfidenceRamp: View {
     let value: Double?
@@ -1199,20 +1249,6 @@ private struct VoiceRow: View {
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
                 ConfidenceRamp(value: voice.meanSimilarity, unreliable: voice.reliability == .unreliable)
-                // Hearing three seconds of the stored profile settles what a score
-                // cannot. Only offered where a name exists to compare against —
-                // there is no profile to play for a voice nobody named.
-                if voice.reliability != .unattributed {
-                    Button {
-                        model.playProfileSample(voice.label)
-                    } label: {
-                        Image(systemName: model.playingVoice == voice.label ? "stop.fill" : "play.fill")
-                            .font(.system(size: 9))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .help("Hear what \(voice.label) sounds like in the stored profile")
-                }
             }
 
             // The evidence. A score cannot tell you who someone is; these can.
@@ -1223,6 +1259,23 @@ private struct VoiceRow: View {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(voice.phrases) { phrase in
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            // Play THIS line. Miles: playback is for the stored
+                            // audio of the chunk being trained on — hearing the
+                            // actual segment is what settles who spoke. Shown only
+                            // when the server still holds that chunk, so a button
+                            // never appears where the click would fail.
+                            if model.canPlay(phrase) {
+                                Button {
+                                    model.playPhrase(phrase, voice: voice.label)
+                                } label: {
+                                    Image(systemName: model.playingVoice == "\(voice.label)#\(phrase.chunkIndex ?? -1)"
+                                          ? "stop.fill" : "play.fill")
+                                        .font(.system(size: 8.5))
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                                .help("Hear this line")
+                            }
                             Text("“\(phrase.text)”").font(.system(size: 11.5))
                                 .fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 4)
@@ -1262,8 +1315,10 @@ private struct VoiceRow: View {
                 }
             }
 
-            if let note = model.playbackNote, model.playingVoice == nil {
-                Text(note).font(.system(size: 10.5)).foregroundStyle(.tertiary)
+            // Keyed to this row: a single shared string printed the same failure
+            // under all eleven voices at once.
+            if let note = model.playbackNote, note.key.hasPrefix(voice.label), model.playingVoice == nil {
+                Text(note.text).font(.system(size: 10.5)).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -1483,6 +1538,14 @@ struct SpeakerReviewPane: View {
                     HStack(spacing: 8) {
                         if !correction.refused {
                             Button("Save") { model.confirmCorrection(correction) }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(model.mergeInFlight)
+                        } else if correction.forceable {
+                            // A stalled EARLIER correction is the one refusal a
+                            // user can override. Without this the 409 was a dead
+                            // end whose own message told them to re-open the
+                            // meeting, which changes nothing on the server.
+                            Button("Apply anyway") { model.forceCorrection(correction) }
                                 .buttonStyle(.borderedProminent)
                                 .disabled(model.mergeInFlight)
                         }

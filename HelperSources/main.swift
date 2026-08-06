@@ -386,6 +386,7 @@ final class COSControlHelper {
         case "meeting-relabel": try emitMeetingRelabel(args: args)
         case "meeting-deattribute": try emitMeetingDeattribute(args: args)
         case "review-audio": try emitReviewAudio(args: args)
+        case "review-audio-list": try emitReviewAudioList(args: args)
         case "fetch-media": try emitFetchedMedia(args: args)
         case "check-app-update": try emitAppUpdateCheck(args: args)
         case "run-server": try runServer()
@@ -4412,6 +4413,17 @@ final class COSControlHelper {
             throw HelperError.message("Server stopped")
         }
         if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        // Classify the STATUS before requiring a JSON body. A server older than
+        // 6.21.18 has no such route, and Express's default 404 is HTML — parsing
+        // that as JSON yielded nil and reported "Server stopped" for a perfectly
+        // healthy server, sending the user off to restart it.
+        if response.status == 404 {
+            emit(ok: true, message: "This needs a newer glasses-server", details: [
+                "state": "route_missing",
+                "httpStatus": 404,
+            ])
+            return
+        }
         guard let body = response.body else { throw HelperError.message("Server stopped") }
 
         // 400 = confirmation gate (carries the full preview).
@@ -4481,6 +4493,10 @@ final class COSControlHelper {
             // 404 is the ordinary case once the retention window has passed, and
             // is reported as a state rather than an error so the panel can say
             // "no longer held" instead of looking broken.
+            // A 404 from a MISSING ROUTE is not expired audio. On an older server
+            // every playback claimed "no longer held", which is a confident false
+            // statement about retention. The listing route below is the capability
+            // probe: if it 404s too, the server is old.
             emit(ok: true, message: "Audio unavailable", details: [
                 "state": response.status == 404 ? "expired" : mediaState(for: response.status),
                 "httpStatus": response.status,
@@ -4502,6 +4518,36 @@ final class COSControlHelper {
             "state": "ready",
             "path": destination.path,
             "bytes": data.count,
+        ])
+    }
+
+    /// Which chunks of a meeting still have audio, so the panel can offer a play
+    /// button only where it will work.
+    ///
+    /// A 404 here means the server predates this panel — reported as
+    /// `route_missing` so Control can say "update your server" instead of
+    /// asserting, falsely, that the audio is gone.
+    private func emitReviewAudioList(args: [String]) throws {
+        guard let session = option("--session", in: args), validSessionID(session) else {
+            throw HelperError.message("--session is required")
+        }
+        let token = try speakerReviewToken()
+        guard let response = request("/api/meeting/\(escapedSessionID(session))/audio", method: "GET", token: token, body: nil, timeout: 15) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if response.status == 404 {
+            emit(ok: true, message: "Retention not available", details: ["state": "route_missing", "chunks": []])
+            return
+        }
+        guard response.status == 200, let body = response.body else {
+            throw HelperError.message("Could not read retained audio (\(response.status))")
+        }
+        emit(ok: true, message: "Retained audio listed", details: [
+            "state": "ready",
+            "chunks": (body["chunks"] as? [Any]) ?? [],
+            "retentionDays": body["retentionDays"] ?? NSNull(),
+            "retained": body["retained"] ?? false,
         ])
     }
 
