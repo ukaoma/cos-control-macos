@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.5.0 (build 35)
+
+- **Renaming a voice now corrects one meeting, not your whole history.** Until
+  now the panel only ever called the global merge, so fixing one call rewrote
+  every meeting that person appears in. A scope control sits above the name, set
+  to "Just this meeting" by default, with "Every meeting" as an explicit choice.
+- **Remove a voice that was not in the room.** There was no way to undo a wrong
+  name — only to replace it with another. "Not in this meeting" un-attributes the
+  voice and also retracts the training samples that meeting contributed to that
+  person's profile, so the mistake stops reinforcing itself. It reports what it
+  cannot reach: samples recorded before meeting-level provenance existed.
+- **A name has to be earned before it is shown as a name.** The identifier
+  accepts a match at 0.55, so a single segment could arrive wearing somebody's
+  full name. Rows below the floor now read "Unidentified voice" with the closest
+  match and the reason it did not qualify — 1 segment, or similarity 0.58, or it
+  swaps with another voice every few segments.
+- **Play the voice.** A speaker button plays what the stored profile sounds like,
+  which settles an identity question faster than any score. Meeting audio is kept
+  for a week, so a segment can be played back during review; after that the panel
+  says the audio is no longer held rather than looking broken.
+- **The ribbon is a real timeline.** It used to draw one rectangle per voice sized
+  by share of segments while labelled "who spoke, in order" — there was no
+  ordering in it, and a voice that spoke twice appeared once. It now reads the
+  server's spans, so widths are durations, a voice can appear more than once, and
+  hovering says who is speaking at that point. Added a legend mapping each colour
+  to a speaker, and hovering a legend entry finds that speaker on the bar.
+
 ## 0.4.2 (build 34)
 
 - Fix a suggested name doing nothing when clicked. When two voices are too far

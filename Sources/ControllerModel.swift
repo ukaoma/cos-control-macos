@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 import ServiceManagement
 
@@ -76,7 +77,16 @@ final class ControllerModel: ObservableObject {
     /// Which voice row has its naming field open. One at a time: two open fields
     /// invite naming the wrong row.
     @Published var namingVoice: String?
-    @Published var pendingMerge: PendingMerge?
+    @Published var pendingCorrection: PendingCorrection?
+    /// Scope the reviewer has chosen for the next rename. Defaults to this
+    /// meeting — the whole point of 0.5.0.
+    @Published var correctionScope: CorrectionScope = .thisMeeting
+    /// Which voice's audio is playing, so one row at a time shows a stop control.
+    @Published var playingVoice: String?
+    /// Why playback could not happen — shown on the row rather than as a dialog,
+    /// because "no longer held" is ordinary information after the retention
+    /// window, not an error the user did anything to cause.
+    @Published var playbackNote: String?
     @Published var mergeInFlight = false
     /// The session the open review asked for. Held separately from `openReview`
     /// because a retry has to work when the review failed to load and there is
@@ -682,7 +692,7 @@ final class ControllerModel: ObservableObject {
 
     func openSpeakerReview(_ meeting: ReviewableMeeting) {
         namingVoice = nil
-        pendingMerge = nil
+        pendingCorrection = nil
         openReview = nil
         lastReviewSession = meeting.sessionId
         Task { [weak self] in await self?.fetchReview(sessionId: meeting.sessionId) }
@@ -715,7 +725,7 @@ final class ControllerModel: ObservableObject {
     func closeSpeakerReview() {
         openReview = nil
         namingVoice = nil
-        pendingMerge = nil
+        pendingCorrection = nil
         reviewError = nil
         lastReviewSession = nil
     }
@@ -729,35 +739,27 @@ final class ControllerModel: ObservableObject {
         }
     }
 
-    /// Ask the server what a merge WOULD do. Never merges — the returned preview
-    /// is what the confirmation is shown against, so the number the user agrees
-    /// to is the number the server acted on.
-    func previewMerge(from: String, into: String) {
-        guard from != into else { return }
+    /// Ask the server what a correction WOULD do. Never applies it — the returned
+    /// preview is what the confirmation is shown against, so the number the user
+    /// agrees to is the number the server acted on.
+    ///
+    /// `scope` decides which endpoint answers. Until 0.5.0 only the global merge
+    /// existed, so every rename rewrote every meeting; per-meeting is now the
+    /// default and the global fold is an explicit opt-in.
+    func previewRename(from: String, to: String, scope: CorrectionScope) {
+        guard from != to else { return }
+        guard let session = openReview?.sessionId else { return }
         mergeInFlight = true
         Task { [weak self] in
             guard let self else { return }
             defer { mergeInFlight = false }
             do {
-                let response = try await helper.run(["voice-merge", "--into", into, "--from", from])
-                let result = response.details["result"]?.object
-                let similarity = result?["similarity"]?.object?[from]?.double
-                // The server refuses below its similarity floor and says so with a
-                // 409. Read the state the helper reports rather than inferring it
-                // from the presence of a `refused` array, which is absent on some
-                // shapes and left the panel silent.
-                let refused = response.details["state"]?.string == "refused"
-                    || (result?["refused"]?.array?.isEmpty == false)
-                pendingMerge = PendingMerge(
-                    into: into,
-                    from: from,
-                    similarity: similarity,
-                    samplesAfter: result?["samplesAfter"]?.int ?? 0,
-                    droppedToCap: result?["droppedToCap"]?.int ?? 0,
-                    refusedBelowFloor: refused,
-                    message: refused
-                        ? "These two voices are too far apart to be the same person, so this was not applied."
-                        : "Everything recorded as \(from) becomes \(into), across every meeting. This cannot be undone here."
+                let args: [String] = scope == .thisMeeting
+                    ? ["meeting-relabel", "--session", session, "--from", from, "--to", to]
+                    : ["voice-merge", "--into", to, "--from", from]
+                let response = try await helper.run(args)
+                pendingCorrection = Self.correction(
+                    from: from, to: to, scope: scope, response: response
                 )
                 namingVoice = nil
                 reviewError = nil
@@ -765,35 +767,195 @@ final class ControllerModel: ObservableObject {
                 // Never fail silently: a click that does nothing is worse than an
                 // error, because the user cannot tell it was received.
                 reviewError = "Could not check that name: \(error.localizedDescription)"
-                pendingMerge = nil
+                pendingCorrection = nil
             }
         }
     }
 
-    func confirmMerge(_ merge: PendingMerge) {
+    /// Ask what removing a false attribution would do.
+    ///
+    /// Always per-meeting: "this person was not in THIS room" says nothing about
+    /// any other meeting, so there is deliberately no global variant.
+    func previewDeattribution(from: String) {
+        guard let session = openReview?.sessionId else { return }
         mergeInFlight = true
         Task { [weak self] in
             guard let self else { return }
             defer { mergeInFlight = false }
             do {
-                _ = try await helper.run([
-                    "voice-merge", "--into", merge.into, "--from", merge.from, "--confirm",
+                let response = try await helper.run([
+                    "meeting-deattribute", "--session", session, "--from", from,
                 ])
-                notice = "Saved — \(merge.from) is now \(merge.into)"
-                pendingMerge = nil
-                await loadVoiceProfiles()
-                // The review is now stale — the absorbed label no longer exists,
-                // so re-read it rather than leave a row pointing at a deleted
-                // profile.
-                if let session = openReview?.sessionId {
-                    await fetchReview(sessionId: session)
-                }
+                pendingCorrection = Self.correction(
+                    from: from, to: nil, scope: .thisMeeting, response: response
+                )
+                namingVoice = nil
+                reviewError = nil
             } catch {
-                reviewError = error.localizedDescription
-                pendingMerge = nil
+                reviewError = "Could not check that: \(error.localizedDescription)"
+                pendingCorrection = nil
             }
         }
     }
 
-    func cancelMerge() { pendingMerge = nil }
+    /// Build the preview from whichever endpoint answered.
+    ///
+    /// The two shapes differ — the per-meeting routes return surfaces/training
+    /// counts, the global merge returns a similarity report — so this is where
+    /// they are reconciled into one thing the view can render.
+    private static func correction(
+        from: String,
+        to: String?,
+        scope: CorrectionScope,
+        response: HelperResponse
+    ) -> PendingCorrection {
+        let state = response.details["state"]?.string ?? ""
+        let result = response.details["result"]?.object
+        let refused = state == "refused" || state == "declined"
+        let pendingEarlier = state == "pending_correction"
+        let training = result?["training"]?.object
+
+        let serverMessage = result?["message"]?.string
+            ?? response.details["message"]?.string
+            ?? ""
+        let message: String
+        if pendingEarlier {
+            message = "An earlier correction on this meeting never finished, so its files may be part-written. Re-open it before trying again."
+        } else if refused {
+            message = serverMessage.isEmpty
+                ? "The server declined this, so nothing was applied."
+                : serverMessage
+        } else if !serverMessage.isEmpty {
+            message = serverMessage
+        } else if to == nil {
+            message = "Removes \(from) from this meeting."
+        } else {
+            message = scope == .thisMeeting
+                ? "Renames \(from) to \(to ?? "") in this meeting only."
+                : "Folds \(from) into \(to ?? "") across every meeting. This cannot be undone here."
+        }
+
+        return PendingCorrection(
+            from: from,
+            to: to,
+            scope: scope,
+            message: message,
+            surfaces: CorrectionSurfaces(response.details["result"]?.object?["surfaces"]),
+            similarity: result?["similarity"]?.object?[from]?.double,
+            refused: refused || pendingEarlier,
+            proseStale: result?["proseStale"]?.bool ?? false,
+            wouldRetract: training?["wouldRetract"]?.int ?? 0,
+            untraceable: training?["untraceable"]?.int ?? 0
+        )
+    }
+
+    func confirmCorrection(_ correction: PendingCorrection) {
+        guard !correction.refused else { pendingCorrection = nil; return }
+        guard let session = openReview?.sessionId else { return }
+        mergeInFlight = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { mergeInFlight = false }
+            do {
+                let args: [String]
+                if correction.isDeattribution {
+                    args = ["meeting-deattribute", "--session", session, "--from", correction.from, "--confirm"]
+                } else if correction.scope == .thisMeeting {
+                    args = ["meeting-relabel", "--session", session,
+                            "--from", correction.from, "--to", correction.to ?? "", "--confirm"]
+                } else {
+                    args = ["voice-merge", "--into", correction.to ?? "", "--from", correction.from, "--confirm"]
+                }
+                _ = try await helper.run(args)
+                notice = correction.isDeattribution
+                    ? "Removed \(correction.from) from this meeting"
+                    : (correction.scope == .thisMeeting
+                        ? "\(correction.from) is now \(correction.to ?? "") in this meeting"
+                        : "Saved — \(correction.from) is now \(correction.to ?? "") everywhere")
+                pendingCorrection = nil
+                await loadVoiceProfiles()
+                // The review is now stale — a label may have changed or gone, so
+                // re-read it rather than leave a row describing the old state.
+                await fetchReview(sessionId: session)
+            } catch {
+                reviewError = error.localizedDescription
+                pendingCorrection = nil
+            }
+        }
+    }
+
+    // MARK: - Review playback (0.5.0)
+
+    /// Held so playback is not garbage-collected mid-sound, and so a second click
+    /// can stop the first. AVAudioPlayer stops the moment its last reference
+    /// drops, which makes a local variable silently play nothing.
+    private var audioPlayer: AVAudioPlayer?
+
+    /// Play what a stored PROFILE sounds like.
+    ///
+    /// Miles: hearing the voice settles an identity question that a similarity
+    /// score cannot. This is the version that needs no retention change — the
+    /// training audio already exists — and it answers the question the panel is
+    /// actually asking: is this person really who the system named?
+    func playProfileSample(_ speaker: String) {
+        play(key: speaker, args: ["review-audio", "--speaker", speaker],
+             missing: "No retained audio for \(speaker).")
+    }
+
+    /// Play one segment of THIS meeting, from the 7-day review archive.
+    func playMeetingSegment(chunkIndex: Int, key: String) {
+        guard let session = openReview?.sessionId else { return }
+        play(key: key,
+             args: ["review-audio", "--session", session, "--chunk", String(chunkIndex)],
+             missing: "That segment's audio is no longer held.")
+    }
+
+    func stopPlayback() {
+        audioPlayer?.stop()
+        audioPlayer = nil
+        playingVoice = nil
+    }
+
+    private func play(key: String, args: [String], missing: String) {
+        // A second click on the row that is already playing means stop.
+        if playingVoice == key { stopPlayback(); return }
+        stopPlayback()
+        playbackNote = nil
+        playingVoice = key
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await helper.run(args)
+                let state = response.details["state"]?.string ?? ""
+                guard state == "ready", let path = response.details["path"]?.string else {
+                    // `expired` is the ordinary outcome once retention has passed.
+                    playbackNote = state == "expired" ? missing : "Audio unavailable (\(state))."
+                    playingVoice = nil
+                    return
+                }
+                let url = URL(fileURLWithPath: path)
+                let player = try AVAudioPlayer(contentsOf: url)
+                audioPlayer = player
+                player.play()
+                // Clear the playing state when the sound ends. Polling the player
+                // rather than using its delegate keeps this off the main-actor
+                // delegate dance for what is a two-second clip.
+                let duration = player.duration
+                Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64(max(0.2, duration) * 1_000_000_000))
+                    guard let self, self.playingVoice == key else { return }
+                    self.playingVoice = nil
+                    self.audioPlayer = nil
+                }
+                // The helper wrote this into its transfer directory; it is ours to
+                // remove once loaded into the player.
+                try? FileManager.default.removeItem(at: url)
+            } catch {
+                playbackNote = "Could not play that: \(error.localizedDescription)"
+                playingVoice = nil
+            }
+        }
+    }
+
+    func cancelCorrection() { pendingCorrection = nil }
 }

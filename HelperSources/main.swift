@@ -383,6 +383,9 @@ final class COSControlHelper {
         case "meeting-speakers": try emitMeetingSpeakers(args: args)
         case "voice-profiles": try emitVoiceProfiles()
         case "voice-merge": try emitVoiceMerge(args: args)
+        case "meeting-relabel": try emitMeetingRelabel(args: args)
+        case "meeting-deattribute": try emitMeetingDeattribute(args: args)
+        case "review-audio": try emitReviewAudio(args: args)
         case "fetch-media": try emitFetchedMedia(args: args)
         case "check-app-update": try emitAppUpdateCheck(args: args)
         case "run-server": try runServer()
@@ -4013,6 +4016,25 @@ final class COSControlHelper {
         return normalized
     }
 
+    /// Mirrors the server's own session-id contract (`^[A-Za-z0-9:_-]{3,96}$`).
+    ///
+    /// Validated rather than only percent-encoded: escaping makes a hostile value
+    /// safe to put IN a URL, but it does not stop the helper asking the server
+    /// about something that was never a session id. Rejecting here keeps the two
+    /// ends agreeing about what a session is.
+    private func validSessionID(_ value: String) -> Bool {
+        guard (3...96).contains(value.count) else { return false }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ":_-"))
+        return value.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
+    /// A session id ready to sit in a path segment.
+    private func escapedSessionID(_ value: String) -> String {
+        value.addingPercentEncoding(
+            withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        ) ?? value
+    }
+
     private func validMediaID(_ value: String) -> Bool {
         guard value.count == 26, value.hasPrefix("m_") else { return false }
         return value.dropFirst(2).allSatisfy { "0123456789abcdef".contains($0) }
@@ -4332,6 +4354,155 @@ final class COSControlHelper {
                 "httpStatus": response.status,
                 "result": report,
             ])
+    }
+
+    /// POST /api/meeting/:id/relabel — correct who a voice was in ONE meeting.
+    ///
+    /// The scoped replacement for voice-merge. Same 400/409 handling: a 400 is the
+    /// server's confirmation gate and a 409 means an earlier correction on this
+    /// meeting never finished, and BOTH carry the report the panel needs. Throwing
+    /// on them is how 0.4.0 shipped a suggestion that appeared to do nothing.
+    private func emitMeetingRelabel(args: [String]) throws {
+        guard let session = option("--session", in: args), validSessionID(session),
+              let from = option("--from", in: args), !from.isEmpty,
+              let to = option("--to", in: args), !to.isEmpty else {
+            throw HelperError.message("--session, --from and --to are required")
+        }
+        var payload: [String: Any] = ["from": from, "to": to]
+        if args.contains("--confirm") { payload["confirm"] = true } else { payload["dryRun"] = true }
+        if args.contains("--force") { payload["force"] = true }
+        try emitMeetingCorrection(
+            path: "/api/meeting/\(escapedSessionID(session))/relabel",
+            payload: payload,
+            confirmed: args.contains("--confirm"),
+            appliedMessage: "Name applied to this meeting"
+        )
+    }
+
+    /// POST /api/meeting/:id/deattribute — this voice was NOT that person.
+    ///
+    /// Retraction of the meeting's training samples defaults ON server-side; pass
+    /// --keep-training to correct the transcript without touching the profile.
+    private func emitMeetingDeattribute(args: [String]) throws {
+        guard let session = option("--session", in: args), validSessionID(session),
+              let from = option("--from", in: args), !from.isEmpty else {
+            throw HelperError.message("--session and --from are required")
+        }
+        var payload: [String: Any] = ["from": from]
+        if args.contains("--keep-training") { payload["retractTraining"] = false }
+        if args.contains("--confirm") { payload["confirm"] = true } else { payload["dryRun"] = true }
+        if args.contains("--force") { payload["force"] = true }
+        try emitMeetingCorrection(
+            path: "/api/meeting/\(escapedSessionID(session))/deattribute",
+            payload: payload,
+            confirmed: args.contains("--confirm"),
+            appliedMessage: "Voice removed from this meeting"
+        )
+    }
+
+    private func emitMeetingCorrection(
+        path: String,
+        payload: [String: Any],
+        confirmed: Bool,
+        appliedMessage: String
+    ) throws {
+        let json = String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8) ?? "{}"
+        let token = try speakerReviewToken()
+        guard let response = request(path, method: "POST", token: token, body: json, timeout: 30) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        guard let body = response.body else { throw HelperError.message("Server stopped") }
+
+        // 400 = confirmation gate (carries the full preview).
+        // 409 = an earlier correction on this meeting never completed.
+        // 422 = the server declined, e.g. the label is not in this meeting.
+        let gated = response.status == 400
+        let pending = response.status == 409
+        let declined = response.status == 422
+        if response.status != 200 && !gated && !pending && !declined {
+            let reason = (body["message"] as? String) ?? (body["error"] as? String)
+                ?? "Request failed (\(response.status))"
+            throw HelperError.message(reason)
+        }
+        let state: String
+        if pending { state = "pending_correction" }
+        else if declined { state = "declined" }
+        else if confirmed && response.status == 200 { state = "applied" }
+        else { state = "preview" }
+        emit(ok: true, message: state == "applied" ? appliedMessage : (body["message"] as? String ?? "Preview ready"),
+            details: [
+                "state": state,
+                "httpStatus": response.status,
+                "result": body,
+            ])
+    }
+
+    /// GET a WAV for review playback and hand back a temp-file path.
+    ///
+    /// A path rather than base64: the panel plays it with AVAudioPlayer, and
+    /// routing several megabytes of audio through a JSON envelope for every click
+    /// would be slower and would blow the message size for a long segment.
+    ///
+    /// --speaker fetches what a stored PROFILE sounds like (training-audio, no
+    /// retention change needed). --session/--chunk fetches one segment of a
+    /// meeting from the 7-day review archive.
+    private func emitReviewAudio(args: [String]) throws {
+        let route: String
+        if let speaker = option("--speaker", in: args), !speaker.isEmpty {
+            guard let encoded = speaker.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
+                throw HelperError.message("Invalid speaker")
+            }
+            route = "/api/voice/profiles/\(encoded)/sample"
+        } else if let session = option("--session", in: args), validSessionID(session) {
+            if let chunk = option("--chunk", in: args), let index = Int(chunk), index >= 0 {
+                route = "/api/meeting/\(escapedSessionID(session))/audio/\(index)"
+            } else {
+                route = "/api/voice/ext-audio/\(escapedSessionID(session))/sample"
+            }
+        } else {
+            throw HelperError.message("--speaker, or --session with an optional --chunk, is required")
+        }
+
+        let token: String
+        do { token = try readToken() }
+        catch {
+            emit(ok: true, message: "Audio unavailable", details: ["state": "unauthorized"])
+            return
+        }
+        // A 16 kHz mono chunk is tens of kilobytes; 8 MB is generous headroom and
+        // still bounded, so a wrong route cannot stream unbounded data into memory.
+        try pruneMediaTransfers()
+        guard let response = boundedMediaRequest(route, token: token, timeout: 12, maximumBytes: 8 * 1_024 * 1_024) else {
+            emit(ok: true, message: "Audio unavailable", details: ["state": "offline"])
+            return
+        }
+        guard response.status == 200, let data = response.data, !data.isEmpty else {
+            // 404 is the ordinary case once the retention window has passed, and
+            // is reported as a state rather than an error so the panel can say
+            // "no longer held" instead of looking broken.
+            emit(ok: true, message: "Audio unavailable", details: [
+                "state": response.status == 404 ? "expired" : mediaState(for: response.status),
+                "httpStatus": response.status,
+            ])
+            return
+        }
+        // Sniff RIFF/WAVE rather than trusting the content-type: this path writes
+        // a file the app will hand to an audio player, and a mislabelled payload
+        // should be refused, not played.
+        guard data.count > 12,
+              data.prefix(4).elementsEqual([0x52, 0x49, 0x46, 0x46]),
+              data.dropFirst(8).prefix(4).elementsEqual([0x57, 0x41, 0x56, 0x45]) else {
+            emit(ok: true, message: "Audio unavailable", details: ["state": "invalid"])
+            return
+        }
+        let destination = mediaTransferRoot.appendingPathComponent("\(UUID().uuidString.lowercased()).wav")
+        try atomicWriteData(data, to: destination, permissions: 0o600)
+        emit(ok: true, message: "Audio ready", details: [
+            "state": "ready",
+            "path": destination.path,
+            "bytes": data.count,
+        ])
     }
 
     private func mediaState(for status: Int) -> String {

@@ -464,13 +464,27 @@ struct ReviewVoice: Identifiable, Sendable, Hashable {
     let meanSimilarity: Double?
     let isOwner: Bool
     let reliability: Reliability
+    /// Whether the server considers this label EARNED enough to show as a name.
+    /// Read, never re-derived here: the floor lives on the server so the phone,
+    /// the lens and this panel cannot disagree about who has been identified.
+    let nameAsserted: Bool
+    /// Why the name is not asserted — shown to the reviewer rather than silently
+    /// hiding it, because "2 segments" and "similarity 0.58" call for different
+    /// judgements.
+    let assertionBlockers: [String]
     let thrashesWith: [SpeakerThrashPair]
     let phrases: [SpeakerPhrase]
 
     var id: String { label }
-    /// Named people can be merged into another profile. An unattributed cluster
-    /// has no profile to merge, and the owner must never be absorbed away.
-    var canMerge: Bool { reliability != .unattributed && !isOwner }
+    /// What the row is allowed to CALL this voice. An unearned label is a
+    /// candidate, not an identity.
+    var displayName: String { nameAsserted ? label : "Unidentified voice" }
+    /// Named people can be renamed. An unattributed cluster has no name to
+    /// correct, and the owner must never be absorbed away.
+    var canRename: Bool { reliability != .unattributed && !isOwner }
+    /// A voice that was never in the room can be removed. Only meaningful where
+    /// a name was actually applied — there is nothing to take back otherwise.
+    var canDeattribute: Bool { reliability != .unattributed }
 
     init?(_ value: JSONValue?) {
         guard let o = value?.object, let label = o["label"]?.string else { return nil }
@@ -479,8 +493,42 @@ struct ReviewVoice: Identifiable, Sendable, Hashable {
         meanSimilarity = o["meanSimilarity"]?.double
         isOwner = o["isOwner"]?.bool ?? false
         reliability = Reliability(rawValue: o["reliability"]?.string ?? "") ?? .weak
+        // Absent on a server older than 6.21.18. Defaulting to TRUE keeps an old
+        // server's panel working exactly as it did rather than blanking every
+        // name; the floor is then simply not enforced until the server ships it.
+        nameAsserted = o["nameAsserted"]?.bool ?? true
+        assertionBlockers = (o["assertionBlockers"]?.array ?? []).compactMap { $0.string }
         thrashesWith = (o["thrashesWith"]?.array ?? []).compactMap(SpeakerThrashPair.init)
         phrases = (o["phrases"]?.array ?? []).compactMap(SpeakerPhrase.init)
+    }
+}
+
+/// One stretch of the meeting held by a single label.
+///
+/// The ribbon used to draw one rectangle per voice sized by share of segments
+/// while calling itself "who spoke, in order" — there was no ordering in it, so
+/// hovering could not report anything true. These spans are what make it a
+/// timeline.
+struct SpeakerTimelineSpan: Identifiable, Sendable, Hashable {
+    let speaker: String
+    let startMs: Int
+    let endMs: Int
+    let segments: Int
+
+    var id: String { "\(startMs)-\(speaker)" }
+    var durationMs: Int { max(0, endMs - startMs) }
+
+    var stamp: String {
+        let total = startMs / 1000
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let speaker = o["speaker"]?.string else { return nil }
+        self.speaker = speaker
+        startMs = o["startMs"]?.int ?? 0
+        endMs = o["endMs"]?.int ?? 0
+        segments = o["segments"]?.int ?? 0
     }
 }
 
@@ -489,7 +537,9 @@ struct SpeakerReview: Sendable {
     let title: String
     let segments: Int
     let attributed: Bool
+    let durationMs: Int
     let voices: [ReviewVoice]
+    let timeline: [SpeakerTimelineSpan]
 
     init?(_ value: JSONValue?) {
         guard let o = value?.object, let sessionId = o["sessionId"]?.string else { return nil }
@@ -497,7 +547,20 @@ struct SpeakerReview: Sendable {
         title = o["title"]?.string ?? "Untitled meeting"
         segments = o["segments"]?.int ?? 0
         attributed = o["attributed"]?.bool ?? false
+        durationMs = o["durationMs"]?.int ?? 0
         voices = (o["voices"]?.array ?? []).compactMap(ReviewVoice.init)
+        timeline = (o["timeline"]?.array ?? []).compactMap(SpeakerTimelineSpan.init)
+    }
+
+    /// Whether a name may be shown for a label, from the voice rows. The ribbon
+    /// asks this rather than deciding for itself, so a span and its list row can
+    /// never disagree about whether someone was identified.
+    func assertsName(_ label: String) -> Bool {
+        voices.first(where: { $0.label == label })?.nameAsserted ?? false
+    }
+
+    func displayName(for label: String) -> String {
+        voices.first(where: { $0.label == label })?.displayName ?? label
     }
 }
 
@@ -513,16 +576,73 @@ struct VoiceProfileOption: Identifiable, Sendable, Hashable {
     }
 }
 
-/// A merge the user has been shown but not yet confirmed. Holding the preview in
-/// state — rather than merging and reporting afterwards — is what makes the
-/// confirmation real.
-struct PendingMerge: Identifiable, Sendable {
-    let into: String
+/// How far a correction reaches.
+///
+/// `thisMeeting` is the DEFAULT and the reason this type exists. Until 0.5.0 the
+/// panel only ever called the global merge, so renaming a voice rewrote every
+/// meeting that person appears in — Miles: "I thought that what we wanted to do
+/// was make this much more segmented." A voice misheard in one room is not
+/// evidence that every past attribution was wrong.
+enum CorrectionScope: String, Sendable, CaseIterable, Identifiable {
+    case thisMeeting
+    case everywhere
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .thisMeeting: return "Just this meeting"
+        case .everywhere: return "Every meeting"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .thisMeeting:
+            return "Corrects this meeting only, and teaches the voice profile from it."
+        case .everywhere:
+            return "Folds one profile into the other across every meeting. Cannot be undone here."
+        }
+    }
+}
+
+/// What changed, per surface, so a correction reporting success can be checked
+/// rather than trusted.
+struct CorrectionSurfaces: Sendable, Hashable {
+    let sidecar: Int
+    let attendees: Int
+    let transcript: Int
+
+    init(_ value: JSONValue?) {
+        let o = value?.object ?? [:]
+        sidecar = o["sidecar"]?.int ?? 0
+        attendees = o["attendees"]?.int ?? 0
+        transcript = o["transcript"]?.int ?? 0
+    }
+}
+
+/// A correction the user has been shown but not yet confirmed. Holding the
+/// preview in state — rather than applying and reporting afterwards — is what
+/// makes the confirmation real.
+struct PendingCorrection: Identifiable, Sendable {
+    /// The label being corrected.
     let from: String
-    let similarity: Double?
-    let samplesAfter: Int
-    let droppedToCap: Int
-    let refusedBelowFloor: Bool
+    /// The new name, or nil to REMOVE the name (this voice was not in the room).
+    let to: String?
+    let scope: CorrectionScope
     let message: String
-    var id: String { "\(from)->\(into)" }
+    let surfaces: CorrectionSurfaces
+    let similarity: Double?
+    /// Server declined — shown with its reason instead of read as a failure.
+    let refused: Bool
+    /// Narrative prose still names the old speaker and is deliberately not
+    /// rewritten, because summaries refer to people by first name.
+    let proseStale: Bool
+    /// Training samples this correction would retract from the profile.
+    let wouldRetract: Int
+    /// Samples that predate meeting-level provenance and cannot be retracted.
+    let untraceable: Int
+
+    var id: String { "\(from)->\(to ?? "«unidentified»")@\(scope.rawValue)" }
+    var isDeattribution: Bool { to == nil }
 }

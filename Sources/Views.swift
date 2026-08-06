@@ -1040,42 +1040,113 @@ struct ControlPanel: View {
 // red badge — an untrustworthy row should look like noise, which is honest about
 // what is wrong with it.
 
+/// Who spoke, in order — an actual timeline.
+///
+/// WHAT THIS REPLACES. The previous ribbon iterated the aggregated `voices` and
+/// drew one rectangle per voice sized by its share of segments. It carried the
+/// label "who spoke, in order" while containing no ordering at all, so a voice
+/// that spoke at the start and again at the end appeared once, in the middle, and
+/// hovering it could not have reported anything true. Miles asked for hover and a
+/// legend; the honest fix was a time axis first.
+///
+/// Widths are proportional to DURATION, not segment count, so a long quiet turn
+/// reads as long. Colour is assigned per distinct speaker in first-appearance
+/// order and shared with the legend, which is what makes the bar readable.
 private struct TurnRibbon: View {
-    let voices: [ReviewVoice]
+    let review: SpeakerReview
+    /// Lifted to the pane so the legend can highlight the same span the pointer
+    /// is over.
+    @Binding var hovered: SpeakerTimelineSpan?
 
-    private func tint(_ voice: ReviewVoice) -> Color {
-        if voice.reliability == .unattributed { return COSPalette.line }
-        if voice.isOwner { return COSPalette.green }
-        return COSPalette.amber
+    /// Distinct speakers in the order they first speak. Stable, so a colour does
+    /// not move between renders of the same meeting.
+    private var speakerOrder: [String] {
+        var seen = Set<String>()
+        var order: [String] = []
+        for span in review.timeline where !seen.contains(span.speaker) {
+            seen.insert(span.speaker)
+            order.append(span.speaker)
+        }
+        return order
+    }
+
+    private var spanMs: Int {
+        max(review.timeline.last?.endMs ?? 0, review.durationMs, 1)
+    }
+
+    static func tint(for speaker: String, order: [String], review: SpeakerReview) -> Color {
+        // An unnamed voice is deliberately neutral: colouring it like a person
+        // would imply an identity the system does not have.
+        if !review.assertsName(speaker) { return COSPalette.line }
+        let palette: [Color] = [COSPalette.green, COSPalette.amber, COSPalette.ink.opacity(0.55),
+                                COSPalette.green.opacity(0.55), COSPalette.amber.opacity(0.55)]
+        guard let at = order.firstIndex(of: speaker) else { return COSPalette.line }
+        return palette[at % palette.count]
     }
 
     var body: some View {
-        GeometryReader { geo in
-            let total = max(voices.reduce(0) { $0 + $1.segments }, 1)
-            HStack(spacing: 1.5) {
-                ForEach(voices) { voice in
-                    let width = geo.size.width * CGFloat(voice.segments) / CGFloat(total)
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(tint(voice).opacity(voice.reliability == .unreliable ? 0.28 : 0.85))
-                        .overlay(alignment: .leading) {
-                            if voice.reliability == .unreliable {
-                                // Thrash reads as fine stripes: the row is not one voice.
-                                HStack(spacing: 2) {
-                                    ForEach(0..<max(Int(width / 5), 1), id: \.self) { _ in
-                                        Rectangle().fill(COSPalette.amber.opacity(0.55)).frame(width: 1.5)
-                                    }
-                                }
+        let order = speakerOrder
+        VStack(alignment: .leading, spacing: 5) {
+            GeometryReader { geo in
+                HStack(spacing: 0.5) {
+                    ForEach(review.timeline) { span in
+                        let width = geo.size.width * CGFloat(span.durationMs) / CGFloat(spanMs)
+                        Rectangle()
+                            .fill(Self.tint(for: span.speaker, order: order, review: review))
+                            // The hovered span lifts; everything else dims, so the
+                            // pointer's position is unambiguous on a busy bar.
+                            .opacity(hovered == nil || hovered == span ? 1 : 0.35)
+                            .frame(width: max(width, 1.5))
+                            .onHover { inside in
+                                hovered = inside ? span : (hovered == span ? nil : hovered)
                             }
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+            }
+            .frame(height: 34)
+
+            // What the pointer is over, in words. A colour bar without this is
+            // exactly the state Miles found: no way to map a stripe to a person.
+            if let span = hovered {
+                HStack(spacing: 6) {
+                    Text(span.stamp).font(.system(size: 9.5, design: .monospaced)).foregroundStyle(.tertiary)
+                    Text(review.displayName(for: span.speaker)).font(.system(size: 11, weight: .medium))
+                    Text("\(span.segments) seg · \(max(1, span.durationMs / 1000))s")
+                        .font(.system(size: 9.5, design: .monospaced)).foregroundStyle(.tertiary)
+                }
+            } else {
+                Text("Hover the bar to see who is speaking")
+                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+            }
+
+            // The legend. Reads the same tint function as the bar, so the two can
+            // never drift apart.
+            if !order.isEmpty {
+                let columns = [GridItem(.adaptive(minimum: 108), spacing: 8)]
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 3) {
+                    ForEach(order, id: \.self) { speaker in
+                        HStack(spacing: 5) {
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Self.tint(for: speaker, order: order, review: review))
+                                .frame(width: 9, height: 9)
+                            Text(review.displayName(for: speaker))
+                                .font(.system(size: 10))
+                                .foregroundStyle(review.assertsName(speaker) ? .secondary : .tertiary)
+                                .lineLimit(1)
                         }
-                        .frame(width: max(width, 2))
-                        .clipped()
+                        // Hovering a legend entry highlights that speaker's FIRST
+                        // span, which is how you find someone on a long bar.
+                        .onHover { inside in
+                            hovered = inside ? review.timeline.first(where: { $0.speaker == speaker }) : nil
+                        }
+                    }
                 }
             }
         }
-        .frame(height: 26)
-        .accessibilityLabel(voices.map { "\($0.label) \($0.segments) segments" }.joined(separator: ", "))
     }
 }
+
 
 private struct ConfidenceRamp: View {
     let value: Double?
@@ -1114,8 +1185,9 @@ private struct VoiceRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(voice.reliability == .unattributed ? "Unidentified voice" : voice.label)
+                Text(voice.displayName)
                     .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(voice.nameAsserted ? .primary : .secondary)
                 if voice.isOwner {
                     Text("you")
                         .font(.system(size: 9, design: .monospaced))
@@ -1127,6 +1199,20 @@ private struct VoiceRow: View {
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
                 ConfidenceRamp(value: voice.meanSimilarity, unreliable: voice.reliability == .unreliable)
+                // Hearing three seconds of the stored profile settles what a score
+                // cannot. Only offered where a name exists to compare against —
+                // there is no profile to play for a voice nobody named.
+                if voice.reliability != .unattributed {
+                    Button {
+                        model.playProfileSample(voice.label)
+                    } label: {
+                        Image(systemName: model.playingVoice == voice.label ? "stop.fill" : "play.fill")
+                            .font(.system(size: 9))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Hear what \(voice.label) sounds like in the stored profile")
+                }
             }
 
             // The evidence. A score cannot tell you who someone is; these can.
@@ -1163,14 +1249,47 @@ private struct VoiceRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if voice.canMerge {
+            // The name the system GUESSED, kept visible even when it was not
+            // earned — it is often the clue that identifies the voice — but stated
+            // as a candidate, with the reason it did not qualify.
+            if !voice.nameAsserted && voice.reliability != .unattributed {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Closest match: \(voice.label)\(voice.meanSimilarity.map { String(format: " (%.2f)", $0) } ?? "")")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    ForEach(voice.assertionBlockers, id: \.self) { blocker in
+                        Text("· \(blocker)").font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+
+            if let note = model.playbackNote, model.playingVoice == nil {
+                Text(note).font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if voice.canRename {
                 if model.namingVoice == voice.label {
                     TextField("Type a name", text: $typed)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12))
+
+                    // Scope, chosen BEFORE the name. Until 0.5.0 every rename was
+                    // global, so this is the control that makes a correction mean
+                    // "in this meeting" — Miles: "it should just be this call."
+                    Picker("", selection: $model.correctionScope) {
+                        ForEach(CorrectionScope.allCases) { scope in
+                            Text(scope.label).tag(scope)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    Text(model.correctionScope.detail)
+                        .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+
                     ForEach(matches) { option in
                         Button {
-                            model.previewMerge(from: voice.label, into: option.name)
+                            model.previewRename(from: voice.label, to: option.name, scope: model.correctionScope)
                         } label: {
                             HStack {
                                 Text(option.name).font(.system(size: 12))
@@ -1194,15 +1313,31 @@ private struct VoiceRow: View {
                     Button("Cancel") { model.namingVoice = nil; typed = "" }
                         .font(.system(size: 11)).buttonStyle(.plain).foregroundStyle(.secondary)
                 } else {
-                    Button(voice.reliability == .unreliable ? "This is someone else" : "Actually someone else") {
-                        model.namingVoice = voice.label
+                    HStack(spacing: 10) {
+                        Button(voice.reliability == .unreliable ? "This is someone else" : "Actually someone else") {
+                            model.namingVoice = voice.label
+                        }
+                        .font(.system(size: 11))
+                        .controlSize(.small)
+
+                        // The inverse of naming an unknown voice, which the panel
+                        // had no way to express. Miles: none of the attributed
+                        // voices were in that room, and there was no option to
+                        // de-attribute.
+                        if voice.canDeattribute {
+                            Button("Not in this meeting") {
+                                model.previewDeattribution(from: voice.label)
+                            }
+                            .font(.system(size: 11))
+                            .controlSize(.small)
+                            .disabled(model.mergeInFlight)
+                        }
                     }
-                    .font(.system(size: 11))
-                    .controlSize(.small)
                 }
             } else if voice.reliability == .unattributed {
-                Text("Naming this needs its audio, which is no longer held.")
+                Text("This voice was never named. Give it one from the list above, or leave it unidentified.")
                     .font(.system(size: 11)).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.vertical, 9)
@@ -1211,6 +1346,18 @@ private struct VoiceRow: View {
 
 struct SpeakerReviewPane: View {
     @ObservedObject var model: ControllerModel
+    /// Which span the pointer is over. Held here so the bar and the legend
+    /// highlight the same thing.
+    @State private var hoveredSpan: SpeakerTimelineSpan?
+
+    private func correctionTitle(_ c: PendingCorrection) -> String {
+        if c.refused { return "Not applied" }
+        if c.isDeattribution { return "Remove \(c.from) from this meeting?" }
+        let to = c.to ?? ""
+        return c.scope == .thisMeeting
+            ? "Rename \(c.from) to \(to) in this meeting?"
+            : "Rename \(c.from) to \(to) everywhere?"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1248,7 +1395,7 @@ struct SpeakerReviewPane: View {
                                 .font(.system(size: 9, design: .monospaced))
                                 .tracking(1.4)
                                 .foregroundStyle(.tertiary)
-                            TurnRibbon(voices: review.voices)
+                            TurnRibbon(review: review, hovered: $hoveredSpan)
                         }
                         .padding(.horizontal, 16).padding(.vertical, 12)
 
@@ -1294,26 +1441,52 @@ struct SpeakerReviewPane: View {
                 .background(COSPalette.amber.opacity(0.14))
             }
 
-            if let merge = model.pendingMerge {
+            if let correction = model.pendingCorrection {
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(merge.refusedBelowFloor
-                         ? "Not applied — these are probably different people"
-                         : "Rename \(merge.from) to \(merge.into)?")
+                    // The title states the SCOPE, because that is the thing the
+                    // 0.4.x panel got wrong: it always said "across every
+                    // meeting" and always meant it.
+                    Text(correctionTitle(correction))
                         .font(.system(size: 12, weight: .semibold))
-                    Text(merge.message).font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text(correction.message).font(.system(size: 11)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    if let similarity = merge.similarity {
-                        Text("Voice similarity \(String(format: "%.2f", similarity)) · \(merge.samplesAfter) samples after, \(merge.droppedToCap) dropped to the cap")
+
+                    // What will actually change, so a claim of success can be
+                    // checked rather than trusted.
+                    if !correction.refused && correction.surfaces.sidecar > 0 {
+                        Text("\(correction.surfaces.sidecar) segment(s)"
+                             + (correction.surfaces.transcript > 0 ? " · \(correction.surfaces.transcript) transcript line(s)" : "")
+                             + (correction.surfaces.attendees > 0 ? " · attendee list" : ""))
                             .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
                     }
+                    if correction.wouldRetract > 0 {
+                        Text("Also removes \(correction.wouldRetract) training sample(s) this meeting gave that profile, so the mistake stops reinforcing itself.")
+                            .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if correction.untraceable > 0 {
+                        Text("\(correction.untraceable) older sample(s) carry no meeting provenance and cannot be removed.")
+                            .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if correction.proseStale {
+                        Text("The summary still names the old speaker. It refers to people by first name, so it is left alone rather than risk rewriting a sentence about someone else.")
+                            .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let similarity = correction.similarity {
+                        Text("Voice similarity \(String(format: "%.2f", similarity))")
+                            .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
+                    }
+
                     HStack(spacing: 8) {
-                        if !merge.refusedBelowFloor {
-                            Button("Save") { model.confirmMerge(merge) }
+                        if !correction.refused {
+                            Button("Save") { model.confirmCorrection(correction) }
                                 .buttonStyle(.borderedProminent)
                                 .disabled(model.mergeInFlight)
                         }
-                        Button(merge.refusedBelowFloor ? "OK" : "Cancel") { model.cancelMerge() }
+                        Button(correction.refused ? "OK" : "Cancel") { model.cancelCorrection() }
                         if model.mergeInFlight { ProgressView().controlSize(.mini) }
                         Spacer()
                     }

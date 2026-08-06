@@ -152,6 +152,67 @@ PY
 # Phrases are the primary evidence in a row — a score cannot identify anyone.
 /usr/bin/grep -q 'voice.phrases' "$ROOT/Sources/Views.swift"
 
+# --- 0.5.0 scoped corrections, playback, real ribbon ---------------------------
+# Every view struct the review pane composes. Added after a refactor sliced from
+# TurnRibbon to SpeakerReviewPane and silently deleted ConfidenceRamp and VoiceRow
+# in between — the suite only noticed via an unrelated `voice.phrases` guard, and
+# the build stage that would have caught it runs AFTER these checks.
+for symbol in 'struct TurnRibbon' 'struct ConfidenceRamp' 'struct VoiceRow' 'struct MediaPreviewPane'; do
+  /usr/bin/grep -q "$symbol" "$ROOT/Sources/Views.swift" || {
+    echo "COS Control: $symbol is missing from Views.swift" >&2; exit 1; }
+done
+
+# The scoped endpoints exist, and each is a TWO-STEP like voice-merge: without
+# --confirm the helper asks for a dryRun. Losing this makes confirmation
+# decorative — the user would be agreeing to something already applied.
+/usr/bin/grep -q 'case "meeting-relabel"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "meeting-deattribute"' "$ROOT/HelperSources/main.swift"
+# BOTH scoped endpoints must be two-step, counted rather than matched once: a
+# single grep passes while the other endpoint applies without a preview.
+[ "$(/usr/bin/grep -c 'if args.contains("--confirm") { payload\["confirm"\] = true } else { payload\["dryRun"\] = true }' "$ROOT/HelperSources/main.swift")" -ge 2 ]
+
+# PER-MEETING IS THE DEFAULT. This is the whole point of 0.5.0: until now every
+# rename called the global merge, so correcting one meeting rewrote every meeting
+# that person appears in.
+/usr/bin/grep -q 'correctionScope: CorrectionScope = .thisMeeting' "$ROOT/Sources/ControllerModel.swift"
+# ...and the per-meeting path must actually route to the per-meeting endpoint.
+# The line FOLLOWING the scope test must be the per-meeting endpoint. A bare grep
+# for "meeting-relabel" anywhere in the file is not enough: it also appears in
+# confirmCorrection, so pointing the preview branch at the global merge left the
+# guard green while restoring exactly the 0.4.x behaviour this release removes.
+/usr/bin/grep -A1 'scope == .thisMeeting$' "$ROOT/Sources/ControllerModel.swift" | /usr/bin/grep -q 'meeting-relabel'
+# And confirming must route the same way, or the preview would describe one thing
+# and the save would do another.
+/usr/bin/grep -A2 'correction.scope == .thisMeeting {' "$ROOT/Sources/ControllerModel.swift" | /usr/bin/grep -q 'meeting-relabel'
+
+# The assertion decision is READ from the server, never re-derived here, so the
+# lens, the phone and this panel cannot disagree about who was identified.
+/usr/bin/grep -q 'nameAsserted = o\["nameAsserted"\]' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'voice.displayName' "$ROOT/Sources/Views.swift"
+
+# The ribbon is a TIMELINE. It previously drew one rect per voice sized by share
+# of segments while calling itself "who spoke, in order", so hover had nothing
+# true to report. It must read the server's spans.
+/usr/bin/grep -q 'review.timeline' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'timeline = (o\["timeline"\]' "$ROOT/Sources/Models.swift"
+# Hover and legend both exist, and the legend shares the bar's tint function so
+# the two cannot drift apart.
+/usr/bin/grep -q 'Hover the bar to see who is speaking' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Self.tint(for: speaker, order: order, review: review)' "$ROOT/Sources/Views.swift"
+
+# Playback must verify it received actual audio. This path writes a file handed
+# to an audio player, so a mislabelled payload is refused rather than played.
+/usr/bin/grep -q 'case "review-audio"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q '0x52, 0x49, 0x46, 0x46' "$ROOT/HelperSources/main.swift"
+# One player reference is held on the model: AVAudioPlayer stops the instant its
+# last reference drops, so a local would silently play nothing.
+/usr/bin/grep -q 'private var audioPlayer: AVAudioPlayer?' "$ROOT/Sources/ControllerModel.swift"
+
+# De-attribution is offered in the row, and is always per-meeting — "not in THIS
+# room" says nothing about any other meeting, so there is no global variant.
+/usr/bin/grep -q 'Not in this meeting' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'previewDeattribution' "$ROOT/Sources/ControllerModel.swift"
+
 # --- 0.4.1 overlay regression ---------------------------------------------------
 # MenuBarExtra(.window) is a transient panel that closes when it loses key status,
 # so ANY sheet presented from it dismisses the panel mid-interaction. This is the
