@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.0 (build 32)
+
+- Review who spoke in a saved meeting. Recent Glasses gains a Review speakers
+  card; opening a meeting shows each voice with two to three of its own verbatim
+  lines, timestamped. The lines are the point: a similarity score cannot tell you
+  who someone is, and a sentence you remember can.
+- Show the shape of the conversation before any name. The ribbon draws each
+  voice's share in order, so a voice that swaps labels every few segments reads as
+  fine stripes rather than a block.
+- Mark a voice unreliable when it swaps with another every few segments. Two
+  labels that trade the floor that fast are one identifier oscillating mid-turn,
+  which means those profiles cannot be told apart and a name applied to either
+  would be a guess. A high confidence score does not override this.
+- Correct a voice by folding it into the right person. The merge is always shown
+  as a preview first, with the measured voice similarity, and the server refuses
+  a pair that is too far apart to be the same person.
+- Never offer to absorb your own profile, and say plainly when an unidentified
+  voice cannot be named because its audio is no longer held.
+
+Requires server 6.21.13 or newer.
+
 ## 0.3.9 (build 31)
 
 - Show Early meeting sync, tier-aware HQ prefill progress, and durable

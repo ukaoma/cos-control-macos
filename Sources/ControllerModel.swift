@@ -66,6 +66,26 @@ final class ControllerModel: ObservableObject {
     @Published var previewingMediaID: String?
     @Published var mediaExportingTurnIDs: Set<String> = []
 
+    // MARK: Speaker review (0.4.0)
+    @Published var reviewableMeetings: [ReviewableMeeting] = []
+    @Published var meetingsLoading = false
+    @Published var openReview: SpeakerReview?
+    @Published var reviewLoading = false
+    @Published var reviewError: String?
+    @Published var voiceProfiles: [VoiceProfileOption] = []
+    /// Which voice row has its naming field open. One at a time: two open fields
+    /// invite naming the wrong row.
+    @Published var namingVoice: String?
+    @Published var pendingMerge: PendingMerge?
+    @Published var mergeInFlight = false
+    /// The session the open sheet asked for. Held separately from `openReview`
+    /// because a retry has to work when the review failed to load and there is
+    /// no review object to read the id back out of.
+    private var lastReviewSession: String?
+    /// True once a review has been asked for, so an error can present the sheet
+    /// rather than being swallowed into a popover with no visible cause.
+    var reviewSheetRequested: Bool { lastReviewSession != nil }
+
     /// This build's identity, handed to the helper so the answer can never depend on
     /// WHICH helper copy ran (bundled vs stable, HelperClient.helperURL():55-64).
     static var currentVersion: String {
@@ -629,4 +649,134 @@ final class ControllerModel: ObservableObject {
             return GlassesTurn(object)
         } ?? []
     }
+    // MARK: - Speaker review
+
+    func loadReviewableMeetings() async {
+        meetingsLoading = true
+        defer { meetingsLoading = false }
+        do {
+            let response = try await helper.run(["meetings", "--limit", "12"])
+            reviewableMeetings = (response.details["meetings"]?.array ?? []).compactMap(ReviewableMeeting.init)
+            // A row without a sessionId is filtered out by the helper, because the
+            // review is keyed on the session. Say so rather than showing an empty
+            // list that looks like "no meetings".
+            let skipped = response.details["skipped"]?.int ?? 0
+            if reviewableMeetings.isEmpty && skipped > 0 {
+                reviewError = "\(skipped) recent meeting(s) predate speaker review. Update the server to review new ones."
+            } else {
+                reviewError = nil
+            }
+        } catch {
+            reviewableMeetings = []
+            reviewError = error.localizedDescription
+        }
+    }
+
+    func openSpeakerReview(_ meeting: ReviewableMeeting) {
+        namingVoice = nil
+        pendingMerge = nil
+        openReview = nil
+        lastReviewSession = meeting.sessionId
+        Task { [weak self] in await self?.fetchReview(sessionId: meeting.sessionId) }
+    }
+
+    /// Load (or reload) one meeting's review. Keyed on the session id alone so a
+    /// post-merge refresh does not need to reconstruct a list row it never had.
+    private func fetchReview(sessionId: String) async {
+        reviewLoading = true
+        reviewError = nil
+        defer { reviewLoading = false }
+        do {
+            let response = try await helper.run(["meeting-speakers", "--session", sessionId])
+            guard let review = SpeakerReview(response.details["review"]) else {
+                reviewError = "The server returned a review this build cannot read."
+                return
+            }
+            openReview = review
+            if voiceProfiles.isEmpty { await loadVoiceProfiles() }
+        } catch {
+            reviewError = error.localizedDescription
+        }
+    }
+
+    func retryOpenReview() {
+        guard let session = lastReviewSession else { return }
+        Task { [weak self] in await self?.fetchReview(sessionId: session) }
+    }
+
+    func closeSpeakerReview() {
+        openReview = nil
+        namingVoice = nil
+        pendingMerge = nil
+        reviewError = nil
+        lastReviewSession = nil
+    }
+
+    func loadVoiceProfiles() async {
+        do {
+            let response = try await helper.run(["voice-profiles"])
+            voiceProfiles = (response.details["profiles"]?.array ?? []).compactMap(VoiceProfileOption.init)
+        } catch {
+            voiceProfiles = []
+        }
+    }
+
+    /// Ask the server what a merge WOULD do. Never merges — the returned preview
+    /// is what the confirmation is shown against, so the number the user agrees
+    /// to is the number the server acted on.
+    func previewMerge(from: String, into: String) {
+        guard from != into else { return }
+        mergeInFlight = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { mergeInFlight = false }
+            do {
+                let response = try await helper.run(["voice-merge", "--into", into, "--from", from])
+                let result = response.details["result"]?.object
+                let similarity = result?["similarity"]?.object?[from]?.double
+                let refused = (result?["refused"]?.array?.isEmpty == false)
+                pendingMerge = PendingMerge(
+                    into: into,
+                    from: from,
+                    similarity: similarity,
+                    samplesAfter: result?["samplesAfter"]?.int ?? 0,
+                    droppedToCap: result?["droppedToCap"]?.int ?? 0,
+                    refusedBelowFloor: refused,
+                    message: refused
+                        ? "These voices are too far apart to be the same person. Merging anyway would damage both profiles."
+                        : "Folds \(from) into \(into)."
+                )
+                namingVoice = nil
+            } catch {
+                reviewError = error.localizedDescription
+            }
+        }
+    }
+
+    func confirmMerge(_ merge: PendingMerge) {
+        mergeInFlight = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { mergeInFlight = false }
+            do {
+                _ = try await helper.run([
+                    "voice-merge", "--into", merge.into, "--from", merge.from, "--confirm",
+                ])
+                notice = "Merged \(merge.from) into \(merge.into)"
+                pendingMerge = nil
+                await loadVoiceProfiles()
+                // The review is now stale — the absorbed label no longer exists,
+                // so re-read it rather than leave a row pointing at a deleted
+                // profile.
+                if let session = openReview?.sessionId {
+                    await fetchReview(sessionId: session)
+                }
+            } catch {
+                reviewError = error.localizedDescription
+                pendingMerge = nil
+            }
+        }
+    }
+
+    func cancelMerge() { pendingMerge = nil }
 }

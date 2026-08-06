@@ -397,3 +397,132 @@ struct AppUpdateInfo: Sendable {
     /// Only a reachable, well-formed, genuinely-newer appcast may surface UI.
     var shouldSurface: Bool { updateAvailable && latestVersion != nil }
 }
+
+// MARK: - Speaker review (0.4.0)
+//
+// Backs the naming panel. The design principle the shapes encode: a similarity
+// score cannot tell you who someone is, a remembered sentence can — so
+// `phrases` is the primary content of a row and `meanSimilarity` is metadata.
+
+struct ReviewableMeeting: Identifiable, Sendable, Hashable {
+    let sessionId: String
+    let title: String
+    let date: String
+    let domain: String
+    let duration: String
+
+    var id: String { sessionId }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object,
+              let sessionId = o["sessionId"]?.string, !sessionId.isEmpty else { return nil }
+        self.sessionId = sessionId
+        title = o["title"]?.string ?? "Untitled meeting"
+        date = o["date"]?.string ?? ""
+        domain = o["domain"]?.string ?? ""
+        duration = o["duration"]?.string ?? ""
+    }
+}
+
+struct SpeakerPhrase: Identifiable, Sendable, Hashable {
+    let text: String
+    let atMs: Int
+    var id: String { "\(atMs)-\(text.prefix(24))" }
+
+    /// The sidecar stores milliseconds. Rendered as a meeting timestamp so a
+    /// reviewer can place the line against their memory of the conversation.
+    var stamp: String {
+        let total = atMs / 1000
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let text = o["text"]?.string, !text.isEmpty else { return nil }
+        self.text = text
+        atMs = o["atMs"]?.int ?? 0
+    }
+}
+
+struct SpeakerThrashPair: Sendable, Hashable {
+    let speaker: String
+    let meanRun: Double
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let speaker = o["speaker"]?.string else { return nil }
+        self.speaker = speaker
+        meanRun = o["meanRun"]?.double ?? 0
+    }
+}
+
+struct ReviewVoice: Identifiable, Sendable, Hashable {
+    enum Reliability: String, Sendable {
+        case confident, weak, unreliable, unattributed
+    }
+
+    let label: String
+    let segments: Int
+    let meanSimilarity: Double?
+    let isOwner: Bool
+    let reliability: Reliability
+    let thrashesWith: [SpeakerThrashPair]
+    let phrases: [SpeakerPhrase]
+
+    var id: String { label }
+    /// Named people can be merged into another profile. An unattributed cluster
+    /// has no profile to merge, and the owner must never be absorbed away.
+    var canMerge: Bool { reliability != .unattributed && !isOwner }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let label = o["label"]?.string else { return nil }
+        self.label = label
+        segments = o["segments"]?.int ?? 0
+        meanSimilarity = o["meanSimilarity"]?.double
+        isOwner = o["isOwner"]?.bool ?? false
+        reliability = Reliability(rawValue: o["reliability"]?.string ?? "") ?? .weak
+        thrashesWith = (o["thrashesWith"]?.array ?? []).compactMap(SpeakerThrashPair.init)
+        phrases = (o["phrases"]?.array ?? []).compactMap(SpeakerPhrase.init)
+    }
+}
+
+struct SpeakerReview: Sendable {
+    let sessionId: String
+    let title: String
+    let segments: Int
+    let attributed: Bool
+    let voices: [ReviewVoice]
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let sessionId = o["sessionId"]?.string else { return nil }
+        self.sessionId = sessionId
+        title = o["title"]?.string ?? "Untitled meeting"
+        segments = o["segments"]?.int ?? 0
+        attributed = o["attributed"]?.bool ?? false
+        voices = (o["voices"]?.array ?? []).compactMap(ReviewVoice.init)
+    }
+}
+
+struct VoiceProfileOption: Identifiable, Sendable, Hashable {
+    let name: String
+    let embeddings: Int
+    var id: String { name }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let name = o["name"]?.string else { return nil }
+        self.name = name
+        embeddings = o["embeddings"]?.int ?? 0
+    }
+}
+
+/// A merge the user has been shown but not yet confirmed. Holding the preview in
+/// state — rather than merging and reporting afterwards — is what makes the
+/// confirmation real.
+struct PendingMerge: Identifiable, Sendable {
+    let into: String
+    let from: String
+    let similarity: Double?
+    let samplesAfter: Int
+    let droppedToCap: Int
+    let refusedBelowFloor: Bool
+    let message: String
+    var id: String { "\(from)->\(into)" }
+}

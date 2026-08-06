@@ -99,6 +99,7 @@ struct ControlPanel: View {
                 statusCard
                 controls
                 recentGlassesCard
+                reviewableMeetingsCard
                 if !model.doctorChecks.isEmpty { doctorCard }
                 utilities
                 footer
@@ -115,6 +116,12 @@ struct ControlPanel: View {
             )
         ) { preview in
             MediaPreviewSheet(preview: preview)
+        }
+        .sheet(isPresented: Binding(
+            get: { model.openReview != nil || model.reviewLoading || (model.reviewError != nil && model.reviewSheetRequested) },
+            set: { if !$0 { model.closeSpeakerReview() } }
+        )) {
+            SpeakerReviewSheet(model: model)
         }
         .onAppear {
             if let tier = model.status.transcriptionRequestedTier,
@@ -476,6 +483,60 @@ struct ControlPanel: View {
                 Text(notice).font(.caption).foregroundStyle(COSPalette.green).frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+
+    /// Saved meetings whose speakers can be reviewed. Deliberately its own card
+    /// rather than a row inside Recent Glasses: that list is turns (messages and
+    /// photos), and a meeting is a different kind of thing with a different action.
+    private var reviewableMeetingsCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Review speakers")
+                    .font(.caption2.weight(.bold))
+                    .tracking(1.3)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if model.meetingsLoading {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Button("Refresh") { Task { await model.loadReviewableMeetings() } }
+                        .font(.system(size: 10))
+                        .controlSize(.small)
+                }
+            }
+
+            if model.reviewableMeetings.isEmpty {
+                Text(model.reviewError ?? "Name the voices in a saved meeting.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(model.reviewableMeetings) { meeting in
+                    Button { model.openSpeakerReview(meeting) } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(meeting.title)
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .lineLimit(1)
+                                Text("\(meeting.date) · \(meeting.duration)")
+                                    .font(.system(size: 9.5, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Spacer(minLength: 4)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Review who spoke in \(meeting.title)")
+                }
+            }
+        }
+        .padding(13)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
+        .overlay(RoundedRectangle(cornerRadius: 13).stroke(COSPalette.line, lineWidth: 1))
     }
 
     private var recentGlassesCard: some View {
@@ -955,5 +1016,273 @@ struct ControlPanel: View {
             Circle().fill(good ? COSPalette.green : Color.secondary.opacity(0.5)).frame(width: 7, height: 7)
             Text(value).fontWeight(.medium)
         }.font(.callout)
+    }
+}
+
+// MARK: - Speaker review sheet (0.4.0)
+//
+// Read the ribbon before the names. Long blocks are people taking turns; fine
+// stripes are one voice split across two labels, which is the failure this panel
+// exists to make visible.
+//
+// Confidence is a ramp, "you" is a tag, and unreliable is TEXTURE rather than a
+// red badge — an untrustworthy row should look like noise, which is honest about
+// what is wrong with it.
+
+private struct TurnRibbon: View {
+    let voices: [ReviewVoice]
+
+    private func tint(_ voice: ReviewVoice) -> Color {
+        if voice.reliability == .unattributed { return COSPalette.line }
+        if voice.isOwner { return COSPalette.green }
+        return COSPalette.amber
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let total = max(voices.reduce(0) { $0 + $1.segments }, 1)
+            HStack(spacing: 1.5) {
+                ForEach(voices) { voice in
+                    let width = geo.size.width * CGFloat(voice.segments) / CGFloat(total)
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(tint(voice).opacity(voice.reliability == .unreliable ? 0.28 : 0.85))
+                        .overlay(alignment: .leading) {
+                            if voice.reliability == .unreliable {
+                                // Thrash reads as fine stripes: the row is not one voice.
+                                HStack(spacing: 2) {
+                                    ForEach(0..<max(Int(width / 5), 1), id: \.self) { _ in
+                                        Rectangle().fill(COSPalette.amber.opacity(0.55)).frame(width: 1.5)
+                                    }
+                                }
+                            }
+                        }
+                        .frame(width: max(width, 2))
+                        .clipped()
+                }
+            }
+        }
+        .frame(height: 26)
+        .accessibilityLabel(voices.map { "\($0.label) \($0.segments) segments" }.joined(separator: ", "))
+    }
+}
+
+private struct ConfidenceRamp: View {
+    let value: Double?
+    let unreliable: Bool
+
+    var body: some View {
+        HStack(spacing: 4) {
+            HStack(spacing: 1.5) {
+                ForEach(0..<10, id: \.self) { i in
+                    let lit = Double(i) < (value ?? 0) * 10
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(lit && !unreliable ? COSPalette.amber : COSPalette.line)
+                        .frame(width: 6, height: 7)
+                }
+            }
+            Text(unreliable ? "unreliable" : value.map { String(format: "%.2f", $0) } ?? "—")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct VoiceRow: View {
+    @ObservedObject var model: ControllerModel
+    let voice: ReviewVoice
+    @State private var typed = ""
+
+    private var matches: [VoiceProfileOption] {
+        let q = typed.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return [] }
+        return model.voiceProfiles
+            .filter { $0.name.lowercased().contains(q) && $0.name != voice.label }
+            .prefix(4).map { $0 }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(voice.reliability == .unattributed ? "Unidentified voice" : voice.label)
+                    .font(.system(size: 13, weight: .semibold))
+                if voice.isOwner {
+                    Text("you")
+                        .font(.system(size: 9, design: .monospaced))
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(COSPalette.green.opacity(0.18), in: Capsule())
+                }
+                Spacer()
+                Text("\(voice.segments) seg")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                ConfidenceRamp(value: voice.meanSimilarity, unreliable: voice.reliability == .unreliable)
+            }
+
+            // The evidence. A score cannot tell you who someone is; these can.
+            if voice.phrases.isEmpty {
+                Text("No line from this voice was distinctive enough to quote.")
+                    .font(.system(size: 11)).foregroundStyle(.tertiary)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(voice.phrases) { phrase in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("“\(phrase.text)”").font(.system(size: 11.5))
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 4)
+                            Text(phrase.stamp)
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                .padding(.leading, 9)
+                .overlay(alignment: .leading) {
+                    Rectangle()
+                        .fill(COSPalette.line)
+                        .frame(width: 2)
+                        // Dashed rule when the lines may not be one person.
+                        .opacity(voice.reliability == .unreliable ? 0.45 : 1)
+                }
+            }
+
+            if let thrash = voice.thrashesWith.first {
+                Text("Swaps with \(thrash.speaker) every \(String(format: "%.0f", thrash.meanRun)) segments. "
+                     + "Real turn-taking holds far longer, so a name here would be a guess.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if voice.canMerge {
+                if model.namingVoice == voice.label {
+                    TextField("Type a name", text: $typed)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12))
+                    ForEach(matches) { option in
+                        Button {
+                            model.previewMerge(from: voice.label, into: option.name)
+                        } label: {
+                            HStack {
+                                Text(option.name).font(.system(size: 12))
+                                Spacer()
+                                Text("\(option.embeddings) samples")
+                                    .font(.system(size: 9.5, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 5))
+                    }
+                    Button("Cancel") { model.namingVoice = nil; typed = "" }
+                        .font(.system(size: 11)).buttonStyle(.plain).foregroundStyle(.secondary)
+                } else {
+                    Button(voice.reliability == .unreliable ? "This is someone else" : "Actually someone else") {
+                        model.namingVoice = voice.label
+                    }
+                    .font(.system(size: 11))
+                    .controlSize(.small)
+                }
+            } else if voice.reliability == .unattributed {
+                Text("Naming this needs its audio, which is no longer held.")
+                    .font(.system(size: 11)).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.vertical, 9)
+    }
+}
+
+struct SpeakerReviewSheet: View {
+    @ObservedObject var model: ControllerModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.openReview?.title ?? "Speaker review").font(.headline)
+                    if let review = model.openReview {
+                        Text("\(review.segments) segments · \(review.voices.count) voices")
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Button("Close") { model.closeSpeakerReview(); dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(16)
+
+            Divider()
+
+            if model.reviewLoading {
+                ProgressView("Reading the transcript…")
+                    .font(.system(size: 12))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let review = model.openReview {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("WHO SPOKE, IN ORDER")
+                                .font(.system(size: 9, design: .monospaced))
+                                .tracking(1.4)
+                                .foregroundStyle(.tertiary)
+                            TurnRibbon(voices: review.voices)
+                        }
+                        .padding(.horizontal, 16).padding(.vertical, 12)
+
+                        if !review.attributed {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("No one was identified in this recording").font(.system(size: 13, weight: .semibold))
+                                Text("The audio was recovered after the session ended, so no voice matching ran while it played. The lines below are all that is left to go on.")
+                                    .font(.system(size: 11.5)).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .padding(.horizontal, 16).padding(.bottom, 10)
+                        }
+
+                        Divider()
+                        ForEach(Array(review.voices.enumerated()), id: \.element.id) { index, voice in
+                            VoiceRow(model: model, voice: voice)
+                                .padding(.horizontal, 16)
+                            if index < review.voices.count - 1 { Divider() }
+                        }
+                    }
+                }
+            } else if let error = model.reviewError {
+                VStack(spacing: 8) {
+                    Text(error).font(.system(size: 12)).multilineTextAlignment(.center)
+                    Button("Try again") { model.retryOpenReview() }
+                    .font(.system(size: 11))
+                }
+                .padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            if let merge = model.pendingMerge {
+                Divider()
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(merge.refusedBelowFloor ? "These are probably different people" : "Merge \(merge.from) into \(merge.into)?")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(merge.message).font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let similarity = merge.similarity {
+                        Text("Voice similarity \(String(format: "%.2f", similarity)) · \(merge.samplesAfter) samples after, \(merge.droppedToCap) dropped to the cap")
+                            .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
+                    }
+                    HStack {
+                        if !merge.refusedBelowFloor {
+                            Button("Merge") { model.confirmMerge(merge) }
+                                .disabled(model.mergeInFlight)
+                        }
+                        Button("Cancel") { model.cancelMerge() }
+                        Spacer()
+                    }
+                    .font(.system(size: 11))
+                }
+                .padding(14)
+                .background(COSPalette.card)
+            }
+        }
+        .frame(minWidth: 520, idealWidth: 580, minHeight: 420, idealHeight: 620)
+        .background(COSPalette.panel)
     }
 }

@@ -135,6 +135,23 @@ PY
 /usr/bin/grep -q 'Balanced CPU guardrail\|tier.*CPU guardrail' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'meetingLifecycleStatusFields' "$ROOT/HelperSources/main.swift"
 
+# --- 0.4.0 speaker review ------------------------------------------------------
+# Shape checks, so treat the macOS build above as the real gate. What they pin is
+# the set of invariants that would break SILENTLY rather than fail to compile.
+/usr/bin/grep -q 'case "meeting-speakers"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "voice-merge"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "voice-profiles"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'struct SpeakerReviewSheet' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'reviewableMeetingsCard' "$ROOT/Sources/Views.swift"
+# A merge must be a two-step: no --confirm means the helper asks the server for a
+# dryRun preview, never a merge. Losing this makes the confirmation decorative.
+/usr/bin/grep -q 'if confirm { payload\["confirm"\] = true } else { payload\["dryRun"\] = true }' "$ROOT/HelperSources/main.swift"
+# The owner profile is checked first on every live chunk; absorbing it away would
+# silently break identification for the wearer.
+/usr/bin/grep -q 'reliability != .unattributed && !isOwner' "$ROOT/Sources/Models.swift"
+# Phrases are the primary evidence in a row — a score cannot identify anyone.
+/usr/bin/grep -q 'voice.phrases' "$ROOT/Sources/Views.swift"
+
 # --- 0.2.9 fixes -------------------------------------------------------------
 # A failed install must not strand in-place mode off: the marker is captured
 # before the throw sites, dropped only at the point of no return, and restored

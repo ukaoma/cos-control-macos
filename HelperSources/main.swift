@@ -379,6 +379,10 @@ final class COSControlHelper {
         case "expire-clipboard": try expireClipboard(args: args)
         case "report": emit(ok: true, message: "Redacted report ready", details: ["report": redactedReport()])
         case "recent-messages": try emitRecentMessages(args: args)
+        case "meetings": try emitMeetings(args: args)
+        case "meeting-speakers": try emitMeetingSpeakers(args: args)
+        case "voice-profiles": try emitVoiceProfiles()
+        case "voice-merge": try emitVoiceMerge(args: args)
         case "fetch-media": try emitFetchedMedia(args: args)
         case "check-app-update": try emitAppUpdateCheck(args: args)
         case "run-server": try runServer()
@@ -4205,6 +4209,104 @@ final class COSControlHelper {
             "messages": messages,
             "count": messages.count,
             "date": body["date"] ?? NSNull(),
+        ])
+    }
+
+    /// Shared preflight for the speaker-review reads: the server has to be up
+    /// AND the token readable, and those are different failures the panel words
+    /// differently. Returns the token.
+    private func speakerReviewToken() throws -> String {
+        let health = request("/api/health", timeout: 5)
+        guard health?.status == 200 else { throw HelperError.message("Server stopped") }
+        do { return try readToken() }
+        catch { throw HelperError.message("Unauthorized") }
+    }
+
+    private func speakerReviewBody(_ path: String, method: String = "GET", body: String? = nil, timeout: Int = 20) throws -> [String: Any] {
+        let token = try speakerReviewToken()
+        guard let response = request(path, method: method, token: token, body: body, timeout: timeout) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        // A 400/404/409 carries a real explanation from the server — surface it
+        // verbatim rather than flattening every non-200 into "Server stopped".
+        if response.status != 200 {
+            let reason = (response.body?["message"] as? String)
+                ?? (response.body?["error"] as? String)
+                ?? "Request failed (\(response.status))"
+            throw HelperError.message(reason)
+        }
+        guard let body = response.body else { throw HelperError.message("Server stopped") }
+        return body
+    }
+
+    /// Recent saved meetings. Only rows that carry a sessionId are emitted:
+    /// the speaker review is keyed on the session, so a row without one cannot
+    /// open the panel and listing it would offer an action that does nothing.
+    private func emitMeetings(args: [String]) throws {
+        let limit = min(max(Int(option("--limit", in: args) ?? "12") ?? 12, 1), 50)
+        let body = try speakerReviewBody("/api/meetings?limit=\(limit)")
+        let raw = (body["meetings"] as? [[String: Any]]) ?? []
+        let rows: [[String: Any]] = raw.compactMap { row in
+            guard let sessionId = row["sessionId"] as? String, !sessionId.isEmpty else { return nil }
+            return [
+                "sessionId": sessionId,
+                "title": row["title"] as? String ?? "Untitled meeting",
+                "date": row["date"] as? String ?? "",
+                "domain": row["domain"] as? String ?? "",
+                "duration": row["duration"] as? String ?? "",
+            ]
+        }
+        emit(ok: true, message: rows.isEmpty ? "No reviewable meetings" : "Meetings ready", details: [
+            "state": rows.isEmpty ? "empty" : "ready",
+            "meetings": rows,
+            "count": rows.count,
+            "skipped": raw.count - rows.count,
+        ])
+    }
+
+    private func emitMeetingSpeakers(args: [String]) throws {
+        guard let session = option("--session", in: args), !session.isEmpty else {
+            throw HelperError.message("--session is required")
+        }
+        let escaped = session.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-_:"))) ?? session
+        let body = try speakerReviewBody("/api/meeting/\(escaped)/speakers", timeout: 25)
+        emit(ok: true, message: "Speaker review ready", details: [
+            "state": (body["attributed"] as? Bool) == true ? "attributed" : "unattributed",
+            "review": body,
+        ])
+    }
+
+    /// Enrolled profiles, for the naming field's autocomplete.
+    private func emitVoiceProfiles() throws {
+        let body = try speakerReviewBody("/api/voice/profiles")
+        emit(ok: true, message: "Voice profiles ready", details: [
+            "owner": body["owner"] as? String ?? "",
+            "count": body["count"] as? Int ?? 0,
+            "profiles": (body["profiles"] as? [[String: Any]]) ?? [],
+        ])
+    }
+
+    /// Fold one profile into another. `--confirm` is required, and it is passed
+    /// through to the server rather than synthesised here: the server owns the
+    /// similarity floor and its own confirmation, and the helper must not be a
+    /// way to bypass either. Without --confirm this returns the server's
+    /// preview, which is what the panel shows before asking.
+    private func emitVoiceMerge(args: [String]) throws {
+        guard let into = option("--into", in: args), !into.isEmpty,
+              let from = option("--from", in: args), !from.isEmpty else {
+            throw HelperError.message("--into and --from are required")
+        }
+        let confirm = args.contains("--confirm")
+        let force = args.contains("--force")
+        var payload: [String: Any] = ["into": into, "from": from]
+        if confirm { payload["confirm"] = true } else { payload["dryRun"] = true }
+        if force { payload["force"] = true }
+        let json = String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8) ?? "{}"
+        let body = try speakerReviewBody("/api/voice/merge-profiles", method: "POST", body: json, timeout: 30)
+        emit(ok: true, message: confirm ? "Profiles merged" : "Merge preview ready", details: [
+            "state": confirm ? "merged" : "preview",
+            "result": body,
         ])
     }
 
