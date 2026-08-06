@@ -141,7 +141,7 @@ PY
 /usr/bin/grep -q 'case "meeting-speakers"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "voice-merge"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "voice-profiles"' "$ROOT/HelperSources/main.swift"
-/usr/bin/grep -q 'struct SpeakerReviewSheet' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'struct SpeakerReviewPane' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'reviewableMeetingsCard' "$ROOT/Sources/Views.swift"
 # A merge must be a two-step: no --confirm means the helper asks the server for a
 # dryRun preview, never a merge. Losing this makes the confirmation decorative.
@@ -151,6 +151,21 @@ PY
 /usr/bin/grep -q 'reliability != .unattributed && !isOwner' "$ROOT/Sources/Models.swift"
 # Phrases are the primary evidence in a row — a score cannot identify anyone.
 /usr/bin/grep -q 'voice.phrases' "$ROOT/Sources/Views.swift"
+
+# --- 0.4.1 overlay regression ---------------------------------------------------
+# MenuBarExtra(.window) is a transient panel that closes when it loses key status,
+# so ANY sheet presented from it dismisses the panel mid-interaction. This is the
+# regression guard: zero sheet presentations in the panel's view tree.
+if /usr/bin/grep -q '\.sheet(' "$ROOT/Sources/Views.swift"; then
+  echo 'COS Control: FAIL — a .sheet reappeared in Views.swift; MenuBarExtra panels must route overlays inline' >&2
+  exit 1
+fi
+/usr/bin/grep -q 'struct SpeakerReviewPane' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'struct MediaPreviewPane' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'reviewRouteActive' "$ROOT/Sources/Views.swift"
+# The route reads lastReviewSession, so it must be observable or the panel can
+# read a stale value and never re-render.
+/usr/bin/grep -q '@Published private var lastReviewSession' "$ROOT/Sources/ControllerModel.swift"
 
 # --- 0.2.9 fixes -------------------------------------------------------------
 # A failed install must not strand in-place mode off: the marker is captured

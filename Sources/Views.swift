@@ -8,32 +8,37 @@ private func adaptiveNSColor(light: NSColor, dark: NSColor) -> NSColor {
     }
 }
 
-private struct MediaPreviewSheet: View {
-    @Environment(\.dismiss) private var dismiss
+/// Inline photo view. Was a sheet; see ControlPanel.body for why sheets cannot
+/// be used from a MenuBarExtra panel.
+private struct MediaPreviewPane: View {
     let preview: SelectedMediaPreview
+    let onBack: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(preview.attachment.displayLabel)
-                        .font(.headline)
-                    Text("\(preview.attachment.width) × \(preview.attachment.height)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Button {
+                    onBack()
+                } label: {
+                    Label("Back", systemImage: "chevron.left").font(.system(size: 11))
                 }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
                 Spacer()
-                Button("Close") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(preview.attachment.displayLabel).font(.system(size: 11, weight: .medium))
+                    Text("\(preview.attachment.width) × \(preview.attachment.height)")
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
             }
             Image(nsImage: preview.image)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.black.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+                .background(Color.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
         }
-        .padding(16)
-        .frame(minWidth: 520, idealWidth: 720, minHeight: 380, idealHeight: 540)
+        .padding(14)
     }
 }
 
@@ -91,38 +96,27 @@ struct ControlPanel: View {
     @State private var selectedBackgroundJobs = true
     @State private var selectedMeetingPreview = false
 
+    /// Overlays are rendered INLINE, never as sheets.
+    ///
+    /// MenuBarExtra(.window) is a transient panel: it closes the moment it stops
+    /// being the key window. Presenting a sheet makes a new window key, so the
+    /// panel dismissed itself mid-interaction and took the sheet's parent with
+    /// it — which is why controls stopped responding as they were clicked. There
+    /// is no arrangement of sheet modifiers that avoids this; the fix is to not
+    /// leave the panel's own window at all.
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                header
-                updateBanner
-                statusCard
-                controls
-                recentGlassesCard
-                reviewableMeetingsCard
-                if !model.doctorChecks.isEmpty { doctorCard }
-                utilities
-                footer
+        Group {
+            if model.reviewRouteActive {
+                SpeakerReviewPane(model: model)
+            } else if let preview = model.selectedMediaPreview {
+                MediaPreviewPane(preview: preview) { model.selectedMediaPreview = nil }
+            } else {
+                mainPanel
             }
-            .padding(16)
         }
         .frame(width: 390, height: 640)
         .background(COSPalette.panel)
         .background(WindowOpaquer())
-        .sheet(
-            item: Binding(
-                get: { model.selectedMediaPreview },
-                set: { model.selectedMediaPreview = $0 }
-            )
-        ) { preview in
-            MediaPreviewSheet(preview: preview)
-        }
-        .sheet(isPresented: Binding(
-            get: { model.openReview != nil || model.reviewLoading || (model.reviewError != nil && model.reviewSheetRequested) },
-            set: { if !$0 { model.closeSpeakerReview() } }
-        )) {
-            SpeakerReviewSheet(model: model)
-        }
         .onAppear {
             if let tier = model.status.transcriptionRequestedTier,
                tier == "max" || tier == "balanced" {
@@ -488,6 +482,23 @@ struct ControlPanel: View {
     /// Saved meetings whose speakers can be reviewed. Deliberately its own card
     /// rather than a row inside Recent Glasses: that list is turns (messages and
     /// photos), and a meeting is a different kind of thing with a different action.
+    private var mainPanel: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                header
+                updateBanner
+                statusCard
+                controls
+                recentGlassesCard
+                reviewableMeetingsCard
+                if !model.doctorChecks.isEmpty { doctorCard }
+                utilities
+                footer
+            }
+            .padding(16)
+        }
+    }
+
     private var reviewableMeetingsCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -1164,12 +1175,19 @@ private struct VoiceRow: View {
                             HStack {
                                 Text(option.name).font(.system(size: 12))
                                 Spacer()
-                                Text("\(option.embeddings) samples")
-                                    .font(.system(size: 9.5, design: .monospaced))
-                                    .foregroundStyle(.secondary)
+                                // A click starts a server round-trip. Without this the
+                                // row looked inert and the click seemed ignored.
+                                if model.mergeInFlight {
+                                    ProgressView().controlSize(.mini)
+                                } else {
+                                    Text("\(option.embeddings) samples")
+                                        .font(.system(size: 9.5, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
                         .buttonStyle(.plain)
+                        .disabled(model.mergeInFlight)
                         .padding(.horizontal, 6).padding(.vertical, 3)
                         .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 5))
                     }
@@ -1191,9 +1209,8 @@ private struct VoiceRow: View {
     }
 }
 
-struct SpeakerReviewSheet: View {
+struct SpeakerReviewPane: View {
     @ObservedObject var model: ControllerModel
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1207,8 +1224,13 @@ struct SpeakerReviewSheet: View {
                     }
                 }
                 Spacer()
-                Button("Close") { model.closeSpeakerReview(); dismiss() }
-                    .keyboardShortcut(.cancelAction)
+                Button {
+                    model.closeSpeakerReview()
+                } label: {
+                    Label("Back", systemImage: "chevron.left").font(.system(size: 11))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
             }
             .padding(16)
 
@@ -1257,10 +1279,27 @@ struct SpeakerReviewSheet: View {
                 .padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
+            // Reachable even with a review loaded. As an `else if` on the branch
+            // above, an error raised WHILE reviewing (a refused name check) was
+            // rendered nowhere, so clicking a suggestion appeared to do nothing.
+            if model.openReview != nil, let error = model.reviewError {
+                Divider()
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle").font(.system(size: 11))
+                    Text(error).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button("Dismiss") { model.reviewError = nil }.font(.system(size: 10))
+                }
+                .padding(10)
+                .background(COSPalette.amber.opacity(0.14))
+            }
+
             if let merge = model.pendingMerge {
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(merge.refusedBelowFloor ? "These are probably different people" : "Merge \(merge.from) into \(merge.into)?")
+                    Text(merge.refusedBelowFloor
+                         ? "Not applied — these are probably different people"
+                         : "Rename \(merge.from) to \(merge.into)?")
                         .font(.system(size: 12, weight: .semibold))
                     Text(merge.message).font(.system(size: 11)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1268,12 +1307,14 @@ struct SpeakerReviewSheet: View {
                         Text("Voice similarity \(String(format: "%.2f", similarity)) · \(merge.samplesAfter) samples after, \(merge.droppedToCap) dropped to the cap")
                             .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
                     }
-                    HStack {
+                    HStack(spacing: 8) {
                         if !merge.refusedBelowFloor {
-                            Button("Merge") { model.confirmMerge(merge) }
+                            Button("Save") { model.confirmMerge(merge) }
+                                .buttonStyle(.borderedProminent)
                                 .disabled(model.mergeInFlight)
                         }
-                        Button("Cancel") { model.cancelMerge() }
+                        Button(merge.refusedBelowFloor ? "OK" : "Cancel") { model.cancelMerge() }
+                        if model.mergeInFlight { ProgressView().controlSize(.mini) }
                         Spacer()
                     }
                     .font(.system(size: 11))
@@ -1282,7 +1323,5 @@ struct SpeakerReviewSheet: View {
                 .background(COSPalette.card)
             }
         }
-        .frame(minWidth: 520, idealWidth: 580, minHeight: 420, idealHeight: 620)
-        .background(COSPalette.panel)
     }
 }

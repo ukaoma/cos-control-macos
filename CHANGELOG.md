@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.2 (build 34)
+
+- Fix a suggested name doing nothing when clicked. When two voices are too far
+  apart to be the same person the server declines and explains why, and that
+  explanation was being treated as a failure and discarded — so the click had no
+  visible effect at all.
+- Show the outcome instead: the measured voice similarity, the threshold it fell
+  under, and a plain statement that nothing was applied.
+- Add a Save button, and show progress while a name is being checked, so it is
+  clear the click was received.
+- Say what saving actually does. Applying a name folds one profile into another
+  across every meeting, not just the one on screen.
+
+## 0.4.1 (build 33)
+
+- Fix the panel closing itself when an overlay opened. Speaker review and the
+  photo preview were presented as sheets, and a sheet makes a new window key —
+  which a menu-bar panel treats as a signal to dismiss. The panel disappeared
+  mid-interaction, so controls stopped responding as they were clicked.
+- Both now open in place inside the panel with a Back button, so nothing ever
+  leaves the panel's own window.
+- Fix a stale route condition: the speaker review's visibility depended on a
+  value the view could not observe, so it could read the wrong answer and fail
+  to redraw.
+
 ## 0.4.0 (build 32)
 
 - Review who spoke in a saved meeting. Recent Glasses gains a Review speakers

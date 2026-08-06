@@ -78,13 +78,21 @@ final class ControllerModel: ObservableObject {
     @Published var namingVoice: String?
     @Published var pendingMerge: PendingMerge?
     @Published var mergeInFlight = false
-    /// The session the open sheet asked for. Held separately from `openReview`
+    /// The session the open review asked for. Held separately from `openReview`
     /// because a retry has to work when the review failed to load and there is
     /// no review object to read the id back out of.
-    private var lastReviewSession: String?
-    /// True once a review has been asked for, so an error can present the sheet
-    /// rather than being swallowed into a popover with no visible cause.
-    var reviewSheetRequested: Bool { lastReviewSession != nil }
+    ///
+    /// @Published because the view's route condition reads it. As a plain
+    /// private var SwiftUI could not observe it, so the route could read a stale
+    /// value and never re-render — a real defect independent of the sheet issue.
+    @Published private var lastReviewSession: String?
+
+    /// Whether the panel should show the review instead of the main content.
+    /// Includes the error case so a failed load is visible in place rather than
+    /// silently doing nothing when a meeting row is clicked.
+    var reviewRouteActive: Bool {
+        openReview != nil || reviewLoading || (reviewError != nil && lastReviewSession != nil)
+    }
 
     /// This build's identity, handed to the helper so the answer can never depend on
     /// WHICH helper copy ran (bundled vs stable, HelperClient.helperURL():55-64).
@@ -734,7 +742,12 @@ final class ControllerModel: ObservableObject {
                 let response = try await helper.run(["voice-merge", "--into", into, "--from", from])
                 let result = response.details["result"]?.object
                 let similarity = result?["similarity"]?.object?[from]?.double
-                let refused = (result?["refused"]?.array?.isEmpty == false)
+                // The server refuses below its similarity floor and says so with a
+                // 409. Read the state the helper reports rather than inferring it
+                // from the presence of a `refused` array, which is absent on some
+                // shapes and left the panel silent.
+                let refused = response.details["state"]?.string == "refused"
+                    || (result?["refused"]?.array?.isEmpty == false)
                 pendingMerge = PendingMerge(
                     into: into,
                     from: from,
@@ -743,12 +756,16 @@ final class ControllerModel: ObservableObject {
                     droppedToCap: result?["droppedToCap"]?.int ?? 0,
                     refusedBelowFloor: refused,
                     message: refused
-                        ? "These voices are too far apart to be the same person. Merging anyway would damage both profiles."
-                        : "Folds \(from) into \(into)."
+                        ? "These two voices are too far apart to be the same person, so this was not applied."
+                        : "Everything recorded as \(from) becomes \(into), across every meeting. This cannot be undone here."
                 )
                 namingVoice = nil
+                reviewError = nil
             } catch {
-                reviewError = error.localizedDescription
+                // Never fail silently: a click that does nothing is worse than an
+                // error, because the user cannot tell it was received.
+                reviewError = "Could not check that name: \(error.localizedDescription)"
+                pendingMerge = nil
             }
         }
     }
@@ -762,7 +779,7 @@ final class ControllerModel: ObservableObject {
                 _ = try await helper.run([
                     "voice-merge", "--into", merge.into, "--from", merge.from, "--confirm",
                 ])
-                notice = "Merged \(merge.from) into \(merge.into)"
+                notice = "Saved — \(merge.from) is now \(merge.into)"
                 pendingMerge = nil
                 await loadVoiceProfiles()
                 // The review is now stale — the absorbed label no longer exists,

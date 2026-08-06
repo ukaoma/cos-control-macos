@@ -4303,11 +4303,35 @@ final class COSControlHelper {
         if confirm { payload["confirm"] = true } else { payload["dryRun"] = true }
         if force { payload["force"] = true }
         let json = String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8) ?? "{}"
-        let body = try speakerReviewBody("/api/voice/merge-profiles", method: "POST", body: json, timeout: 30)
-        emit(ok: true, message: confirm ? "Profiles merged" : "Merge preview ready", details: [
-            "state": confirm ? "merged" : "preview",
-            "result": body,
-        ])
+
+        // A 409 here is the server REFUSING a below-floor merge, and a 400 is its
+        // confirmation gate. Both carry the report the panel needs to explain
+        // itself. Routing them through speakerReviewBody would throw, and the
+        // panel would show nothing at all when a suggestion is clicked — which is
+        // exactly how this shipped broken in 0.4.0.
+        let token = try speakerReviewToken()
+        guard let response = request("/api/voice/merge-profiles", method: "POST", token: token, body: json, timeout: 30) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        guard let body = response.body else { throw HelperError.message("Server stopped") }
+
+        let refused = response.status == 409
+        let gated = response.status == 400
+        if response.status != 200 && !refused && !gated {
+            let reason = (body["message"] as? String) ?? (body["error"] as? String)
+                ?? "Request failed (\(response.status))"
+            throw HelperError.message(reason)
+        }
+        let report = (body["report"] as? [String: Any]) ?? (body["preview"] as? [String: Any]) ?? body
+        emit(ok: true, message: refused
+                ? "Merge refused: voices too far apart"
+                : (confirm ? "Profiles merged" : "Merge preview ready"),
+            details: [
+                "state": refused ? "refused" : (gated ? "preview" : (confirm ? "merged" : "preview")),
+                "httpStatus": response.status,
+                "result": report,
+            ])
     }
 
     private func mediaState(for status: Int) -> String {
