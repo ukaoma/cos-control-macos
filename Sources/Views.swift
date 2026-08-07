@@ -511,7 +511,9 @@ struct ControlPanel: View {
     private var reviewableMeetingsCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Review speakers")
+                Text(model.reviewableMeetings.isEmpty
+                     ? "Review speakers"
+                     : "Review speakers · \(min(model.reviewableMeetings.count, MEETING_LIST_VISIBLE))")
                     .font(.caption2.weight(.bold))
                     .tracking(1.3)
                     .foregroundStyle(.secondary)
@@ -531,27 +533,47 @@ struct ControlPanel: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                ForEach(model.reviewableMeetings) { meeting in
-                    Button { model.openSpeakerReview(meeting) } label: {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(meeting.title)
-                                    .font(.system(size: 11.5, weight: .medium))
-                                    .lineLimit(1)
-                                Text("\(meeting.date) · \(meeting.duration)")
-                                    .font(.system(size: 9.5, design: .monospaced))
-                                    .foregroundStyle(.tertiary)
+                let shown = Array(model.reviewableMeetings.prefix(MEETING_LIST_VISIBLE))
+                // Height follows CONTENT up to the cap, so a light day reserves no
+                // dead space. A flat maxHeight on a ScrollView is greedy in the
+                // scroll axis and would hold ~300pt open for three rows.
+                let capped = shown.count > MEETING_LIST_SCROLL_AFTER
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(shown) { meeting in
+                            Button { model.openSpeakerReview(meeting) } label: {
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(meeting.title)
+                                            .font(.system(size: 11.5, weight: .medium))
+                                            .lineLimit(1)
+                                        Text("\(meeting.date) · \(meeting.duration)")
+                                            .font(.system(size: 9.5, design: .monospaced))
+                                            .foregroundStyle(.tertiary)
+                                        // Counts the server already sends. Own line, and
+                                        // fixedSize because a wrapping Text inside the
+                                        // panel's outer ScrollView does not reserve its
+                                        // true height and paints over the next row.
+                                        Text(meeting.countsSummary)
+                                            .font(.system(size: 9.5))
+                                            .foregroundStyle(.tertiary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    Spacer(minLength: 4)
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .contentShape(Rectangle())
                             }
-                            Spacer(minLength: 4)
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.tertiary)
+                            .buttonStyle(.plain)
+                            .help("Review who spoke in \(meeting.title)")
                         }
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-                    .help("Review who spoke in \(meeting.title)")
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(maxHeight: capped ? MEETING_LIST_MAX_HEIGHT : nil)
+                .scrollIndicators(capped ? .visible : .hidden)
             }
         }
         .padding(13)
@@ -1427,6 +1449,15 @@ private struct VoiceRow: View {
         .padding(.vertical, 9)
     }
 }
+
+/// Rows shown in the review card. The helper over-requests so this many
+/// actually render — asking the server for exactly this count returned fewer,
+/// because rows without a G2 sessionId are filtered out.
+let MEETING_LIST_VISIBLE = 15
+/// Past this many rows the list scrolls instead of growing. Measured pitch is
+/// ~47pt per row with the counts line, so this shows about seven.
+let MEETING_LIST_SCROLL_AFTER = 7
+let MEETING_LIST_MAX_HEIGHT: CGFloat = 330
 
 struct SpeakerReviewPane: View {
     @ObservedObject var model: ControllerModel

@@ -416,8 +416,34 @@ struct ReviewableMeeting: Identifiable, Sendable, Hashable {
     let date: String
     let domain: String
     let duration: String
+    /// Join keys for the meeting-detail route. Present on every row the server
+    /// sends; the helper used to discard them.
+    let month: String
+    let filename: String
+    /// How the meeting was captured (G2 Glasses, Granola, Fireflies).
+    let source: String
+    /// Pre-computed by the server, so the subtitle costs no extra fetch.
+    let topicCount: Int
+    let decisionCount: Int
+    let actionCount: Int
+    let attendeeCount: Int
 
     var id: String { sessionId }
+
+    /// "4 topics · 2 decisions · 1 action · 3 attendees", zero counts omitted.
+    ///
+    /// Falls back to the capture source when everything is zero, because an
+    /// empty line reads as a rendering bug rather than as a meeting with no
+    /// extracted structure.
+    var countsSummary: String {
+        var parts: [String] = []
+        if topicCount > 0 { parts.append("\(topicCount) topic\(topicCount == 1 ? "" : "s")") }
+        if decisionCount > 0 { parts.append("\(decisionCount) decision\(decisionCount == 1 ? "" : "s")") }
+        if actionCount > 0 { parts.append("\(actionCount) action\(actionCount == 1 ? "" : "s")") }
+        if attendeeCount > 0 { parts.append("\(attendeeCount) attendee\(attendeeCount == 1 ? "" : "s")") }
+        if parts.isEmpty { return source }
+        return parts.joined(separator: " · ")
+    }
 
     init?(_ value: JSONValue?) {
         guard let o = value?.object,
@@ -427,6 +453,14 @@ struct ReviewableMeeting: Identifiable, Sendable, Hashable {
         date = o["date"]?.string ?? ""
         domain = o["domain"]?.string ?? ""
         duration = o["duration"]?.string ?? ""
+        month = o["month"]?.string ?? ""
+        filename = o["filename"]?.string ?? ""
+        source = o["source"]?.string ?? ""
+        // The server sends counts as STRINGS in this payload, not numbers.
+        topicCount = Int(o["topicCount"]?.string ?? "") ?? o["topicCount"]?.int ?? 0
+        decisionCount = Int(o["decisionCount"]?.string ?? "") ?? o["decisionCount"]?.int ?? 0
+        actionCount = Int(o["actionCount"]?.string ?? "") ?? o["actionCount"]?.int ?? 0
+        attendeeCount = Int(o["attendeeCount"]?.string ?? "") ?? o["attendeeCount"]?.int ?? 0
     }
 }
 

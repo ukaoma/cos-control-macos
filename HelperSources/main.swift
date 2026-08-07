@@ -4340,20 +4340,47 @@ final class COSControlHelper {
     /// Recent saved meetings. Only rows that carry a sessionId are emitted:
     /// the speaker review is keyed on the session, so a row without one cannot
     /// open the panel and listing it would offer an action that does nothing.
+    /// Project one server meetings row into what Control consumes.
+    ///
+    /// EXTRACTED so it can be tested. Inline, it had no coverage at all:
+    /// deleting the `month` or `topicCount` passthrough left the whole suite
+    /// green, because the Swift-side tests build their fixture from a literal
+    /// and never run this code. The failure mode is silent — ReviewableMeeting
+    /// defaults every non-sessionId field to "", so a dropped field surfaces as
+    /// an empty string, not an error.
+    ///
+    /// Returns nil for a row with no sessionId: the speaker review is keyed on
+    /// the session, so such a row would offer an action that does nothing.
+    static func meetingRowProjection(_ row: [String: Any]) -> [String: Any]? {
+        guard let sessionId = row["sessionId"] as? String, !sessionId.isEmpty else { return nil }
+        return [
+            "sessionId": sessionId,
+            "title": row["title"] as? String ?? "Untitled meeting",
+            "date": row["date"] as? String ?? "",
+            "domain": row["domain"] as? String ?? "",
+            "duration": row["duration"] as? String ?? "",
+            // Join keys for the meeting-detail route, and the counts the server
+            // has always sent and this projection used to throw away.
+            "month": row["month"] as? String ?? "",
+            "filename": row["filename"] as? String ?? "",
+            "source": row["source"] as? String ?? "",
+            "topicCount": row["topicCount"] as? String ?? "",
+            "decisionCount": row["decisionCount"] as? String ?? "",
+            "actionCount": row["actionCount"] as? String ?? "",
+            "attendeeCount": row["attendeeCount"] as? String ?? "",
+        ]
+    }
+
     private func emitMeetings(args: [String]) throws {
-        let limit = min(max(Int(option("--limit", in: args) ?? "12") ?? 12, 1), 50)
+        // OVER-REQUEST ON PURPOSE. `--limit` is the SERVER row count, and the
+        // filter below then drops every row without a sessionId, so asking for
+        // 15 returned 10-12 depending on how much of the day was G2-captured.
+        // Ask for more than we intend to show and let Control take the first N
+        // survivors. Both ends hard-clamp at 50.
+        let limit = min(max(Int(option("--limit", in: args) ?? "30") ?? 30, 1), 50)
         let body = try speakerReviewBody("/api/meetings?limit=\(limit)")
         let raw = (body["meetings"] as? [[String: Any]]) ?? []
-        let rows: [[String: Any]] = raw.compactMap { row in
-            guard let sessionId = row["sessionId"] as? String, !sessionId.isEmpty else { return nil }
-            return [
-                "sessionId": sessionId,
-                "title": row["title"] as? String ?? "Untitled meeting",
-                "date": row["date"] as? String ?? "",
-                "domain": row["domain"] as? String ?? "",
-                "duration": row["duration"] as? String ?? "",
-            ]
-        }
+        let rows: [[String: Any]] = raw.compactMap(Self.meetingRowProjection)
         emit(ok: true, message: rows.isEmpty ? "No reviewable meetings" : "Meetings ready", details: [
             "state": rows.isEmpty ? "empty" : "ready",
             "meetings": rows,
@@ -5186,6 +5213,25 @@ final class COSControlHelper {
         }
         try expect(unauthorized, "recent-messages fail-closed when token missing")
         try expect(stripEmails("user milesukaoma@gmail.com ok") == "user <redacted-email> ok", "doctor email redaction")
+
+        // The meetings projection. Untested while inline: removing a field left
+        // the suite green because the Swift tests build their own fixture.
+        let fullRow: [String: Any] = [
+            "sessionId": "meeting_1", "title": "Standoff (G2)", "date": "2026-08-06",
+            "domain": "personal", "duration": "8 minutes", "month": "2026-08",
+            "filename": "2026-08-06_Standoff_(G2).md", "source": "G2 Glasses",
+            "topicCount": "4", "decisionCount": "2", "actionCount": "1", "attendeeCount": "3",
+        ]
+        let projected = Self.meetingRowProjection(fullRow)
+        try expect(projected?["month"] as? String == "2026-08", "projection carries month")
+        try expect(projected?["filename"] as? String == "2026-08-06_Standoff_(G2).md", "projection carries filename")
+        try expect(projected?["topicCount"] as? String == "4", "projection carries topicCount")
+        try expect(projected?["decisionCount"] as? String == "2", "projection carries decisionCount")
+        try expect(projected?["actionCount"] as? String == "1", "projection carries actionCount")
+        try expect(projected?["attendeeCount"] as? String == "3", "projection carries attendeeCount")
+        try expect(projected?["source"] as? String == "G2 Glasses", "projection carries source")
+        try expect(Self.meetingRowProjection(["title": "no session"]) == nil,
+                   "projection drops a row with no sessionId")
 
         emit(ok: true, message: "\(passed) deterministic helper tests passed", details: ["tests": passed])
     }

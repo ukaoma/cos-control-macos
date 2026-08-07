@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.3 (build 40)
+
+- **The meeting list shows 15 and scrolls.** It showed 12 before — and asking
+  the server for 15 would have returned 10 to 12, varying by day, because rows
+  without a G2 session are filtered out after the limit is applied. The helper
+  now over-requests so 15 actually render, and the header states the count so
+  hidden rows are stated rather than implied.
+- **Each row shows what is in the meeting**: topics, decisions, actions and
+  attendees, on their own line. The server was already sending these counts and
+  the helper was discarding them, so this costs no extra request. Zero counts
+  are omitted, and a meeting with none falls back to how it was captured.
+- The list only scrolls once it is long enough to need to. Height follows
+  content up to a cap, so a light day reserves no empty space.
+
 ## 0.5.2 (build 39)
 
 - **You can now name an unidentified voice.** The row said "This voice was

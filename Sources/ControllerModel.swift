@@ -683,7 +683,10 @@ final class ControllerModel: ObservableObject {
         meetingsLoading = true
         defer { meetingsLoading = false }
         do {
-            let response = try await helper.run(["meetings", "--limit", "12"])
+            // Over-request: the helper drops rows without a sessionId, so asking for
+                // 15 returned 10-12 depending on how much of the day was G2-captured.
+                // Ask 30, show the first MEETING_LIST_VISIBLE survivors.
+                let response = try await helper.run(["meetings", "--limit", "30"])
             reviewableMeetings = (response.details["meetings"]?.array ?? []).compactMap(ReviewableMeeting.init)
             // A row without a sessionId is filtered out by the helper, because the
             // review is keyed on the session. Say so rather than showing an empty
