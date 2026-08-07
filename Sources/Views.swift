@@ -95,6 +95,7 @@ struct ControlPanel: View {
     @State private var selectedTranscriptionTier = "balanced"
     @State private var selectedBackgroundJobs = true
     @State private var selectedMeetingPreview = false
+    @State private var selectedIdleMetalHq = false
 
     /// Overlays are rendered INLINE, never as sheets.
     ///
@@ -124,6 +125,7 @@ struct ControlPanel: View {
             }
             if let enabled = model.status.backgroundJobsEnabled { selectedBackgroundJobs = enabled }
             if let enabled = model.status.meetingPreviewEnabled { selectedMeetingPreview = enabled }
+            if let enabled = model.status.idleMetalHqEnabled { selectedIdleMetalHq = enabled }
         }
         .onChange(of: model.status.transcriptionRequestedTier) { _, tier in
             if let tier, tier == "max" || tier == "balanced" { selectedTranscriptionTier = tier }
@@ -133,6 +135,9 @@ struct ControlPanel: View {
         }
         .onChange(of: model.status.meetingPreviewEnabled) { _, enabled in
             if let enabled { selectedMeetingPreview = enabled }
+        }
+        .onChange(of: model.status.idleMetalHqEnabled) { _, enabled in
+            if let enabled { selectedIdleMetalHq = enabled }
         }
         .alert("COS Control", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
@@ -206,6 +211,10 @@ struct ControlPanel: View {
             }
             if model.status.meetingPreviewSupported, let enabled = model.status.meetingPreviewEnabled {
                 statusRow("Meeting preview", value: enabled ? "Turbo · On" : "Off", good: enabled)
+            }
+            if model.status.idleMetalHqSupported, let enabled = model.status.idleMetalHqEnabled {
+                let label = enabled ? "On · preemptible" : (model.status.idleMetalHqForceCpu == true ? "Force CPU" : "Off · CPU")
+                statusRow("Idle Metal HQ", value: label, good: enabled)
             }
             if !model.status.whisperReady, let error = model.status.whisperError, !error.isEmpty {
                 Text(error)
@@ -775,6 +784,18 @@ struct ControlPanel: View {
                             || (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0)
                 }
                 Text("Shows fast provisional meeting text, then replaces it with the canonical speaker-attributed transcript. Disable for immediate rollback.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if model.status.idleMetalHqSupported {
+                HStack(spacing: 8) {
+                    Toggle("Idle Metal HQ", isOn: $selectedIdleMetalHq)
+                    Button("Apply") { model.setIdleMetalHqEnabled(selectedIdleMetalHq) }
+                        .disabled(model.busy
+                            || (!model.status.installed && model.status.runtimeState != "managedInPlace")
+                            || (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0)
+                }
+                Text("Powerful Macs only. Uses Metal for sealed post-meeting HQ when idle. Live and progressive transcription stay protected; Off forces CPU rollback.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

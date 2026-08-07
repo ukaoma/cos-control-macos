@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.1 (build 38)
+
+- Add an **Idle Metal HQ** control for powerful Macs running glasses-server
+  6.21.20 or newer. It only enables Metal for sealed post-meeting HQ work when
+  the server is idle; live and progressive transcription keep their existing
+  protected paths.
+- Turning the setting off writes both `COS_BATCH_HQ_METAL=0` and the explicit
+  `COS_BATCH_HQ_FORCE_CPU=1` rollback. Turning it on clears that override. Both
+  values are applied through Control's safe drain, restart, verification, and
+  rollback transaction instead of by editing a LaunchAgent by hand.
+- Show the active policy in the status card as `On · preemptible`, `Force CPU`,
+  or `Off · CPU`. Public installs remain CPU-first unless the user opts in.
+
 ## 0.5.0 (build 37)
 
 - Hotfix: the speaking timeline drew an empty bar on a server older than

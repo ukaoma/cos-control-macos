@@ -72,6 +72,9 @@ struct ServerStatus: Sendable {
     var backgroundJobsEnabled: Bool?
     var meetingPreviewSupported = false
     var meetingPreviewEnabled: Bool?
+    var idleMetalHqSupported = false
+    var idleMetalHqEnabled: Bool?
+    var idleMetalHqForceCpu: Bool?
     var whisperReady = false
     var whisperCircuitOpen = false
     var whisperStartupState: String?
@@ -160,6 +163,9 @@ struct ServerStatus: Sendable {
         backgroundJobsEnabled = details["backgroundJobsEnabled"]?.bool
         meetingPreviewSupported = details["meetingPreviewSupported"]?.bool ?? false
         meetingPreviewEnabled = details["meetingPreviewEnabled"]?.bool
+        idleMetalHqSupported = details["idleMetalHqSupported"]?.bool ?? false
+        idleMetalHqEnabled = details["idleMetalHqEnabled"]?.bool
+        idleMetalHqForceCpu = details["idleMetalHqForceCpu"]?.bool
         whisperReady = details["whisperReady"]?.bool ?? false
         whisperCircuitOpen = details["whisperCircuitOpen"]?.bool ?? false
         whisperStartupState = details["whisperStartupState"]?.string

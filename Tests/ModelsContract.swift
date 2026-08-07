@@ -38,8 +38,12 @@ struct ModelsContract {
         let status = ServerStatus([
             "meetingPreviewSupported": .bool(true),
             "meetingPreviewEnabled": .bool(true),
+            "idleMetalHqSupported": .bool(true),
+            "idleMetalHqEnabled": .bool(true),
+            "idleMetalHqForceCpu": .bool(false),
         ])
         precondition(status.meetingPreviewSupported && status.meetingPreviewEnabled == true)
+        precondition(status.idleMetalHqSupported && status.idleMetalHqEnabled == true && status.idleMetalHqForceCpu == false)
 
         // Decode into an owned in-memory image before deleting the source.
         let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")!

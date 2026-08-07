@@ -288,6 +288,8 @@ final class COSControlHelper {
         "COS_MEETING_EARLY_SYNC",
         "COS_MEETING_PROGRESSIVE_HQ",
         "COS_MEETING_PROGRESSIVE_HQ_THREADS",
+        "COS_BATCH_HQ_METAL",
+        "COS_BATCH_HQ_FORCE_CPU",
     ]
 
     private lazy var support = home.appendingPathComponent("Library/Application Support/COS Control", isDirectory: true)
@@ -374,6 +376,10 @@ final class COSControlHelper {
         case "set-meeting-preview": try withMutationLock {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing meeting preview setting") }
             try setMeetingPreview(value)
+        }
+        case "set-idle-metal-hq": try withMutationLock {
+            guard let value = args.dropFirst().first else { throw HelperError.message("missing idle Metal HQ setting") }
+            try setIdleMetalHq(value)
         }
         case "token": try copyPairingToken()
         case "expire-clipboard": try expireClipboard(args: args)
@@ -1919,6 +1925,17 @@ final class COSControlHelper {
         let meetingPreviewEnabled = meetingPreviewSupported
             ? ((health != nil ? loadedEnvironmentValue("COS_WHISPER_MEETING_PREVIEW") : configuredMeetingPreview) == "1")
             : nil
+        let idleMetalHqSupported = reportedVersion.map { versionAtLeast($0, "6.21.20") } == true
+        let configuredIdleMetalHq = manifest?.providerEnvironment?["COS_BATCH_HQ_METAL"]
+            ?? (launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String])?["COS_BATCH_HQ_METAL"]
+        let configuredIdleMetalHqForceCpu = manifest?.providerEnvironment?["COS_BATCH_HQ_FORCE_CPU"]
+            ?? (launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String])?["COS_BATCH_HQ_FORCE_CPU"]
+        let activeIdleMetalHq = health != nil ? loadedEnvironmentValue("COS_BATCH_HQ_METAL") : configuredIdleMetalHq
+        let activeIdleMetalHqForceCpu = health != nil ? loadedEnvironmentValue("COS_BATCH_HQ_FORCE_CPU") : configuredIdleMetalHqForceCpu
+        let idleMetalHqForceCpu = idleMetalHqSupported ? activeIdleMetalHqForceCpu == "1" : nil
+        let idleMetalHqEnabled = idleMetalHqSupported
+            ? (activeIdleMetalHq == "1" && activeIdleMetalHqForceCpu != "1")
+            : nil
         var details: [String: Any] = [
             "installed": manifest != nil,
             "serviceLoaded": snapshot.serviceLoaded,
@@ -1951,6 +1968,9 @@ final class COSControlHelper {
             "backgroundJobsEnabled": backgroundJobsEnabled ?? NSNull(),
             "meetingPreviewSupported": meetingPreviewSupported,
             "meetingPreviewEnabled": meetingPreviewEnabled ?? NSNull(),
+            "idleMetalHqSupported": idleMetalHqSupported,
+            "idleMetalHqEnabled": idleMetalHqEnabled ?? NSNull(),
+            "idleMetalHqForceCpu": idleMetalHqForceCpu ?? NSNull(),
             "whisperReady": ((health?["whisper_health"] as? [String: Any])?["server"] as? Bool) ?? false,
             "whisperCircuitOpen": ((health?["whisper_health"] as? [String: Any])?["circuitOpen"] as? Bool) ?? false,
             "whisperStartupState": (health?["whisper_health"] as? [String: Any])?["startupState"] ?? NSNull(),
@@ -3220,6 +3240,51 @@ final class COSControlHelper {
         }
     }
 
+    /// Idle Metal HQ is intentionally a two-key policy. Enabling clears the
+    /// emergency CPU override; disabling sets that override explicitly so the
+    /// rollback is deterministic even if a stale METAL=1 survives elsewhere.
+    private func idleMetalHqEnvironment(_ raw: String) throws -> [String: String] {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "on":
+            return ["COS_BATCH_HQ_METAL": "1", "COS_BATCH_HQ_FORCE_CPU": "0"]
+        case "off":
+            return ["COS_BATCH_HQ_METAL": "0", "COS_BATCH_HQ_FORCE_CPU": "1"]
+        default:
+            throw HelperError.message("Unknown idle Metal HQ setting. Choose On or Off.")
+        }
+    }
+
+    private func setIdleMetalHq(_ raw: String) throws {
+        let values = try idleMetalHqEnvironment(raw)
+        let enabled = values["COS_BATCH_HQ_METAL"] == "1"
+        let health = request("/api/health", timeout: 12)?.body
+        let runningVersion = health?["server_version"] as? String
+        let stoppedCompatibleManagedServer = loadManifest().map {
+            $0.desiredState == "stopped" && versionAtLeast($0.version, "6.21.20")
+        } ?? false
+        guard runningVersion.map({ versionAtLeast($0, "6.21.20") }) == true || stoppedCompatibleManagedServer else {
+            throw HelperError.message("Update the managed server to 6.21.20 or newer before changing Idle Metal HQ.")
+        }
+        let operationLabel = enabled ? "Idle Metal HQ" : "Idle Metal HQ force-CPU rollback"
+        if let manifest = loadManifest() {
+            try applyManagedProviderEnvironment(values, current: manifest, operationLabel: operationLabel)
+            return
+        }
+        guard inPlaceActive() else {
+            throw HelperError.message("Install the managed server or choose Manage in place first.")
+        }
+        try applyInPlaceProviderEnvironment(values, operationLabel: operationLabel)
+    }
+
+    private func requireIdleMetalHq(enabled: Bool) throws {
+        let expectedMetal = enabled ? "1" : "0"
+        let expectedForceCpu = enabled ? "0" : "1"
+        guard loadedEnvironmentValue("COS_BATCH_HQ_METAL") == expectedMetal,
+              loadedEnvironmentValue("COS_BATCH_HQ_FORCE_CPU") == expectedForceCpu else {
+            throw HelperError.message("the restarted server did not load Idle Metal HQ as \(enabled ? "enabled" : "force CPU")")
+        }
+    }
+
     /// Verify the persisted policy after restart and return the model tier that
     /// is actually active. Max may truthfully degrade to Balanced when the
     /// Large-v3 weights are unavailable; callers must surface that fallback
@@ -3373,6 +3438,9 @@ final class COSControlHelper {
                 if let meetingPreview = values["COS_WHISPER_MEETING_PREVIEW"] {
                     try requireMeetingPreview(meetingPreview)
                 }
+                if let idleMetalHq = values["COS_BATCH_HQ_METAL"] {
+                    try requireIdleMetalHq(enabled: idleMetalHq == "1")
+                }
                 try requireMaintenanceRelease(activeLease)
             }
             clearTransaction()
@@ -3454,6 +3522,9 @@ final class COSControlHelper {
             if alreadyActive, let meetingPreview = values["COS_WHISPER_MEETING_PREVIEW"] {
                 try requireMeetingPreview(meetingPreview)
             }
+            if alreadyActive, let idleMetalHq = values["COS_BATCH_HQ_METAL"] {
+                try requireIdleMetalHq(enabled: idleMetalHq == "1")
+            }
             let message: String
             if alreadyActive, values["COS_WHISPER_TRANSCRIPTION_TIER"] == "max", effectiveTier == "balanced" {
                 message = "Max transcription is saved; running Balanced fallback because Large-v3 is unavailable"
@@ -3509,6 +3580,9 @@ final class COSControlHelper {
             }
             if let meetingPreview = values["COS_WHISPER_MEETING_PREVIEW"] {
                 try requireMeetingPreview(meetingPreview)
+            }
+            if let idleMetalHq = values["COS_BATCH_HQ_METAL"] {
+                try requireIdleMetalHq(enabled: idleMetalHq == "1")
             }
             try requireMaintenanceRelease(activeLease)
             clearInPlaceConfigurationTransaction()
@@ -4774,6 +4848,8 @@ final class COSControlHelper {
                 "COS_HARNESS": "codex",
                 "COS_EXTRA_TOOLS": "mcp__calendar__*",
                 "COS_WHISPER_MEETING_PREVIEW": "1",
+                "COS_BATCH_HQ_METAL": "1",
+                "COS_BATCH_HQ_FORCE_CPU": "0",
                 "COS_API_TOKEN": "must-not-survive",
             ],
             retainedGenerations: [],
@@ -4787,8 +4863,22 @@ final class COSControlHelper {
             filtered["COS_HARNESS"] == "codex"
                 && filtered["COS_EXTRA_TOOLS"] == "mcp__calendar__*"
                 && filtered["COS_WHISPER_MEETING_PREVIEW"] == "1"
+                && filtered["COS_BATCH_HQ_METAL"] == "1"
+                && filtered["COS_BATCH_HQ_FORCE_CPU"] == "0"
                 && filtered["COS_API_TOKEN"] == nil,
             "provider allowlist"
+        )
+        let idleMetalOn = try idleMetalHqEnvironment("ON")
+        let idleMetalOff = try idleMetalHqEnvironment("off")
+        try expect(
+            idleMetalOn["COS_BATCH_HQ_METAL"] == "1"
+                && idleMetalOn["COS_BATCH_HQ_FORCE_CPU"] == "0",
+            "Idle Metal HQ enable clears force-CPU rollback"
+        )
+        try expect(
+            idleMetalOff["COS_BATCH_HQ_METAL"] == "0"
+                && idleMetalOff["COS_BATCH_HQ_FORCE_CPU"] == "1",
+            "Idle Metal HQ disable forces CPU"
         )
         let balancedTier = try transcriptionTierEnvironment("balanced")
         let maxTier = try transcriptionTierEnvironment("MAX")
