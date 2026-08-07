@@ -507,6 +507,8 @@ struct SpeakerThrashPair: Sendable, Hashable {
 }
 
 struct ReviewVoice: Identifiable, Sendable, Hashable {
+    /// Voiced milliseconds for this voice. nil on a server that does not report it.
+    var speakingMs: Int?
     enum Reliability: String, Sendable {
         case confident, weak, unreliable, unattributed
     }
@@ -566,6 +568,9 @@ struct ReviewVoice: Identifiable, Sendable, Hashable {
         guard let o = value?.object, let label = o["label"]?.string else { return nil }
         self.label = label
         segments = o["segments"]?.int ?? 0
+        // Server 6.21.27+. Optional with no `?? 0`: a count has no safe scalar
+        // default, and zero would read as "this person never spoke".
+        speakingMs = o["speakingMs"]?.int
         meanSimilarity = o["meanSimilarity"]?.double
         isOwner = o["isOwner"]?.bool ?? false
         reliability = Reliability(rawValue: o["reliability"]?.string ?? "") ?? .weak
@@ -633,6 +638,14 @@ struct SpeakerReview: Sendable {
     /// guards. There is no safe scalar default for a count, so nil means "this
     /// server does not report it" and the view omits the line.
     let assertedSegments: Int?
+    /// Voiced ms of voices shown WITH A NAME, and the two buckets beside it.
+    /// All nil together on a server older than 6.21.27.
+    let attributedSpeakingMs: Int?
+    let unattributedSpeakingMs: Int?
+    let notCapturedMs: Int?
+    /// "words" (real voiced time) or "chunks" (capped wall clock). Not
+    /// comparable across meetings, so never trend a mix of the two.
+    let speakingTimeSource: String?
     let durationMs: Int
     let voices: [ReviewVoice]
     let timeline: [SpeakerTimelineSpan]
@@ -644,6 +657,10 @@ struct SpeakerReview: Sendable {
         segments = o["segments"]?.int ?? 0
         attributed = o["attributed"]?.bool ?? false
         assertedSegments = o["assertedSegments"]?.int
+        attributedSpeakingMs = o["attributedSpeakingMs"]?.int
+        unattributedSpeakingMs = o["unattributedSpeakingMs"]?.int
+        notCapturedMs = o["notCapturedMs"]?.int
+        speakingTimeSource = o["speakingTimeSource"]?.string
         durationMs = o["durationMs"]?.int ?? 0
         voices = (o["voices"]?.array ?? []).compactMap(ReviewVoice.init)
         timeline = (o["timeline"]?.array ?? []).enumerated().compactMap { SpeakerTimelineSpan($1, index: $0) }
@@ -654,6 +671,32 @@ struct SpeakerReview: Sendable {
     /// never disagree about whether someone was identified.
     func assertsName(_ label: String) -> Bool {
         voices.first(where: { $0.label == label })?.nameAsserted ?? false
+    }
+
+    /// Share of IDENTIFIED speech held by this voice, 0...1.
+    ///
+    /// Deliberately a share of NAMED speech, not of the meeting: the
+    /// unattributed bucket is routinely the largest single slice (44.8% of
+    /// retained speaking time corpus-wide), so a share of wall clock would make
+    /// every real participant look marginal.
+    /// Denominator is the SUM of named voices, NOT `attributedSpeakingMs`.
+    ///
+    /// That field is a UNION — crosstalk counted once — so dividing by it lets
+    /// the shares total more than 100%. Measured on a real 19.6-minute meeting
+    /// the union is 6.6m while the participants sum to 6.9m, which rendered
+    /// "MU 66% · Edward Addo 39%". Share of voice is conventionally a share of
+    /// everyone's talking, and this denominator totals exactly 100%.
+    func shareOfIdentified(_ voice: ReviewVoice) -> Double? {
+        guard voice.nameAsserted, let ms = voice.speakingMs else { return nil }
+        let total = voices.reduce(0) { $0 + ($1.nameAsserted ? ($1.speakingMs ?? 0) : 0) }
+        guard total > 0 else { return nil }
+        return Double(ms) / Double(total)
+    }
+
+    /// How much of the meeting's voice was named. nil when unreported.
+    var speakingCoverage: Double? {
+        guard let a = attributedSpeakingMs, let u = unattributedSpeakingMs, a + u > 0 else { return nil }
+        return Double(a) / Double(a + u)
     }
 
     func displayName(for label: String) -> String {

@@ -214,12 +214,75 @@ struct ModelsContract {
         precondition(review(assertedSegments: nil)?.segments == 379, "old server still usable")
     }
 
+    /// Talk time must never be invented for a voice the panel will not name,
+    /// and must read as UNKNOWN rather than zero on a server that omits it.
+    private static func checkSpeakingTime() {
+        func rv(_ label: String, _ ms: Int?, asserted: Bool) -> ReviewVoice? {
+            var o: [String: JSONValue] = [
+                "label": .string(label), "segments": .number(12),
+                "reliability": .string(asserted ? "confident" : "weak"),
+                "nameAsserted": .bool(asserted), "assertionBlockers": .array([]),
+                "thrashesWith": .array([]), "phrases": .array([]),
+            ]
+            if let ms { o["speakingMs"] = .number(Double(ms)) }
+            return ReviewVoice(.object(o))
+        }
+        func review(_ voices: [JSONValue], attributed: Int?, unattributed: Int?) -> SpeakerReview? {
+            var o: [String: JSONValue] = [
+                "sessionId": .string("meeting_x"), "title": .string("t"),
+                "segments": .number(100), "attributed": .bool(true),
+                "durationMs": .number(600_000), "voices": .array(voices),
+                "timeline": .array([]),
+            ]
+            if let attributed { o["attributedSpeakingMs"] = .number(Double(attributed)) }
+            if let unattributed { o["unattributedSpeakingMs"] = .number(Double(unattributed)) }
+            return SpeakerReview(.object(o))
+        }
+        precondition(rv("A", 5000, asserted: true)?.speakingMs == 5000, "present decodes")
+        precondition(rv("A", nil, asserted: true)?.speakingMs == nil, "absent must be nil, NOT 0")
+
+        let named = rv("Gina", 30_000, asserted: true)!
+        let weak = rv("Navaz", 10_000, asserted: false)!
+        // Two named voices whose union is SMALLER than their sum — the crosstalk
+        // case. Shares must still total 100%, not 105%.
+        let two = review([
+            .object(["label": .string("MU"), "segments": .number(1), "reliability": .string("confident"),
+                     "nameAsserted": .bool(true), "speakingMs": .number(258_000),
+                     "assertionBlockers": .array([]), "thrashesWith": .array([]), "phrases": .array([])]),
+            .object(["label": .string("Edward"), "segments": .number(1), "reliability": .string("confident"),
+                     "nameAsserted": .bool(true), "speakingMs": .number(156_000),
+                     "assertionBlockers": .array([]), "thrashesWith": .array([]), "phrases": .array([])]),
+        ], attributed: 396_000, unattributed: 0)!
+        let shares = two.voices.compactMap { two.shareOfIdentified($0) }
+        precondition(shares.count == 2, "both named voices get a share")
+        precondition(abs(shares.reduce(0, +) - 1.0) < 0.001,
+                     "shares must total 100% — a union denominator gave 105%")
+
+        // The review must carry the SAME voices the share is computed over — the
+        // denominator now reads `voices`, so a stub array yields no share.
+        let r = review([
+            .object(["label": .string("Gina"), "segments": .number(12), "reliability": .string("confident"),
+                     "nameAsserted": .bool(true), "speakingMs": .number(30_000),
+                     "assertionBlockers": .array([]), "thrashesWith": .array([]), "phrases": .array([])]),
+        ], attributed: 30_000, unattributed: 10_000)!
+        // Share is over NAMED speech, so the only named voice holds 100%.
+        precondition(r.shareOfIdentified(named).map { abs($0 - 1.0) < 0.001 } == true, "share over named speech")
+        // A voice the panel will not name gets no share at all.
+        precondition(r.shareOfIdentified(weak) == nil, "unnamed voice must not get a share")
+        // Coverage is named / (named + unnamed) = 75%.
+        precondition(r.speakingCoverage.map { abs($0 - 0.75) < 0.001 } == true, "coverage")
+        // An old server reporting neither bucket yields no coverage, not 0%.
+        precondition(review([], attributed: nil, unattributed: nil)?.speakingCoverage == nil,
+                     "absent buckets must be nil coverage, NOT zero")
+    }
+
     static func main() throws {
         checkRenameEligibility()
         checkConfirmEligibility()
         checkMeetingRowFields()
         checkCountsSummary()
         checkAssertedSegmentsBackCompat()
+        checkSpeakingTime()
 
         precondition(GlassesAttachmentRef(object: attachment("a", timestamp: "2026-08-03T12:00:00.000Z")) != nil)
         precondition(GlassesAttachmentRef(object: attachment("b", timestamp: "2026-08-03T12:00:00.123Z")) != nil)

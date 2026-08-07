@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.6 (build 43)
+
+- **Talk time per voice in the speaker sheet.** Minutes and share of voice
+  beside each row, shown ONLY for a voice the panel actually names — minutes
+  next to an unnamed row would assert an identity by the back door, which is
+  exactly what the display floor exists to prevent.
+- Shares are a share of NAMED speech and total 100%. The denominator is the sum
+  of named voices, not the server's `attributedSpeakingMs`: that field is a
+  union with crosstalk counted once, and dividing by it rendered "MU 66% ·
+  Edward Addo 39%" on a real meeting.
+- Below 60% identified, the header says so instead of drawing shares.
+  Corpus-wide 44.8% of speaking time is unattributed and 17% of meetings name
+  nobody; a percentage there invites reading the missing majority as a person.
+- Requires glasses-server 6.21.27+. Older servers omit the numbers rather than
+  showing zeros.
+
 ## 0.5.5 (build 42)
 
 - **The speaker sheet now says how much of the meeting carries a name.** The

@@ -210,6 +210,12 @@ done
 /usr/bin/grep -q 'assertedSegments = o\["assertedSegments"\]?.int$' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'let asserted = review.assertedSegments' "$ROOT/Sources/Views.swift"
 
+# Talk time decodes with no `?? 0` (same no-safe-default rule as coverage), and
+# is rendered ONLY behind nameAsserted — showing minutes for a voice the panel
+# refuses to name would assert an identity by the back door.
+/usr/bin/grep -q 'speakingMs = o\["speakingMs"\]?.int$' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'voice.nameAsserted, let ms = voice.speakingMs' "$ROOT/Sources/Views.swift"
+
 # The ribbon is a TIMELINE. It previously drew one rect per voice sized by share
 # of segments while calling itself "who spoke, in order", so hover had nothing
 # true to report. It must read the server's spans.

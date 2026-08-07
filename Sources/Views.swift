@@ -1305,6 +1305,19 @@ private struct VoiceRow: View {
                 Text("\(voice.segments) seg")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
+                // Talk time, ONLY for a voice the panel actually names. Minutes
+                // beside an unnamed row would assert by the back door exactly
+                // what the display floor refuses to assert.
+                if voice.nameAsserted, let ms = voice.speakingMs, ms > 0 {
+                    Text("· \(ms / 60_000)m \(ms / 1000 % 60)s")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    if let share = model.openReview?.shareOfIdentified(voice) {
+                        Text("· \(Int((share * 100).rounded()))%")
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.primary)
+                    }
+                }
                 ConfidenceRamp(value: voice.meanSimilarity, unreliable: voice.reliability == .unreliable)
             }
 
@@ -1539,6 +1552,19 @@ struct SpeakerReviewPane: View {
                             Text("\(asserted) of \(review.segments) segments named")
                                 .font(.system(size: 10.5, design: .monospaced))
                                 .foregroundStyle(asserted * 2 < review.segments ? .orange : .secondary)
+                        }
+                        // Talk shares are a ratio over NAMED speech, so they only
+                        // mean something when most of the voice was named.
+                        // Corpus-wide 44.8% of speaking time is unattributed and
+                        // 17% of meetings name nobody — below the bar, a
+                        // percentage invites reading the missing majority as a
+                        // person. Say the coverage instead of drawing shares.
+                        if let coverage = review.speakingCoverage, review.attributed {
+                            Text(coverage < 0.6
+                                 ? "only \(Int((coverage * 100).rounded()))% of the voice identified — shares unreliable"
+                                 : "talk time from \(review.speakingTimeSource == "words" ? "word timings" : "chunk estimates")")
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(coverage < 0.6 ? .orange : .secondary)
                         }
                     }
                 }
