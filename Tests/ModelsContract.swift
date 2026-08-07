@@ -68,8 +68,8 @@ struct ModelsContract {
 
     /// A meetings row as the HELPER now projects it.
     private static func meetingRow(
-        topics: String = "4", decisions: String = "2",
-        actions: String = "1", attendees: String = "3", source: String = "G2 Glasses"
+        topics: Int = 4, decisions: Int = 2,
+        actions: Int = 1, attendees: Int = 3, source: String = "G2 Glasses"
     ) -> ReviewableMeeting? {
         ReviewableMeeting(.object([
             "sessionId": .string("meeting_1786073313411_d77gck"),
@@ -80,10 +80,11 @@ struct ModelsContract {
             "month": .string("2026-08"),
             "filename": .string("2026-08-06_Crypto_Clarity_Act_Senate_Standoff_(G2).md"),
             "source": .string(source),
-            "topicCount": .string(topics),
-            "decisionCount": .string(decisions),
-            "actionCount": .string(actions),
-            "attendeeCount": .string(attendees),
+            // Numbers, matching the wire. String fixtures hid a real blank-count bug.
+            "topicCount": .number(Double(topics)),
+            "decisionCount": .number(Double(decisions)),
+            "actionCount": .number(Double(actions)),
+            "attendeeCount": .number(Double(attendees)),
         ]))
     }
 
@@ -102,7 +103,7 @@ struct ModelsContract {
         precondition(!row.filename.isEmpty)
 
         // Counts arrive as STRINGS in this payload, not numbers.
-        precondition(row.topicCount == 4, "topicCount must parse from a string")
+        precondition(row.topicCount == 4, "topicCount must parse from a JSON number")
         precondition(row.decisionCount == 2)
         precondition(row.actionCount == 1)
         precondition(row.attendeeCount == 3)
@@ -113,16 +114,16 @@ struct ModelsContract {
         precondition(meetingRow()?.countsSummary == "4 topics · 2 decisions · 1 action · 3 attendees")
 
         // Singulars, so a one-topic meeting does not read "1 topics".
-        precondition(meetingRow(topics: "1", decisions: "0", actions: "0", attendees: "1")?
+        precondition(meetingRow(topics: 1, decisions: 0, actions: 0, attendees: 1)?
             .countsSummary == "1 topic · 1 attendee")
 
         // Zeros are omitted rather than printed as "0 decisions".
-        precondition(meetingRow(topics: "5", decisions: "0", actions: "0", attendees: "0")?
+        precondition(meetingRow(topics: 5, decisions: 0, actions: 0, attendees: 0)?
             .countsSummary == "5 topics")
 
         // ALL zero falls back to the capture source. An empty line here reads as
         // a rendering bug rather than as a meeting with no extracted structure.
-        precondition(meetingRow(topics: "0", decisions: "0", actions: "0", attendees: "0",
+        precondition(meetingRow(topics: 0, decisions: 0, actions: 0, attendees: 0,
                                 source: "Granola")?.countsSummary == "Granola")
     }
 

@@ -4340,6 +4340,17 @@ final class COSControlHelper {
     /// Recent saved meetings. Only rows that carry a sessionId are emitted:
     /// the speaker review is keyed on the session, so a row without one cannot
     /// open the panel and listing it would offer an action that does nothing.
+    /// Read a count that may arrive as a JSON number or a string.
+    ///
+    /// The server sends Int today. Accepting both means a future serialisation
+    /// change cannot silently blank the row again.
+    static func meetingCount(_ value: Any?) -> Int {
+        if let int = value as? Int { return int }
+        if let double = value as? Double { return Int(double) }
+        if let string = value as? String, let parsed = Int(string) { return parsed }
+        return 0
+    }
+
     /// Project one server meetings row into what Control consumes.
     ///
     /// EXTRACTED so it can be tested. Inline, it had no coverage at all:
@@ -4364,10 +4375,14 @@ final class COSControlHelper {
             "month": row["month"] as? String ?? "",
             "filename": row["filename"] as? String ?? "",
             "source": row["source"] as? String ?? "",
-            "topicCount": row["topicCount"] as? String ?? "",
-            "decisionCount": row["decisionCount"] as? String ?? "",
-            "actionCount": row["actionCount"] as? String ?? "",
-            "attendeeCount": row["attendeeCount"] as? String ?? "",
+            // NUMBERS on the wire, not strings. An `as? String` cast here
+            // returned "" for every count and the rows rendered blank — caught
+            // only by running it against the live server, because the self-test
+            // fixture used string literals and could not reproduce the real type.
+            "topicCount": Self.meetingCount(row["topicCount"]),
+            "decisionCount": Self.meetingCount(row["decisionCount"]),
+            "actionCount": Self.meetingCount(row["actionCount"]),
+            "attendeeCount": Self.meetingCount(row["attendeeCount"]),
         ]
     }
 
@@ -5220,15 +5235,21 @@ final class COSControlHelper {
             "sessionId": "meeting_1", "title": "Standoff (G2)", "date": "2026-08-06",
             "domain": "personal", "duration": "8 minutes", "month": "2026-08",
             "filename": "2026-08-06_Standoff_(G2).md", "source": "G2 Glasses",
-            "topicCount": "4", "decisionCount": "2", "actionCount": "1", "attendeeCount": "3",
+            // Ints, as the server actually sends them. String literals here were
+            // why the blank-count bug shipped past a green suite.
+            "topicCount": 4, "decisionCount": 2, "actionCount": 1, "attendeeCount": 3,
         ]
         let projected = Self.meetingRowProjection(fullRow)
         try expect(projected?["month"] as? String == "2026-08", "projection carries month")
         try expect(projected?["filename"] as? String == "2026-08-06_Standoff_(G2).md", "projection carries filename")
-        try expect(projected?["topicCount"] as? String == "4", "projection carries topicCount")
-        try expect(projected?["decisionCount"] as? String == "2", "projection carries decisionCount")
-        try expect(projected?["actionCount"] as? String == "1", "projection carries actionCount")
-        try expect(projected?["attendeeCount"] as? String == "3", "projection carries attendeeCount")
+        try expect(projected?["topicCount"] as? Int == 4, "projection carries topicCount as a number")
+        try expect(projected?["decisionCount"] as? Int == 2, "projection carries decisionCount")
+        try expect(projected?["actionCount"] as? Int == 1, "projection carries actionCount")
+        try expect(projected?["attendeeCount"] as? Int == 3, "projection carries attendeeCount")
+        // Both wire shapes, so a serialisation change cannot blank the row.
+        try expect(Self.meetingCount(7) == 7, "count accepts a number")
+        try expect(Self.meetingCount("7") == 7, "count accepts a numeric string")
+        try expect(Self.meetingCount(nil) == 0, "count defaults to zero")
         try expect(projected?["source"] as? String == "G2 Glasses", "projection carries source")
         try expect(Self.meetingRowProjection(["title": "no session"]) == nil,
                    "projection drops a row with no sessionId")

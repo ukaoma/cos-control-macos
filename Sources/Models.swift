@@ -456,11 +456,11 @@ struct ReviewableMeeting: Identifiable, Sendable, Hashable {
         month = o["month"]?.string ?? ""
         filename = o["filename"]?.string ?? ""
         source = o["source"]?.string ?? ""
-        // The server sends counts as STRINGS in this payload, not numbers.
-        topicCount = Int(o["topicCount"]?.string ?? "") ?? o["topicCount"]?.int ?? 0
-        decisionCount = Int(o["decisionCount"]?.string ?? "") ?? o["decisionCount"]?.int ?? 0
-        actionCount = Int(o["actionCount"]?.string ?? "") ?? o["actionCount"]?.int ?? 0
-        attendeeCount = Int(o["attendeeCount"]?.string ?? "") ?? o["attendeeCount"]?.int ?? 0
+        // Numbers on the wire; the string branch is a belt-and-braces fallback.
+        topicCount = o["topicCount"]?.int ?? Int(o["topicCount"]?.string ?? "") ?? 0
+        decisionCount = o["decisionCount"]?.int ?? Int(o["decisionCount"]?.string ?? "") ?? 0
+        actionCount = o["actionCount"]?.int ?? Int(o["actionCount"]?.string ?? "") ?? 0
+        attendeeCount = o["attendeeCount"]?.int ?? Int(o["attendeeCount"]?.string ?? "") ?? 0
     }
 }
 
