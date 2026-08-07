@@ -497,9 +497,22 @@ struct ReviewVoice: Identifiable, Sendable, Hashable {
     /// What the row is allowed to CALL this voice. An unearned label is a
     /// candidate, not an identity.
     var displayName: String { nameAsserted ? label : "Unidentified voice" }
-    /// Named people can be renamed. An unattributed cluster has no name to
-    /// correct, and the owner must never be absorbed away.
-    var canRename: Bool { reliability != .unattributed && !isOwner }
+    /// Any voice but the wearer can be given a name — INCLUDING an unattributed
+    /// cluster, which is the whole reason to review one.
+    ///
+    /// This excluded `.unattributed` until 0.5.2, while the row's own copy told
+    /// the user to "give it one from the list above". The panel instructed an
+    /// action the panel then refused to offer. The server was never the blocker:
+    /// `relabelSidecarJson` operates on any label, `Ext` and `Unidentified N`
+    /// included.
+    ///
+    /// The owner stays excluded deliberately — the wearer is established by the
+    /// device, not by cosine, and must never be absorbed into someone else.
+    var canRename: Bool { !isOwner }
+    /// Naming an unattributed row ASSIGNS an identity rather than correcting a
+    /// wrong one. Worth distinguishing on the button, because "Actually someone
+    /// else" reads as fixing a mistake the system made.
+    var isNameAssignment: Bool { reliability == .unattributed }
     /// A voice that was never in the room can be removed. Only meaningful where
     /// a name was actually applied — there is nothing to take back otherwise.
     var canDeattribute: Bool { reliability != .unattributed }
@@ -672,6 +685,13 @@ struct PendingCorrection: Identifiable, Sendable {
     /// Narrative prose still names the old speaker and is deliberately not
     /// rewritten, because summaries refer to people by first name.
     let proseStale: Bool
+    /// True when this names a voice that was never attributed to anyone.
+    ///
+    /// An unattributed row is a cluster the identifier could NOT match, so
+    /// nothing ever established it is one person — a big cluster on a G2 mic is
+    /// frequently several. Naming it writes that name onto every one of its
+    /// segments, so the card says so before the click rather than after.
+    let isNameAssignment: Bool
     /// Training samples this correction would retract from the profile.
     let wouldRetract: Int
     /// Samples that predate meeting-level provenance and cannot be retracted.

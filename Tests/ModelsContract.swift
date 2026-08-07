@@ -14,7 +14,61 @@ struct ModelsContract {
         ]
     }
 
+    /// A speaker row, built from the shape the server actually sends.
+    private static func voice(
+        label: String, reliability: String, isOwner: Bool = false, segments: Int = 12
+    ) -> ReviewVoice? {
+        ReviewVoice(.object([
+            "label": .string(label),
+            "segments": .number(Double(segments)),
+            "isOwner": .bool(isOwner),
+            "reliability": .string(reliability),
+            "nameAsserted": .bool(reliability == "confident"),
+            "assertionBlockers": .array([]),
+            "thrashesWith": .array([]),
+            "phrases": .array([]),
+        ]))
+    }
+
+    /// Who may be renamed, and who may never be.
+    ///
+    /// Regression: `canRename` excluded `.unattributed` while the row's copy read
+    /// "Give it one from the list above" — the panel instructed an action it then
+    /// refused to offer. Naming an unheard voice is the entire point of reviewing
+    /// one, and the server always supported it.
+    private static func checkRenameEligibility() {
+        // The fix, stated as behaviour.
+        precondition(voice(label: "Ext", reliability: "unattributed")?.canRename == true,
+                     "an unattributed voice must be nameable")
+        precondition(voice(label: "Unidentified 2", reliability: "unattributed")?.canRename == true,
+                     "a numbered unattributed voice must be nameable")
+
+        // Unchanged, and the reason the guard exists at all: the wearer is
+        // established by the device, not by cosine, and absorbing them into
+        // another profile would break identification for every later chunk.
+        precondition(voice(label: "MU", reliability: "confident", isOwner: true)?.canRename == false,
+                     "the owner must never be renameable")
+        precondition(voice(label: "MU", reliability: "unattributed", isOwner: true)?.canRename == false,
+                     "the owner must never be renameable, even unattributed")
+
+        // Still true for ordinary rows.
+        precondition(voice(label: "Queen Ukaoma", reliability: "confident")?.canRename == true)
+        precondition(voice(label: "Luke Henry", reliability: "weak")?.canRename == true)
+
+        // Naming an unattributed row is an ASSIGNMENT, and the confirm card says
+        // so — a large unmatched cluster is frequently several people.
+        precondition(voice(label: "Ext", reliability: "unattributed")?.isNameAssignment == true)
+        precondition(voice(label: "Queen Ukaoma", reliability: "confident")?.isNameAssignment == false)
+
+        // De-attribution stays scoped to rows that actually carry a name: there
+        // is nothing to take back from a voice nobody was ever called.
+        precondition(voice(label: "Ext", reliability: "unattributed")?.canDeattribute == false)
+        precondition(voice(label: "Queen Ukaoma", reliability: "confident")?.canDeattribute == true)
+    }
+
     static func main() throws {
+        checkRenameEligibility()
+
         precondition(GlassesAttachmentRef(object: attachment("a", timestamp: "2026-08-03T12:00:00.000Z")) != nil)
         precondition(GlassesAttachmentRef(object: attachment("b", timestamp: "2026-08-03T12:00:00.123Z")) != nil)
         precondition(GlassesAttachmentRef(object: attachment("c", timestamp: "2026-08-03T12:00:00Z")) != nil)

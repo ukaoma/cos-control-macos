@@ -769,7 +769,10 @@ final class ControllerModel: ObservableObject {
     /// `scope` decides which endpoint answers. Until 0.5.0 only the global merge
     /// existed, so every rename rewrote every meeting; per-meeting is now the
     /// default and the global fold is an explicit opt-in.
-    func previewRename(from: String, to: String, scope: CorrectionScope) {
+    /// `isNameAssignment` marks the case where the row was never attributed to
+    /// anyone. It changes no behaviour — only what the confirm card is allowed
+    /// to say, so a click that labels an unverified cluster says so first.
+    func previewRename(from: String, to: String, scope: CorrectionScope, isNameAssignment: Bool = false) {
         guard from != to else { return }
         guard let session = openReview?.sessionId else { return }
         mergeInFlight = true
@@ -782,7 +785,8 @@ final class ControllerModel: ObservableObject {
                     : ["voice-merge", "--into", to, "--from", from]
                 let response = try await helper.run(args)
                 pendingCorrection = Self.correction(
-                    from: from, to: to, scope: scope, response: response
+                    from: from, to: to, scope: scope, response: response,
+                    isNameAssignment: isNameAssignment
                 )
                 namingVoice = nil
                 reviewError = nil
@@ -830,7 +834,8 @@ final class ControllerModel: ObservableObject {
         from: String,
         to: String?,
         scope: CorrectionScope,
-        response: HelperResponse
+        response: HelperResponse,
+        isNameAssignment: Bool = false
     ) -> PendingCorrection {
         let state = response.details["state"]?.string ?? ""
         let result = response.details["result"]?.object
@@ -868,6 +873,7 @@ final class ControllerModel: ObservableObject {
             refused: refused || pendingEarlier,
             forceable: pendingEarlier,
             proseStale: result?["proseStale"]?.bool ?? false,
+            isNameAssignment: isNameAssignment,
             wouldRetract: training?["wouldRetract"]?.int ?? 0,
             untraceable: training?["untraceable"]?.int ?? 0
         )

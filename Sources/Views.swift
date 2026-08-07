@@ -1365,7 +1365,9 @@ private struct VoiceRow: View {
 
                     ForEach(matches) { option in
                         Button {
-                            model.previewRename(from: voice.label, to: option.name, scope: model.correctionScope)
+                            model.previewRename(from: voice.label, to: option.name,
+                                               scope: model.correctionScope,
+                                               isNameAssignment: voice.isNameAssignment)
                         } label: {
                             HStack {
                                 Text(option.name).font(.system(size: 12))
@@ -1389,8 +1391,18 @@ private struct VoiceRow: View {
                     Button("Cancel") { model.namingVoice = nil; typed = "" }
                         .font(.system(size: 11)).buttonStyle(.plain).foregroundStyle(.secondary)
                 } else {
+                    // An unattributed row is being GIVEN a name, not corrected,
+                    // and until 0.5.2 it had no control at all — only copy telling
+                    // the user to do the thing the panel would not let them do.
+                    if voice.isNameAssignment {
+                        Text("This voice was never named. Name it, or leave it unidentified.")
+                            .font(.system(size: 11)).foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     HStack(spacing: 10) {
-                        Button(voice.reliability == .unreliable ? "This is someone else" : "Actually someone else") {
+                        Button(voice.isNameAssignment
+                                ? "Name this voice"
+                                : (voice.reliability == .unreliable ? "This is someone else" : "Actually someone else")) {
                             model.namingVoice = voice.label
                         }
                         .font(.system(size: 11))
@@ -1410,10 +1422,6 @@ private struct VoiceRow: View {
                         }
                     }
                 }
-            } else if voice.reliability == .unattributed {
-                Text("This voice was never named. Give it one from the list above, or leave it unidentified.")
-                    .font(.system(size: 11)).foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.vertical, 9)
@@ -1555,6 +1563,17 @@ struct SpeakerReviewPane: View {
                              + (correction.surfaces.transcript > 0 ? " · \(correction.surfaces.transcript) transcript line(s)" : "")
                              + (correction.surfaces.attendees > 0 ? " · attendee list" : ""))
                             .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
+                    }
+                    // Naming an unattributed row is the one correction that can
+                    // quietly go very wrong: the identifier never matched this
+                    // cluster to anyone, so nothing established it is ONE person.
+                    // On a G2 mic a large cluster is frequently several. Say the
+                    // count before the click, not after.
+                    if correction.isNameAssignment && !correction.refused && correction.surfaces.sidecar > 0 {
+                        Text("This voice was never matched to anyone, so nothing has established it is one person. "
+                             + "Saving labels all \(correction.surfaces.sidecar) of its segments \(correction.to ?? "").")
+                            .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     if correction.wouldRetract > 0 {
                         Text("Also removes \(correction.wouldRetract) training sample(s) this meeting gave that profile, so the mistake stops reinforcing itself.")

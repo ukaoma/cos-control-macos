@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.2 (build 39)
+
+- **You can now name an unidentified voice.** The row said "This voice was
+  never named. Give it one from the list above" and then offered no control to
+  do it — the panel instructed an action it refused to perform. The server
+  always supported this; `canRename` simply excluded unattributed rows. Naming
+  one now opens the same scope picker and confirm preview as every other
+  correction.
+- The confirm card says what a name assignment actually does. An unattributed
+  row is a cluster the identifier could NOT match, so nothing established it is
+  one person, and a large cluster on a G2 microphone is frequently several.
+  Saving labels every one of its segments, and the card now states the count
+  and that caveat before the click rather than after.
+- The wearer still cannot be renamed. That guard is the reason the check
+  existed; only the unattributed half was wrong.
+
 ## 0.5.1 (build 38)
 
 - Add an **Idle Metal HQ** control for powerful Macs running glasses-server

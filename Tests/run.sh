@@ -153,7 +153,14 @@ PY
 /usr/bin/grep -q 'if confirm { payload\["confirm"\] = true } else { payload\["dryRun"\] = true }' "$ROOT/HelperSources/main.swift"
 # The owner profile is checked first on every live chunk; absorbing it away would
 # silently break identification for the wearer.
-/usr/bin/grep -q 'reliability != .unattributed && !isOwner' "$ROOT/Sources/Models.swift"
+#
+# This pinned the whole expression `reliability != .unattributed && !isOwner`
+# until 0.5.2, which made it a test of the DEFECT: the `!= .unattributed` half
+# blocked naming an unidentified voice while the row's own copy told the user to
+# do exactly that, so fixing the bug failed the suite. Only `!isOwner` was ever
+# the contract the comment describes. The behaviour now has real execution
+# coverage in ModelsContract.swift; this line just keeps the owner guard present.
+/usr/bin/grep -q '!isOwner' "$ROOT/Sources/Models.swift"
 # Phrases are the primary evidence in a row — a score cannot identify anyone.
 /usr/bin/grep -q 'voice.phrases' "$ROOT/Sources/Views.swift"
 
