@@ -1275,6 +1275,20 @@ private struct VoiceRow: View {
             .prefix(4).map { $0 }
     }
 
+    /// The typed name, when it matches no existing profile.
+    ///
+    /// Without this a voice could only ever be named after someone ALREADY
+    /// enrolled — type a new person's name and nothing appears to click, which
+    /// is indistinguishable from the UI being broken. Offered as an explicit
+    /// row rather than an implicit Return, because it creates a new label in
+    /// the meeting and a typo becomes a phantom attendee.
+    private var typedNewName: String? {
+        let name = typed.trimmingCharacters(in: .whitespaces)
+        guard name.count >= 2, name != voice.label else { return nil }
+        let exists = model.voiceProfiles.contains { $0.name.lowercased() == name.lowercased() }
+        return exists ? nil : name
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -1410,6 +1424,25 @@ private struct VoiceRow: View {
                         .padding(.horizontal, 6).padding(.vertical, 3)
                         .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 5))
                     }
+                    if let newName = typedNewName {
+                        Button {
+                            model.previewRename(from: voice.label, to: newName,
+                                                scope: model.correctionScope,
+                                                isNameAssignment: voice.isNameAssignment)
+                        } label: {
+                            HStack {
+                                Text("Use \u{201C}\(newName)\u{201D}").font(.system(size: 12))
+                                Spacer()
+                                Text("new name")
+                                    .font(.system(size: 9.5, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.mergeInFlight)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 5))
+                    }
                     Button("Cancel") { model.namingVoice = nil; typed = "" }
                         .font(.system(size: 11)).buttonStyle(.plain).foregroundStyle(.secondary)
                 } else {
@@ -1429,6 +1462,19 @@ private struct VoiceRow: View {
                         }
                         .font(.system(size: 11))
                         .controlSize(.small)
+
+                        // The row's own name, when the floor withheld it. Miles
+                        // typed "Queen Ukaoma" into a list that excluded Queen
+                        // Ukaoma — the candidate IS the row's label, so a rename
+                        // could never express "yes, that really is her".
+                        if voice.canConfirmCandidate {
+                            Button("Yes, this is \(voice.label)") {
+                                model.confirmVoice(voice.label)
+                            }
+                            .font(.system(size: 11))
+                            .controlSize(.small)
+                            .disabled(model.mergeInFlight)
+                        }
 
                         // The inverse of naming an unknown voice, which the panel
                         // had no way to express. Miles: none of the attributed

@@ -127,8 +127,69 @@ struct ModelsContract {
                                 source: "Granola")?.countsSummary == "Granola")
     }
 
+    private static func confirmableVoice(
+        label: String, reliability: String, asserted: Bool,
+        isOwner: Bool = false, confirmed: Bool = false
+    ) -> ReviewVoice? {
+        ReviewVoice(.object([
+            "label": .string(label),
+            "segments": .number(1),
+            "isOwner": .bool(isOwner),
+            "reliability": .string(reliability),
+            "nameAsserted": .bool(asserted),
+            "confirmedByHuman": .bool(confirmed),
+            "assertionBlockers": .array([.string("similarity 0.56 below 0.65")]),
+            "thrashesWith": .array([]),
+            "phrases": .array([]),
+        ]))
+    }
+
+    /// Who can have their own candidate name vouched for.
+    ///
+    /// The case that prompted this: a row displaying "Unidentified voice" whose
+    /// LABEL is already "Queen Ukaoma" at 0.56. A rename cannot express it
+    /// (from == to is rejected server-side) and the match list excluded the
+    /// name, so the panel offered no way forward at all.
+    private static func checkConfirmEligibility() {
+        precondition(confirmableVoice(label: "Queen Ukaoma", reliability: "weak", asserted: false)?
+            .canConfirmCandidate == true, "a demoted candidate must be confirmable")
+        precondition(confirmableVoice(label: "Luke Henry", reliability: "unreliable", asserted: false)?
+            .canConfirmCandidate == true, "an unreliable candidate must be confirmable")
+
+        // Nothing to confirm: no candidate was ever proposed.
+        precondition(confirmableVoice(label: "Ext", reliability: "unattributed", asserted: false)?
+            .canConfirmCandidate == false, "an unattributed row has no candidate")
+        // Already asserted — confirming adds nothing.
+        precondition(confirmableVoice(label: "Gina Obert", reliability: "confident", asserted: true)?
+            .canConfirmCandidate == false, "an asserted name needs no confirmation")
+        // The wearer is established by the device, not by vouching.
+        precondition(confirmableVoice(label: "MU", reliability: "weak", asserted: false, isOwner: true)?
+            .canConfirmCandidate == false, "the owner is never confirmed this way")
+        // Idempotent: the button disappears once it has been used.
+        precondition(confirmableVoice(label: "Queen Ukaoma", reliability: "weak", asserted: true, confirmed: true)?
+            .canConfirmCandidate == false, "an already-confirmed row stops offering it")
+        // Defensive, and the only case that actually exercises the confirmed
+        // term: a server reporting confirmed WITHOUT asserting would be a bug,
+        // and re-offering the action would append a second identical row to an
+        // append-only ledger. The mutation that removes `!confirmedByHuman`
+        // passes without this, because `!nameAsserted` short-circuits above.
+        precondition(confirmableVoice(label: "Queen Ukaoma", reliability: "weak", asserted: false, confirmed: true)?
+            .canConfirmCandidate == false, "confirmed never re-offers, even if the server did not assert")
+
+        // Old server: the flag is absent, which must read as not-confirmed
+        // rather than crashing or defaulting to true.
+        let legacy = ReviewVoice(.object([
+            "label": .string("Queen Ukaoma"), "segments": .number(1), "isOwner": .bool(false),
+            "reliability": .string("weak"), "nameAsserted": .bool(false),
+            "assertionBlockers": .array([]), "thrashesWith": .array([]), "phrases": .array([]),
+        ]))
+        precondition(legacy?.confirmedByHuman == false, "absent flag reads as not confirmed")
+        precondition(legacy?.canConfirmCandidate == true, "an old server still offers the action")
+    }
+
     static func main() throws {
         checkRenameEligibility()
+        checkConfirmEligibility()
         checkMeetingRowFields()
         checkCountsSummary()
 

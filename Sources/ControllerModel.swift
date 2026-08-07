@@ -802,6 +802,31 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    /// Vouch for a label the display floor demoted.
+    ///
+    /// No preview step, unlike rename and de-attribution. Those rewrite files;
+    /// this rewrites nothing — the sidecar already carries the label, and the
+    /// confirmation only records that a human stands behind it. A confirm
+    /// dialog for a no-op edit trains people to click through the ones that
+    /// matter.
+    func confirmVoice(_ label: String) {
+        guard let session = openReview?.sessionId else { return }
+        mergeInFlight = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { mergeInFlight = false }
+            do {
+                _ = try await helper.run(["meeting-confirm", "--session", session, "--label", label])
+                reviewError = nil
+                // Re-fetch so the row re-renders as asserted from the SERVER's
+                // view rather than a local guess about what the confirmation did.
+                await fetchReview(sessionId: session)
+            } catch {
+                reviewError = "Could not confirm that name: \(error.localizedDescription)"
+            }
+        }
+    }
+
     /// Ask what removing a false attribution would do.
     ///
     /// Always per-meeting: "this person was not in THIS room" says nothing about

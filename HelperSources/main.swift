@@ -391,6 +391,7 @@ final class COSControlHelper {
         case "voice-merge": try emitVoiceMerge(args: args)
         case "meeting-relabel": try emitMeetingRelabel(args: args)
         case "meeting-deattribute": try emitMeetingDeattribute(args: args)
+        case "meeting-confirm": try emitMeetingConfirm(args: args)
         case "review-audio": try emitReviewAudio(args: args)
         case "review-audio-list": try emitReviewAudioList(args: args)
         case "fetch-media": try emitFetchedMedia(args: args)
@@ -4515,6 +4516,36 @@ final class COSControlHelper {
             confirmed: args.contains("--confirm"),
             appliedMessage: "Voice removed from this meeting"
         )
+    }
+
+    /// Vouch for a label the display floor demoted.
+    ///
+    /// Deliberately NOT routed through emitMeetingCorrection: that helper is
+    /// built around the two-step dryRun/confirm contract every DESTRUCTIVE
+    /// correction uses. A confirmation rewrites nothing — no chunk changes, no
+    /// attendee bullet moves, no training sample is retracted — so a preview
+    /// step would be theatre, and modelling it as one would imply a blast
+    /// radius it does not have.
+    private func emitMeetingConfirm(args: [String]) throws {
+        guard let session = option("--session", in: args), validSessionID(session),
+              let label = option("--label", in: args), !label.isEmpty else {
+            throw HelperError.message("--session and --label are required")
+        }
+        let json = String(
+            data: try JSONSerialization.data(withJSONObject: ["label": label]),
+            encoding: .utf8
+        ) ?? "{}"
+        let body = try speakerReviewBody(
+            "/api/meeting/\(escapedSessionID(session))/confirm",
+            method: "POST",
+            body: json
+        )
+        let segments = body["segments"] as? Int ?? 0
+        emit(ok: true, message: "Confirmed \(label) for this meeting", details: [
+            "state": "confirmed",
+            "label": label,
+            "segments": segments,
+        ])
     }
 
     private func emitMeetingCorrection(

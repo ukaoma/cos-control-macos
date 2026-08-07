@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.4 (build 41)
+
+- **You can now finish naming a voice.** Typing a name and picking a scope had
+  no Save — the commit action was clicking a suggested profile, and in the most
+  common case no suggestion could ever appear. Two dead ends are closed:
+  - **"Yes, this is <name>"** on a row the system demoted. When the identifier
+    proposes a name it is not confident enough to show, that name IS the row's
+    label, so renaming it to itself is impossible. This vouches for it instead
+    and rewrites nothing.
+  - **"Use '<name>'"** when what you typed is not an enrolled profile. Before,
+    a voice could only be named after someone already enrolled, so a new person
+    could not be named at all.
+- A confirmed voice keeps its caveats. If it swaps with another speaker, the
+  panel still says so — the name is asserted, the evidence is not hidden.
+
+Requires server 6.21.25 for the confirm action. Older servers keep working and
+simply never show it.
+
 ## 0.5.3 (build 40)
 
 - **The meeting list shows 15 and scrolls.** It showed 12 before — and asking

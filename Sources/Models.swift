@@ -524,6 +524,9 @@ struct ReviewVoice: Identifiable, Sendable, Hashable {
     /// hiding it, because "2 segments" and "similarity 0.58" call for different
     /// judgements.
     let assertionBlockers: [String]
+    /// A human vouched for this label in this meeting, so the floor is waived.
+    /// Server 6.21.25+; absent on older servers, which simply never confirm.
+    let confirmedByHuman: Bool
     let thrashesWith: [SpeakerThrashPair]
     let phrases: [SpeakerPhrase]
 
@@ -547,6 +550,14 @@ struct ReviewVoice: Identifiable, Sendable, Hashable {
     /// wrong one. Worth distinguishing on the button, because "Actually someone
     /// else" reads as fixing a mistake the system made.
     var isNameAssignment: Bool { reliability == .unattributed }
+    /// Can this row's OWN label be vouched for?
+    ///
+    /// Only when the identifier proposed a name that the floor then withheld.
+    /// An unattributed row has no candidate to confirm, the owner needs none,
+    /// and a row already asserted has nothing to add.
+    var canConfirmCandidate: Bool {
+        !isOwner && !nameAsserted && reliability != .unattributed && !confirmedByHuman
+    }
     /// A voice that was never in the room can be removed. Only meaningful where
     /// a name was actually applied — there is nothing to take back otherwise.
     var canDeattribute: Bool { reliability != .unattributed }
@@ -563,6 +574,7 @@ struct ReviewVoice: Identifiable, Sendable, Hashable {
         // name; the floor is then simply not enforced until the server ships it.
         nameAsserted = o["nameAsserted"]?.bool ?? true
         assertionBlockers = (o["assertionBlockers"]?.array ?? []).compactMap { $0.string }
+        confirmedByHuman = o["confirmedByHuman"]?.bool ?? false
         thrashesWith = (o["thrashesWith"]?.array ?? []).compactMap(SpeakerThrashPair.init)
         phrases = (o["phrases"]?.array ?? []).compactMap(SpeakerPhrase.init)
     }
