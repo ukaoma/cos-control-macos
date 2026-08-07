@@ -187,11 +187,39 @@ struct ModelsContract {
         precondition(legacy?.canConfirmCandidate == true, "an old server still offers the action")
     }
 
+    /// A review payload, optionally carrying the 6.21.26+ coverage field.
+    private static func review(assertedSegments: Int?) -> SpeakerReview? {
+        var o: [String: JSONValue] = [
+            "sessionId": .string("meeting_1786109145248_0i1xv3"),
+            "title": .string("International TEFL Engagement Scoping"),
+            "segments": .number(379),
+            "attributed": .bool(true),
+            "durationMs": .number(1_800_000),
+            "voices": .array([]),
+            "timeline": .array([]),
+        ]
+        if let a = assertedSegments { o["assertedSegments"] = .number(Double(a)) }
+        return SpeakerReview(.object(o))
+    }
+
+    /// An older server omits `assertedSegments`. It must read as UNKNOWN, never
+    /// as zero: the house `?? 0` would render "0 of 379 segments named" on a
+    /// perfectly well-attributed meeting — a confident false statement, and the
+    /// same class as the 404-means-audio-expired bug guarded in run.sh.
+    private static func checkAssertedSegmentsBackCompat() {
+        precondition(review(assertedSegments: 177)?.assertedSegments == 177, "present value decodes")
+        precondition(review(assertedSegments: 0)?.assertedSegments == 0, "a real zero survives")
+        precondition(review(assertedSegments: nil)?.assertedSegments == nil, "absent must be nil, NOT 0")
+        // The rest of the struct still decodes when the field is missing.
+        precondition(review(assertedSegments: nil)?.segments == 379, "old server still usable")
+    }
+
     static func main() throws {
         checkRenameEligibility()
         checkConfirmEligibility()
         checkMeetingRowFields()
         checkCountsSummary()
+        checkAssertedSegmentsBackCompat()
 
         precondition(GlassesAttachmentRef(object: attachment("a", timestamp: "2026-08-03T12:00:00.000Z")) != nil)
         precondition(GlassesAttachmentRef(object: attachment("b", timestamp: "2026-08-03T12:00:00.123Z")) != nil)

@@ -202,6 +202,14 @@ done
 /usr/bin/grep -q 'nameAsserted = o\["nameAsserted"\]' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'voice.displayName' "$ROOT/Sources/Views.swift"
 
+# Meeting-level coverage decodes with NO `?? 0`. A count has no safe scalar
+# default: an older server omits the field entirely, and defaulting to zero
+# would report "0 of 379 segments named" on a well-attributed meeting — the same
+# confident-false-statement class as the 404-means-audio-expired guard above.
+# nil means unknown and the header omits the line, so pin decode AND render.
+/usr/bin/grep -q 'assertedSegments = o\["assertedSegments"\]?.int$' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'let asserted = review.assertedSegments' "$ROOT/Sources/Views.swift"
+
 # The ribbon is a TIMELINE. It previously drew one rect per voice sized by share
 # of segments while calling itself "who spoke, in order", so hover had nothing
 # true to report. It must read the server's spans.

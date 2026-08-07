@@ -623,6 +623,16 @@ struct SpeakerReview: Sendable {
     let title: String
     let segments: Int
     let attributed: Bool
+    /// Segments belonging to voices the server asserts a NAME for.
+    ///
+    /// Server 6.21.26+; absent on older servers. OPTIONAL ON PURPOSE — the house
+    /// `?? 0` here would render "0 of 379 identified" for a perfectly
+    /// well-attributed meeting served by an older build: a confident false
+    /// statement of exactly the kind this panel exists to stop making, and the
+    /// same class as the 404-means-audio-expired bug Tests/run.sh already
+    /// guards. There is no safe scalar default for a count, so nil means "this
+    /// server does not report it" and the view omits the line.
+    let assertedSegments: Int?
     let durationMs: Int
     let voices: [ReviewVoice]
     let timeline: [SpeakerTimelineSpan]
@@ -633,6 +643,7 @@ struct SpeakerReview: Sendable {
         title = o["title"]?.string ?? "Untitled meeting"
         segments = o["segments"]?.int ?? 0
         attributed = o["attributed"]?.bool ?? false
+        assertedSegments = o["assertedSegments"]?.int
         durationMs = o["durationMs"]?.int ?? 0
         voices = (o["voices"]?.array ?? []).compactMap(ReviewVoice.init)
         timeline = (o["timeline"]?.array ?? []).enumerated().compactMap { SpeakerTimelineSpan($1, index: $0) }

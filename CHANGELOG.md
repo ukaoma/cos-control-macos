@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.5 (build 42)
+
+- **The speaker sheet now says how much of the meeting carries a name.** The
+  header showed only "N segments · M voices", and the server's only coverage
+  signal was a boolean that goes false at 100% unidentified — so a meeting where
+  295 of 299 chunks matched nobody rendered as though it were normally
+  attributed. Measured across 14 retained sessions, unidentified share ran from
+  24% to 100%, all of it collapsing onto that one boolean.
+- The number counts segments whose voice row is actually shown with a name, not
+  chunks carrying a person-shaped label. Those diverge: on one real session the
+  label count is 287 of 379 while only 177 are displayed as names, so a header
+  built on labels would claim high coverage above rows reading "Unidentified
+  voice".
+- Requires glasses-server 6.21.26+. Against an older server the line is omitted
+  rather than shown as zero.
+
 ## 0.5.4 (build 41)
 
 - **You can now finish naming a voice.** Typing a name and picking a scope had

@@ -1529,6 +1529,17 @@ struct SpeakerReviewPane: View {
                         Text("\(review.segments) segments · \(review.voices.count) voices")
                             .font(.system(size: 10.5, design: .monospaced))
                             .foregroundStyle(.secondary)
+                        // How much of the meeting carries a name the rows below
+                        // will actually show. Three gates, all deliberate: nil
+                        // means an older server that does not report this (never
+                        // render it as 0); `segments > 0` avoids a meaningless
+                        // "0 of 0"; and `attributed` false is skipped because the
+                        // block further down already says it at length.
+                        if let asserted = review.assertedSegments, review.segments > 0, review.attributed {
+                            Text("\(asserted) of \(review.segments) segments named")
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(asserted * 2 < review.segments ? .orange : .secondary)
+                        }
                     }
                 }
                 Spacer()
