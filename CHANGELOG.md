@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.11 (build 49)
+
+- **Adaptive audio cleanup is visible and reversible.** Server 6.21.32 adds a
+  default-off, retained-playback-only canary. Control exposes one plain toggle,
+  reports `Adaptive replay` versus `Raw replay`, and transactionally restarts
+  the managed or adopted LaunchAgent with an explicit `1` or `0`.
+- **Activation proves the real server contract.** Apply succeeds only when
+  health reports the selected value, `retained_replay_only` scope, and raw WAV
+  preservation. A failed activation restores and verifies the prior server.
+- **The label states the boundary.** Cleanup runs only after a reviewer presses
+  Play. It does not enter live preview, canonical transcription, speaker
+  attribution, save, HQ polish, or meeting sync. Off immediately restores raw
+  replay after the normal safe restart.
+
+  Requires glasses-server 6.21.32. The previously shipped 0.5.10 binary remains
+  build 48; this different binary is build 49 so the updater never confuses the
+  two artifacts.
+
 ## 0.5.10 (build 48)
 
 - **The Meetings Library picker no longer requires you to be Miles.** The

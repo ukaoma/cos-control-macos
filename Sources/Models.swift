@@ -75,6 +75,8 @@ struct ServerStatus: Sendable {
     var idleMetalHqSupported = false
     var idleMetalHqEnabled: Bool?
     var idleMetalHqForceCpu: Bool?
+    var adaptiveAudioCleanupSupported = false
+    var adaptiveAudioCleanupEnabled: Bool?
     var whisperReady = false
     var whisperCircuitOpen = false
     var whisperStartupState: String?
@@ -166,6 +168,8 @@ struct ServerStatus: Sendable {
         idleMetalHqSupported = details["idleMetalHqSupported"]?.bool ?? false
         idleMetalHqEnabled = details["idleMetalHqEnabled"]?.bool
         idleMetalHqForceCpu = details["idleMetalHqForceCpu"]?.bool
+        adaptiveAudioCleanupSupported = details["adaptiveAudioCleanupSupported"]?.bool ?? false
+        adaptiveAudioCleanupEnabled = details["adaptiveAudioCleanupEnabled"]?.bool
         whisperReady = details["whisperReady"]?.bool ?? false
         whisperCircuitOpen = details["whisperCircuitOpen"]?.bool ?? false
         whisperStartupState = details["whisperStartupState"]?.string

@@ -290,6 +290,7 @@ final class COSControlHelper {
         "COS_MEETING_PROGRESSIVE_HQ_THREADS",
         "COS_BATCH_HQ_METAL",
         "COS_BATCH_HQ_FORCE_CPU",
+        "COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK",
     ]
 
     private lazy var support = home.appendingPathComponent("Library/Application Support/COS Control", isDirectory: true)
@@ -380,6 +381,10 @@ final class COSControlHelper {
         case "set-idle-metal-hq": try withMutationLock {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing idle Metal HQ setting") }
             try setIdleMetalHq(value)
+        }
+        case "set-adaptive-audio-cleanup": try withMutationLock {
+            guard let value = args.dropFirst().first else { throw HelperError.message("missing adaptive audio cleanup setting") }
+            try setAdaptiveAudioCleanup(value)
         }
         case "token": try copyPairingToken()
         case "expire-clipboard": try expireClipboard(args: args)
@@ -1938,6 +1943,13 @@ final class COSControlHelper {
         let idleMetalHqEnabled = idleMetalHqSupported
             ? (activeIdleMetalHq == "1" && activeIdleMetalHqForceCpu != "1")
             : nil
+        let adaptiveAudioCleanupSupported = reportedVersion.map { versionAtLeast($0, "6.21.32") } == true
+        let adaptivePlayback = (health?["review_audio"] as? [String: Any])?["adaptivePlayback"] as? [String: Any]
+        let configuredAdaptiveAudioCleanup = manifest?.providerEnvironment?["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"]
+            ?? (launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String])?["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"]
+        let adaptiveAudioCleanupEnabled = adaptiveAudioCleanupSupported
+            ? ((adaptivePlayback?["enabled"] as? Bool) ?? (configuredAdaptiveAudioCleanup == "1"))
+            : nil
         var details: [String: Any] = [
             "installed": manifest != nil,
             "serviceLoaded": snapshot.serviceLoaded,
@@ -1973,6 +1985,8 @@ final class COSControlHelper {
             "idleMetalHqSupported": idleMetalHqSupported,
             "idleMetalHqEnabled": idleMetalHqEnabled ?? NSNull(),
             "idleMetalHqForceCpu": idleMetalHqForceCpu ?? NSNull(),
+            "adaptiveAudioCleanupSupported": adaptiveAudioCleanupSupported,
+            "adaptiveAudioCleanupEnabled": adaptiveAudioCleanupEnabled ?? NSNull(),
             "whisperReady": ((health?["whisper_health"] as? [String: Any])?["server"] as? Bool) ?? false,
             "whisperCircuitOpen": ((health?["whisper_health"] as? [String: Any])?["circuitOpen"] as? Bool) ?? false,
             "whisperStartupState": (health?["whisper_health"] as? [String: Any])?["startupState"] ?? NSNull(),
@@ -3287,6 +3301,48 @@ final class COSControlHelper {
         }
     }
 
+    private func adaptiveAudioCleanupEnvironment(_ raw: String) throws -> [String: String] {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "on": return ["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK": "1"]
+        case "off": return ["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK": "0"]
+        default: throw HelperError.message("Unknown adaptive audio cleanup setting. Choose On or Off.")
+        }
+    }
+
+    private func setAdaptiveAudioCleanup(_ raw: String) throws {
+        let values = try adaptiveAudioCleanupEnvironment(raw)
+        let enabled = values["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"] == "1"
+        let health = request("/api/health", timeout: 12)?.body
+        let runningVersion = health?["server_version"] as? String
+        let stoppedCompatibleManagedServer = loadManifest().map {
+            $0.desiredState == "stopped" && versionAtLeast($0.version, "6.21.32")
+        } ?? false
+        guard runningVersion.map({ versionAtLeast($0, "6.21.32") }) == true || stoppedCompatibleManagedServer else {
+            throw HelperError.message("Update the managed server to 6.21.32 or newer before changing Adaptive audio cleanup.")
+        }
+        let operationLabel = enabled ? "Adaptive audio cleanup" : "Adaptive audio cleanup off"
+        if let manifest = loadManifest() {
+            try applyManagedProviderEnvironment(values, current: manifest, operationLabel: operationLabel)
+            return
+        }
+        guard inPlaceActive() else {
+            throw HelperError.message("Install the managed server or choose Manage in place first.")
+        }
+        try applyInPlaceProviderEnvironment(values, operationLabel: operationLabel)
+    }
+
+    private func requireAdaptiveAudioCleanup(_ raw: String) throws {
+        let expected = raw == "1"
+        let health = request("/api/health", timeout: 12)?.body
+        let adaptive = (health?["review_audio"] as? [String: Any])?["adaptivePlayback"] as? [String: Any]
+        guard adaptive?["enabled"] as? Bool == expected,
+              adaptive?["rawPreserved"] as? Bool == true,
+              adaptive?["liveRecordingProtected"] as? Bool == true,
+              adaptive?["mode"] as? String == "retained_replay_only" else {
+            throw HelperError.message("the restarted server did not report Adaptive audio cleanup as \(expected ? "enabled" : "disabled") with raw preservation")
+        }
+    }
+
     /// Verify the persisted policy after restart and return the model tier that
     /// is actually active. Max may truthfully degrade to Balanced when the
     /// Large-v3 weights are unavailable; callers must surface that fallback
@@ -3519,6 +3575,9 @@ final class COSControlHelper {
                 if let idleMetalHq = values["COS_BATCH_HQ_METAL"] {
                     try requireIdleMetalHq(enabled: idleMetalHq == "1")
                 }
+                if let adaptiveAudioCleanup = values["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"] {
+                    try requireAdaptiveAudioCleanup(adaptiveAudioCleanup)
+                }
                 try requireMaintenanceRelease(activeLease)
             }
             clearTransaction()
@@ -3603,6 +3662,9 @@ final class COSControlHelper {
             if alreadyActive, let idleMetalHq = values["COS_BATCH_HQ_METAL"] {
                 try requireIdleMetalHq(enabled: idleMetalHq == "1")
             }
+            if alreadyActive, let adaptiveAudioCleanup = values["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"] {
+                try requireAdaptiveAudioCleanup(adaptiveAudioCleanup)
+            }
             let message: String
             if alreadyActive, values["COS_WHISPER_TRANSCRIPTION_TIER"] == "max", effectiveTier == "balanced" {
                 message = "Max transcription is saved; running Balanced fallback because Large-v3 is unavailable"
@@ -3661,6 +3723,9 @@ final class COSControlHelper {
             }
             if let idleMetalHq = values["COS_BATCH_HQ_METAL"] {
                 try requireIdleMetalHq(enabled: idleMetalHq == "1")
+            }
+            if let adaptiveAudioCleanup = values["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"] {
+                try requireAdaptiveAudioCleanup(adaptiveAudioCleanup)
             }
             try requireMaintenanceRelease(activeLease)
             clearInPlaceConfigurationTransaction()
@@ -5080,6 +5145,7 @@ final class COSControlHelper {
                 "COS_WHISPER_MEETING_PREVIEW": "1",
                 "COS_BATCH_HQ_METAL": "1",
                 "COS_BATCH_HQ_FORCE_CPU": "0",
+                "COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK": "1",
                 "COS_API_TOKEN": "must-not-survive",
             ],
             retainedGenerations: [],
@@ -5095,6 +5161,7 @@ final class COSControlHelper {
                 && filtered["COS_WHISPER_MEETING_PREVIEW"] == "1"
                 && filtered["COS_BATCH_HQ_METAL"] == "1"
                 && filtered["COS_BATCH_HQ_FORCE_CPU"] == "0"
+                && filtered["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"] == "1"
                 && filtered["COS_API_TOKEN"] == nil,
             "provider allowlist"
         )
@@ -5109,6 +5176,13 @@ final class COSControlHelper {
             idleMetalOff["COS_BATCH_HQ_METAL"] == "0"
                 && idleMetalOff["COS_BATCH_HQ_FORCE_CPU"] == "1",
             "Idle Metal HQ disable forces CPU"
+        )
+        let adaptiveAudioOn = try adaptiveAudioCleanupEnvironment("ON")
+        let adaptiveAudioOff = try adaptiveAudioCleanupEnvironment("off")
+        try expect(
+            adaptiveAudioOn["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"] == "1"
+                && adaptiveAudioOff["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"] == "0",
+            "Adaptive audio cleanup maps to an explicit reversible value"
         )
         let balancedTier = try transcriptionTierEnvironment("balanced")
         let maxTier = try transcriptionTierEnvironment("MAX")

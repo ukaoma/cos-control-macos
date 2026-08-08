@@ -55,6 +55,10 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
 /usr/bin/grep -q 'COS_BATCH_HQ_FORCE_CPU' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'requireIdleMetalHq' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'Idle Metal HQ' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'case "set-adaptive-audio-cleanup"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'requireAdaptiveAudioCleanup' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'Adaptive audio cleanup' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'stoppedCompatibleManagedServer' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'configuredRequestedTier' "$ROOT/HelperSources/main.swift"
 /usr/bin/python3 - "$ROOT" <<'PY'
