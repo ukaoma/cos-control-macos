@@ -71,6 +71,14 @@ final class ControllerModel: ObservableObject {
     @Published var reviewableMeetings: [ReviewableMeeting] = []
     @Published var meetingsLoading = false
     @Published var openReview: SpeakerReview?
+    /// The readable meeting beside the speaker rows. nil when the server is
+    /// older than 6.21.28 or the fetch failed — the review still renders.
+    @Published var openContent: MeetingContent?
+    @Published var copyNote: String?
+    /// Why the write-up is absent: "route_absent" (server too old) or an error
+    /// string. nil when content loaded. Previously a 404 and a real failure both
+    /// rendered as silence, with no way to tell the user to update the server.
+    @Published var contentUnavailable: String?
     @Published var reviewLoading = false
     @Published var reviewError: String?
     @Published var voiceProfiles: [VoiceProfileOption] = []
@@ -719,6 +727,10 @@ final class ControllerModel: ObservableObject {
     private func fetchReview(sessionId: String) async {
         reviewLoading = true
         reviewError = nil
+        // A relabel refetches; the old confirmation would otherwise keep asserting
+        // a clipboard that no longer matches the panel.
+        copyNote = nil
+        contentUnavailable = nil
         defer { reviewLoading = false }
         do {
             let response = try await helper.run(["meeting-speakers", "--session", sessionId])
@@ -729,9 +741,40 @@ final class ControllerModel: ObservableObject {
             openReview = review
             if voiceProfiles.isEmpty { await loadVoiceProfiles() }
             await loadRetainedAudio(sessionId: sessionId)
+            // Non-fatal on purpose: the review is the primary answer, and an
+            // older server has no /content route. A failure here must not blank
+            // the speaker rows that already loaded.
+            await loadMeetingContent(sessionId: sessionId)
         } catch {
             reviewError = error.localizedDescription
         }
+    }
+
+    private func loadMeetingContent(sessionId: String) async {
+        do {
+            let response = try await helper.run(["meeting-content", "--session", sessionId])
+            if let reason = response.details["unavailable"]?.string {
+                openContent = nil
+                contentUnavailable = reason
+                return
+            }
+            openContent = MeetingContent(response.details["content"])
+            contentUnavailable = openContent == nil ? "error" : nil
+        } catch {
+            openContent = nil
+            contentUnavailable = "error"
+        }
+    }
+
+    /// Put one of the server-built forms on the clipboard.
+    func copyMeeting(full: Bool) {
+        guard let c = openContent else { return }
+        let text = full ? c.clipboardFull : c.clipboardSummary
+        guard !text.isEmpty else { copyNote = "Nothing to copy"; return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        let kb = max(1, (full ? c.fullChars : c.summaryChars) / 1024)
+        copyNote = full ? "Copied full meeting (\(kb) KB)" : "Copied summary (\(kb) KB)"
     }
 
     func retryOpenReview() {
@@ -754,6 +797,9 @@ final class ControllerModel: ObservableObject {
         pendingCorrection = nil
         reviewError = nil
         lastReviewSession = nil
+        openContent = nil
+        copyNote = nil
+        contentUnavailable = nil
     }
 
     func loadVoiceProfiles() async {

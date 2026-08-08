@@ -704,6 +704,110 @@ struct SpeakerReview: Sendable {
     }
 }
 
+/// The readable meeting behind a speaker review, plus its clipboard forms.
+///
+/// The clipboard strings are built SERVER-SIDE and passed through untouched.
+/// They apply the display floor to the attendee block — the scribe's own
+/// `## Attendees` does not, and on one real 26-minute meeting lists 15 people
+/// including a name already confirmed absent. Re-deriving them here would put
+/// that formatting somewhere with no execution tests.
+struct MeetingContent: Sendable {
+    let sessionId: String
+    let title: String
+    let date: String
+    let durationMin: Int
+    /// False when the meeting has no scribe markdown on disk. The speaker rows
+    /// still render — who spoke is worth having without the write-up.
+    let scribeAvailable: Bool
+    let summary: String
+    let topics: String
+    let decisions: String
+    let actions: String
+    let transcriptChars: Int
+    /// Sizes of the ACTUAL strings, from the server. The button label and the
+    /// copy confirmation previously quoted two different numbers for one click
+    /// (transcriptChars vs clipboardFull.count) and disagreed on 81% of meetings.
+    let summaryChars: Int
+    let fullChars: Int
+    /// Identified share of voiced time, or nil when unknown.
+    let coverage: Double?
+    /// Whether the server reported per-voice shares. False below its floor.
+    let sharesReported: Bool
+    /// Sections the parser did not recognise, carried rather than discarded.
+    let extras: [(String, String)]
+    let clipboardSummary: String
+    let clipboardFull: String
+
+    /// Sections with content, in reading order. Empty ones are dropped rather
+    /// than rendered as bare headings.
+    var sections: [(String, String)] {
+        ([("Summary", summary), ("Topics", topics),
+          ("Decisions", decisions), ("Action items", actions)] + extras)
+            .filter { !$0.1.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    /// What to tell the user when there is no write-up.
+    ///
+    /// A pure function on purpose. The previous guard for this was a `grep` for
+    /// "route_absent", which a mutation defeated by leaving the string in place
+    /// while changing the assignment — source-shape greps cannot see behaviour.
+    /// nil means render nothing (content loaded, or genuinely no scribe).
+    static func unavailableMessage(_ reason: String?) -> String? {
+        switch reason {
+        case nil: return nil
+        case "route_absent":
+            return "The meeting write-up needs glasses-server 6.21.28 or newer. Use Update Server in Settings."
+        default:
+            return "The meeting write-up could not be loaded."
+        }
+    }
+
+    /// Body text with markdown markers softened for a 390pt popover.
+    ///
+    /// `Text(_: String)` binds the StringProtocol overload and does NOT parse
+    /// markdown, so `###`, `- [ ]` and `**` rendered literally. The clipboard
+    /// still gets the real markdown — a model wants the structure — so this
+    /// transform is display-only.
+    static func panelText(_ body: String) -> String {
+        body.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+            var s = String(line)
+            if let m = s.range(of: "^#{1,6}\\s+", options: .regularExpression) {
+                s = String(s[m.upperBound...]).uppercased()
+            }
+            s = s.replacingOccurrences(of: "- [ ] ", with: "• ")
+            s = s.replacingOccurrences(of: "- [x] ", with: "✓ ")
+            s = s.replacingOccurrences(of: "**", with: "")
+            return s
+        }.joined(separator: "\n")
+    }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let sessionId = o["sessionId"]?.string else { return nil }
+        self.sessionId = sessionId
+        title = o["title"]?.string ?? "Untitled meeting"
+        date = o["date"]?.string ?? ""
+        durationMin = o["durationMin"]?.int ?? 0
+        scribeAvailable = o["scribeAvailable"]?.bool ?? false
+        summary = o["summary"]?.string ?? ""
+        topics = o["topics"]?.string ?? ""
+        decisions = o["decisions"]?.string ?? ""
+        actions = o["actions"]?.string ?? ""
+        transcriptChars = o["transcriptChars"]?.int ?? 0
+        summaryChars = o["summaryChars"]?.int ?? 0
+        fullChars = o["fullChars"]?.int ?? 0
+        coverage = o["coverage"]?.double
+        sharesReported = o["sharesReported"]?.bool ?? false
+        extras = (o["extras"]?.array ?? []).compactMap { item in
+            guard let e = item.object, let h = e["heading"]?.string,
+                  let b = e["body"]?.string, !b.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return nil }
+            return (h, b)
+        }
+        clipboardSummary = o["clipboardSummary"]?.string ?? ""
+        clipboardFull = o["clipboardFull"]?.string ?? ""
+    }
+}
+
 struct VoiceProfileOption: Identifiable, Sendable, Hashable {
     let name: String
     let embeddings: Int

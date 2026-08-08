@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.5.8 (build 45)
+
+- **The write-up now sits BELOW the voice rows.** Measured with AppKit at the
+  real 358pt content width, placing it above pushed the rows this sheet exists
+  for one to two full screens down on 7 of 8 of one day's meetings, worst case
+  5.3 screens.
+- **An older server is told so instead of hiding the feature.** A 404 from
+  `/content` is classified as "server too old" and names the version needed; any
+  other failure says it could not load. Previously both rendered as silence.
+- Markdown markers are softened for the popover, since `Text(_: String)` does not
+  parse markdown and rendered `###`, `- [ ]` and `**` literally.
+- Both copy labels are sized from the SAME string the server measured. The button
+  and the confirmation previously quoted different numbers on 81% of meetings.
+- Unrecognised scribe sections appear in the panel rather than being dropped.
+- The copy confirmation clears when the review reloads, so it can no longer
+  assert a clipboard that a relabel has invalidated.
+- Guards: the previous four pinned that code existed, and /qa proved two
+  feature-killing mutations kept the suite green. The message decision is now a
+  pure function covered by execution in ModelsContract, and the wiring greps are
+  anchored to line start so a commented-out call cannot satisfy them.
+- Requires glasses-server 6.21.28+.
+
+## 0.5.7 (build 44)
+
+- **Review the whole meeting, not just its voices.** The speaker sheet now shows
+  the write-up — summary, topics, decisions, action items — above the speaker
+  rows. Empty sections are omitted rather than rendered as bare headings, and a
+  meeting with no write-up on disk says so instead of leaving blank panel.
+- **Two copy buttons.** Summary for pasting into Slack or email; Full for pasting
+  the whole meeting including the transcript into a model. The button shows the
+  full size (measured 28 KB on a 26-minute meeting) so you know what you are
+  putting on the clipboard.
+- Both strings come from the server with the display floor already applied to
+  the attendee list. The scribe's own `## Attendees` applies none — one real
+  26-minute meeting lists 15 people, including a name already confirmed absent —
+  so copying it verbatim would carry a guess into whatever you paste it into.
+  Only named voices appear; the rest collapse into one honest line.
+- Requires glasses-server 6.21.28+. Older servers omit the write-up and the copy
+  buttons; the speaker rows are unaffected.
+
 ## 0.5.6 (build 43)
 
 - **Talk time per voice in the speaker sheet.** Minutes and share of voice

@@ -387,6 +387,7 @@ final class COSControlHelper {
         case "recent-messages": try emitRecentMessages(args: args)
         case "meetings": try emitMeetings(args: args)
         case "meeting-speakers": try emitMeetingSpeakers(args: args)
+        case "meeting-content": try emitMeetingContent(args: args)
         case "voice-profiles": try emitVoiceProfiles()
         case "voice-merge": try emitVoiceMerge(args: args)
         case "meeting-relabel": try emitMeetingRelabel(args: args)
@@ -4415,6 +4416,40 @@ final class COSControlHelper {
             "state": (body["attributed"] as? Bool) == true ? "attributed" : "unattributed",
             "review": body,
         ])
+    }
+
+    /// The readable meeting plus its two clipboard forms.
+    ///
+    /// Body passes through VERBATIM, like emitMeetingSpeakers and unlike
+    /// meetingRowProjection — that one is a key whitelist and would silently drop
+    /// any field the server adds later. Timeout is larger than the speaker
+    /// review's because the full clipboard string carries the transcript
+    /// (measured 28 KB on a 26-minute meeting).
+    private func emitMeetingContent(args: [String]) throws {
+        guard let session = option("--session", in: args), !session.isEmpty else {
+            throw HelperError.message("--session is required")
+        }
+        let escaped = session.addingPercentEncoding(
+            withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-_:"))
+        ) ?? session
+        // A 404 means the SERVER is older than 6.21.28 — a different situation
+        // from a real failure, and the GUI must say so rather than silently
+        // hiding the feature. Classified here, once, so Swift reads a structured
+        // field instead of sniffing an error string. Anything unrecognised falls
+        // through as a generic failure, which is still better than silence.
+        do {
+            let body = try speakerReviewBody("/api/meeting/\(escaped)/content", timeout: 30)
+            emit(ok: true, message: "Meeting content ready", details: [
+                "content": body,
+            ])
+        } catch let error {
+            let text = "\(error)"
+            let routeAbsent = text.contains("(404)")
+            emit(ok: true, message: routeAbsent ? "Meeting content unavailable" : "Meeting content failed", details: [
+                "unavailable": routeAbsent ? "route_absent" : "error",
+                "detail": text,
+            ])
+        }
     }
 
     /// Enrolled profiles, for the naming field's autocomplete.

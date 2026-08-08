@@ -210,6 +210,30 @@ done
 /usr/bin/grep -q 'assertedSegments = o\["assertedSegments"\]?.int$' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'let asserted = review.assertedSegments' "$ROOT/Sources/Views.swift"
 
+# The meeting write-up and its two clipboard forms. Both strings are built
+# SERVER-SIDE with the display floor applied to the attendee block — the scribe's
+# own `## Attendees` applies none and lists names already confirmed absent. Pin
+# that Control passes them through and never re-derives them here.
+/usr/bin/grep -q 'case "meeting-content"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'clipboardSummary = o\["clipboardSummary"\]' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'model.copyMeeting(full: true)' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'model.copyMeeting(full: false)' "$ROOT/Sources/Views.swift"
+
+# WIRING, not existence. /qa mutation-tested the previous four guards and found
+# two feature-killing mutations that kept the suite GREEN: no-op'ing the content
+# fetch (write-up and both buttons dead forever) and making Full copy the summary.
+# Source-shape greps cannot see behaviour, so pin the two exact call expressions.
+# ANCHORED to line start: an unanchored grep matched the string inside a
+# commented-out line, so a mutation that disabled the whole feature stayed green.
+/usr/bin/grep -qE '^[[:space:]]*await loadMeetingContent\(sessionId: sessionId\)' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'full ? c.clipboardFull : c.clipboardSummary' "$ROOT/Sources/ControllerModel.swift"
+# A 404 is "server too old", not a silent failure. The MESSAGE logic is covered by
+# execution in ModelsContract; this pins that the reason is actually assigned.
+/usr/bin/grep -qE '^[[:space:]]*contentUnavailable = reason$' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'MeetingContent.unavailableMessage(reason)' "$ROOT/Sources/Views.swift"
+# The clipboard must never quote a size the confirmation disagrees with.
+/usr/bin/grep -q 'content.fullChars / 1024' "$ROOT/Sources/Views.swift"
+
 # Talk time decodes with no `?? 0` (same no-safe-default rule as coverage), and
 # is rendered ONLY behind nameAsserted — showing minutes for a voice the panel
 # refuses to name would assert an identity by the back door.

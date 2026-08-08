@@ -276,6 +276,76 @@ struct ModelsContract {
                      "absent buckets must be nil coverage, NOT zero")
     }
 
+    /// The readable meeting: section selection, and the popover text transform.
+    ///
+    /// `MeetingContent` had ZERO execution coverage — the same gap SpeakerReview
+    /// had, which is why `checkAssertedSegmentsBackCompat` exists.
+    private static func checkMeetingContent() {
+        func content(_ extra: [JSONValue] = [], summary: String = "the summary",
+                     decisions: String = "   ") -> MeetingContent? {
+            MeetingContent(.object([
+                "sessionId": .string("meeting_x"),
+                "title": .string("A Meeting"),
+                "date": .string("2026-08-06"),
+                "durationMin": .number(26),
+                "scribeAvailable": .bool(true),
+                "summary": .string(summary),
+                "topics": .string(""),
+                "decisions": .string(decisions),
+                "actions": .string("### High Confidence\n- [ ] do the thing (**Gina**)"),
+                "transcriptChars": .number(26789),
+                "summaryChars": .number(2184),
+                "fullChars": .number(28925),
+                "coverage": .number(0.099),
+                "sharesReported": .bool(false),
+                "extras": .array(extra),
+                "clipboardSummary": .string("s"),
+                "clipboardFull": .string("f"),
+            ]))
+        }
+        let c = content()!
+        // Whitespace-only sections are dropped, not rendered as bare headings.
+        precondition(c.sections.map(\.0) == ["Summary", "Action items"], "empty sections dropped")
+        precondition(c.summaryChars == 2184 && c.fullChars == 28925, "both sizes decode")
+        precondition(c.sharesReported == false, "share suppression carried from the server")
+
+        // Unrecognised sections are carried, not discarded — v1 lost 116,820
+        // characters corpus-wide including Miles's own Granola write-up.
+        let withExtra = content([.object([
+            "heading": .string("Granola Structured Notes (canonical)"),
+            "body": .string("the canonical notes"),
+        ])])!
+        precondition(withExtra.sections.map(\.0).contains("Granola Structured Notes (canonical)"),
+                     "extras reach the panel")
+        // An empty-bodied extra is filtered at decode.
+        let emptyExtra = content([.object([
+            "heading": .string("Nothing"), "body": .string("   "),
+        ])])!
+        precondition(!emptyExtra.sections.map(\.0).contains("Nothing"), "blank extra dropped")
+
+        // Text(_: String) does not parse markdown, so the panel softens it.
+        let panel = MeetingContent.panelText(c.actions)
+        precondition(!panel.contains("###"), "heading markers softened")
+        precondition(!panel.contains("- [ ]"), "task box softened")
+        precondition(!panel.contains("**"), "bold markers softened")
+        precondition(panel.contains("HIGH CONFIDENCE"), "heading text survives, uppercased")
+        precondition(panel.contains("do the thing"), "content survives")
+
+        // Never silence: a 404 names the version, anything else names the failure.
+        precondition(MeetingContent.unavailableMessage(nil) == nil, "loaded content renders nothing")
+        precondition(MeetingContent.unavailableMessage("route_absent")?.contains("6.21.28") == true,
+                     "an old server is told which version it needs")
+        precondition(MeetingContent.unavailableMessage("error")?.contains("could not be loaded") == true,
+                     "a real failure is named, not hidden")
+        precondition(MeetingContent.unavailableMessage("something new") != nil,
+                     "an unrecognised reason still says something")
+
+        // An older server sends none of it; init? must still succeed.
+        let bare = MeetingContent(.object(["sessionId": .string("meeting_y")]))
+        precondition(bare != nil && bare?.scribeAvailable == false, "older server degrades")
+        precondition(bare?.sections.isEmpty == true, "no sections without bodies")
+    }
+
     static func main() throws {
         checkRenameEligibility()
         checkConfirmEligibility()
@@ -283,6 +353,7 @@ struct ModelsContract {
         checkCountsSummary()
         checkAssertedSegmentsBackCompat()
         checkSpeakingTime()
+        checkMeetingContent()
 
         precondition(GlassesAttachmentRef(object: attachment("a", timestamp: "2026-08-03T12:00:00.000Z")) != nil)
         precondition(GlassesAttachmentRef(object: attachment("b", timestamp: "2026-08-03T12:00:00.123Z")) != nil)

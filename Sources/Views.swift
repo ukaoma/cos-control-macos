@@ -1559,6 +1559,11 @@ struct SpeakerReviewPane: View {
                         // 17% of meetings name nobody — below the bar, a
                         // percentage invites reading the missing majority as a
                         // person. Say the coverage instead of drawing shares.
+                        if let note = model.copyNote {
+                            Text(note)
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(COSPalette.green)
+                        }
                         if let coverage = review.speakingCoverage, review.attributed {
                             Text(coverage < 0.6
                                  ? "only \(Int((coverage * 100).rounded()))% of the voice identified — shares unreliable"
@@ -1569,6 +1574,23 @@ struct SpeakerReviewPane: View {
                     }
                 }
                 Spacer()
+                // Two forms because they serve different jobs: the summary is
+                // pasteable into Slack or email, the full one carries the
+                // transcript for an LLM. Both are built server-side with the
+                // display floor applied to the attendee block.
+                if let content = model.openContent, !content.clipboardSummary.isEmpty {
+                    Button { model.copyMeeting(full: false) } label: {
+                        Label("Summary", systemImage: "doc.on.doc").font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy the meeting without the transcript")
+                    Button { model.copyMeeting(full: true) } label: {
+                        Label("Full (\(max(1, content.fullChars / 1024)) KB)",
+                              systemImage: "doc.on.doc.fill").font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy the meeting including the full transcript")
+                }
                 Button {
                     model.closeSpeakerReview()
                 } label: {
@@ -1633,6 +1655,44 @@ struct SpeakerReviewPane: View {
                                 .padding(.horizontal, 16)
                             if index < review.voices.count - 1 { Divider() }
                         }
+
+                        // The write-up, BELOW the voice rows. Measured with
+                        // AppKit at the real 358pt content width, placing it
+                        // above pushed the rows this sheet exists for one to two
+                        // full screens down on 7 of 8 of one day's meetings
+                        // (worst case 2,565pt). Markdown markers are softened
+                        // for the popover; the clipboard keeps the real markup.
+                        if let content = model.openContent, !content.sections.isEmpty {
+                            Divider()
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(content.sections, id: \.0) { section in
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(section.0.uppercased())
+                                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                        Text(MeetingContent.panelText(section.1))
+                                            .font(.system(size: 11.5))
+                                            .fixedSize(horizontal: false, vertical: true)
+                                            .textSelection(.enabled)
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, 16).padding(.vertical, 10)
+                        } else if let reason = model.contentUnavailable {
+                            // Never silence. A 404 means the server predates the
+                            // route; anything else is a real failure worth naming.
+                            Divider()
+                            Text(MeetingContent.unavailableMessage(reason) ?? "")
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.horizontal, 16).padding(.vertical, 8)
+                        } else if let content = model.openContent, !content.scribeAvailable {
+                            Divider()
+                            Text("No write-up saved for this meeting yet.")
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                                .padding(.horizontal, 16).padding(.vertical, 8)
+                        }
+
                     }
                 }
             } else if let error = model.reviewError {
