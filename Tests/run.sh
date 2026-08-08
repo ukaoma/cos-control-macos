@@ -321,7 +321,7 @@ done
 
 # The playback note is keyed to ONE row: a shared string printed the same failure
 # under all eleven voices at once.
-/usr/bin/grep -Fq 'note.key.hasPrefix("\(voice.label)#")' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'note.voice == voice.label' "$ROOT/Sources/Views.swift"
 # Closing the panel stops audio and resets scope. Audio kept playing after close,
 # and a sticky "Every meeting" is the irreversible global fold this release removes.
 /usr/bin/grep -A12 'func closeSpeakerReview' "$ROOT/Sources/ControllerModel.swift" | /usr/bin/grep -q 'stopPlayback()'

@@ -1412,7 +1412,7 @@ private struct VoiceRow: View {
             // Keyed to this row: a single shared string printed the same failure
             // under all eleven voices at once.
             if let note = model.playbackNote,
-               (note.key == voice.label || note.key.hasPrefix("\(voice.label)#")),
+               note.voice == voice.label,
                model.playingVoice == nil {
                 Text(note.text).font(.system(size: 10.5)).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)

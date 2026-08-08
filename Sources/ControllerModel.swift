@@ -95,7 +95,7 @@ final class ControllerModel: ObservableObject {
     /// because "no longer held" is ordinary information after the retention
     /// window, not an error the user did anything to cause.
     /// Keyed so a failure prints under the row that caused it, not all of them.
-    @Published var playbackNote: (key: String, text: String)?
+    @Published var playbackNote: (key: String, voice: String, text: String)?
     /// Raw chunk indices this meeting still has audio for. Empty until asked, and
     /// empty forever for meetings recorded before retention existed.
     @Published var retainedAudioChunks: Set<Int> = []
@@ -1069,7 +1069,7 @@ final class ControllerModel: ObservableObject {
     /// the audio it enrolls from.
     func playPhrase(_ phrase: SpeakerPhrase, voice: String) {
         guard let session = openReview?.sessionId, let index = phrase.chunkIndex else { return }
-        play(key: "\(voice)#\(index)",
+        play(key: "\(voice)#\(index)", voice: voice,
              args: ["review-audio", "--session", session, "--chunk", String(index)],
              missing: "That segment's audio is no longer held.")
     }
@@ -1089,7 +1089,7 @@ final class ControllerModel: ObservableObject {
         playingVoice = nil
     }
 
-    private func play(key: String, args: [String], missing: String) {
+    private func play(key: String, voice: String, args: [String], missing: String) {
         // A second click on the row that is already playing means stop.
         if playingVoice == key { stopPlayback(); return }
         stopPlayback()
@@ -1120,7 +1120,7 @@ final class ControllerModel: ObservableObject {
                     case "route_missing": text = "This needs glasses-server 6.21.18 or newer — use Update Server."
                     default: text = "Audio unavailable (\(state))."
                     }
-                    playbackNote = (key: key, text: text)
+                    playbackNote = (key: key, voice: voice, text: text)
                     playingVoice = nil
                     playbackTask = nil
                     playbackRequestID = nil
@@ -1139,11 +1139,11 @@ final class ControllerModel: ObservableObject {
                 let playbackMode = response.details["playbackMode"]?.string
                 let playbackBypass = response.details["playbackBypass"]?.string
                 if playbackBypass == "live_recording" {
-                    playbackNote = (key: key, text: "Played raw to protect the active meeting.")
+                    playbackNote = (key: key, voice: voice, text: "Played raw to protect the active meeting.")
                 } else if playbackBypass == "cleanup_busy" {
-                    playbackNote = (key: key, text: "Played raw because another cleanup was already running.")
+                    playbackNote = (key: key, voice: voice, text: "Played raw because another cleanup was already running.")
                 } else if playbackMode == "raw", status.adaptiveAudioCleanupEnabled == true {
-                    playbackNote = (key: key, text: "Adaptive cleanup fell back safely to raw audio.")
+                    playbackNote = (key: key, voice: voice, text: "Adaptive cleanup fell back safely to raw audio.")
                 }
                 // Clear the playing state when the sound ends. Polling the player
                 // rather than using its delegate keeps this off the main-actor
@@ -1166,7 +1166,7 @@ final class ControllerModel: ObservableObject {
                 guard !Task.isCancelled,
                       self.playbackRequestID == requestID,
                       self.playingVoice == key else { return }
-                playbackNote = (key: key, text: "Could not play that: \(error.localizedDescription)")
+                playbackNote = (key: key, voice: voice, text: "Could not play that: \(error.localizedDescription)")
                 playingVoice = nil
                 playbackTask = nil
                 playbackRequestID = nil
