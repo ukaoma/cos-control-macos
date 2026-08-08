@@ -1057,6 +1057,8 @@ final class ControllerModel: ObservableObject {
     /// can stop the first. AVAudioPlayer stops the moment its last reference
     /// drops, which makes a local variable silently play nothing.
     private var audioPlayer: AVAudioPlayer?
+    private var playbackTask: Task<Void, Never>?
+    private var playbackRequestID: UUID?
 
     /// Play THIS line's audio, from the meeting under review.
     ///
@@ -1079,6 +1081,9 @@ final class ControllerModel: ObservableObject {
     }
 
     func stopPlayback() {
+        playbackTask?.cancel()
+        playbackTask = nil
+        playbackRequestID = nil
         audioPlayer?.stop()
         audioPlayer = nil
         playingVoice = nil
@@ -1090,11 +1095,21 @@ final class ControllerModel: ObservableObject {
         stopPlayback()
         playbackNote = nil
         playingVoice = key
-        Task { [weak self] in
+        let requestID = UUID()
+        playbackRequestID = requestID
+        playbackTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let response = try await helper.run(args)
                 let state = response.details["state"]?.string ?? ""
+                guard !Task.isCancelled,
+                      self.playbackRequestID == requestID,
+                      self.playingVoice == key else {
+                    if state == "ready", let path = response.details["path"]?.string {
+                        try? FileManager.default.removeItem(atPath: path)
+                    }
+                    return
+                }
                 guard state == "ready", let path = response.details["path"]?.string else {
                     // `expired` is the ordinary outcome once retention has passed;
                     // `route_missing` means the server predates this panel and must
@@ -1107,28 +1122,54 @@ final class ControllerModel: ObservableObject {
                     }
                     playbackNote = (key: key, text: text)
                     playingVoice = nil
+                    playbackTask = nil
+                    playbackRequestID = nil
                     return
                 }
                 let url = URL(fileURLWithPath: path)
                 let player = try AVAudioPlayer(contentsOf: url)
+                guard !Task.isCancelled,
+                      self.playbackRequestID == requestID,
+                      self.playingVoice == key else {
+                    try? FileManager.default.removeItem(at: url)
+                    return
+                }
                 audioPlayer = player
                 player.play()
+                let playbackMode = response.details["playbackMode"]?.string
+                let playbackBypass = response.details["playbackBypass"]?.string
+                if playbackBypass == "live_recording" {
+                    playbackNote = (key: key, text: "Played raw to protect the active meeting.")
+                } else if playbackBypass == "cleanup_busy" {
+                    playbackNote = (key: key, text: "Played raw because another cleanup was already running.")
+                } else if playbackMode == "raw", status.adaptiveAudioCleanupEnabled == true {
+                    playbackNote = (key: key, text: "Adaptive cleanup fell back safely to raw audio.")
+                }
                 // Clear the playing state when the sound ends. Polling the player
                 // rather than using its delegate keeps this off the main-actor
                 // delegate dance for what is a two-second clip.
                 let duration = player.duration
                 Task { [weak self] in
                     try? await Task.sleep(nanoseconds: UInt64(max(0.2, duration) * 1_000_000_000))
-                    guard let self, self.playingVoice == key else { return }
+                    guard let self,
+                          self.playbackRequestID == requestID,
+                          self.playingVoice == key else { return }
                     self.playingVoice = nil
                     self.audioPlayer = nil
+                    self.playbackRequestID = nil
                 }
                 // The helper wrote this into its transfer directory; it is ours to
                 // remove once loaded into the player.
                 try? FileManager.default.removeItem(at: url)
+                playbackTask = nil
             } catch {
+                guard !Task.isCancelled,
+                      self.playbackRequestID == requestID,
+                      self.playingVoice == key else { return }
                 playbackNote = (key: key, text: "Could not play that: \(error.localizedDescription)")
                 playingVoice = nil
+                playbackTask = nil
+                playbackRequestID = nil
             }
         }
     }

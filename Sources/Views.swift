@@ -222,7 +222,8 @@ struct ControlPanel: View {
                 statusRow("Idle Metal HQ", value: label, good: enabled)
             }
             if model.status.adaptiveAudioCleanupSupported, let enabled = model.status.adaptiveAudioCleanupEnabled {
-                statusRow("Audio cleanup", value: enabled ? "Adaptive replay" : "Raw replay", good: enabled)
+                // Raw replay is the safe default/rollback, not a degraded state.
+                statusRow("Audio cleanup", value: enabled ? "Adaptive replay" : "Raw replay", good: true)
             }
             if !model.status.whisperReady, let error = model.status.whisperError, !error.isEmpty {
                 Text(error)

@@ -1947,9 +1947,19 @@ final class COSControlHelper {
         let adaptivePlayback = (health?["review_audio"] as? [String: Any])?["adaptivePlayback"] as? [String: Any]
         let configuredAdaptiveAudioCleanup = manifest?.providerEnvironment?["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"]
             ?? (launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String])?["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"]
-        let adaptiveAudioCleanupEnabled = adaptiveAudioCleanupSupported
-            ? ((adaptivePlayback?["enabled"] as? Bool) ?? (configuredAdaptiveAudioCleanup == "1"))
-            : nil
+        let adaptiveAudioCleanupEnabled: Bool?
+        if !adaptiveAudioCleanupSupported {
+            adaptiveAudioCleanupEnabled = nil
+        } else if let reported = adaptivePlayback?["enabled"] as? Bool {
+            adaptiveAudioCleanupEnabled = reported
+        } else if health == nil {
+            // A stopped server has no live truth, so configured state is the
+            // only state available. A running server that omits the capability
+            // must remain Unknown rather than claiming its plist value is active.
+            adaptiveAudioCleanupEnabled = configuredAdaptiveAudioCleanup == "1"
+        } else {
+            adaptiveAudioCleanupEnabled = nil
+        }
         var details: [String: Any] = [
             "installed": manifest != nil,
             "serviceLoaded": snapshot.serviceLoaded,
@@ -3318,6 +3328,9 @@ final class COSControlHelper {
             $0.desiredState == "stopped" && versionAtLeast($0.version, "6.21.32")
         } ?? false
         guard runningVersion.map({ versionAtLeast($0, "6.21.32") }) == true || stoppedCompatibleManagedServer else {
+            if inPlaceActive(), runningVersion == nil {
+                throw HelperError.message("Start the adopted server once so COS Control can verify version 6.21.32 or newer before changing Adaptive audio cleanup.")
+            }
             throw HelperError.message("Update the managed server to 6.21.32 or newer before changing Adaptive audio cleanup.")
         }
         let operationLabel = enabled ? "Adaptive audio cleanup" : "Adaptive audio cleanup off"
@@ -3648,37 +3661,40 @@ final class COSControlHelper {
 
         let alreadyActive = values.allSatisfy { loadedEnvironmentValue($0.key) == $0.value }
         if alreadyActive || snapshot.allListenerPIDs.isEmpty {
-            try atomicWriteData(candidate, to: plistURL, permissions: 0o600)
-            clearInPlaceConfigurationTransaction()
-            let effectiveTier = alreadyActive
-                ? try values["COS_WHISPER_TRANSCRIPTION_TIER"].map { try requireTranscriptionTier($0) }
-                : nil
-            if alreadyActive, let backgroundJobs = values["COS_DURABLE_QUERY_JOBS"] {
-                try requireBackgroundJobs(backgroundJobs)
+            do {
+                try atomicWriteData(candidate, to: plistURL, permissions: 0o600)
+                let effectiveTier = alreadyActive
+                    ? try values["COS_WHISPER_TRANSCRIPTION_TIER"].map { try requireTranscriptionTier($0) }
+                    : nil
+                if alreadyActive, let backgroundJobs = values["COS_DURABLE_QUERY_JOBS"] {
+                    try requireBackgroundJobs(backgroundJobs)
+                }
+                if alreadyActive, let meetingPreview = values["COS_WHISPER_MEETING_PREVIEW"] {
+                    try requireMeetingPreview(meetingPreview)
+                }
+                if alreadyActive, let idleMetalHq = values["COS_BATCH_HQ_METAL"] {
+                    try requireIdleMetalHq(enabled: idleMetalHq == "1")
+                }
+                if alreadyActive, let adaptiveAudioCleanup = values["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"] {
+                    try requireAdaptiveAudioCleanup(adaptiveAudioCleanup)
+                }
+                // Verification owns the transaction. Clearing before the health
+                // proof would make an invariant failure impossible to roll back.
+                clearInPlaceConfigurationTransaction()
+                let message: String
+                if alreadyActive, values["COS_WHISPER_TRANSCRIPTION_TIER"] == "max", effectiveTier == "balanced" {
+                    message = "Max transcription is saved; running Balanced fallback because Large-v3 is unavailable"
+                } else if alreadyActive {
+                    message = "\(operationLabel) is already active"
+                } else {
+                    message = "\(operationLabel) saved and will apply when your server starts"
+                }
+                emit(ok: true, message: message, details: statusDetails())
+                return
+            } catch {
+                let recovery = try restoreInPlaceConfiguration(transaction)
+                throw HelperError.message("\(operationLabel) change failed. \(recovery) Original error: \(error)")
             }
-            if alreadyActive, let meetingPreview = values["COS_WHISPER_MEETING_PREVIEW"] {
-                try requireMeetingPreview(meetingPreview)
-            }
-            if alreadyActive, let idleMetalHq = values["COS_BATCH_HQ_METAL"] {
-                try requireIdleMetalHq(enabled: idleMetalHq == "1")
-            }
-            if alreadyActive, let adaptiveAudioCleanup = values["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"] {
-                try requireAdaptiveAudioCleanup(adaptiveAudioCleanup)
-            }
-            let message: String
-            if alreadyActive, values["COS_WHISPER_TRANSCRIPTION_TIER"] == "max", effectiveTier == "balanced" {
-                message = "Max transcription is saved; running Balanced fallback because Large-v3 is unavailable"
-            } else if alreadyActive {
-                message = "\(operationLabel) is already active"
-            } else {
-                message = "\(operationLabel) saved and will apply when your server starts"
-            }
-            emit(
-                ok: true,
-                message: message,
-                details: statusDetails()
-            )
-            return
         }
         guard let version = transaction.serverVersion,
               let generation = transaction.generationID else {
@@ -4841,6 +4857,9 @@ final class COSControlHelper {
             "state": "ready",
             "path": destination.path,
             "bytes": data.count,
+            "playbackMode": response.headers["x-cos-audio-playback"] ?? "raw",
+            "playbackProfile": response.headers["x-cos-audio-profile"] ?? NSNull(),
+            "playbackBypass": response.headers["x-cos-audio-bypass"] ?? NSNull(),
         ])
     }
 

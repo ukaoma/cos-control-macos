@@ -9,6 +9,10 @@
 - **Activation proves the real server contract.** Apply succeeds only when
   health reports the selected value, `retained_replay_only` scope, and raw WAV
   preservation. A failed activation restores and verifies the prior server.
+- **Stop and rollback win timing races.** Closing review or pressing Stop now
+  cancels a pending first-play fetch, and adopted-server verification retains
+  its rollback transaction until the health proof passes. The server's raw
+  fallback deadline is shorter than Control's bounded media request.
 - **The label states the boundary.** Cleanup runs only after a reviewer presses
   Play. It does not enter live preview, canonical transcription, speaker
   attribution, save, HQ polish, or meeting sync. Off immediately restores raw

@@ -37,6 +37,21 @@ one LaunchAgent, `com.cos.glasses-server`, as the sole server owner.
 Existing data remains under the standard COS Glasses locations. The existing
 `npx @gotcos/glasses-server` foreground workflow remains supported.
 
+## 0.5.11 adaptive review-audio cleanup
+
+- Server 6.21.32 can create a derived, replay-only cleanup copy of retained
+  meeting audio. The immutable raw recording remains the source of truth and
+  `raw=1` remains an exact per-request bypass.
+- Cleanup is default-off, runs at most one FFmpeg worker across the server, and
+  immediately serves raw when busy. A meeting that starts while cleanup is in
+  flight preempts that work within 100 ms so capture and transcription win.
+- COS Control exposes the machine-wide canary, reports the effective live
+  capability, identifies raw fallbacks per playback, and applies the setting
+  through the existing verified restart and rollback transaction.
+- The 12-second Control playback request is protected by an 8-second server
+  cleanup deadline. Stop, close, and replacement playback cancel stale work so
+  a delayed response cannot begin playing after the user has moved on.
+
 ## 0.3.9 progressive HQ canary reporting
 
 - Server 6.21.8 can claim a durable G2 meeting in Operations before its

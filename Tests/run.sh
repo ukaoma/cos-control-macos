@@ -59,6 +59,8 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
 /usr/bin/grep -q 'COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'requireAdaptiveAudioCleanup' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'Adaptive audio cleanup' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'playbackTask?.cancel()' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'playbackRequestID == requestID' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'stoppedCompatibleManagedServer' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'configuredRequestedTier' "$ROOT/HelperSources/main.swift"
 /usr/bin/python3 - "$ROOT" <<'PY'
@@ -67,6 +69,12 @@ source = (pathlib.Path(sys.argv[1]) / "HelperSources/main.swift").read_text()
 invalid = re.findall(r'operationKind:\s*"(provider_env_update|workdir_update)"', source)
 if invalid:
     raise SystemExit(f"internal labels leaked into maintenance operation contract: {invalid}")
+branch = source.index("if alreadyActive || snapshot.allListenerPIDs.isEmpty")
+proof = source.index("try requireAdaptiveAudioCleanup", branch)
+clear = source.index("clearInPlaceConfigurationTransaction()", branch)
+restore = source.index("restoreInPlaceConfiguration(transaction)", branch)
+if not proof < clear < restore:
+    raise SystemExit("in-place adaptive proof must run before transaction clear, with rollback retained")
 PY
 /usr/bin/grep -q 'running Balanced fallback because Large-v3 is unavailable' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'commitDegraded' "$ROOT/HelperSources/main.swift"
