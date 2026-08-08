@@ -1,6 +1,46 @@
 # Changelog
 
-## 0.5.8 (build 45)
+## 0.5.8 (build 46)
+
+Second adversarial-review pass before this ever shipped. gotcos.com still
+advertises 0.5.6, so neither 0.5.7 nor 0.5.8 has reached anyone; build 45 exists
+only as a local install here, which is why this is build 46 rather than a second
+binary wearing the same number.
+
+- **The panel drew per-voice shares with no coverage gate at all.** The clipboard
+  has always suppressed shares below 60% coverage, and this file's own comment
+  claimed the panel did too — "Say the coverage instead of drawing shares", above
+  code that drew them unconditionally. The only `0.6` comparison in the app
+  changed a caption's colour. Measured across 355 real reviews, the panel showed a
+  share the clipboard refused on **170** of them. The floor now lives inside
+  `shareOfIdentified`, so a future row cannot forget it, and it fails CLOSED on
+  unknown coverage exactly as the server does — an `if let` would have shown a
+  share on the one path where we know least.
+
+- **"Full (1 KB)" on a 54 KB clipboard.** `fullChars ?? 0` labelled every button
+  1 KB against published server 6.21.28, which serves `/content` without the size
+  fields; real payloads measured 54,451 / 43,815 / 39,334 characters, and the
+  confirmation then read "Copied full meeting (1 KB)". Both counts now fall back
+  to the length of the string actually received.
+
+- **The inline write-up is bounded.** It renders inside the sheet's own
+  ScrollView, so it cannot have a bounded scroll view of its own without the two
+  fighting for one gesture — the text is capped instead, at a word boundary, with
+  the remainder stated rather than hidden. A 5,000-character write-up measured
+  ~1,448pt and the worst real one ~2,700pt inside a 640pt pane.
+
+- Panel seconds are rounded, matching the server, so the two no longer differ by
+  a second on 456 voice rows; `2**3` and `**/blog` survive the markdown softener
+  (18 real occurrences); and the sections list is keyed by position, because one
+  real scribe repeats three of its own headings and recovered extras made that
+  reachable.
+
+- The pass-through of the clipboard strings is now asserted by EXECUTION rather
+  than by grepping for an assignment's exact spelling. That grep broke on a
+  refactor that changed nothing about the behaviour, which is how a shape test
+  teaches you to edit the test instead of the code.
+
+### Originally in build 45
 
 - **The write-up now sits BELOW the voice rows.** Measured with AppKit at the
   real 358pt content width, placing it above pushed the rows this sheet exists

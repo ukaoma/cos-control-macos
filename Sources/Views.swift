@@ -1309,7 +1309,10 @@ private struct VoiceRow: View {
                 // beside an unnamed row would assert by the back door exactly
                 // what the display floor refuses to assert.
                 if voice.nameAsserted, let ms = voice.speakingMs, ms > 0 {
-                    Text("· \(ms / 60_000)m \(ms / 1000 % 60)s")
+                    // Rounded, matching the server's `mmss`. Truncating here
+                    // put the panel 1 second below the clipboard on 456 real
+                    // voice rows, and showed "0m 20s" against its "21s".
+                    Text("· \(Int((Double(ms) / 1000).rounded()) / 60)m \(Int((Double(ms) / 1000).rounded()) % 60)s")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
                     if let share = model.openReview?.shareOfIdentified(voice) {
@@ -1665,12 +1668,16 @@ struct SpeakerReviewPane: View {
                         if let content = model.openContent, !content.sections.isEmpty {
                             Divider()
                             VStack(alignment: .leading, spacing: 10) {
-                                ForEach(content.sections, id: \.0) { section in
+                                // Keyed by POSITION, not heading. `sections` now
+                                // includes recovered extras, and one real scribe
+                                // repeats three of its own `##` headings — keying
+                                // on the string gives SwiftUI duplicate ids.
+                                ForEach(Array(content.sections.enumerated()), id: \.offset) { item in
                                     VStack(alignment: .leading, spacing: 3) {
-                                        Text(section.0.uppercased())
+                                        Text(item.element.0.uppercased())
                                             .font(.system(size: 9, weight: .semibold, design: .monospaced))
                                             .foregroundStyle(.secondary)
-                                        Text(MeetingContent.panelText(section.1))
+                                        Text(MeetingContent.panelPreview(item.element.1))
                                             .font(.system(size: 11.5))
                                             .fixedSize(horizontal: false, vertical: true)
                                             .textSelection(.enabled)

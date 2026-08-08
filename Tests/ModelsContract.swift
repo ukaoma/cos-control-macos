@@ -258,6 +258,65 @@ struct ModelsContract {
         precondition(abs(shares.reduce(0, +) - 1.0) < 0.001,
                      "shares must total 100% — a union denominator gave 105%")
 
+        // THE FLOOR. A share is a fraction of the IDENTIFIED speech, so at 40%
+        // coverage "53%" can be 21% of the room. The clipboard has always
+        // refused these; the panel drew them anyway on 170 of 355 real meetings
+        // while a comment claimed the two could never disagree. Neither the gate
+        // nor the 0.6 value had ANY execution coverage — both mutations passed.
+        let lowCoverage = review([
+            .object(["label": .string("MU"), "segments": .number(9), "reliability": .string("confident"),
+                     "nameAsserted": .bool(true), "speakingMs": .number(450_000),
+                     "assertionBlockers": .array([]), "thrashesWith": .array([]), "phrases": .array([])]),
+            .object(["label": .string("Niala Samnarine"), "segments": .number(5), "reliability": .string("confident"),
+                     "nameAsserted": .bool(true), "speakingMs": .number(314_000),
+                     "assertionBlockers": .array([]), "thrashesWith": .array([]), "phrases": .array([])]),
+        ], attributed: 404_000, unattributed: 596_000)!
+        precondition(abs((lowCoverage.speakingCoverage ?? 1) - 0.404) < 0.001, "40.4% coverage fixture")
+        precondition(lowCoverage.voices.allSatisfy { lowCoverage.shareOfIdentified($0) == nil },
+                     "no share may be reported below the coverage floor")
+
+        // Just ABOVE the floor, the same rows must still get their shares — a
+        // gate that suppressed everything would also pass the test above.
+        let okCoverage = review([
+            .object(["label": .string("MU"), "segments": .number(9), "reliability": .string("confident"),
+                     "nameAsserted": .bool(true), "speakingMs": .number(450_000),
+                     "assertionBlockers": .array([]), "thrashesWith": .array([]), "phrases": .array([])]),
+            .object(["label": .string("Niala Samnarine"), "segments": .number(5), "reliability": .string("confident"),
+                     "nameAsserted": .bool(true), "speakingMs": .number(314_000),
+                     "assertionBlockers": .array([]), "thrashesWith": .array([]), "phrases": .array([])]),
+        ], attributed: 700_000, unattributed: 300_000)!
+        precondition(lowCoverage.voices.count == okCoverage.voices.count, "same shape, different coverage")
+        precondition(okCoverage.voices.compactMap { okCoverage.shareOfIdentified($0) }.count == 2,
+                     "above the floor, shares are still reported")
+
+        // Exactly AT the floor shows, matching the server's `>=` comparison.
+        let atFloor = review([
+            .object(["label": .string("MU"), "segments": .number(9), "reliability": .string("confident"),
+                     "nameAsserted": .bool(true), "speakingMs": .number(600_000),
+                     "assertionBlockers": .array([]), "thrashesWith": .array([]), "phrases": .array([])]),
+            .object(["label": .string("Gina Obert"), "segments": .number(4), "reliability": .string("confident"),
+                     "nameAsserted": .bool(true), "speakingMs": .number(200_000),
+                     "assertionBlockers": .array([]), "thrashesWith": .array([]), "phrases": .array([])]),
+        ], attributed: 600_000, unattributed: 400_000)!
+        precondition(atFloor.speakingCoverage == 0.6, "exactly the floor")
+        precondition(atFloor.voices.compactMap { atFloor.shareOfIdentified($0) }.count == 2,
+                     "0.6 itself must SHOW, matching the server's >= comparison")
+
+        // UNKNOWN coverage must suppress too. The server writes
+        // `coverage !== null && coverage >= FLOOR`; an `if let` on this side
+        // would show a share precisely where we know least about it.
+        let noCoverage = review([
+            .object(["label": .string("MU"), "segments": .number(9), "reliability": .string("confident"),
+                     "nameAsserted": .bool(true), "speakingMs": .number(450_000),
+                     "assertionBlockers": .array([]), "thrashesWith": .array([]), "phrases": .array([])]),
+            .object(["label": .string("Gina Obert"), "segments": .number(4), "reliability": .string("confident"),
+                     "nameAsserted": .bool(true), "speakingMs": .number(120_000),
+                     "assertionBlockers": .array([]), "thrashesWith": .array([]), "phrases": .array([])]),
+        ], attributed: nil, unattributed: nil)!
+        precondition(noCoverage.speakingCoverage == nil, "coverage genuinely unknown")
+        precondition(noCoverage.voices.allSatisfy { noCoverage.shareOfIdentified($0) == nil },
+                     "unknown coverage must suppress shares, not show them")
+
         // The review must carry the SAME voices the share is computed over — the
         // denominator now reads `voices`, so a stub array yields no share.
         let r = review([
@@ -328,8 +387,35 @@ struct ModelsContract {
         precondition(!panel.contains("###"), "heading markers softened")
         precondition(!panel.contains("- [ ]"), "task box softened")
         precondition(!panel.contains("**"), "bold markers softened")
+        // UNPAIRED markers are not emphasis. Stripping unconditionally turned
+        // `2**3` into `23` and `**/blog` into `/blog` (18 real occurrences).
+        precondition(MeetingContent.panelText("use 2**3 exponent").contains("2**3"),
+                     "an unpaired ** is content, not emphasis")
+        precondition(MeetingContent.panelText("ignore **/blog paths").contains("**/blog"),
+                     "a glob is content, not emphasis")
+        precondition(!MeetingContent.panelText("a **bold** word").contains("**"),
+                     "a paired ** is still softened")
+
+        // The inline write-up is bounded; the clipboard is not.
+        let long = String(repeating: "word ", count: 2_000)
+        let preview = MeetingContent.panelPreview(long)
+        precondition(preview.count < 1_100, "the panel preview must be bounded")
+        precondition(preview.contains("more characters"), "the remainder must be accounted for, not hidden")
+        precondition(!preview.hasSuffix("wor"), "the cut must land on a word boundary")
+        precondition(MeetingContent.panelPreview("short enough") == "short enough",
+                     "a short section is untouched")
         precondition(panel.contains("HIGH CONFIDENCE"), "heading text survives, uppercased")
         precondition(panel.contains("do the thing"), "content survives")
+
+        // A real scribe repeats its own `##` headings, so two sections can share a
+        // display name. They must both survive as distinct entries — the panel
+        // keys the ForEach by position for exactly this reason.
+        let dupes = content([
+            .object(["heading": .string("Notes"), "body": .string("first")]),
+            .object(["heading": .string("Notes"), "body": .string("second")]),
+        ])!
+        precondition(dupes.sections.filter { $0.0 == "Notes" }.count == 2,
+                     "duplicate headings must not collapse")
 
         // Never silence: a 404 names the version, anything else names the failure.
         precondition(MeetingContent.unavailableMessage(nil) == nil, "loaded content renders nothing")
@@ -341,6 +427,26 @@ struct ModelsContract {
                      "an unrecognised reason still says something")
 
         // An older server sends none of it; init? must still succeed.
+        // BLOCKER, measured against the running server: published 6.21.28 serves
+        // /content WITHOUT summaryChars/fullChars, so `?? 0` labelled the button
+        // "Full (1 KB)" for real 54,451-character payloads. The strings are
+        // present in that same response, so they are the fallback.
+        let noSizes = MeetingContent(.object([
+            "sessionId": .string("meeting_sizes"),
+            "clipboardSummary": .string(String(repeating: "s", count: 3_500)),
+            "clipboardFull": .string(String(repeating: "f", count: 54_451)),
+        ]))
+        precondition(noSizes?.fullChars == 54_451, "fullChars falls back to the string length")
+        precondition(noSizes?.summaryChars == 3_500, "summaryChars falls back to the string length")
+        precondition((noSizes?.fullChars ?? 0) / 1024 == 53, "the KB label reads 53, not 1")
+        // An explicit server-sent count still wins.
+        let withSizes = MeetingContent(.object([
+            "sessionId": .string("meeting_sizes2"),
+            "clipboardFull": .string("short"),
+            "fullChars": .number(99),
+        ]))
+        precondition(withSizes?.fullChars == 99, "an explicit fullChars wins over the string length")
+
         let bare = MeetingContent(.object(["sessionId": .string("meeting_y")]))
         precondition(bare != nil && bare?.scribeAvailable == false, "older server degrades")
         precondition(bare?.sections.isEmpty == true, "no sections without bodies")

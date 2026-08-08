@@ -215,7 +215,10 @@ done
 # own `## Attendees` applies none and lists names already confirmed absent. Pin
 # that Control passes them through and never re-derives them here.
 /usr/bin/grep -q 'case "meeting-content"' "$ROOT/HelperSources/main.swift"
-/usr/bin/grep -q 'clipboardSummary = o\["clipboardSummary"\]' "$ROOT/Sources/Models.swift"
+# Pass-through is asserted by EXECUTION in ModelsContract (checkMeetingContent),
+# not by grepping for an assignment's exact spelling — that grep broke on a
+# refactor that changed nothing about the behaviour, which is how a shape test
+# trains you to edit the test instead of the code.
 /usr/bin/grep -q 'model.copyMeeting(full: true)' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'model.copyMeeting(full: false)' "$ROOT/Sources/Views.swift"
 

@@ -686,8 +686,27 @@ struct SpeakerReview: Sendable {
     /// the union is 6.6m while the participants sum to 6.9m, which rendered
     /// "MU 66% · Edward Addo 39%". Share of voice is conventionally a share of
     /// everyone's talking, and this denominator totals exactly 100%.
+    /// Coverage below which a per-voice share is not shown. Must equal the
+    /// server's `SHARE_COVERAGE_FLOOR`, because the clipboard and this panel
+    /// describe the same meeting and a reader comparing them will notice.
+    static let shareCoverageFloor = 0.6
+
+    /// Share of IDENTIFIED speech, or nil when it would mislead.
+    ///
+    /// The floor lives HERE rather than in the view. The panel's own comment
+    /// claimed it already hid these below 60% coverage; it never did — every
+    /// asserted voice got a percentage and the only `0.6` test in the app
+    /// swapped a caption's colour. Measured across 355 real reviews, the panel
+    /// showed a share the clipboard refused on 170 of them. A share is a
+    /// fraction of what was identified, so at 40% coverage "53%" can be 21% of
+    /// the room. One function, so a future row cannot forget the gate.
     func shareOfIdentified(_ voice: ReviewVoice) -> Double? {
         guard voice.nameAsserted, let ms = voice.speakingMs else { return nil }
+        // FAIL CLOSED on unknown coverage, exactly as the server does
+        // (`coverage !== null && coverage >= FLOOR`). `if let c = ...` alone
+        // would SHOW a share when coverage is nil — reintroducing the same
+        // asymmetry on the one path where we know least.
+        guard let c = speakingCoverage, c >= Self.shareCoverageFloor else { return nil }
         let total = voices.reduce(0) { $0 + ($1.nameAsserted ? ($1.speakingMs ?? 0) : 0) }
         guard total > 0 else { return nil }
         return Double(ms) / Double(total)
@@ -729,6 +748,10 @@ struct MeetingContent: Sendable {
     /// (transcriptChars vs clipboardFull.count) and disagreed on 81% of meetings.
     let summaryChars: Int
     let fullChars: Int
+    /// Transcript characters in the RECORDING, whether or not it is written up.
+    let capturedChars: Int
+    /// Which business this meeting belongs to, '' when the server omits it.
+    let domain: String
     /// Identified share of voiced time, or nil when unknown.
     let coverage: Double?
     /// Whether the server reported per-voice shares. False below its floor.
@@ -768,6 +791,28 @@ struct MeetingContent: Sendable {
     /// markdown, so `###`, `- [ ]` and `**` rendered literally. The clipboard
     /// still gets the real markdown — a model wants the structure — so this
     /// transform is display-only.
+    /// Per-section ceiling for the INLINE panel render.
+    ///
+    /// The write-up is inside the sheet's own ScrollView, so it cannot be given a
+    /// bounded scroll view of its own without the two fighting for the same
+    /// gesture. Bound the TEXT instead: measured, a 5,000-character write-up
+    /// renders ~1,448pt and the worst real one ~2,700pt inside a 640pt pane,
+    /// which pushes the voice rows this sheet exists for far off-screen and
+    /// leaves an 18-20% scroll thumb. The clipboard forms carry the whole thing;
+    /// this is a preview.
+    static let panelSectionMaxChars = 900
+
+    /// `panelText`, bounded, with the remainder accounted for rather than hidden.
+    static func panelPreview(_ raw: String) -> String {
+        let full = panelText(raw)
+        guard full.count > panelSectionMaxChars else { return full }
+        // Cut on a whitespace boundary so the preview does not end mid-word.
+        let hard = full.index(full.startIndex, offsetBy: panelSectionMaxChars)
+        let cut = full[..<hard].lastIndex(where: { $0 == " " || $0 == "\n" }) ?? hard
+        let shown = full[..<cut].trimmingCharacters(in: .whitespacesAndNewlines)
+        return shown + "\n\n… \(full.count - shown.count) more characters — use the copy buttons above."
+    }
+
     static func panelText(_ body: String) -> String {
         body.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
             var s = String(line)
@@ -776,7 +821,11 @@ struct MeetingContent: Sendable {
             }
             s = s.replacingOccurrences(of: "- [ ] ", with: "• ")
             s = s.replacingOccurrences(of: "- [x] ", with: "✓ ")
-            s = s.replacingOccurrences(of: "**", with: "")
+            // Only when they PAIR. Unconditional stripping turned `2**3` into
+            // `23` and `**/blog` into `/blog` (18 real occurrences).
+            if s.components(separatedBy: "**").count % 2 == 1 {
+                s = s.replacingOccurrences(of: "**", with: "")
+            }
             return s
         }.joined(separator: "\n")
     }
@@ -793,8 +842,21 @@ struct MeetingContent: Sendable {
         decisions = o["decisions"]?.string ?? ""
         actions = o["actions"]?.string ?? ""
         transcriptChars = o["transcriptChars"]?.int ?? 0
-        summaryChars = o["summaryChars"]?.int ?? 0
-        fullChars = o["fullChars"]?.int ?? 0
+        capturedChars = o["capturedChars"]?.int ?? 0
+        domain = o["domain"]?.string ?? ""
+        // Read BEFORE the counts, which fall back to these lengths.
+        let sumText = o["clipboardSummary"]?.string ?? ""
+        let fullText = o["clipboardFull"]?.string ?? ""
+        clipboardSummary = sumText
+        clipboardFull = fullText
+        // Fall back to the STRINGS we were actually given. Published server
+        // 6.21.28 has the /content route but NOT these two fields, so `?? 0`
+        // labelled every button "Full (1 KB)" against real payloads of 54,451 /
+        // 43,815 / 39,334 characters — wrong on the very first click, and
+        // "Copied full meeting (1 KB)" in the confirmation afterwards. The
+        // string is the truth; the count is a convenience.
+        summaryChars = o["summaryChars"]?.int ?? sumText.count
+        fullChars = o["fullChars"]?.int ?? fullText.count
         coverage = o["coverage"]?.double
         sharesReported = o["sharesReported"]?.bool ?? false
         extras = (o["extras"]?.array ?? []).compactMap { item in
@@ -803,8 +865,6 @@ struct MeetingContent: Sendable {
             else { return nil }
             return (h, b)
         }
-        clipboardSummary = o["clipboardSummary"]?.string ?? ""
-        clipboardFull = o["clipboardFull"]?.string ?? ""
     }
 }
 
