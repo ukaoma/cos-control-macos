@@ -837,7 +837,7 @@ struct ControlPanel: View {
                           : "Install the managed server or choose Manage in place first")
                 Button("Meetings Library", systemImage: "calendar") { model.selectOperationsFolder() }
                     .disabled(!model.status.installed && model.status.runtimeState != "managedInPlace")
-                    .help("COS operations/ tree for G2 Review Meetings (Meetings library above) — quilt/personal/…/meetings")
+                    .help("Folder containing your domain folders, each with a meetings/ folder inside. Used for G2 Review Meetings.")
             }
             HStack {
                 Button("Open Cursor", systemImage: "chevron.left.forwardslash.chevron.right") { model.openCursor() }

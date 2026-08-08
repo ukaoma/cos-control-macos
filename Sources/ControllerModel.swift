@@ -609,7 +609,10 @@ final class ControllerModel: ObservableObject {
     func selectOperationsFolder() {
         let panel = NSOpenPanel()
         panel.title = "Meetings Library — COS operations folder"
-        panel.message = "Select the operations/ directory that contains quilt/meetings, personal/meetings, etc. This is only for G2 Review Meetings — not the agent work folder."
+        panel.message = "Choose the folder that CONTAINS your domain folders. Each domain needs a "
+            + "meetings/ folder inside it, and the names are yours: work/meetings, research/meetings, "
+            + "anything. Pick the parent, not a meetings/ folder itself. This is only for G2 Review "
+            + "Meetings, not the agent work folder."
         panel.prompt = "Use as Meetings Library"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false

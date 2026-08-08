@@ -3323,10 +3323,16 @@ final class COSControlHelper {
     }
 
     /// Point G2 Review Meetings at a COS operations/ tree
-    /// (`{dir}/{quilt|personal|…}/meetings/YYYY-MM/*.md`). Each COS layout can differ.
+    /// (`{dir}/{anyDomainName}/meetings/YYYY-MM/*.md`).
+    ///
+    /// Domain names are the USER'S. This comment used to end "Each COS layout can
+    /// differ" while the validator two functions down hardcoded four of them.
     private func setOperationsDirectory(_ path: String) throws {
         guard let validated = try validatedOperationsDirectory(path) else {
-            throw HelperError.message("Selected meetings folder must exist and contain at least one domain meetings/ tree (e.g. quilt/meetings).")
+            let url = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+            throw HelperError.message(
+                COSControlHelper.operationsDirectoryRejection(url)
+                    ?? "That folder cannot be used as the meetings library.")
         }
         if let manifest = loadManifest() {
             try applyManagedProviderEnvironment(["COS_OPERATIONS_DIR": validated], current: manifest, operationLabel: "Meetings library")
@@ -3338,20 +3344,90 @@ final class COSControlHelper {
         try applyInPlaceProviderEnvironment(["COS_OPERATIONS_DIR": validated], operationLabel: "Meetings library")
     }
 
+    /// Is `name` safe to join onto the operations root?
+    ///
+    /// A safety check, NOT a naming policy. Deliberately permissive about style:
+    /// a real domain may be `DNP study` with a space, and an alphanumeric-only
+    /// rule would re-encode one user's snake_case habit as a requirement.
+    static func isSafeDomainName(_ name: String) -> Bool {
+        if name.isEmpty || name.count > 128 { return false }
+        if name == "." || name == ".." { return false }
+        if name.hasPrefix(".") { return false }
+        if name.contains("/") || name.contains("\\") || name.contains("\0") { return false }
+        return true
+    }
+
+    /// Every immediate subdirectory of `dir` that holds a `meetings/` tree.
+    ///
+    /// This IS the domain list. It used to be the literal string array
+    /// ["quilt","sprocket_rocket","hermit_crabs","personal"] — one user's
+    /// business domains shipped as a requirement, directly above a comment
+    /// saying "Each COS layout can differ". Queen set up her own COS on
+    /// 2026-08-08 and every folder she chose was rejected, because her tree has
+    /// none of those four and never will. Mirrors discoverMeetingDomains() in
+    /// the server, which must agree or the picker validates a shape the server
+    /// then refuses to list.
+    static func discoverMeetingDomains(_ dir: URL) -> [String] {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: dir.path) else { return [] }
+        return entries.filter { isSafeDomainName($0) }.filter { name in
+            var isDir: ObjCBool = false
+            let meetings = dir.appendingPathComponent(name).appendingPathComponent("meetings", isDirectory: true)
+            return fm.fileExists(atPath: meetings.path, isDirectory: &isDir) && isDir.boolValue
+        }.sorted()
+    }
+
+    /// Does this directory look like a `meetings/` tree itself, i.e. did the user
+    /// pick one level too deep?
+    ///
+    /// Queen selected `queen-cos/meetings`. The old error told her to supply a
+    /// `quilt/meetings` tree, which is neither what she has nor what she did
+    /// wrong — a dead end. Detect the near-miss and name the fix.
+    static func looksLikeMeetingsTree(_ dir: URL) -> Bool {
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return false }
+        let monthPattern = try? NSRegularExpression(pattern: "^\\d{4}-\\d{2}$")
+        return entries.contains { name in
+            guard let re = monthPattern else { return false }
+            let range = NSRange(name.startIndex..<name.endIndex, in: name)
+            return re.firstMatch(in: name, range: range) != nil
+        }
+    }
+
+    /// Why this directory cannot serve as the meetings library, phrased so the
+    /// next click is obvious. nil when it is valid.
+    static func operationsDirectoryRejection(_ dir: URL) -> String? {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else {
+            return "That folder does not exist."
+        }
+        if !discoverMeetingDomains(dir).isEmpty { return nil }
+        let name = dir.lastPathComponent
+        if looksLikeMeetingsTree(dir) {
+            return "\"\(name)\" looks like a meetings folder itself: it holds YYYY-MM month folders. "
+                 + "Choose its PARENT folder instead, the one that contains \(name)/."
+        }
+        let subdirs = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
+            .filter { isSafeDomainName($0) }
+            .filter { sub in
+                var d: ObjCBool = false
+                return FileManager.default.fileExists(
+                    atPath: dir.appendingPathComponent(sub).path, isDirectory: &d) && d.boolValue
+            }.sorted()
+        if subdirs.isEmpty {
+            return "\"\(name)\" has no subfolders. Choose the folder that contains your domain "
+                 + "folders, where each one has a meetings/ folder inside it."
+        }
+        let shown = subdirs.prefix(6).joined(separator: ", ")
+        let more = subdirs.count > 6 ? ", and \(subdirs.count - 6) more" : ""
+        return "None of the folders in \"\(name)\" contain a meetings/ folder. Found: \(shown)\(more). "
+             + "Pick the folder whose subfolders each hold a meetings/ folder. Any names work, "
+             + "they do not have to match anyone else's."
+    }
+
     private func validatedOperationsDirectory(_ path: String?) throws -> String? {
         guard let path, !path.isEmpty else { return nil }
         let url = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
-            return nil
-        }
-        let domains = ["quilt", "sprocket_rocket", "hermit_crabs", "personal"]
-        let hasMeetingsTree = domains.contains { domain in
-            let meetings = url.appendingPathComponent(domain).appendingPathComponent("meetings", isDirectory: true)
-            var meetingsIsDir: ObjCBool = false
-            return FileManager.default.fileExists(atPath: meetings.path, isDirectory: &meetingsIsDir) && meetingsIsDir.boolValue
-        }
-        guard hasMeetingsTree else { return nil }
+        guard COSControlHelper.operationsDirectoryRejection(url) == nil else { return nil }
         return url.path
     }
 
@@ -4933,6 +5009,52 @@ final class COSControlHelper {
         }
 
         try ensureDirectories()
+
+        // Meetings-library discovery. Queen set up her own COS on 2026-08-08 and
+        // every folder she chose was rejected, because this file carried
+        // ["quilt","sprocket_rocket","hermit_crabs","personal"] — one user's
+        // business domains shipped as a requirement — directly beneath a comment
+        // saying "Each COS layout can differ". These run against the SHIPPED
+        // functions on every build, rather than a throwaway probe that would rot.
+        let opsRoot = home.appendingPathComponent("selftest-ops", isDirectory: true)
+        func makeDir(_ url: URL) throws {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        // A domain nobody predicted, with a space in the name.
+        try makeDir(opsRoot.appendingPathComponent("DNP study/meetings/2026-08"))
+        try makeDir(opsRoot.appendingPathComponent("ascension/meetings/2026-08"))
+        // Not domains: no meetings/ tree, and a hidden directory.
+        try makeDir(opsRoot.appendingPathComponent("context"))
+        try makeDir(opsRoot.appendingPathComponent(".meeting_archive/meetings"))
+        let found = COSControlHelper.discoverMeetingDomains(opsRoot)
+        try expect(found == ["DNP study", "ascension"],
+                   "discovery must find arbitrary domain names and skip non-domains, got \(found)")
+        try expect(COSControlHelper.operationsDirectoryRejection(opsRoot) == nil,
+                   "a tree with no quilt/ must still validate")
+
+        // The wrong level: subfolders exist, none holds meetings/. The message must
+        // name what it FOUND rather than demand a domain the user does not own.
+        let wrongLevel = home.appendingPathComponent("selftest-wrong", isDirectory: true)
+        try makeDir(wrongLevel.appendingPathComponent("context"))
+        try makeDir(wrongLevel.appendingPathComponent("communications"))
+        let wrongMessage = COSControlHelper.operationsDirectoryRejection(wrongLevel) ?? ""
+        try expect(wrongMessage.contains("Found:") && !wrongMessage.contains("quilt"),
+                   "rejection must enumerate what it found and never demand quilt/, got \(wrongMessage)")
+
+        // One level too deep — exactly what Queen clicked.
+        let tooDeep = home.appendingPathComponent("selftest-deep", isDirectory: true)
+        try makeDir(tooDeep.appendingPathComponent("2026-08"))
+        try expect((COSControlHelper.operationsDirectoryRejection(tooDeep) ?? "")
+                     .contains("looks like a meetings folder"),
+                   "picking the meetings folder itself must be diagnosed, not just refused")
+
+        try expect(!COSControlHelper.isSafeDomainName("..")
+                     && !COSControlHelper.isSafeDomainName("a/b")
+                     && !COSControlHelper.isSafeDomainName(".hidden"),
+                   "traversal guard must survive the move off the membership check")
+        try expect(COSControlHelper.isSafeDomainName("DNP study"),
+                   "a domain name with a space is legitimate")
+
         let v1: [String: Any] = ["managed": true, "contractVersion": 1]
         let v2: [String: Any] = ["managed": true, "contractVersion": 2]
         let future: [String: Any] = ["managed": true, "contractVersion": 3]

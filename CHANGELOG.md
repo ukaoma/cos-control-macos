@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.10 (build 48)
+
+- **The Meetings Library picker no longer requires you to be Miles.** The
+  validator hardcoded `["quilt","sprocket_rocket","hermit_crabs","personal"]` —
+  one user's business domains — directly beneath a comment reading "Each COS
+  layout can differ". Queen set up her own COS and every folder she chose was
+  rejected with a message telling her to supply a `quilt/meetings` tree she has no
+  reason to own. Domains are now discovered: any subfolder holding a `meetings/`
+  folder counts, whatever it is named, spaces included.
+
+- **The rejection message says what is actually wrong.** It was a dead end. Now it
+  distinguishes the three real cases: you picked a `meetings/` folder itself, so
+  choose its parent; the folder has no subfolders; or none of the subfolders hold a
+  `meetings/` folder, and here are the ones it found. The picker's own instructions
+  stopped naming someone else's domains too.
+
+  Requires glasses-server 6.21.31, which discovers domains the same way. The picker
+  and the server had to move together, or the picker would validate a shape the
+  server then refuses to list.
+
+
 ## 0.5.9 (build 47)
 
 - **A name you removed is called out above the write-up.** De-attribution rewrites
