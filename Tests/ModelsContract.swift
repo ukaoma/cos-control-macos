@@ -447,6 +447,27 @@ struct ModelsContract {
         ]))
         precondition(withSizes?.fullChars == 99, "an explicit fullChars wins over the string length")
 
+        // 2026-08-07: "Clem Ukaoma" removed from a call that was only Miles and
+        // Queen. All 8 label sites rewritten; the panel still read "Miles, Queen,
+        // and Clem talk through...". The server records proseStale; the panel must
+        // say it before the user reads the prose.
+        let removedC = MeetingContent(.object([
+            "sessionId": .string("meeting_rm"),
+            "removedNames": .array([.object([
+                "label": .string("Clem Ukaoma"), "proseStale": .bool(true),
+            ])]),
+        ]))
+        precondition(removedC?.removedNames.count == 1, "removedNames decodes")
+        let warn = MeetingContent.removalWarning(removedC?.removedNames ?? [])
+        precondition(warn?.contains("You removed") == true, "the warning states the removal")
+        precondition(warn?.contains("Clem Ukaoma") == true, "the warning names the person")
+        precondition(warn?.contains("still uses the name") == true, "it explains why the prose is wrong")
+        precondition(MeetingContent.removalWarning([(label: "X", proseStale: false)]) == nil,
+                     "a clean-prose removal needs no warning above the write-up")
+        precondition(MeetingContent.removalWarning([]) == nil, "no removals, no warning")
+        precondition(MeetingContent(.object(["sessionId": .string("m")]))?.removedNames.isEmpty == true,
+                     "absent removedNames decodes to empty, not a crash")
+
         let bare = MeetingContent(.object(["sessionId": .string("meeting_y")]))
         precondition(bare != nil && bare?.scribeAvailable == false, "older server degrades")
         precondition(bare?.sections.isEmpty == true, "no sections without bodies")

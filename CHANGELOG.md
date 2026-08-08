@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.9 (build 47)
+
+- **A name you removed is called out above the write-up.** De-attribution rewrites
+  the sidecar, the attendee list and the transcript labels, but deliberately leaves
+  narrative prose alone, so a person you removed can still be named in the LLM
+  summary shown right below the voice rows.
+
+  2026-08-07: "Clem Ukaoma" was removed from a personal call that was only Miles
+  and Queen — his father's voice had matched a similar profile. All 8 label sites
+  were rewritten correctly and the panel still read "Miles, Queen, and Clem talk
+  through the fallout", with nothing to indicate the removal had taken. The panel
+  now shows, in orange above the write-up: *"You removed "Clem Ukaoma" from this
+  meeting. The write-up below was written before that and still uses the name."*
+
+  Needs glasses-server 6.21.30, which publishes `removedNames`. Older servers omit
+  the field and the panel simply shows no warning.
+
+
 ## 0.5.8 (build 46)
 
 Second adversarial-review pass before this ever shipped. gotcos.com still

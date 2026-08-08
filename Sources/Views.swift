@@ -1668,6 +1668,16 @@ struct SpeakerReviewPane: View {
                         if let content = model.openContent, !content.sections.isEmpty {
                             Divider()
                             VStack(alignment: .leading, spacing: 10) {
+                                // A person the user REMOVED can still be named in
+                                // the prose below, because de-attribution does not
+                                // rewrite written sentences. Say so before they read
+                                // it, not after.
+                                if let warning = MeetingContent.removalWarning(content.removedNames) {
+                                    Text(warning)
+                                        .font(.system(size: 10.5, design: .monospaced))
+                                        .foregroundStyle(.orange)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                                 // Keyed by POSITION, not heading. `sections` now
                                 // includes recovered extras, and one real scribe
                                 // repeats three of its own `##` headings — keying

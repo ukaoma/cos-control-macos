@@ -752,6 +752,28 @@ struct MeetingContent: Sendable {
     let capturedChars: Int
     /// Which business this meeting belongs to, '' when the server omits it.
     let domain: String
+    /// Names the user explicitly de-attributed from this meeting.
+    ///
+    /// De-attribution rewrites the sidecar, the attendee list and the transcript
+    /// labels but deliberately leaves narrative prose alone. So a removed person
+    /// can still be named in the LLM summary shown right below the voice rows —
+    /// which is exactly what happened on 2026-08-07: "Clem Ukaoma" was removed
+    /// from a call that was only Miles and Queen, all 8 label sites were rewritten,
+    /// and the panel still read "Miles, Queen, and Clem talk through...". Server
+    /// 6.21.30+; empty on older servers, which simply show no warning.
+    let removedNames: [(label: String, proseStale: Bool)]
+
+    /// The warning to show above the write-up, or nil when there is nothing to say.
+    ///
+    /// A pure function so the wording is covered by execution rather than by a
+    /// grep for a string literal.
+    static func removalWarning(_ removed: [(label: String, proseStale: Bool)]) -> String? {
+        let stale = removed.filter { $0.proseStale }.map { $0.label }
+        guard !stale.isEmpty else { return nil }
+        let names = stale.map { "\u{0022}\($0)\u{0022}" }.joined(separator: ", ")
+        return "You removed \(names) from this meeting. The write-up below was written "
+             + "before that and still uses the name."
+    }
     /// Identified share of voiced time, or nil when unknown.
     let coverage: Double?
     /// Whether the server reported per-voice shares. False below its floor.
@@ -844,6 +866,10 @@ struct MeetingContent: Sendable {
         transcriptChars = o["transcriptChars"]?.int ?? 0
         capturedChars = o["capturedChars"]?.int ?? 0
         domain = o["domain"]?.string ?? ""
+        removedNames = (o["removedNames"]?.array ?? []).compactMap { item in
+            guard let e = item.object, let l = e["label"]?.string, !l.isEmpty else { return nil }
+            return (label: l, proseStale: e["proseStale"]?.bool ?? false)
+        }
         // Read BEFORE the counts, which fall back to these lengths.
         let sumText = o["clipboardSummary"]?.string ?? ""
         let fullText = o["clipboardFull"]?.string ?? ""
