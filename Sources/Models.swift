@@ -68,6 +68,18 @@ struct ServerStatus: Sendable {
     var meetingLibraryLayout = "standalone"
     var meetingLibraryCount = 0
     var meetingLibraryWarning: String?
+    var contextBrowserSupported = false
+    var contextAvailable: Bool?
+    var contextState: String?
+    var contextProtocol: Int?
+    var contextScriptsDirectory: String?
+    var memoryAvailable: Bool?
+    var memoryCount = 0
+    var memoryState: String?
+    var threadsAvailable: Bool?
+    var threadCount = 0
+    var activeThreadCount = 0
+    var threadState: String?
     var safeToRestart = false
     var activeJobs: Int?
     var activeTranscriptionSessions: Int?
@@ -164,6 +176,18 @@ struct ServerStatus: Sendable {
         meetingLibraryLayout = details["meetingLibraryLayout"]?.string ?? "standalone"
         meetingLibraryCount = details["meetingLibraryCount"]?.int ?? 0
         meetingLibraryWarning = details["meetingLibraryWarning"]?.string
+        contextBrowserSupported = details["contextBrowserSupported"]?.bool ?? false
+        contextAvailable = details["contextAvailable"]?.bool
+        contextState = details["contextState"]?.string
+        contextProtocol = details["contextProtocol"]?.int
+        contextScriptsDirectory = details["contextScriptsDirectory"]?.string
+        memoryAvailable = details["memoryAvailable"]?.bool
+        memoryCount = details["memoryCount"]?.int ?? 0
+        memoryState = details["memoryState"]?.string
+        threadsAvailable = details["threadsAvailable"]?.bool
+        threadCount = details["threadCount"]?.int ?? 0
+        activeThreadCount = details["activeThreadCount"]?.int ?? 0
+        threadState = details["threadState"]?.string
         safeToRestart = details["safeToRestart"]?.bool ?? false
         activeJobs = details["activeJobs"]?.int
         activeTranscriptionSessions = details["activeTranscriptionSessions"]?.int

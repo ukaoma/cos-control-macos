@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.14 (build 52)
+
+- Adds a separate COS Data picker for Memory and Threads. It accepts a COS
+  workspace or `operations/scripts`, validates bridge protocol 1, then applies
+  `COS_SCRIPTS_DIR` with the same reversible restart transaction as other settings.
+- Reports authenticated Memory and Threads readiness and counts without exposing
+  paths or store metadata on public health.
+- Redacts Work, Meetings, and COS Data directory paths from copied support
+  reports while retaining useful configured/not-configured diagnostics.
+- Doctor distinguishes healthy empty stores from setup needed, a degraded
+  dependency, or an outdated workspace bridge.
+- Keeps Work Folder, Meetings Library, and COS Data as three independent paths.
+
+Requires glasses-server 6.21.35. This binary is build 52.
+
 ## 0.5.13 (build 51)
 
 - Makes an existing month-based meeting folder the recommended setup path:

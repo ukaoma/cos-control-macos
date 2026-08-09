@@ -366,6 +366,10 @@ final class COSControlHelper {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing operations directory") }
             try setOperationsDirectory(value)
         }
+        case "set-context-dir": try withMutationLock {
+            guard let value = args.dropFirst().first else { throw HelperError.message("missing COS data directory") }
+            try setContextDirectory(value)
+        }
         case "set-transcription-tier": try withMutationLock {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing transcription tier") }
             try setTranscriptionTier(value)
@@ -1921,6 +1925,23 @@ final class COSControlHelper {
         let reportedVersion = (maintenance?["serverVersion"] as? String)
             ?? (health?["server_version"] as? String)
             ?? manifest?.version
+        let contextBrowserSupported = reportedVersion.map { versionAtLeast($0, "6.21.35") } == true
+        let contextResponse: HTTPResponse? = contextBrowserSupported
+            ? (try? readToken()).flatMap { request("/api/context/status", token: $0, timeout: 12) }
+            : nil
+        let context = contextResponse?.status == 200 ? contextResponse?.body : nil
+        let memoryContext = context?["memory"] as? [String: Any]
+        let threadsContext = context?["threads"] as? [String: Any]
+        let effectiveContextState: Any
+        if let reported = context?["state"] {
+            effectiveContextState = reported
+        } else if context?["available"] as? Bool == true {
+            effectiveContextState = "ready"
+        } else if contextBrowserSupported {
+            effectiveContextState = "unavailable"
+        } else {
+            effectiveContextState = NSNull()
+        }
         let backgroundJobsSupported = reportedBackgroundJobs != nil
             || reportedVersion.map { versionAtLeast($0, "6.21.5") } == true
         let configuredBackgroundJobs = manifest?.providerEnvironment?["COS_DURABLE_QUERY_JOBS"]
@@ -1989,6 +2010,18 @@ final class COSControlHelper {
             "meetingLibraryLayout": configuredMeetings?.layout ?? "standalone",
             "meetingLibraryCount": configuredMeetings?.meetingCount ?? 0,
             "meetingLibraryWarning": configuredMeetings?.warning ?? NSNull(),
+            "contextBrowserSupported": contextBrowserSupported,
+            "contextAvailable": context?["available"] ?? NSNull(),
+            "contextState": effectiveContextState,
+            "contextProtocol": context?["protocol"] ?? NSNull(),
+            "contextScriptsDirectory": configuredContextScriptsDirectory() ?? NSNull(),
+            "memoryAvailable": memoryContext?["available"] ?? NSNull(),
+            "memoryCount": memoryContext?["total"] ?? 0,
+            "memoryState": memoryContext?["state"] ?? memoryContext?["reason"] ?? NSNull(),
+            "threadsAvailable": threadsContext?["available"] ?? NSNull(),
+            "threadCount": threadsContext?["total"] ?? 0,
+            "activeThreadCount": threadsContext?["active"] ?? 0,
+            "threadState": threadsContext?["state"] ?? threadsContext?["reason"] ?? NSNull(),
             "safeToRestart": (managed || inPlaceActive()) ? (maintenance?["safeToRestart"] ?? false) : false,
             "activeJobs": maintenance?["activeJobs"] ?? NSNull(),
             "activeTranscriptionSessions": maintenance?["activeTranscriptionSessions"] ?? NSNull(),
@@ -3435,6 +3468,50 @@ final class COSControlHelper {
             requiredMeetingLibrary: inspection)
     }
 
+    private func validatedContextScriptsDirectory(_ path: String) throws -> String {
+        let selected = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        let candidates = [
+            selected,
+            selected.appendingPathComponent("operations/scripts", isDirectory: true),
+        ]
+        for candidate in candidates {
+            guard let values = try? candidate.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  values.isDirectory == true, values.isSymbolicLink != true else { continue }
+            let bridge = candidate.appendingPathComponent("cos_api_bridge.py")
+            let python = candidate.appendingPathComponent("venv/bin/python3")
+            guard fm.fileExists(atPath: bridge.path), fm.isExecutableFile(atPath: python.path) else { continue }
+            let result = try execute(python.path, [bridge.path, "context-status"], timeout: 20)
+            guard result.code == 0,
+                  let data = result.output.data(using: .utf8),
+                  let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  payload["protocol"] as? Int == 1 else {
+                throw HelperError.message("This COS workspace uses an older Memory and Threads bridge. Update the workspace, then choose it again.")
+            }
+            return candidate.resolvingSymlinksInPath().path
+        }
+        throw HelperError.message("Choose your COS workspace or its operations/scripts folder. COS needs operations/scripts/cos_api_bridge.py and operations/scripts/venv/bin/python3. Meetings setup is separate.")
+    }
+
+    private func setContextDirectory(_ path: String) throws {
+        let scripts = try validatedContextScriptsDirectory(path)
+        let runningVersion = (maintenanceStatus()?["serverVersion"] as? String)
+            ?? (request("/api/health", timeout: 8)?.body?["server_version"] as? String)
+            ?? loadManifest()?.version
+        guard runningVersion.map({ versionAtLeast($0, "6.21.35") }) == true else {
+            throw HelperError.message("Update the server to 6.21.35 or newer before enabling Memory and Threads.")
+        }
+        let values = ["COS_SCRIPTS_DIR": scripts]
+        if let manifest = loadManifest() {
+            try applyManagedProviderEnvironment(values, current: manifest,
+                operationLabel: "COS data", requireContextProof: true)
+            return
+        }
+        guard inPlaceActive() else {
+            throw HelperError.message("Install the managed server or choose Manage in place first.")
+        }
+        try applyInPlaceProviderEnvironment(values, operationLabel: "COS data", requireContextProof: true)
+    }
+
     /// Is `name` safe to join onto the operations root?
     ///
     /// A safety check, NOT a naming policy. Deliberately permissive about style:
@@ -3607,12 +3684,27 @@ final class COSControlHelper {
         }
     }
 
+    private func requireContextBrowser() throws {
+        let token = try readToken()
+        guard let response = request("/api/context/status", token: token, timeout: 20),
+              response.status == 200, response.body?["protocol"] as? Int == 1,
+              response.body?["available"] as? Bool == true else {
+            throw HelperError.message("the restarted server did not prove the Memory and Threads bridge")
+        }
+        let memory = response.body?["memory"] as? [String: Any]
+        let threads = response.body?["threads"] as? [String: Any]
+        guard memory?["available"] as? Bool == true || threads?["available"] as? Bool == true else {
+            throw HelperError.message("the restarted server reported no usable Memory or Threads store")
+        }
+    }
+
     private func applyManagedProviderEnvironment(
         _ values: [String: String],
         removingKeys: Set<String> = [],
         current: RuntimeManifest,
         operationLabel: String,
-        requiredMeetingLibrary: MeetingsDirectoryInspection? = nil
+        requiredMeetingLibrary: MeetingsDirectoryInspection? = nil,
+        requireContextProof: Bool = false
     ) throws {
         guard loadTransaction() == nil else {
             throw HelperError.message("A previous runtime change needs Repair before \(operationLabel.lowercased()) can change.")
@@ -3686,6 +3778,7 @@ final class COSControlHelper {
                     try requireAdaptiveAudioCleanup(adaptiveAudioCleanup)
                 }
                 if let requiredMeetingLibrary { try requireMeetingLibrary(requiredMeetingLibrary) }
+                if requireContextProof { try requireContextBrowser() }
                 try requireMaintenanceRelease(activeLease)
             }
             clearTransaction()
@@ -3712,7 +3805,8 @@ final class COSControlHelper {
         _ values: [String: String],
         removingKeys: Set<String> = [],
         operationLabel: String,
-        requiredMeetingLibrary: MeetingsDirectoryInspection? = nil
+        requiredMeetingLibrary: MeetingsDirectoryInspection? = nil,
+        requireContextProof: Bool = false
     ) throws {
         // Adopted self-managed installs get the same reversible bootout /
         // bootstrap transaction as work-folder changes. launchctl kickstart is
@@ -3786,6 +3880,7 @@ final class COSControlHelper {
                     try requireAdaptiveAudioCleanup(adaptiveAudioCleanup)
                 }
                 if alreadyActive, let requiredMeetingLibrary { try requireMeetingLibrary(requiredMeetingLibrary) }
+                if alreadyActive && requireContextProof { try requireContextBrowser() }
                 // Verification owns the transaction. Clearing before the health
                 // proof would make an invariant failure impossible to roll back.
                 clearInPlaceConfigurationTransaction()
@@ -3852,6 +3947,7 @@ final class COSControlHelper {
                 try requireAdaptiveAudioCleanup(adaptiveAudioCleanup)
             }
             if let requiredMeetingLibrary { try requireMeetingLibrary(requiredMeetingLibrary) }
+            if requireContextProof { try requireContextBrowser() }
             try requireMaintenanceRelease(activeLease)
             clearInPlaceConfigurationTransaction()
             let message = values["COS_WHISPER_TRANSCRIPTION_TIER"] == "max" && effectiveTier == "balanced"
@@ -3875,6 +3971,23 @@ final class COSControlHelper {
             if let value = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
                let validated = try? validatedWorkDirectory(value) {
                 return validated
+            }
+        }
+        return nil
+    }
+
+    private func configuredContextScriptsDirectory() -> String? {
+        let environments = [
+            loadManifest()?.providerEnvironment ?? [:],
+            (launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String]) ?? [:],
+        ]
+        for environment in environments {
+            if let path = environment["COS_SCRIPTS_DIR"] {
+                let scripts = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+                if fm.fileExists(atPath: scripts.appendingPathComponent("cos_api_bridge.py").path),
+                   fm.isExecutableFile(atPath: scripts.appendingPathComponent("venv/bin/python3").path) {
+                    return scripts.resolvingSymlinksInPath().path
+                }
             }
         }
         return nil
@@ -5139,6 +5252,24 @@ final class COSControlHelper {
         let details = statusDetails()
         let state = details["runtimeState"] as? String ?? RuntimeState.unknown.rawValue
         add("Runtime ownership", state == RuntimeState.managedHealthy.rawValue ? "ok" : (state == RuntimeState.ownerConflict.rawValue ? "error" : "warning"), state)
+        if details["contextBrowserSupported"] as? Bool == true {
+            let memoryReady = details["memoryAvailable"] as? Bool == true
+            let threadsReady = details["threadsAvailable"] as? Bool == true
+            let contextState = details["contextState"] as? String
+            let contextDetail: String
+            if memoryReady && threadsReady {
+                contextDetail = "\(details["memoryCount"] as? Int ?? 0) memories · \(details["threadCount"] as? Int ?? 0) threads"
+            } else if memoryReady || threadsReady {
+                contextDetail = memoryReady ? "Memory ready; Threads unavailable" : "Threads ready; Memory unavailable"
+            } else if contextState == "bridge_outdated" {
+                contextDetail = "Workspace bridge update required; choose COS Data again after updating"
+            } else if contextState == "bridge_error" {
+                contextDetail = "COS Data bridge is temporarily unavailable; retry or run Doctor"
+            } else {
+                contextDetail = "Choose COS Data to connect a compatible operations/scripts bridge"
+            }
+            add("Memory and Threads", memoryReady && threadsReady ? "ok" : "warning", contextDetail)
+        }
         if loadManifest() != nil || inPlaceActive() {
             let providerReady = details["providerCapabilitiesReady"] as? Bool == true
             let providerDetail = details["providerCapabilityError"] as? String ?? "Installed providers are available to the service"
@@ -5181,6 +5312,9 @@ final class COSControlHelper {
         var status = details
         if redacted {
             status["workDirectory"] = (manifestConfiguredWorkDirectory() ? "<configured COS workspace>" : NSNull())
+            status["activeWorkDirectory"] = redactedConfiguredPath(status["activeWorkDirectory"] as? String, label: "active COS workspace")
+            status["operationsDirectory"] = redactedConfiguredPath(configuredOperationsDirectory(), label: "configured meetings library")
+            status["contextScriptsDirectory"] = redactedConfiguredPath(configuredContextScriptsDirectory(), label: "configured COS Data bridge")
             status["servicePID"] = NSNull()
             status["listenerPIDs"] = []
         }
@@ -5188,6 +5322,10 @@ final class COSControlHelper {
     }
 
     private func manifestConfiguredWorkDirectory() -> Bool { configuredWorkDirectory() != nil }
+
+    private func redactedConfiguredPath(_ value: String?, label: String) -> Any {
+        value == nil ? NSNull() : "<\(label)>"
+    }
 
     private func redactPath(_ value: String) -> String {
         if value == home.path { return "~" }
@@ -5338,6 +5476,8 @@ final class COSControlHelper {
         try expect(versionAtLeast("6.15.2", "6.15.2") && versionAtLeast("6.16.0", "6.15.2"), "transactional proof version gate")
         try expect(!versionAtLeast("6.15.1", "6.15.2") && !versionAtLeast("invalid", "6.15.2"), "legacy proof compatibility gate")
         try expect(redactPath(home.appendingPathComponent("workspace").path) == "~/workspace", "home path redaction")
+        try expect(redactedConfiguredPath("/Users/private/COS/operations", label: "configured meetings library") as? String == "<configured meetings library>", "report operations path redaction")
+        try expect(redactedConfiguredPath("/Users/private/COS/operations/scripts", label: "configured COS Data bridge") as? String == "<configured COS Data bridge>", "report context path redaction")
         let launchPaths = launchPathDirectories(node: "/opt/homebrew/bin/node")
         let localBin = home.appendingPathComponent(".local/bin", isDirectory: true).path
         try expect(launchPaths.contains(localBin), "managed PATH includes the user-local bin")

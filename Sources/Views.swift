@@ -225,6 +225,16 @@ struct ControlPanel: View {
             statusRow("Ownership", value: ownershipLabel, good: model.status.ownershipVerified)
             statusRow("Recovery", value: model.status.recoveryLoaded ? "Scheduled" : "Needs repair", good: model.status.recoveryInstalled && model.status.recoveryLoaded)
             statusRow("Local Whisper", value: whisperLabel, good: model.status.whisperReady)
+            if model.status.contextBrowserSupported {
+                let memoryReady = model.status.memoryAvailable == true
+                let threadsReady = model.status.threadsAvailable == true
+                statusRow("Memory & Threads", value: contextBrowserLabel, good: memoryReady && threadsReady)
+                if !memoryReady || !threadsReady {
+                    Text("Choose COS Data below. Empty stores are healthy; unavailable stores need setup or a workspace update.")
+                        .font(.caption2).foregroundStyle(COSPalette.amber)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            }
             if model.status.backgroundJobsSupported, let enabled = model.status.backgroundJobsEnabled {
                 statusRow("Background jobs", value: enabled ? "Allowed" : "Off", good: enabled)
             }
@@ -456,6 +466,19 @@ struct ControlPanel: View {
         .padding(13)
         .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
         .overlay(RoundedRectangle(cornerRadius: 13).stroke(COSPalette.line, lineWidth: 1))
+    }
+
+    private var contextBrowserLabel: String {
+        let memoryReady = model.status.memoryAvailable == true
+        let threadsReady = model.status.threadsAvailable == true
+        if memoryReady && threadsReady {
+            return "\(model.status.memoryCount) memories · \(model.status.threadCount) threads"
+        }
+        if memoryReady { return "Memory ready · Threads unavailable" }
+        if threadsReady { return "Threads ready · Memory unavailable" }
+        if model.status.contextState == "bridge_outdated" { return "Workspace update required" }
+        if model.status.contextState == "bridge_error" { return "Temporarily unavailable" }
+        return "Setup needed"
     }
 
     private var controls: some View {
@@ -885,6 +908,15 @@ struct ControlPanel: View {
                 Button("Meetings Library", systemImage: "calendar") { model.selectOperationsFolder() }
                     .disabled(!model.status.installed && model.status.runtimeState != "managedInPlace")
                     .help("Choose your existing meetings folder. COS also recognizes a parent containing several custom-named meeting folders.")
+            }
+            HStack {
+                Button("COS Data", systemImage: "externaldrive.badge.icloud") { model.selectContextFolder() }
+                    .disabled(!model.status.installed && model.status.runtimeState != "managedInPlace")
+                    .help("Choose the COS workspace that supplies Memory and Threads. This does not change the Work Folder or Meetings Library.")
+                if let path = model.status.contextScriptsDirectory {
+                    Text(path).font(.caption2).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                }
             }
             HStack {
                 Button("Open Cursor", systemImage: "chevron.left.forwardslash.chevron.right") { model.openCursor() }

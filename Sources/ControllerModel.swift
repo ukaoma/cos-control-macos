@@ -626,6 +626,18 @@ final class ControllerModel: ObservableObject {
         perform("set-operations-dir", arguments: [url.path])
     }
 
+    func selectContextFolder() {
+        let panel = NSOpenPanel()
+        panel.title = "COS Data — Memory and Threads"
+        panel.message = "Choose your COS workspace, or its operations/scripts folder. This is separate from the agent Work Folder and Meetings Library. COS validates the local bridge before changing the server."
+        panel.prompt = "Use for Memory and Threads"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        perform("set-context-dir", arguments: [url.path])
+    }
+
     func openLogs() {
         let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/COS Glasses", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

@@ -37,6 +37,16 @@ one LaunchAgent, `com.cos.glasses-server`, as the sole server owner.
 Existing data remains under the standard COS Glasses locations. The existing
 `npx @gotcos/glasses-server` foreground workflow remains supported.
 
+## 0.5.14 Memory and Threads setup
+
+COS Data is a separate, explicit picker for the local Memory and Threads bridge.
+Choose a COS workspace or its `operations/scripts` folder. Control validates
+`cos_api_bridge.py`, the workspace Python environment, and authenticated bridge
+protocol 1 before committing the LaunchAgent change. Empty stores are healthy;
+missing, degraded, and outdated dependencies remain visibly distinct.
+
+Requires glasses-server 6.21.35.
+
 ## 0.5.13 easy existing meeting libraries
 
 The common setup is one click: choose the folder that already contains your
