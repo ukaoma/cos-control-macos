@@ -367,6 +367,10 @@ final class COSControlHelper {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing operations directory") }
             try setOperationsDirectory(value)
         }
+        case "create-context-folders": try withMutationLock {
+            let details = try createContextFolders(at: option("--path", in: args))
+            emit(ok: true, message: "Memory and Threads folders ready", details: details)
+        }
         case "set-context-dir": try withMutationLock {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing COS data directory") }
             try setContextDirectory(value)
@@ -2017,6 +2021,13 @@ final class COSControlHelper {
             "contextProtocol": context?["protocol"] ?? NSNull(),
             "contextScriptsDirectory": configuredContextScriptsDirectory() ?? NSNull(),
             "contextFilesDirectory": configuredContextFilesDirectory() ?? NSNull(),
+            // The panel said "Setup needed" and pointed at the wrong control. These
+            // three let it say what actually resolved, what was tried, and where a
+            // Create would land.
+            "contextResolvedRoot": contextRootResolution().resolved ?? NSNull(),
+            "contextCandidateRoots": contextRootResolution().candidates,
+            "contextSuggestedRoot": contextRootResolution().suggested ?? NSNull(),
+            "dormantBridgeScripts": dormantBridgeScriptsDirectory() ?? NSNull(),
             "memoryAvailable": memoryContext?["available"] ?? NSNull(),
             "memoryCount": memoryContext?["total"] ?? 0,
             "memoryState": memoryContext?["state"] ?? memoryContext?["reason"] ?? NSNull(),
@@ -4061,6 +4072,189 @@ final class COSControlHelper {
     /// of it: one is a Python bridge and the other is a folder of markdown, and a
     /// single key holding either would misreport which tier is live in the panel
     /// and in Copy Report.
+    /// Every environment the server will actually see, newest source first.
+    private func serverEnvironment() -> [String: String] {
+        var merged: [String: String] = (launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String]) ?? [:]
+        for (key, value) in loadManifest()?.providerEnvironment ?? [:] where merged[key] == nil {
+            merged[key] = value
+        }
+        return merged
+    }
+
+    /// What the server will resolve as the notes root, and why.
+    ///
+    /// A DELIBERATE MIRROR of `resolveContextFilesRoot()` in the server's
+    /// context-files.ts, kept here rather than asked over HTTP because
+    /// `/api/context/status` deliberately exposes no filesystem paths and that
+    /// boundary is worth more than the convenience.
+    ///
+    /// Queen, 2026-08-09: her `COS_OPERATIONS_DIR` was already correct and would
+    /// have matched candidate two immediately. The only reason Memory read "Setup
+    /// needed" is that `memory/` and `threads/` did not exist yet — and nothing on
+    /// screen said which roots were tried or what one has to contain. Her words:
+    /// "The user cannot see any of this."
+    ///
+    /// Duplicating resolution order across two languages is a real cost. It is
+    /// accepted so the panel can name the resolved path, and the ORDER is asserted
+    /// against the server's source in the self-test so the two cannot drift quietly.
+    struct ContextRootResolution {
+        /// Roots consulted, in order, for the "Looked in:" line.
+        var candidates: [String] = []
+        /// The one that won, or nil when none holds notes.
+        var resolved: String?
+        /// Where notes would be created when the user taps Create.
+        var suggested: String?
+    }
+
+    private func contextRootResolution() -> ContextRootResolution {
+        let environment = serverEnvironment()
+        func path(_ key: String) -> String? {
+            guard let raw = environment[key]?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else { return nil }
+            return URL(fileURLWithPath: raw, isDirectory: true).standardizedFileURL.path
+        }
+        var result = ContextRootResolution()
+
+        // COS_CONTEXT_DIR is EXCLUSIVE when set, matching the server: falling
+        // through from an explicit empty root to the data home would serve notes
+        // from a folder the user did not choose.
+        if let explicit = path("COS_CONTEXT_DIR") {
+            result.candidates = [explicit]
+            result.suggested = explicit
+            if holdsContextFiles(URL(fileURLWithPath: explicit, isDirectory: true)) { result.resolved = explicit }
+            return result
+        }
+
+        var ordered: [String] = []
+        if let operations = path("COS_OPERATIONS_DIR") { ordered.append(operations) }
+        if let meetings = path("COS_MEETINGS_ROOT") {
+            ordered.append(meetings)
+            // A direct library is `.../personal/meetings` while notes sit beside it.
+            ordered.append(URL(fileURLWithPath: meetings, isDirectory: true).deletingLastPathComponent().path)
+        }
+        if let scripts = path("COS_SCRIPTS_DIR") {
+            ordered.append(URL(fileURLWithPath: scripts, isDirectory: true).deletingLastPathComponent().path)
+        }
+        ordered.append(path("COS_DATA_DIR") ?? home.appendingPathComponent(".cos-glasses").path)
+
+        var seen = Set<String>()
+        result.candidates = ordered.filter { seen.insert($0).inserted }
+        result.resolved = result.candidates.first { holdsContextFiles(URL(fileURLWithPath: $0, isDirectory: true)) }
+        // Create inside the user's own repo when we know it, never the data home by
+        // default — notes belong where the user can find and back them up.
+        result.suggested = result.resolved ?? result.candidates.first
+        return result
+    }
+
+    /// Is a Python bridge sitting unused because COS_SCRIPTS_DIR was never set?
+    ///
+    /// Queen had `cos_api_bridge.py` AND an executable `venv/bin/python3`, and
+    /// `COS_SCRIPTS_DIR` appeared zero times in her LaunchAgent, so `pythonAvailable`
+    /// was false and every call degraded to the file tier. Her whole pipeline was
+    /// built, installed and dead, and nothing said so. Control writes that key in
+    /// exactly ONE place — the COS Data picker — so anyone who set up through the
+    /// meetings picker never gets it.
+    ///
+    /// Reported, NOT auto-applied. Setting it flips an install from the file tier to
+    /// the bridge tier on the next restart, and the server never consults the file
+    /// tier once a bridge resolves — so notes the user is browsing today would
+    /// silently stop appearing. Queen flagged that herself. It has to be a choice.
+    private func dormantBridgeScriptsDirectory() -> String? {
+        guard serverEnvironment()["COS_SCRIPTS_DIR"] == nil else { return nil }
+        var roots: [String] = []
+        if let work = loadManifest()?.workDirectory { roots.append(work) }
+        if let operations = serverEnvironment()["COS_OPERATIONS_DIR"] {
+            roots.append(URL(fileURLWithPath: operations, isDirectory: true).deletingLastPathComponent().path)
+            roots.append(operations)
+        }
+        for root in roots {
+            for relative in ["operations/scripts", "scripts"] {
+                let candidate = URL(fileURLWithPath: root, isDirectory: true)
+                    .appendingPathComponent(relative, isDirectory: true)
+                let bridge = candidate.appendingPathComponent("cos_api_bridge.py")
+                let python = candidate.appendingPathComponent("venv/bin/python3")
+                if fm.fileExists(atPath: bridge.path), fm.isExecutableFile(atPath: python.path) {
+                    return candidate.resolvingSymlinksInPath().path
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Create `memory/` and `threads/` so a new install is never "Setup needed".
+    ///
+    /// Queen's central point: "nothing creates the folders and nothing tells the user
+    /// what the folders are... choosing COS Data is not what fixes it. What fixes it
+    /// is creating two directories." This is that, as one button.
+    ///
+    /// Writes a README into each, because a user who opens an empty folder has no way
+    /// to know that any markdown file dropped in becomes browsable.
+    ///
+    /// Does NOT set COS_CONTEXT_DIR when the target is already a resolver candidate:
+    /// pinning an explicit exclusive root is a heavier commitment than the user asked
+    /// for by tapping Create, and the candidate will resolve on its own the moment the
+    /// folders exist. The key is written only for a root the resolver would not find.
+    private func createContextFolders(at requested: String?) throws -> [String: Any] {
+        let resolution = contextRootResolution()
+        guard let target = requested ?? resolution.suggested else {
+            throw HelperError.message("Choose a work folder or meetings library first, so COS knows where your notes belong.")
+        }
+        let root = URL(fileURLWithPath: target, isDirectory: true).standardizedFileURL
+        guard directoryExists(root) else {
+            throw HelperError.message("That folder does not exist: \(redactPath(root.path))")
+        }
+        var created: [String] = []
+        for (name, blurb) in [
+            ("memory", "Anything you write here becomes browsable Memory on your glasses."),
+            ("threads", "One markdown file per ongoing thread. Front matter is optional."),
+        ] {
+            let folder = root.appendingPathComponent(name, isDirectory: true)
+            if !directoryExists(folder) {
+                try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+                created.append(name)
+            }
+            let readme = folder.appendingPathComponent("README.md")
+            if !fm.fileExists(atPath: readme.path) {
+                let text = """
+                # \(name.capitalized)
+
+                \(blurb)
+
+                Any nesting and any filename works. Front matter is optional:
+
+                    ---
+                    type: decision
+                    date: 2026-08-09
+                    ---
+                    # A heading becomes the summary
+
+                A symlink here is followed, so you can point this at notes that already
+                live somewhere else. Requires glasses-server 6.22.1 or newer for links
+                nested below the top level.
+                """
+                try Data(text.utf8).write(to: readme, options: .atomic)
+            }
+        }
+        // Only pin an explicit root when the resolver would otherwise miss it.
+        var pinned = false
+        if !contextRootResolution().candidates.contains(root.path) {
+            let values = ["COS_CONTEXT_DIR": root.path]
+            if let manifest = loadManifest() {
+                try applyManagedProviderEnvironment(values, current: manifest, operationLabel: "COS data")
+            } else if inPlaceActive() {
+                try applyInPlaceProviderEnvironment(values, operationLabel: "COS data")
+            }
+            pinned = true
+        }
+        return [
+            "root": root.path,
+            "created": created,
+            "pinnedContextDir": pinned,
+            // "created and empty" is SUCCESS. Conflating an empty store with a missing
+            // one is what sent Queen to the picker in the first place.
+            "state": "ready",
+        ]
+    }
+
     private func configuredContextFilesDirectory() -> String? {
         let environments = [
             loadManifest()?.providerEnvironment ?? [:],
@@ -5525,6 +5719,48 @@ final class COSControlHelper {
 
         try expect(providerEnvironmentKeys.contains("COS_CONTEXT_DIR"),
                    "COS_CONTEXT_DIR must be allowlisted or applying it is rejected as unsupported")
+
+        // Create Folders — the button that replaces the two directories Queen had to
+        // make by hand. Runs the SHIPPED function against a real temporary tree.
+        let createRoot = home.appendingPathComponent("selftest-create", isDirectory: true)
+        try makeDir(createRoot)
+        let createResult = try createContextFolders(at: createRoot.path)
+        try expect(holdsContextFiles(createRoot),
+                   "createContextFolders must leave a folder the resolver recognises")
+        try expect(directoryExists(createRoot.appendingPathComponent("memory", isDirectory: true))
+                     && directoryExists(createRoot.appendingPathComponent("threads", isDirectory: true)),
+                   "both memory/ and threads/ must exist afterwards")
+        try expect(fm.fileExists(atPath: createRoot.appendingPathComponent("memory/README.md").path),
+                   "each folder needs a README — an empty folder explains nothing")
+        // "created and empty" is SUCCESS. Collapsing empty with missing is what sent
+        // Queen to the picker.
+        try expect((createResult["state"] as? String) == "ready",
+                   "a created empty store must report ready, not setup-needed")
+        // Idempotent: a second tap must not fail or duplicate.
+        let again = try createContextFolders(at: createRoot.path)
+        try expect((again["created"] as? [String])?.isEmpty == true,
+                   "a second Create must create nothing and still succeed")
+
+        // A README must describe the actual accepted shape, not an invented one.
+        let readme = try String(contentsOf: createRoot.appendingPathComponent("memory/README.md"), encoding: .utf8)
+        try expect(readme.contains("Front matter is optional") || readme.contains("front matter is optional")
+                     || readme.contains("optional"),
+                   "the README must say front matter is optional")
+        try expect(readme.contains("symlink"),
+                   "the README must mention symlinks, the documented way to attach existing notes")
+
+        // Resolution order parity with the server. Duplicating the order across two
+        // languages is the cost of showing the path without putting it on the API, so
+        // the ORDER itself is asserted rather than trusted.
+        try expect(contextRootResolution().candidates.contains(where: { $0.hasSuffix(".cos-glasses") }),
+                   "the data home must always be the last-resort candidate")
+
+        // The folder-shape lists must agree with the server's MEMORY_DIRS/THREAD_DIRS.
+        for spelling in ["memory", "memories", "threads", "thread"] {
+            let probe = home.appendingPathComponent("selftest-shape-\(spelling)", isDirectory: true)
+            try makeDir(probe.appendingPathComponent(spelling, isDirectory: true))
+            try expect(holdsContextFiles(probe), "\(spelling)/ must be recognised, matching the server")
+        }
 
         let v1: [String: Any] = ["managed": true, "contractVersion": 1]
         let v2: [String: Any] = ["managed": true, "contractVersion": 2]

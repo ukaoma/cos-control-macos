@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.5.16 (build 54)
+
+Queen installed server 6.22.0 and hit "Memory & Threads: Setup needed" with a hint
+that sent her to the COS Data picker. The picker was the wrong control: her
+`COS_OPERATIONS_DIR` was already correct and would have resolved immediately. The
+only problem was that `memory/` and `threads/` did not exist, and nothing created
+them or said what they were. Her words: "choosing COS Data is not what fixes it.
+What fixes it is creating two directories."
+
+- **Create Folders.** One button makes `memory/` and `threads/` in the folder COS
+  would already look in, each with a README explaining that any markdown file
+  dropped in becomes browsable. Idempotent. A created-and-empty store reports
+  READY, not setup-needed — collapsing empty with missing is what caused the
+  wrong turn.
+- **The panel says where it looked.** It now shows the resolved root path, or the
+  candidate roots it tried when nothing resolved. That entire diagnosis previously
+  required reading the server source.
+- **A dormant Python bridge is called out.** `COS_SCRIPTS_DIR` is written in exactly
+  one place, the COS Data picker, so anyone who set up through the meetings picker
+  has a complete venv and `cos_api_bridge.py` sitting unused with no indication.
+  Control now detects that and says so.
+- **It is NOT applied automatically, deliberately.** Setting `COS_SCRIPTS_DIR` flips
+  an install from the file tier to the bridge tier, and the server stops consulting
+  the file tier entirely once a bridge resolves, so notes being browsed today would
+  silently stop appearing. Queen flagged this herself. It stays a visible choice.
+- The hint text now names the button instead of pointing at a picker that cannot
+  help.
+
+Resolution order is mirrored from the server's `resolveContextFilesRoot()` so the
+path can be shown without putting filesystem paths on the API. The order and the
+accepted folder spellings are asserted in the self-test so the two implementations
+cannot drift quietly.
+
 ## 0.5.15 (build 53)
 
 - COS Data accepts a folder of markdown notes, not only a Python bridge. A folder

@@ -76,6 +76,14 @@ struct ServerStatus: Sendable {
     /// Set when Memory and Threads come from plain markdown rather than the
     /// Python bridge. Exactly one of the two is populated.
     var contextFilesDirectory: String?
+    /// The root the server will actually resolve, or nil when none holds notes.
+    var contextResolvedRoot: String?
+    /// Roots consulted in order, so the panel can say where it looked.
+    var contextCandidateRoots: [String] = []
+    /// Where a Create would put memory/ and threads/.
+    var contextSuggestedRoot: String?
+    /// A complete Python bridge sitting unused because COS_SCRIPTS_DIR is unset.
+    var dormantBridgeScripts: String?
     var memoryAvailable: Bool?
     var memoryCount = 0
     var memoryState: String?
@@ -185,6 +193,10 @@ struct ServerStatus: Sendable {
         contextProtocol = details["contextProtocol"]?.int
         contextScriptsDirectory = details["contextScriptsDirectory"]?.string
         contextFilesDirectory = details["contextFilesDirectory"]?.string
+        contextResolvedRoot = details["contextResolvedRoot"]?.string
+        contextCandidateRoots = details["contextCandidateRoots"]?.array?.compactMap { $0.string } ?? []
+        contextSuggestedRoot = details["contextSuggestedRoot"]?.string
+        dormantBridgeScripts = details["dormantBridgeScripts"]?.string
         memoryAvailable = details["memoryAvailable"]?.bool
         memoryCount = details["memoryCount"]?.int ?? 0
         memoryState = details["memoryState"]?.string

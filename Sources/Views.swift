@@ -239,6 +239,7 @@ struct ControlPanel: View {
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .multilineTextAlignment(.trailing)
                 }
+                contextDetail
             }
             if model.status.backgroundJobsSupported, let enabled = model.status.backgroundJobsEnabled {
                 statusRow("Background jobs", value: enabled ? "Allowed" : "Off", good: enabled)
@@ -491,15 +492,56 @@ struct ControlPanel: View {
     /// Branches on WHY it is unavailable. Telling someone whose bridge is mid-error
     /// to go create a folder is noise, and telling someone with no workspace that
     /// "empty stores are healthy" is not a next step.
+    ///
+    /// Queen, 2026-08-09, on the version of this that pointed at the picker: "That
+    /// message sent me to the COS Data picker, which is the wrong place... choosing
+    /// COS Data is not what fixes it. What fixes it is creating two directories."
+    /// There is now a button for that, so the hint names the button.
     private var contextBrowserHint: String {
         switch model.status.contextState {
         case "bridge_outdated": return "Update your COS workspace, then choose COS Data again."
         case "bridge_error": return "The workspace bridge failed. Open Logs, then choose COS Data again."
         default:
-            if model.status.contextFilesDirectory != nil || model.status.contextScriptsDirectory != nil {
-                return "The chosen folder holds no notes yet. Add markdown files to memory/ or threads/ inside it."
+            if model.status.contextResolvedRoot != nil {
+                return "The store resolved but holds no notes yet. Drop markdown files into memory/ or threads/."
             }
-            return "No vector database needed: make a folder with memory/ and threads/ subfolders, put markdown notes in them, then click COS Data."
+            if let suggested = model.status.contextSuggestedRoot {
+                return "No memory/ or threads/ folder yet. Create Folders makes them in \(shortPath(suggested))."
+            }
+            return "Choose a Work Folder or Meetings Library first, then Create Folders."
+        }
+    }
+
+    /// Trailing path components only. The full path goes on its own selectable line.
+    private func shortPath(_ path: String) -> String {
+        let parts = path.split(separator: "/")
+        return parts.count <= 2 ? path : "…/" + parts.suffix(2).joined(separator: "/")
+    }
+
+    /// Where the notes actually are, and which tier is reading them.
+    ///
+    /// The whole diagnosis Queen had to do by reading source — which root won, which
+    /// were tried, and whether the Python tier is even reachable — is data Control
+    /// already had and simply never showed.
+    @ViewBuilder private var contextDetail: some View {
+        if let root = model.status.contextResolvedRoot {
+            Text("Root: \(root)").font(.caption2).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        } else if !model.status.contextCandidateRoots.isEmpty {
+            Text("Looked in: " + model.status.contextCandidateRoots.map(shortPath).joined(separator: ", "))
+                .font(.caption2).foregroundStyle(.secondary)
+                .lineLimit(2).truncationMode(.middle).textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        if let scripts = model.status.dormantBridgeScripts {
+            // Reported, never applied on our own initiative: switching tiers stops the
+            // file tier being consulted at all, so notes being browsed today would
+            // silently stop appearing.
+            Text("A Python bridge is installed but unused at \(shortPath(scripts)). Choose COS Data to switch to it, which replaces the file tier.")
+                .font(.caption2).foregroundStyle(COSPalette.amber)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .multilineTextAlignment(.trailing)
         }
     }
 
@@ -938,6 +980,15 @@ struct ControlPanel: View {
                 // Names the TIER, not just the path. "Notes" is browse and
                 // reference; "Bridge" adds semantic recall and type statistics.
                 // Showing a bare path let a files install look like a pipeline.
+                // One tap replaces the two directories Queen had to create by hand.
+                // Offered whenever no store has resolved, including when the picker
+                // has never been touched, because that is exactly the new-install case.
+                if model.status.contextResolvedRoot == nil {
+                    Button("Create Folders", systemImage: "folder.badge.plus") { model.perform("create-context-folders") }
+                        .disabled(!model.status.installed && model.status.runtimeState != "managedInPlace")
+                        .help(model.status.contextSuggestedRoot.map { "Creates memory/ and threads/ in \($0)" }
+                              ?? "Choose a Work Folder or Meetings Library first")
+                }
                 if let path = model.status.contextScriptsDirectory {
                     Text("Bridge: \(path)").font(.caption2).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
