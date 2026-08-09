@@ -432,4 +432,57 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
 /usr/bin/vtool -show-build "$TMP/cos-control-helper" | /usr/bin/grep -q 'minos 14.0'
 /usr/bin/vtool -show-build "$TMP/COS Control" | /usr/bin/grep -q 'minos 14.0'
 
+# --- Every route a click can enter must actually render -----------------------
+# The 0.5.17 Review Memories / Review Threads buttons did NOTHING when clicked. The
+# opener set `contextBrowseKind`, but the pane was mounted inside
+# `if model.reviewRouteActive` — a flag only the speaker flow ever sets — so state
+# changed and no view was watching. It compiled, the helper worked, and 110 self-test
+# assertions passed, because nothing tied the OPENER to the RENDER CONDITION.
+/usr/bin/python3 - "$ROOT" <<'ROUTECHK'
+import pathlib, re, sys
+root = pathlib.Path(sys.argv[1])
+views = (root / "Sources/Views.swift").read_text()
+model = (root / "Sources/ControllerModel.swift").read_text()
+
+def need(condition, message):
+    if not condition:
+        sys.exit(f"route wiring: {message}")
+
+# 1. Every *RouteActive flag the model defines is consumed by the view. An
+#    unrendered route is a dead click by construction.
+flags = re.findall(r"var (\w*RouteActive)\s*:\s*Bool", model)
+need(len(flags) >= 2, f"expected the speaker and context routes, found {flags}")
+for flag in flags:
+    need(f"model.{flag}" in views, f"{flag} is never read by Views.swift")
+
+# 2. The context route renders its own pane, gated on NOTHING BUT its own flag.
+#    Checking only that the flag appears somewhere is too weak: a mutation that
+#    restored the original bug — `else if model.reviewRouteActive &&
+#    model.contextRouteActive` — passed that version of this test.
+need("ContextDetailPane(model: model)" in views, "ContextDetailPane is never mounted")
+branch = re.search(r"\}\s*else if ([^\n{]*)\{((?:\s*//[^\n]*\n)*)\s*ContextDetailPane", views)  # comment lines between the gate and the pane are fine
+need(branch is not None, "ContextDetailPane is not on its own else-if branch")
+need(branch.group(1).strip() == "model.contextRouteActive",
+     f"the context pane is gated on {branch.group(1).strip()!r}, not on model.contextRouteActive alone")
+
+# 3. The route flag reads the var the opener writes. This is the exact link that was
+#    missing: openContextRecord set one thing, the mount condition read another.
+route = re.search(r"var contextRouteActive[^}]*\}", model, re.S)
+need(route is not None, "contextRouteActive not found")
+# Word-boundary, because `contextDetailLoading` CONTAINS `contextDetail`: a mutation
+# that reduced the flag to just the loading bool passed a plain substring check.
+need(re.search(r"\bcontextDetail\b", route.group(0)) is not None,
+     "contextRouteActive does not read contextDetail itself")
+opener = re.search(r"func openContextRecord\(.*?\n    \}", model, re.S)
+need(opener is not None, "openContextRecord not found")
+need(re.search(r"contextDetail\s*=", opener.group(0)) is not None,
+     "openContextRecord never assigns contextDetail, so the route can never activate")
+
+# 4. Both list cards are placed, and the controls row no longer carries the review
+#    buttons — five buttons plus a path truncated to "Revi..." at 390pt.
+need(views.count('contextListCard(kind: "memory")') == 1, "memory list card is not placed")
+need(views.count('contextListCard(kind: "thread")') == 1, "thread list card is not placed")
+need('Button("Review Memories"' not in views, "Review Memories is back in a button row")
+ROUTECHK
+
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"

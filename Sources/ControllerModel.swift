@@ -738,97 +738,118 @@ final class ControllerModel: ObservableObject {
     // ── Memory and Threads review ───────────────────────────
     //
     // Miles: "It's mostly just exposing the read-only layer that we see from the
-    // glasses." That is exactly what this is — the same authenticated routes the G2
-    // browses, on a screen with room to read them.
+    // glasses... The expected action was going to be something more similar to what
+    // we see with review speakers."
+    //
+    // So this is the SPEAKERS shape, which the first cut got wrong: a list card in
+    // the main panel, and clicking a row routes the whole panel to a detail view.
+    // The first version put two buttons in the controls row and mounted the pane
+    // inside `if reviewRouteActive` — a flag only the speaker flow ever sets — so a
+    // click updated state that nothing was rendering. Nothing happened, visibly.
     //
     // "Pick up from here" is COPY and REVEAL, not send. Control has no path to the
-    // agent (no /api/query call exists anywhere in it), and arming a reference for
-    // the next prompt would need a write route the amendment design does not have.
-    // Copying grounded context into whatever you are already typing achieves the
-    // same thing today without inventing a mutation surface.
+    // agent (no /api/query call exists in it), and arming a reference for the next
+    // prompt would need a write route the amendment design does not have.
 
-    @Published var contextBrowseKind: String?          // "memory" | "thread" | nil
-    @Published var contextRecords: [ContextRecord] = []
-    @Published var contextRecordsLoading = false
-    @Published var contextRecordsError: String?
-    @Published var contextOpenRecord: ContextRecord?
-    @Published var contextHeadline = ""
+    @Published var memoryRecords: [ContextRecord] = []
+    @Published var threadRecords: [ContextRecord] = []
+    @Published var memoryRecordsLoading = false
+    @Published var threadRecordsLoading = false
+    @Published var memoryRecordsError: String?
+    @Published var threadRecordsError: String?
+    @Published var memoryHeadline = ""
+    @Published var threadHeadline = ""
 
-    func openContextBrowser(_ kind: String) {
-        contextBrowseKind = kind
-        contextOpenRecord = nil
-        contextRecordsError = nil
-        contextRecords = []
-        Task { [weak self] in await self?.loadContextRecords(kind: kind) }
+    /// The open record, its kind, and the load/error states that make a click always
+    /// produce something on screen — including a failure.
+    @Published var contextDetail: ContextRecord?
+    @Published var contextDetailKind: String?
+    @Published var contextDetailLoading = false
+    @Published var contextDetailError: String?
+
+    /// Route the panel to the detail view.
+    ///
+    /// Mirrors `reviewRouteActive`, error case included, so a failed load is visible
+    /// in place instead of silently doing nothing when a row is clicked.
+    var contextRouteActive: Bool {
+        contextDetail != nil || contextDetailLoading || contextDetailError != nil
     }
 
-    func closeContextBrowser() {
-        contextBrowseKind = nil
-        contextRecords = []
-        contextOpenRecord = nil
-        contextRecordsError = nil
-    }
-
-    private func loadContextRecords(kind: String) async {
-        contextRecordsLoading = true
-        contextRecordsError = nil
-        defer { contextRecordsLoading = false }
+    func loadContextRecords(kind: String) async {
+        let isThread = kind == "thread"
+        if isThread { threadRecordsLoading = true } else { memoryRecordsLoading = true }
+        defer { if isThread { threadRecordsLoading = false } else { memoryRecordsLoading = false } }
         do {
-            let command = kind == "thread" ? "context-threads" : "context-memories"
-            let response = try await helper.run([command, "--limit", "50"])
-            let key = kind == "thread" ? "threads" : "memories"
-            let rows = response.details[key]?.array?.compactMap { $0.object } ?? []
-            contextRecords = rows.map { kind == "thread" ? ContextRecord.thread($0) : ContextRecord.memory($0) }
-            // `shown` is this page; `total`/`activeCount` cover the whole store. A
-            // live probe returned "4 threads" beside "11 active", so the headline
-            // names both rather than implying the page is everything.
-            let shown = response.details["shown"]?.int ?? contextRecords.count
-            if kind == "thread" {
+            let response = try await helper.run([isThread ? "context-threads" : "context-memories", "--limit", "50"])
+            let rows = response.details[isThread ? "threads" : "memories"]?.array?.compactMap { $0.object } ?? []
+            let records = rows.map { isThread ? ContextRecord.thread($0) : ContextRecord.memory($0) }
+            // `shown` is this PAGE; `total`/`activeCount` cover the whole store. A live
+            // probe printed "4 threads" beside "11 active", so both are named.
+            let shown = response.details["shown"]?.int ?? records.count
+            if isThread {
+                threadRecords = records
                 let active = response.details["activeCount"]?.int ?? 0
-                contextHeadline = "Showing \(shown) · \(active) active"
+                threadHeadline = "\(shown) shown · \(active) active"
+                threadRecordsError = records.isEmpty
+                    ? "No threads yet. Threads are markdown files in threads/, or tracked automatically with a bridge."
+                    : nil
             } else {
+                memoryRecords = records
                 let total = response.details["total"]?.int ?? shown
-                contextHeadline = total > shown ? "Showing \(shown) of \(total)" : "\(shown) stored"
-            }
-            if contextRecords.isEmpty {
-                contextRecordsError = kind == "thread"
-                    ? "No threads yet. Threads are markdown files in threads/, or tracked automatically when a bridge is configured."
-                    : "No memories yet. Drop markdown into memory/, or configure a bridge for the vector store."
+                memoryHeadline = total > shown ? "\(shown) of \(total)" : "\(shown) stored"
+                memoryRecordsError = records.isEmpty
+                    ? "No memories yet. Drop markdown into memory/, or configure a bridge for the vector store."
+                    : nil
             }
         } catch {
-            contextRecordsError = error.localizedDescription
+            if isThread { threadRecordsError = error.localizedDescription }
+            else { memoryRecordsError = error.localizedDescription }
         }
     }
 
-    /// Open one record, fetching full detail so the body is not the truncated row.
-    func openContextRecord(_ record: ContextRecord) {
-        contextOpenRecord = record
-        let kind = contextBrowseKind ?? "memory"
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                let command = kind == "thread" ? "context-threads" : "context-memories"
-                let response = try await self.helper.run([command, "--id", record.id])
-                let raw = response.details.reduce(into: [String: JSONValue]()) { $0[$1.key] = $1.value }
-                let full = kind == "thread" ? ContextRecord.thread(raw) : ContextRecord.memory(raw)
-                // Keep the row's own title when detail omits it, so the header never
-                // blanks out mid-read.
-                if !full.id.isEmpty { self.contextOpenRecord = full.title.isEmpty ? record : full }
-            } catch {
-                // The list row is already readable; a detail failure must not clear it.
-                self.contextRecordsError = error.localizedDescription
-            }
+    /// Open one record. Routes immediately on the LIST row so the click always shows
+    /// something, then replaces it with full detail when that arrives.
+    func openContextRecord(_ record: ContextRecord, kind: String) {
+        contextDetailKind = kind
+        contextDetail = record
+        contextDetailError = nil
+        copyNote = nil
+        Task { [weak self] in await self?.fetchContextDetail(record: record, kind: kind) }
+    }
+
+    private func fetchContextDetail(record: ContextRecord, kind: String) async {
+        contextDetailLoading = true
+        defer { contextDetailLoading = false }
+        do {
+            let response = try await helper.run([
+                kind == "thread" ? "context-threads" : "context-memories", "--id", record.id,
+            ])
+            let raw = response.details.reduce(into: [String: JSONValue]()) { $0[$1.key] = $1.value }
+            let full = kind == "thread" ? ContextRecord.thread(raw) : ContextRecord.memory(raw)
+            // Keep the row when detail is thinner, so the header never blanks mid-read.
+            if !full.id.isEmpty && !full.title.isEmpty { contextDetail = full }
+        } catch {
+            // The row is already on screen; a detail failure annotates rather than
+            // clearing it, which is why the route stays active.
+            contextDetailError = error.localizedDescription
         }
+    }
+
+    func closeContextDetail() {
+        contextDetail = nil
+        contextDetailKind = nil
+        contextDetailError = nil
+        copyNote = nil
     }
 
     /// Copy the record as grounded context, ready to paste into a prompt.
     ///
-    /// Quoted and labelled with its id, which is the same contract the glasses use
-    /// when they attach a reference: stored text is DATA, never instructions.
+    /// Quoted and labelled with its id — the same data-not-instructions contract the
+    /// glasses use when they attach a reference.
     func copyContextRecord(_ record: ContextRecord) {
+        let label = contextDetailKind == "thread" ? "Thread" : "Memory"
         let text = """
-        \(contextBrowseKind == "thread" ? "Thread" : "Memory") \(record.id)
-        \(record.subtitle.isEmpty ? "" : "(\(record.subtitle))")
+        \(label) \(record.id)\(record.subtitle.isEmpty ? "" : " (\(record.subtitle))")
 
         \"\"\"
         \(record.body.isEmpty ? record.title : record.body)

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.18 (build 56)
+
+Review Memories and Review Threads actually work. In 0.5.17 they did nothing.
+
+- **The click was dead.** The buttons set `contextBrowseKind`, but the pane was
+  mounted inside `if model.reviewRouteActive` — a flag only the speaker-review flow
+  ever sets — so state changed and no view was watching. It compiled, the helper
+  worked, and 110 self-test assertions passed, because nothing connected the opener
+  to the render condition.
+- **Rebuilt in the shape it should have had:** a titled list card in the main panel
+  with its own Refresh and chevron rows, and a click that routes the whole panel to
+  a detail view. The same pattern as Review speakers, which is what was asked for.
+- **The buttons are gone from the controls row.** Five buttons plus a path did not
+  fit 390pt and truncated to "CO…", "Revi…", "Revi…", "Cre…". Lists belong in cards.
+- Detail shows the full body selectable, the record id, Copy as Context, and Reveal
+  in Finder for file-tier records. A detail-fetch failure annotates the record
+  rather than clearing it, so a click always leaves something on screen.
+- **A dead click is now a test failure.** Four assertions tie every `*RouteActive`
+  flag to a view that reads it, require the context pane to be gated on its own flag
+  ALONE, and require the route flag to read the exact variable the opener writes.
+  Re-creating the original bug fails the suite.
+
 ## 0.5.17 (build 55)
 
 Review Memories and Review Threads, on the desktop.
