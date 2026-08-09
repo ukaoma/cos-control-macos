@@ -3506,7 +3506,7 @@ final class COSControlHelper {
         let domains = discoverMeetingDomains(dir)
         let direct = looksLikeMeetingsTree(dir)
         if direct && !domains.isEmpty {
-            return MeetingsDirectoryInspection(layout: "invalid", path: dir.path, meetingCount: 0, warning: "This folder mixes YYYY-MM folders with domain/meetings trees. Choose one direct meetings folder or one multi-domain operations folder.")
+            return MeetingsDirectoryInspection(layout: "invalid", path: dir.path, meetingCount: 0, warning: "This folder mixes month folders with several named meeting folders. Choose the folder that directly contains your YYYY-MM folders, or choose the parent whose named folders each contain meetings/YYYY-MM.")
         }
         let layout = direct ? "direct" : (!domains.isEmpty ? "multi_domain" : "invalid")
         if layout != "invalid" {
@@ -3543,12 +3543,12 @@ final class COSControlHelper {
             }.sorted()
         if subdirs.isEmpty {
             return MeetingsDirectoryInspection(layout: "invalid", path: dir.path, meetingCount: 0,
-                warning: "\"\(name)\" has no meeting folders. Choose either meetings/YYYY-MM or operations/<domain>/meetings/YYYY-MM. You can Skip for Now and use standalone recordings.")
+                warning: "\"\(name)\" has no recognizable meetings yet. Choose the folder that directly contains YYYY-MM folders. If you use several custom-named folders, choose their parent and keep meetings/YYYY-MM inside each one. You can also Skip for Now.")
         }
         let shown = subdirs.prefix(6).joined(separator: ", ")
         let more = subdirs.count > 6 ? ", and \(subdirs.count - 6) more" : ""
         return MeetingsDirectoryInspection(layout: "invalid", path: dir.path, meetingCount: 0,
-            warning: "None of the folders in \"\(name)\" contain meetings/. Found: \(shown)\(more). For multiple domains use <domain>/meetings/YYYY-MM. For one library choose the folder that directly contains YYYY-MM folders.")
+            warning: "COS found these folders in \"\(name)\": \(shown)\(more), but none contains meetings/YYYY-MM. For the easiest setup, choose the folder that directly contains your YYYY-MM folders. For several folders, their names are up to you; each only needs meetings/YYYY-MM inside.")
     }
 
     static func operationsDirectoryRejection(_ dir: URL) -> String? {
@@ -5238,7 +5238,7 @@ final class COSControlHelper {
         try makeDir(wrongLevel.appendingPathComponent("context"))
         try makeDir(wrongLevel.appendingPathComponent("communications"))
         let wrongMessage = COSControlHelper.operationsDirectoryRejection(wrongLevel) ?? ""
-        try expect(wrongMessage.contains("Found:") && !wrongMessage.contains("quilt"),
+        try expect(wrongMessage.contains("COS found these folders") && !wrongMessage.contains("quilt"),
                    "rejection must enumerate what it found and never demand quilt/, got \(wrongMessage)")
 
         // A direct library is now a first-class, browse-only layout. This is

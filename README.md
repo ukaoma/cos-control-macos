@@ -37,6 +37,14 @@ one LaunchAgent, `com.cos.glasses-server`, as the sole server owner.
 Existing data remains under the standard COS Glasses locations. The existing
 `npx @gotcos/glasses-server` foreground workflow remains supported.
 
+## 0.5.13 easy existing meeting libraries
+
+The common setup is one click: choose the folder that already contains your
+`YYYY-MM/*.md` meeting folders. COS browses it in place. Users who maintain
+several libraries can choose their parent instead; every child name is
+user-defined and only needs `meetings/YYYY-MM/*.md` below it. Role selection
+personalizes COS behavior and never prescribes directory names.
+
 ## 0.5.12 existing meeting libraries
 
 - Choose a direct library whose immediate folders are months, for example

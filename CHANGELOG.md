@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.13 (build 51)
+
+- Makes an existing month-based meeting folder the recommended setup path:
+  choose the folder that directly contains `YYYY-MM/*.md` and COS uses it
+  without moving or renaming anything.
+- Keeps multi-folder organization optional and fully customizable. Any safe
+  folder names work when each contains `meetings/YYYY-MM/*.md`; COS roles never
+  dictate filesystem names.
+- Replaces internal "multi-domain" terminology and role-specific examples with
+  plain guidance for one folder or multiple custom-named folders.
+- Improves invalid-folder recovery messages so users can correct the selected
+  level without rebuilding an existing library.
+- Requires glasses-server 6.21.33. This binary is build 51.
+
 ## 0.5.12 (build 50)
 
 - **Existing meeting folders now work directly.** Choose a folder that contains

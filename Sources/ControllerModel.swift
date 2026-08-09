@@ -614,10 +614,10 @@ final class ControllerModel: ObservableObject {
     func selectOperationsFolder() {
         let panel = NSOpenPanel()
         panel.title = "Meetings Library"
-        panel.message = "Choose either your direct meetings folder (meetings/YYYY-MM) or your "
-            + "multi-domain operations folder (operations/<domain>/meetings/YYYY-MM). Domain names "
-            + "are yours. COS Control never moves or reorganizes these files. You can skip this and "
-            + "keep using standalone recordings."
+        panel.message = "Choose the folder you already use for meetings. Most people should choose "
+            + "the folder that directly contains month folders such as 2026-08. If you organize meetings "
+            + "into several named folders, choose their parent instead; each named folder only needs its "
+            + "own meetings folder. Your names are entirely up to you. COS never moves or reorganizes files."
         panel.prompt = "Use as Meetings Library"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false

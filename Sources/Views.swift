@@ -429,8 +429,8 @@ struct ControlPanel: View {
                         .lineLimit(2).multilineTextAlignment(.trailing).textSelection(.enabled)
                     if model.status.operationsDirectory != nil {
                         Text(model.status.meetingLibraryLayout == "direct"
-                            ? "Direct library · \(model.status.meetingLibraryCount) meeting(s)"
-                            : "Multi-domain · \(model.status.meetingLibraryCount) meeting(s)")
+                            ? "One folder · \(model.status.meetingLibraryCount) meeting(s)"
+                            : "Multiple folders · \(model.status.meetingLibraryCount) meeting(s)")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -884,7 +884,7 @@ struct ControlPanel: View {
                           : "Install the managed server or choose Manage in place first")
                 Button("Meetings Library", systemImage: "calendar") { model.selectOperationsFolder() }
                     .disabled(!model.status.installed && model.status.runtimeState != "managedInPlace")
-                    .help("Folder containing your domain folders, each with a meetings/ folder inside. Used for G2 Review Meetings.")
+                    .help("Choose your existing meetings folder. COS also recognizes a parent containing several custom-named meeting folders.")
             }
             HStack {
                 Button("Open Cursor", systemImage: "chevron.left.forwardslash.chevron.right") { model.openCursor() }
