@@ -37,6 +37,20 @@ one LaunchAgent, `com.cos.glasses-server`, as the sole server owner.
 Existing data remains under the standard COS Glasses locations. The existing
 `npx @gotcos/glasses-server` foreground workflow remains supported.
 
+## 0.5.12 existing meeting libraries
+
+- Choose a direct library whose immediate folders are months, for example
+  `meetings/2026-08/*.md`. It is browse-only and does not reorganize or rewrite
+  existing files.
+- Choose a multi-domain operations root when each domain contains its own
+  `meetings/YYYY-MM` tree. Domain names are discovered rather than hardcoded.
+- Direct browsing can coexist with an operations write root. Review Meetings
+  merges both with standalone G2 recordings and prefers the enriched writable
+  copy for the same session.
+- Invalid folders show both valid examples and offer Choose Again or Skip for
+  Now. The helper verifies server 6.21.33 and the exact loaded library after a
+  safe restart.
+
 ## 0.5.11 adaptive review-audio cleanup
 
 - Server 6.21.32 can create a derived, replay-only cleanup copy of retained

@@ -1890,6 +1890,7 @@ final class COSControlHelper {
         let directOwner = launchdOwnsListeners(snapshot, requireDirect: true)
         let managed = hasLifecycleContract(maintenance)
         let configuredWork = configuredWorkDirectory()
+        let configuredMeetings = configuredMeetingsDirectoryInspection()
         let activeWork = ["COS_WORKDIR", "CODEX_GLASSES_WORKDIR", "COS_LAUNCH_DIR"]
             .compactMap(loadedEnvironmentValue)
             .compactMap { try? validatedWorkDirectory($0) }
@@ -1985,6 +1986,9 @@ final class COSControlHelper {
             "activeWorkDirectory": activeWork ?? NSNull(),
             "workDirectoryPending": snapshot.serviceLoaded && configuredWork != nil && configuredWork != activeWork,
             "operationsDirectory": configuredOperationsDirectory() ?? NSNull(),
+            "meetingLibraryLayout": configuredMeetings?.layout ?? "standalone",
+            "meetingLibraryCount": configuredMeetings?.meetingCount ?? 0,
+            "meetingLibraryWarning": configuredMeetings?.warning ?? NSNull(),
             "safeToRestart": (managed || inPlaceActive()) ? (maintenance?["safeToRestart"] ?? false) : false,
             "activeJobs": maintenance?["activeJobs"] ?? NSNull(),
             "activeTranscriptionSessions": maintenance?["activeTranscriptionSessions"] ?? NSNull(),
@@ -3391,26 +3395,44 @@ final class COSControlHelper {
         try applyInPlaceWorkDirectory(validated)
     }
 
-    /// Point G2 Review Meetings at a COS operations/ tree
-    /// (`{dir}/{anyDomainName}/meetings/YYYY-MM/*.md`).
-    ///
-    /// Domain names are the USER'S. This comment used to end "Each COS layout can
-    /// differ" while the validator two functions down hardcoded four of them.
+    private struct MeetingsDirectoryInspection {
+        let layout: String
+        let path: String
+        let meetingCount: Int
+        let warning: String?
+        var valid: Bool { layout == "direct" || layout == "multi_domain" }
+    }
+
+    /// Point G2 Review Meetings at either a direct meetings/YYYY-MM library or
+    /// a multi-domain operations/<domain>/meetings tree. Direct libraries are
+    /// browse-only; the operations root remains the write/enrichment target.
     private func setOperationsDirectory(_ path: String) throws {
-        guard let validated = try validatedOperationsDirectory(path) else {
-            let url = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
-            throw HelperError.message(
-                COSControlHelper.operationsDirectoryRejection(url)
-                    ?? "That folder cannot be used as the meetings library.")
+        let inspection = COSControlHelper.inspectMeetingsDirectory(URL(fileURLWithPath: path, isDirectory: true))
+        guard inspection.valid else {
+            throw HelperError.message(inspection.warning ?? "That folder cannot be used as the meetings library.")
         }
+        let runningVersion = (maintenanceStatus()?["serverVersion"] as? String)
+            ?? (request("/api/health", timeout: 8)?.body?["server_version"] as? String)
+            ?? loadManifest()?.version
+        guard runningVersion.map({ versionAtLeast($0, "6.21.33") }) == true else {
+            throw HelperError.message("Update the server to 6.21.33 or newer before choosing this meetings library.")
+        }
+        let values = inspection.layout == "direct"
+            ? ["COS_MEETINGS_ROOT": inspection.path]
+            : ["COS_OPERATIONS_DIR": inspection.path]
+        let removing = inspection.layout == "multi_domain" ? Set(["COS_MEETINGS_ROOT"]) : Set<String>()
         if let manifest = loadManifest() {
-            try applyManagedProviderEnvironment(["COS_OPERATIONS_DIR": validated], current: manifest, operationLabel: "Meetings library")
+            try applyManagedProviderEnvironment(
+                values, removingKeys: removing, current: manifest,
+                operationLabel: "Meetings library", requiredMeetingLibrary: inspection)
             return
         }
         guard inPlaceActive() else {
             throw HelperError.message("Install the managed server or choose Manage in place first.")
         }
-        try applyInPlaceProviderEnvironment(["COS_OPERATIONS_DIR": validated], operationLabel: "Meetings library")
+        try applyInPlaceProviderEnvironment(
+            values, removingKeys: removing, operationLabel: "Meetings library",
+            requiredMeetingLibrary: inspection)
     }
 
     /// Is `name` safe to join onto the operations root?
@@ -3419,10 +3441,10 @@ final class COSControlHelper {
     /// a real domain may be `DNP study` with a space, and an alphanumeric-only
     /// rule would re-encode one user's snake_case habit as a requirement.
     static func isSafeDomainName(_ name: String) -> Bool {
-        if name.isEmpty || name.count > 128 { return false }
+        if name.isEmpty || name.count > 64 || name != name.trimmingCharacters(in: .whitespacesAndNewlines) { return false }
         if name == "." || name == ".." { return false }
         if name.hasPrefix(".") { return false }
-        if name.contains("/") || name.contains("\\") || name.contains("\0") { return false }
+        if name.contains("/") || name.contains("\\") || name.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f }) { return false }
         return true
     }
 
@@ -3440,9 +3462,14 @@ final class COSControlHelper {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(atPath: dir.path) else { return [] }
         return entries.filter { isSafeDomainName($0) }.filter { name in
-            var isDir: ObjCBool = false
-            let meetings = dir.appendingPathComponent(name).appendingPathComponent("meetings", isDirectory: true)
-            return fm.fileExists(atPath: meetings.path, isDirectory: &isDir) && isDir.boolValue
+            let domain = dir.appendingPathComponent(name, isDirectory: true)
+            let meetings = domain.appendingPathComponent("meetings", isDirectory: true)
+            guard let domainValues = try? domain.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey]),
+                  domainValues.isSymbolicLink != true, domainValues.isDirectory == true,
+                  let meetingValues = try? meetings.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey]) else {
+                return false
+            }
+            return meetingValues.isSymbolicLink != true && meetingValues.isDirectory == true
         }.sorted()
     }
 
@@ -3458,23 +3485,55 @@ final class COSControlHelper {
         return entries.contains { name in
             guard let re = monthPattern else { return false }
             let range = NSRange(name.startIndex..<name.endIndex, in: name)
-            return re.firstMatch(in: name, range: range) != nil
+            guard re.firstMatch(in: name, range: range) != nil else { return false }
+            let month = dir.appendingPathComponent(name, isDirectory: true)
+            guard let values = try? month.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey]) else { return false }
+            return values.isSymbolicLink != true && values.isDirectory == true
         }
     }
 
-    /// Why this directory cannot serve as the meetings library, phrased so the
-    /// next click is obvious. nil when it is valid.
-    static func operationsDirectoryRejection(_ dir: URL) -> String? {
+    private static func inspectMeetingsDirectory(_ input: URL) -> MeetingsDirectoryInspection {
+        let selected = input.standardizedFileURL
+        guard let selectedValues = try? selected.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey]),
+              selectedValues.isSymbolicLink != true, selectedValues.isDirectory == true else {
+            return MeetingsDirectoryInspection(layout: "invalid", path: selected.path, meetingCount: 0, warning: "That folder does not exist, is unavailable, or is a symbolic link.")
+        }
+        let dir = selected.resolvingSymlinksInPath()
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else {
-            return "That folder does not exist."
+            return MeetingsDirectoryInspection(layout: "invalid", path: dir.path, meetingCount: 0, warning: "That folder does not exist or is unavailable.")
         }
-        if !discoverMeetingDomains(dir).isEmpty { return nil }
+        let domains = discoverMeetingDomains(dir)
+        let direct = looksLikeMeetingsTree(dir)
+        if direct && !domains.isEmpty {
+            return MeetingsDirectoryInspection(layout: "invalid", path: dir.path, meetingCount: 0, warning: "This folder mixes YYYY-MM folders with domain/meetings trees. Choose one direct meetings folder or one multi-domain operations folder.")
+        }
+        let layout = direct ? "direct" : (!domains.isEmpty ? "multi_domain" : "invalid")
+        if layout != "invalid" {
+            let roots: [URL] = layout == "direct"
+                ? [dir]
+                : domains.map { dir.appendingPathComponent($0).appendingPathComponent("meetings", isDirectory: true) }
+            var count = 0
+            for root in roots {
+                let months = ((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []).filter { name in
+                    guard name.range(of: #"^\d{4}-\d{2}$"#, options: .regularExpression) != nil else { return false }
+                    let monthURL = root.appendingPathComponent(name, isDirectory: true)
+                    guard let values = try? monthURL.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey]) else { return false }
+                    return values.isSymbolicLink != true && values.isDirectory == true
+                }
+                for month in months.prefix(120) {
+                    let monthURL = root.appendingPathComponent(month, isDirectory: true)
+                    let files = (try? FileManager.default.contentsOfDirectory(at: monthURL, includingPropertiesForKeys: [.isSymbolicLinkKey, .isRegularFileKey])) ?? []
+                    count += files.filter { file in
+                        guard file.pathExtension.lowercased() == "md",
+                              let values = try? file.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey]) else { return false }
+                        return values.isSymbolicLink != true && values.isRegularFile == true
+                    }.count
+                }
+            }
+            return MeetingsDirectoryInspection(layout: layout, path: dir.path, meetingCount: count, warning: nil)
+        }
         let name = dir.lastPathComponent
-        if looksLikeMeetingsTree(dir) {
-            return "\"\(name)\" looks like a meetings folder itself: it holds YYYY-MM month folders. "
-                 + "Choose its PARENT folder instead, the one that contains \(name)/."
-        }
         let subdirs = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
             .filter { isSafeDomainName($0) }
             .filter { sub in
@@ -3483,54 +3542,89 @@ final class COSControlHelper {
                     atPath: dir.appendingPathComponent(sub).path, isDirectory: &d) && d.boolValue
             }.sorted()
         if subdirs.isEmpty {
-            return "\"\(name)\" has no subfolders. Choose the folder that contains your domain "
-                 + "folders, where each one has a meetings/ folder inside it."
+            return MeetingsDirectoryInspection(layout: "invalid", path: dir.path, meetingCount: 0,
+                warning: "\"\(name)\" has no meeting folders. Choose either meetings/YYYY-MM or operations/<domain>/meetings/YYYY-MM. You can Skip for Now and use standalone recordings.")
         }
         let shown = subdirs.prefix(6).joined(separator: ", ")
         let more = subdirs.count > 6 ? ", and \(subdirs.count - 6) more" : ""
-        return "None of the folders in \"\(name)\" contain a meetings/ folder. Found: \(shown)\(more). "
-             + "Pick the folder whose subfolders each hold a meetings/ folder. Any names work, "
-             + "they do not have to match anyone else's."
+        return MeetingsDirectoryInspection(layout: "invalid", path: dir.path, meetingCount: 0,
+            warning: "None of the folders in \"\(name)\" contain meetings/. Found: \(shown)\(more). For multiple domains use <domain>/meetings/YYYY-MM. For one library choose the folder that directly contains YYYY-MM folders.")
+    }
+
+    static func operationsDirectoryRejection(_ dir: URL) -> String? {
+        let inspection = inspectMeetingsDirectory(dir)
+        return inspection.valid ? nil : inspection.warning
     }
 
     private func validatedOperationsDirectory(_ path: String?) throws -> String? {
         guard let path, !path.isEmpty else { return nil }
-        let url = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
-        guard COSControlHelper.operationsDirectoryRejection(url) == nil else { return nil }
-        return url.path
+        let inspection = COSControlHelper.inspectMeetingsDirectory(URL(fileURLWithPath: path, isDirectory: true))
+        return inspection.valid ? inspection.path : nil
     }
 
     private func configuredOperationsDirectory() -> String? {
-        if let value = loadManifest()?.providerEnvironment?["COS_OPERATIONS_DIR"]
-            ?? loadManifest()?.providerEnvironment?["COS_MEETINGS_ROOT"],
-           let validated = try? validatedOperationsDirectory(value) {
-            return validated
-        }
-        if let environment = launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String] {
-            for key in ["COS_OPERATIONS_DIR", "COS_MEETINGS_ROOT"] {
-                if let value = environment[key], let validated = try? validatedOperationsDirectory(value) {
-                    return validated
-                }
+        return configuredMeetingsDirectoryInspection()?.path
+    }
+
+    private func configuredMeetingsDirectoryInspection() -> MeetingsDirectoryInspection? {
+        let manifestEnvironment = loadManifest()?.providerEnvironment ?? [:]
+        let launchEnvironment = (launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String]) ?? [:]
+        for environment in [manifestEnvironment, launchEnvironment] {
+            if let value = environment["COS_MEETINGS_ROOT"] {
+                let inspection = COSControlHelper.inspectMeetingsDirectory(URL(fileURLWithPath: value, isDirectory: true))
+                if inspection.layout == "direct" { return inspection }
+                if inspection.layout == "invalid" { return inspection }
+            }
+            if let value = environment["COS_OPERATIONS_DIR"] {
+                let inspection = COSControlHelper.inspectMeetingsDirectory(URL(fileURLWithPath: value, isDirectory: true))
+                if inspection.valid { return inspection }
+            }
+            // Legacy alias-only multi-domain install.
+            if let value = environment["COS_MEETINGS_ROOT"] {
+                let inspection = COSControlHelper.inspectMeetingsDirectory(URL(fileURLWithPath: value, isDirectory: true))
+                if inspection.layout == "multi_domain" { return inspection }
             }
             if let scripts = environment["COS_SCRIPTS_DIR"], !scripts.isEmpty {
                 let inferred = URL(fileURLWithPath: scripts, isDirectory: true)
-                    .deletingLastPathComponent().path
-                if let validated = try? validatedOperationsDirectory(inferred) { return validated }
+                    .deletingLastPathComponent()
+                let inspection = COSControlHelper.inspectMeetingsDirectory(inferred)
+                if inspection.layout == "multi_domain" { return inspection }
             }
         }
         return nil
     }
 
+    private func requireMeetingLibrary(_ expected: MeetingsDirectoryInspection) throws {
+        let token = try readToken()
+        guard let response = request("/api/meetings?limit=1", token: token, timeout: 15), response.status == 200,
+              let layout = response.body?["layout"] as? String,
+              let root = response.body?["root"] as? String else {
+            throw HelperError.message("the restarted server did not report the selected meetings library")
+        }
+        let reported = URL(fileURLWithPath: root, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath().path
+        guard layout == expected.layout, reported == expected.path else {
+            throw HelperError.message("the restarted server activated a different meetings library")
+        }
+    }
+
     private func applyManagedProviderEnvironment(
         _ values: [String: String],
+        removingKeys: Set<String> = [],
         current: RuntimeManifest,
-        operationLabel: String
+        operationLabel: String,
+        requiredMeetingLibrary: MeetingsDirectoryInspection? = nil
     ) throws {
         guard loadTransaction() == nil else {
             throw HelperError.message("A previous runtime change needs Repair before \(operationLabel.lowercased()) can change.")
         }
         var candidate = current
         var provider = candidate.providerEnvironment ?? [:]
+        for key in removingKeys {
+            guard providerEnvironmentKeys.contains(key) else {
+                throw HelperError.message("Unsupported environment key removal: \(key)")
+            }
+            provider.removeValue(forKey: key)
+        }
         for (key, value) in values {
             guard providerEnvironmentKeys.contains(key) else {
                 throw HelperError.message("Unsupported environment key: \(key)")
@@ -3591,6 +3685,7 @@ final class COSControlHelper {
                 if let adaptiveAudioCleanup = values["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"] {
                     try requireAdaptiveAudioCleanup(adaptiveAudioCleanup)
                 }
+                if let requiredMeetingLibrary { try requireMeetingLibrary(requiredMeetingLibrary) }
                 try requireMaintenanceRelease(activeLease)
             }
             clearTransaction()
@@ -3613,7 +3708,12 @@ final class COSControlHelper {
         }
     }
 
-    private func applyInPlaceProviderEnvironment(_ values: [String: String], operationLabel: String) throws {
+    private func applyInPlaceProviderEnvironment(
+        _ values: [String: String],
+        removingKeys: Set<String> = [],
+        operationLabel: String,
+        requiredMeetingLibrary: MeetingsDirectoryInspection? = nil
+    ) throws {
         // Adopted self-managed installs get the same reversible bootout /
         // bootstrap transaction as work-folder changes. launchctl kickstart is
         // not sufficient: it retains stale LaunchAgent environment values.
@@ -3637,6 +3737,12 @@ final class COSControlHelper {
         let previous = try Data(contentsOf: plistURL)
         let permissions = ((try? fm.attributesOfItem(atPath: plistURL.path)[.posixPermissions] as? NSNumber)?.intValue) ?? 0o600
         var environment = (plist["EnvironmentVariables"] as? [String: String]) ?? [:]
+        for key in removingKeys {
+            guard providerEnvironmentKeys.contains(key) else {
+                throw HelperError.message("Unsupported environment key removal: \(key)")
+            }
+            environment.removeValue(forKey: key)
+        }
         for (key, value) in values {
             guard providerEnvironmentKeys.contains(key) else {
                 throw HelperError.message("Unsupported environment key: \(key)")
@@ -3660,6 +3766,7 @@ final class COSControlHelper {
         try saveInPlaceConfigurationTransaction(transaction)
 
         let alreadyActive = values.allSatisfy { loadedEnvironmentValue($0.key) == $0.value }
+            && removingKeys.allSatisfy { loadedEnvironmentValue($0) == nil }
         if alreadyActive || snapshot.allListenerPIDs.isEmpty {
             do {
                 try atomicWriteData(candidate, to: plistURL, permissions: 0o600)
@@ -3678,6 +3785,7 @@ final class COSControlHelper {
                 if alreadyActive, let adaptiveAudioCleanup = values["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"] {
                     try requireAdaptiveAudioCleanup(adaptiveAudioCleanup)
                 }
+                if alreadyActive, let requiredMeetingLibrary { try requireMeetingLibrary(requiredMeetingLibrary) }
                 // Verification owns the transaction. Clearing before the health
                 // proof would make an invariant failure impossible to roll back.
                 clearInPlaceConfigurationTransaction()
@@ -3743,6 +3851,7 @@ final class COSControlHelper {
             if let adaptiveAudioCleanup = values["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"] {
                 try requireAdaptiveAudioCleanup(adaptiveAudioCleanup)
             }
+            if let requiredMeetingLibrary { try requireMeetingLibrary(requiredMeetingLibrary) }
             try requireMaintenanceRelease(activeLease)
             clearInPlaceConfigurationTransaction()
             let message = values["COS_WHISPER_TRANSCRIPTION_TIER"] == "max" && effectiveTier == "balanced"
@@ -4534,6 +4643,9 @@ final class COSControlHelper {
             "month": row["month"] as? String ?? "",
             "filename": row["filename"] as? String ?? "",
             "source": row["source"] as? String ?? "",
+            "librarySource": row["librarySource"] as? String ?? "standalone_recordings",
+            "recordId": row["recordId"] as? String ?? "",
+            "mutable": row["mutable"] as? Bool ?? true,
             // NUMBERS on the wire, not strings. An `as? String` cast here
             // returned "" for every count and the rows rendered blank — caught
             // only by running it against the live server, because the self-test
@@ -4679,6 +4791,7 @@ final class COSControlHelper {
             throw HelperError.message("--session, --from and --to are required")
         }
         var payload: [String: Any] = ["from": from, "to": to]
+        if let recordId = option("--record-id", in: args), !recordId.isEmpty { payload["recordId"] = recordId }
         if args.contains("--confirm") { payload["confirm"] = true } else { payload["dryRun"] = true }
         if args.contains("--force") { payload["force"] = true }
         try emitMeetingCorrection(
@@ -4699,6 +4812,7 @@ final class COSControlHelper {
             throw HelperError.message("--session and --from are required")
         }
         var payload: [String: Any] = ["from": from]
+        if let recordId = option("--record-id", in: args), !recordId.isEmpty { payload["recordId"] = recordId }
         if args.contains("--keep-training") { payload["retractTraining"] = false }
         if args.contains("--confirm") { payload["confirm"] = true } else { payload["dryRun"] = true }
         if args.contains("--force") { payload["force"] = true }
@@ -4723,8 +4837,10 @@ final class COSControlHelper {
               let label = option("--label", in: args), !label.isEmpty else {
             throw HelperError.message("--session and --label are required")
         }
+        var payload: [String: Any] = ["label": label]
+        if let recordId = option("--record-id", in: args), !recordId.isEmpty { payload["recordId"] = recordId }
         let json = String(
-            data: try JSONSerialization.data(withJSONObject: ["label": label]),
+            data: try JSONSerialization.data(withJSONObject: payload),
             encoding: .utf8
         ) ?? "{}"
         let body = try speakerReviewBody(
@@ -5125,12 +5241,14 @@ final class COSControlHelper {
         try expect(wrongMessage.contains("Found:") && !wrongMessage.contains("quilt"),
                    "rejection must enumerate what it found and never demand quilt/, got \(wrongMessage)")
 
-        // One level too deep — exactly what Queen clicked.
-        let tooDeep = home.appendingPathComponent("selftest-deep", isDirectory: true)
-        try makeDir(tooDeep.appendingPathComponent("2026-08"))
-        try expect((COSControlHelper.operationsDirectoryRejection(tooDeep) ?? "")
-                     .contains("looks like a meetings folder"),
-                   "picking the meetings folder itself must be diagnosed, not just refused")
+        // A direct library is now a first-class, browse-only layout. This is
+        // exactly what Queen selected: meetings/YYYY-MM/*.md.
+        let direct = home.appendingPathComponent("selftest-direct", isDirectory: true)
+        let directMonth = direct.appendingPathComponent("2026-08", isDirectory: true)
+        try makeDir(directMonth)
+        try Data("# Existing meeting\n".utf8).write(to: directMonth.appendingPathComponent("existing.md"))
+        try expect(COSControlHelper.operationsDirectoryRejection(direct) == nil,
+                   "a direct YYYY-MM meeting library must validate")
 
         try expect(!COSControlHelper.isSafeDomainName("..")
                      && !COSControlHelper.isSafeDomainName("a/b")

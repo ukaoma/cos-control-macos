@@ -56,6 +56,7 @@ final class ControllerModel: ObservableObject {
     @Published var operationProgress: String?
     @Published var notice: String?
     @Published var error: String?
+    @Published var meetingLibraryGuidance: String?
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
     @Published var recentMessages: [GlassesTurn] = []
     @Published var recentGlassesExpanded = false
@@ -579,7 +580,11 @@ final class ControllerModel: ObservableObject {
                 }
                 await refresh(quiet: true)
             } catch {
-                self.error = error.localizedDescription
+                if command == "set-operations-dir" {
+                    self.meetingLibraryGuidance = error.localizedDescription
+                } else {
+                    self.error = error.localizedDescription
+                }
                 await refresh(quiet: true)
             }
         }
@@ -608,11 +613,11 @@ final class ControllerModel: ObservableObject {
 
     func selectOperationsFolder() {
         let panel = NSOpenPanel()
-        panel.title = "Meetings Library — COS operations folder"
-        panel.message = "Choose the folder that CONTAINS your domain folders. Each domain needs a "
-            + "meetings/ folder inside it, and the names are yours: work/meetings, research/meetings, "
-            + "anything. Pick the parent, not a meetings/ folder itself. This is only for G2 Review "
-            + "Meetings, not the agent work folder."
+        panel.title = "Meetings Library"
+        panel.message = "Choose either your direct meetings folder (meetings/YYYY-MM) or your "
+            + "multi-domain operations folder (operations/<domain>/meetings/YYYY-MM). Domain names "
+            + "are yours. COS Control never moves or reorganizes these files. You can skip this and "
+            + "keep using standalone recordings."
         panel.prompt = "Use as Meetings Library"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -830,14 +835,18 @@ final class ControllerModel: ObservableObject {
     /// to say, so a click that labels an unverified cluster says so first.
     func previewRename(from: String, to: String, scope: CorrectionScope, isNameAssignment: Bool = false) {
         guard from != to else { return }
-        guard let session = openReview?.sessionId else { return }
+        guard let review = openReview, review.mutable else {
+            reviewError = "This meeting comes from a read-only library. New COS meetings remain editable."
+            return
+        }
+        let session = review.sessionId
         mergeInFlight = true
         Task { [weak self] in
             guard let self else { return }
             defer { mergeInFlight = false }
             do {
                 let args: [String] = scope == .thisMeeting
-                    ? ["meeting-relabel", "--session", session, "--from", from, "--to", to]
+                    ? ["meeting-relabel", "--session", session, "--record-id", review.recordId, "--from", from, "--to", to]
                     : ["voice-merge", "--into", to, "--from", from]
                 let response = try await helper.run(args)
                 pendingCorrection = Self.correction(
@@ -863,13 +872,17 @@ final class ControllerModel: ObservableObject {
     /// dialog for a no-op edit trains people to click through the ones that
     /// matter.
     func confirmVoice(_ label: String) {
-        guard let session = openReview?.sessionId else { return }
+        guard let review = openReview, review.mutable else {
+            reviewError = "This meeting comes from a read-only library. New COS meetings remain editable."
+            return
+        }
+        let session = review.sessionId
         mergeInFlight = true
         Task { [weak self] in
             guard let self else { return }
             defer { mergeInFlight = false }
             do {
-                _ = try await helper.run(["meeting-confirm", "--session", session, "--label", label])
+                _ = try await helper.run(["meeting-confirm", "--session", session, "--record-id", review.recordId, "--label", label])
                 reviewError = nil
                 // Re-fetch so the row re-renders as asserted from the SERVER's
                 // view rather than a local guess about what the confirmation did.
@@ -885,14 +898,18 @@ final class ControllerModel: ObservableObject {
     /// Always per-meeting: "this person was not in THIS room" says nothing about
     /// any other meeting, so there is deliberately no global variant.
     func previewDeattribution(from: String) {
-        guard let session = openReview?.sessionId else { return }
+        guard let review = openReview, review.mutable else {
+            reviewError = "This meeting comes from a read-only library. New COS meetings remain editable."
+            return
+        }
+        let session = review.sessionId
         mergeInFlight = true
         Task { [weak self] in
             guard let self else { return }
             defer { mergeInFlight = false }
             do {
                 let response = try await helper.run([
-                    "meeting-deattribute", "--session", session, "--from", from,
+                    "meeting-deattribute", "--session", session, "--record-id", review.recordId, "--from", from,
                 ])
                 pendingCorrection = Self.correction(
                     from: from, to: nil, scope: .thisMeeting, response: response
@@ -975,7 +992,11 @@ final class ControllerModel: ObservableObject {
         // A refusal that is only a stalled predecessor CAN be forced; a genuine
         // decline cannot.
         guard !correction.refused || force else { pendingCorrection = nil; return }
-        guard let session = openReview?.sessionId else { return }
+        guard let review = openReview, review.mutable else {
+            reviewError = "This meeting comes from a read-only library. New COS meetings remain editable."
+            return
+        }
+        let session = review.sessionId
         mergeInFlight = true
         Task { [weak self] in
             guard let self else { return }
@@ -983,9 +1004,9 @@ final class ControllerModel: ObservableObject {
             do {
                 var args: [String]
                 if correction.isDeattribution {
-                    args = ["meeting-deattribute", "--session", session, "--from", correction.from, "--confirm"]
+                    args = ["meeting-deattribute", "--session", session, "--record-id", review.recordId, "--from", correction.from, "--confirm"]
                 } else if correction.scope == .thisMeeting {
-                    args = ["meeting-relabel", "--session", session,
+                    args = ["meeting-relabel", "--session", session, "--record-id", review.recordId,
                             "--from", correction.from, "--to", correction.to ?? "", "--confirm"]
                 } else {
                     args = ["voice-merge", "--into", correction.to ?? "", "--from", correction.from, "--confirm"]

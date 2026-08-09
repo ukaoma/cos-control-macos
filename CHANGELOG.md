@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.12 (build 50)
+
+- **Existing meeting folders now work directly.** Choose a folder that contains
+  `YYYY-MM/*.md`, or choose a multi-domain operations folder containing
+  `<domain>/meetings/YYYY-MM/*.md`.
+- **The picker explains both supported layouts.** Invalid selections show
+  actionable examples, let the user choose again, or allow setup to continue
+  without a meeting library.
+- **Browse and write responsibilities stay separate.** Direct libraries are
+  read-only. Existing operations roots keep enrichment, new G2 output, and
+  speaker edits. Mixed results prefer the canonical enriched copy.
+- **Activation is transactional.** Control removes stale conflicting keys,
+  restarts through launchd, verifies the authenticated effective root and
+  layout, and restores the exact prior environment on failure.
+
+  Requires glasses-server 6.21.33. This binary is build 50.
+
 ## 0.5.11 (build 49)
 
 - **Adaptive audio cleanup is visible and reversible.** Server 6.21.32 adds a

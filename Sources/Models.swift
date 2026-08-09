@@ -65,6 +65,9 @@ struct ServerStatus: Sendable {
     var activeWorkDirectory: String?
     var workDirectoryPending = false
     var operationsDirectory: String?
+    var meetingLibraryLayout = "standalone"
+    var meetingLibraryCount = 0
+    var meetingLibraryWarning: String?
     var safeToRestart = false
     var activeJobs: Int?
     var activeTranscriptionSessions: Int?
@@ -158,6 +161,9 @@ struct ServerStatus: Sendable {
         activeWorkDirectory = details["activeWorkDirectory"]?.string
         workDirectoryPending = details["workDirectoryPending"]?.bool ?? false
         operationsDirectory = details["operationsDirectory"]?.string
+        meetingLibraryLayout = details["meetingLibraryLayout"]?.string ?? "standalone"
+        meetingLibraryCount = details["meetingLibraryCount"]?.int ?? 0
+        meetingLibraryWarning = details["meetingLibraryWarning"]?.string
         safeToRestart = details["safeToRestart"]?.bool ?? false
         activeJobs = details["activeJobs"]?.int
         activeTranscriptionSessions = details["activeTranscriptionSessions"]?.int
@@ -431,6 +437,9 @@ struct ReviewableMeeting: Identifiable, Sendable, Hashable {
     let decisionCount: Int
     let actionCount: Int
     let attendeeCount: Int
+    let recordId: String
+    let mutable: Bool
+    let librarySource: String
 
     var id: String { sessionId }
 
@@ -465,6 +474,9 @@ struct ReviewableMeeting: Identifiable, Sendable, Hashable {
         decisionCount = o["decisionCount"]?.int ?? Int(o["decisionCount"]?.string ?? "") ?? 0
         actionCount = o["actionCount"]?.int ?? Int(o["actionCount"]?.string ?? "") ?? 0
         attendeeCount = o["attendeeCount"]?.int ?? Int(o["attendeeCount"]?.string ?? "") ?? 0
+        recordId = o["recordId"]?.string ?? ""
+        mutable = o["mutable"]?.bool ?? true
+        librarySource = o["librarySource"]?.string ?? "standalone_recordings"
     }
 }
 
@@ -653,6 +665,9 @@ struct SpeakerReview: Sendable {
     let durationMs: Int
     let voices: [ReviewVoice]
     let timeline: [SpeakerTimelineSpan]
+    let recordId: String
+    let mutable: Bool
+    let librarySource: String
 
     init?(_ value: JSONValue?) {
         guard let o = value?.object, let sessionId = o["sessionId"]?.string else { return nil }
@@ -668,6 +683,9 @@ struct SpeakerReview: Sendable {
         durationMs = o["durationMs"]?.int ?? 0
         voices = (o["voices"]?.array ?? []).compactMap(ReviewVoice.init)
         timeline = (o["timeline"]?.array ?? []).enumerated().compactMap { SpeakerTimelineSpan($1, index: $0) }
+        recordId = o["recordId"]?.string ?? ""
+        mutable = o["mutable"]?.bool ?? true
+        librarySource = o["source"]?.string ?? "standalone_recordings"
     }
 
     /// Whether a name may be shown for a label, from the voice rows. The ribbon

@@ -147,6 +147,20 @@ struct ControlPanel: View {
         .alert("COS Control", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
         } message: { Text(model.error ?? "") }
+        .alert("Meetings Library", isPresented: Binding(
+            get: { model.meetingLibraryGuidance != nil },
+            set: { if !$0 { model.meetingLibraryGuidance = nil } }
+        )) {
+            Button("Choose Again") {
+                model.meetingLibraryGuidance = nil
+                model.selectOperationsFolder()
+            }
+            Button("View Examples") {
+                model.meetingLibraryGuidance = nil
+                model.openSetupGuide()
+            }
+            Button("Skip for Now", role: .cancel) { model.meetingLibraryGuidance = nil }
+        } message: { Text(model.meetingLibraryGuidance ?? "") }
         .confirmationDialog(
             "Restart this self-managed server?",
             isPresented: $confirmLegacyRestart,
@@ -410,9 +424,21 @@ struct ControlPanel: View {
             HStack(alignment: .top) {
                 Text("Meetings library").foregroundStyle(.secondary)
                 Spacer()
-                Text(model.status.operationsDirectory ?? "Not set (standalone recordings)")
-                    .lineLimit(2).multilineTextAlignment(.trailing).textSelection(.enabled)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(model.status.operationsDirectory ?? "Not set (standalone recordings)")
+                        .lineLimit(2).multilineTextAlignment(.trailing).textSelection(.enabled)
+                    if model.status.operationsDirectory != nil {
+                        Text(model.status.meetingLibraryLayout == "direct"
+                            ? "Direct library · \(model.status.meetingLibraryCount) meeting(s)"
+                            : "Multi-domain · \(model.status.meetingLibraryCount) meeting(s)")
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }.font(.caption)
+            if let warning = model.status.meetingLibraryWarning {
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(COSPalette.amber)
+            }
             if let jobs = model.status.activeJobs, let recordings = model.status.activeTranscriptionSessions, jobs + recordings > 0 {
                 Label("\(jobs) job(s), \(recordings) recording(s) active. Restart is locked.", systemImage: "lock.fill")
                     .font(.caption).foregroundStyle(COSPalette.amber)
@@ -1418,7 +1444,10 @@ private struct VoiceRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if voice.canRename {
+            if model.openReview?.mutable == false {
+                Label("Read-only library · new COS meetings remain editable", systemImage: "lock")
+                    .font(.system(size: 10.5)).foregroundStyle(.secondary)
+            } else if voice.canRename {
                 if model.namingVoice == voice.label {
                     TextField("Type a name", text: $typed)
                         .textFieldStyle(.roundedBorder)
