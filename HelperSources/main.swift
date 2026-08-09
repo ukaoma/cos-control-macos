@@ -272,6 +272,7 @@ final class COSControlHelper {
         "COS_CLAUDE_MCP_CONFIG",
         "COS_CURSOR_AGENT_BIN",
         "COS_SCRIPTS_DIR",
+        "COS_CONTEXT_DIR",
         "COS_OPERATIONS_DIR",
         "COS_MEETINGS_ROOT",
         "CODEX_GLASSES_WORKDIR",
@@ -2015,6 +2016,7 @@ final class COSControlHelper {
             "contextState": effectiveContextState,
             "contextProtocol": context?["protocol"] ?? NSNull(),
             "contextScriptsDirectory": configuredContextScriptsDirectory() ?? NSNull(),
+            "contextFilesDirectory": configuredContextFilesDirectory() ?? NSNull(),
             "memoryAvailable": memoryContext?["available"] ?? NSNull(),
             "memoryCount": memoryContext?["total"] ?? 0,
             "memoryState": memoryContext?["state"] ?? memoryContext?["reason"] ?? NSNull(),
@@ -3468,15 +3470,53 @@ final class COSControlHelper {
             requiredMeetingLibrary: inspection)
     }
 
-    private func validatedContextScriptsDirectory(_ path: String) throws -> String {
+    /// Which kind of Memory and Threads store a chosen folder holds.
+    ///
+    /// TWO tiers, and the file tier is a real configuration rather than a broken
+    /// bridge. Before 6.22.0 this function accepted exactly one shape — a folder
+    /// containing `cos_api_bridge.py` AND an executable `venv/bin/python3`, whose
+    /// output had to answer protocol 1 — with Docker and OpenAI embeddings behind
+    /// it. So the answer to "how do I start using Memory?" was "clone a
+    /// workspace and run a vector database", and the error text said as much.
+    ///
+    /// Meetings became adoptable when the requirement collapsed to markdown files
+    /// in folders. This is the same move for Memory and Threads.
+    enum ContextSource {
+        /// The Python pipeline: semantic recall, dedup, type stats, retention.
+        case bridge(scripts: String)
+        /// Plain markdown in `memory/` or `threads/`. Browse and reference only.
+        case files(root: String)
+    }
+
+    private func directoryExists(_ url: URL) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]) else { return false }
+        return values.isDirectory == true && values.isSymbolicLink != true
+    }
+
+    /// Does this folder hold plain-text notes the server can read without a venv?
+    ///
+    /// Mirrors `MEMORY_DIRS`/`THREAD_DIRS` in the server's `context-files.ts`. The
+    /// two lists must agree: a folder Control accepts but the server cannot read
+    /// would pass the picker and then fail the post-restart proof, which reads to
+    /// the user as "COS Control broke my server".
+    private func holdsContextFiles(_ url: URL) -> Bool {
+        for name in ["memory", "memories", "threads", "thread"] {
+            if directoryExists(url.appendingPathComponent(name, isDirectory: true)) { return true }
+        }
+        return false
+    }
+
+    private func validatedContextSource(_ path: String) throws -> ContextSource {
         let selected = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
-        let candidates = [
+        // Bridge first, always. A workspace that has BOTH keeps the pipeline —
+        // downgrading an existing install to browse-only would be a silent
+        // regression for exactly the users who invested in setting it up.
+        let bridgeCandidates = [
             selected,
             selected.appendingPathComponent("operations/scripts", isDirectory: true),
         ]
-        for candidate in candidates {
-            guard let values = try? candidate.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
-                  values.isDirectory == true, values.isSymbolicLink != true else { continue }
+        for candidate in bridgeCandidates {
+            guard directoryExists(candidate) else { continue }
             let bridge = candidate.appendingPathComponent("cos_api_bridge.py")
             let python = candidate.appendingPathComponent("venv/bin/python3")
             guard fm.fileExists(atPath: bridge.path), fm.isExecutableFile(atPath: python.path) else { continue }
@@ -3487,29 +3527,51 @@ final class COSControlHelper {
                   payload["protocol"] as? Int == 1 else {
                 throw HelperError.message("This COS workspace uses an older Memory and Threads bridge. Update the workspace, then choose it again.")
             }
-            return candidate.resolvingSymlinksInPath().path
+            return .bridge(scripts: candidate.resolvingSymlinksInPath().path)
         }
-        throw HelperError.message("Choose your COS workspace or its operations/scripts folder. COS needs operations/scripts/cos_api_bridge.py and operations/scripts/venv/bin/python3. Meetings setup is separate.")
+        // No bridge. Accept a folder of notes.
+        let fileCandidates = [
+            selected,
+            selected.appendingPathComponent("operations", isDirectory: true),
+        ]
+        for candidate in fileCandidates where directoryExists(candidate) && holdsContextFiles(candidate) {
+            return .files(root: candidate.resolvingSymlinksInPath().path)
+        }
+        throw HelperError.message("Choose a folder that holds a memory or threads folder of markdown notes, or a COS workspace with operations/scripts/cos_api_bridge.py and operations/scripts/venv/bin/python3. Meetings setup is separate.")
     }
 
     private func setContextDirectory(_ path: String) throws {
-        let scripts = try validatedContextScriptsDirectory(path)
+        let source = try validatedContextSource(path)
         let runningVersion = (maintenanceStatus()?["serverVersion"] as? String)
             ?? (request("/api/health", timeout: 8)?.body?["server_version"] as? String)
             ?? loadManifest()?.version
-        guard runningVersion.map({ versionAtLeast($0, "6.21.35") }) == true else {
-            throw HelperError.message("Update the server to 6.21.35 or newer before enabling Memory and Threads.")
+        // Per-tier floor: reading plain files landed in 6.22.0, so pointing an
+        // older server at a notes folder would set an env var it ignores and then
+        // fail the proof with nothing to show for it.
+        // Switching tiers must REMOVE the other key. The server prefers the
+        // bridge whenever COS_SCRIPTS_DIR resolves, so leaving it behind would
+        // make choosing a notes folder look like it did nothing at all.
+        let (floor, values, removing): (String, [String: String], Set<String>) = {
+            switch source {
+            case .bridge(let scripts):
+                return ("6.21.35", ["COS_SCRIPTS_DIR": scripts], ["COS_CONTEXT_DIR"])
+            case .files(let root):
+                return ("6.22.0", ["COS_CONTEXT_DIR": root], ["COS_SCRIPTS_DIR"])
+            }
+        }()
+        guard runningVersion.map({ versionAtLeast($0, floor) }) == true else {
+            throw HelperError.message("Update the server to \(floor) or newer before enabling Memory and Threads.")
         }
-        let values = ["COS_SCRIPTS_DIR": scripts]
         if let manifest = loadManifest() {
-            try applyManagedProviderEnvironment(values, current: manifest,
+            try applyManagedProviderEnvironment(values, removingKeys: removing, current: manifest,
                 operationLabel: "COS data", requireContextProof: true)
             return
         }
         guard inPlaceActive() else {
             throw HelperError.message("Install the managed server or choose Manage in place first.")
         }
-        try applyInPlaceProviderEnvironment(values, operationLabel: "COS data", requireContextProof: true)
+        try applyInPlaceProviderEnvironment(values, removingKeys: removing,
+            operationLabel: "COS data", requireContextProof: true)
     }
 
     /// Is `name` safe to join onto the operations root?
@@ -3988,6 +4050,29 @@ final class COSControlHelper {
                    fm.isExecutableFile(atPath: scripts.appendingPathComponent("venv/bin/python3").path) {
                     return scripts.resolvingSymlinksInPath().path
                 }
+            }
+        }
+        return nil
+    }
+
+    /// The configured file-tier notes root, if one is set and still holds notes.
+    ///
+    /// A SEPARATE field from `configuredContextScriptsDirectory`, not an overload
+    /// of it: one is a Python bridge and the other is a folder of markdown, and a
+    /// single key holding either would misreport which tier is live in the panel
+    /// and in Copy Report.
+    private func configuredContextFilesDirectory() -> String? {
+        let environments = [
+            loadManifest()?.providerEnvironment ?? [:],
+            (launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String]) ?? [:],
+        ]
+        for environment in environments {
+            if let path = environment["COS_CONTEXT_DIR"] {
+                let root = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+                // Re-validated, not just echoed: a folder the user renamed or an
+                // external drive that unmounted must read as unset rather than
+                // showing a path that no longer serves anything.
+                if holdsContextFiles(root) { return root.resolvingSymlinksInPath().path }
             }
         }
         return nil
@@ -5315,6 +5400,7 @@ final class COSControlHelper {
             status["activeWorkDirectory"] = redactedConfiguredPath(status["activeWorkDirectory"] as? String, label: "active COS workspace")
             status["operationsDirectory"] = redactedConfiguredPath(configuredOperationsDirectory(), label: "configured meetings library")
             status["contextScriptsDirectory"] = redactedConfiguredPath(configuredContextScriptsDirectory(), label: "configured COS Data bridge")
+            status["contextFilesDirectory"] = redactedConfiguredPath(configuredContextFilesDirectory(), label: "configured COS Data notes folder")
             status["servicePID"] = NSNull()
             status["listenerPIDs"] = []
         }
@@ -5394,6 +5480,51 @@ final class COSControlHelper {
                    "traversal guard must survive the move off the membership check")
         try expect(COSControlHelper.isSafeDomainName("DNP study"),
                    "a domain name with a space is legitimate")
+
+        // The COS Data picker, both tiers. Before 6.22.0 this accepted exactly one
+        // shape — cos_api_bridge.py plus an executable venv/bin/python3, with
+        // Docker and OpenAI embeddings behind it — so a user with notes and no
+        // vector database could not select anything, and the error text told them
+        // to go build a pipeline. These run the SHIPPED functions.
+        let notes = home.appendingPathComponent("selftest-notes", isDirectory: true)
+        try makeDir(notes.appendingPathComponent("memory"))
+        try expect(holdsContextFiles(notes), "a folder with memory/ must be recognised as a notes store")
+        if case .files(let root) = try validatedContextSource(notes.path) {
+            try expect(root.hasSuffix("selftest-notes"), "the notes root must be the folder chosen, got \(root)")
+        } else {
+            throw HelperError.message("self-test failed: a memory/ folder must resolve to the files tier")
+        }
+
+        // Plural and threads-only spellings, matching the server's own lists. A
+        // folder Control accepts but the server cannot read would pass the picker
+        // and then fail the post-restart proof.
+        let plural = home.appendingPathComponent("selftest-memories", isDirectory: true)
+        try makeDir(plural.appendingPathComponent("memories"))
+        try expect(holdsContextFiles(plural), "memories/ must be accepted alongside memory/")
+        let threadsOnly = home.appendingPathComponent("selftest-threads", isDirectory: true)
+        try makeDir(threadsOnly.appendingPathComponent("threads"))
+        try expect(holdsContextFiles(threadsOnly), "a threads-only store is a valid store")
+
+        // Nested one level down, which is where a COS repo keeps them.
+        let repo = home.appendingPathComponent("selftest-repo", isDirectory: true)
+        try makeDir(repo.appendingPathComponent("operations/memory"))
+        if case .files(let root) = try validatedContextSource(repo.path) {
+            try expect(root.hasSuffix("operations"), "a repo root must resolve to operations/, got \(root)")
+        } else {
+            throw HelperError.message("self-test failed: operations/memory must resolve to the files tier")
+        }
+
+        // A folder with neither is still refused, and the message must offer the
+        // notes path rather than only the pipeline.
+        let neither = home.appendingPathComponent("selftest-neither", isDirectory: true)
+        try makeDir(neither.appendingPathComponent("communications"))
+        var refusal = ""
+        do { _ = try validatedContextSource(neither.path) } catch { refusal = "\(error)" }
+        try expect(refusal.contains("memory") && refusal.contains("markdown"),
+                   "the refusal must name the notes path, got \(refusal)")
+
+        try expect(providerEnvironmentKeys.contains("COS_CONTEXT_DIR"),
+                   "COS_CONTEXT_DIR must be allowlisted or applying it is rejected as unsupported")
 
         let v1: [String: Any] = ["managed": true, "contractVersion": 1]
         let v2: [String: Any] = ["managed": true, "contractVersion": 2]

@@ -73,6 +73,9 @@ struct ServerStatus: Sendable {
     var contextState: String?
     var contextProtocol: Int?
     var contextScriptsDirectory: String?
+    /// Set when Memory and Threads come from plain markdown rather than the
+    /// Python bridge. Exactly one of the two is populated.
+    var contextFilesDirectory: String?
     var memoryAvailable: Bool?
     var memoryCount = 0
     var memoryState: String?
@@ -181,6 +184,7 @@ struct ServerStatus: Sendable {
         contextState = details["contextState"]?.string
         contextProtocol = details["contextProtocol"]?.int
         contextScriptsDirectory = details["contextScriptsDirectory"]?.string
+        contextFilesDirectory = details["contextFilesDirectory"]?.string
         memoryAvailable = details["memoryAvailable"]?.bool
         memoryCount = details["memoryCount"]?.int ?? 0
         memoryState = details["memoryState"]?.string

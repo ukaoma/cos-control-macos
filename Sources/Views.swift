@@ -230,9 +230,14 @@ struct ControlPanel: View {
                 let threadsReady = model.status.threadsAvailable == true
                 statusRow("Memory & Threads", value: contextBrowserLabel, good: memoryReady && threadsReady)
                 if !memoryReady || !threadsReady {
-                    Text("Choose COS Data below. Empty stores are healthy; unavailable stores need setup or a workspace update.")
+                    // The ONLY in-app guidance for this feature, so it has to say
+                    // what to actually do. It used to read "Choose COS Data below.
+                    // Empty stores are healthy" — true, and useless to someone
+                    // who has no COS workspace, which was everyone but the author.
+                    Text(contextBrowserHint)
                         .font(.caption2).foregroundStyle(COSPalette.amber)
                         .frame(maxWidth: .infinity, alignment: .trailing)
+                        .multilineTextAlignment(.trailing)
                 }
             }
             if model.status.backgroundJobsSupported, let enabled = model.status.backgroundJobsEnabled {
@@ -479,6 +484,23 @@ struct ControlPanel: View {
         if model.status.contextState == "bridge_outdated" { return "Workspace update required" }
         if model.status.contextState == "bridge_error" { return "Temporarily unavailable" }
         return "Setup needed"
+    }
+
+    /// What to do next, stated concretely enough to act on.
+    ///
+    /// Branches on WHY it is unavailable. Telling someone whose bridge is mid-error
+    /// to go create a folder is noise, and telling someone with no workspace that
+    /// "empty stores are healthy" is not a next step.
+    private var contextBrowserHint: String {
+        switch model.status.contextState {
+        case "bridge_outdated": return "Update your COS workspace, then choose COS Data again."
+        case "bridge_error": return "The workspace bridge failed. Open Logs, then choose COS Data again."
+        default:
+            if model.status.contextFilesDirectory != nil || model.status.contextScriptsDirectory != nil {
+                return "The chosen folder holds no notes yet. Add markdown files to memory/ or threads/ inside it."
+            }
+            return "No vector database needed: make a folder with memory/ and threads/ subfolders, put markdown notes in them, then click COS Data."
+        }
     }
 
     private var controls: some View {
@@ -912,9 +934,15 @@ struct ControlPanel: View {
             HStack {
                 Button("COS Data", systemImage: "externaldrive.badge.icloud") { model.selectContextFolder() }
                     .disabled(!model.status.installed && model.status.runtimeState != "managedInPlace")
-                    .help("Choose the COS workspace that supplies Memory and Threads. This does not change the Work Folder or Meetings Library.")
+                    .help("Choose a folder of markdown notes (memory/ or threads/), or a COS workspace with the Python bridge. This does not change the Work Folder or Meetings Library.")
+                // Names the TIER, not just the path. "Notes" is browse and
+                // reference; "Bridge" adds semantic recall and type statistics.
+                // Showing a bare path let a files install look like a pipeline.
                 if let path = model.status.contextScriptsDirectory {
-                    Text(path).font(.caption2).foregroundStyle(.secondary)
+                    Text("Bridge: \(path)").font(.caption2).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                } else if let path = model.status.contextFilesDirectory {
+                    Text("Notes: \(path)").font(.caption2).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
                 }
             }

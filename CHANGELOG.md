@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.15 (build 53)
+
+- COS Data accepts a folder of markdown notes, not only a Python bridge. A folder
+  holding `memory/`, `memories/`, `threads/` or `thread/` — at the folder chosen or
+  one level down in `operations/` — applies `COS_CONTEXT_DIR` and requires server
+  6.22.0. A workspace with a working bridge still resolves to the bridge and still
+  requires 6.21.35, so an existing install is not downgraded to browse-only.
+- Switching tiers removes the other tier's environment key. The server prefers the
+  bridge whenever `COS_SCRIPTS_DIR` resolves, so leaving it behind would make
+  choosing a notes folder appear to do nothing.
+- The panel names the tier — "Bridge:" or "Notes:" — instead of a bare path, so a
+  file-backed install cannot be mistaken for a vector pipeline. Copy Report carries
+  both, redacted.
+- The Memory and Threads hint says what to do next and branches on why it is
+  unavailable. It read "Choose COS Data below. Empty stores are healthy", which is
+  true and useless to someone who has no COS workspace.
+- The refusal message offers the notes path first instead of demanding
+  `cos_api_bridge.py` and `venv/bin/python3`.
+
 ## 0.5.14 (build 52)
 
 - Adds a separate COS Data picker for Memory and Threads. It accepts a COS
