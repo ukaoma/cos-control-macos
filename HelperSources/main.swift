@@ -50,6 +50,17 @@ struct HTTPResponse {
     let data: Data?
     let headers: [String: String]
 
+    /// A TOP-LEVEL JSON array, which `body` cannot represent.
+    ///
+    /// `/api/memory` deliberately returns a bare array to stay compatible with
+    /// released companions, so a dictionary-only reader sees an empty result and
+    /// reads working data as a failure — which is exactly what happened to Queen's
+    /// own probe on 2026-08-09 before she checked the raw response.
+    var bodyArray: [[String: Any]]? {
+        guard let data else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]]
+    }
+
     init(status: Int, body: [String: Any]?, data: Data? = nil, headers: [String: String] = [:]) {
         self.status = status
         self.body = body
@@ -399,6 +410,8 @@ final class COSControlHelper {
         case "expire-clipboard": try expireClipboard(args: args)
         case "report": emit(ok: true, message: "Redacted report ready", details: ["report": redactedReport()])
         case "recent-messages": try emitRecentMessages(args: args)
+        case "context-memories": try emitContextMemories(args: args)
+        case "context-threads": try emitContextThreads(args: args)
         case "meetings": try emitMeetings(args: args)
         case "meeting-speakers": try emitMeetingSpeakers(args: args)
         case "meeting-content": try emitMeetingContent(args: args)
@@ -4930,6 +4943,117 @@ final class COSControlHelper {
         }
     }
 
+    /// Read-only Memory and Threads browsing on the desktop.
+    ///
+    /// Purely an exposure of a layer that already exists: /api/memory,
+    /// /api/memory/:id, /api/threads and /api/threads/:id are authenticated and
+    /// read-only, the glasses already browse them, and Control already holds the
+    /// token. No new server surface and no mutation.
+    ///
+    /// Control has NO send path to the agent — there is not one /api/query call in
+    /// this file — so "pick up from here" on the desktop is copy-as-context and, for
+    /// the file tier, revealing the actual file. Arming a reference for the next
+    /// prompt would need a write route, which the amendment design deliberately does
+    /// not have yet.
+    private func contextBrowseResponse(_ route: String, timeout: Int = 20) throws -> [String: Any] {
+        guard request("/api/health", timeout: 5)?.status == 200 else {
+            throw HelperError.message("Server stopped")
+        }
+        let token: String
+        do { token = try readToken() }
+        catch { throw HelperError.message("Unauthorized") }
+        guard let response = request(route, token: token, timeout: timeout) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        // 503 is the server's honest "no context source configured", not a fault.
+        if response.status == 503 {
+            throw HelperError.message("Memory and Threads are not set up yet. Use Create Folders.")
+        }
+        guard response.status == 200 else { throw HelperError.message("Server stopped") }
+        // /api/memory returns a TOP-LEVEL ARRAY for released companions, so a
+        // dictionary-only reader sees nothing. Queen hit exactly this with her own
+        // parser on 2026-08-09 and read it as a failure when the data was fine.
+        if let body = response.body { return body }
+        if let rows = response.bodyArray { return ["items": rows] }
+        throw HelperError.message("Server stopped")
+    }
+
+    /// Absolute file path for a `file_` id, so the desktop can reveal it.
+    ///
+    /// Resolved HERE from the id and the resolved root rather than asked of the
+    /// server, because /api/context/status deliberately exposes no paths. Returns nil
+    /// for a `mem_` id, which addresses the vector store and has no file.
+    private func contextRecordPath(id: String, kind: String) -> String? {
+        guard id.hasPrefix("file_"), let root = contextRootResolution().resolved else { return nil }
+        // The id is a sanitised relative path, so it cannot be reversed exactly.
+        // Match by scanning the store, which is bounded and correct.
+        let folders = kind == "thread" ? ["threads", "thread"] : ["memory", "memories"]
+        for folder in folders {
+            let base = URL(fileURLWithPath: root, isDirectory: true).appendingPathComponent(folder, isDirectory: true)
+            guard let walker = fm.enumerator(at: base, includingPropertiesForKeys: nil) else { continue }
+            for case let file as URL in walker {
+                guard ["md", "markdown", "txt"].contains(file.pathExtension.lowercased()) else { continue }
+                let relative = file.path.hasPrefix(root)
+                    ? String(file.path.dropFirst(root.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                    : file.lastPathComponent
+                let sanitised = "file_" + relative.map { char -> String in
+                    let ok = char.isLetter || char.isNumber || char == "." || char == "_" || char == "-"
+                    return ok ? String(char) : "_"
+                }.joined()
+                if sanitised == id { return file.path }
+            }
+        }
+        return nil
+    }
+
+    private func emitContextMemories(args: [String]) throws {
+        let limit = min(max(Int(option("--limit", in: args) ?? "30") ?? 30, 1), 50)
+        if let id = option("--id", in: args), !id.isEmpty {
+            let detail = try contextBrowseResponse("/api/memory/\(id)")
+            var payload = detail
+            payload["filePath"] = contextRecordPath(id: id, kind: "memory") ?? NSNull()
+            emit(ok: true, message: "Memory detail", details: payload)
+            return
+        }
+        let listing = try contextBrowseResponse("/api/memory?limit=\(limit)")
+        let rows = (listing["items"] as? [[String: Any]]) ?? []
+        let overview = try? contextBrowseResponse("/api/memory/overview")
+        // `shown` is this PAGE, `total` is the whole store. Naming both "count"
+        // would put "4 memories" next to a 4,902 total and read as a bug.
+        emit(ok: true, message: rows.isEmpty ? "No memories yet" : "\(rows.count) shown", details: [
+            "state": rows.isEmpty ? "empty" : "ready",
+            "memories": rows,
+            "shown": rows.count,
+            "total": overview?["total"] ?? rows.count,
+            "byType": overview?["by_type"] ?? [:],
+            "root": contextRootResolution().resolved ?? NSNull(),
+        ])
+    }
+
+    private func emitContextThreads(args: [String]) throws {
+        let limit = min(max(Int(option("--limit", in: args) ?? "30") ?? 30, 1), 50)
+        if let id = option("--id", in: args), !id.isEmpty {
+            var payload = try contextBrowseResponse("/api/threads/\(id)")
+            payload["filePath"] = contextRecordPath(id: id, kind: "thread") ?? NSNull()
+            emit(ok: true, message: "Thread detail", details: payload)
+            return
+        }
+        let listing = try contextBrowseResponse("/api/threads?limit=\(limit)")
+        let rows = (listing["threads"] as? [[String: Any]]) ?? (listing["items"] as? [[String: Any]]) ?? []
+        // Same split as memories: the server returns a limited PAGE alongside
+        // full-store active/resolved counts, so a live probe showed "4 threads" beside
+        // "11 active". Both are correct; only one of them counts the rows on screen.
+        emit(ok: true, message: rows.isEmpty ? "No threads yet" : "\(rows.count) shown", details: [
+            "state": rows.isEmpty ? "empty" : "ready",
+            "threads": rows,
+            "shown": rows.count,
+            "activeCount": listing["active_count"] ?? 0,
+            "resolvedCount": listing["resolved_count"] ?? 0,
+            "root": contextRootResolution().resolved ?? NSNull(),
+        ])
+    }
+
     private func emitRecentMessages(args: [String]) throws {
         let limit = Int(option("--limit", in: args) ?? "30") ?? 30
         let health = request("/api/health", timeout: 5)
@@ -5740,6 +5864,17 @@ final class COSControlHelper {
         let again = try createContextFolders(at: createRoot.path)
         try expect((again["created"] as? [String])?.isEmpty == true,
                    "a second Create must create nothing and still succeed")
+
+        // The desktop review path must reach the same routes the glasses do, and must
+        // survive the /api/memory top-level-array shape that a dictionary-only reader
+        // silently reads as empty.
+        let arrayBody = Data("[{\"id\":\"file_a.md\",\"summary\":\"s\",\"content\":\"c\"}]".utf8)
+        let arrayResponse = HTTPResponse(status: 200, body: nil, data: arrayBody)
+        try expect(arrayResponse.body == nil && arrayResponse.bodyArray?.count == 1,
+                   "a top-level JSON array must be readable when body is nil")
+        let objectResponse = HTTPResponse(status: 200, body: ["threads": []], data: Data("{\"threads\":[]}".utf8))
+        try expect(objectResponse.bodyArray == nil,
+                   "an object body must not be misread as an array")
 
         // A README must describe the actual accepted shape, not an invented one.
         let readme = try String(contentsOf: createRoot.appendingPathComponent("memory/README.md"), encoding: .utf8)

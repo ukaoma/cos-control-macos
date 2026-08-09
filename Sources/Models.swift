@@ -272,6 +272,54 @@ struct ServerStatus: Sendable {
     }
 }
 
+/// One Memory or Thread row, as browsed from the desktop.
+///
+/// Read-only by construction: no mutation route exists behind any of this, and
+/// Control has no send path to the agent. `filePath` is present only for the file
+/// tier, where a record IS a file and the desktop can reveal it — something the
+/// glasses cannot do.
+struct ContextRecord: Identifiable, Equatable {
+    var id: String
+    var title: String
+    var subtitle: String
+    var body: String
+    var createdAt: String
+    /// nil for a vector-store record, which has no file behind it.
+    var filePath: String?
+    var meetingCount: Int = 0
+    var isResolved: Bool = false
+
+    static func memory(_ raw: [String: JSONValue]) -> ContextRecord {
+        ContextRecord(
+            id: raw["id"]?.string ?? "",
+            title: raw["summary"]?.string ?? raw["content"]?.string ?? "(untitled)",
+            subtitle: [raw["type"]?.string, raw["created_at"]?.string].compactMap { $0 }.joined(separator: " · "),
+            body: raw["content"]?.string ?? "",
+            createdAt: raw["created_at"]?.string ?? "",
+            filePath: raw["filePath"]?.string
+        )
+    }
+
+    static func thread(_ raw: [String: JSONValue]) -> ContextRecord {
+        let meetings = raw["meeting_count"]?.int ?? 0
+        let topics = raw["topics"]?.array?.compactMap { $0.string } ?? []
+        return ContextRecord(
+            id: raw["id"]?.string ?? "",
+            title: raw["name"]?.string ?? "(untitled)",
+            subtitle: [
+                meetings > 0 ? "\(meetings) meeting\(meetings == 1 ? "" : "s")" : nil,
+                topics.isEmpty ? nil : topics.prefix(3).joined(separator: ", "),
+                raw["is_resolved"]?.bool == true ? "resolved" : nil,
+            ].compactMap { $0 }.joined(separator: " · "),
+            body: (raw["manual_updates"]?.array?.compactMap { $0.object?["content"]?.string } ?? []).joined(separator: "\n\n"),
+            createdAt: raw["last_seen"]?.string ?? raw["created_at"]?.string ?? "",
+            filePath: raw["filePath"]?.string,
+            meetingCount: meetings,
+            isResolved: raw["is_resolved"]?.bool == true
+        )
+    }
+}
+
 struct GlassesAttachmentRef: Identifiable, Sendable, Equatable {
     let id: String
     let kind: String

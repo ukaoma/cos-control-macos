@@ -110,6 +110,7 @@ struct ControlPanel: View {
         Group {
             if model.reviewRouteActive {
                 SpeakerReviewPane(model: model)
+                if model.contextBrowseKind != nil { ContextBrowserPane(model: model) }
             } else if let preview = model.selectedMediaPreview {
                 MediaPreviewPane(preview: preview) { model.selectedMediaPreview = nil }
             } else {
@@ -983,6 +984,14 @@ struct ControlPanel: View {
                 // One tap replaces the two directories Queen had to create by hand.
                 // Offered whenever no store has resolved, including when the picker
                 // has never been touched, because that is exactly the new-install case.
+                // Review the same read-only layer the glasses browse. Shown whenever
+                // a store is answering, on either tier.
+                if model.status.memoryAvailable == true {
+                    Button("Review Memories", systemImage: "brain") { model.openContextBrowser("memory") }
+                }
+                if model.status.threadsAvailable == true {
+                    Button("Review Threads", systemImage: "point.3.connected.trianglepath.dotted") { model.openContextBrowser("thread") }
+                }
                 if model.status.contextResolvedRoot == nil {
                     Button("Create Folders", systemImage: "folder.badge.plus") { model.perform("create-context-folders") }
                         .disabled(!model.status.installed && model.status.runtimeState != "managedInPlace")
@@ -1973,5 +1982,97 @@ struct SpeakerReviewPane: View {
                 .background(COSPalette.card)
             }
         }
+    }
+}
+
+
+/// Read-only Memory and Threads browsing, mirroring the glasses.
+///
+/// Deliberately the SAME data the G2 shows, on a screen with room for it. Nothing
+/// here mutates: there is no write route behind these records, and Control has no
+/// send path to the agent. "Pick up from here" is Copy as Context — the record
+/// quoted and labelled with its id, the same data-not-instructions contract the
+/// glasses use when attaching a reference — plus Reveal in Finder for the file tier,
+/// where a record IS a file and the desktop can do something the glasses cannot.
+struct ContextBrowserPane: View {
+    @ObservedObject var model: ControllerModel
+
+    private var isThread: Bool { model.contextBrowseKind == "thread" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(isThread ? "Threads" : "Memories").font(.headline)
+                if !model.contextHeadline.isEmpty {
+                    Text(model.contextHeadline).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if model.contextRecordsLoading { ProgressView().controlSize(.small) }
+                Button("Close") { model.closeContextBrowser() }.buttonStyle(.borderless)
+            }
+            if let error = model.contextRecordsError, model.contextRecords.isEmpty {
+                Text(error).font(.caption).foregroundStyle(COSPalette.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(alignment: .top, spacing: 10) {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(model.contextRecords) { record in
+                            Button { model.openContextRecord(record) } label: {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(record.title).font(.caption).lineLimit(2)
+                                        .multilineTextAlignment(.leading)
+                                    if !record.subtitle.isEmpty {
+                                        Text(record.subtitle).font(.caption2).foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 3).padding(.horizontal, 5)
+                                .background(model.contextOpenRecord?.id == record.id
+                                            ? COSPalette.amber.opacity(0.14) : .clear)
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                            }.buttonStyle(.plain)
+                        }
+                    }
+                }.frame(width: 210, height: 210)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    if let record = model.contextOpenRecord {
+                        Text(record.title).font(.caption.weight(.semibold))
+                            .fixedSize(horizontal: false, vertical: true)
+                        // The id is shown because it is the addressable handle the
+                        // glasses use, and because a copied excerpt is worth nothing
+                        // without knowing which record it came from.
+                        Text(record.id).font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.secondary).textSelection(.enabled)
+                        ScrollView {
+                            Text(record.body.isEmpty ? "(no stored body)" : record.body)
+                                .font(.caption2).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }.frame(height: 128)
+                        HStack {
+                            Button("Copy as Context", systemImage: "doc.on.doc") {
+                                model.copyContextRecord(record)
+                            }
+                            if record.filePath != nil {
+                                Button("Reveal in Finder", systemImage: "folder") {
+                                    model.revealContextRecord(record)
+                                }
+                            }
+                        }.controlSize(.small)
+                        if let note = model.copyNote {
+                            Text(note).font(.caption2).foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text(isThread ? "Select a thread." : "Select a memory.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(9)
+        .background(COSPalette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }

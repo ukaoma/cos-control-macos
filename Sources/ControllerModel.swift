@@ -735,6 +735,116 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    // ── Memory and Threads review ───────────────────────────
+    //
+    // Miles: "It's mostly just exposing the read-only layer that we see from the
+    // glasses." That is exactly what this is — the same authenticated routes the G2
+    // browses, on a screen with room to read them.
+    //
+    // "Pick up from here" is COPY and REVEAL, not send. Control has no path to the
+    // agent (no /api/query call exists anywhere in it), and arming a reference for
+    // the next prompt would need a write route the amendment design does not have.
+    // Copying grounded context into whatever you are already typing achieves the
+    // same thing today without inventing a mutation surface.
+
+    @Published var contextBrowseKind: String?          // "memory" | "thread" | nil
+    @Published var contextRecords: [ContextRecord] = []
+    @Published var contextRecordsLoading = false
+    @Published var contextRecordsError: String?
+    @Published var contextOpenRecord: ContextRecord?
+    @Published var contextHeadline = ""
+
+    func openContextBrowser(_ kind: String) {
+        contextBrowseKind = kind
+        contextOpenRecord = nil
+        contextRecordsError = nil
+        contextRecords = []
+        Task { [weak self] in await self?.loadContextRecords(kind: kind) }
+    }
+
+    func closeContextBrowser() {
+        contextBrowseKind = nil
+        contextRecords = []
+        contextOpenRecord = nil
+        contextRecordsError = nil
+    }
+
+    private func loadContextRecords(kind: String) async {
+        contextRecordsLoading = true
+        contextRecordsError = nil
+        defer { contextRecordsLoading = false }
+        do {
+            let command = kind == "thread" ? "context-threads" : "context-memories"
+            let response = try await helper.run([command, "--limit", "50"])
+            let key = kind == "thread" ? "threads" : "memories"
+            let rows = response.details[key]?.array?.compactMap { $0.object } ?? []
+            contextRecords = rows.map { kind == "thread" ? ContextRecord.thread($0) : ContextRecord.memory($0) }
+            // `shown` is this page; `total`/`activeCount` cover the whole store. A
+            // live probe returned "4 threads" beside "11 active", so the headline
+            // names both rather than implying the page is everything.
+            let shown = response.details["shown"]?.int ?? contextRecords.count
+            if kind == "thread" {
+                let active = response.details["activeCount"]?.int ?? 0
+                contextHeadline = "Showing \(shown) · \(active) active"
+            } else {
+                let total = response.details["total"]?.int ?? shown
+                contextHeadline = total > shown ? "Showing \(shown) of \(total)" : "\(shown) stored"
+            }
+            if contextRecords.isEmpty {
+                contextRecordsError = kind == "thread"
+                    ? "No threads yet. Threads are markdown files in threads/, or tracked automatically when a bridge is configured."
+                    : "No memories yet. Drop markdown into memory/, or configure a bridge for the vector store."
+            }
+        } catch {
+            contextRecordsError = error.localizedDescription
+        }
+    }
+
+    /// Open one record, fetching full detail so the body is not the truncated row.
+    func openContextRecord(_ record: ContextRecord) {
+        contextOpenRecord = record
+        let kind = contextBrowseKind ?? "memory"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let command = kind == "thread" ? "context-threads" : "context-memories"
+                let response = try await self.helper.run([command, "--id", record.id])
+                let raw = response.details.reduce(into: [String: JSONValue]()) { $0[$1.key] = $1.value }
+                let full = kind == "thread" ? ContextRecord.thread(raw) : ContextRecord.memory(raw)
+                // Keep the row's own title when detail omits it, so the header never
+                // blanks out mid-read.
+                if !full.id.isEmpty { self.contextOpenRecord = full.title.isEmpty ? record : full }
+            } catch {
+                // The list row is already readable; a detail failure must not clear it.
+                self.contextRecordsError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Copy the record as grounded context, ready to paste into a prompt.
+    ///
+    /// Quoted and labelled with its id, which is the same contract the glasses use
+    /// when they attach a reference: stored text is DATA, never instructions.
+    func copyContextRecord(_ record: ContextRecord) {
+        let text = """
+        \(contextBrowseKind == "thread" ? "Thread" : "Memory") \(record.id)
+        \(record.subtitle.isEmpty ? "" : "(\(record.subtitle))")
+
+        \"\"\"
+        \(record.body.isEmpty ? record.title : record.body)
+        \"\"\"
+        """
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        copyNote = "Copied as grounded context"
+    }
+
+    /// Reveal the file behind a file-tier record. Absent for a vector-store record.
+    func revealContextRecord(_ record: ContextRecord) {
+        guard let path = record.filePath else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
     func openSpeakerReview(_ meeting: ReviewableMeeting) {
         stopPlayback()
         playbackNote = nil

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.17 (build 55)
+
+Review Memories and Review Threads, on the desktop.
+
+- Two new buttons open the SAME read-only records the glasses browse, using the
+  authenticated routes that already existed. No new server surface, no mutation.
+- **Copy as Context** puts the record on the clipboard quoted and labelled with its
+  id — the same data-not-instructions contract the glasses use when attaching a
+  reference — ready to paste into whatever you are already typing.
+- **Reveal in Finder** appears for file-tier records, where a memory IS a file. That
+  is something the glasses cannot do, and the reason a desktop view earns its place
+  rather than just mirroring the lens.
+- No send path was added. Control has never had one, and arming a reference for the
+  next prompt needs a write route the amendment design does not have yet. Copying
+  grounded context does the same job today without inventing a mutation surface.
+- The headline separates the page from the store: a live probe returned "4 threads"
+  beside "11 active", because the server sends a limited page with full-store counts.
+  It now reads "Showing 4 · 11 active".
+- `/api/memory` returns a TOP-LEVEL ARRAY for released-companion compatibility, which
+  a dictionary-only reader sees as empty. Queen's own probe hit that and read working
+  data as a failure, so the response reader handles both shapes and a test pins it.
+
 ## 0.5.16 (build 54)
 
 Queen installed server 6.22.0 and hit "Memory & Threads: Setup needed" with a hint
