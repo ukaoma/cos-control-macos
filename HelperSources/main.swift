@@ -416,6 +416,7 @@ final class COSControlHelper {
         case "meeting-speakers": try emitMeetingSpeakers(args: args)
         case "meeting-content": try emitMeetingContent(args: args)
         case "voice-profiles": try emitVoiceProfiles()
+        case "voice-directory": try emitVoiceDirectory(args: args)
         case "voice-merge": try emitVoiceMerge(args: args)
         case "meeting-relabel": try emitMeetingRelabel(args: args)
         case "meeting-deattribute": try emitMeetingDeattribute(args: args)
@@ -577,6 +578,18 @@ final class COSControlHelper {
         }
     }
 
+    /// Finder-launched apps inherit a minimal PATH. Homebrew's npm executable
+    /// uses `#!/usr/bin/env node`, so finding npm is not sufficient: its child
+    /// must also receive the directory containing the Node binary. Keep npm's
+    /// update notifier off here so the JSON-only registry response cannot be
+    /// polluted by an unrelated upgrade notice on the shared output pipe.
+    private func nodeToolEnvironment(node: String) -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = launchPathDirectories(node: node).joined(separator: ":")
+        environment["NPM_CONFIG_UPDATE_NOTIFIER"] = "false"
+        return environment
+    }
+
     /// Match glasses-app `resolveAgentBinary`: env → PATH → ~/.local/bin/agent.
     private func resolveAgentBinary() -> String? {
         if let configured = ProcessInfo.processInfo.environment["COS_CURSOR_AGENT_BIN"]?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -732,8 +745,16 @@ final class COSControlHelper {
         guard let npm = findExecutable("npm") else {
             throw HelperError.message("Node/npm not found. Install Node.js 20.11 or newer.")
         }
+        guard let node = findExecutable("node") else {
+            throw HelperError.message("Node/npm not found. Install Node.js 20.11 or newer.")
+        }
         let spec = requested == "latest" ? packageName : "\(packageName)@\(requested)"
-        let result = try execute(npm, ["view", spec, "version", "dist.integrity", "--json"], timeout: 30)
+        let result = try execute(
+            npm,
+            ["--silent", "view", spec, "version", "dist.integrity", "--json"],
+            environment: nodeToolEnvironment(node: node),
+            timeout: 30
+        )
         guard result.code == 0, let data = result.output.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let version = object["version"] as? String,
@@ -831,13 +852,15 @@ final class COSControlHelper {
 
     private func stageGeneration(version: String, integrity: String) throws -> GenerationRecord {
         guard let npm = findExecutable("npm") else { throw HelperError.message("npm not found") }
+        guard let node = findExecutable("node") else { throw HelperError.message("Node.js not found") }
+        let npmEnvironment = nodeToolEnvironment(node: node)
         try ensureDirectories()
         let stage = stagingRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try fm.createDirectory(at: stage, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         progress("Downloading server \(version)…")
         let packed = try execute(npm, [
-            "pack", "\(packageName)@\(version)", "--pack-destination", stage.path, "--json",
-        ], timeout: 120)
+            "--silent", "pack", "\(packageName)@\(version)", "--pack-destination", stage.path, "--json",
+        ], environment: npmEnvironment, timeout: 120)
         guard packed.code == 0,
               let packedData = packed.output.data(using: .utf8),
               let packedObjects = try? JSONSerialization.jsonObject(with: packedData) as? [[String: Any]],
@@ -854,7 +877,7 @@ final class COSControlHelper {
         let result = try execute(npm, [
             "install", "--prefix", stage.path, "--ignore-scripts", "--omit=dev",
             "--no-audit", "--no-fund", artifact.path,
-        ], log: true, timeout: 900)
+        ], log: true, environment: npmEnvironment, timeout: 900)
         guard result.code == 0 else {
             throw HelperError.message("npm server installation failed. Open the COS Control log for details.")
         }
@@ -1099,7 +1122,13 @@ final class COSControlHelper {
             expectedVersion: previous.version,
             expectedGenerationID: previous.generationID,
             inheritedLease: lease,
-            timeout: 60
+            timeout: 60,
+            // This integrity-verified generation already passed the complete
+            // provider/TTS gate when it was first committed. Re-running an old
+            // server's verifier during rollback can deadlock Repair after a
+            // provider CLI changes its project-context behavior. New candidates
+            // still require the complete transactional proof before commit.
+            requireTransactionalProof: false
         )
         try requireMaintenanceRelease(activeLease)
         clearTransaction()
@@ -5247,6 +5276,51 @@ final class COSControlHelper {
         ])
     }
 
+    /// Enrolled people plus bounded cross-meeting evidence.
+    ///
+    /// A 404 is an honest older-server state, not an empty directory. We keep
+    /// the existing profile endpoint as a compatibility fallback so Control can
+    /// still show training coverage while explaining that meeting history needs
+    /// a server update.
+    private func emitVoiceDirectory(args: [String]) throws {
+        let token = try speakerReviewToken()
+        let refresh = args.contains("--refresh") ? "&refresh=1" : ""
+        guard let response = request("/api/voice/directory?limit=100\(refresh)", token: token, timeout: 45) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if response.status == 404 {
+            let body = try speakerReviewBody("/api/voice/profiles")
+            emit(ok: true, message: "Voice history needs a server update", details: [
+                "state": "route_absent",
+                "owner": body["owner"] as? String ?? "",
+                "profileCount": body["count"] as? Int ?? 0,
+                "totalEmbeddings": body["totalEmbeddings"] as? Int ?? 0,
+                "profiles": (body["profiles"] as? [[String: Any]]) ?? [],
+            ])
+            return
+        }
+        if response.status != 200 {
+            let reason = (response.body?["error"] as? String) ?? "Request failed (\(response.status))"
+            throw HelperError.message(reason)
+        }
+        guard let body = response.body else { throw HelperError.message("Server stopped") }
+        emit(ok: true, message: "Voice directory ready", details: [
+            "state": "ready",
+            "schemaVersion": body["schemaVersion"] as? Int ?? 0,
+            "generatedAt": body["generatedAt"] as? String ?? "",
+            "owner": body["owner"] as? String ?? "",
+            "profileCount": body["profileCount"] as? Int ?? 0,
+            "totalEmbeddings": body["totalEmbeddings"] as? Int ?? 0,
+            "meetingsScanned": body["meetingsScanned"] as? Int ?? 0,
+            "sidecarsSkipped": body["sidecarsSkipped"] as? Int ?? 0,
+            "truncated": body["truncated"] as? Bool ?? false,
+            "unresolvedMeetings": body["unresolvedMeetings"] as? Int ?? 0,
+            "unresolvedSegments": body["unresolvedSegments"] as? Int ?? 0,
+            "profiles": (body["profiles"] as? [[String: Any]]) ?? [],
+        ])
+    }
+
     /// Fold one profile into another. `--confirm` is required, and it is passed
     /// through to the server rather than synthesised here: the server owns the
     /// similarity floor and its own confirmation, and the helper must not be a
@@ -5984,6 +6058,11 @@ final class COSControlHelper {
         let localBin = home.appendingPathComponent(".local/bin", isDirectory: true).path
         try expect(launchPaths.contains(localBin), "managed PATH includes the user-local bin")
         try expect(launchPaths.filter { $0 == "/opt/homebrew/bin" }.count == 1, "managed PATH removes duplicate directories")
+        let nodeToolEnv = nodeToolEnvironment(node: "/opt/homebrew/bin/node")
+        try expect(nodeToolEnv["PATH"]?.split(separator: ":").first == "/opt/homebrew/bin",
+                   "npm resolver PATH starts with the discovered Node directory")
+        try expect(nodeToolEnv["NPM_CONFIG_UPDATE_NOTIFIER"] == "false",
+                   "npm resolver disables non-JSON update notices")
 
         let healthyClaude: [String: Any] = [
             "status": "ok", "server": "ok",

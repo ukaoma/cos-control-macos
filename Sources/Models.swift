@@ -1016,6 +1016,96 @@ struct VoiceProfileOption: Identifiable, Sendable, Hashable {
     }
 }
 
+/// One occurrence of an enrolled voice in a saved meeting.
+///
+/// `observedMatch` is deliberately not called confidence: it is the mean
+/// similarity of this occurrence, not a permanent confidence score for a human.
+struct VoiceDirectoryAppearance: Identifiable, Sendable, Hashable {
+    let sessionId: String
+    let title: String
+    let date: String
+    let source: String
+    let mutable: Bool
+    let segments: Int
+    let speakingMs: Int
+    let speakingTimeSource: String
+    let observedMatch: Double?
+    let reliability: String
+    let confirmedByHuman: Bool
+    let needsReview: Bool
+
+    var id: String { "\(sessionId):\(title)" }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object,
+              let sessionId = o["sessionId"]?.string,
+              !sessionId.isEmpty else { return nil }
+        self.sessionId = sessionId
+        title = o["title"]?.string ?? "Untitled meeting"
+        date = o["date"]?.string ?? ""
+        source = o["source"]?.string ?? ""
+        mutable = o["mutable"]?.bool ?? true
+        segments = o["segments"]?.int ?? 0
+        speakingMs = o["speakingMs"]?.int ?? 0
+        speakingTimeSource = o["speakingTimeSource"]?.string ?? "chunks"
+        observedMatch = o["observedMatch"]?.double
+        reliability = o["reliability"]?.string ?? "weak"
+        confirmedByHuman = o["confirmedByHuman"]?.bool ?? false
+        needsReview = o["needsReview"]?.bool ?? false
+    }
+}
+
+/// Server-built, bounded aggregate for one enrolled identity.
+struct VoiceDirectoryPerson: Identifiable, Sendable, Hashable {
+    let name: String
+    let isOwner: Bool
+    let embeddings: Int
+    let sources: [String: Int]
+    let sourcesAligned: Bool
+    let assertedSegments: Int
+    let candidateSegments: Int
+    let assertedSpeakingMs: Int
+    let candidateSpeakingMs: Int
+    let meetingCount: Int
+    let reviewMeetingCount: Int
+    let observedMatch: Double?
+    let observedMatchSegments: Int
+    let reliabilityCounts: [String: Int]
+    let firstSeen: String?
+    let lastSeen: String?
+    let appearances: [VoiceDirectoryAppearance]
+
+    var id: String { name }
+    var needsAttention: Bool { reviewMeetingCount > 0 || !sourcesAligned }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object,
+              let name = o["name"]?.string,
+              !name.isEmpty else { return nil }
+        self.name = name
+        isOwner = o["isOwner"]?.bool ?? false
+        embeddings = o["embeddings"]?.int ?? 0
+        sources = (o["sources"]?.object ?? [:]).reduce(into: [:]) { result, pair in
+            result[pair.key] = pair.value.int ?? 0
+        }
+        sourcesAligned = o["sourcesAligned"]?.bool ?? true
+        assertedSegments = o["assertedSegments"]?.int ?? 0
+        candidateSegments = o["candidateSegments"]?.int ?? 0
+        assertedSpeakingMs = o["assertedSpeakingMs"]?.int ?? 0
+        candidateSpeakingMs = o["candidateSpeakingMs"]?.int ?? 0
+        meetingCount = o["meetingCount"]?.int ?? 0
+        reviewMeetingCount = o["reviewMeetingCount"]?.int ?? 0
+        observedMatch = o["observedMatch"]?.double
+        observedMatchSegments = o["observedMatchSegments"]?.int ?? 0
+        reliabilityCounts = (o["reliabilityCounts"]?.object ?? [:]).reduce(into: [:]) { result, pair in
+            result[pair.key] = pair.value.int ?? 0
+        }
+        firstSeen = o["firstSeen"]?.string
+        lastSeen = o["lastSeen"]?.string
+        appearances = (o["appearances"]?.array ?? []).compactMap(VoiceDirectoryAppearance.init)
+    }
+}
+
 /// How far a correction reaches.
 ///
 /// `thisMeeting` is the DEFAULT and the reason this type exists. Until 0.5.0 the

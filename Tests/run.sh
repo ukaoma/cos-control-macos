@@ -158,8 +158,17 @@ PY
 /usr/bin/grep -q 'case "meeting-speakers"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "voice-merge"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "voice-profiles"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "voice-directory"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'struct VoiceDirectoryPerson' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'private var voiceDirectoryList' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'Meetings to review' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'struct SpeakerReviewPane' "$ROOT/Sources/Views.swift"
-/usr/bin/grep -q 'reviewableMeetingsCard' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'activityLauncher' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'ActivityWindowPresenter' "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q 'activityWindow.show(model: model)' "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q 'window.isReleasedWhenClosed = false' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'window.setFrameAutosaveName("COSActivityWindow")' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'struct ActivityWindow' "$ROOT/Sources/ActivityWindow.swift"
 # A merge must be a two-step: no --confirm means the helper asks the server for a
 # dryRun preview, never a merge. Losing this makes the confirmation decorative.
 /usr/bin/grep -q 'if confirm { payload\["confirm"\] = true } else { payload\["dryRun"\] = true }' "$ROOT/HelperSources/main.swift"
@@ -342,13 +351,13 @@ fi
 # MenuBarExtra(.window) is a transient panel that closes when it loses key status,
 # so ANY sheet presented from it dismisses the panel mid-interaction. This is the
 # regression guard: zero sheet presentations in the panel's view tree.
-if /usr/bin/grep -q '\.sheet(' "$ROOT/Sources/Views.swift"; then
+if /usr/bin/grep -q '\.sheet(' "$ROOT/Sources/Views.swift" "$ROOT/Sources/ActivityWindow.swift"; then
   echo 'COS Control: FAIL — a .sheet reappeared in Views.swift; MenuBarExtra panels must route overlays inline' >&2
   exit 1
 fi
 /usr/bin/grep -q 'struct SpeakerReviewPane' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'struct MediaPreviewPane' "$ROOT/Sources/Views.swift"
-/usr/bin/grep -q 'reviewRouteActive' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'reviewRouteActive' "$ROOT/Sources/ActivityWindow.swift"
 # The route reads lastReviewSession, so it must be observable or the panel can
 # read a stale value and never re-render.
 /usr/bin/grep -q '@Published private var lastReviewSession' "$ROOT/Sources/ControllerModel.swift"
@@ -425,6 +434,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/HelperClient.swift" \
   "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/Views.swift" \
+  "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   -o "$TMP/COS Control"
@@ -442,6 +452,8 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
 import pathlib, re, sys
 root = pathlib.Path(sys.argv[1])
 views = (root / "Sources/Views.swift").read_text()
+activity = (root / "Sources/ActivityWindow.swift").read_text()
+app = (root / "Sources/COSControlApp.swift").read_text()
 model = (root / "Sources/ControllerModel.swift").read_text()
 
 def need(condition, message):
@@ -453,17 +465,18 @@ def need(condition, message):
 flags = re.findall(r"var (\w*RouteActive)\s*:\s*Bool", model)
 need(len(flags) >= 2, f"expected the speaker and context routes, found {flags}")
 for flag in flags:
-    need(f"model.{flag}" in views, f"{flag} is never read by Views.swift")
+    need(f"model.{flag}" in activity, f"{flag} is never read by ActivityWindow.swift")
 
-# 2. The context route renders its own pane, gated on NOTHING BUT its own flag.
-#    Checking only that the flag appears somewhere is too weak: a mutation that
-#    restored the original bug — `else if model.reviewRouteActive &&
-#    model.contextRouteActive` — passed that version of this test.
-need("ContextDetailPane(model: model)" in views, "ContextDetailPane is never mounted")
-branch = re.search(r"\}\s*else if ([^\n{]*)\{((?:\s*//[^\n]*\n)*)\s*ContextDetailPane", views)  # comment lines between the gate and the pane are fine
-need(branch is not None, "ContextDetailPane is not on its own else-if branch")
-need(branch.group(1).strip() == "model.contextRouteActive",
-     f"the context pane is gated on {branch.group(1).strip()!r}, not on model.contextRouteActive alone")
+# 2. The context pane reads its own route flag inside a window-local selection
+#    gate. The local id prevents a late response from another tab reopening a
+#    detail the user already left; the model flag prevents a false rendered pane.
+need("ContextDetailPane(model: model, showsBackButton: false)" in activity, "ContextDetailPane is never mounted")
+need('selectedContextID != nil' in activity, "context detail has no window-local selection gate")
+need(re.search(r"if model\.contextRouteActive\s*\{\s*ContextDetailPane", activity) is not None,
+     "ContextDetailPane is not gated on model.contextRouteActive")
+need('selectedSpeakerSessionID != nil' in activity, "speaker detail has no window-local selection gate")
+need(re.search(r"if model\.reviewRouteActive\s*\{\s*SpeakerReviewPane", activity) is not None,
+     "SpeakerReviewPane is not gated on model.reviewRouteActive")
 
 # 3. The route flag reads the var the opener writes. This is the exact link that was
 #    missing: openContextRecord set one thing, the mount condition read another.
@@ -478,11 +491,31 @@ need(opener is not None, "openContextRecord not found")
 need(re.search(r"contextDetail\s*=", opener.group(0)) is not None,
      "openContextRecord never assigns contextDetail, so the route can never activate")
 
-# 4. Both list cards are placed, and the controls row no longer carries the review
-#    buttons — five buttons plus a path truncated to "Revi..." at 390pt.
-need(views.count('contextListCard(kind: "memory")') == 1, "memory list card is not placed")
-need(views.count('contextListCard(kind: "thread")') == 1, "thread list card is not placed")
-need('Button("Review Memories"' not in views, "Review Memories is back in a button row")
+# 4. The narrow menu panel has one doorway. All four peer sections live in the
+#    persistent window, whose shell owns Home, Back, and the breadcrumb.
+need('openActivity()' in views, "the menu panel cannot open Activity")
+need('ActivityWindowPresenter' in app and 'activityWindow.show(model: model)' in app,
+     "the click-only Activity presenter is not wired")
+need('case .messages: messagesList' in activity, "Messages is not mounted")
+need('case .speakers: speakersList' in activity, "Speakers is not mounted")
+need('case .memories: contextList(kind: "memory")' in activity, "Memories is not mounted")
+need('case .threads: contextList(kind: "thread")' in activity, "Threads is not mounted")
+need('private func goHome()' in activity and 'private func goBack()' in activity,
+     "Activity does not own Home and Back navigation")
+need('private var breadcrumb' in activity, "Activity has no breadcrumb")
+need('windowWillClose' in activity and 'model?.closeSpeakerReview()' in activity,
+     "closing Activity does not stop speaker playback and detail work")
+need('selectedVoiceName' in activity and 'voiceDirectoryDetail' in activity,
+     "Speakers has no enrolled-voice directory/detail route")
+need('observed match' in activity.lower(),
+     "voice similarity is not labelled as an occurrence-level observed match")
+need('loadVoiceDirectory' in model and 'voiceDirectoryError' in model,
+     "voice directory has no explicit loading/error contract")
+main_panel = re.search(r"private var mainPanel: some View \{(.*?)\n    \}\n\n", views, re.S)
+need(main_panel is not None, "mainPanel not found")
+need('recentGlassesCard' not in main_panel.group(1), "Recent Glasses is still nested in the menu panel")
+need('reviewableMeetingsCard' not in main_panel.group(1), "Review Speakers is still nested in the menu panel")
+need('contextListCard' not in main_panel.group(1), "Memory/Threads are still nested in the menu panel")
 ROUTECHK
 
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"

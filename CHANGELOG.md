@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.5.19 (build 57)
+
+COS Activity moves Messages, Speakers, Memories, and Threads out of the narrow
+menu-bar popover and into one durable, resizable window. Peer tabs, Home, Back,
+and a scoped breadcrumb make it clear where you are without throwing away the
+place you came from. Closing the window now cancels detail work and stops voice
+playback; late server responses cannot overwrite a newer selection.
+
+Speakers is now a Voice Directory instead of a list of meeting titles. Enrolled
+people show training-sample provenance, attributed and review segments, meeting
+count, last seen, and a segment-weighted **observed match** with its evidence
+basis. A voice detail opens its recent meeting appearances, while Meetings to
+review remains a peer view for corrections. Unidentified meeting-local voices
+stay separate and are never presented as one global person. Requires the new
+voice-directory route for history; older servers still show honest profile-only
+coverage and an update explanation.
+
+Server updates resolve correctly when COS Control is launched from Finder or at
+login. Control previously found Homebrew's `npm` executable, then launched it
+with macOS's minimal GUI `PATH`; npm's `#!/usr/bin/env node` launcher could not
+find Node and the UI collapsed that failure into “Could not resolve the latest
+npm server release.” The resolver now supplies the discovered Node directory,
+suppresses non-JSON npm update notices, and keeps the existing transactional
+update and rollback path unchanged.
+
+Repair also restores a previously committed, integrity-verified generation
+without re-running that older server's provider verifier. Ownership, package
+integrity, health, local Whisper, and the credentialed maintenance handoff remain
+mandatory; every new candidate still runs the full real-query proof before commit.
+
 ## 0.5.18 (build 56)
 
 Review Memories and Review Threads actually work. In 0.5.17 they did nothing.

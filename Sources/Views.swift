@@ -77,7 +77,7 @@ private struct WindowOpaquer: NSViewRepresentable {
     }
 }
 
-private enum COSPalette {
+enum COSPalette {
     static let ink = Color(red: 0.12, green: 0.09, blue: 0.07)   // dark brand tile (both modes)
     static let panel = Color(nsColor: COSInk.panelNS)            // adaptive
     static let card = Color(nsColor: COSInk.cardNS)              // adaptive
@@ -89,6 +89,7 @@ private enum COSPalette {
 
 struct ControlPanel: View {
     @ObservedObject var model: ControllerModel
+    let openActivity: () -> Void
     @State private var confirmLegacyRestart = false
     @State private var confirmInstallManaged = false
     @State private var showGuidedSetupTier = false
@@ -98,29 +99,11 @@ struct ControlPanel: View {
     @State private var selectedIdleMetalHq = false
     @State private var selectedAdaptiveAudioCleanup = false
 
-    /// Overlays are rendered INLINE, never as sheets.
-    ///
-    /// MenuBarExtra(.window) is a transient panel: it closes the moment it stops
-    /// being the key window. Presenting a sheet makes a new window key, so the
-    /// panel dismissed itself mid-interaction and took the sheet's parent with
-    /// it — which is why controls stopped responding as they were clicked. There
-    /// is no arrangement of sheet modifiers that avoids this; the fix is to not
-    /// leave the panel's own window at all.
+    /// The menu-bar panel stays the server console. Browsing activity lives in a
+    /// real, persistent AppKit window: unlike a sheet, that
+    /// window does not need the transient MenuBarExtra to remain key.
     var body: some View {
-        Group {
-            if model.reviewRouteActive {
-                SpeakerReviewPane(model: model)
-            } else if model.contextRouteActive {
-                // Its OWN route. The first cut nested this inside reviewRouteActive,
-                // a flag only the speaker flow sets, so clicking a row changed state
-                // that nothing rendered and the click looked dead.
-                ContextDetailPane(model: model)
-            } else if let preview = model.selectedMediaPreview {
-                MediaPreviewPane(preview: preview) { model.selectedMediaPreview = nil }
-            } else {
-                mainPanel
-            }
-        }
+        mainPanel
         .frame(width: 390, height: 640)
         .background(COSPalette.panel)
         .background(WindowOpaquer())
@@ -625,16 +608,61 @@ struct ControlPanel: View {
                 updateBanner
                 statusCard
                 controls
-                recentGlassesCard
-                reviewableMeetingsCard
-                if model.status.memoryAvailable == true { contextListCard(kind: "memory") }
-                if model.status.threadsAvailable == true { contextListCard(kind: "thread") }
+                activityLauncher
                 if !model.doctorChecks.isEmpty { doctorCard }
                 utilities
                 footer
             }
             .padding(16)
         }
+    }
+
+    /// One doorway instead of four nested browsers in a 390pt transient panel.
+    /// The destination is a durable window with peer tabs and a real back stack.
+    private var activityLauncher: some View {
+        Button {
+            openActivity()
+        } label: {
+            VStack(alignment: .leading, spacing: 11) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Activity")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Browse without losing your place")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Label("Open", systemImage: "arrow.up.forward.app")
+                        .font(.system(size: 10.5, weight: .medium))
+                }
+                HStack(spacing: 7) {
+                    activityChip("Messages", icon: "message", tint: Color(red: 0.24, green: 0.48, blue: 0.78))
+                    activityChip("Speakers", icon: "waveform", tint: Color(red: 0.78, green: 0.34, blue: 0.39))
+                    activityChip("Memories", icon: "sparkles", tint: Color(red: 0.48, green: 0.36, blue: 0.72))
+                    activityChip("Threads", icon: "point.3.connected.trianglepath.dotted", tint: Color(red: 0.22, green: 0.57, blue: 0.39))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(13)
+            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
+            .overlay(RoundedRectangle(cornerRadius: 13).stroke(COSPalette.line, lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: 13))
+        }
+        .buttonStyle(.plain)
+        .help("Open Messages, Speakers, Memories, and Threads in a separate window")
+    }
+
+    private func activityChip(_ title: String, icon: String, tint: Color) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+            Text(title)
+        }
+        .font(.system(size: 9.5, weight: .medium))
+        .foregroundStyle(tint)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .background(tint.opacity(0.10), in: Capsule())
     }
 
     private var reviewableMeetingsCard: some View {
@@ -1693,6 +1721,7 @@ let MEETING_LIST_MAX_HEIGHT: CGFloat = 330
 
 struct SpeakerReviewPane: View {
     @ObservedObject var model: ControllerModel
+    var showsBackButton = true
     /// Which span the pointer is over. Held here so the bar and the legend
     /// highlight the same thing.
     @State private var hoveredSpan: SpeakerTimelineSpan?
@@ -1764,13 +1793,15 @@ struct SpeakerReviewPane: View {
                     .buttonStyle(.plain)
                     .help("Copy the meeting including the full transcript")
                 }
-                Button {
-                    model.closeSpeakerReview()
-                } label: {
-                    Label("Back", systemImage: "chevron.left").font(.system(size: 11))
+                if showsBackButton {
+                    Button {
+                        model.closeSpeakerReview()
+                    } label: {
+                        Label("Back", systemImage: "chevron.left").font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
             }
             .padding(16)
 
@@ -2074,16 +2105,19 @@ extension ControlPanel {
 /// selectable text at length, and revealing the actual file on the file tier.
 struct ContextDetailPane: View {
     @ObservedObject var model: ControllerModel
+    var showsBackButton = true
 
     private var isThread: Bool { model.contextDetailKind == "thread" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Button { model.closeContextDetail() } label: {
-                    Label(isThread ? "Threads" : "Memories", systemImage: "chevron.left")
+                if showsBackButton {
+                    Button { model.closeContextDetail() } label: {
+                        Label(isThread ? "Threads" : "Memories", systemImage: "chevron.left")
+                    }
+                    .buttonStyle(.borderless)
                 }
-                .buttonStyle(.borderless)
                 Spacer()
                 if model.contextDetailLoading { ProgressView().controlSize(.small) }
             }

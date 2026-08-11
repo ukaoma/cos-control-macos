@@ -83,6 +83,15 @@ final class ControllerModel: ObservableObject {
     @Published var reviewLoading = false
     @Published var reviewError: String?
     @Published var voiceProfiles: [VoiceProfileOption] = []
+    @Published var voiceDirectory: [VoiceDirectoryPerson] = []
+    @Published var voiceDirectoryLoading = false
+    @Published var voiceDirectoryError: String?
+    @Published var voiceDirectoryRouteAvailable: Bool?
+    @Published var voiceDirectoryGeneratedAt: String?
+    @Published var voiceDirectoryMeetingsScanned = 0
+    @Published var voiceDirectoryUnresolvedMeetings = 0
+    @Published var voiceDirectoryUnresolvedSegments = 0
+    @Published var voiceDirectoryTruncated = false
     /// Which voice row has its naming field open. One at a time: two open fields
     /// invite naming the wrong row.
     @Published var namingVoice: String?
@@ -132,6 +141,9 @@ final class ControllerModel: ObservableObject {
     private let mediaFetchGate = MediaFetchGate()
     private var refreshTask: Task<Void, Never>?
     private var updateCheckTask: Task<Void, Never>?
+    private var speakerReviewTask: Task<Void, Never>?
+    private var contextDetailTask: Task<Void, Never>?
+    private var mediaPreviewTask: Task<Void, Never>?
     private var thumbnailTasks: [String: Task<Void, Never>] = [:]
     private var thumbnailLoadIDs: [String: UUID] = [:]
 
@@ -182,6 +194,9 @@ final class ControllerModel: ObservableObject {
     deinit {
         refreshTask?.cancel()
         updateCheckTask?.cancel()
+        speakerReviewTask?.cancel()
+        contextDetailTask?.cancel()
+        mediaPreviewTask?.cancel()
         thumbnailTasks.values.forEach { $0.cancel() }
     }
 
@@ -282,22 +297,36 @@ final class ControllerModel: ObservableObject {
     }
 
     func openMediaPreview(_ attachment: GlassesAttachmentRef) {
-        guard previewingMediaID == nil else { return }
+        mediaPreviewTask?.cancel()
         previewingMediaID = attachment.id
-        Task { [weak self] in
+        mediaPreviewTask = Task { [weak self] in
             guard let self else { return }
-            defer { previewingMediaID = nil }
+            defer {
+                if previewingMediaID == attachment.id {
+                    previewingMediaID = nil
+                    mediaPreviewTask = nil
+                }
+            }
             do {
                 let file = try await fetchMediaFile(attachment, variant: "phone", purpose: "preview")
                 defer { try? FileManager.default.removeItem(at: file.url) }
+                guard !Task.isCancelled, previewingMediaID == attachment.id else { return }
                 guard let image = RecentMediaImageDecoder.decode(url: file.url, expectedBytes: file.bytes) else {
                     throw MediaFetchError.invalidResponse
                 }
                 selectedMediaPreview = SelectedMediaPreview(attachment: attachment, image: image)
             } catch {
+                guard !Task.isCancelled, previewingMediaID == attachment.id else { return }
                 self.error = error.localizedDescription
             }
         }
+    }
+
+    func closeMediaPreview() {
+        mediaPreviewTask?.cancel()
+        mediaPreviewTask = nil
+        previewingMediaID = nil
+        selectedMediaPreview = nil
     }
 
     func copyTurnWithImages(_ turn: GlassesTurn) {
@@ -810,25 +839,38 @@ final class ControllerModel: ObservableObject {
     /// Open one record. Routes immediately on the LIST row so the click always shows
     /// something, then replaces it with full detail when that arrives.
     func openContextRecord(_ record: ContextRecord, kind: String) {
+        contextDetailTask?.cancel()
         contextDetailKind = kind
         contextDetail = record
         contextDetailError = nil
         copyNote = nil
-        Task { [weak self] in await self?.fetchContextDetail(record: record, kind: kind) }
+        contextDetailTask = Task { [weak self] in
+            await self?.fetchContextDetail(record: record, kind: kind)
+        }
     }
 
     private func fetchContextDetail(record: ContextRecord, kind: String) async {
         contextDetailLoading = true
-        defer { contextDetailLoading = false }
+        defer {
+            if contextDetail?.id == record.id, contextDetailKind == kind {
+                contextDetailLoading = false
+            }
+        }
         do {
             let response = try await helper.run([
                 kind == "thread" ? "context-threads" : "context-memories", "--id", record.id,
             ])
+            guard !Task.isCancelled,
+                  contextDetail?.id == record.id,
+                  contextDetailKind == kind else { return }
             let raw = response.details.reduce(into: [String: JSONValue]()) { $0[$1.key] = $1.value }
             let full = kind == "thread" ? ContextRecord.thread(raw) : ContextRecord.memory(raw)
             // Keep the row when detail is thinner, so the header never blanks mid-read.
             if !full.id.isEmpty && !full.title.isEmpty { contextDetail = full }
         } catch {
+            guard !Task.isCancelled,
+                  contextDetail?.id == record.id,
+                  contextDetailKind == kind else { return }
             // The row is already on screen; a detail failure annotates rather than
             // clearing it, which is why the route stays active.
             contextDetailError = error.localizedDescription
@@ -836,6 +878,9 @@ final class ControllerModel: ObservableObject {
     }
 
     func closeContextDetail() {
+        contextDetailTask?.cancel()
+        contextDetailTask = nil
+        contextDetailLoading = false
         contextDetail = nil
         contextDetailKind = nil
         contextDetailError = nil
@@ -867,14 +912,21 @@ final class ControllerModel: ObservableObject {
     }
 
     func openSpeakerReview(_ meeting: ReviewableMeeting) {
+        openSpeakerReview(sessionId: meeting.sessionId)
+    }
+
+    func openSpeakerReview(sessionId: String) {
+        speakerReviewTask?.cancel()
         stopPlayback()
         playbackNote = nil
         correctionScope = .thisMeeting
         namingVoice = nil
         pendingCorrection = nil
         openReview = nil
-        lastReviewSession = meeting.sessionId
-        Task { [weak self] in await self?.fetchReview(sessionId: meeting.sessionId) }
+        lastReviewSession = sessionId
+        speakerReviewTask = Task { [weak self] in
+            await self?.fetchReview(sessionId: sessionId)
+        }
     }
 
     /// Load (or reload) one meeting's review. Keyed on the session id alone so a
@@ -886,21 +938,27 @@ final class ControllerModel: ObservableObject {
         // a clipboard that no longer matches the panel.
         copyNote = nil
         contentUnavailable = nil
-        defer { reviewLoading = false }
+        defer {
+            if lastReviewSession == sessionId { reviewLoading = false }
+        }
         do {
             let response = try await helper.run(["meeting-speakers", "--session", sessionId])
+            guard !Task.isCancelled, lastReviewSession == sessionId else { return }
             guard let review = SpeakerReview(response.details["review"]) else {
                 reviewError = "The server returned a review this build cannot read."
                 return
             }
             openReview = review
             if voiceProfiles.isEmpty { await loadVoiceProfiles() }
+            guard !Task.isCancelled, lastReviewSession == sessionId else { return }
             await loadRetainedAudio(sessionId: sessionId)
+            guard !Task.isCancelled, lastReviewSession == sessionId else { return }
             // Non-fatal on purpose: the review is the primary answer, and an
             // older server has no /content route. A failure here must not blank
             // the speaker rows that already loaded.
             await loadMeetingContent(sessionId: sessionId)
         } catch {
+            guard !Task.isCancelled, lastReviewSession == sessionId else { return }
             reviewError = error.localizedDescription
         }
     }
@@ -908,6 +966,7 @@ final class ControllerModel: ObservableObject {
     private func loadMeetingContent(sessionId: String) async {
         do {
             let response = try await helper.run(["meeting-content", "--session", sessionId])
+            guard !Task.isCancelled, lastReviewSession == sessionId else { return }
             if let reason = response.details["unavailable"]?.string {
                 openContent = nil
                 contentUnavailable = reason
@@ -916,6 +975,7 @@ final class ControllerModel: ObservableObject {
             openContent = MeetingContent(response.details["content"])
             contentUnavailable = openContent == nil ? "error" : nil
         } catch {
+            guard !Task.isCancelled, lastReviewSession == sessionId else { return }
             openContent = nil
             contentUnavailable = "error"
         }
@@ -934,10 +994,14 @@ final class ControllerModel: ObservableObject {
 
     func retryOpenReview() {
         guard let session = lastReviewSession else { return }
-        Task { [weak self] in await self?.fetchReview(sessionId: session) }
+        speakerReviewTask?.cancel()
+        speakerReviewTask = Task { [weak self] in await self?.fetchReview(sessionId: session) }
     }
 
     func closeSpeakerReview() {
+        speakerReviewTask?.cancel()
+        speakerReviewTask = nil
+        reviewLoading = false
         // Audio kept playing after the panel closed, and a stale note followed the
         // user into the next meeting's rows.
         stopPlayback()
@@ -963,6 +1027,40 @@ final class ControllerModel: ObservableObject {
             voiceProfiles = (response.details["profiles"]?.array ?? []).compactMap(VoiceProfileOption.init)
         } catch {
             voiceProfiles = []
+        }
+    }
+
+    /// Load the all-voices directory without destroying last-good rows on a
+    /// transient server/token failure. An older server returns its lightweight
+    /// enrolled-profile list with an explicit route-absent state; that is useful
+    /// training coverage, but it is never presented as meeting evidence.
+    func loadVoiceDirectory(refresh: Bool = false) async {
+        guard !voiceDirectoryLoading else { return }
+        voiceDirectoryLoading = true
+        voiceDirectoryError = nil
+        defer { voiceDirectoryLoading = false }
+        do {
+            var args = ["voice-directory"]
+            if refresh { args.append("--refresh") }
+            let response = try await helper.run(args)
+            let state = response.details["state"]?.string ?? "ready"
+            let people = (response.details["profiles"]?.array ?? []).compactMap(VoiceDirectoryPerson.init)
+            voiceDirectory = people
+            voiceDirectoryRouteAvailable = state != "route_absent"
+            voiceDirectoryGeneratedAt = response.details["generatedAt"]?.string
+            voiceDirectoryMeetingsScanned = response.details["meetingsScanned"]?.int ?? 0
+            voiceDirectoryUnresolvedMeetings = response.details["unresolvedMeetings"]?.int ?? 0
+            voiceDirectoryUnresolvedSegments = response.details["unresolvedSegments"]?.int ?? 0
+            voiceDirectoryTruncated = response.details["truncated"]?.bool ?? false
+            if state == "route_absent" {
+                voiceDirectoryError = "Update the COS server to add cross-meeting voice history. Training sample counts are still available."
+            } else if people.isEmpty {
+                voiceDirectoryError = "No voice profiles are enrolled yet. Enroll a voice before cross-meeting history can appear."
+            }
+        } catch {
+            // Preserve last-good rows. Empty plus an error means unavailable;
+            // non-empty plus an error means stale-but-readable.
+            voiceDirectoryError = error.localizedDescription
         }
     }
 
@@ -1030,6 +1128,7 @@ final class ControllerModel: ObservableObject {
                 // Re-fetch so the row re-renders as asserted from the SERVER's
                 // view rather than a local guess about what the confirmation did.
                 await fetchReview(sessionId: session)
+                await loadVoiceDirectory(refresh: true)
             } catch {
                 reviewError = "Could not confirm that name: \(error.localizedDescription)"
             }
@@ -1187,6 +1286,7 @@ final class ControllerModel: ObservableObject {
                 // The review is now stale — a label may have changed or gone, so
                 // re-read it rather than leave a row describing the old state.
                 await fetchReview(sessionId: session)
+                await loadVoiceDirectory(refresh: true)
             } catch {
                 reviewError = error.localizedDescription
                 pendingCorrection = nil
@@ -1200,14 +1300,17 @@ final class ControllerModel: ObservableObject {
     /// this, every row offered playback and 92% of clicks failed — the affordance
     /// was where the data was not.
     private func loadRetainedAudio(sessionId: String) async {
+        guard lastReviewSession == sessionId else { return }
         retainedAudioChunks = []
         audioRetentionDays = nil
         do {
             let response = try await helper.run(["review-audio-list", "--session", sessionId])
+            guard !Task.isCancelled, lastReviewSession == sessionId else { return }
             let chunks = (response.details["chunks"]?.array ?? []).compactMap { $0.int }
             retainedAudioChunks = Set(chunks)
             audioRetentionDays = response.details["retentionDays"]?.int
         } catch {
+            guard !Task.isCancelled, lastReviewSession == sessionId else { return }
             // An older server has no such route. Silence is right here: the
             // buttons simply do not appear, rather than an error for something
             // the user did not ask for.
