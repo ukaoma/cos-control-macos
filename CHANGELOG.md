@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.20 (build 58)
+
+Reliable video uploads is a private, machine-wide canary for server 6.27.3 and
+companion 6.8.343. When enabled, every MP4/MOV uses the restart-safe resumable
+transport rather than relying on a single long request. Control reports active
+drafts, finalization, and unacknowledged receipts; disabling the canary restores
+the prior transport without hiding already accepted uploads.
+
+Server updates and ordinary restarts remain allowed after publication, but Control
+refuses a binary downgrade below 6.27.3 while any V2 draft or unacknowledged receipt
+still exists. The transaction verifies the loaded LaunchAgent environment and the
+authenticated health/maintenance contract before committing. Phone frame extraction
+is deliberately not enabled: the original MP4/MOV and proven Mac validation/extraction
+pipeline remain canonical until a physical iPhone benchmark proves a material gain.
+
 ## 0.5.19 (build 57)
 
 COS Activity moves Messages, Speakers, Memories, and Threads out of the narrow

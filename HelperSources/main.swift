@@ -303,6 +303,7 @@ final class COSControlHelper {
         "COS_BATCH_HQ_METAL",
         "COS_BATCH_HQ_FORCE_CPU",
         "COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK",
+        "COS_VIDEO_UPLOAD_V2",
     ]
 
     private lazy var support = home.appendingPathComponent("Library/Application Support/COS Control", isDirectory: true)
@@ -405,6 +406,10 @@ final class COSControlHelper {
         case "set-adaptive-audio-cleanup": try withMutationLock {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing adaptive audio cleanup setting") }
             try setAdaptiveAudioCleanup(value)
+        }
+        case "set-video-upload-v2": try withMutationLock {
+            guard let value = args.dropFirst().first else { throw HelperError.message("missing reliable video upload setting") }
+            try setVideoUploadV2(value)
         }
         case "token": try copyPairingToken()
         case "expire-clipboard": try expireClipboard(args: args)
@@ -959,6 +964,7 @@ final class COSControlHelper {
 
         progress("Resolving npm release…")
         let release = try resolveVersion(requestedVersion)
+        try requireVideoUploadDowngradeSafe(targetVersion: release.version)
         let generation = try stageGeneration(version: release.version, integrity: release.integrity)
         // Populate the stable cert store AND the API token now, before the legacy
         // LaunchAgent is unloaded/overwritten, so the exact HTTPS certificate and
@@ -2001,6 +2007,13 @@ final class COSControlHelper {
         let meetingPreviewEnabled = meetingPreviewSupported
             ? ((health != nil ? loadedEnvironmentValue("COS_WHISPER_MEETING_PREVIEW") : configuredMeetingPreview) == "1")
             : nil
+        let videoUploadStatus = maintenance?["videoUploads"] as? [String: Any]
+        let videoUploadV2Supported = reportedVersion.map { versionAtLeast($0, "6.27.3") } == true
+        let configuredVideoUploadV2 = manifest?.providerEnvironment?["COS_VIDEO_UPLOAD_V2"]
+            ?? (launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String])?["COS_VIDEO_UPLOAD_V2"]
+        let videoUploadV2Enabled = videoUploadV2Supported
+            ? ((videoUploadStatus?["enabled"] as? Bool) ?? (configuredVideoUploadV2 == "1"))
+            : nil
         let idleMetalHqSupported = reportedVersion.map { versionAtLeast($0, "6.21.20") } == true
         let configuredIdleMetalHq = manifest?.providerEnvironment?["COS_BATCH_HQ_METAL"]
             ?? (launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String])?["COS_BATCH_HQ_METAL"]
@@ -2084,6 +2097,12 @@ final class COSControlHelper {
             "backgroundJobsEnabled": backgroundJobsEnabled ?? NSNull(),
             "meetingPreviewSupported": meetingPreviewSupported,
             "meetingPreviewEnabled": meetingPreviewEnabled ?? NSNull(),
+            "videoUploadV2Supported": videoUploadV2Supported,
+            "videoUploadV2Enabled": videoUploadV2Enabled ?? NSNull(),
+            "videoUploadV2Receiving": videoUploadStatus?["receiving"] ?? 0,
+            "videoUploadV2Finalizing": videoUploadStatus?["finalizing"] ?? 0,
+            "videoUploadV2Unacknowledged": videoUploadStatus?["unacknowledgedPublished"] ?? 0,
+            "videoUploadV2BlocksRollback": videoUploadStatus?["blocksRollback"] ?? false,
             "idleMetalHqSupported": idleMetalHqSupported,
             "idleMetalHqEnabled": idleMetalHqEnabled ?? NSNull(),
             "idleMetalHqForceCpu": idleMetalHqForceCpu ?? NSNull(),
@@ -3115,6 +3134,7 @@ final class COSControlHelper {
             GenerationRecord(version: $0, path: generations.appendingPathComponent($0).path, registryIntegrity: nil, launcherSHA256: nil, packageJSONSHA256: nil)
         }
         guard let prior = retained.first else { throw HelperError.message("No retained server generation is available.") }
+        try requireVideoUploadDowngradeSafe(targetVersion: prior.version)
         let verified = try verifyGeneration(
             at: prior.path,
             expectedVersion: prior.version,
@@ -3355,6 +3375,70 @@ final class COSControlHelper {
         let expected = raw == "1"
         guard loadedEnvironmentValue("COS_WHISPER_MEETING_PREVIEW") == (expected ? "1" : "0") else {
             throw HelperError.message("the restarted server did not load Meeting Turbo preview as \(expected ? "enabled" : "disabled")")
+        }
+    }
+
+    private func setVideoUploadV2(_ raw: String) throws {
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard ["on", "off"].contains(normalized) else {
+            throw HelperError.message("Unknown reliable video upload setting. Choose On or Off.")
+        }
+        let runningVersion = (maintenanceStatus()?["serverVersion"] as? String)
+            ?? request("/api/health", timeout: 12)?.body?["server_version"] as? String
+        let stoppedCompatibleManagedServer = loadManifest().map {
+            $0.desiredState == "stopped" && versionAtLeast($0.version, "6.27.3")
+        } ?? false
+        guard runningVersion.map({ versionAtLeast($0, "6.27.3") }) == true || stoppedCompatibleManagedServer else {
+            throw HelperError.message("Update the managed server to 6.27.3 or newer before enabling Reliable video uploads.")
+        }
+        let enabled = normalized == "on"
+        let values = ["COS_VIDEO_UPLOAD_V2": enabled ? "1" : "0"]
+        let operationLabel = enabled ? "Reliable video uploads" : "Reliable video uploads off"
+        if let manifest = loadManifest() {
+            try applyManagedProviderEnvironment(values, current: manifest, operationLabel: operationLabel)
+            return
+        }
+        guard inPlaceActive() else {
+            throw HelperError.message("Install the managed server or choose Manage in place first.")
+        }
+        try applyInPlaceProviderEnvironment(values, operationLabel: operationLabel)
+    }
+
+    private func requireVideoUploadV2(_ raw: String) throws {
+        let expected = raw == "1"
+        guard loadedEnvironmentValue("COS_VIDEO_UPLOAD_V2") == (expected ? "1" : "0") else {
+            throw HelperError.message("the restarted server did not load Reliable video uploads as \(expected ? "enabled" : "disabled")")
+        }
+        guard let status = maintenanceStatus(),
+              let videoUploads = status["videoUploads"] as? [String: Any],
+              videoUploads["enabled"] as? Bool == expected else {
+            throw HelperError.message("the restarted server did not prove the Reliable video upload state")
+        }
+        if expected {
+            guard let health = request("/api/health", timeout: 12)?.body,
+                  let capabilities = health["capabilities"] as? [String: Any],
+                  let richMedia = capabilities["richMedia"] as? [String: Any],
+                  let capability = richMedia["videoUploadV2"] as? [String: Any],
+                  capability["protocol"] as? Int == 1,
+                  capability["available"] as? Bool == true else {
+                throw HelperError.message("the server loaded the setting but could not prove video processing readiness")
+            }
+        }
+    }
+
+    private func requireVideoUploadDowngradeSafe(targetVersion: String) throws {
+        guard !versionAtLeast(targetVersion, "6.27.3") else { return }
+        let currentVersion = (maintenanceStatus()?["serverVersion"] as? String) ?? loadManifest()?.version
+        guard currentVersion.map({ versionAtLeast($0, "6.27.3") }) == true else { return }
+        guard let status = maintenanceStatus(),
+              let videoUploads = status["videoUploads"] as? [String: Any] else {
+            throw HelperError.message("Downgrade refused because COS Control could not prove the Reliable video upload queue is empty.")
+        }
+        guard videoUploads["blocksRollback"] as? Bool != true else {
+            let receiving = videoUploads["receiving"] as? Int ?? 0
+            let finalizing = videoUploads["finalizing"] as? Int ?? 0
+            let receipts = videoUploads["unacknowledgedPublished"] as? Int ?? 0
+            throw HelperError.message("Downgrade refused: Reliable video uploads still hold \(receiving) draft(s), \(finalizing) finalizing upload(s), and \(receipts) unacknowledged receipt(s). Finish or cancel them before installing a server older than 6.27.3.")
         }
     }
 
@@ -3886,6 +3970,9 @@ final class COSControlHelper {
                 if let meetingPreview = values["COS_WHISPER_MEETING_PREVIEW"] {
                     try requireMeetingPreview(meetingPreview)
                 }
+                if let videoUploadV2 = values["COS_VIDEO_UPLOAD_V2"] {
+                    try requireVideoUploadV2(videoUploadV2)
+                }
                 if let idleMetalHq = values["COS_BATCH_HQ_METAL"] {
                     try requireIdleMetalHq(enabled: idleMetalHq == "1")
                 }
@@ -3988,6 +4075,9 @@ final class COSControlHelper {
                 if alreadyActive, let meetingPreview = values["COS_WHISPER_MEETING_PREVIEW"] {
                     try requireMeetingPreview(meetingPreview)
                 }
+                if alreadyActive, let videoUploadV2 = values["COS_VIDEO_UPLOAD_V2"] {
+                    try requireVideoUploadV2(videoUploadV2)
+                }
                 if alreadyActive, let idleMetalHq = values["COS_BATCH_HQ_METAL"] {
                     try requireIdleMetalHq(enabled: idleMetalHq == "1")
                 }
@@ -4054,6 +4144,9 @@ final class COSControlHelper {
             }
             if let meetingPreview = values["COS_WHISPER_MEETING_PREVIEW"] {
                 try requireMeetingPreview(meetingPreview)
+            }
+            if let videoUploadV2 = values["COS_VIDEO_UPLOAD_V2"] {
+                try requireVideoUploadV2(videoUploadV2)
             }
             if let idleMetalHq = values["COS_BATCH_HQ_METAL"] {
                 try requireIdleMetalHq(enabled: idleMetalHq == "1")

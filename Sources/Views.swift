@@ -96,6 +96,7 @@ struct ControlPanel: View {
     @State private var selectedTranscriptionTier = "balanced"
     @State private var selectedBackgroundJobs = true
     @State private var selectedMeetingPreview = false
+    @State private var selectedVideoUploadV2 = false
     @State private var selectedIdleMetalHq = false
     @State private var selectedAdaptiveAudioCleanup = false
 
@@ -114,6 +115,7 @@ struct ControlPanel: View {
             }
             if let enabled = model.status.backgroundJobsEnabled { selectedBackgroundJobs = enabled }
             if let enabled = model.status.meetingPreviewEnabled { selectedMeetingPreview = enabled }
+            if let enabled = model.status.videoUploadV2Enabled { selectedVideoUploadV2 = enabled }
             if let enabled = model.status.idleMetalHqEnabled { selectedIdleMetalHq = enabled }
             if let enabled = model.status.adaptiveAudioCleanupEnabled { selectedAdaptiveAudioCleanup = enabled }
         }
@@ -125,6 +127,9 @@ struct ControlPanel: View {
         }
         .onChange(of: model.status.meetingPreviewEnabled) { _, enabled in
             if let enabled { selectedMeetingPreview = enabled }
+        }
+        .onChange(of: model.status.videoUploadV2Enabled) { _, enabled in
+            if let enabled { selectedVideoUploadV2 = enabled }
         }
         .onChange(of: model.status.idleMetalHqEnabled) { _, enabled in
             if let enabled { selectedIdleMetalHq = enabled }
@@ -234,6 +239,16 @@ struct ControlPanel: View {
             }
             if model.status.meetingPreviewSupported, let enabled = model.status.meetingPreviewEnabled {
                 statusRow("Meeting preview", value: enabled ? "Turbo · On" : "Off", good: enabled)
+            }
+            if model.status.videoUploadV2Supported, let enabled = model.status.videoUploadV2Enabled {
+                let active = model.status.videoUploadV2Receiving + model.status.videoUploadV2Finalizing
+                let detail = active > 0 ? "\(active) active" : (enabled ? "Resumable · On" : "Off")
+                statusRow("Video uploads", value: detail, good: enabled && active == 0)
+                if model.status.videoUploadV2Unacknowledged > 0 {
+                    Text("\(model.status.videoUploadV2Unacknowledged) completed video receipt(s) await companion acknowledgment.")
+                        .font(.caption2).foregroundStyle(COSPalette.amber)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
             }
             if model.status.idleMetalHqSupported, let enabled = model.status.idleMetalHqEnabled {
                 let label = enabled ? "On · preemptible" : (model.status.idleMetalHqForceCpu == true ? "Force CPU" : "Off · CPU")
@@ -963,6 +978,18 @@ struct ControlPanel: View {
                             || (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0)
                 }
                 Text("Shows fast provisional meeting text, then replaces it with the canonical speaker-attributed transcript. Disable for immediate rollback.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if model.status.videoUploadV2Supported {
+                HStack(spacing: 8) {
+                    Toggle("Reliable video uploads (beta)", isOn: $selectedVideoUploadV2)
+                    Button("Apply") { model.setVideoUploadV2Enabled(selectedVideoUploadV2) }
+                        .disabled(model.busy
+                            || (!model.status.installed && model.status.runtimeState != "managedInPlace")
+                            || model.status.videoUploadV2Receiving + model.status.videoUploadV2Finalizing > 0)
+                }
+                Text("Private canary. Sends every MP4/MOV in restart-safe chunks and resumes from server-confirmed bytes. Phone frame extraction remains off until device benchmarks prove it is faster. Disable for immediate transport rollback.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

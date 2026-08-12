@@ -98,6 +98,12 @@ struct ServerStatus: Sendable {
     var backgroundJobsEnabled: Bool?
     var meetingPreviewSupported = false
     var meetingPreviewEnabled: Bool?
+    var videoUploadV2Supported = false
+    var videoUploadV2Enabled: Bool?
+    var videoUploadV2Receiving = 0
+    var videoUploadV2Finalizing = 0
+    var videoUploadV2Unacknowledged = 0
+    var videoUploadV2BlocksRollback = false
     var idleMetalHqSupported = false
     var idleMetalHqEnabled: Bool?
     var idleMetalHqForceCpu: Bool?
@@ -211,6 +217,12 @@ struct ServerStatus: Sendable {
         backgroundJobsEnabled = details["backgroundJobsEnabled"]?.bool
         meetingPreviewSupported = details["meetingPreviewSupported"]?.bool ?? false
         meetingPreviewEnabled = details["meetingPreviewEnabled"]?.bool
+        videoUploadV2Supported = details["videoUploadV2Supported"]?.bool ?? false
+        videoUploadV2Enabled = details["videoUploadV2Enabled"]?.bool
+        videoUploadV2Receiving = details["videoUploadV2Receiving"]?.int ?? 0
+        videoUploadV2Finalizing = details["videoUploadV2Finalizing"]?.int ?? 0
+        videoUploadV2Unacknowledged = details["videoUploadV2Unacknowledged"]?.int ?? 0
+        videoUploadV2BlocksRollback = details["videoUploadV2BlocksRollback"]?.bool ?? false
         idleMetalHqSupported = details["idleMetalHqSupported"]?.bool ?? false
         idleMetalHqEnabled = details["idleMetalHqEnabled"]?.bool
         idleMetalHqForceCpu = details["idleMetalHqForceCpu"]?.bool
