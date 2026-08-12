@@ -2427,6 +2427,90 @@ final class COSControlHelper {
         return true
     }
 
+    /// The drain label for a set of blockers.
+    ///
+    /// Extracted so the EMPTY case is testable. A mutation reverting this to the
+    /// bare "restart proof" string passed the whole suite, because the drain
+    /// loop needs a live server and nothing exercised its label choice — the
+    /// exact branch that made the 2026-08-12 lockout undiagnosable.
+    static func drainLabel(_ blockers: [String]) -> String {
+        blockers.isEmpty ? "restart proof (no cause reported)" : blockers.joined(separator: ", ")
+    }
+
+    /// Every reason a restart is currently refused, named.
+    ///
+    /// WHY THIS EXISTS. `restartProofMatches` folds a dozen conditions into one
+    /// `guard`, and the drain loop only ever inspected `lifecycle.activeByKind`.
+    /// When that dictionary was EMPTY the progress line fell back to the literal
+    /// string "restart proof", which names nothing — so a blocked update said
+    /// only "Timed out draining restart proof" no matter what was actually
+    /// holding it.
+    ///
+    /// On 2026-08-12 that cost more than an hour across two sessions. The real
+    /// blocker was `videoUploads.blocksRestart` — one abandoned upload, stuck in
+    /// `receiving` for three hours after a client-side bug — and the server had
+    /// been reporting it in the same payload the whole time. `activeByKind` was
+    /// `{}` throughout, so the one field that mattered was never read and never
+    /// printed. Three wrong root causes were proposed before anyone read it.
+    ///
+    /// Order is deliberate: the cheapest, most actionable causes first.
+    private func restartBlockers(_ status: [String: Any], operation: MaintenanceLease) -> [String] {
+        var blockers: [String] = []
+        let lifecycle = status["lifecycle"] as? [String: Any] ?? [:]
+
+        // Named active work. This is what the old code looked at, and it stays
+        // first because when it IS populated it is the most useful answer.
+        let activeByKind = lifecycle["activeByKind"] as? [String: Any] ?? [:]
+        for (kind, value) in activeByKind.sorted(by: { $0.key < $1.key }) {
+            if let count = value as? Int, count > 0 { blockers.append("\(kind)=\(count)") }
+        }
+
+        // The term that actually blocked us, and was invisible.
+        if let video = status["videoUploads"] as? [String: Any],
+           video["blocksRestart"] as? Bool == true {
+            let receiving = video["receiving"] as? Int ?? 0
+            let finalizing = video["finalizing"] as? Int ?? 0
+            var detail: [String] = []
+            if receiving > 0 { detail.append("receiving=\(receiving)") }
+            if finalizing > 0 { detail.append("finalizing=\(finalizing)") }
+            blockers.append(detail.isEmpty ? "video upload" : "video upload (\(detail.joined(separator: ", ")))")
+        }
+
+        if status["shuttingDown"] as? Bool == true { blockers.append("server shutting down") }
+
+        if let gate = lifecycle["blockedGate"] as? [String: Any] {
+            blockers.append("gate blocked: \(gate["reason"] as? String ?? "unknown")")
+        }
+
+        // Decompose the proof rather than reporting it as one opaque failure.
+        if let proof = lifecycle["restartProof"] as? [String: Any] {
+            for (key, label) in [
+                ("leaseMatches", "lease"),
+                ("operationMatches", "operation id"),
+                ("nonceMatches", "nonce"),
+                ("sourceIdentityMatches", "source identity"),
+            ] where proof[key] as? Bool != true {
+                blockers.append("proof \(label) mismatch")
+            }
+            if proof["serverInstanceId"] as? String != operation.serverInstanceId { blockers.append("server instance changed") }
+            if proof["bootId"] as? String != operation.bootId { blockers.append("server rebooted") }
+            if proof["generationId"] as? String != operation.generationId { blockers.append("generation changed") }
+        }
+
+        if let state = lifecycle["state"] as? String, state != "draining" {
+            blockers.append("lifecycle state is \(state)")
+        }
+
+        // Context, not a blocker: a stale session no longer holds the gate, but
+        // seeing it explains an activeTranscriptionSessions count that looks
+        // wrong next to activeByKind.
+        if let stale = status["staleTranscriptionSessions"] as? Int, stale > 0 {
+            blockers.append("(\(stale) stale session(s), not blocking)")
+        }
+
+        return blockers
+    }
+
     private func waitForRestartProof(_ operation: MaintenanceLease, timeout: TimeInterval = 90) throws -> MaintenanceLease {
         progress("Draining active work safely…")
         let deadline = Date().addingTimeInterval(timeout)
@@ -2445,13 +2529,10 @@ final class COSControlHelper {
             }
             if restartProofMatches(status, operation: operation) { return operation }
             if Date() >= nextProgress {
-                let lifecycle = status["lifecycle"] as? [String: Any]
-                let activeByKind = lifecycle?["activeByKind"] as? [String: Any] ?? [:]
-                let blockers = activeByKind.compactMap { key, value -> String? in
-                    guard let count = value as? Int, count > 0 else { return nil }
-                    return "\(key)=\(count)"
-                }.sorted()
-                lastBlockers = blockers.isEmpty ? "restart proof" : blockers.joined(separator: ", ")
+                // "restart proof" only when the payload genuinely offers no
+                // reason. Previously this was the answer whenever activeByKind
+                // was empty, which is exactly when the cause was something else.
+                lastBlockers = Self.drainLabel(restartBlockers(status, operation: operation))
                 let remaining = max(0, Int(ceil(deadline.timeIntervalSinceNow)))
                 progress("Draining: \(lastBlockers) · \(remaining)s remaining…")
                 nextProgress = Date().addingTimeInterval(3)
@@ -6466,6 +6547,87 @@ final class COSControlHelper {
         try expect(projected?["source"] as? String == "G2 Glasses", "projection carries source")
         try expect(Self.meetingRowProjection(["title": "no session"]) == nil,
                    "projection drops a row with no sessionId")
+
+        // --- restart blockers must NAME the cause ---------------------------
+        // The 2026-08-12 lockout in one fixture: activeByKind EMPTY, everything
+        // else healthy, and a single stuck video upload holding blocksRestart.
+        // The old code printed "restart proof" here and named nothing.
+        let stuckLease = MaintenanceLease(
+            id: "lease-1", operationId: "op-1", nonce: "n", nonceSha256: "sha",
+            operationKind: "server_update", scope: "cross_boot",
+            postcondition: "authorized_successor_adopted",
+            authorizedSuccessorGenerations: [], serverInstanceId: "srv",
+            sourceBootId: "boot", sourceGenerationId: "gen",
+            bootId: "boot", generationId: "gen", expiresAt: nil)
+        let videoStuck: [String: Any] = [
+            "shuttingDown": false,
+            "videoUploads": ["blocksRestart": true, "receiving": 1, "finalizing": 0],
+            "lifecycle": [
+                "state": "draining",
+                "activeByKind": [String: Any](),
+                "restartProof": [
+                    "valid": true, "leaseMatches": true, "operationMatches": true,
+                    "nonceMatches": true, "sourceIdentityMatches": true,
+                    "serverInstanceId": "srv", "bootId": "boot", "generationId": "gen",
+                ],
+            ],
+        ]
+        let videoBlockers = restartBlockers(videoStuck, operation: stuckLease)
+        try expect(!videoBlockers.isEmpty, "a stuck video upload is reported as a blocker")
+        try expect(videoBlockers.contains { $0.contains("video upload") },
+                   "the blocker names the video upload")
+        try expect(videoBlockers.contains { $0.contains("receiving=1") },
+                   "the blocker carries the receiving count")
+
+        // Named active work still wins, and still reads the same as before.
+        let workStuck: [String: Any] = [
+            "lifecycle": ["state": "draining",
+                          "activeByKind": ["recording_session": 1, "recording_chunk": 2],
+                          "restartProof": ["valid": true, "leaseMatches": true,
+                                           "operationMatches": true, "nonceMatches": true,
+                                           "sourceIdentityMatches": true,
+                                           "serverInstanceId": "srv", "bootId": "boot",
+                                           "generationId": "gen"]],
+        ]
+        let workBlockers = restartBlockers(workStuck, operation: stuckLease)
+        try expect(workBlockers.contains("recording_session=1"), "named work is still reported")
+        try expect(workBlockers.contains("recording_chunk=2"), "every active kind is reported")
+
+        // A failing proof says WHICH field failed, not just that it failed.
+        let proofStuck: [String: Any] = [
+            "lifecycle": ["state": "draining", "activeByKind": [String: Any](),
+                          "restartProof": ["valid": false, "leaseMatches": true,
+                                           "operationMatches": true, "nonceMatches": false,
+                                           "sourceIdentityMatches": true,
+                                           "serverInstanceId": "srv", "bootId": "boot",
+                                           "generationId": "gen"]],
+        ]
+        try expect(restartBlockers(proofStuck, operation: stuckLease).contains("proof nonce mismatch"),
+                   "a failing proof names the field that failed")
+
+        // A genuinely healthy payload reports nothing, so the empty case still
+        // means "no cause reported" rather than a fabricated one.
+        let healthy: [String: Any] = [
+            "shuttingDown": false,
+            "videoUploads": ["blocksRestart": false],
+            "lifecycle": ["state": "draining", "activeByKind": [String: Any](),
+                          "restartProof": ["valid": true, "leaseMatches": true,
+                                           "operationMatches": true, "nonceMatches": true,
+                                           "sourceIdentityMatches": true,
+                                           "serverInstanceId": "srv", "bootId": "boot",
+                                           "generationId": "gen"]],
+        ]
+        try expect(restartBlockers(healthy, operation: stuckLease).isEmpty,
+                   "a healthy payload reports no blockers")
+
+        // The label itself, including the empty case the old code got wrong.
+        try expect(Self.drainLabel([]) == "restart proof (no cause reported)",
+                   "an empty blocker set says no cause was reported")
+        try expect(Self.drainLabel([]) != "restart proof",
+                   "the empty label is never the old opaque string")
+        try expect(Self.drainLabel(["video upload (receiving=1)"]) == "video upload (receiving=1)",
+                   "a single blocker is the label")
+        try expect(Self.drainLabel(["a", "b"]) == "a, b", "blockers are joined")
 
         emit(ok: true, message: "\(passed) deterministic helper tests passed", details: ["tests": passed])
     }

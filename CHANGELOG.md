@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.21 (build 59)
+
+- **A blocked update now tells you what is blocking it.** The drain only ever
+  read `lifecycle.activeByKind`, and when that was empty it printed the literal
+  string "restart proof" — naming nothing. It now names the actual cause: a
+  video upload holding the restart (with its receiving/finalizing counts), the
+  server shutting down, a blocked gate, which specific proof field mismatched,
+  or a changed server identity. Stale sessions are shown as context and marked
+  as not blocking.
+- This cost over an hour across two sessions on 2026-08-12. One abandoned video
+  upload, stuck in `receiving` for three hours after a client-side bug, held
+  `blocksRestart` — and the server reported it in the very same payload the
+  drain was already reading. Three wrong root causes were proposed before
+  anyone looked at the right field.
+
 ## 0.5.20 (build 58)
 
 Reliable video uploads is a private, machine-wide canary for server 6.27.3 and
