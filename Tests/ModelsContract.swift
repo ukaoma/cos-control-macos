@@ -192,6 +192,78 @@ struct ModelsContract {
         precondition(hit?.score == 0.8)
     }
 
+    private static func checkContextSearchHit() {
+        let memory = ContextSearchHit(kind: "memory", .object([
+            "id": .string("mem_1"),
+            "summary": .string("Toast decision"),
+            "snippet": .string("Counter Toast."),
+            "match": .string("both"),
+            "keywordScore": .number(0.8),
+            "semanticScore": .number(0.61),
+        ]))
+        precondition(memory?.matchLabel == "Keyword + meaning")
+        precondition(memory?.record.title == "Toast decision")
+        precondition(ContextSearchHit(kind: "memory", .object(["snippet": .string("no id")])) == nil,
+                     "context search drops rows without id")
+        let thread = ContextSearchHit(kind: "thread", .object([
+            "id": .string("7ce8073d"),
+            "name": .string("Hubspot Theme Settings"),
+            "snippet": .string("theme"),
+            "match": .string("keyword"),
+            "keywordScore": .number(0.7),
+        ]))
+        precondition(thread?.matchLabel == "Keyword")
+        precondition(thread?.record.title == "Hubspot Theme Settings")
+    }
+
+    private static func checkClaudeSession() {
+        let waiting = ClaudeSession(.object([
+            "id": .string("sess_1"),
+            "name": .string("hidden-name"),
+            "workspace": .string("MU-Chief-Staff"),
+            "state": .string("waiting"),
+            "waitingFor": .string("user"),
+            "alive": .bool(true),
+        ]))
+        precondition(waiting?.title == "MU-Chief-Staff")
+        precondition(waiting?.stateLabel == "Waiting")
+        precondition(ClaudeSession(.object(["workspace": .string("MU-Chief-Staff")])) == nil,
+                     "session rows without id are dropped")
+        let unnamed = ClaudeSession(.object([
+            "id": .string("sess_2"),
+            "name": .string("analysis"),
+            "workspace": .string(""),
+            "state": .string("stale"),
+            "alive": .bool(false),
+        ]))
+        precondition(unnamed?.title == "analysis")
+        precondition(unnamed?.stateLabel == "Stale")
+    }
+
+    private static func checkOrphanCapture() {
+        let recoverable = OrphanCapture(.object([
+            "sessionId": .string("meeting_1786237535593"),
+            "chunkFiles": .number(12),
+            "ageHours": .number(2.5),
+            "recovered": .bool(false),
+            "recovering": .bool(false),
+            "recoverable": .bool(true),
+        ]))
+        precondition(recoverable?.recoverable == true)
+        precondition(recoverable?.label.contains("12 chunks") == true)
+        precondition(OrphanCapture(.object(["chunkFiles": .number(12)])) == nil,
+                     "orphan rows without sessionId are dropped")
+        let stranded = StrandedCapture(.object([
+            "sessionId": .string("meeting_live"),
+            "idleMinutes": .number(40),
+            "capturedMinutes": .number(18),
+            "chunks": .number(90),
+        ]))
+        precondition(stranded?.label.contains("still live") == true)
+        precondition(stranded?.label.contains("Meetings to review") == false,
+                     "stranded copy must never collide with Speakers review")
+    }
+
     private static func confirmableVoice(
         label: String, reliability: String, asserted: Bool,
         isOwner: Bool = false, confirmed: Bool = false
@@ -544,6 +616,9 @@ struct ModelsContract {
         checkMeetingRowFields()
         checkCountsSummary()
         checkLibraryMeeting()
+        checkContextSearchHit()
+        checkOrphanCapture()
+        checkClaudeSession()
         checkAssertedSegmentsBackCompat()
         checkSpeakingTime()
         checkMeetingContent()

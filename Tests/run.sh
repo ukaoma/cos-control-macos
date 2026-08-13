@@ -59,6 +59,25 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
 /usr/bin/grep -q 'case "set-video-upload-v2"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "clear-stranded-video-uploads"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "reset-message-era"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "meeting-orphans"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "meeting-orphan-recover"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "meeting-orphan-recover-all"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "meeting-sync-now"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'Run sync now' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'meetingSyncTooling' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'cos_python' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'recoverableOrphanSessionIds' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'waitForOrphanSlot' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'Recover all unsaved captures' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'model.recoverAllOrphans' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'model.recoverOrphan' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Unsaved captures' "$ROOT/Sources/ActivityMeetings.swift"
+/usr/bin/grep -q "This is not Speakers" "$ROOT/Sources/ActivityMeetings.swift"
+if /usr/bin/grep -q '/api/meeting/orphans route' "$ROOT/Sources/Views.swift"; then
+  echo "COS Control: user-facing copy still tells the user to curl orphans" >&2
+  exit 1
+fi
+/usr/bin/grep -q 'struct OrphanCapture' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'isStrandedReceivingVideoUpload' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'Clear stranded' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'clearStrandedVideoUploads' "$ROOT/Sources/ControllerModel.swift"
@@ -175,19 +194,34 @@ PY
 /usr/bin/grep -q 'Meetings to review' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'case "meetings-library"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "meetings-library-search"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "context-memories-search"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "context-threads-search"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'struct ContextSearchHit' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'scheduleContextSearch' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'contextSearchBar' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'case "meeting-library-detail"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'libraryMeetingProjection' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'struct LibrarySearchHit' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'Search topics, ideas' "$ROOT/Sources/ActivityMeetings.swift"
-/usr/bin/grep -q 'Five views into the work' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'Six views into the work' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'case .meetings: meetingsList' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'struct MeetingLibraryDetailPane' "$ROOT/Sources/ActivityMeetings.swift"
 /usr/bin/grep -q 'struct MeetingMonthCalendar' "$ROOT/Sources/ActivityMeetings.swift"
 /usr/bin/grep -q 'struct LibraryMeeting' "$ROOT/Sources/Models.swift"
+if /usr/bin/grep -q 'Five views into the work' "$ROOT/Sources/ActivityWindow.swift"; then
+  echo "COS Control: Activity home still says Five views" >&2
+  exit 1
+fi
 if /usr/bin/grep -q 'Four views into the work' "$ROOT/Sources/ActivityWindow.swift"; then
   echo "COS Control: Activity home still says Four views" >&2
   exit 1
 fi
+/usr/bin/grep -q 'case .sessions: sessionsList' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'case sessions' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'struct ClaudeSession' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'case "claude-sessions"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'COS_CLAUDE_SESSIONS_ENABLED' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'COS_CLAUDE_SESSIONS_SHOW_NAMES' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'struct SpeakerReviewPane' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'activityLauncher' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'ActivitySection.allCases' "$ROOT/Sources/Views.swift"
@@ -542,6 +576,8 @@ need('case .messages: messagesList' in activity, "Messages is not mounted")
 need('case .speakers: speakersList' in activity, "Speakers is not mounted")
 need('case .memories: contextList(kind: "memory")' in activity, "Memories is not mounted")
 need('case .threads: contextList(kind: "thread")' in activity, "Threads is not mounted")
+need('case .sessions: sessionsList' in activity, "Sessions is not mounted")
+need('case sessions' in activity, "Sessions is not an ActivitySection")
 need('private func goHome()' in activity and 'private func goBack()' in activity,
      "Activity does not own Home and Back navigation")
 need('private var breadcrumb' in activity, "Activity has no breadcrumb")

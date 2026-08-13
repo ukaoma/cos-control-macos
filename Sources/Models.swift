@@ -332,6 +332,106 @@ struct ContextRecord: Identifiable, Equatable {
     }
 }
 
+/// Quarantined meeting audio that Control can turn into a saved call.
+///
+/// Distinct from Speakers' "Meetings to review" — those are identity
+/// corrections on already-saved meetings. This is unsaved capture recovery.
+struct OrphanCapture: Identifiable, Sendable {
+    let sessionId: String
+    let chunkFiles: Int
+    let ageHours: Double?
+    let recovered: Bool
+    let recovering: Bool
+    let recoverable: Bool
+    let expiresAt: String
+
+    var id: String { sessionId }
+
+    var label: String {
+        let chunks = chunkFiles == 1 ? "1 chunk" : "\(chunkFiles) chunks"
+        if recovering { return "\(shortId) · recovering · \(chunks)" }
+        if let ageHours {
+            return "\(shortId) · \(chunks) · \(ageHours)h"
+        }
+        return "\(shortId) · \(chunks)"
+    }
+
+    var shortId: String {
+        sessionId.count > 18 ? String(sessionId.prefix(18)) + "…" : sessionId
+    }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let sessionId = o["sessionId"]?.string, !sessionId.isEmpty else { return nil }
+        self.sessionId = sessionId
+        chunkFiles = o["chunkFiles"]?.int ?? Int(o["chunkFiles"]?.string ?? "") ?? 0
+        ageHours = o["ageHours"]?.double
+        recovered = o["recovered"]?.bool ?? false
+        recovering = o["recovering"]?.bool ?? false
+        recoverable = o["recoverable"]?.bool ?? (!recovered && chunkFiles >= 2)
+        expiresAt = o["expiresAt"]?.string ?? ""
+    }
+}
+
+/// A live recording whose phone went quiet. Not quarantined yet — do not
+/// delete its session files, and do not POST recover until it lands in
+/// quarantine.
+struct StrandedCapture: Identifiable, Sendable {
+    let sessionId: String
+    let idleMinutes: Int
+    let capturedMinutes: Int
+    let chunks: Int
+
+    var id: String { sessionId }
+
+    var label: String {
+        let idle = idleMinutes == 1 ? "1 min idle" : "\(idleMinutes) min idle"
+        return "\(shortId) · \(idle) · still live"
+    }
+
+    var shortId: String {
+        sessionId.count > 18 ? String(sessionId.prefix(18)) + "…" : sessionId
+    }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let sessionId = o["sessionId"]?.string, !sessionId.isEmpty else { return nil }
+        self.sessionId = sessionId
+        idleMinutes = o["idleMinutes"]?.int ?? Int(o["idleMinutes"]?.string ?? "") ?? 0
+        capturedMinutes = o["capturedMinutes"]?.int ?? Int(o["capturedMinutes"]?.string ?? "") ?? 0
+        chunks = o["chunks"]?.int ?? Int(o["chunks"]?.string ?? "") ?? 0
+    }
+}
+
+struct ClaudeSession: Identifiable, Sendable {
+    let id: String
+    let name: String
+    let workspace: String
+    let state: String
+    let waitingFor: String
+    let alive: Bool
+
+    var stateLabel: String {
+        switch state {
+        case "waiting": "Waiting"
+        case "stale": "Stale"
+        default: "Running"
+        }
+    }
+
+    var title: String {
+        workspace.isEmpty ? (name.isEmpty ? id : name) : workspace
+    }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let id = o["id"]?.string, !id.isEmpty else { return nil }
+        self.id = id
+        name = o["name"]?.string ?? ""
+        workspace = o["workspace"]?.string ?? ""
+        state = o["state"]?.string ?? "stale"
+        waitingFor = o["waitingFor"]?.string ?? ""
+        alive = o["alive"]?.bool ?? false
+    }
+}
+
 struct GlassesAttachmentRef: Identifiable, Sendable, Equatable {
     let id: String
     let kind: String
@@ -668,6 +768,35 @@ struct LibrarySearchHit: Identifiable, Sendable {
     init?(_ value: JSONValue?) {
         guard let meeting = LibraryMeeting(value), let o = value?.object else { return nil }
         self.meeting = meeting
+        snippet = o["snippet"]?.string ?? ""
+        match = o["match"]?.string ?? "keyword"
+        let keyword = o["keywordScore"]?.double ?? 0
+        let semantic = o["semanticScore"]?.double ?? 0
+        score = o["score"]?.double ?? max(keyword, semantic)
+    }
+}
+
+struct ContextSearchHit: Identifiable, Sendable {
+    let record: ContextRecord
+    let snippet: String
+    let match: String
+    let score: Double
+
+    var id: String { record.id }
+
+    var matchLabel: String {
+        switch match {
+        case "both": "Keyword + meaning"
+        case "semantic": "Meaning"
+        default: "Keyword"
+        }
+    }
+
+    init?(kind: String, _ value: JSONValue?) {
+        guard let o = value?.object, let id = o["id"]?.string, !id.isEmpty else { return nil }
+        let record = kind == "thread" ? ContextRecord.thread(o) : ContextRecord.memory(o)
+        guard !record.id.isEmpty else { return nil }
+        self.record = record
         snippet = o["snippet"]?.string ?? ""
         match = o["match"]?.string ?? "keyword"
         let keyword = o["keywordScore"]?.double ?? 0

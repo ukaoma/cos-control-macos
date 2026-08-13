@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.27 (build 65)
+
+- **One-click orphan recovery.** Status card Recover / Recover all turns
+  unsaved captures into meetings, one at a time. Session files are not
+  deleted. Curl copy is gone.
+- **Sessions in Activity.** Sixth read-only view: Claude Code workspace
+  basename plus waiting / running / stale. Off until
+  `COS_CLAUDE_SESSIONS_ENABLED=1` on the server.
+- **Run sync now.** Button next to Meeting sync runs
+  `cos_python sync_meetings.py` from `COS_SCRIPTS_DIR`. Disabled while HQ
+  polish is active. Does not pass `--force`.
+- **Memories and Threads lookup.** Same keyword + meaning pattern as Meetings.
+  Memories meaning uses the existing `cos_memory` index; threads are keyword
+  only. Needs the 6.27.6 `/api/memory/search` and `/api/threads/search`
+  hotfix.
+
 ## 0.5.26 (build 64)
 
 - **Meetings on the home Activity card.** The panel still listed four chips after

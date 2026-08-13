@@ -304,6 +304,8 @@ final class COSControlHelper {
         "COS_BATCH_HQ_FORCE_CPU",
         "COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK",
         "COS_VIDEO_UPLOAD_V2",
+        "COS_CLAUDE_SESSIONS_ENABLED",
+        "COS_CLAUDE_SESSIONS_SHOW_NAMES",
     ]
 
     private lazy var support = home.appendingPathComponent("Library/Application Support/COS Control", isDirectory: true)
@@ -411,14 +413,25 @@ final class COSControlHelper {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing reliable video upload setting") }
             try setVideoUploadV2(value)
         }
+        case "set-claude-sessions": try withMutationLock {
+            guard let value = args.dropFirst().first else { throw HelperError.message("missing Claude sessions setting") }
+            try setClaudeSessions(value)
+        }
+        case "claude-sessions": try emitClaudeSessions()
         case "clear-stranded-video-uploads": try clearStrandedVideoUploads()
         case "reset-message-era": try resetMessageEra()
+        case "meeting-orphans": try emitMeetingOrphans()
+        case "meeting-orphan-recover": try emitMeetingOrphanRecover(args: args)
+        case "meeting-orphan-recover-all": try emitMeetingOrphanRecoverAll()
+        case "meeting-sync-now": try emitMeetingSyncNow()
         case "token": try copyPairingToken()
         case "expire-clipboard": try expireClipboard(args: args)
         case "report": emit(ok: true, message: "Redacted report ready", details: ["report": redactedReport()])
         case "recent-messages": try emitRecentMessages(args: args)
         case "context-memories": try emitContextMemories(args: args)
         case "context-threads": try emitContextThreads(args: args)
+        case "context-memories-search": try emitContextSearch(kind: "memory", args: args)
+        case "context-threads-search": try emitContextSearch(kind: "thread", args: args)
         case "meetings": try emitMeetings(args: args)
         case "meetings-library": try emitMeetingsLibrary(args: args)
         case "meetings-library-search": try emitMeetingsLibrarySearch(args: args)
@@ -616,7 +629,9 @@ final class COSControlHelper {
         _ arguments: [String],
         log: Bool = false,
         environment: [String: String]? = nil,
-        timeout: TimeInterval = 20
+        timeout: TimeInterval = 20,
+        heartbeat: String? = nil,
+        heartbeatInterval: TimeInterval = 15
     ) throws -> CommandResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -641,7 +656,26 @@ final class COSControlHelper {
         }
 
         try process.run()
-        if completion.wait(timeout: .now() + timeout) == .timedOut {
+        let timedOut: Bool
+        if heartbeat == nil {
+            timedOut = completion.wait(timeout: .now() + timeout) == .timedOut
+        } else {
+            let deadline = Date().addingTimeInterval(timeout)
+            var expired = false
+            while true {
+                let remaining = deadline.timeIntervalSinceNow
+                if remaining <= 0 {
+                    expired = true
+                    break
+                }
+                if completion.wait(timeout: .now() + min(heartbeatInterval, remaining)) == .success {
+                    break
+                }
+                if let heartbeat { progress(heartbeat) }
+            }
+            timedOut = expired
+        }
+        if timedOut {
             process.terminate()
             if completion.wait(timeout: .now() + 2) == .timedOut {
                 kill(process.processIdentifier, SIGKILL)
@@ -3715,6 +3749,46 @@ final class COSControlHelper {
         }
     }
 
+    private func setClaudeSessions(_ raw: String) throws {
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard ["on", "off"].contains(normalized) else {
+            throw HelperError.message("Unknown Claude sessions setting. Choose On or Off.")
+        }
+        let enabled = normalized == "on"
+        let values = [
+            "COS_CLAUDE_SESSIONS_ENABLED": enabled ? "1" : "0",
+            "COS_CLAUDE_SESSIONS_SHOW_NAMES": enabled ? "1" : "0",
+        ]
+        let operationLabel = enabled ? "Claude sessions" : "Claude sessions off"
+        if let manifest = loadManifest() {
+            try applyManagedProviderEnvironment(values, current: manifest, operationLabel: operationLabel)
+            return
+        }
+        guard inPlaceActive() else {
+            throw HelperError.message("Install the managed server or choose Manage in place first.")
+        }
+        try applyInPlaceProviderEnvironment(values, operationLabel: operationLabel)
+    }
+
+    private func requireClaudeSessions(enabled: Bool) throws {
+        let expected = enabled ? "1" : "0"
+        guard loadedEnvironmentValue("COS_CLAUDE_SESSIONS_ENABLED") == expected else {
+            throw HelperError.message("the restarted server did not load Claude sessions as \(enabled ? "enabled" : "disabled")")
+        }
+        if enabled {
+            guard loadedEnvironmentValue("COS_CLAUDE_SESSIONS_SHOW_NAMES") == "1" else {
+                throw HelperError.message("the restarted server did not load Claude session names")
+            }
+        }
+        let token = try readToken()
+        guard let response = request("/api/claude-sessions", token: token, timeout: 12),
+              response.status == 200,
+              let body = response.body,
+              body["enabled"] as? Bool == enabled else {
+            throw HelperError.message("the restarted server did not prove the Claude sessions route")
+        }
+    }
+
     private func requireVideoUploadDowngradeSafe(targetVersion: String) throws {
         guard !versionAtLeast(targetVersion, "6.27.3") else { return }
         let currentVersion = (maintenanceStatus()?["serverVersion"] as? String) ?? loadManifest()?.version
@@ -4262,6 +4336,9 @@ final class COSControlHelper {
                 if let videoUploadV2 = values["COS_VIDEO_UPLOAD_V2"] {
                     try requireVideoUploadV2(videoUploadV2)
                 }
+                if let claudeSessions = values["COS_CLAUDE_SESSIONS_ENABLED"] {
+                    try requireClaudeSessions(enabled: claudeSessions == "1")
+                }
                 if let idleMetalHq = values["COS_BATCH_HQ_METAL"] {
                     try requireIdleMetalHq(enabled: idleMetalHq == "1")
                 }
@@ -4367,6 +4444,9 @@ final class COSControlHelper {
                 if alreadyActive, let videoUploadV2 = values["COS_VIDEO_UPLOAD_V2"] {
                     try requireVideoUploadV2(videoUploadV2)
                 }
+                if alreadyActive, let claudeSessions = values["COS_CLAUDE_SESSIONS_ENABLED"] {
+                    try requireClaudeSessions(enabled: claudeSessions == "1")
+                }
                 if alreadyActive, let idleMetalHq = values["COS_BATCH_HQ_METAL"] {
                     try requireIdleMetalHq(enabled: idleMetalHq == "1")
                 }
@@ -4436,6 +4516,9 @@ final class COSControlHelper {
             }
             if let videoUploadV2 = values["COS_VIDEO_UPLOAD_V2"] {
                 try requireVideoUploadV2(videoUploadV2)
+            }
+            if let claudeSessions = values["COS_CLAUDE_SESSIONS_ENABLED"] {
+                try requireClaudeSessions(enabled: claudeSessions == "1")
             }
             if let idleMetalHq = values["COS_BATCH_HQ_METAL"] {
                 try requireIdleMetalHq(enabled: idleMetalHq == "1")
@@ -5418,6 +5501,144 @@ final class COSControlHelper {
         return nil
     }
 
+    static func claudePeerState(alive: Bool, status: String, waitingFor: String) -> String {
+        if !alive { return "stale" }
+        if !waitingFor.isEmpty || status == "waiting" { return "waiting" }
+        return "running"
+    }
+
+    static func claudePeerProjection(_ row: [String: Any]) -> [String: Any]? {
+        guard let id = row["id"] as? String, !id.isEmpty else { return nil }
+        let alive = row["alive"] as? Bool ?? false
+        let status = row["status"] as? String ?? ""
+        let waitingFor = row["waitingFor"] as? String ?? ""
+        return [
+            "id": id,
+            "name": row["name"] as? String ?? "",
+            "workspace": row["workspace"] as? String ?? "",
+            "state": claudePeerState(alive: alive, status: status, waitingFor: waitingFor),
+            "status": status,
+            "waitingFor": waitingFor,
+            "alive": alive,
+            "reachable": row["reachable"] as? Bool ?? false,
+        ]
+    }
+
+    private func emitClaudeSessions() throws {
+        let token = try speakerReviewToken()
+        guard let response = request("/api/claude-sessions", token: token, timeout: 12) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if response.status == 404 {
+            throw HelperError.message("Update the server to show Claude sessions.")
+        }
+        guard response.status == 200, let body = response.body else {
+            throw HelperError.message("Could not list Claude sessions.")
+        }
+        let enabled = body["enabled"] as? Bool ?? false
+        let peers = ((body["peers"] as? [[String: Any]]) ?? []).compactMap(Self.claudePeerProjection)
+        let reason = body["reason"] as? String ?? ""
+        let message: String
+        if !enabled {
+            message = reason == "disabled" ? "Claude sessions are off" : "Claude sessions unavailable"
+        } else if peers.isEmpty {
+            message = "No Claude sessions"
+        } else {
+            message = "\(peers.count) Claude session(s)"
+        }
+        emit(ok: true, message: message, details: [
+            "enabled": enabled,
+            "reason": reason,
+            "sessions": peers,
+            "counts": body["counts"] ?? ["alive": 0, "reachable": 0, "stale": 0],
+        ])
+    }
+
+    static let meetingSyncTimeout: TimeInterval = 15 * 60
+
+    static func meetingSyncTooling(
+        scriptsDir: String?,
+        fileExists: (String) -> Bool,
+        isExecutable: (String) -> Bool
+    ) throws -> (python: String, script: String) {
+        let trimmed = scriptsDir?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else {
+            throw HelperError.message("COS_SCRIPTS_DIR is not set on the server. Meeting sync cannot run.")
+        }
+        let root = URL(fileURLWithPath: trimmed, isDirectory: true)
+        let python = root.appendingPathComponent("cos_python").path
+        let script = root.appendingPathComponent("sync_meetings.py").path
+        guard fileExists(python), isExecutable(python) else {
+            throw HelperError.message("cos_python is missing in COS_SCRIPTS_DIR. Meeting sync cannot run.")
+        }
+        guard fileExists(script) else {
+            throw HelperError.message("sync_meetings.py is missing in COS_SCRIPTS_DIR. Meeting sync cannot run.")
+        }
+        return (python, script)
+    }
+
+    static func meetingSyncChildEnvironment(
+        base: [String: String],
+        launchAgent: [String: String],
+        liveScriptsDir: String?
+    ) -> [String: String] {
+        var env = base
+        for (key, value) in launchAgent { env[key] = value }
+        if let liveScriptsDir {
+            let trimmed = liveScriptsDir.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { env["COS_SCRIPTS_DIR"] = trimmed }
+        }
+        return env
+    }
+
+    static func meetingSyncArguments(script: String) -> [String] {
+        [script]
+    }
+
+    private func emitMeetingSyncNow() throws {
+        let health = request("/api/health", timeout: 8)?.body
+        let fields = meetingSyncStatusFields(health: health)
+        if fields["meetingSyncActive"] as? Bool == true {
+            throw HelperError.message("Meeting polish is in progress. Wait until Meeting sync is idle.")
+        }
+        let liveScripts = loadedEnvironmentValue("COS_SCRIPTS_DIR")
+            ?? serverEnvironment()["COS_SCRIPTS_DIR"]
+        let tooling = try Self.meetingSyncTooling(
+            scriptsDir: liveScripts,
+            fileExists: { fm.fileExists(atPath: $0) },
+            isExecutable: { fm.isExecutableFile(atPath: $0) }
+        )
+        let arguments = Self.meetingSyncArguments(script: tooling.script)
+        if arguments.contains(where: { $0 == "--force" || $0.hasPrefix("--force=") }) {
+            throw HelperError.message("Meeting sync refuses --force so deletions are not auto-committed.")
+        }
+        let environment = Self.meetingSyncChildEnvironment(
+            base: ProcessInfo.processInfo.environment,
+            launchAgent: serverEnvironment(),
+            liveScriptsDir: liveScripts
+        )
+        progress("Running meeting sync…")
+        let result = try execute(
+            tooling.python,
+            arguments,
+            environment: environment,
+            timeout: Self.meetingSyncTimeout,
+            heartbeat: "Meeting sync still running…"
+        )
+        if result.code != 0 {
+            let tail = result.output.split(separator: "\n").suffix(8).joined(separator: "\n")
+            throw HelperError.message(tail.isEmpty ? "Meeting sync failed." : tail)
+        }
+        let summary = result.output.split(separator: "\n").reversed().first {
+            !$0.trimmingCharacters(in: .whitespaces).isEmpty
+        }.map(String.init) ?? "Meeting sync finished"
+        emit(ok: true, message: summary, details: [
+            "code": result.code,
+            "forced": false,
+        ])
+    }
+
     private func emitContextMemories(args: [String]) throws {
         let limit = min(max(Int(option("--limit", in: args) ?? "30") ?? 30, 1), 50)
         if let id = option("--id", in: args), !id.isEmpty {
@@ -5666,6 +5887,242 @@ final class COSControlHelper {
         return fields
     }
 
+    static func contextSearchHitProjection(_ row: [String: Any], kind: String) -> [String: Any]? {
+        guard let id = row["id"] as? String, !id.isEmpty else { return nil }
+        let keyword = meetingScore(row["keywordScore"])
+        let semantic = meetingScore(row["semanticScore"])
+        let title = row["title"] as? String ?? row["name"] as? String ?? row["summary"] as? String ?? ""
+        return [
+            "id": id,
+            "title": title,
+            "summary": title,
+            "name": row["name"] as? String ?? title,
+            "snippet": row["snippet"] as? String ?? "",
+            "match": row["match"] as? String ?? "keyword",
+            "keywordScore": keyword,
+            "semanticScore": semantic,
+            "score": max(keyword, semantic),
+            "kind": kind,
+            "type": row["type"] as? String ?? "",
+            "created_at": row["created_at"] as? String ?? "",
+            "content": row["snippet"] as? String ?? "",
+            "domain": row["domain"] as? String ?? "",
+            "meeting_count": meetingCount(row["meeting_count"]),
+            "is_resolved": row["is_resolved"] as? Bool ?? false,
+            "topics": row["topics"] as? [String] ?? [],
+        ]
+    }
+
+    /// Chunks below this are noise, not a meeting. Same floor as the server
+    /// `isWorthRecovering` picker, so Recover all cannot POST a capture the
+    /// badge itself would not count.
+    static let minRecoverableOrphanChunks = 2
+
+    static func orphanItemProjection(_ row: [String: Any]) -> [String: Any]? {
+        guard let sessionId = row["sessionId"] as? String, !sessionId.isEmpty else { return nil }
+        return [
+            "sessionId": sessionId,
+            "dirName": row["dirName"] as? String ?? "",
+            "chunkFiles": Self.meetingCount(row["chunkFiles"]),
+            "bytes": Self.meetingCount(row["bytes"]),
+            "ageHours": row["ageHours"] ?? NSNull(),
+            "recovered": row["recovered"] as? Bool ?? false,
+            "reason": row["reason"] as? String ?? "",
+            "expiresAt": row["expiresAt"] as? String ?? "",
+            "quarantinedAt": row["quarantinedAt"] as? String ?? "",
+        ]
+    }
+
+    static func isRecoverableOrphan(_ row: [String: Any]) -> Bool {
+        (row["recovered"] as? Bool ?? false) == false
+            && Self.meetingCount(row["chunkFiles"]) >= minRecoverableOrphanChunks
+    }
+
+    static func strandedItemProjection(_ row: [String: Any]) -> [String: Any]? {
+        guard let sessionId = row["sessionId"] as? String, !sessionId.isEmpty else { return nil }
+        return [
+            "sessionId": sessionId,
+            "idleMinutes": Self.meetingCount(row["idleMinutes"]),
+            "capturedMinutes": Self.meetingCount(row["capturedMinutes"]),
+            "chunks": Self.meetingCount(row["chunks"]),
+            "promotesAt": row["promotesAt"] as? String ?? "",
+        ]
+    }
+
+    static func recoverableOrphanSessionIds(_ items: [[String: Any]]) -> [String] {
+        items.compactMap { row in
+            guard isRecoverableOrphan(row) else { return nil }
+            return row["sessionId"] as? String
+        }
+    }
+
+    private func orphanSessionPath(_ sessionId: String) throws -> String {
+        guard sessionId.range(of: "^[A-Za-z0-9:_-]{3,96}$", options: .regularExpression) != nil else {
+            throw HelperError.message("Invalid capture id")
+        }
+        let escaped = sessionId.addingPercentEncoding(
+            withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-_:"))
+        ) ?? sessionId
+        return "/api/meeting/orphans/\(escaped)/recover"
+    }
+
+    private func meetingOrphansBody() throws -> [String: Any] {
+        let token = try speakerReviewToken()
+        guard let response = request("/api/meeting/orphans", token: token, timeout: 20) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if response.status == 404 {
+            throw HelperError.message("Update the server to recover unsaved captures from this panel.")
+        }
+        guard response.status == 200, let body = response.body else {
+            throw HelperError.message("Could not list unsaved captures.")
+        }
+        return body
+    }
+
+    private func emitMeetingOrphans() throws {
+        let body = try meetingOrphansBody()
+        let recovering = (body["recovering"] as? [String]) ?? []
+        let recoveringSet = Set(recovering)
+        let items = ((body["items"] as? [[String: Any]]) ?? []).compactMap(Self.orphanItemProjection).map { row -> [String: Any] in
+            var next = row
+            let sessionId = row["sessionId"] as? String ?? ""
+            next["recovering"] = recoveringSet.contains(sessionId)
+            next["recoverable"] = Self.isRecoverableOrphan(row)
+            return next
+        }
+        let stranded = ((body["stranded"] as? [[String: Any]]) ?? []).compactMap(Self.strandedItemProjection)
+        let recoverable = items.filter { ($0["recoverable"] as? Bool) == true }
+        emit(ok: true, message: recoverable.isEmpty ? "No recoverable captures" : "\(recoverable.count) recoverable", details: [
+            "count": body["count"] as? Int ?? recoverable.count,
+            "strandedCount": body["strandedCount"] as? Int ?? stranded.count,
+            "recovering": recovering,
+            "recoveringProgress": body["recoveringProgress"] ?? [:],
+            "items": items,
+            "stranded": stranded,
+        ])
+    }
+
+    private func postOrphanRecover(sessionId: String) throws -> (status: Int, body: [String: Any]) {
+        let token = try speakerReviewToken()
+        let path = try orphanSessionPath(sessionId)
+        guard let response = request(path, method: "POST", token: token, body: "{}", timeout: 30) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        return (response.status, response.body ?? [:])
+    }
+
+    private func emitMeetingOrphanRecover(args: [String]) throws {
+        guard let sessionId = option("--session", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sessionId.isEmpty else {
+            throw HelperError.message("--session is required")
+        }
+        let posted = try postOrphanRecover(sessionId: sessionId)
+        if posted.status == 202, posted.body["accepted"] as? Bool == true {
+            emit(ok: true, message: "Recovery started", details: posted.body)
+            return
+        }
+        if posted.status == 200, posted.body["alreadySaved"] as? Bool == true {
+            emit(ok: true, message: "Already saved", details: posted.body)
+            return
+        }
+        if posted.status == 409 {
+            throw HelperError.message("Recovery already in progress for this capture.")
+        }
+        if posted.status == 404 {
+            throw HelperError.message("No quarantined audio for this capture. Session files were not deleted.")
+        }
+        if posted.status == 503 {
+            throw HelperError.message(posted.body["error"] as? String ?? "Server is busy with another recovery. Wait, then retry.")
+        }
+        let reason = posted.body["error"] as? String ?? posted.body["reason"] as? String ?? "Recovery failed (\(posted.status))"
+        throw HelperError.message(reason)
+    }
+
+    private func recoveringSessionIds(_ body: [String: Any]) -> [String] {
+        (body["recovering"] as? [String]) ?? []
+    }
+
+    private func waitForOrphanSlot(sessionId: String?, timeout: TimeInterval, label: String) throws -> [String: Any] {
+        let deadline = Date().addingTimeInterval(timeout)
+        var last = try meetingOrphansBody()
+        while Date() < deadline {
+            let recovering = recoveringSessionIds(last)
+            if let sessionId {
+                if !recovering.contains(sessionId) { return last }
+            } else if recovering.isEmpty {
+                return last
+            }
+            progress(label)
+            Thread.sleep(forTimeInterval: 2)
+            last = try meetingOrphansBody()
+        }
+        throw HelperError.message("Timed out waiting for a recovery slot.")
+    }
+
+    private func emitMeetingOrphanRecoverAll() throws {
+        var body = try meetingOrphansBody()
+        if !recoveringSessionIds(body).isEmpty {
+            progress("Waiting for the current recovery to finish…")
+            body = try waitForOrphanSlot(sessionId: nil, timeout: 20 * 60, label: "Waiting for the current recovery to finish…")
+        }
+        let items = (body["items"] as? [[String: Any]]) ?? []
+        let ids = Self.recoverableOrphanSessionIds(items)
+        if ids.isEmpty {
+            emit(ok: true, message: "No recoverable captures", details: [
+                "recovered": 0, "skipped": 0, "failed": [] as [String],
+            ])
+            return
+        }
+        var recovered = 0
+        var skipped = 0
+        var failed: [String] = []
+        for (index, sessionId) in ids.enumerated() {
+            if index > 0 {
+                progress("Waiting before capture \(index + 1) of \(ids.count)…")
+                _ = try waitForOrphanSlot(sessionId: nil, timeout: 20 * 60, label: "Waiting before capture \(index + 1) of \(ids.count)…")
+            }
+            progress("Recovering \(index + 1) of \(ids.count)…")
+            do {
+                let posted = try postOrphanRecover(sessionId: sessionId)
+                if posted.status == 202, posted.body["accepted"] as? Bool == true {
+                    recovered += 1
+                    _ = try waitForOrphanSlot(
+                        sessionId: sessionId,
+                        timeout: 20 * 60,
+                        label: "Recovering \(index + 1) of \(ids.count)…"
+                    )
+                    continue
+                }
+                if posted.status == 200, posted.body["alreadySaved"] as? Bool == true {
+                    skipped += 1
+                    continue
+                }
+                if posted.status == 409 {
+                    skipped += 1
+                    _ = try waitForOrphanSlot(sessionId: sessionId, timeout: 20 * 60, label: "Waiting for \(sessionId)…")
+                    continue
+                }
+                failed.append(sessionId)
+            } catch {
+                failed.append(sessionId)
+            }
+        }
+        let message: String
+        if failed.isEmpty {
+            message = recovered == 1 ? "Started recovery for 1 capture." : "Started recovery for \(recovered) capture(s)."
+        } else {
+            message = "Recovered \(recovered). \(failed.count) failed. Session files were not deleted."
+        }
+        emit(ok: true, message: message, details: [
+            "recovered": recovered,
+            "skipped": skipped,
+            "failed": failed,
+        ])
+    }
+
     private func emitMeetingsLibrarySearch(args: [String]) throws {
         guard let query = option("--query", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines),
               query.count >= 2 else {
@@ -5678,6 +6135,40 @@ final class COSControlHelper {
         let raw = (body["hits"] as? [[String: Any]]) ?? []
         let rows: [[String: Any]] = raw.compactMap(Self.librarySearchHitProjection)
         emit(ok: true, message: rows.isEmpty ? "No matching meetings" : "Meeting lookup ready", details: [
+            "state": rows.isEmpty ? "empty" : "ready",
+            "hits": rows,
+            "count": rows.count,
+            "keywordCount": body["keywordCount"] as? Int ?? rows.count,
+            "semanticCount": body["semanticCount"] as? Int ?? 0,
+            "semanticAvailable": body["semanticAvailable"] as? Bool ?? false,
+            "semanticReason": body["semanticReason"] as? String ?? "",
+        ])
+    }
+
+    private func emitContextSearch(kind: String, args: [String]) throws {
+        guard let query = option("--query", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              query.count >= 2 else {
+            throw HelperError.message("--query must be at least 2 characters")
+        }
+        let limit = min(max(Int(option("--limit", in: args) ?? "20") ?? 20, 1), 50)
+        let route = kind == "thread" ? "/api/threads/search" : "/api/memory/search"
+        let path = "\(route)?q=\(queryEscape(query))&limit=\(limit)"
+        let body: [String: Any]
+        do {
+            body = try speakerReviewBody(path, timeout: 25)
+        } catch {
+            let text = "\(error)"
+            if text.contains("(404)") {
+                throw HelperError.message(kind == "thread"
+                    ? "Update the server to search threads from this panel."
+                    : "Update the server to search memories from this panel.")
+            }
+            throw error
+        }
+        let raw = (body["hits"] as? [[String: Any]]) ?? []
+        let rows = raw.compactMap { Self.contextSearchHitProjection($0, kind: kind) }
+        let noun = kind == "thread" ? "threads" : "memories"
+        emit(ok: true, message: rows.isEmpty ? "No matching \(noun)" : "Lookup ready", details: [
             "state": rows.isEmpty ? "empty" : "ready",
             "hits": rows,
             "count": rows.count,
@@ -6396,6 +6887,10 @@ final class COSControlHelper {
 
         try expect(providerEnvironmentKeys.contains("COS_CONTEXT_DIR"),
                    "COS_CONTEXT_DIR must be allowlisted or applying it is rejected as unsupported")
+        try expect(providerEnvironmentKeys.contains("COS_CLAUDE_SESSIONS_ENABLED"),
+                   "COS_CLAUDE_SESSIONS_ENABLED must be allowlisted or Update Server strips it")
+        try expect(providerEnvironmentKeys.contains("COS_CLAUDE_SESSIONS_SHOW_NAMES"),
+                   "COS_CLAUDE_SESSIONS_SHOW_NAMES must be allowlisted or Update Server strips it")
 
         // Create Folders — the button that replaces the two directories Queen had to
         // make by hand. Runs the SHIPPED function against a real temporary tree.
@@ -6872,6 +7367,14 @@ final class COSControlHelper {
                    "search projection keeps the snippet")
         try expect(searchHit?["match"] as? String == "both", "search projection keeps match kind")
         try expect(searchHit?["score"] as? Double == 0.8, "search score is the stronger signal")
+        try expect(Self.contextSearchHitProjection(["title": "no id"], kind: "memory") == nil,
+                   "context search drops rows without id")
+        let memoryHit = Self.contextSearchHitProjection([
+            "id": "mem_1", "title": "Toast decision", "snippet": "Counter Toast.",
+            "match": "both", "keywordScore": 0.8, "semanticScore": 0.6,
+        ], kind: "memory")
+        try expect(memoryHit?["id"] as? String == "mem_1", "memory search keeps id")
+        try expect(memoryHit?["match"] as? String == "both", "memory search keeps match kind")
 
         // --- restart blockers must NAME the cause ---------------------------
         // The 2026-08-12 lockout in one fixture: activeByKind EMPTY, everything
@@ -6975,6 +7478,82 @@ final class COSControlHelper {
                    "a real upload id is accepted")
         try expect(Self.isValidVideoUploadId("clear-stranded") == false,
                    "the clear-stranded path is not an upload id")
+
+        let recoveredNoise: [String: Any] = [
+            "sessionId": "meeting_1", "chunkFiles": 40, "recovered": true,
+        ]
+        let tooShort: [String: Any] = [
+            "sessionId": "meeting_2", "chunkFiles": 1, "recovered": false,
+        ]
+        let recoverable: [String: Any] = [
+            "sessionId": "meeting_3", "chunkFiles": 12, "recovered": false,
+        ]
+        try expect(Self.orphanItemProjection(["title": "no id"]) == nil,
+                   "orphan rows without a sessionId are dropped")
+        try expect(Self.isRecoverableOrphan(recoveredNoise) == false,
+                   "already-recovered captures are not recoverable")
+        try expect(Self.isRecoverableOrphan(tooShort) == false,
+                   "a one-chunk capture is not recoverable")
+        try expect(Self.isRecoverableOrphan(recoverable) == true,
+                   "a substantial unrecovered capture is recoverable")
+        try expect(
+            Self.recoverableOrphanSessionIds([recoveredNoise, tooShort, recoverable]) == ["meeting_3"],
+            "recover-all walks only recoverable ids, in list order"
+        )
+        try expect(Self.strandedItemProjection(["idleMinutes": 40]) == nil,
+                   "stranded rows without a sessionId are dropped")
+        try expect(
+            Self.strandedItemProjection(["sessionId": "meeting_live", "idleMinutes": 40])?["idleMinutes"] as? Int == 40,
+            "stranded rows keep idle minutes and never imply deletion"
+        )
+        try expect(Self.claudePeerState(alive: false, status: "waiting", waitingFor: "user") == "stale",
+                   "a dead process is stale even if the registry still says waiting")
+        try expect(Self.claudePeerState(alive: true, status: "waiting", waitingFor: "") == "waiting",
+                   "an alive waiting session is waiting")
+        try expect(Self.claudePeerState(alive: true, status: "running", waitingFor: "") == "running",
+                   "an alive session with no wait is running")
+        try expect(Self.claudePeerProjection(["workspace": "MU-Chief-Staff"]) == nil,
+                   "Claude session rows without an id are dropped")
+        var missingScripts = ""
+        do {
+            _ = try Self.meetingSyncTooling(scriptsDir: nil, fileExists: { _ in true }, isExecutable: { _ in true })
+        } catch { missingScripts = "\(error)" }
+        try expect(missingScripts.contains("COS_SCRIPTS_DIR"), "missing scripts dir must fail closed")
+        var missingPython = ""
+        do {
+            _ = try Self.meetingSyncTooling(
+                scriptsDir: "/tmp/scripts",
+                fileExists: { $0.hasSuffix("sync_meetings.py") },
+                isExecutable: { _ in false }
+            )
+        } catch { missingPython = "\(error)" }
+        try expect(missingPython.contains("cos_python"), "missing cos_python must fail closed")
+        var missingScript = ""
+        do {
+            _ = try Self.meetingSyncTooling(
+                scriptsDir: "/tmp/scripts",
+                fileExists: { $0.hasSuffix("cos_python") },
+                isExecutable: { $0.hasSuffix("cos_python") }
+            )
+        } catch { missingScript = "\(error)" }
+        try expect(missingScript.contains("sync_meetings.py"), "missing sync_meetings.py must fail closed")
+        let tooling = try Self.meetingSyncTooling(
+            scriptsDir: "/tmp/scripts",
+            fileExists: { _ in true },
+            isExecutable: { _ in true }
+        )
+        try expect(tooling.python.hasSuffix("cos_python") && tooling.script.hasSuffix("sync_meetings.py"),
+                   "resolved tooling must be cos_python plus sync_meetings.py")
+        try expect(!Self.meetingSyncArguments(script: tooling.script).contains("--force"),
+                   "manual sync must not pass --force")
+        let child = Self.meetingSyncChildEnvironment(
+            base: ["PATH": "/usr/bin", "COS_SCRIPTS_DIR": "stale"],
+            launchAgent: ["COS_SCRIPTS_DIR": "/from/plist"],
+            liveScriptsDir: "/live/scripts"
+        )
+        try expect(child["COS_SCRIPTS_DIR"] == "/live/scripts", "live LaunchAgent scripts dir wins")
+        try expect(child["PATH"] == "/usr/bin", "child env keeps the helper PATH")
+        try expect(Self.meetingSyncTimeout >= 60, "meeting sync must have a timeout")
 
         emit(ok: true, message: "\(passed) deterministic helper tests passed", details: ["tests": passed])
     }

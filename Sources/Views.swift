@@ -99,6 +99,7 @@ struct ControlPanel: View {
     @State private var selectedVideoUploadV2 = false
     @State private var confirmClearStrandedVideoUploads = false
     @State private var confirmResetMessageCount = false
+    @State private var confirmRecoverAllOrphans = false
     @State private var selectedIdleMetalHq = false
     @State private var selectedAdaptiveAudioCleanup = false
 
@@ -214,6 +215,16 @@ struct ControlPanel: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Archives live messages and starts numbering at #1. History stays in ARCHIVE and Message History. This does not delete anything.")
+        }
+        .confirmationDialog(
+            "Recover all unsaved captures?",
+            isPresented: $confirmRecoverAllOrphans,
+            titleVisibility: .visible
+        ) {
+            Button("Recover all") { model.recoverAllOrphans() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Turns each unsaved capture into a meeting, one at a time. Already-recovering captures wait their turn. Session files are not deleted.")
         }
     }
 
@@ -350,6 +361,12 @@ struct ControlPanel: View {
                 }
             }
             statusRow("Meeting sync", value: meetingSyncLabel, good: !model.status.meetingSyncActive)
+            HStack {
+                Spacer()
+                Button("Run sync now") { model.perform("meeting-sync-now") }
+                    .controlSize(.small)
+                    .disabled(model.busy || model.status.meetingSyncActive)
+            }
             if model.status.meetingSyncActive {
                 Text(model.status.meetingSyncBlocksRestart
                      ? "Blocks Update / Restart until HQ polish finishes."
@@ -439,18 +456,56 @@ struct ControlPanel: View {
             // Server 6.19.0+: meeting audio whose save never landed is
             // quarantined instead of deleted. Surface it — a hidden lost
             // meeting is the failure this exists to end. Row hides at zero.
-            if model.status.unsavedCaptures > 0 {
+            if model.status.unsavedCaptures > 0 || !model.orphanCaptures.isEmpty || !model.strandedCaptures.isEmpty {
                 statusRow(
                     "Unsaved captures",
-                    value: "\(model.status.unsavedCaptures) recoverable",
+                    value: unsavedCapturesLabel,
                     good: false
                 )
-                Text("Meeting audio was captured but never saved. Open COS on the phone to let a deferred save land, or recover via the server's /api/meeting/orphans route before retention expires.")
+                Text("Meeting audio was captured but never saved. Recover here before retention expires, or open COS on the phone to let a deferred save land.")
                     .font(.caption2)
                     .foregroundStyle(COSPalette.amber)
                     .lineLimit(3)
                     .frame(maxWidth: .infinity, alignment: .trailing)
-                    .textSelection(.enabled)
+                if !model.recoverableOrphans.isEmpty {
+                    VStack(alignment: .trailing, spacing: 6) {
+                        Button(model.recoverableOrphans.count == 1 ? "Recover" : "Recover all") {
+                            if model.recoverableOrphans.count > 1 {
+                                confirmRecoverAllOrphans = true
+                            } else if let only = model.recoverableOrphans.first {
+                                model.recoverOrphan(only.sessionId)
+                            }
+                        }
+                        .controlSize(.small)
+                        .disabled(model.busy || model.orphanBusy)
+                        ForEach(model.recoverableOrphans) { capture in
+                            HStack(spacing: 8) {
+                                Text(capture.label)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                Button("Recover") { model.recoverOrphan(capture.sessionId) }
+                                    .controlSize(.mini)
+                                    .disabled(model.busy || model.orphanBusy || capture.recovering)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                if !model.strandedCaptures.isEmpty {
+                    Text("Still live — waiting on the phone. Session files are not deleted.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    ForEach(model.strandedCaptures) { capture in
+                        Text(capture.label)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                }
             }
             // One quick-glance row for all three agent backends. Cursor keeps
             // its own detailed row below because the helper probes it locally
@@ -709,7 +764,7 @@ struct ControlPanel: View {
             .contentShape(RoundedRectangle(cornerRadius: 13))
         }
         .buttonStyle(.plain)
-        .help("Open Messages, Speakers, Meetings, Memories, and Threads in a separate window")
+        .help("Open Messages, Speakers, Meetings, Memories, Threads, and Sessions in a separate window")
     }
 
     private func activityChip(_ title: String, icon: String, tint: Color) -> some View {
@@ -1276,6 +1331,14 @@ struct ControlPanel: View {
         let raw = model.status.meetingSyncLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         if !raw.isEmpty { return raw }
         return model.status.meetingSyncActive ? "Syncing…" : "Idle"
+    }
+
+    private var unsavedCapturesLabel: String {
+        let recoverable = model.recoverableOrphans.count
+        if recoverable > 0 { return "\(recoverable) recoverable" }
+        if model.status.unsavedCaptures > 0 { return "\(model.status.unsavedCaptures) recoverable" }
+        if !model.strandedCaptures.isEmpty { return "\(model.strandedCaptures.count) still live" }
+        return "None"
     }
 
     private var recentGlassesStatusLabel: String {

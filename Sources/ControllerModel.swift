@@ -145,6 +145,8 @@ final class ControllerModel: ObservableObject {
     private var contextDetailTask: Task<Void, Never>?
     private var libraryDetailTask: Task<Void, Never>?
     private var librarySearchTask: Task<Void, Never>?
+    private var memorySearchTask: Task<Void, Never>?
+    private var threadSearchTask: Task<Void, Never>?
     private var mediaPreviewTask: Task<Void, Never>?
     private var thumbnailTasks: [String: Task<Void, Never>] = [:]
     private var thumbnailLoadIDs: [String: UUID] = [:]
@@ -200,6 +202,8 @@ final class ControllerModel: ObservableObject {
         contextDetailTask?.cancel()
         libraryDetailTask?.cancel()
         librarySearchTask?.cancel()
+        memorySearchTask?.cancel()
+        threadSearchTask?.cancel()
         mediaPreviewTask?.cancel()
         thumbnailTasks.values.forEach { $0.cancel() }
     }
@@ -211,6 +215,7 @@ final class ControllerModel: ObservableObject {
             let response = try await helper.run(["status"])
             status = ServerStatus(response.details)
             if !quiet { error = nil }
+            await loadOrphans(quiet: true)
         } catch {
             status.running = false
             if !quiet { self.error = error.localizedDescription }
@@ -712,6 +717,27 @@ final class ControllerModel: ObservableObject {
         perform("reset-message-era")
     }
 
+    func recoverOrphan(_ sessionId: String) {
+        guard !sessionId.isEmpty, !busy, !orphanBusy else { return }
+        orphanBusy = true
+        Task {
+            defer { orphanBusy = false }
+            do {
+                let response = try await helper.run(["meeting-orphan-recover", "--session", sessionId])
+                notice = response.message
+                await loadOrphans(quiet: true)
+                await refresh(quiet: true)
+            } catch {
+                self.error = error.localizedDescription
+                await loadOrphans(quiet: true)
+            }
+        }
+    }
+
+    func recoverAllOrphans() {
+        perform("meeting-orphan-recover-all")
+    }
+
     func setIdleMetalHqEnabled(_ enabled: Bool) {
         perform("set-idle-metal-hq", arguments: [enabled ? "on" : "off"])
     }
@@ -803,6 +829,14 @@ final class ControllerModel: ObservableObject {
     @Published var librarySearchError: String?
     @Published var librarySemanticAvailable = true
     @Published var librarySemanticReason: String?
+    @Published var orphanCaptures: [OrphanCapture] = []
+    @Published var strandedCaptures: [StrandedCapture] = []
+    @Published var orphanBusy = false
+    @Published var claudeSessions: [ClaudeSession] = []
+    @Published var claudeSessionsEnabled = false
+    @Published var claudeSessionsReason = ""
+    @Published var claudeSessionsLoading = false
+    @Published var claudeSessionsError: String?
     private var libraryLoadID = UUID()
     private var librarySearchID = UUID()
     private var libraryDayAutoApplied = false
@@ -872,6 +906,38 @@ final class ControllerModel: ObservableObject {
         let known = ["quilt", "sprocket_rocket", "hermit_crabs", "personal"]
         let present = libraryMeetings.map(\.domain).filter { !$0.isEmpty }
         return ["all"] + Array(Set(known + present)).sorted()
+    }
+
+    var recoverableOrphans: [OrphanCapture] {
+        orphanCaptures.filter(\.recoverable)
+    }
+
+    func loadOrphans(quiet: Bool = true) async {
+        do {
+            let response = try await helper.run(["meeting-orphans"])
+            orphanCaptures = (response.details["items"]?.array ?? []).compactMap(OrphanCapture.init)
+            strandedCaptures = (response.details["stranded"]?.array ?? []).compactMap(StrandedCapture.init)
+        } catch {
+            if !quiet { self.error = error.localizedDescription }
+            if status.unsavedCaptures == 0 {
+                orphanCaptures = []
+                strandedCaptures = []
+            }
+        }
+    }
+
+    func loadClaudeSessions() async {
+        claudeSessionsLoading = true
+        defer { claudeSessionsLoading = false }
+        do {
+            let response = try await helper.run(["claude-sessions"])
+            claudeSessionsEnabled = response.details["enabled"]?.bool ?? false
+            claudeSessionsReason = response.details["reason"]?.string ?? ""
+            claudeSessions = (response.details["sessions"]?.array ?? []).compactMap(ClaudeSession.init)
+            claudeSessionsError = nil
+        } catch {
+            claudeSessionsError = error.localizedDescription
+        }
     }
 
     static func currentMeetingMonth(_ now: Date = Date()) -> String {
@@ -1058,6 +1124,20 @@ final class ControllerModel: ObservableObject {
     @Published var threadRecordsError: String?
     @Published var memoryHeadline = ""
     @Published var threadHeadline = ""
+    @Published var memoryQuery = ""
+    @Published var threadQuery = ""
+    @Published var memorySearchHits: [ContextSearchHit] = []
+    @Published var threadSearchHits: [ContextSearchHit] = []
+    @Published var memorySearching = false
+    @Published var threadSearching = false
+    @Published var memorySearchError: String?
+    @Published var threadSearchError: String?
+    @Published var memorySemanticAvailable = true
+    @Published var threadSemanticAvailable = false
+    @Published var memorySemanticReason: String?
+    @Published var threadSemanticReason: String?
+    private var memorySearchID = UUID()
+    private var threadSearchID = UUID()
 
     /// The open record, its kind, and the load/error states that make a click always
     /// produce something on screen — including a failure.
@@ -1103,6 +1183,88 @@ final class ControllerModel: ObservableObject {
         } catch {
             if isThread { threadRecordsError = error.localizedDescription }
             else { memoryRecordsError = error.localizedDescription }
+        }
+    }
+
+    var isMemoryQueryActive: Bool {
+        memoryQuery.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2
+    }
+
+    var isThreadQueryActive: Bool {
+        threadQuery.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2
+    }
+
+    func scheduleContextSearch(kind: String) {
+        let isThread = kind == "thread"
+        if isThread { threadSearchTask?.cancel() } else { memorySearchTask?.cancel() }
+        let trimmed = (isThread ? threadQuery : memoryQuery).trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count < 2 {
+            if isThread {
+                threadSearchHits = []
+                threadSearchError = nil
+                threadSearching = false
+                threadSemanticReason = nil
+            } else {
+                memorySearchHits = []
+                memorySearchError = nil
+                memorySearching = false
+                memorySemanticReason = nil
+            }
+            return
+        }
+        let id = UUID()
+        if isThread { threadSearchID = id } else { memorySearchID = id }
+        let task = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            if isThread {
+                guard self?.threadSearchID == id else { return }
+            } else {
+                guard self?.memorySearchID == id else { return }
+            }
+            await self?.runContextSearch(kind: kind, query: trimmed, id: id)
+        }
+        if isThread { threadSearchTask = task } else { memorySearchTask = task }
+    }
+
+    private func runContextSearch(kind: String, query: String, id: UUID) async {
+        let isThread = kind == "thread"
+        if isThread { threadSearching = true } else { memorySearching = true }
+        defer {
+            if isThread {
+                if threadSearchID == id { threadSearching = false }
+            } else if memorySearchID == id {
+                memorySearching = false
+            }
+        }
+        do {
+            let command = isThread ? "context-threads-search" : "context-memories-search"
+            let response = try await helper.run([command, "--query", query, "--limit", "20"])
+            if isThread {
+                guard threadSearchID == id else { return }
+                threadSearchHits = (response.details["hits"]?.array ?? []).compactMap { ContextSearchHit(kind: "thread", $0) }
+                threadSemanticAvailable = response.details["semanticAvailable"]?.bool ?? false
+                let reason = response.details["semanticReason"]?.string ?? ""
+                threadSemanticReason = reason.isEmpty ? nil : reason
+                threadSearchError = nil
+            } else {
+                guard memorySearchID == id else { return }
+                memorySearchHits = (response.details["hits"]?.array ?? []).compactMap { ContextSearchHit(kind: "memory", $0) }
+                memorySemanticAvailable = response.details["semanticAvailable"]?.bool ?? false
+                let reason = response.details["semanticReason"]?.string ?? ""
+                memorySemanticReason = reason.isEmpty ? nil : reason
+                memorySearchError = nil
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            if isThread {
+                guard threadSearchID == id else { return }
+                threadSearchError = error.localizedDescription
+            } else {
+                guard memorySearchID == id else { return }
+                memorySearchError = error.localizedDescription
+            }
         }
     }
 

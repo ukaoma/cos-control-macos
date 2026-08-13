@@ -52,6 +52,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
     case meetings
     case memories
     case threads
+    case sessions
 
     var id: String { rawValue }
 
@@ -62,6 +63,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         case .meetings: "Meetings"
         case .memories: "Memories"
         case .threads: "Threads"
+        case .sessions: "Sessions"
         }
     }
 
@@ -72,6 +74,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         case .meetings: "calendar"
         case .memories: "sparkles"
         case .threads: "point.3.connected.trianglepath.dotted"
+        case .sessions: "terminal"
         }
     }
 
@@ -82,6 +85,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         case .meetings: Color(red: 0.82, green: 0.52, blue: 0.22)
         case .memories: Color(red: 0.48, green: 0.36, blue: 0.72)
         case .threads: Color(red: 0.22, green: 0.57, blue: 0.39)
+        case .sessions: Color(red: 0.36, green: 0.36, blue: 0.40)
         }
     }
 
@@ -92,9 +96,11 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         case .meetings: "Browse saved calls by day, with transcript, summary, and copy."
         case .memories: "Browse the durable context your COS can recall."
         case .threads: "Follow work that develops across meetings and time."
+        case .sessions: "Claude Code sessions on this Mac — waiting, running, or stale."
         }
     }
 }
+
 
 private enum SpeakerSubview: String, CaseIterable, Identifiable {
     case voices
@@ -181,6 +187,7 @@ struct ActivityWindow: View {
         case .speakers: selectedVoiceName != nil || selectedSpeakerSessionID != nil
         case .meetings: selectedLibraryRecordID != nil
         case .memories, .threads: selectedContextID != nil
+        case .sessions: false
         case nil: false
         }
     }
@@ -423,7 +430,7 @@ struct ActivityWindow: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Activity")
                         .font(.system(size: 30, weight: .semibold, design: .rounded))
-                    Text("Five views into the work your COS already holds.")
+                    Text("Six views into the work your COS already holds.")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
@@ -506,6 +513,10 @@ struct ActivityWindow: View {
             return model.status.threadsAvailable == true
                 ? (model.threadHeadline.isEmpty ? "Ready" : model.threadHeadline)
                 : "Setup needed"
+        case .sessions:
+            if !model.claudeSessionsEnabled { return "Off on this server" }
+            if model.claudeSessions.isEmpty { return "Refresh to load" }
+            return "\(model.claudeSessions.count) session(s)"
         }
     }
 
@@ -519,6 +530,7 @@ struct ActivityWindow: View {
         case .meetings: meetingsList
         case .memories: contextList(kind: "memory")
         case .threads: contextList(kind: "thread")
+        case .sessions: sessionsList
         }
     }
 
@@ -539,6 +551,82 @@ struct ActivityWindow: View {
                 selectedLibraryRecordID = meeting.id
                 model.openLibraryMeeting(meeting)
             }
+        }
+    }
+
+    private var sessionsList: some View {
+        VStack(spacing: 0) {
+            sectionHeader(
+                section: .sessions,
+                title: "Sessions",
+                detail: sessionsStatus,
+                refresh: { Task { await model.loadClaudeSessions() } },
+                refreshDisabled: model.claudeSessionsLoading
+            )
+            if model.claudeSessionsLoading && model.claudeSessions.isEmpty {
+                centeredProgress("Loading sessions…")
+            } else if let error = model.claudeSessionsError, model.claudeSessions.isEmpty {
+                emptyState(.sessions, text: error)
+            } else if !model.claudeSessionsEnabled {
+                emptyState(.sessions, text: sessionsDisabledCopy)
+            } else if model.claudeSessions.isEmpty {
+                emptyState(.sessions, text: "No Claude Code sessions on this Mac.")
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(model.claudeSessions) { session in
+                            HStack(spacing: 13) {
+                                sectionGlyph(.sessions)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(session.title)
+                                        .font(.system(size: 12.5, weight: .medium))
+                                        .lineLimit(1)
+                                    HStack(spacing: 8) {
+                                        Text(session.stateLabel)
+                                            .font(.system(size: 10, weight: .semibold))
+                                            .foregroundStyle(sessionStateTint(session.state))
+                                        if !session.waitingFor.isEmpty {
+                                            Text(session.waitingFor)
+                                                .font(.system(size: 10.5))
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                    }
+                                }
+                                Spacer()
+                            }
+                            .padding(.vertical, 13)
+                            Divider().padding(.leading, 46)
+                        }
+                    }
+                    .padding(.horizontal, 22)
+                    .padding(.bottom, 22)
+                }
+            }
+        }
+    }
+
+    private var sessionsStatus: String {
+        if model.claudeSessionsLoading { return "Loading…" }
+        if let error = model.claudeSessionsError { return error }
+        if !model.claudeSessionsEnabled { return "Off on this server" }
+        if model.claudeSessions.isEmpty { return "No sessions" }
+        return "Waiting, running, or stale · read-only"
+    }
+
+    private var sessionsDisabledCopy: String {
+        model.claudeSessionsReason == "disabled"
+            ? "Claude sessions are off. Enable them from the server environment to see workspace presence here."
+            : (model.claudeSessionsReason.isEmpty
+                ? "Claude sessions are unavailable on this server."
+                : model.claudeSessionsReason)
+    }
+
+    private func sessionStateTint(_ state: String) -> Color {
+        switch state {
+        case "waiting": COSPalette.amber
+        case "running": Color(red: 0.22, green: 0.57, blue: 0.39)
+        default: .secondary
         }
     }
 
@@ -796,14 +884,23 @@ struct ActivityWindow: View {
         let error = isThread ? model.threadRecordsError : model.memoryRecordsError
         let available = isThread ? model.status.threadsAvailable == true : model.status.memoryAvailable == true
         let headline = isThread ? model.threadHeadline : model.memoryHeadline
+        let queryActive = isThread ? model.isThreadQueryActive : model.isMemoryQueryActive
+        let searching = isThread ? model.threadSearching : model.memorySearching
         return VStack(spacing: 0) {
             sectionHeader(
                 section: item,
                 title: isThread ? "Review threads" : "Review memories",
-                detail: !headline.isEmpty ? headline : item.summary,
+                detail: queryActive
+                    ? (searching ? "Looking up…" : "Lookup across stored \(item.title.lowercased())")
+                    : (!headline.isEmpty ? headline : item.summary),
                 refresh: { Task { await model.loadContextRecords(kind: kind) } }
             )
-            if loading {
+            if available {
+                contextSearchBar(kind: kind)
+            }
+            if queryActive {
+                contextSearchResults(kind: kind, item: item)
+            } else if loading {
                 centeredProgress("Loading \(item.title.lowercased())…")
             } else if !available {
                 emptyState(item, text: "Choose COS Data in the menu-bar panel to connect this library.")
@@ -817,31 +914,7 @@ struct ActivityWindow: View {
                                 selectedContextID = record.id
                                 model.openContextRecord(record, kind: kind)
                             } label: {
-                                HStack(spacing: 13) {
-                                    sectionGlyph(item)
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(record.title)
-                                            .font(.system(size: 12.5, weight: .medium))
-                                            .lineLimit(2)
-                                            .multilineTextAlignment(.leading)
-                                        if !record.subtitle.isEmpty {
-                                            Text(record.subtitle)
-                                                .font(.system(size: 10.5))
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(2)
-                                        }
-                                        Text(record.id)
-                                            .font(.system(size: 9.5, design: .monospaced))
-                                            .foregroundStyle(.tertiary)
-                                            .lineLimit(1)
-                                    }
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 10, weight: .semibold))
-                                        .foregroundStyle(.tertiary)
-                                }
-                                .padding(.vertical, 13)
-                                .contentShape(Rectangle())
+                                contextRow(record, item: item)
                             }
                             .buttonStyle(.plain)
                             Divider().padding(.leading, 46)
@@ -852,6 +925,138 @@ struct ActivityWindow: View {
                 }
             }
         }
+    }
+
+    private func contextSearchBar(kind: String) -> some View {
+        let isThread = kind == "thread"
+        let query = isThread ? model.threadQuery : model.memoryQuery
+        let semanticAvailable = isThread ? model.threadSemanticAvailable : model.memorySemanticAvailable
+        let queryActive = isThread ? model.isThreadQueryActive : model.isMemoryQueryActive
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search topics, ideas…", text: isThread ? $model.threadQuery : $model.memoryQuery)
+                    .textFieldStyle(.plain)
+                if !query.isEmpty {
+                    Button {
+                        if isThread { model.threadQuery = "" } else { model.memoryQuery = "" }
+                        model.scheduleContextSearch(kind: kind)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Clear search")
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+            .frame(maxWidth: 320)
+            if queryActive, !semanticAvailable {
+                Text(isThread
+                     ? "Keyword only — threads have no meaning index"
+                     : "Keyword only — meaning search needs the COS memory index")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 8)
+        .overlay(alignment: .bottom) { Divider() }
+        .onChange(of: isThread ? model.threadQuery : model.memoryQuery) { _, _ in
+            model.scheduleContextSearch(kind: kind)
+        }
+    }
+
+    @ViewBuilder
+    private func contextSearchResults(kind: String, item: ActivitySection) -> some View {
+        let isThread = kind == "thread"
+        let searching = isThread ? model.threadSearching : model.memorySearching
+        let hits = isThread ? model.threadSearchHits : model.memorySearchHits
+        let error = isThread ? model.threadSearchError : model.memorySearchError
+        if searching && hits.isEmpty && error == nil {
+            centeredProgress("Looking up…")
+        } else if let error, hits.isEmpty {
+            emptyState(item, text: error)
+        } else if hits.isEmpty {
+            emptyState(item, text: "No \(item.title.lowercased()) match that lookup.")
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(hits) { hit in
+                        Button {
+                            selectedContextID = hit.record.id
+                            model.openContextRecord(hit.record, kind: kind)
+                        } label: {
+                            HStack(spacing: 13) {
+                                sectionGlyph(item)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(hit.record.title)
+                                        .font(.system(size: 12.5, weight: .medium))
+                                        .lineLimit(2)
+                                        .multilineTextAlignment(.leading)
+                                    if !hit.snippet.isEmpty {
+                                        Text(hit.snippet)
+                                            .font(.system(size: 10.5))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                    }
+                                    Text(hit.record.id)
+                                        .font(.system(size: 9.5, design: .monospaced))
+                                        .foregroundStyle(.tertiary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Text(hit.matchLabel)
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(Capsule().fill(item.tint.opacity(0.16)))
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.vertical, 13)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        Divider().padding(.leading, 46)
+                    }
+                }
+                .padding(.horizontal, 22)
+                .padding(.bottom, 22)
+            }
+        }
+    }
+
+    private func contextRow(_ record: ContextRecord, item: ActivitySection) -> some View {
+        HStack(spacing: 13) {
+            sectionGlyph(item)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(record.title)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                if !record.subtitle.isEmpty {
+                    Text(record.subtitle)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Text(record.id)
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 13)
+        .contentShape(Rectangle())
     }
 
     private func sectionHeader(
@@ -1258,6 +1463,7 @@ struct ActivityWindow: View {
         if model.status.threadsAvailable == true, model.threadRecords.isEmpty {
             await model.loadContextRecords(kind: "thread")
         }
+        if model.claudeSessions.isEmpty { await model.loadClaudeSessions() }
     }
 
     private func load(_ item: ActivitySection) async {
@@ -1272,6 +1478,8 @@ struct ActivityWindow: View {
             if model.status.memoryAvailable == true { await model.loadContextRecords(kind: "memory") }
         case .threads:
             if model.status.threadsAvailable == true { await model.loadContextRecords(kind: "thread") }
+        case .sessions:
+            await model.loadClaudeSessions()
         }
     }
 

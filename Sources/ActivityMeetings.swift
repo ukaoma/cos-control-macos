@@ -7,9 +7,13 @@ import SwiftUI
 struct MeetingLibraryBody: View {
     @ObservedObject var model: ControllerModel
     let onOpen: (LibraryMeeting) -> Void
+    @State private var confirmRecoverAllOrphans = false
 
     var body: some View {
         VStack(spacing: 0) {
+            if !model.recoverableOrphans.isEmpty || !model.strandedCaptures.isEmpty {
+                unsavedCaptureBanner
+            }
             if !model.isLibraryQueryActive {
                 MeetingMonthCalendar(
                     month: model.libraryMonth,
@@ -27,6 +31,55 @@ struct MeetingLibraryBody: View {
         .onChange(of: model.libraryDomainFilter) { _, _ in
             if model.isLibraryQueryActive { model.scheduleLibrarySearch() }
         }
+        .task { await model.loadOrphans(quiet: true) }
+        .confirmationDialog(
+            "Recover all unsaved captures?",
+            isPresented: $confirmRecoverAllOrphans,
+            titleVisibility: .visible
+        ) {
+            Button("Recover all") { model.recoverAllOrphans() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Turns each unsaved capture into a meeting, one at a time. Session files are not deleted.")
+        }
+    }
+
+    private var unsavedCaptureBanner: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Unsaved captures")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(COSPalette.amber)
+            Text("Audio that never became a meeting. This is not Speakers’ Meetings to review.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            ForEach(model.recoverableOrphans) { capture in
+                HStack {
+                    Text(capture.label)
+                        .font(.system(size: 11))
+                        .lineLimit(1)
+                    Spacer()
+                    Button("Recover") { model.recoverOrphan(capture.sessionId) }
+                        .controlSize(.small)
+                        .disabled(model.busy || model.orphanBusy || capture.recovering)
+                }
+            }
+            if model.recoverableOrphans.count > 1 {
+                Button("Recover all") { confirmRecoverAllOrphans = true }
+                    .controlSize(.small)
+                    .disabled(model.busy || model.orphanBusy)
+            }
+            ForEach(model.strandedCaptures) { capture in
+                Text(capture.label)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(COSPalette.amber.opacity(0.08))
+        .overlay(alignment: .bottom) { Divider() }
     }
 
     private var toolbar: some View {
