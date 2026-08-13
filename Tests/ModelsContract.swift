@@ -190,6 +190,54 @@ struct ModelsContract {
         precondition(hit?.matchLabel == "Keyword + meaning")
         precondition(hit?.meeting.title == "Toast in Grocery")
         precondition(hit?.score == 0.8)
+
+        let older = LibrarySearchHit(.object([
+            "title": .string("Quarterly Budget Overspend Review Meeting"),
+            "date": .string("2026-05-13"),
+            "time": .string("2:00 PM"),
+            "domain": .string("quilt"),
+            "month": .string("2026-05"),
+            "filename": .string("2026-05-13_Budget.md"),
+            "keywordScore": .number(0.95),
+            "semanticScore": .number(0.80),
+        ]))
+        let newer = LibrarySearchHit(.object([
+            "title": .string("Aug 13, 10:03 AM"),
+            "date": .string("2026-08-13"),
+            "time": .string("10:03 AM"),
+            "domain": .string("quilt"),
+            "month": .string("2026-08"),
+            "filename": .string("2026-08-13_Niala.md"),
+            "keywordScore": .number(0.40),
+            "semanticScore": .number(0.20),
+        ]))
+        precondition(older != nil && newer != nil, "recency fixtures parse")
+        if let older, let newer {
+            let newest = SearchRecency.sorted(
+                [older, newer],
+                recency: .newest,
+                date: { $0.meeting.recencyDate },
+                score: { $0.score }
+            )
+            precondition(newest.first?.meeting.title == "Aug 13, 10:03 AM",
+                         "Newest puts this morning's call above a higher-score May hit")
+            let match = SearchRecency.sorted(
+                [older, newer],
+                recency: .match,
+                date: { $0.meeting.recencyDate },
+                score: { $0.score }
+            )
+            precondition(match.first?.meeting.title == "Quarterly Budget Overspend Review Meeting",
+                         "Best match keeps score order")
+            let oldest = SearchRecency.sorted(
+                [older, newer],
+                recency: .oldest,
+                date: { $0.meeting.recencyDate },
+                score: { $0.score }
+            )
+            precondition(oldest.first?.meeting.title == "Quarterly Budget Overspend Review Meeting",
+                         "Oldest puts May first")
+        }
     }
 
     private static func checkContextSearchHit() {
@@ -242,6 +290,28 @@ struct ModelsContract {
             let instant = SessionSearchHit.keywordHits(query: "aeo", sessions: [listed])
             precondition(instant.contains(where: { $0.session.title == "AEO HS Setup" }),
                          "listed titles match before the helper returns")
+        }
+        let olderSession = SessionSearchHit(.object([
+            "id": .string("old-session"),
+            "name": .string("May POS"),
+            "updatedAt": .string("2026-05-13T15:00:00Z"),
+            "keywordScore": .number(0.9),
+        ]))
+        let newerSession = SessionSearchHit(.object([
+            "id": .string("new-session"),
+            "name": .string("POS complexity"),
+            "updatedAt": .string("2026-08-13T16:00:00Z"),
+            "keywordScore": .number(0.2),
+        ]))
+        if let olderSession, let newerSession {
+            let newest = SearchRecency.sorted(
+                [olderSession, newerSession],
+                recency: .newest,
+                date: { $0.session.updatedDate ?? $0.session.createdDate },
+                score: { $0.score }
+            )
+            precondition(newest.first?.session.title == "POS complexity",
+                         "Newest session lookup puts the latest write first")
         }
     }
 

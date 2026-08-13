@@ -576,6 +576,96 @@ enum SessionClock: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Lookup sort next to Domain. Newest is the default so this morning's call
+/// beats an older higher-score hit. Best match keeps keyword/meaning order.
+enum SearchRecency: String, CaseIterable, Identifiable, Sendable {
+    case newest
+    case oldest
+    case match
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .newest: return "Newest"
+        case .oldest: return "Oldest"
+        case .match: return "Best match"
+        }
+    }
+
+    static func sorted<T>(
+        _ items: [T],
+        recency: SearchRecency,
+        date: (T) -> Date?,
+        score: (T) -> Double
+    ) -> [T] {
+        items.sorted { lhs, rhs in
+            switch recency {
+            case .match:
+                let left = score(lhs), right = score(rhs)
+                if left != right { return left > right }
+                return (date(lhs) ?? .distantPast) > (date(rhs) ?? .distantPast)
+            case .newest:
+                let left = date(lhs) ?? .distantPast
+                let right = date(rhs) ?? .distantPast
+                if left != right { return left > right }
+                return score(lhs) > score(rhs)
+            case .oldest:
+                let left = date(lhs) ?? .distantFuture
+                let right = date(rhs) ?? .distantFuture
+                if left != right { return left < right }
+                return score(lhs) > score(rhs)
+            }
+        }
+    }
+
+    static func parseStamp(_ raw: String) -> Date? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = withFraction.date(from: trimmed) { return date }
+        let basic = ISO8601DateFormatter()
+        basic.formatOptions = [.withInternetDateTime]
+        if let date = basic.date(from: trimmed) { return date }
+        return meetingStamp(date: trimmed, time: "", filename: "")
+    }
+
+    static func meetingStamp(date: String, time: String, filename: String) -> Date? {
+        let daySource = date.count >= 10 ? date : filename
+        let day = String(daySource.prefix(10))
+        let parts = day.split(separator: "-")
+        guard parts.count >= 3,
+              let year = Int(parts[0]), let month = Int(parts[1]), let dayNum = Int(parts[2]) else {
+            return nil
+        }
+        var comps = DateComponents()
+        comps.year = year
+        comps.month = month
+        comps.day = dayNum
+        comps.hour = 0
+        comps.minute = 0
+        if let clock = parseClock(time) {
+            comps.hour = clock.hour
+            comps.minute = clock.minute
+        }
+        return Calendar.current.date(from: comps)
+    }
+
+    private static func parseClock(_ raw: String) -> (hour: Int, minute: Int)? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        for format in ["h:mm a", "h:mma", "HH:mm", "H:mm"] {
+            formatter.dateFormat = format
+            if let date = formatter.date(from: trimmed) {
+                let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+                return (parts.hour ?? 0, parts.minute ?? 0)
+            }
+        }
+        return nil
+    }
+}
+
 struct ClaudeSessionTurn: Identifiable, Sendable {
     let id: String
     let role: String
@@ -952,6 +1042,10 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
         decisionCount = o["decisionCount"]?.int ?? Int(o["decisionCount"]?.string ?? "") ?? 0
         actionCount = o["actionCount"]?.int ?? Int(o["actionCount"]?.string ?? "") ?? 0
         attendeeCount = o["attendeeCount"]?.int ?? Int(o["attendeeCount"]?.string ?? "") ?? 0
+    }
+
+    var recencyDate: Date? {
+        SearchRecency.meetingStamp(date: date, time: time, filename: filename)
     }
 }
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.41 (build 79)
+
+- **Lookup Recency next to Domain.** Meetings, Sessions, Memories, and Threads
+  search can sort Newest (default), Oldest, or Best match. Newest uses last
+  made/edited time so this morning's call beats an older higher-score hit.
+  Changing Recency re-sorts the hits already on screen.
+
 ## 0.5.40 (build 78)
 
 - **Sessions lookup reads recent transcript bodies.** Keyword search still

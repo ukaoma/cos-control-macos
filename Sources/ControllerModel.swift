@@ -855,6 +855,8 @@ final class ControllerModel: ObservableObject {
     @Published var libraryMonth = ControllerModel.currentMeetingMonth()
     @Published var libraryDay: String?
     @Published var libraryDomainFilter = "all"
+    /// Shared across Meetings / Sessions / Memories / Threads lookup.
+    @Published var searchRecency: SearchRecency = .newest
     @Published var libraryLoading = false
     @Published var libraryError: String?
     @Published var openLibraryRow: LibraryMeeting?
@@ -893,6 +895,42 @@ final class ControllerModel: ObservableObject {
 
     var isLibraryQueryActive: Bool {
         libraryQuery.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2
+    }
+
+    var visibleLibrarySearchHits: [LibrarySearchHit] {
+        SearchRecency.sorted(
+            librarySearchHits,
+            recency: searchRecency,
+            date: { $0.meeting.recencyDate },
+            score: { $0.score }
+        )
+    }
+
+    var visibleSessionSearchHits: [SessionSearchHit] {
+        SearchRecency.sorted(
+            sessionSearchHits,
+            recency: searchRecency,
+            date: { $0.session.updatedDate ?? $0.session.createdDate },
+            score: { $0.score }
+        )
+    }
+
+    var visibleMemorySearchHits: [ContextSearchHit] {
+        SearchRecency.sorted(
+            memorySearchHits,
+            recency: searchRecency,
+            date: { SearchRecency.parseStamp($0.record.createdAt) },
+            score: { $0.score }
+        )
+    }
+
+    var visibleThreadSearchHits: [ContextSearchHit] {
+        SearchRecency.sorted(
+            threadSearchHits,
+            recency: searchRecency,
+            date: { SearchRecency.parseStamp($0.record.createdAt) },
+            score: { $0.score }
+        )
     }
 
     func scheduleLibrarySearch() {

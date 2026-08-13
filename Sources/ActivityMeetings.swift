@@ -140,6 +140,15 @@ struct MeetingLibraryBody: View {
                     .frame(maxWidth: 180)
                 }
 
+                Picker("Recency", selection: $model.searchRecency) {
+                    ForEach(SearchRecency.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: 150)
+                .accessibilityLabel("Recency")
+
                 Spacer()
                 Text(listDetail)
                     .font(.system(size: 11))
@@ -213,7 +222,7 @@ struct MeetingLibraryBody: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(30)
         } else {
-            List(model.librarySearchHits) { hit in
+            List(model.visibleLibrarySearchHits) { hit in
                 Button { onOpen(hit.meeting) } label: {
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
@@ -282,7 +291,7 @@ struct MeetingLibraryBody: View {
     private var listDetail: String {
         if model.isLibraryQueryActive {
             if model.librarySearching && model.librarySearchHits.isEmpty { return "Looking up…" }
-            return "\(model.librarySearchHits.count) across stored calls"
+            return "\(model.visibleLibrarySearchHits.count) across stored calls"
         }
         let visible = model.visibleLibraryMeetings.count
         if let day = model.libraryDay { return "\(visible) on \(day)" }

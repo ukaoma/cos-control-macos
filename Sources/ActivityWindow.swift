@@ -625,27 +625,38 @@ struct ActivityWindow: View {
 
     private var sessionsSearchBar: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Search titles, transcripts…", text: $model.sessionQuery)
-                    .textFieldStyle(.plain)
-                if !model.sessionQuery.isEmpty {
-                    Button {
-                        model.sessionQuery = ""
-                        model.scheduleSessionSearch()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
+            HStack(spacing: 10) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Search titles, transcripts…", text: $model.sessionQuery)
+                        .textFieldStyle(.plain)
+                    if !model.sessionQuery.isEmpty {
+                        Button {
+                            model.sessionQuery = ""
+                            model.scheduleSessionSearch()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Clear search")
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("Clear search")
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+                .frame(maxWidth: 320)
+                Picker("Recency", selection: $model.searchRecency) {
+                    ForEach(SearchRecency.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: 150)
+                .accessibilityLabel("Recency")
+                Spacer()
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
-            .frame(maxWidth: 320)
             if model.isSessionQueryActive, !model.sessionSemanticAvailable {
                 Text(sessionSemanticHint)
                     .font(.system(size: 11))
@@ -680,7 +691,7 @@ struct ActivityWindow: View {
         } else {
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(model.sessionSearchHits) { hit in
+                    ForEach(model.visibleSessionSearchHits) { hit in
                         sessionRow(hit.session, snippet: hit.snippet, matchLabel: hit.matchLabel)
                     }
                 }
@@ -1180,27 +1191,38 @@ struct ActivityWindow: View {
         let semanticAvailable = isThread ? model.threadSemanticAvailable : model.memorySemanticAvailable
         let queryActive = isThread ? model.isThreadQueryActive : model.isMemoryQueryActive
         return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Search topics, ideas…", text: isThread ? $model.threadQuery : $model.memoryQuery)
-                    .textFieldStyle(.plain)
-                if !query.isEmpty {
-                    Button {
-                        if isThread { model.threadQuery = "" } else { model.memoryQuery = "" }
-                        model.scheduleContextSearch(kind: kind)
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
+            HStack(spacing: 10) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Search topics, ideas…", text: isThread ? $model.threadQuery : $model.memoryQuery)
+                        .textFieldStyle(.plain)
+                    if !query.isEmpty {
+                        Button {
+                            if isThread { model.threadQuery = "" } else { model.memoryQuery = "" }
+                            model.scheduleContextSearch(kind: kind)
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Clear search")
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("Clear search")
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+                .frame(maxWidth: 320)
+                Picker("Recency", selection: $model.searchRecency) {
+                    ForEach(SearchRecency.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: 150)
+                .accessibilityLabel("Recency")
+                Spacer()
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
-            .frame(maxWidth: 320)
             if queryActive, !semanticAvailable {
                 Text(isThread
                      ? "Keyword only — threads have no meaning index"
@@ -1221,7 +1243,7 @@ struct ActivityWindow: View {
     private func contextSearchResults(kind: String, item: ActivitySection) -> some View {
         let isThread = kind == "thread"
         let searching = isThread ? model.threadSearching : model.memorySearching
-        let hits = isThread ? model.threadSearchHits : model.memorySearchHits
+        let hits = isThread ? model.visibleThreadSearchHits : model.visibleMemorySearchHits
         let error = isThread ? model.threadSearchError : model.memorySearchError
         if searching && hits.isEmpty && error == nil {
             centeredProgress("Looking up…")

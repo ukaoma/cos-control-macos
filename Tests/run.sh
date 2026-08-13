@@ -274,6 +274,14 @@ fi
 /usr/bin/grep -q 'timeout: 12' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'peekSessionSearchBody' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'sessionSearchBodyFileLimit' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'enum SearchRecency' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'searchRecency' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'visibleLibrarySearchHits' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'visibleSessionSearchHits' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'visibleMemorySearchHits' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'visibleThreadSearchHits' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'Picker("Recency"' "$ROOT/Sources/ActivityMeetings.swift"
+/usr/bin/grep -q 'Picker("Recency"' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/python3 - "$ROOT" <<'PY'
 from pathlib import Path
 import sys
