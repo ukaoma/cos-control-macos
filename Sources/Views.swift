@@ -97,6 +97,8 @@ struct ControlPanel: View {
     @State private var selectedBackgroundJobs = true
     @State private var selectedMeetingPreview = false
     @State private var selectedVideoUploadV2 = false
+    @State private var confirmClearStrandedVideoUploads = false
+    @State private var confirmResetMessageCount = false
     @State private var selectedIdleMetalHq = false
     @State private var selectedAdaptiveAudioCleanup = false
 
@@ -193,6 +195,26 @@ struct ControlPanel: View {
         } message: {
             Text("Balanced uses fast Small.en previews, Turbo commits, and Large-v3 polish. Max uses Large-v3 for live preview and commit too; choose it only on a powerful Mac.")
         }
+        .confirmationDialog(
+            "Clear stranded video uploads?",
+            isPresented: $confirmClearStrandedVideoUploads,
+            titleVisibility: .visible
+        ) {
+            Button("Clear stranded", role: .destructive) { model.clearStrandedVideoUploads() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Cancels drafts that have not received bytes for 60 seconds. Uploads still in progress and videos being compressed are left alone. Repair does not do this — stranded drafts block Repair.")
+        }
+        .confirmationDialog(
+            "Reset live message count?",
+            isPresented: $confirmResetMessageCount,
+            titleVisibility: .visible
+        ) {
+            Button("Reset count", role: .destructive) { model.resetMessageEra() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Archives live messages and starts numbering at #1. History stays in ARCHIVE and Message History. This does not delete anything.")
+        }
     }
 
     private var header: some View {
@@ -207,6 +229,10 @@ struct ControlPanel: View {
             }
             Spacer()
             if model.busy { ProgressView().controlSize(.small) }
+            Button { confirmResetMessageCount = true } label: { Image(systemName: "archivebox") }
+                .buttonStyle(.borderless)
+                .disabled(model.busy)
+                .help("Archive live messages and start numbering at #1")
             Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(.borderless).help("Refresh status")
         }
@@ -241,9 +267,20 @@ struct ControlPanel: View {
                 statusRow("Meeting preview", value: enabled ? "Turbo · On" : "Off", good: enabled)
             }
             if model.status.videoUploadV2Supported, let enabled = model.status.videoUploadV2Enabled {
-                let active = model.status.videoUploadV2Receiving + model.status.videoUploadV2Finalizing
+                let receiving = model.status.videoUploadV2Receiving
+                let finalizing = model.status.videoUploadV2Finalizing
+                let active = receiving + finalizing
                 let detail = active > 0 ? "\(active) active" : (enabled ? "Resumable · On" : "Off")
                 statusRow("Video uploads", value: detail, good: enabled && active == 0)
+                if receiving > 0 {
+                    HStack {
+                        Text("Sideload or a killed upload can sit here for 4 hours and block Repair.")
+                            .font(.caption2).foregroundStyle(COSPalette.amber)
+                        Spacer()
+                        Button("Clear stranded") { confirmClearStrandedVideoUploads = true }
+                            .disabled(model.busy)
+                    }
+                }
                 if model.status.videoUploadV2Unacknowledged > 0 {
                     Text("\(model.status.videoUploadV2Unacknowledged) completed video receipt(s) await companion acknowledgment.")
                         .font(.caption2).foregroundStyle(COSPalette.amber)
@@ -632,8 +669,9 @@ struct ControlPanel: View {
         }
     }
 
-    /// One doorway instead of four nested browsers in a 390pt transient panel.
+    /// One doorway instead of five nested browsers in a 390pt transient panel.
     /// The destination is a durable window with peer tabs and a real back stack.
+    /// Chips come from ActivitySection.allCases so a new view cannot ship invisible.
     private var activityLauncher: some View {
         Button {
             openActivity()
@@ -651,11 +689,17 @@ struct ControlPanel: View {
                     Label("Open", systemImage: "arrow.up.forward.app")
                         .font(.system(size: 10.5, weight: .medium))
                 }
-                HStack(spacing: 7) {
-                    activityChip("Messages", icon: "message", tint: Color(red: 0.24, green: 0.48, blue: 0.78))
-                    activityChip("Speakers", icon: "waveform", tint: Color(red: 0.78, green: 0.34, blue: 0.39))
-                    activityChip("Memories", icon: "sparkles", tint: Color(red: 0.48, green: 0.36, blue: 0.72))
-                    activityChip("Threads", icon: "point.3.connected.trianglepath.dotted", tint: Color(red: 0.22, green: 0.57, blue: 0.39))
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(spacing: 7) {
+                        ForEach(Array(ActivitySection.allCases.prefix(3))) { item in
+                            activityChip(item.title, icon: item.icon, tint: item.tint)
+                        }
+                    }
+                    HStack(spacing: 7) {
+                        ForEach(Array(ActivitySection.allCases.dropFirst(3))) { item in
+                            activityChip(item.title, icon: item.icon, tint: item.tint)
+                        }
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -665,7 +709,7 @@ struct ControlPanel: View {
             .contentShape(RoundedRectangle(cornerRadius: 13))
         }
         .buttonStyle(.plain)
-        .help("Open Messages, Speakers, Memories, and Threads in a separate window")
+        .help("Open Messages, Speakers, Meetings, Memories, and Threads in a separate window")
     }
 
     private func activityChip(_ title: String, icon: String, tint: Color) -> some View {
@@ -988,6 +1032,10 @@ struct ControlPanel: View {
                         .disabled(model.busy
                             || (!model.status.installed && model.status.runtimeState != "managedInPlace")
                             || model.status.videoUploadV2Receiving + model.status.videoUploadV2Finalizing > 0)
+                    if model.status.videoUploadV2Receiving > 0 {
+                        Button("Clear stranded") { confirmClearStrandedVideoUploads = true }
+                            .disabled(model.busy)
+                    }
                 }
                 Text("Private canary. Sends every MP4/MOV in restart-safe chunks and resumes from server-confirmed bytes. Phone frame extraction remains off until device benchmarks prove it is faster. Disable for immediate transport rollback.")
                     .font(.caption2)

@@ -411,6 +411,8 @@ final class COSControlHelper {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing reliable video upload setting") }
             try setVideoUploadV2(value)
         }
+        case "clear-stranded-video-uploads": try clearStrandedVideoUploads()
+        case "reset-message-era": try resetMessageEra()
         case "token": try copyPairingToken()
         case "expire-clipboard": try expireClipboard(args: args)
         case "report": emit(ok: true, message: "Redacted report ready", details: ["report": redactedReport()])
@@ -418,6 +420,9 @@ final class COSControlHelper {
         case "context-memories": try emitContextMemories(args: args)
         case "context-threads": try emitContextThreads(args: args)
         case "meetings": try emitMeetings(args: args)
+        case "meetings-library": try emitMeetingsLibrary(args: args)
+        case "meetings-library-search": try emitMeetingsLibrarySearch(args: args)
+        case "meeting-library-detail": try emitMeetingLibraryDetail(args: args)
         case "meeting-speakers": try emitMeetingSpeakers(args: args)
         case "meeting-content": try emitMeetingContent(args: args)
         case "voice-profiles": try emitVoiceProfiles()
@@ -1675,6 +1680,7 @@ final class COSControlHelper {
         maintenanceOperation: String? = nil,
         maintenanceNonce: String? = nil,
         body: String? = nil,
+        headers: [String: String] = [:],
         timeout: Int = 5,
         deadlineUptime: TimeInterval? = nil
     ) -> HTTPResponse? {
@@ -1689,6 +1695,9 @@ final class COSControlHelper {
         if let maintenanceLease { request.setValue(maintenanceLease, forHTTPHeaderField: "X-COS-Maintenance-Lease") }
         if let maintenanceOperation { request.setValue(maintenanceOperation, forHTTPHeaderField: "X-COS-Maintenance-Operation") }
         if let maintenanceNonce { request.setValue(maintenanceNonce, forHTTPHeaderField: "X-COS-Maintenance-Nonce") }
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = Data(body.utf8)
@@ -2435,6 +2444,29 @@ final class COSControlHelper {
     /// exact branch that made the 2026-08-12 lockout undiagnosable.
     static func drainLabel(_ blockers: [String]) -> String {
         blockers.isEmpty ? "restart proof (no cause reported)" : blockers.joined(separator: ", ")
+    }
+
+    /// Receiving, no writer, idle ≥ 60s. Finalizing and published are never stranded.
+    static func isStrandedReceivingVideoUpload(
+        state: String,
+        updatedAtMs: Int,
+        nowMs: Int,
+        activeWriters: Int = 0,
+        idleMs: Int = 60_000
+    ) -> Bool {
+        state == "receiving" && activeWriters == 0 && nowMs - updatedAtMs >= idleMs
+    }
+
+    static func jsonInt(_ value: Any?) -> Int? {
+        if let number = value as? Int { return number }
+        if let number = value as? Int64 { return Int(number) }
+        if let number = value as? Double { return Int(number) }
+        if let number = value as? NSNumber { return number.intValue }
+        return nil
+    }
+
+    static func isValidVideoUploadId(_ value: String) -> Bool {
+        value.range(of: "^vu_[0-9a-f]{24}$", options: .regularExpression) != nil
     }
 
     /// Every reason a restart is currently refused, named.
@@ -3259,7 +3291,183 @@ final class COSControlHelper {
         }
     }
 
+    private func videoUploadRegistryRoot() -> URL {
+        if let media = loadedEnvironmentValue("COS_MEDIA_ROOT"), !media.isEmpty {
+            return URL(fileURLWithPath: media).appendingPathComponent("video-upload-v1")
+        }
+        if let data = loadedEnvironmentValue("COS_DATA_DIR"), !data.isEmpty {
+            return URL(fileURLWithPath: data).appendingPathComponent("media/video-upload-v1")
+        }
+        return home.appendingPathComponent(".cos-glasses/data/media/video-upload-v1")
+    }
+
+    private func clearStrandedMessage(cancelledCount: Int, skippedCount: Int) -> String {
+        if cancelledCount == 0 {
+            return skippedCount > 0
+                ? "No stranded video uploads. In-progress and compressing uploads were left alone."
+                : "No stranded video uploads."
+        }
+        return cancelledCount == 1
+            ? "Cleared 1 stranded video upload."
+            : "Cleared \(cancelledCount) stranded video uploads."
+    }
+
+    private func stringArray(_ value: Any?) -> [String] {
+        (value as? [Any])?.compactMap { $0 as? String } ?? []
+    }
+
+    private func clearStrandedVideoUploads() throws {
+        let token = try readToken()
+        guard let instance = request("/api/models", token: token, timeout: 8)?.body?["serverInstanceId"] as? String,
+              !instance.isEmpty else {
+            throw HelperError.message("Server identity is unavailable.")
+        }
+        if let posted = request(
+            "/api/media/video-upload/clear-stranded",
+            method: "POST",
+            token: token,
+            headers: ["X-COS-Server-Instance": instance],
+            timeout: 20
+        ) {
+            if posted.status == 200 {
+                let cancelled = stringArray(posted.body?["cancelled"])
+                let skipped = posted.body?["skipped"] as? [Any] ?? []
+                emit(
+                    ok: true,
+                    message: clearStrandedMessage(cancelledCount: cancelled.count, skippedCount: skipped.count),
+                    details: ["cancelled": cancelled, "skipped": skipped, "via": "api"]
+                )
+                return
+            }
+            if posted.status != 404 && posted.status != 405 {
+                let error = posted.body?["error"] as? String ?? "Clear stranded failed"
+                throw HelperError.message(error)
+            }
+        }
+        try clearStrandedVideoUploadsFromDisk(token: token, serverInstanceId: instance)
+    }
+
+    private func glassesDataDir() -> URL {
+        if let data = loadedEnvironmentValue("COS_DATA_DIR"), !data.isEmpty {
+            return URL(fileURLWithPath: data)
+        }
+        return home.appendingPathComponent(".cos-glasses/data")
+    }
+
+    private func resetMessageEraMessage(archived: Int, era: String) -> String {
+        let count = archived == 1 ? "1 live session archived." : "\(archived) live sessions archived."
+        return "\(count) Next message is #1. History stays in ARCHIVE / Message History."
+    }
+
+    private func resetMessageEra() throws {
+        let token = try readToken()
+        if let posted = request(
+            "/api/message-era/reset",
+            method: "POST",
+            token: token,
+            body: try jsonBody(["confirm": true]),
+            timeout: 30
+        ) {
+            if posted.status == 200 {
+                let era = posted.body?["era"] as? String ?? ""
+                let archived = Self.jsonInt(posted.body?["archived"]) ?? 0
+                emit(
+                    ok: true,
+                    message: resetMessageEraMessage(archived: archived, era: era),
+                    details: [
+                        "era": era,
+                        "previousEra": posted.body?["previousEra"] ?? NSNull(),
+                        "archived": archived,
+                        "via": "api",
+                    ]
+                )
+                return
+            }
+            if posted.status == 409 || posted.status == 400 || posted.status == 503 {
+                let error = posted.body?["error"] as? String ?? "Reset failed"
+                throw HelperError.message(error)
+            }
+            if posted.status != 404 && posted.status != 405 {
+                let error = posted.body?["error"] as? String ?? "Reset failed"
+                throw HelperError.message(error)
+            }
+        }
+        try resetMessageEraFromDisk(token: token)
+    }
+
+    private func resetMessageEraFromDisk(token: String) throws {
+        _ = request("/api/archive/now", method: "POST", token: token, timeout: 20)
+        let now = Date()
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMddHHmmss"
+        let era = "era-\(formatter.string(from: now))"
+        let startedAt = Int(now.timeIntervalSince1970 * 1000)
+        let payload: [String: Any] = ["v": 1, "era": era, "startedAt": startedAt]
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+        let dir = glassesDataDir()
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try atomicWriteData(data, to: dir.appendingPathComponent("message-era.json"), permissions: 0o600)
+        emit(
+            ok: true,
+            message: "Archived live messages and started numbering at #1. Reopen the phone companion if it still shows the old count.",
+            details: ["era": era, "via": "disk"]
+        )
+    }
+
+    private func clearStrandedVideoUploadsFromDisk(token: String, serverInstanceId: String) throws {
+        let nowMs = Int(Date().timeIntervalSince1970 * 1000)
+        var cancelled: [String] = []
+        var skipped: [[String: String]] = []
+        let root = videoUploadRegistryRoot()
+        let entries = (try? fm.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        for entry in entries {
+            let manifestURL = entry.appendingPathComponent("manifest.json")
+            guard let data = try? Data(contentsOf: manifestURL),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            let state = object["state"] as? String ?? ""
+            let named = object["uploadId"] as? String
+            let uploadId = (named.flatMap { Self.isValidVideoUploadId($0) ? $0 : nil })
+                ?? (Self.isValidVideoUploadId(entry.lastPathComponent) ? entry.lastPathComponent : nil)
+            guard let uploadId else { continue }
+            if state == "finalizing" {
+                skipped.append(["uploadId": uploadId, "reason": "finalizing"])
+                continue
+            }
+            guard state == "receiving" else { continue }
+            let updated = Self.jsonInt(object["updatedAtMs"]) ?? 0
+            if !Self.isStrandedReceivingVideoUpload(state: state, updatedAtMs: updated, nowMs: nowMs) {
+                skipped.append(["uploadId": uploadId, "reason": "recently_updated"])
+                continue
+            }
+            guard let response = request(
+                "/api/media/video-upload/\(uploadId)",
+                method: "DELETE",
+                token: token,
+                headers: ["X-COS-Server-Instance": serverInstanceId],
+                timeout: 15
+            ), response.status == 200 else {
+                skipped.append(["uploadId": uploadId, "reason": "cancel_failed"])
+                continue
+            }
+            cancelled.append(uploadId)
+        }
+        emit(
+            ok: true,
+            message: clearStrandedMessage(cancelledCount: cancelled.count, skippedCount: skipped.count),
+            details: ["cancelled": cancelled, "skipped": skipped, "via": "disk"]
+        )
+    }
+
     private func repair() throws {
+        // Repair restores the LaunchAgent / recovers an interrupted update.
+        // It does not cancel stranded V2 video drafts. Those hold blocksRestart
+        // for up to 4 hours; Clear stranded is the dedicated action.
         progress("Inspecting managed runtime…")
         if let transaction = loadTransaction() {
             progress("Recovering an interrupted update…")
@@ -5349,31 +5557,55 @@ final class COSControlHelper {
     ///
     /// Returns nil for a row with no sessionId: the speaker review is keyed on
     /// the session, so such a row would offer an action that does nothing.
-    static func meetingRowProjection(_ row: [String: Any]) -> [String: Any]? {
-        guard let sessionId = row["sessionId"] as? String, !sessionId.isEmpty else { return nil }
-        return [
-            "sessionId": sessionId,
+    static func meetingRowFields(_ row: [String: Any]) -> [String: Any] {
+        [
+            "sessionId": row["sessionId"] as? String ?? "",
             "title": row["title"] as? String ?? "Untitled meeting",
             "date": row["date"] as? String ?? "",
+            "time": row["time"] as? String ?? "",
             "domain": row["domain"] as? String ?? "",
+            "domainAbbr": row["domainAbbr"] as? String ?? "",
             "duration": row["duration"] as? String ?? "",
-            // Join keys for the meeting-detail route, and the counts the server
-            // has always sent and this projection used to throw away.
+            "durationMinutes": Self.meetingCount(row["durationMinutes"]),
             "month": row["month"] as? String ?? "",
             "filename": row["filename"] as? String ?? "",
             "source": row["source"] as? String ?? "",
             "librarySource": row["librarySource"] as? String ?? "standalone_recordings",
             "recordId": row["recordId"] as? String ?? "",
             "mutable": row["mutable"] as? Bool ?? true,
-            // NUMBERS on the wire, not strings. An `as? String` cast here
-            // returned "" for every count and the rows rendered blank — caught
-            // only by running it against the live server, because the self-test
-            // fixture used string literals and could not reproduce the real type.
             "topicCount": Self.meetingCount(row["topicCount"]),
             "decisionCount": Self.meetingCount(row["decisionCount"]),
             "actionCount": Self.meetingCount(row["actionCount"]),
             "attendeeCount": Self.meetingCount(row["attendeeCount"]),
         ]
+    }
+
+    static func meetingRowProjection(_ row: [String: Any]) -> [String: Any]? {
+        guard let sessionId = row["sessionId"] as? String, !sessionId.isEmpty else { return nil }
+        var fields = meetingRowFields(row)
+        fields["sessionId"] = sessionId
+        return fields
+    }
+
+    /// Library rows keep Granola/Fireflies meetings that have no sessionId.
+    /// Identity is recordId, falling back to domain:month:filename.
+    static func libraryMeetingProjection(_ row: [String: Any]) -> [String: Any]? {
+        let filename = row["filename"] as? String ?? ""
+        let month = row["month"] as? String ?? ""
+        guard !filename.isEmpty, !month.isEmpty else { return nil }
+        var fields = meetingRowFields(row)
+        let recordId = fields["recordId"] as? String ?? ""
+        if recordId.isEmpty {
+            let domain = fields["domain"] as? String ?? ""
+            fields["recordId"] = "\(domain):\(month):\(filename)"
+        }
+        return fields
+    }
+
+    private func queryEscape(_ value: String) -> String {
+        value.addingPercentEncoding(
+            withAllowedCharacters: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.~"))
+        ) ?? value
     }
 
     private func emitMeetings(args: [String]) throws {
@@ -5392,6 +5624,79 @@ final class COSControlHelper {
             "count": rows.count,
             "skipped": raw.count - rows.count,
         ])
+    }
+
+    private func emitMeetingsLibrary(args: [String]) throws {
+        let month = option("--month", in: args) ?? ""
+        let day = option("--day", in: args) ?? ""
+        let domain = option("--domain", in: args) ?? "all"
+        let scoped = !month.isEmpty || !day.isEmpty
+        let limit = min(max(Int(option("--limit", in: args) ?? (scoped ? "200" : "50")) ?? 50, 1), scoped ? 200 : 50)
+        var path = "/api/meetings?limit=\(limit)&domain=\(queryEscape(domain))"
+        if !month.isEmpty { path += "&month=\(queryEscape(month))" }
+        if !day.isEmpty { path += "&day=\(queryEscape(day))" }
+        let body = try speakerReviewBody(path, timeout: 30)
+        let raw = (body["meetings"] as? [[String: Any]]) ?? []
+        let rows: [[String: Any]] = raw.compactMap(Self.libraryMeetingProjection)
+        emit(ok: true, message: rows.isEmpty ? "No meetings in this range" : "Meeting library ready", details: [
+            "state": rows.isEmpty ? "empty" : "ready",
+            "meetings": rows,
+            "months": body["months"] as? [String] ?? [],
+            "days": body["days"] as? [[String: Any]] ?? [],
+            "count": rows.count,
+        ])
+    }
+
+    static func meetingScore(_ value: Any?) -> Double {
+        if let number = value as? Double { return number }
+        if let number = value as? Int { return Double(number) }
+        if let string = value as? String, let parsed = Double(string) { return parsed }
+        return 0
+    }
+
+    static func librarySearchHitProjection(_ row: [String: Any]) -> [String: Any]? {
+        guard var fields = libraryMeetingProjection(row) else { return nil }
+        let keyword = meetingScore(row["keywordScore"])
+        let semantic = meetingScore(row["semanticScore"])
+        fields["snippet"] = row["snippet"] as? String ?? ""
+        fields["match"] = row["match"] as? String ?? "keyword"
+        fields["keywordScore"] = keyword
+        fields["semanticScore"] = semantic
+        fields["score"] = max(keyword, semantic)
+        return fields
+    }
+
+    private func emitMeetingsLibrarySearch(args: [String]) throws {
+        guard let query = option("--query", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              query.count >= 2 else {
+            throw HelperError.message("--query must be at least 2 characters")
+        }
+        let domain = option("--domain", in: args) ?? "all"
+        let limit = min(max(Int(option("--limit", in: args) ?? "20") ?? 20, 1), 50)
+        let path = "/api/meetings/search?q=\(queryEscape(query))&limit=\(limit)&domain=\(queryEscape(domain))"
+        let body = try speakerReviewBody(path, timeout: 25)
+        let raw = (body["hits"] as? [[String: Any]]) ?? []
+        let rows: [[String: Any]] = raw.compactMap(Self.librarySearchHitProjection)
+        emit(ok: true, message: rows.isEmpty ? "No matching meetings" : "Meeting lookup ready", details: [
+            "state": rows.isEmpty ? "empty" : "ready",
+            "hits": rows,
+            "count": rows.count,
+            "keywordCount": body["keywordCount"] as? Int ?? rows.count,
+            "semanticCount": body["semanticCount"] as? Int ?? 0,
+            "semanticAvailable": body["semanticAvailable"] as? Bool ?? false,
+            "semanticReason": body["semanticReason"] as? String ?? "",
+        ])
+    }
+
+    private func emitMeetingLibraryDetail(args: [String]) throws {
+        guard let domain = option("--domain", in: args), !domain.isEmpty,
+              let month = option("--month", in: args), !month.isEmpty,
+              let filename = option("--filename", in: args), !filename.isEmpty else {
+            throw HelperError.message("--domain, --month, and --filename are required")
+        }
+        let path = "/api/meetings/detail?domain=\(queryEscape(domain))&month=\(queryEscape(month))&filename=\(queryEscape(filename))"
+        let body = try speakerReviewBody(path, timeout: 30)
+        emit(ok: true, message: "Meeting ready", details: body)
     }
 
     private func emitMeetingSpeakers(args: [String]) throws {
@@ -6547,6 +6852,26 @@ final class COSControlHelper {
         try expect(projected?["source"] as? String == "G2 Glasses", "projection carries source")
         try expect(Self.meetingRowProjection(["title": "no session"]) == nil,
                    "projection drops a row with no sessionId")
+        let libraryKept = Self.libraryMeetingProjection([
+            "title": "Granola sync", "date": "2026-08-12", "domain": "quilt",
+            "month": "2026-08", "filename": "2026-08-12_Granola_sync.md",
+            "duration": "16 minutes", "source": "Granola",
+        ])
+        try expect(libraryKept?["recordId"] as? String == "quilt:2026-08:2026-08-12_Granola_sync.md",
+                   "library projection keeps a row with no sessionId")
+        try expect(libraryKept?["sessionId"] as? String == "", "library sessionId stays empty")
+        try expect(Self.libraryMeetingProjection(["title": "no file", "month": "2026-08"]) == nil,
+                   "library projection drops a row with no filename")
+        let searchHit = Self.librarySearchHitProjection([
+            "title": "Toast in Grocery", "date": "2026-08-12", "domain": "quilt",
+            "month": "2026-08", "filename": "2026-08-12_Toast.md",
+            "snippet": "Counter Toast in grocery.", "match": "both",
+            "keywordScore": 0.8, "semanticScore": 0.61,
+        ])
+        try expect(searchHit?["snippet"] as? String == "Counter Toast in grocery.",
+                   "search projection keeps the snippet")
+        try expect(searchHit?["match"] as? String == "both", "search projection keeps match kind")
+        try expect(searchHit?["score"] as? Double == 0.8, "search score is the stronger signal")
 
         // --- restart blockers must NAME the cause ---------------------------
         // The 2026-08-12 lockout in one fixture: activeByKind EMPTY, everything
@@ -6628,6 +6953,28 @@ final class COSControlHelper {
         try expect(Self.drainLabel(["video upload (receiving=1)"]) == "video upload (receiving=1)",
                    "a single blocker is the label")
         try expect(Self.drainLabel(["a", "b"]) == "a, b", "blockers are joined")
+
+        try expect(Self.isStrandedReceivingVideoUpload(
+            state: "receiving", updatedAtMs: 0, nowMs: 60_000) == true,
+                   "idle receiving is stranded")
+        try expect(Self.isStrandedReceivingVideoUpload(
+            state: "receiving", updatedAtMs: 1, nowMs: 60_000) == false,
+                   "a draft updated inside 60s is not stranded")
+        try expect(Self.isStrandedReceivingVideoUpload(
+            state: "receiving", updatedAtMs: 0, nowMs: 120_000, activeWriters: 1) == false,
+                   "an active writer is not stranded")
+        try expect(Self.isStrandedReceivingVideoUpload(
+            state: "finalizing", updatedAtMs: 0, nowMs: 120_000) == false,
+                   "finalizing is never stranded")
+        try expect(Self.isStrandedReceivingVideoUpload(
+            state: "published", updatedAtMs: 0, nowMs: 120_000) == false,
+                   "published receipts are never stranded")
+        try expect(Self.jsonInt(NSNumber(value: 1_700_000_000_000)) == 1_700_000_000_000,
+                   "manifest updatedAtMs survives JSON number bridging")
+        try expect(Self.isValidVideoUploadId("vu_83467cd724e7566c4c2d4335") == true,
+                   "a real upload id is accepted")
+        try expect(Self.isValidVideoUploadId("clear-stranded") == false,
+                   "the clear-stranded path is not an upload id")
 
         emit(ok: true, message: "\(passed) deterministic helper tests passed", details: ["tests": passed])
     }

@@ -31,6 +31,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/Views.swift" \
   "$ROOT/Sources/ActivityWindow.swift" \
+  "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   -o "$APP/Contents/MacOS/COS Control"

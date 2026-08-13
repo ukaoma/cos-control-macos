@@ -56,6 +56,17 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
 /usr/bin/grep -q 'requireIdleMetalHq' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'Idle Metal HQ' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'case "set-adaptive-audio-cleanup"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "set-video-upload-v2"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "clear-stranded-video-uploads"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "reset-message-era"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'isStrandedReceivingVideoUpload' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'Clear stranded' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'clearStrandedVideoUploads' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'resetMessageEra' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'Archive live messages and start numbering at #1' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Reset live message count' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Repair does not do this' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'It does not cancel stranded V2 video drafts' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'requireAdaptiveAudioCleanup' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'Adaptive audio cleanup' "$ROOT/Sources/Views.swift"
@@ -162,8 +173,25 @@ PY
 /usr/bin/grep -q 'struct VoiceDirectoryPerson' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'private var voiceDirectoryList' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'Meetings to review' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'case "meetings-library"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "meetings-library-search"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "meeting-library-detail"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'libraryMeetingProjection' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'struct LibrarySearchHit' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'Search topics, ideas' "$ROOT/Sources/ActivityMeetings.swift"
+/usr/bin/grep -q 'Five views into the work' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'case .meetings: meetingsList' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'struct MeetingLibraryDetailPane' "$ROOT/Sources/ActivityMeetings.swift"
+/usr/bin/grep -q 'struct MeetingMonthCalendar' "$ROOT/Sources/ActivityMeetings.swift"
+/usr/bin/grep -q 'struct LibraryMeeting' "$ROOT/Sources/Models.swift"
+if /usr/bin/grep -q 'Four views into the work' "$ROOT/Sources/ActivityWindow.swift"; then
+  echo "COS Control: Activity home still says Four views" >&2
+  exit 1
+fi
 /usr/bin/grep -q 'struct SpeakerReviewPane' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'activityLauncher' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'ActivitySection.allCases' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Open Messages, Speakers, Meetings' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'ActivityWindowPresenter' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'activityWindow.show(model: model)' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'window.isReleasedWhenClosed = false' "$ROOT/Sources/ActivityWindow.swift"
@@ -435,6 +463,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/Views.swift" \
   "$ROOT/Sources/ActivityWindow.swift" \
+  "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   -o "$TMP/COS Control"
@@ -491,7 +520,20 @@ need(opener is not None, "openContextRecord not found")
 need(re.search(r"contextDetail\s*=", opener.group(0)) is not None,
      "openContextRecord never assigns contextDetail, so the route can never activate")
 
-# 4. The narrow menu panel has one doorway. All four peer sections live in the
+need('case .meetings: meetingsList' in activity, "Meetings is not mounted")
+need('selectedLibraryRecordID != nil' in activity, "meeting library detail has no window-local selection gate")
+need(re.search(r"if model\.libraryRouteActive\s*\{\s*MeetingLibraryDetailPane", activity) is not None,
+     "MeetingLibraryDetailPane is not gated on model.libraryRouteActive")
+library_route = re.search(r"var libraryRouteActive[^}]*\}", model, re.S)
+need(library_route is not None, "libraryRouteActive not found")
+need(re.search(r"\bopenLibraryRow\b", library_route.group(0)) is not None,
+     "libraryRouteActive does not read openLibraryRow itself")
+library_opener = re.search(r"func openLibraryMeeting\(.*?\n    \}", model, re.S)
+need(library_opener is not None, "openLibraryMeeting not found")
+need(re.search(r"openLibraryRow\s*=", library_opener.group(0)) is not None,
+     "openLibraryMeeting never assigns openLibraryRow, so the route can never activate")
+
+# 4. The narrow menu panel has one doorway. Peer sections live in the
 #    persistent window, whose shell owns Home, Back, and the breadcrumb.
 need('openActivity()' in views, "the menu panel cannot open Activity")
 need('ActivityWindowPresenter' in app and 'activityWindow.show(model: model)' in app,

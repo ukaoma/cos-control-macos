@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.5.26 (build 64)
+
+- **Meetings on the home Activity card.** The panel still listed four chips after
+  Meetings shipped as a fifth Activity view. Chips now come from the same
+  section list as the Activity window, so Meetings is visible without opening.
+
+## 0.5.25 (build 63)
+
+- **Meeting lookup.** Search field on Meetings: keyword over title/summary plus
+  meaning search against the existing COS meeting index (one query embedding, no
+  LLM). Results span every stored month, not just the open calendar day. Badge
+  shows Keyword / Meaning / both. Needs the 6.27.6 `/api/meetings/search`
+  hotfix; without it the field still runs, but the helper will error.
+
+## 0.5.24 (build 62)
+
+- **Meetings in Activity.** Fifth peer view next to Speakers. Month pager and
+  day calendar over the saved-call library, with domain, duration, full
+  transcript, summary, and copy (summary / transcript / as context). Speakers
+  still owns identity correction — "Meetings to review" is unchanged. Needs the
+  6.27.6 meeting-list `month`/`day` hotfix; older servers still list the latest
+  50 rows.
+
+## 0.5.23 (build 61)
+
+- **Reset live message count.** Toolbar archive-box next to Refresh. Confirms,
+  then archives live glasses messages and starts numbering at #1. History stays
+  in ARCHIVE / Message History. Talks to `POST /api/message-era/reset` on a
+  hotfixed 6.27.6; if that route is missing it snapshots via `/api/archive/now`
+  and writes `message-era.json` itself. Reopen the phone companion if Control
+  did the reset while the app was already open.
+
+## 0.5.22 (build 60)
+
+- **Clear stranded video uploads.** Sideload or a killed composer can leave a
+  `receiving` draft for 4 hours. That draft is what Control shows as
+  "Video uploads · N active", and it holds `blocksRestart` so Repair and Update
+  stall on it. Repair does not cancel these. Clear stranded does: receiving
+  drafts with no bytes for 60 seconds. In-progress uploads and compressing
+  videos are left alone. Talks to server 6.27.7 when present; on 6.27.6 it
+  DELETEs the same drafts from disk.
+
 ## 0.5.21 (build 59)
 
 - **A blocked update now tells you what is blocking it.** The drain only ever

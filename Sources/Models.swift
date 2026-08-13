@@ -580,6 +580,179 @@ struct ReviewableMeeting: Identifiable, Sendable, Hashable {
     }
 }
 
+/// A saved meeting in the Activity library. sessionId is optional — Granola and
+/// Fireflies rows still open transcript and summary.
+struct LibraryMeeting: Identifiable, Sendable, Hashable {
+    let recordId: String
+    let sessionId: String
+    let title: String
+    let date: String
+    let time: String
+    let domain: String
+    let domainAbbr: String
+    let duration: String
+    let durationMinutes: Int
+    let month: String
+    let filename: String
+    let source: String
+    let librarySource: String
+    let topicCount: Int
+    let decisionCount: Int
+    let actionCount: Int
+    let attendeeCount: Int
+
+    var id: String { recordId }
+
+    var domainLabel: String {
+        if !domainAbbr.isEmpty { return domainAbbr }
+        let spaced = domain.replacingOccurrences(of: "_", with: " ")
+        return spaced.localizedCapitalized
+    }
+
+    var subtitle: String {
+        var parts: [String] = []
+        if !date.isEmpty { parts.append(date) }
+        if !time.isEmpty { parts.append(time) }
+        if !domainLabel.isEmpty { parts.append(domainLabel) }
+        if !duration.isEmpty { parts.append(duration) }
+        else if durationMinutes > 0 { parts.append("\(durationMinutes) min") }
+        if !source.isEmpty { parts.append(source) }
+        return parts.joined(separator: " · ")
+    }
+
+    var canReviewVoices: Bool { !sessionId.isEmpty }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object else { return nil }
+        let filename = o["filename"]?.string ?? ""
+        let month = o["month"]?.string ?? ""
+        guard !filename.isEmpty, !month.isEmpty else { return nil }
+        let domain = o["domain"]?.string ?? ""
+        let providedId = o["recordId"]?.string ?? ""
+        recordId = providedId.isEmpty ? "\(domain):\(month):\(filename)" : providedId
+        sessionId = o["sessionId"]?.string ?? ""
+        title = o["title"]?.string ?? "Untitled meeting"
+        date = o["date"]?.string ?? ""
+        time = o["time"]?.string ?? ""
+        self.domain = domain
+        domainAbbr = o["domainAbbr"]?.string ?? ""
+        duration = o["duration"]?.string ?? ""
+        durationMinutes = o["durationMinutes"]?.int ?? Int(o["durationMinutes"]?.string ?? "") ?? 0
+        self.month = month
+        self.filename = filename
+        source = o["source"]?.string ?? ""
+        librarySource = o["librarySource"]?.string ?? ""
+        topicCount = o["topicCount"]?.int ?? Int(o["topicCount"]?.string ?? "") ?? 0
+        decisionCount = o["decisionCount"]?.int ?? Int(o["decisionCount"]?.string ?? "") ?? 0
+        actionCount = o["actionCount"]?.int ?? Int(o["actionCount"]?.string ?? "") ?? 0
+        attendeeCount = o["attendeeCount"]?.int ?? Int(o["attendeeCount"]?.string ?? "") ?? 0
+    }
+}
+
+struct LibrarySearchHit: Identifiable, Sendable {
+    let meeting: LibraryMeeting
+    let snippet: String
+    let match: String
+    let score: Double
+
+    var id: String { meeting.id }
+
+    var matchLabel: String {
+        switch match {
+        case "both": "Keyword + meaning"
+        case "semantic": "Meaning"
+        default: "Keyword"
+        }
+    }
+
+    init?(_ value: JSONValue?) {
+        guard let meeting = LibraryMeeting(value), let o = value?.object else { return nil }
+        self.meeting = meeting
+        snippet = o["snippet"]?.string ?? ""
+        match = o["match"]?.string ?? "keyword"
+        let keyword = o["keywordScore"]?.double ?? 0
+        let semantic = o["semanticScore"]?.double ?? 0
+        score = o["score"]?.double ?? max(keyword, semantic)
+    }
+}
+
+enum MeetingMonth {
+    static func parse(_ value: String) -> Date? {
+        let parts = value.split(separator: "-")
+        guard parts.count == 2, let year = Int(parts[0]), let month = Int(parts[1]) else { return nil }
+        return Calendar.current.date(from: DateComponents(year: year, month: month, day: 1))
+    }
+
+    static func title(_ month: String) -> String {
+        guard let date = parse(month) else { return month }
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.setLocalizedDateFormatFromTemplate("MMMMyyyy")
+        return formatter.string(from: date)
+    }
+
+    static func dayKey(_ date: Date) -> String {
+        let parts = Calendar.current.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+    }
+}
+
+struct LibraryMeetingDay: Sendable, Hashable {
+    let date: String
+    let count: Int
+
+    init(date: String, count: Int) {
+        self.date = date
+        self.count = count
+    }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let date = o["date"]?.string, !date.isEmpty else { return nil }
+        self.date = date
+        count = o["count"]?.int ?? Int(o["count"]?.string ?? "") ?? 0
+    }
+}
+
+struct LibraryMeetingDetail: Sendable {
+    let title: String
+    let date: String
+    let time: String
+    let domain: String
+    let duration: String
+    let source: String
+    let summary: String
+    let transcript: String
+    let sourceContent: String
+    let sourceTruncated: Bool
+    let attendees: [String]
+    let topics: [String]
+    let decisions: [String]
+    let actionItems: [(task: String, owner: String)]
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object else { return nil }
+        title = o["title"]?.string ?? "Untitled meeting"
+        date = o["date"]?.string ?? ""
+        time = o["time"]?.string ?? ""
+        domain = o["domain"]?.string ?? ""
+        duration = o["duration"]?.string ?? ""
+        source = o["source"]?.string ?? ""
+        summary = o["summary"]?.string ?? ""
+        transcript = o["transcript"]?.string ?? ""
+        sourceContent = o["sourceContent"]?.string ?? ""
+        sourceTruncated = o["sourceTruncated"]?.bool ?? false
+        attendees = o["attendees"]?.array?.compactMap(\.string) ?? []
+        topics = o["topics"]?.array?.compactMap(\.string) ?? []
+        decisions = o["decisions"]?.array?.compactMap(\.string) ?? []
+        actionItems = o["actionItems"]?.array?.compactMap { item in
+            guard let object = item.object else { return nil }
+            let task = object["task"]?.string ?? ""
+            guard !task.isEmpty else { return nil }
+            return (task, object["owner"]?.string ?? "")
+        } ?? []
+    }
+}
+
 struct SpeakerPhrase: Identifiable, Sendable, Hashable {
     let text: String
     let atMs: Int

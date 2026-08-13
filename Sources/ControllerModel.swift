@@ -143,6 +143,8 @@ final class ControllerModel: ObservableObject {
     private var updateCheckTask: Task<Void, Never>?
     private var speakerReviewTask: Task<Void, Never>?
     private var contextDetailTask: Task<Void, Never>?
+    private var libraryDetailTask: Task<Void, Never>?
+    private var librarySearchTask: Task<Void, Never>?
     private var mediaPreviewTask: Task<Void, Never>?
     private var thumbnailTasks: [String: Task<Void, Never>] = [:]
     private var thumbnailLoadIDs: [String: UUID] = [:]
@@ -196,6 +198,8 @@ final class ControllerModel: ObservableObject {
         updateCheckTask?.cancel()
         speakerReviewTask?.cancel()
         contextDetailTask?.cancel()
+        libraryDetailTask?.cancel()
+        librarySearchTask?.cancel()
         mediaPreviewTask?.cancel()
         thumbnailTasks.values.forEach { $0.cancel() }
     }
@@ -602,6 +606,9 @@ final class ControllerModel: ObservableObject {
                     NSPasteboard.general.setString(report, forType: .string)
                     notice = "Redacted report copied"
                 }
+                if command == "reset-message-era" {
+                    await refreshRecentMessages(quiet: true)
+                }
                 if let nestedStatus = response.details["status"]?.object {
                     status = ServerStatus(nestedStatus)
                 } else if response.details["running"] != nil {
@@ -697,6 +704,14 @@ final class ControllerModel: ObservableObject {
         perform("set-video-upload-v2", arguments: [enabled ? "on" : "off"])
     }
 
+    func clearStrandedVideoUploads() {
+        perform("clear-stranded-video-uploads")
+    }
+
+    func resetMessageEra() {
+        perform("reset-message-era")
+    }
+
     func setIdleMetalHqEnabled(_ enabled: Bool) {
         perform("set-idle-metal-hq", arguments: [enabled ? "on" : "off"])
     }
@@ -766,6 +781,257 @@ final class ControllerModel: ObservableObject {
             reviewableMeetings = []
             reviewError = error.localizedDescription
         }
+    }
+
+    // MARK: Meeting library (Activity)
+
+    @Published var libraryMeetings: [LibraryMeeting] = []
+    @Published var libraryMonths: [String] = []
+    @Published var libraryDays: [LibraryMeetingDay] = []
+    @Published var libraryMonth = ControllerModel.currentMeetingMonth()
+    @Published var libraryDay: String?
+    @Published var libraryDomainFilter = "all"
+    @Published var libraryLoading = false
+    @Published var libraryError: String?
+    @Published var openLibraryRow: LibraryMeeting?
+    @Published var libraryDetail: LibraryMeetingDetail?
+    @Published var libraryDetailLoading = false
+    @Published var libraryDetailError: String?
+    @Published var libraryQuery = ""
+    @Published var librarySearchHits: [LibrarySearchHit] = []
+    @Published var librarySearching = false
+    @Published var librarySearchError: String?
+    @Published var librarySemanticAvailable = true
+    @Published var librarySemanticReason: String?
+    private var libraryLoadID = UUID()
+    private var librarySearchID = UUID()
+    private var libraryDayAutoApplied = false
+
+    var isLibraryQueryActive: Bool {
+        libraryQuery.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2
+    }
+
+    func scheduleLibrarySearch() {
+        librarySearchTask?.cancel()
+        let trimmed = libraryQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count < 2 {
+            librarySearchHits = []
+            librarySearchError = nil
+            librarySearching = false
+            librarySemanticReason = nil
+            return
+        }
+        let id = UUID()
+        librarySearchID = id
+        librarySearchTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled, self?.librarySearchID == id else { return }
+            await self?.runLibrarySearch(trimmed, id: id)
+        }
+    }
+
+    private func runLibrarySearch(_ query: String, id: UUID) async {
+        librarySearching = true
+        defer { if librarySearchID == id { librarySearching = false } }
+        do {
+            var args = ["meetings-library-search", "--query", query, "--limit", "20"]
+            if libraryDomainFilter != "all" { args += ["--domain", libraryDomainFilter] }
+            let response = try await helper.run(args)
+            guard librarySearchID == id else { return }
+            librarySearchHits = (response.details["hits"]?.array ?? []).compactMap(LibrarySearchHit.init)
+            librarySemanticAvailable = response.details["semanticAvailable"]?.bool ?? false
+            let reason = response.details["semanticReason"]?.string ?? ""
+            librarySemanticReason = reason.isEmpty ? nil : reason
+            librarySearchError = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            guard librarySearchID == id else { return }
+            librarySearchHits = []
+            librarySearchError = error.localizedDescription
+        }
+    }
+
+    var libraryRouteActive: Bool {
+        openLibraryRow != nil || libraryDetail != nil || libraryDetailLoading || libraryDetailError != nil
+    }
+
+    var visibleLibraryMeetings: [LibraryMeeting] {
+        libraryMeetings.filter { meeting in
+            if let libraryDay, meeting.date != libraryDay { return false }
+            if libraryDomainFilter != "all", meeting.domain != libraryDomainFilter { return false }
+            return true
+        }
+    }
+
+    var libraryDomainOptions: [String] {
+        ["all"] + Array(Set(libraryMeetings.map(\.domain).filter { !$0.isEmpty })).sorted()
+    }
+
+    var librarySearchDomainOptions: [String] {
+        let known = ["quilt", "sprocket_rocket", "hermit_crabs", "personal"]
+        let present = libraryMeetings.map(\.domain).filter { !$0.isEmpty }
+        return ["all"] + Array(Set(known + present)).sorted()
+    }
+
+    static func currentMeetingMonth(_ now: Date = Date()) -> String {
+        let parts = Calendar.current.dateComponents([.year, .month], from: now)
+        return String(format: "%04d-%02d", parts.year ?? 0, parts.month ?? 0)
+    }
+
+    static func currentMeetingDay(_ now: Date = Date()) -> String {
+        let parts = Calendar.current.dateComponents([.year, .month, .day], from: now)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+    }
+
+    func loadLibraryMeetings() async {
+        let id = UUID()
+        libraryLoadID = id
+        libraryLoading = true
+        defer { if libraryLoadID == id { libraryLoading = false } }
+        do {
+            let args = ["meetings-library", "--month", libraryMonth, "--limit", "200"]
+            let response = try await helper.run(args)
+            guard libraryLoadID == id else { return }
+            libraryMeetings = (response.details["meetings"]?.array ?? []).compactMap(LibraryMeeting.init)
+            let months = response.details["months"]?.array?.compactMap(\.string) ?? []
+            libraryMonths = months.isEmpty
+                ? Array(Set(libraryMeetings.map(\.month))).sorted().reversed()
+                : months
+            let days = response.details["days"]?.array?.compactMap(LibraryMeetingDay.init) ?? []
+            if days.isEmpty {
+                var counts: [String: Int] = [:]
+                for meeting in libraryMeetings { counts[meeting.date, default: 0] += 1 }
+                libraryDays = counts.keys.sorted().map { LibraryMeetingDay(date: $0, count: counts[$0] ?? 0) }
+            } else {
+                libraryDays = days
+            }
+            if !libraryDayAutoApplied, libraryMonth == Self.currentMeetingMonth() {
+                let today = Self.currentMeetingDay()
+                if libraryDays.contains(where: { $0.date == today && $0.count > 0 }) {
+                    libraryDay = today
+                }
+                libraryDayAutoApplied = true
+            }
+            libraryError = nil
+        } catch {
+            guard libraryLoadID == id else { return }
+            libraryMeetings = []
+            libraryError = error.localizedDescription
+        }
+    }
+
+    func selectLibraryDay(_ day: String?) {
+        libraryDay = day
+        libraryDayAutoApplied = true
+    }
+
+    func shiftLibraryMonth(_ delta: Int) {
+        guard let date = MeetingMonth.parse(libraryMonth),
+              let next = Calendar.current.date(byAdding: .month, value: delta, to: date) else { return }
+        libraryMonth = Self.currentMeetingMonth(next)
+        libraryDay = nil
+        Task { await loadLibraryMeetings() }
+    }
+
+    func openLibraryMeeting(_ meeting: LibraryMeeting) {
+        libraryDetailTask?.cancel()
+        openLibraryRow = meeting
+        libraryDetail = nil
+        libraryDetailError = nil
+        copyNote = nil
+        libraryDetailTask = Task { [weak self] in
+            await self?.fetchLibraryDetail(meeting)
+        }
+    }
+
+    private func fetchLibraryDetail(_ meeting: LibraryMeeting) async {
+        libraryDetailLoading = true
+        defer {
+            if openLibraryRow?.id == meeting.id { libraryDetailLoading = false }
+        }
+        do {
+            let response = try await helper.run([
+                "meeting-library-detail",
+                "--domain", meeting.domain,
+                "--month", meeting.month,
+                "--filename", meeting.filename,
+            ])
+            guard !Task.isCancelled, openLibraryRow?.id == meeting.id else { return }
+            guard let detail = LibraryMeetingDetail(.object(response.details)) else {
+                libraryDetailError = "The server returned a meeting this build cannot read."
+                return
+            }
+            libraryDetail = detail
+        } catch {
+            guard !Task.isCancelled, openLibraryRow?.id == meeting.id else { return }
+            libraryDetailError = error.localizedDescription
+        }
+    }
+
+    func closeLibraryDetail() {
+        libraryDetailTask?.cancel()
+        libraryDetailTask = nil
+        libraryDetailLoading = false
+        openLibraryRow = nil
+        libraryDetail = nil
+        libraryDetailError = nil
+        copyNote = nil
+    }
+
+    var canRevealLibraryMeeting: Bool {
+        guard let row = openLibraryRow,
+              let ops = status.operationsDirectory, !ops.isEmpty else { return false }
+        return row.librarySource == "cos_operations"
+            || (row.librarySource.isEmpty && row.domain != "library" && !row.domain.isEmpty)
+    }
+
+    func copyLibraryMeeting(kind: LibraryCopyKind) {
+        guard let row = openLibraryRow else { return }
+        let detail = libraryDetail
+        let body: String
+        switch kind {
+        case .summary:
+            body = detail?.summary ?? ""
+        case .transcript:
+            body = detail?.transcript ?? ""
+        case .context:
+            let source = detail?.sourceContent.isEmpty == false ? detail!.sourceContent
+                : (detail?.transcript.isEmpty == false ? detail!.transcript : detail?.summary ?? row.title)
+            body = """
+            Meeting \(row.title)\(row.date.isEmpty ? "" : " (\(row.date)\(row.domain.isEmpty ? "" : ", \(row.domain)"))")
+
+            \"\"\"
+            \(source)
+            \"\"\"
+            """
+        }
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { copyNote = "Nothing to copy"; return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(kind == .context ? body : trimmed, forType: .string)
+        switch kind {
+        case .summary: copyNote = "Copied summary"
+        case .transcript: copyNote = "Copied transcript"
+        case .context: copyNote = "Copied as grounded context"
+        }
+    }
+
+    func revealLibraryMeeting() {
+        guard let row = openLibraryRow,
+              let ops = status.operationsDirectory, !ops.isEmpty,
+              row.librarySource == "cos_operations" || (row.librarySource.isEmpty && row.domain != "library")
+        else { return }
+        let url = URL(fileURLWithPath: ops)
+            .appendingPathComponent(row.domain)
+            .appendingPathComponent("meetings")
+            .appendingPathComponent(row.month)
+            .appendingPathComponent(row.filename)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    enum LibraryCopyKind {
+        case summary, transcript, context
     }
 
     // ── Memory and Threads review ───────────────────────────

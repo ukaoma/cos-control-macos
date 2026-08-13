@@ -127,6 +127,71 @@ struct ModelsContract {
                                 source: "Granola")?.countsSummary == "Granola")
     }
 
+    /// Library rows must parse WITHOUT a sessionId. Reusing ReviewableMeeting
+    /// for the Activity library would hide every Granola/Fireflies meeting.
+    private static func checkLibraryMeeting() {
+        let granola = LibraryMeeting(.object([
+            "title": .string("Granola sync"),
+            "date": .string("2026-08-12"),
+            "domain": .string("quilt"),
+            "month": .string("2026-08"),
+            "filename": .string("2026-08-12_Granola_sync.md"),
+            "duration": .string("16 minutes"),
+            "source": .string("Granola"),
+        ]))
+        precondition(granola != nil, "library row parses without sessionId")
+        precondition(granola?.sessionId == "", "sessionId stays empty")
+        precondition(granola?.id == "quilt:2026-08:2026-08-12_Granola_sync.md", "synthesizes recordId")
+        precondition(granola?.canReviewVoices == false, "no voice review without sessionId")
+        precondition(ReviewableMeeting(.object([
+            "title": .string("Granola sync"),
+            "month": .string("2026-08"),
+            "filename": .string("2026-08-12_Granola_sync.md"),
+        ])) == nil, "speaker-review rows still require sessionId")
+
+        let g2 = LibraryMeeting(.object([
+            "recordId": .string("ops:quilt:2026-08:file.md"),
+            "sessionId": .string("meeting_1"),
+            "title": .string("Toast in Grocery"),
+            "date": .string("2026-08-12"),
+            "domain": .string("quilt"),
+            "month": .string("2026-08"),
+            "filename": .string("2026-08-12_Toast.md"),
+            "duration": .string("47 minutes"),
+        ]))
+        precondition(g2?.id == "ops:quilt:2026-08:file.md")
+        precondition(g2?.canReviewVoices == true)
+
+        let detail = LibraryMeetingDetail(.object([
+            "title": .string("Toast in Grocery"),
+            "summary": .string("Counter Toast."),
+            "transcript": .string("[MU]: We should lead with grocery."),
+            "sourceContent": .string("# Toast\n\n## Transcript\n[MU]: We should lead with grocery."),
+            "attendees": .array([.string("MU"), .string("Tyler Rhoton")]),
+            "topics": .array([.string("Toast")]),
+            "sourceTruncated": .bool(false),
+        ]))
+        precondition(detail?.summary == "Counter Toast.")
+        precondition(detail?.attendees.count == 2)
+        precondition(LibraryMeeting(.object(["title": .string("no keys")])) == nil,
+                     "library row without filename/month is dropped")
+
+        let hit = LibrarySearchHit(.object([
+            "title": .string("Toast in Grocery"),
+            "date": .string("2026-08-12"),
+            "domain": .string("quilt"),
+            "month": .string("2026-08"),
+            "filename": .string("2026-08-12_Toast.md"),
+            "snippet": .string("Counter Toast."),
+            "match": .string("both"),
+            "keywordScore": .number(0.8),
+            "semanticScore": .number(0.61),
+        ]))
+        precondition(hit?.matchLabel == "Keyword + meaning")
+        precondition(hit?.meeting.title == "Toast in Grocery")
+        precondition(hit?.score == 0.8)
+    }
+
     private static func confirmableVoice(
         label: String, reliability: String, asserted: Bool,
         isOwner: Bool = false, confirmed: Bool = false
@@ -478,6 +543,7 @@ struct ModelsContract {
         checkConfirmEligibility()
         checkMeetingRowFields()
         checkCountsSummary()
+        checkLibraryMeeting()
         checkAssertedSegmentsBackCompat()
         checkSpeakingTime()
         checkMeetingContent()

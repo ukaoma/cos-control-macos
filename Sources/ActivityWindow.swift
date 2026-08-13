@@ -41,6 +41,7 @@ final class ActivityWindowPresenter: NSObject, ObservableObject, NSWindowDelegat
         model?.closeMediaPreview()
         model?.closeSpeakerReview()
         model?.closeContextDetail()
+        model?.closeLibraryDetail()
         windowController = nil
     }
 }
@@ -48,6 +49,7 @@ final class ActivityWindowPresenter: NSObject, ObservableObject, NSWindowDelegat
 enum ActivitySection: String, CaseIterable, Identifiable {
     case messages
     case speakers
+    case meetings
     case memories
     case threads
 
@@ -57,6 +59,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         switch self {
         case .messages: "Messages"
         case .speakers: "Speakers"
+        case .meetings: "Meetings"
         case .memories: "Memories"
         case .threads: "Threads"
         }
@@ -66,6 +69,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         switch self {
         case .messages: "message"
         case .speakers: "waveform"
+        case .meetings: "calendar"
         case .memories: "sparkles"
         case .threads: "point.3.connected.trianglepath.dotted"
         }
@@ -75,6 +79,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         switch self {
         case .messages: Color(red: 0.24, green: 0.48, blue: 0.78)
         case .speakers: Color(red: 0.78, green: 0.34, blue: 0.39)
+        case .meetings: Color(red: 0.82, green: 0.52, blue: 0.22)
         case .memories: Color(red: 0.48, green: 0.36, blue: 0.72)
         case .threads: Color(red: 0.22, green: 0.57, blue: 0.39)
         }
@@ -84,6 +89,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         switch self {
         case .messages: "Questions, answers, and image context from your glasses."
         case .speakers: "See enrolled voices, match quality, appearances, and meetings to review."
+        case .meetings: "Browse saved calls by day, with transcript, summary, and copy."
         case .memories: "Browse the durable context your COS can recall."
         case .threads: "Follow work that develops across meetings and time."
         }
@@ -115,7 +121,7 @@ private enum VoiceDirectorySort: String, CaseIterable, Identifiable {
     }
 }
 
-/// Persistent activity browser for the four review surfaces.
+/// Persistent activity browser for the review surfaces.
 ///
 /// Navigation is deliberately window-local. The controller owns data and
 /// mutations; this view owns where the user is. That keeps opening a record here
@@ -131,6 +137,7 @@ struct ActivityWindow: View {
     @State private var voiceSearch = ""
     @State private var voiceSort: VoiceDirectorySort = .attention
     @State private var selectedContextID: String?
+    @State private var selectedLibraryRecordID: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var selectedTurn: GlassesTurn? {
@@ -172,6 +179,7 @@ struct ActivityWindow: View {
         switch section {
         case .messages: model.selectedMediaPreview != nil || selectedTurnID != nil
         case .speakers: selectedVoiceName != nil || selectedSpeakerSessionID != nil
+        case .meetings: selectedLibraryRecordID != nil
         case .memories, .threads: selectedContextID != nil
         case nil: false
         }
@@ -202,6 +210,12 @@ struct ActivityWindow: View {
                         ContextDetailPane(model: model, showsBackButton: false)
                     } else {
                         centeredProgress("Loading record…")
+                    }
+                } else if section == .meetings, selectedLibraryRecordID != nil {
+                    if model.libraryRouteActive {
+                        MeetingLibraryDetailPane(model: model, onReviewVoices: openVoiceReviewFromLibrary)
+                    } else {
+                        centeredProgress("Loading meeting…")
                     }
                 } else if let section {
                     sectionList(section)
@@ -296,6 +310,10 @@ struct ActivityWindow: View {
             if let review = model.openReview, review.sessionId == selectedSpeakerSessionID { return review.title }
             if model.reviewLoading { return "Loading meeting" }
         }
+        if section == .meetings, selectedLibraryRecordID != nil {
+            if let row = model.openLibraryRow, row.id == selectedLibraryRecordID { return row.title }
+            if model.libraryDetailLoading { return "Loading meeting" }
+        }
         if (section == .memories || section == .threads),
            selectedContextID != nil,
            let context = model.contextDetail,
@@ -308,7 +326,7 @@ struct ActivityWindow: View {
         return nil
     }
 
-    /// The four tabs form one continuous lens rail. Color identifies the data
+    /// The peer tabs form one continuous lens rail. Color identifies the data
     /// surface; position and label carry the navigation meaning.
     private var lensRail: some View {
         HStack(spacing: 6) {
@@ -327,7 +345,7 @@ struct ActivityWindow: View {
                             .fill(section == item ? item.tint : Color.clear)
                             .frame(height: 3)
                     }
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, 10)
                     .padding(.top, 10)
                     .contentShape(Rectangle())
                 }
@@ -371,6 +389,9 @@ struct ActivityWindow: View {
         } else if (section == .memories || section == .threads), selectedContextID != nil {
             selectedContextID = nil
             model.closeContextDetail()
+        } else if section == .meetings, selectedLibraryRecordID != nil {
+            selectedLibraryRecordID = nil
+            model.closeLibraryDetail()
         } else {
             withOptionalAnimation { section = nil }
         }
@@ -383,8 +404,10 @@ struct ActivityWindow: View {
         voiceParentName = nil
         selectedSpeakerSessionID = nil
         selectedContextID = nil
+        selectedLibraryRecordID = nil
         model.closeSpeakerReview()
         model.closeContextDetail()
+        model.closeLibraryDetail()
     }
 
     private func withOptionalAnimation(_ changes: () -> Void) {
@@ -400,7 +423,7 @@ struct ActivityWindow: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Activity")
                         .font(.system(size: 30, weight: .semibold, design: .rounded))
-                    Text("Four views into the work your COS already holds.")
+                    Text("Five views into the work your COS already holds.")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
@@ -467,6 +490,14 @@ struct ActivityWindow: View {
             return model.recentMessages.isEmpty ? "Refresh to load" : "\(model.recentMessages.count) recent"
         case .speakers:
             return model.voiceDirectory.isEmpty ? "Refresh to load" : "\(model.voiceDirectory.count) enrolled voices"
+        case .meetings:
+            if !model.libraryMeetings.isEmpty {
+                return "\(model.libraryMeetings.count) in \(MeetingMonth.title(model.libraryMonth))"
+            }
+            if model.status.meetingLibraryCount > 0 {
+                return "\(model.status.meetingLibraryCount) stored"
+            }
+            return "Browse by day"
         case .memories:
             return model.status.memoryAvailable == true
                 ? (model.memoryHeadline.isEmpty ? "Ready" : model.memoryHeadline)
@@ -485,9 +516,37 @@ struct ActivityWindow: View {
         switch item {
         case .messages: messagesList
         case .speakers: speakersList
+        case .meetings: meetingsList
         case .memories: contextList(kind: "memory")
         case .threads: contextList(kind: "thread")
         }
+    }
+
+    private var meetingsList: some View {
+        VStack(spacing: 0) {
+            sectionHeader(
+                section: .meetings,
+                title: "Meetings",
+                detail: model.isLibraryQueryActive
+                    ? (model.librarySearching ? "Looking up…" : "Lookup across stored calls")
+                    : (model.libraryLoading
+                        ? "Loading…"
+                        : (model.libraryError ?? "Saved calls by day · transcript and summary")),
+                refresh: { Task { await model.loadLibraryMeetings() } },
+                refreshDisabled: model.libraryLoading
+            )
+            MeetingLibraryBody(model: model) { meeting in
+                selectedLibraryRecordID = meeting.id
+                model.openLibraryMeeting(meeting)
+            }
+        }
+    }
+
+    private func openVoiceReviewFromLibrary(_ sessionId: String) {
+        speakerSubview = .meetings
+        selectedSpeakerSessionID = sessionId
+        withOptionalAnimation { section = .speakers }
+        model.openSpeakerReview(sessionId: sessionId)
     }
 
     private var messagesList: some View {
@@ -1207,6 +1266,8 @@ struct ActivityWindow: View {
         case .speakers:
             if speakerSubview == .voices { await model.loadVoiceDirectory() }
             else { await model.loadReviewableMeetings() }
+        case .meetings:
+            await model.loadLibraryMeetings()
         case .memories:
             if model.status.memoryAvailable == true { await model.loadContextRecords(kind: "memory") }
         case .threads:
