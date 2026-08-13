@@ -69,6 +69,8 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
 /usr/bin/grep -q 'recoverableOrphanSessionIds' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'waitForOrphanSlot' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'Recover all unsaved captures' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Recover all unsaved captures' "$ROOT/Sources/ActivityMeetings.swift"
+/usr/bin/grep -q 'recoverableOrphans.isEmpty || !model.strandedCaptures.isEmpty' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'model.recoverAllOrphans' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'model.recoverOrphan' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'Unsaved captures' "$ROOT/Sources/ActivityMeetings.swift"

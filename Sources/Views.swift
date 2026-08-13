@@ -456,7 +456,7 @@ struct ControlPanel: View {
             // Server 6.19.0+: meeting audio whose save never landed is
             // quarantined instead of deleted. Surface it — a hidden lost
             // meeting is the failure this exists to end. Row hides at zero.
-            if model.status.unsavedCaptures > 0 || !model.orphanCaptures.isEmpty || !model.strandedCaptures.isEmpty {
+            if model.status.unsavedCaptures > 0 || !model.recoverableOrphans.isEmpty || !model.strandedCaptures.isEmpty {
                 statusRow(
                     "Unsaved captures",
                     value: unsavedCapturesLabel,

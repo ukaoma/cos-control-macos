@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.28 (build 66)
+
+- **Unsaved captures row hides when nothing is recoverable.** Recovered
+  quarantine leftovers no longer show an amber "None" with no Recover button.
+  Stranded live sessions still surface.
+
 ## 0.5.27 (build 65)
 
 - **One-click orphan recovery.** Status card Recover / Recover all turns
