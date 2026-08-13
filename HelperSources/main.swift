@@ -418,6 +418,10 @@ final class COSControlHelper {
             try setClaudeSessions(value)
         }
         case "claude-sessions": try emitClaudeSessions()
+        case "claude-sessions-search": try emitClaudeSessionsSearch(args: args)
+        case "claude-session-detail": try emitClaudeSessionDetail(args: args)
+        case "meeting-stranded-save": try emitMeetingStrandedSave(args: args)
+        case "meeting-stranded-save-all": try emitMeetingStrandedSaveAll()
         case "clear-stranded-video-uploads": try clearStrandedVideoUploads()
         case "reset-message-era": try resetMessageEra()
         case "meeting-orphans": try emitMeetingOrphans()
@@ -5514,44 +5518,1257 @@ final class COSControlHelper {
         let waitingFor = row["waitingFor"] as? String ?? ""
         return [
             "id": id,
+            "provider": "claude",
             "name": row["name"] as? String ?? "",
-            "workspace": row["workspace"] as? String ?? "",
+            "workspace": Self.workspaceLabel(row["workspace"] as? String ?? ""),
             "state": claudePeerState(alive: alive, status: status, waitingFor: waitingFor),
             "status": status,
             "waitingFor": waitingFor,
             "alive": alive,
             "reachable": row["reachable"] as? Bool ?? false,
+            "createdAt": row["startedAt"] as? String ?? "",
+            "updatedAt": row["lastActiveAt"] as? String ?? "",
         ]
     }
 
-    private func emitClaudeSessions() throws {
-        let token = try speakerReviewToken()
-        guard let response = request("/api/claude-sessions", token: token, timeout: 12) else {
-            throw HelperError.message("Server stopped")
+    /// Claude Code writes `/rename` titles as `custom-title` lines in the project jsonl,
+    /// not in the live pid registry. Presence without that overlay is why Activity
+    /// showed "MU-Chief-Staff" (or nothing) for "Fireflies meeting sync".
+    static func lastCustomTitle(in jsonl: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: jsonl) else { return nil }
+        defer { try? handle.close() }
+        func scan(_ data: Data) -> String? {
+            guard let text = String(data: data, encoding: .utf8) else { return nil }
+            var found: String?
+            for line in text.split(whereSeparator: \.isNewline) {
+                guard line.contains("custom-title") else { continue }
+                guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                      obj["type"] as? String == "custom-title",
+                      let title = (obj["customTitle"] as? String)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines),
+                      !title.isEmpty else { continue }
+                found = String(title.prefix(120))
+            }
+            return found
         }
-        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
-        if response.status == 404 {
-            throw HelperError.message("Update the server to show Claude sessions.")
+        let headTitle = scan(handle.readData(ofLength: 256 * 1024))
+        let size = (try? jsonl.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        if size > 256 * 1024 {
+            handle.seek(toFileOffset: UInt64(max(0, size - 64 * 1024)))
+            if let tailTitle = scan(handle.readDataToEndOfFile()) { return tailTitle }
         }
-        guard response.status == 200, let body = response.body else {
-            throw HelperError.message("Could not list Claude sessions.")
+        return headTitle
+    }
+
+    static func firstClaudeUserTitle(in jsonl: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: jsonl) else { return nil }
+        defer { try? handle.close() }
+        let data = handle.readData(ofLength: 256 * 1024)
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        for line in text.split(whereSeparator: \.isNewline) {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  obj["type"] as? String == "user",
+                  obj["toolUseResult"] == nil,
+                  obj["isSidechain"] as? Bool != true,
+                  let message = obj["message"] as? [String: Any],
+                  let body = claudeMessageText(message) else { continue }
+            let title = firstLineTitle(body)
+            if !title.isEmpty { return title }
         }
-        let enabled = body["enabled"] as? Bool ?? false
-        let peers = ((body["peers"] as? [[String: Any]]) ?? []).compactMap(Self.claudePeerProjection)
-        let reason = body["reason"] as? String ?? ""
-        let message: String
-        if !enabled {
-            message = reason == "disabled" ? "Claude sessions are off" : "Claude sessions unavailable"
-        } else if peers.isEmpty {
-            message = "No Claude sessions"
+        return nil
+    }
+
+    static func firstLineTitle(_ text: String) -> String {
+        var body = text
+        if let start = body.range(of: "<user_query>"),
+           let end = body.range(of: "</user_query>"),
+           start.upperBound < end.lowerBound {
+            body = String(body[start.upperBound..<end.lowerBound])
+        }
+        if let re = try? NSRegularExpression(pattern: "<[^>]+>") {
+            let range = NSRange(body.startIndex..<body.endIndex, in: body)
+            body = re.stringByReplacingMatches(in: body, range: range, withTemplate: " ")
+        }
+        let line = body.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty } ?? ""
+        return String(line.prefix(80))
+    }
+
+    static func workspaceLabel(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "" }
+        if trimmed.hasPrefix("/") { return URL(fileURLWithPath: trimmed).lastPathComponent }
+        var encoded = trimmed
+        if encoded.hasPrefix("-") { encoded.removeFirst() }
+        if encoded.contains("MU-Chief-Staff") { return "MU-Chief-Staff" }
+        if let range = encoded.range(of: "GitHub-", options: [.backwards, .caseInsensitive]) {
+            let rest = String(encoded[range.upperBound...])
+            if rest.hasSuffix("-MU-Chief-Staff") || rest == "MU-Chief-Staff" { return "MU-Chief-Staff" }
+            return rest
+        }
+        return URL(fileURLWithPath: trimmed).lastPathComponent
+    }
+
+    static func claudeCustomTitle(sessionId: String, projectsRoot: URL, fileExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }) -> String? {
+        let prefix = String(sessionId.prefix(8))
+        guard prefix.count >= 8,
+              let dirs = try? FileManager.default.contentsOfDirectory(
+                at: projectsRoot,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+              ) else { return nil }
+        for dir in dirs {
+            let isDir = (try? dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard isDir else { continue }
+            guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { continue }
+            for file in files where file.pathExtension == "jsonl" && file.lastPathComponent.hasPrefix(prefix) {
+                if fileExists(file), let title = lastCustomTitle(in: file) { return title }
+            }
+        }
+        return nil
+    }
+
+    static func recentClaudeConversations(
+        liveIds: Set<String>,
+        projectsRoot: URL,
+        now: Date = Date(),
+        maxAge: TimeInterval = agentSessionMaxAge,
+        limit: Int = 20,
+        starredIds: Set<String> = [],
+        desktopSessionsRoot: URL? = nil,
+        desktopIndex: [String: ClaudeDesktopSession]? = nil
+    ) -> [[String: Any]] {
+        let index = desktopIndex ?? desktopSessionsRoot.map { loadClaudeDesktopIndex(from: $0) } ?? [:]
+        let dirs = (try? FileManager.default.contentsOfDirectory(
+            at: projectsRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        var pinnedRows: [(mtime: Date, row: [String: Any])] = []
+        var recentRows: [(mtime: Date, row: [String: Any])] = []
+        var seen = Set<String>()
+        let uuidName = try? NSRegularExpression(pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.jsonl$")
+        for dir in dirs {
+            let isDir = (try? dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard isDir else { continue }
+            guard let files = try? FileManager.default.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: [.contentModificationDateKey, .creationDateKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for file in files {
+                let name = file.lastPathComponent
+                let whole = NSRange(name.startIndex..<name.endIndex, in: name)
+                guard uuidName?.firstMatch(in: name, range: whole) != nil else { continue }
+                let sessionId = String(name.dropLast(6))
+                let shortId = String(sessionId.prefix(8))
+                if liveIds.contains(shortId) || liveIds.contains(sessionId) { continue }
+                let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .creationDateKey])
+                let mtime = values?.contentModificationDate ?? .distantPast
+                let pinned = starredIds.contains(sessionId.lowercased())
+                let fresh = now.timeIntervalSince(mtime) <= maxAge
+                if !pinned && !fresh { continue }
+                let desktop = index[sessionId.lowercased()] ?? index[shortId]
+                var title = desktop?.title ?? ""
+                if title.isEmpty {
+                    title = lastCustomTitle(in: file) ?? firstClaudeUserTitle(in: file) ?? ""
+                }
+                var workspace = Self.workspaceLabel(dir.lastPathComponent)
+                if workspace.isEmpty, let cwd = desktop?.cwd, !cwd.isEmpty {
+                    workspace = workspaceLabel(cwd)
+                }
+                title = title.isEmpty ? "Claude session" : title
+                if isKeepWarmSessionTitle(title) { continue }
+                let created = values?.creationDate ?? mtime
+                let row: [String: Any] = [
+                    "id": shortId,
+                    "provider": "claude",
+                    "name": title,
+                    "workspace": workspace,
+                    "state": "recent",
+                    "status": "recent",
+                    "waitingFor": "",
+                    "alive": false,
+                    "reachable": false,
+                    "pinned": pinned,
+                    "createdAt": Self.isoString(from: created),
+                    "updatedAt": Self.isoString(from: mtime),
+                ]
+                seen.insert(sessionId.lowercased())
+                if let desktopId = desktop?.id, !desktopId.isEmpty { seen.insert(desktopId) }
+                if let cli = desktop?.cliSessionId, !cli.isEmpty { seen.insert(cli) }
+                if pinned { pinnedRows.append((mtime, row)) }
+                else { recentRows.append((mtime, row)) }
+            }
+        }
+        for (id, head) in index where id == head.id {
+            if seen.contains(id)
+                || seen.contains(head.cliSessionId)
+                || liveIds.contains(id)
+                || liveIds.contains(String(id.prefix(8)))
+                || (!head.cliSessionId.isEmpty && (
+                    liveIds.contains(head.cliSessionId)
+                    || liveIds.contains(String(head.cliSessionId.prefix(8)))
+                )) { continue }
+            let pinned = starredIds.contains(id)
+            let fresh = now.timeIntervalSince(head.mtime) <= maxAge
+            if !pinned && !fresh { continue }
+            let title = head.title.isEmpty ? "Claude session" : head.title
+            if isKeepWarmSessionTitle(title) { continue }
+            let row: [String: Any] = [
+                "id": id,
+                "provider": "claude",
+                "name": title,
+                "workspace": workspaceLabel(head.cwd),
+                "state": "recent",
+                "status": "recent",
+                "waitingFor": "",
+                "alive": false,
+                "reachable": false,
+                "pinned": pinned,
+                "createdAt": Self.isoString(from: head.created),
+                "updatedAt": Self.isoString(from: head.mtime),
+            ]
+            seen.insert(id)
+            if pinned { pinnedRows.append((head.mtime, row)) }
+            else { recentRows.append((head.mtime, row)) }
+        }
+        pinnedRows.sort { $0.mtime > $1.mtime }
+        recentRows.sort { $0.mtime > $1.mtime }
+        return pinnedRows.map(\.row) + Array(recentRows.prefix(limit).map(\.row))
+    }
+
+    static let claudeTranscriptMaxLineBytes = 200_000
+    static let claudeHistoryTurnLimit = 120
+    static let claudeKickstartMaxChars = 100_000
+    static let claudeTurnMaxChars = 8_000
+
+    static func findClaudeSessionFile(sessionId: String, projectsRoot: URL) -> URL? {
+        let needle = sessionId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard needle.count >= 8,
+              needle.allSatisfy({ $0.isHexDigit || $0 == "-" }),
+              !needle.contains(".."),
+              !needle.contains("/") else { return nil }
+        guard let dirs = try? FileManager.default.contentsOfDirectory(
+            at: projectsRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        var prefixMatch: URL?
+        for dir in dirs {
+            let isDir = (try? dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard isDir else { continue }
+            guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { continue }
+            for file in files where file.pathExtension == "jsonl" {
+                let name = file.deletingPathExtension().lastPathComponent.lowercased()
+                if name == needle { return file }
+                if prefixMatch == nil, name.hasPrefix(needle) { prefixMatch = file }
+            }
+        }
+        return prefixMatch
+    }
+
+    static func redactSecrets(_ text: String) -> String {
+        var out = text
+        let patterns = [
+            #"COS_API_TOKEN\s*=\s*\S+"#,
+            #"COS_GLASSES_TOKEN\s*=\s*\S+"#,
+            #"sk-ant-[A-Za-z0-9_\-]{8,}"#,
+            #"\bsk-[A-Za-z0-9]{20,}"#,
+            #"(?i)bearer\s+[A-Za-z0-9._\-]{16,}"#,
+            #"(?i)x-cos-token['\"]?\s*[:=]\s*\S+"#,
+        ]
+        for pattern in patterns {
+            guard let re = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(out.startIndex..<out.endIndex, in: out)
+            out = re.stringByReplacingMatches(in: out, options: [], range: range, withTemplate: "[redacted]")
+        }
+        return out
+    }
+
+    static func claudeMessageText(_ message: [String: Any]) -> String? {
+        let content = message["content"]
+        if let text = content as? String {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        guard let blocks = content as? [[String: Any]] else { return nil }
+        var parts: [String] = []
+        var hasImage = false
+        for block in blocks {
+            let type = block["type"] as? String ?? ""
+            if type == "tool_result" || type == "tool_use" || type == "thinking" { continue }
+            if type == "text" || type == "input_text",
+               let text = (block["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !text.isEmpty {
+                parts.append(text)
+            } else if type == "image" || type == "image_url" {
+                hasImage = true
+            }
+        }
+        if hasImage { parts.append("[image attached]") }
+        let joined = parts.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return joined.isEmpty ? nil : joined
+    }
+
+    static func clipClaudeTurn(_ text: String) -> String {
+        if text.count <= claudeTurnMaxChars { return text }
+        let end = text.index(text.startIndex, offsetBy: claudeTurnMaxChars)
+        return String(text[..<end]) + "\n[truncated]"
+    }
+
+    static func parseClaudeTranscript(in jsonl: URL) -> (
+        title: String,
+        cwd: String,
+        branch: String,
+        sessionId: String,
+        turns: [[String: String]],
+        omittedTools: Int,
+        omittedSidechain: Int
+    ) {
+        var title = ""
+        var cwd = ""
+        var branch = ""
+        var sessionId = jsonl.deletingPathExtension().lastPathComponent
+        var turns: [[String: String]] = []
+        var omittedTools = 0
+        var omittedSidechain = 0
+        forEachClaudeJsonlLine(in: jsonl) { line in
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { return }
+            let type = obj["type"] as? String ?? ""
+            if let sid = obj["sessionId"] as? String, !sid.isEmpty { sessionId = sid }
+            if type == "custom-title", let custom = obj["customTitle"] as? String, !custom.isEmpty {
+                title = custom
+                return
+            }
+            if obj["isSidechain"] as? Bool == true {
+                omittedSidechain += 1
+                return
+            }
+            if cwd.isEmpty, let value = obj["cwd"] as? String, !value.isEmpty { cwd = value }
+            if branch.isEmpty, let value = obj["gitBranch"] as? String, !value.isEmpty { branch = value }
+            if type == "user", obj["toolUseResult"] != nil {
+                omittedTools += 1
+                return
+            }
+            guard type == "user" || type == "assistant",
+                  let message = obj["message"] as? [String: Any],
+                  let text = claudeMessageText(message) else {
+                if type == "assistant" { omittedTools += 1 }
+                return
+            }
+            let role = type == "user" ? "user" : "assistant"
+            turns.append([
+                "id": "\(turns.count + 1)",
+                "role": role,
+                "text": redactSecrets(clipClaudeTurn(text)),
+                "timestamp": obj["timestamp"] as? String ?? "",
+            ])
+        }
+        return (title, cwd, branch, sessionId, turns, omittedTools, omittedSidechain)
+    }
+
+    static func forEachClaudeJsonlLine(in url: URL, body: (String) -> Void) {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return }
+        defer { try? handle.close() }
+        var buffer = Data()
+        while true {
+            let chunk = handle.readData(ofLength: 256 * 1024)
+            if chunk.isEmpty { break }
+            buffer.append(chunk)
+            while let newline = buffer.firstIndex(of: UInt8(0x0a)) {
+                let lineData = buffer.subdata(in: buffer.startIndex..<newline)
+                buffer.removeSubrange(buffer.startIndex...newline)
+                if lineData.count > claudeTranscriptMaxLineBytes { continue }
+                if let line = String(data: lineData, encoding: .utf8), !line.isEmpty { body(line) }
+            }
+            if buffer.count > claudeTranscriptMaxLineBytes * 2 { buffer.removeAll(keepingCapacity: true) }
+        }
+        if !buffer.isEmpty, buffer.count <= claudeTranscriptMaxLineBytes,
+           let line = String(data: buffer, encoding: .utf8), !line.isEmpty {
+            body(line)
+        }
+    }
+
+    static func claudeKickstartCopy(
+        title: String,
+        cwd: String,
+        branch: String,
+        sessionId: String,
+        turns: [[String: String]],
+        omittedTools: Int,
+        provider: String = "claude",
+        maxChars: Int = claudeKickstartMaxChars
+    ) -> String {
+        let providerName = provider == "codex" ? "Codex" : provider == "cursor" ? "Cursor" : "Claude Code"
+        let heading = title.isEmpty ? "\(providerName) session" : title
+        var header = """
+        # Kickstart: \(heading)
+
+        Read-only export of a \(providerName) session. Continue this work here. Do not look for \(providerName) jsonl or session IDs to resume.
+
+        - Workspace: \(cwd.isEmpty ? "(unknown)" : cwd)
+        - Branch: \(branch.isEmpty ? "(unknown)" : branch)
+        - Session: \(sessionId.isEmpty ? "(unknown)" : sessionId)
+        """
+        if omittedTools > 0 {
+            header += "\n- Tool calls omitted: \(omittedTools)"
+        }
+        header += "\n\n"
+        func render(_ turn: [String: String]) -> String {
+            let role = turn["role"] == "user" ? "You" : "Assistant"
+            return "**\(role)**\n\n\(turn["text"] ?? "")\n\n"
+        }
+        var used = header.count
+        var tail: [[String: String]] = []
+        for turn in turns.reversed() {
+            let chunk = render(turn)
+            if used + chunk.count > maxChars && !tail.isEmpty { break }
+            tail.append(turn)
+            used += chunk.count
+        }
+        var selected = Array(tail.reversed())
+        if let firstUser = turns.first(where: { $0["role"] == "user" }),
+           selected.first?["text"] != firstUser["text"] {
+            selected.insert(firstUser, at: 0)
+        }
+        let omitted = turns.count - selected.count
+        var body = header
+        if let original = turns.first(where: { $0["role"] == "user" }) {
+            body += "## Original request\n\n\(original["text"] ?? "")\n\n## Conversation\n\n"
         } else {
-            message = "\(peers.count) Claude session(s)"
+            body += "## Conversation\n\n"
+        }
+        if omitted > 0 {
+            body += "[Older assistant turns omitted to fit the clipboard. Original request kept.]\n\n"
+        }
+        for turn in selected {
+            if turn["text"] == turns.first(where: { $0["role"] == "user" })?["text"],
+               body.contains("## Original request") {
+                continue
+            }
+            body += render(turn)
+        }
+        if body.count > maxChars {
+            let end = body.index(body.startIndex, offsetBy: maxChars)
+            body = String(body[..<end]) + "\n[truncated]\n"
+        }
+        return body
+    }
+
+    static func claudeHistorySlice(_ turns: [[String: String]], limit: Int = claudeHistoryTurnLimit) -> [[String: String]] {
+        if turns.count <= limit { return turns }
+        return Array(turns.suffix(limit))
+    }
+
+    static let agentSessionListLimit = 20
+    static let agentSessionMaxFileBytes = 32 * 1024 * 1024
+    static let agentSessionMaxAge: TimeInterval = 7 * 24 * 3600
+
+    static func isoString(from date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
+
+    static func createdFromCodexFilename(_ name: String) -> Date? {
+        guard name.hasPrefix("rollout-") else { return nil }
+        let stamp = String(name.dropFirst("rollout-".count).prefix(19))
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "yyyy-MM-dd'T'HH-mm-ss"
+        return formatter.date(from: stamp)
+    }
+
+    static func loadCodexPinnedIds(sessionsRoot: URL) -> Set<String> {
+        let state = sessionsRoot.deletingLastPathComponent().appendingPathComponent(".codex-global-state.json")
+        guard let data = try? Data(contentsOf: state),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = obj["pinned-thread-ids"] as? [Any] else { return [] }
+        return Set(list.compactMap { ($0 as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty })
+    }
+
+    static func normalizeClaudeSessionId(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return trimmed.hasPrefix("local_") ? String(trimmed.dropFirst(6)) : trimmed
+    }
+
+    static func loadClaudeStarredIds(from config: URL) -> Set<String> {
+        guard let data = try? Data(contentsOf: config),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let preferences = obj["preferences"] as? [String: Any],
+              let epitaxy = preferences["epitaxyPrefs"] as? [String: Any],
+              let list = epitaxy["starred-local-code-sessions"] as? [Any] else { return [] }
+        return Set(list.compactMap { ($0 as? String).map(normalizeClaudeSessionId) }.filter { !$0.isEmpty })
+    }
+
+    static func peekClaudeDesktopHead(in file: URL) -> (title: String, cwd: String, cliSessionId: String) {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return ("", "", "") }
+        defer { try? handle.close() }
+        let text = String(data: handle.readData(ofLength: 8 * 1024), encoding: .utf8) ?? ""
+        func capture(_ key: String) -> String {
+            guard let re = try? NSRegularExpression(pattern: "\"\(key)\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"") else { return "" }
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            guard let match = re.firstMatch(in: text, range: range),
+                  let inner = Range(match.range(at: 1), in: text) else { return "" }
+            return text[inner]
+                .replacingOccurrences(of: "\\\"", with: "\"")
+                .replacingOccurrences(of: "\\\\", with: "\\")
+        }
+        return (String(capture("title").prefix(120)), capture("cwd"), normalizeClaudeSessionId(capture("cliSessionId")))
+    }
+
+    struct ClaudeDesktopSession {
+        var id: String
+        var cliSessionId: String
+        var title: String
+        var cwd: String
+        var mtime: Date
+        var created: Date
+    }
+
+    static func loadClaudeDesktopIndex(from sessionsRoot: URL) -> [String: ClaudeDesktopSession] {
+        var byFull: [String: ClaudeDesktopSession] = [:]
+        guard FileManager.default.fileExists(atPath: sessionsRoot.path),
+              let walker = FileManager.default.enumerator(
+                at: sessionsRoot,
+                includingPropertiesForKeys: [.contentModificationDateKey, .creationDateKey, .isRegularFileKey],
+                options: [.skipsHiddenFiles]
+              ) else { return [:] }
+        for case let file as URL in walker {
+            let name = file.lastPathComponent
+            guard name.hasPrefix("local_"), name.hasSuffix(".json") else { continue }
+            let id = normalizeClaudeSessionId(String(name.dropLast(5)))
+            guard id.count >= 8 else { continue }
+            let values = try? file.resourceValues(forKeys: [
+                .contentModificationDateKey, .creationDateKey, .isRegularFileKey
+            ])
+            if values?.isRegularFile == false { continue }
+            let head = peekClaudeDesktopHead(in: file)
+            let mtime = values?.contentModificationDate ?? .distantPast
+            let created = values?.creationDate ?? mtime
+            let row = ClaudeDesktopSession(
+                id: id,
+                cliSessionId: head.cliSessionId,
+                title: head.title,
+                cwd: head.cwd,
+                mtime: mtime,
+                created: created
+            )
+            if let existing = byFull[id], existing.mtime >= mtime { continue }
+            byFull[id] = row
+            if !head.cliSessionId.isEmpty, head.cliSessionId != id {
+                if let existing = byFull[head.cliSessionId], existing.mtime >= mtime { continue }
+                byFull[head.cliSessionId] = row
+            }
+        }
+        var index = byFull
+        for (id, row) in byFull {
+            let short = String(id.prefix(8))
+            if let existing = index[short], existing.mtime >= row.mtime { continue }
+            index[short] = row
+        }
+        return index
+    }
+
+    static func claudeSidebarTitle(
+        sessionId: String,
+        projectsRoot: URL,
+        desktopIndex: [String: ClaudeDesktopSession]
+    ) -> String? {
+        let key = normalizeClaudeSessionId(sessionId)
+        if let title = desktopIndex[key]?.title ?? desktopIndex[String(key.prefix(8))]?.title, !title.isEmpty {
+            return title
+        }
+        if let custom = claudeCustomTitle(sessionId: sessionId, projectsRoot: projectsRoot) { return custom }
+        if let file = findClaudeSessionFile(sessionId: sessionId, projectsRoot: projectsRoot),
+           let first = firstClaudeUserTitle(in: file) {
+            return first
+        }
+        return nil
+    }
+
+    static func findClaudeDesktopFile(sessionId: String, sessionsRoot: URL) -> URL? {
+        let needle = normalizeClaudeSessionId(sessionId)
+        guard needle.count >= 8,
+              needle.allSatisfy({ $0.isHexDigit || $0 == "-" }),
+              !needle.contains(".."),
+              !needle.contains("/") else { return nil }
+        let exact = "local_\(needle).json"
+        let prefix = "local_\(needle)"
+        var best: (mtime: Date, file: URL)?
+        guard let accounts = try? FileManager.default.contentsOfDirectory(
+            at: sessionsRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        for account in accounts {
+            let isDir = (try? account.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard isDir else { continue }
+            guard let workspaces = try? FileManager.default.contentsOfDirectory(
+                at: account,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for workspace in workspaces {
+                let exactFile = workspace.appendingPathComponent(exact)
+                if FileManager.default.fileExists(atPath: exactFile.path) { return exactFile }
+                guard needle.count < 36 else { continue }
+                guard let files = try? FileManager.default.contentsOfDirectory(
+                    at: workspace,
+                    includingPropertiesForKeys: [.contentModificationDateKey],
+                    options: [.skipsHiddenFiles]
+                ) else { continue }
+                for file in files {
+                    let name = file.lastPathComponent.lowercased()
+                    guard name.hasPrefix(prefix), name.hasSuffix(".json") else { continue }
+                    let mtime = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                        ?? .distantPast
+                    if best == nil || mtime > best!.mtime { best = (mtime, file) }
+                }
+            }
+        }
+        return best?.file
+    }
+
+    static func parsePinnedComposerList(_ raw: String) -> [String] {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = trimmed.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) else { return [] }
+        let list: [Any]
+        if let array = parsed as? [Any] {
+            list = array
+        } else if let obj = parsed as? [String: Any] {
+            list = (obj["composerIds"] as? [Any]) ?? (obj["ids"] as? [Any]) ?? []
+        } else {
+            list = []
+        }
+        return list.compactMap { ($0 as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty }
+    }
+
+    static func loadCursorPinnedIds(from workspaceStorage: URL) -> Set<String> {
+        guard let folders = try? FileManager.default.contentsOfDirectory(
+            at: workspaceStorage,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        var pinned = Set<String>()
+        for folder in folders {
+            let db = folder.appendingPathComponent("state.vscdb")
+            guard FileManager.default.fileExists(atPath: db.path) else { continue }
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+            process.arguments = ["-readonly", db.path, "SELECT value FROM ItemTable WHERE key = 'cursor/pinnedComposers' LIMIT 1"]
+            let stdout = Pipe()
+            process.standardOutput = stdout
+            process.standardError = Pipe()
+            do { try process.run() } catch { continue }
+            let deadline = Date().addingTimeInterval(2)
+            while process.isRunning && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.02)
+            }
+            if process.isRunning { process.terminate() }
+            guard process.terminationStatus == 0 else { continue }
+            let raw = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            for id in parsePinnedComposerList(raw) { pinned.insert(id) }
+        }
+        return pinned
+    }
+
+    static func idFromCodexFilename(_ name: String) -> String? {
+        guard name.hasSuffix(".jsonl") else { return nil }
+        let stem = String(name.dropLast(6))
+        let uuid = stem.split(separator: "-").suffix(5).joined(separator: "-")
+        guard uuid.count >= 36 else { return nil }
+        return uuid.lowercased()
+    }
+
+    static func loadCodexThreadNames(sessionsRoot: URL) -> [String: String] {
+        let index = sessionsRoot.deletingLastPathComponent().appendingPathComponent("session_index.jsonl")
+        guard let handle = try? FileHandle(forReadingFrom: index) else { return [:] }
+        defer { try? handle.close() }
+        guard let text = String(data: handle.readDataToEndOfFile(), encoding: .utf8) else { return [:] }
+        var names: [String: String] = [:]
+        for line in text.split(whereSeparator: \.isNewline) {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  let id = obj["id"] as? String, !id.isEmpty,
+                  let name = (obj["thread_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !name.isEmpty else { continue }
+            names[id] = String(name.prefix(120))
+        }
+        return names
+    }
+
+    static func listCodexJsonlFiles(sessionsRoot: URL) -> [URL] {
+        var files: [URL] = []
+        guard let years = try? FileManager.default.contentsOfDirectory(
+            at: sessionsRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        for year in years {
+            let yearIsDir = (try? year.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard yearIsDir else { continue }
+            guard let months = try? FileManager.default.contentsOfDirectory(
+                at: year,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for month in months {
+                let monthIsDir = (try? month.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                guard monthIsDir else { continue }
+                guard let days = try? FileManager.default.contentsOfDirectory(
+                    at: month,
+                    includingPropertiesForKeys: [.isDirectoryKey],
+                    options: [.skipsHiddenFiles]
+                ) else { continue }
+                for day in days {
+                    let dayIsDir = (try? day.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                    guard dayIsDir else { continue }
+                    guard let jsonl = try? FileManager.default.contentsOfDirectory(
+                        at: day,
+                        includingPropertiesForKeys: nil,
+                        options: [.skipsHiddenFiles]
+                    ) else { continue }
+                    files.append(contentsOf: jsonl.filter { $0.pathExtension == "jsonl" })
+                }
+            }
+        }
+        return files
+    }
+
+    static func payloadText(_ payload: [String: Any]) -> String? {
+        let content = payload["content"]
+        if let text = content as? String {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        guard let blocks = content as? [[String: Any]] else { return nil }
+        var parts: [String] = []
+        for block in blocks {
+            let type = block["type"] as? String ?? ""
+            if type == "input_text" || type == "output_text" || type == "text",
+               let text = (block["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !text.isEmpty {
+                parts.append(text)
+            }
+        }
+        let joined = parts.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return joined.isEmpty ? nil : joined
+    }
+
+    static func isWrapperPrompt(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasPrefix("<")
+            || trimmed.hasPrefix("SYSTEM INSTRUCTIONS")
+            || trimmed.hasPrefix("You are an agent")
+            || trimmed.hasPrefix("You are QA Agent")
+            || trimmed.hasPrefix("Message Type:")
+    }
+
+    static func isKeepWarmSessionTitle(_ title: String) -> Bool {
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if t == "ready" { return true }
+        return t.hasPrefix("this is an automated local readiness check")
+    }
+
+    static func recentCodexConversations(
+        sessionsRoot: URL,
+        now: Date = Date(),
+        maxAge: TimeInterval = agentSessionMaxAge,
+        limit: Int = agentSessionListLimit
+    ) -> [[String: Any]] {
+        let names = loadCodexThreadNames(sessionsRoot: sessionsRoot)
+        let pinnedIds = loadCodexPinnedIds(sessionsRoot: sessionsRoot)
+        var pinnedRows: [(mtime: Date, row: [String: Any])] = []
+        var recentRows: [(mtime: Date, row: [String: Any])] = []
+        for file in listCodexJsonlFiles(sessionsRoot: sessionsRoot) {
+            let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .creationDateKey])
+            let mtime = values?.contentModificationDate ?? .distantPast
+            let fileId = idFromCodexFilename(file.lastPathComponent)
+            let pinned = fileId.map { pinnedIds.contains($0) } ?? false
+            let fresh = now.timeIntervalSince(mtime) <= maxAge
+            if !pinned && !fresh { continue }
+            guard let meta = peekCodexMeta(in: file), meta.subagent == false else { continue }
+            let nativeId = meta.id.isEmpty ? file.deletingPathExtension().lastPathComponent : meta.id
+            let title = names[nativeId] ?? (meta.title.isEmpty ? "Codex session" : meta.title)
+            if isKeepWarmSessionTitle(title) { continue }
+            let created = meta.created.isEmpty
+                ? isoString(from: createdFromCodexFilename(file.lastPathComponent) ?? values?.creationDate ?? mtime)
+                : meta.created
+            let row: [String: Any] = [
+                "id": nativeId,
+                "provider": "codex",
+                "name": title,
+                "workspace": workspaceLabel(meta.cwd),
+                "state": "recent",
+                "status": "recent",
+                "waitingFor": "",
+                "alive": false,
+                "reachable": false,
+                "pinned": pinned || pinnedIds.contains(nativeId.lowercased()),
+                "createdAt": created,
+                "updatedAt": isoString(from: mtime),
+            ]
+            if pinned { pinnedRows.append((mtime, row)) }
+            else { recentRows.append((mtime, row)) }
+        }
+        pinnedRows.sort { $0.mtime > $1.mtime }
+        recentRows.sort { $0.mtime > $1.mtime }
+        return pinnedRows.map(\.row) + Array(recentRows.prefix(limit).map(\.row))
+    }
+
+    static func peekCodexMeta(in jsonl: URL) -> (id: String, cwd: String, title: String, subagent: Bool, created: String)? {
+        guard let handle = try? FileHandle(forReadingFrom: jsonl) else { return nil }
+        defer { try? handle.close() }
+        let data = handle.readData(ofLength: 256 * 1024)
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        var id = ""
+        var cwd = ""
+        var title = ""
+        var created = ""
+        var subagent = false
+        for line in text.split(whereSeparator: \.isNewline) {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { continue }
+            if obj["type"] as? String == "session_meta", let payload = obj["payload"] as? [String: Any] {
+                id = (payload["id"] as? String) ?? (payload["session_id"] as? String) ?? id
+                cwd = payload["cwd"] as? String ?? cwd
+                subagent = (payload["thread_source"] as? String) == "subagent"
+                if let nick = payload["agent_nickname"] as? String, !nick.isEmpty, title.isEmpty { title = nick }
+                if let stamp = payload["timestamp"] as? String, !stamp.isEmpty, created.isEmpty { created = stamp }
+                if created.isEmpty, let stamp = obj["timestamp"] as? String, !stamp.isEmpty { created = stamp }
+            }
+            if title.isEmpty,
+               obj["type"] as? String == "response_item",
+               let payload = obj["payload"] as? [String: Any],
+               payload["type"] as? String == "message",
+               payload["role"] as? String == "user",
+               let text = payloadText(payload),
+               !isWrapperPrompt(text) {
+                title = firstLineTitle(text)
+            }
+            if !id.isEmpty && !title.isEmpty { break }
+        }
+        return (id, cwd, title, subagent, created)
+    }
+
+    static func findCodexSessionFile(sessionId: String, sessionsRoot: URL) -> URL? {
+        let needle = sessionId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard needle.count >= 8,
+              needle.allSatisfy({ $0.isHexDigit || $0 == "-" }),
+              !needle.contains(".."),
+              !needle.contains("/") else { return nil }
+        return listCodexJsonlFiles(sessionsRoot: sessionsRoot).first {
+            $0.pathExtension == "jsonl" && $0.lastPathComponent.lowercased().contains(needle)
+        }
+    }
+
+    static func parseCodexTranscript(in jsonl: URL) -> (
+        title: String, cwd: String, branch: String, sessionId: String,
+        turns: [[String: String]], omittedTools: Int, omittedSidechain: Int
+    ) {
+        var title = "", cwd = "", branch = "", sessionId = jsonl.deletingPathExtension().lastPathComponent
+        var turns: [[String: String]] = []
+        var omittedTools = 0
+        forEachClaudeJsonlLine(in: jsonl) { line in
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { return }
+            if obj["type"] as? String == "session_meta", let payload = obj["payload"] as? [String: Any] {
+                cwd = payload["cwd"] as? String ?? cwd
+                sessionId = (payload["id"] as? String) ?? sessionId
+                if let git = payload["git"] as? [String: Any] {
+                    branch = (git["branch"] as? String) ?? branch
+                }
+                if title.isEmpty, let nick = payload["agent_nickname"] as? String, !nick.isEmpty { title = nick }
+                return
+            }
+            guard obj["type"] as? String == "response_item",
+                  let payload = obj["payload"] as? [String: Any] else { return }
+            let kind = payload["type"] as? String ?? ""
+            if kind == "custom_tool_call" || kind == "custom_tool_call_output" || kind == "function_call" {
+                omittedTools += 1
+                return
+            }
+            if kind != "message" { return }
+            let role = payload["role"] as? String ?? ""
+            if role == "developer" { return }
+            guard let text = payloadText(payload), !isWrapperPrompt(text) else { return }
+            let mapped = role == "assistant" ? "assistant" : "user"
+            if title.isEmpty && mapped == "user" { title = firstLineTitle(text) }
+            turns.append([
+                "id": "\(turns.count + 1)",
+                "role": mapped,
+                "text": redactSecrets(clipClaudeTurn(text)),
+                "timestamp": obj["timestamp"] as? String ?? "",
+            ])
+        }
+        return (title, cwd, branch, sessionId, turns, omittedTools, 0)
+    }
+
+    static func isSkippedCursorFolder(_ folder: String) -> Bool {
+        folder == "empty-window" || folder.contains("var-folders") || folder.contains("private-var")
+    }
+
+    static func loadCursorComposerNames(from db: URL) -> [String: String] {
+        guard FileManager.default.fileExists(atPath: db.path) else { return [:] }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        process.arguments = [
+            "-readonly",
+            "-json",
+            db.path,
+            "SELECT composerId AS id, json_extract(value, '$.name') AS name FROM composerHeaders WHERE json_extract(value, '$.name') IS NOT NULL AND json_extract(value, '$.name') != ''",
+        ]
+        let stdout = Pipe()
+        process.standardOutput = stdout
+        process.standardError = Pipe()
+        do { try process.run() } catch { return [:] }
+        let deadline = Date().addingTimeInterval(4)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning { process.terminate() }
+        guard process.terminationStatus == 0,
+              let rows = try? JSONSerialization.jsonObject(with: stdout.fileHandleForReading.readDataToEndOfFile()) as? [[String: Any]]
+        else { return [:] }
+        var names: [String: String] = [:]
+        for row in rows {
+            let id = ((row["id"] as? String) ?? (row["composerId"] as? String) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = (row["name"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !id.isEmpty, !name.isEmpty { names[id] = String(name.prefix(120)) }
+        }
+        return names
+    }
+
+    static func recentCursorConversations(
+        projectsRoot: URL,
+        now: Date = Date(),
+        maxAge: TimeInterval = agentSessionMaxAge,
+        limit: Int = agentSessionListLimit,
+        composerNames: [String: String] = [:],
+        pinnedIds: Set<String> = []
+    ) -> [[String: Any]] {
+        guard let projects = try? FileManager.default.contentsOfDirectory(
+            at: projectsRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        var byId: [String: (mtime: Date, row: [String: Any], workspace: String)] = [:]
+        for project in projects {
+            let isDir = (try? project.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard isDir else { continue }
+            let folder = project.lastPathComponent
+            if folder.contains("var-folders") || folder.contains("private-var") { continue }
+            let transcripts = project.appendingPathComponent("agent-transcripts", isDirectory: true)
+            guard let sessions = try? FileManager.default.contentsOfDirectory(
+                at: transcripts,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for sessionDir in sessions {
+                if sessionDir.lastPathComponent == "subagents" { continue }
+                let nativeId = sessionDir.lastPathComponent
+                let pinned = pinnedIds.contains(nativeId.lowercased())
+                if folder == "empty-window" && !pinned { continue }
+                let file = sessionDir.appendingPathComponent("\(nativeId).jsonl")
+                guard FileManager.default.fileExists(atPath: file.path) else { continue }
+                let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                if !pinned && size > agentSessionMaxFileBytes { continue }
+                let mtime = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let fresh = now.timeIntervalSince(mtime) <= maxAge
+                if !pinned && !fresh { continue }
+                let created = (try? file.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? mtime
+                let title = composerNames[nativeId]
+                    ?? lastCursorUserTitle(in: file)
+                    ?? firstCursorUserTitle(in: file)
+                    ?? "Cursor session"
+                if isKeepWarmSessionTitle(title) { continue }
+                let workspace = workspaceLabel(folder)
+                let row: [String: Any] = [
+                    "id": nativeId,
+                    "provider": "cursor",
+                    "name": title,
+                    "workspace": workspace,
+                    "state": now.timeIntervalSince(mtime) < 180 ? "running" : "recent",
+                    "status": "recent",
+                    "waitingFor": "",
+                    "alive": now.timeIntervalSince(mtime) < 180,
+                    "reachable": false,
+                    "pinned": pinned,
+                    "createdAt": isoString(from: created),
+                    "updatedAt": isoString(from: mtime),
+                ]
+                if let existing = byId[nativeId] {
+                    if workspace == "empty-window" && existing.workspace != "empty-window" { continue }
+                    if existing.workspace == "empty-window" && workspace != "empty-window" {
+                        byId[nativeId] = (mtime, row, workspace)
+                        continue
+                    }
+                    if mtime >= existing.mtime { byId[nativeId] = (mtime, row, workspace) }
+                } else {
+                    byId[nativeId] = (mtime, row, workspace)
+                }
+            }
+        }
+        let pinnedRows = byId.values.filter { $0.row["pinned"] as? Bool == true }.sorted { $0.mtime > $1.mtime }
+        let recentRows = byId.values.filter { $0.row["pinned"] as? Bool != true }.sorted { $0.mtime > $1.mtime }
+        return pinnedRows.map(\.row) + Array(recentRows.prefix(limit).map(\.row))
+    }
+
+    static func cursorUserTitle(from body: String, requireQuery: Bool) -> String? {
+        if requireQuery && !body.contains("<user_query>") { return nil }
+        let title = firstLineTitle(body)
+        if title.isEmpty || isWrapperPrompt(title) { return nil }
+        return title
+    }
+
+    static func firstCursorUserTitle(in jsonl: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: jsonl) else { return nil }
+        defer { try? handle.close() }
+        let data = handle.readData(ofLength: 256 * 1024)
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        var fallback: String?
+        for line in text.split(whereSeparator: \.isNewline) {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  (obj["role"] as? String) == "user",
+                  let message = obj["message"] as? [String: Any],
+                  let body = claudeMessageText(message) else { continue }
+            if let title = cursorUserTitle(from: body, requireQuery: true) { return title }
+            if fallback == nil { fallback = cursorUserTitle(from: body, requireQuery: false) }
+        }
+        return fallback
+    }
+
+    static func lastCursorUserTitle(in jsonl: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: jsonl) else { return nil }
+        defer { try? handle.close() }
+        let size = (try? jsonl.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        let window = 256 * 1024
+        if size > window { handle.seek(toFileOffset: UInt64(size - window)) }
+        let data = handle.readDataToEndOfFile()
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        var found: String?
+        for line in text.split(whereSeparator: \.isNewline) {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  (obj["role"] as? String) == "user",
+                  let message = obj["message"] as? [String: Any],
+                  let body = claudeMessageText(message),
+                  let title = cursorUserTitle(from: body, requireQuery: true) else { continue }
+            found = title
+        }
+        return found
+    }
+
+    static func findCursorSessionFile(sessionId: String, projectsRoot: URL) -> URL? {
+        let needle = sessionId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard needle.count >= 8,
+              needle.allSatisfy({ $0.isHexDigit || $0 == "-" }),
+              !needle.contains(".."),
+              !needle.contains("/") else { return nil }
+        guard let projects = try? FileManager.default.contentsOfDirectory(
+            at: projectsRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        var best: (file: URL, mtime: Date)?
+        for project in projects {
+            if isSkippedCursorFolder(project.lastPathComponent) { continue }
+            let file = project
+                .appendingPathComponent("agent-transcripts", isDirectory: true)
+                .appendingPathComponent(needle, isDirectory: true)
+                .appendingPathComponent("\(needle).jsonl")
+            guard FileManager.default.fileExists(atPath: file.path) else { continue }
+            let mtime = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            if best == nil || mtime >= (best?.mtime ?? .distantPast) { best = (file, mtime) }
+        }
+        return best?.file
+    }
+
+    static func parseCursorTranscript(in jsonl: URL) -> (
+        title: String, cwd: String, branch: String, sessionId: String,
+        turns: [[String: String]], omittedTools: Int, omittedSidechain: Int
+    ) {
+        var title = ""
+        var turns: [[String: String]] = []
+        var omittedTools = 0
+        let sessionId = jsonl.deletingPathExtension().lastPathComponent
+        forEachClaudeJsonlLine(in: jsonl) { line in
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { return }
+            let role = obj["role"] as? String ?? ""
+            guard role == "user" || role == "assistant" else { return }
+            let message = obj["message"] as? [String: Any] ?? [:]
+            if let blocks = message["content"] as? [[String: Any]],
+               blocks.contains(where: { ($0["type"] as? String) == "tool_use" }) {
+                omittedTools += 1
+            }
+            guard let text = claudeMessageText(message) else { return }
+            if role == "user" {
+                if let queryTitle = cursorUserTitle(from: text, requireQuery: true) {
+                    title = queryTitle
+                } else if title.isEmpty, let fallback = cursorUserTitle(from: text, requireQuery: false) {
+                    title = fallback
+                }
+            }
+            turns.append([
+                "id": "\(turns.count + 1)",
+                "role": role,
+                "text": redactSecrets(clipClaudeTurn(text)),
+                "timestamp": obj["timestamp"] as? String ?? "",
+            ])
+        }
+        let cwd = jsonl.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
+        return (title, workspaceLabel(cwd), "", sessionId, turns, omittedTools, 0)
+    }
+
+    private func emitClaudeSessions() throws {
+        var enabled = false
+        var reason = ""
+        var peers: [[String: Any]] = []
+        var counts: Any = ["alive": 0, "reachable": 0, "stale": 0]
+        var liveIds: Set<String> = []
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let claudeProjects = home.appendingPathComponent(".claude/projects", isDirectory: true)
+        let claudeStarred = Self.loadClaudeStarredIds(
+            from: home.appendingPathComponent("Library/Application Support/Claude/claude_desktop_config.json")
+        )
+        let claudeDesktop = home.appendingPathComponent(
+            "Library/Application Support/Claude/claude-code-sessions",
+            isDirectory: true
+        )
+        let desktopIndex = Self.loadClaudeDesktopIndex(from: claudeDesktop)
+        if let token = try? speakerReviewToken(),
+           let response = request("/api/claude-sessions", token: token, timeout: 12),
+           response.status == 200,
+           let body = response.body {
+            enabled = body["enabled"] as? Bool ?? false
+            reason = body["reason"] as? String ?? ""
+            counts = body["counts"] ?? counts
+            if enabled {
+                peers = ((body["peers"] as? [[String: Any]]) ?? []).compactMap(Self.claudePeerProjection)
+                for index in peers.indices {
+                    let id = peers[index]["id"] as? String ?? ""
+                    if let title = Self.claudeSidebarTitle(
+                        sessionId: id,
+                        projectsRoot: claudeProjects,
+                        desktopIndex: desktopIndex
+                    ) {
+                        peers[index]["name"] = title
+                    }
+                    peers[index]["provider"] = "claude"
+                    peers[index]["workspace"] = Self.workspaceLabel(peers[index]["workspace"] as? String ?? "")
+                    peers[index]["pinned"] = claudeStarred.contains(Self.normalizeClaudeSessionId(id))
+                }
+                liveIds = Set(peers.compactMap { $0["id"] as? String })
+            }
+        }
+        peers.append(contentsOf: Self.recentClaudeConversations(
+            liveIds: liveIds,
+            projectsRoot: claudeProjects,
+            starredIds: claudeStarred,
+            desktopSessionsRoot: claudeDesktop,
+            desktopIndex: desktopIndex
+        ))
+        peers.append(contentsOf: Self.recentCodexConversations(
+            sessionsRoot: home.appendingPathComponent(".codex/sessions", isDirectory: true)
+        ))
+        peers.append(contentsOf: Self.recentCursorConversations(
+            projectsRoot: home.appendingPathComponent(".cursor/projects", isDirectory: true),
+            composerNames: Self.loadCursorComposerNames(
+                from: home.appendingPathComponent("Library/Application Support/Cursor/User/globalStorage/state.vscdb")
+            ),
+            pinnedIds: Self.loadCursorPinnedIds(
+                from: home.appendingPathComponent("Library/Application Support/Cursor/User/workspaceStorage")
+            )
+        ))
+        peers.removeAll { Self.isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
+        peers.sort { a, b in
+            let aLive = a["alive"] as? Bool == true
+            let bLive = b["alive"] as? Bool == true
+            if aLive != bLive { return aLive && !bLive }
+            let aPin = a["pinned"] as? Bool == true
+            let bPin = b["pinned"] as? Bool == true
+            if aPin != bPin { return aPin && !bPin }
+            return (a["updatedAt"] as? String ?? "") > (b["updatedAt"] as? String ?? "")
+        }
+        let message: String
+        if peers.isEmpty {
+            message = enabled ? "No sessions" : "No Codex or Cursor sessions"
+        } else {
+            message = "\(peers.count) session(s)"
         }
         emit(ok: true, message: message, details: [
-            "enabled": enabled,
+            "enabled": true,
             "reason": reason,
             "sessions": peers,
-            "counts": body["counts"] ?? ["alive": 0, "reachable": 0, "stale": 0],
+            "counts": counts,
+            "claudeLiveEnabled": enabled,
+        ])
+    }
+
+    private func emitClaudeSessionDetail(args: [String]) throws {
+        guard let sessionId = option("--session", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sessionId.isEmpty else {
+            throw HelperError.message("--session is required")
+        }
+        let provider = (option("--provider", in: args) ?? "claude").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let file: URL
+        let parsed: (title: String, cwd: String, branch: String, sessionId: String, turns: [[String: String]], omittedTools: Int, omittedSidechain: Int)
+        switch provider {
+        case "codex":
+            guard let found = Self.findCodexSessionFile(
+                sessionId: sessionId,
+                sessionsRoot: home.appendingPathComponent(".codex/sessions", isDirectory: true)
+            ) else { throw HelperError.message("No local Codex transcript for this session.") }
+            let size = (try? found.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            if size > Self.agentSessionMaxFileBytes {
+                throw HelperError.message("This Codex session is too large to open in Control.")
+            }
+            file = found
+            parsed = Self.parseCodexTranscript(in: found)
+        case "cursor":
+            guard let found = Self.findCursorSessionFile(
+                sessionId: sessionId,
+                projectsRoot: home.appendingPathComponent(".cursor/projects", isDirectory: true)
+            ) else { throw HelperError.message("No local Cursor transcript for this session.") }
+            let size = (try? found.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            if size > Self.agentSessionMaxFileBytes {
+                throw HelperError.message("This Cursor session is too large to open in Control.")
+            }
+            file = found
+            parsed = Self.parseCursorTranscript(in: found)
+        default:
+            guard let found = Self.findClaudeSessionFile(
+                sessionId: sessionId,
+                projectsRoot: home.appendingPathComponent(".claude/projects", isDirectory: true)
+            ) else { throw HelperError.message("No local transcript for this session.") }
+            file = found
+            parsed = Self.parseClaudeTranscript(in: found)
+        }
+        let history = Self.claudeHistorySlice(parsed.turns)
+        let copy = Self.claudeKickstartCopy(
+            title: parsed.title,
+            cwd: parsed.cwd,
+            branch: parsed.branch,
+            sessionId: parsed.sessionId,
+            turns: parsed.turns,
+            omittedTools: parsed.omittedTools,
+            provider: provider
+        )
+        let fallback = provider == "codex" ? "Codex session" : provider == "cursor" ? "Cursor session" : "Claude session"
+        emit(ok: true, message: "Session ready", details: [
+            "title": parsed.title.isEmpty ? fallback : parsed.title,
+            "cwd": parsed.cwd,
+            "branch": parsed.branch,
+            "sessionId": parsed.sessionId,
+            "provider": provider,
+            "path": file.path,
+            "turns": history,
+            "totalTurns": parsed.turns.count,
+            "omittedTools": parsed.omittedTools,
+            "omittedSidechain": parsed.omittedSidechain,
+            "truncated": parsed.turns.count > history.count,
+            "copyText": copy,
         ])
     }
 
@@ -6120,6 +7337,505 @@ final class COSControlHelper {
             "recovered": recovered,
             "skipped": skipped,
             "failed": failed,
+        ])
+    }
+
+    private func postMeetingSave(sessionId: String) throws -> (status: Int, body: [String: Any]) {
+        guard sessionId.range(of: "^[A-Za-z0-9:_-]{3,96}$", options: .regularExpression) != nil else {
+            throw HelperError.message("Invalid capture id")
+        }
+        let token = try speakerReviewToken()
+        let body = "{\"sessionId\":\"\(sessionId)\"}"
+        guard let response = request("/api/meeting/save", method: "POST", token: token, body: body, timeout: 180) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        return (response.status, response.body ?? [:])
+    }
+
+    private func emitMeetingStrandedSave(args: [String]) throws {
+        guard let sessionId = option("--session", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sessionId.isEmpty else {
+            throw HelperError.message("--session is required")
+        }
+        let posted = try postMeetingSave(sessionId: sessionId)
+        if posted.status == 200, posted.body["filename"] as? String != nil {
+            emit(ok: true, message: "Saved capture as a meeting.", details: posted.body)
+            return
+        }
+        if posted.status == 200, posted.body["alreadySaved"] as? Bool == true {
+            emit(ok: true, message: "Already saved", details: posted.body)
+            return
+        }
+        if posted.status == 409 {
+            throw HelperError.message("Save already in progress for this capture.")
+        }
+        if posted.status == 404 {
+            throw HelperError.message(posted.body["error"] as? String ?? "No transcript for this capture. Session files were not deleted.")
+        }
+        let reason = posted.body["error"] as? String ?? posted.body["reason"] as? String ?? "Save failed (\(posted.status))"
+        throw HelperError.message(reason)
+    }
+
+    private func emitMeetingStrandedSaveAll() throws {
+        let body = try meetingOrphansBody()
+        let stranded = ((body["stranded"] as? [[String: Any]]) ?? []).compactMap(Self.strandedItemProjection)
+        let ids = stranded.compactMap { $0["sessionId"] as? String }
+        if ids.isEmpty {
+            emit(ok: true, message: "No still-live captures", details: [
+                "saved": 0, "failed": [] as [String],
+            ])
+            return
+        }
+        var saved = 0
+        var failed: [String] = []
+        for (index, sessionId) in ids.enumerated() {
+            progress("Saving \(index + 1) of \(ids.count)…")
+            do {
+                let posted = try postMeetingSave(sessionId: sessionId)
+                if posted.status == 200, posted.body["filename"] as? String != nil || posted.body["alreadySaved"] as? Bool == true {
+                    saved += 1
+                    continue
+                }
+                failed.append(sessionId)
+            } catch {
+                failed.append(sessionId)
+            }
+        }
+        let message: String
+        if failed.isEmpty {
+            message = saved == 1 ? "Saved 1 capture as a meeting." : "Saved \(saved) captures as meetings."
+        } else {
+            message = "Saved \(saved). \(failed.count) failed. Session files were not deleted."
+        }
+        emit(ok: true, message: message, details: [
+            "saved": saved,
+            "failed": failed,
+        ])
+    }
+
+    static func sessionSearchHitProjection(_ row: [String: Any]) -> [String: Any]? {
+        let id = (row["session_id"] as? String ?? row["id"] as? String ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return nil }
+        let keyword = meetingScore(row["keywordScore"])
+        let semantic = meetingScore(row["semanticScore"])
+        let name = row["display_label"] as? String
+            ?? row["custom_title"] as? String
+            ?? row["name"] as? String
+            ?? ""
+        return [
+            "id": id,
+            "provider": row["provider"] as? String ?? "claude",
+            "name": name,
+            "workspace": workspaceLabel(row["project"] as? String ?? row["workspace"] as? String ?? ""),
+            "state": row["state"] as? String ?? "recent",
+            "status": row["state"] as? String ?? "recent",
+            "waitingFor": row["waitingFor"] as? String ?? "",
+            "alive": row["alive"] as? Bool ?? false,
+            "reachable": false,
+            "pinned": row["pinned"] as? Bool ?? false,
+            "createdAt": row["created"] as? String ?? row["createdAt"] as? String ?? "",
+            "updatedAt": row["modified"] as? String ?? row["updatedAt"] as? String ?? "",
+            "snippet": row["snippet"] as? String ?? "",
+            "match": row["match"] as? String ?? "keyword",
+            "keywordScore": keyword,
+            "semanticScore": semantic,
+            "score": max(keyword, semantic),
+        ]
+    }
+
+    static let sessionSearchStopwords: Set<String> = [
+        "the", "a", "an", "and", "or", "of", "to", "in", "for", "on", "at", "by",
+        "with", "from", "vs", "is", "it", "be", "as", "we", "our",
+    ]
+
+    static func tokenizeSessionQuery(_ query: String) -> [String] {
+        let matches = query.lowercased().split { !$0.isLetter && !$0.isNumber }
+        var seen = Set<String>()
+        var tokens: [String] = []
+        for part in matches {
+            let token = String(part)
+            guard token.count >= 2, !sessionSearchStopwords.contains(token), !seen.contains(token) else { continue }
+            seen.insert(token)
+            tokens.append(token)
+        }
+        return tokens
+    }
+
+    static func scoreSessionKeyword(tokens: [String], title: String, haystack: String) -> (score: Double, snippet: String) {
+        guard !tokens.isEmpty else { return (0, "") }
+        let titleL = title.lowercased()
+        let hayL = haystack.lowercased()
+        var hits = 0
+        var titleHits = 0
+        var firstAt = -1
+        for token in tokens {
+            let inTitle = titleL.contains(token)
+            let inHay = hayL.contains(token)
+            if !inTitle && !inHay { continue }
+            hits += 1
+            if inTitle { titleHits += 1 }
+            if firstAt < 0 {
+                if let range = hayL.range(of: token) {
+                    firstAt = hayL.distance(from: hayL.startIndex, to: range.lowerBound)
+                } else {
+                    firstAt = 0
+                }
+            }
+        }
+        if hits == 0 { return (0, "") }
+        let coverage = Double(hits) / Double(tokens.count)
+        if coverage < 0.5 && titleHits == 0 { return (0, "") }
+        let score = min(1, coverage * 0.65 + (Double(titleHits) / Double(tokens.count)) * 0.35)
+        let start = max(0, firstAt - 40)
+        let end = min(haystack.count, start + 180)
+        let lower = haystack.index(haystack.startIndex, offsetBy: start)
+        let upper = haystack.index(haystack.startIndex, offsetBy: end)
+        let snippet = String(haystack[lower..<upper]).replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (score, snippet)
+    }
+
+    static let sessionSearchBodyBytes = 96 * 1024
+    static let sessionSearchBodyFileLimit = 80
+    static let sessionSearchBodyMaxAge: TimeInterval = 7 * 24 * 3600
+
+    static func sessionSearchBodyChunk(_ obj: [String: Any]) -> String? {
+        let type = obj["type"] as? String ?? ""
+        if type == "user" || type == "assistant" {
+            if obj["toolUseResult"] != nil || obj["isSidechain"] as? Bool == true { return nil }
+            if let message = obj["message"] as? [String: Any] { return claudeMessageText(message) }
+        }
+        if (obj["role"] as? String) == "user" || (obj["role"] as? String) == "assistant",
+           let message = obj["message"] as? [String: Any] {
+            return claudeMessageText(message)
+        }
+        if type == "response_item",
+           let payload = obj["payload"] as? [String: Any],
+           payload["type"] as? String == "message",
+           let text = payloadText(payload),
+           !isWrapperPrompt(text) {
+            return text
+        }
+        return nil
+    }
+
+    static func peekSessionSearchBody(in file: URL, maxBytes: Int = sessionSearchBodyBytes) -> String {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return "" }
+        defer { try? handle.close() }
+        let data = handle.readData(ofLength: maxBytes)
+        guard let text = String(data: data, encoding: .utf8) else { return "" }
+        var parts: [String] = []
+        var used = 0
+        for line in text.split(whereSeparator: \.isNewline) {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  let chunk = sessionSearchBodyChunk(obj) else { continue }
+            parts.append(chunk)
+            used += chunk.count
+            if used >= 12_000 { break }
+        }
+        return parts.joined(separator: "\n")
+    }
+
+    struct SessionSearchTranscript {
+        var provider: String
+        var id: String
+        var file: URL
+        var mtime: Date
+    }
+
+    static func listSessionSearchTranscripts(
+        claudeProjects: URL,
+        codexRoot: URL,
+        cursorProjects: URL,
+        now: Date = Date(),
+        maxAge: TimeInterval = sessionSearchBodyMaxAge,
+        limit: Int = sessionSearchBodyFileLimit
+    ) -> [SessionSearchTranscript] {
+        var rows: [SessionSearchTranscript] = []
+        let uuidName = try? NSRegularExpression(
+            pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.jsonl$"
+        )
+        let claudeDirs = (try? FileManager.default.contentsOfDirectory(
+            at: claudeProjects,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        for dir in claudeDirs {
+            let isDir = (try? dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard isDir else { continue }
+            guard let files = try? FileManager.default.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for file in files {
+                let name = file.lastPathComponent
+                let whole = NSRange(name.startIndex..<name.endIndex, in: name)
+                guard uuidName?.firstMatch(in: name, range: whole) != nil else { continue }
+                let mtime = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                    ?? .distantPast
+                guard now.timeIntervalSince(mtime) <= maxAge else { continue }
+                rows.append(SessionSearchTranscript(
+                    provider: "claude",
+                    id: String(name.dropLast(6)),
+                    file: file,
+                    mtime: mtime
+                ))
+            }
+        }
+        for file in listCodexJsonlFiles(sessionsRoot: codexRoot) {
+            let mtime = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                ?? .distantPast
+            guard now.timeIntervalSince(mtime) <= maxAge else { continue }
+            let id = idFromCodexFilename(file.lastPathComponent)
+                ?? file.deletingPathExtension().lastPathComponent
+            rows.append(SessionSearchTranscript(provider: "codex", id: id, file: file, mtime: mtime))
+        }
+        let cursorDirs = (try? FileManager.default.contentsOfDirectory(
+            at: cursorProjects,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        for project in cursorDirs {
+            let isDir = (try? project.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard isDir else { continue }
+            let folder = project.lastPathComponent
+            if folder == "empty-window" || folder.contains("var-folders") || folder.contains("private-var") { continue }
+            let transcripts = project.appendingPathComponent("agent-transcripts", isDirectory: true)
+            guard let sessions = try? FileManager.default.contentsOfDirectory(
+                at: transcripts,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for sessionDir in sessions {
+                if sessionDir.lastPathComponent == "subagents" { continue }
+                let nativeId = sessionDir.lastPathComponent
+                let file = sessionDir.appendingPathComponent("\(nativeId).jsonl")
+                guard FileManager.default.fileExists(atPath: file.path) else { continue }
+                let mtime = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                    ?? .distantPast
+                guard now.timeIntervalSince(mtime) <= maxAge else { continue }
+                rows.append(SessionSearchTranscript(provider: "cursor", id: nativeId, file: file, mtime: mtime))
+            }
+        }
+        rows.sort { $0.mtime > $1.mtime }
+        return Array(rows.prefix(max(1, min(limit, sessionSearchBodyFileLimit))))
+    }
+
+    static func localSessionKeywordHits(query: String, limit: Int, home: URL) -> [[String: Any]] {
+        let tokens = tokenizeSessionQuery(query)
+        guard !tokens.isEmpty else { return [] }
+        let claudeProjects = home.appendingPathComponent(".claude/projects", isDirectory: true)
+        let claudeDesktop = home.appendingPathComponent(
+            "Library/Application Support/Claude/claude-code-sessions", isDirectory: true
+        )
+        let claudeStarred = loadClaudeStarredIds(
+            from: home.appendingPathComponent("Library/Application Support/Claude/claude_desktop_config.json")
+        )
+        let composerNames = loadCursorComposerNames(
+            from: home.appendingPathComponent("Library/Application Support/Cursor/User/globalStorage/state.vscdb")
+        )
+        let cursorPinned = loadCursorPinnedIds(
+            from: home.appendingPathComponent("Library/Application Support/Cursor/User/workspaceStorage")
+        )
+        let desktopIndex = loadClaudeDesktopIndex(from: claudeDesktop)
+        var rows: [[String: Any]] = []
+        var seen = Set<String>()
+        func add(_ row: [String: Any]) {
+            let id = (row["id"] as? String ?? "").lowercased()
+            let provider = row["provider"] as? String ?? "claude"
+            guard !id.isEmpty else { return }
+            let key = "\(provider):\(id)"
+            if seen.contains(key) { return }
+            seen.insert(key)
+            rows.append(row)
+        }
+        for (id, head) in desktopIndex where id == head.id {
+            let title = head.title.isEmpty ? "Claude session" : head.title
+            add([
+                "id": String(id.prefix(8)),
+                "provider": "claude",
+                "name": title,
+                "workspace": workspaceLabel(head.cwd),
+                "state": "recent",
+                "status": "recent",
+                "waitingFor": "",
+                "alive": false,
+                "reachable": false,
+                "pinned": claudeStarred.contains(id),
+                "createdAt": isoString(from: head.created),
+                "updatedAt": isoString(from: head.mtime),
+            ])
+        }
+        for row in recentClaudeConversations(
+            liveIds: [],
+            projectsRoot: claudeProjects,
+            starredIds: claudeStarred,
+            desktopSessionsRoot: claudeDesktop,
+            desktopIndex: desktopIndex
+        ) { add(row) }
+        let codexRoot = home.appendingPathComponent(".codex/sessions", isDirectory: true)
+        for (id, name) in loadCodexThreadNames(sessionsRoot: codexRoot) {
+            add([
+                "id": id,
+                "provider": "codex",
+                "name": name,
+                "workspace": "",
+                "state": "recent",
+                "status": "recent",
+                "waitingFor": "",
+                "alive": false,
+                "reachable": false,
+                "pinned": false,
+                "createdAt": "",
+                "updatedAt": "",
+            ])
+        }
+        for row in recentCodexConversations(sessionsRoot: codexRoot) { add(row) }
+        for (id, name) in composerNames {
+            add([
+                "id": id,
+                "provider": "cursor",
+                "name": name,
+                "workspace": "",
+                "state": "recent",
+                "status": "recent",
+                "waitingFor": "",
+                "alive": false,
+                "reachable": false,
+                "pinned": cursorPinned.contains(id.lowercased()),
+                "createdAt": "",
+                "updatedAt": "",
+            ])
+        }
+        let cursorProjects = home.appendingPathComponent(".cursor/projects", isDirectory: true)
+        for row in recentCursorConversations(
+            projectsRoot: cursorProjects,
+            composerNames: composerNames,
+            pinnedIds: cursorPinned
+        ) { add(row) }
+        var hitsByKey: [String: [String: Any]] = [:]
+        var rowByKey: [String: [String: Any]] = [:]
+        func keep(_ hit: [String: Any]) {
+            let id = (hit["id"] as? String ?? "").lowercased()
+            let provider = hit["provider"] as? String ?? "claude"
+            guard !id.isEmpty else { return }
+            let key = "\(provider):\(id)"
+            if let existing = hitsByKey[key], meetingScore(existing["score"]) >= meetingScore(hit["score"]) { return }
+            hitsByKey[key] = hit
+        }
+        func consider(row: [String: Any], haystack: String) {
+            let name = row["name"] as? String ?? ""
+            let scored = scoreSessionKeyword(tokens: tokens, title: name, haystack: haystack)
+            if scored.score <= 0 { return }
+            var hit = row
+            hit["snippet"] = scored.snippet.isEmpty ? name : scored.snippet
+            hit["match"] = "keyword"
+            hit["keywordScore"] = scored.score
+            hit["semanticScore"] = 0.0
+            hit["score"] = scored.score
+            keep(hit)
+        }
+        for row in rows {
+            let id = (row["id"] as? String ?? "").lowercased()
+            let provider = row["provider"] as? String ?? "claude"
+            rowByKey["\(provider):\(id)"] = row
+            consider(row: row, haystack: "\(row["name"] as? String ?? "")\n\(row["workspace"] as? String ?? "")")
+        }
+        for item in listSessionSearchTranscripts(
+            claudeProjects: claudeProjects,
+            codexRoot: codexRoot,
+            cursorProjects: cursorProjects
+        ) {
+            let short = String(item.id.prefix(8)).lowercased()
+            var row = rowByKey["\(item.provider):\(item.id.lowercased())"]
+                ?? rowByKey["\(item.provider):\(short)"]
+            if row == nil {
+                let desktop = item.provider == "claude"
+                    ? (desktopIndex[item.id.lowercased()] ?? desktopIndex[short])
+                    : nil
+                let fallback = item.provider == "codex" ? "Codex session"
+                    : item.provider == "cursor" ? "Cursor session"
+                    : "Claude session"
+                let title = (desktop?.title.isEmpty == false) ? (desktop?.title ?? fallback) : fallback
+                row = [
+                    "id": item.provider == "claude" ? String(item.id.prefix(8)) : item.id,
+                    "provider": item.provider,
+                    "name": title,
+                    "workspace": workspaceLabel(desktop?.cwd ?? ""),
+                    "state": "recent",
+                    "status": "recent",
+                    "waitingFor": "",
+                    "alive": false,
+                    "reachable": false,
+                    "pinned": false,
+                    "createdAt": "",
+                    "updatedAt": isoString(from: item.mtime),
+                ]
+            }
+            guard let row else { continue }
+            let name = row["name"] as? String ?? ""
+            let workspace = row["workspace"] as? String ?? ""
+            let nameL = name.lowercased()
+            if tokens.allSatisfy({ nameL.contains($0) }) { continue }
+            let body = peekSessionSearchBody(in: item.file)
+            if body.isEmpty { continue }
+            consider(row: row, haystack: "\(name)\n\(workspace)\n\(body)")
+            if item.provider == "claude",
+               let desktop = desktopIndex[item.id.lowercased()] ?? desktopIndex[short] {
+                let alias = String(desktop.id.prefix(8)).lowercased()
+                if alias != (row["id"] as? String ?? "").lowercased(),
+                   let aliasRow = rowByKey["claude:\(alias)"] {
+                    consider(
+                        row: aliasRow,
+                        haystack: "\(aliasRow["name"] as? String ?? "")\n\(aliasRow["workspace"] as? String ?? "")\n\(body)"
+                    )
+                }
+            }
+        }
+        return Array(
+            hitsByKey.values.sorted { meetingScore($0["score"]) > meetingScore($1["score"]) }
+                .prefix(max(1, min(limit, 50)))
+        )
+    }
+
+    private func emitClaudeSessionsSearch(args: [String]) throws {
+        guard let query = option("--query", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              query.count >= 2 else {
+            throw HelperError.message("--query must be at least 2 characters")
+        }
+        let limit = min(max(Int(option("--limit", in: args) ?? "20") ?? 20, 1), 50)
+        let path = "/api/agent-sessions/search?q=\(queryEscape(query))&limit=\(limit)"
+        if let token = try? speakerReviewToken(),
+           let response = request(path, token: token, timeout: 2) {
+            if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+            if response.status == 200 {
+                let body = response.body ?? [:]
+                let raw = (body["hits"] as? [[String: Any]]) ?? []
+                let rows = raw.compactMap(Self.sessionSearchHitProjection)
+                emit(ok: true, message: rows.isEmpty ? "No matching sessions" : "Session lookup ready", details: [
+                    "state": rows.isEmpty ? "empty" : "ready",
+                    "hits": rows,
+                    "count": rows.count,
+                    "keywordCount": body["keywordCount"] as? Int ?? rows.count,
+                    "semanticCount": body["semanticCount"] as? Int ?? 0,
+                    "semanticAvailable": body["semanticAvailable"] as? Bool ?? false,
+                    "semanticReason": body["semanticReason"] as? String ?? "",
+                ])
+                return
+            }
+        }
+        let rows = Self.localSessionKeywordHits(query: query, limit: limit, home: FileManager.default.homeDirectoryForCurrentUser)
+        emit(ok: true, message: rows.isEmpty ? "No matching sessions" : "Session lookup ready", details: [
+            "state": rows.isEmpty ? "empty" : "ready",
+            "hits": rows,
+            "count": rows.count,
+            "keywordCount": rows.count,
+            "semanticCount": 0,
+            "semanticAvailable": false,
+            "semanticReason": "server_too_old",
         ])
     }
 
@@ -7375,6 +9091,29 @@ final class COSControlHelper {
         ], kind: "memory")
         try expect(memoryHit?["id"] as? String == "mem_1", "memory search keeps id")
         try expect(memoryHit?["match"] as? String == "both", "memory search keeps match kind")
+        try expect(Self.sessionSearchHitProjection(["name": "no id"]) == nil,
+                   "session search drops rows without id")
+        let sessionHit = Self.sessionSearchHitProjection([
+            "session_id": "019dfe42-d4ba-7152-b5ae-60f600a2675a", "provider": "codex",
+            "display_label": "Markt POS 2.0 build", "project": "MU-Chief-Staff",
+            "snippet": "Jewelry Edge bridge", "match": "both",
+            "keywordScore": 0.8, "semanticScore": 0.61,
+            "pinned": true, "state": "recent", "alive": false,
+        ])
+        try expect(sessionHit?["id"] as? String == "019dfe42-d4ba-7152-b5ae-60f600a2675a", "session search keeps session_id as id")
+        try expect(sessionHit?["name"] as? String == "Markt POS 2.0 build", "session search keeps the sidebar title")
+        try expect(sessionHit?["match"] as? String == "both", "session search keeps match kind")
+        try expect(sessionHit?["score"] as? Double == 0.8, "session search score is the stronger signal")
+        try expect(sessionHit?["workspace"] as? String == "MU-Chief-Staff", "session search keeps the repo name")
+        try expect(Self.tokenizeSessionQuery("Toast in grocery vs Clover") == ["toast", "grocery", "clover"],
+                   "session search drops stopwords")
+        let scored = Self.scoreSessionKeyword(
+            tokens: ["jewelry", "edge"],
+            title: "Markt POS 2.0 build",
+            haystack: "Markt POS 2.0 build\nJewelry Edge bridge"
+        )
+        try expect(scored.score > 0, "session keyword hits a first prompt the sidebar title does not use")
+        try expect(scored.snippet.lowercased().contains("jewelry"), "session keyword snippet comes from the prompt")
 
         // --- restart blockers must NAME the cause ---------------------------
         // The 2026-08-12 lockout in one fixture: activeByKind EMPTY, everything
@@ -7514,6 +9253,373 @@ final class COSControlHelper {
                    "an alive session with no wait is running")
         try expect(Self.claudePeerProjection(["workspace": "MU-Chief-Staff"]) == nil,
                    "Claude session rows without an id are dropped")
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("cos-claude-title-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let project = tmp.appendingPathComponent("proj", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let jsonl = project.appendingPathComponent("d3786335-cfb4-4556-9a4a-7308ce66eab1.jsonl")
+        try Data("{\"type\":\"custom-title\",\"customTitle\":\"Fireflies meeting sync\"}\n".utf8).write(to: jsonl)
+        try expect(Self.lastCustomTitle(in: jsonl) == "Fireflies meeting sync",
+                   "jsonl custom-title is the Activity label")
+        try expect(Self.claudeCustomTitle(sessionId: "d3786335", projectsRoot: tmp) == "Fireflies meeting sync",
+                   "an 8-char presence id still finds the /rename title")
+        try expect(Self.recentClaudeConversations(liveIds: ["d3786335"], projectsRoot: tmp).isEmpty,
+                   "live sessions are not duplicated as recent")
+        try expect(
+            Self.recentClaudeConversations(liveIds: [], projectsRoot: tmp).first?["name"] as? String == "Fireflies meeting sync",
+            "ended conversations from today still appear"
+        )
+        try expect(Self.isKeepWarmSessionTitle("ready"), "CLI pre-warm prompt is keep-warm")
+        try expect(Self.isKeepWarmSessionTitle("This is an automated local readiness check. Do not use tools. Reply with exactly"),
+                   "provider-proof prompts are keep-warm")
+        try expect(!Self.isKeepWarmSessionTitle("Fireflies meeting sync"), "real session titles stay visible")
+        let readyJsonl = project.appendingPathComponent("bbbbbbbb-bbbb-cccc-dddd-ffffffffffff.jsonl")
+        try Data("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"ready\"}}\n".utf8).write(to: readyJsonl)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(60)], ofItemAtPath: readyJsonl.path)
+        try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: jsonl.path)
+        let afterWarm = Self.recentClaudeConversations(liveIds: [], projectsRoot: tmp)
+        try expect(afterWarm.contains(where: { ($0["name"] as? String) == "ready" }) == false,
+                   "keep-warm ready sessions stay out of the Sessions list")
+        try expect(afterWarm.contains(where: { ($0["name"] as? String) == "Fireflies meeting sync" }),
+                   "real sessions still list after keep-warm rows are skipped")
+        try expect(Self.findClaudeSessionFile(sessionId: "d3786335", projectsRoot: tmp)?.lastPathComponent == jsonl.lastPathComponent,
+                   "an 8-char id resolves to the local jsonl")
+        try expect(Self.findClaudeSessionFile(sessionId: "../etc/passwd", projectsRoot: tmp) == nil,
+                   "session lookup rejects path escape")
+        try expect(Self.findClaudeSessionFile(sessionId: "short", projectsRoot: tmp) == nil,
+                   "session lookup requires an 8-char id")
+        let transcript = project.appendingPathComponent("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl")
+        let transcriptLines = [
+            "{\"type\":\"custom-title\",\"customTitle\":\"Fireflies meeting sync\"}",
+            "{\"type\":\"user\",\"cwd\":\"/repo\",\"gitBranch\":\"main\",\"sessionId\":\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\",\"message\":{\"role\":\"user\",\"content\":\"Sync Fireflies COS_API_TOKEN=secret-token-value\"}}",
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"hide\"},{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"cat ~/.cos-glasses/.env\"}}]}}",
+            "{\"type\":\"user\",\"toolUseResult\":{\"stdout\":\"SECRET\"},\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"SECRET\"}]}}",
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Synced the meeting.\"}]}}",
+            "{\"type\":\"user\",\"isSidechain\":true,\"message\":{\"role\":\"user\",\"content\":\"subagent secret\"}}",
+        ]
+        try Data((transcriptLines.joined(separator: "\n") + "\n").utf8).write(to: transcript)
+        let parsed = Self.parseClaudeTranscript(in: transcript)
+        try expect(parsed.turns.count == 2, "history keeps user and assistant prose only")
+        try expect(parsed.omittedTools >= 1, "tool calls are counted as omitted")
+        try expect(parsed.omittedSidechain == 1, "subagent sidechains are omitted")
+        try expect(parsed.turns[0]["text"]?.contains("[redacted]") == true, "token shapes are redacted in history")
+        try expect(parsed.turns[0]["text"]?.contains("secret-token-value") != true, "raw tokens never reach history")
+        let copy = Self.claudeKickstartCopy(
+            title: parsed.title,
+            cwd: parsed.cwd,
+            branch: parsed.branch,
+            sessionId: parsed.sessionId,
+            turns: parsed.turns,
+            omittedTools: parsed.omittedTools
+        )
+        try expect(copy.contains("# Kickstart: Fireflies meeting sync"), "copy is a kickstart brief")
+        try expect(copy.contains("Synced the meeting."), "copy includes assistant prose")
+        try expect(copy.contains("/repo") && copy.contains("main"), "copy carries workspace and branch")
+        try expect(!copy.contains("secret-token-value"), "copy does not carry raw tokens")
+        try expect(!copy.contains("cat ~/.cos-glasses/.env"), "copy does not carry tool commands")
+        try expect(!copy.contains("subagent secret"), "copy does not carry sidechain text")
+        try expect(!copy.contains("SECRET"), "copy does not carry tool output")
+        try expect(Self.workspaceLabel("-Users-ukaoma-Documents-GitHub-Ukaoma-Chief-Of-Staff-MU-Chief-Staff") == "MU-Chief-Staff",
+                   "encoded Claude/Cursor project folders collapse to the repo name")
+        try expect(Self.workspaceLabel("/Users/ukaoma/Documents/GitHub/Ukaoma Chief Of Staff/MU-Chief-Staff") == "MU-Chief-Staff",
+                   "real paths use the last component")
+        let codexRoot = tmp.appendingPathComponent("codex/2026/08/13", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexRoot, withIntermediateDirectories: true)
+        let codexFile = codexRoot.appendingPathComponent("rollout-2026-08-13T12-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl")
+        let codexLines = [
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\",\"cwd\":\"/repo\",\"thread_source\":\"user\"}}",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"developer\",\"content\":[{\"type\":\"input_text\",\"text\":\"<app-context>hide\"}]}}",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Badge the sessions tab\"}]}}",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"custom_tool_call\",\"name\":\"Bash\",\"input\":{\"command\":\"cat ~/.env\"}}}",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Badges added.\"}]}}",
+        ]
+        try Data((codexLines.joined(separator: "\n") + "\n").utf8).write(to: codexFile)
+        let now = Date()
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: codexFile.path)
+        let sessionsRoot = tmp.appendingPathComponent("codex", isDirectory: true)
+        let codexParsed = Self.parseCodexTranscript(in: codexFile)
+        try expect(codexParsed.turns.count == 2, "Codex history keeps user and assistant prose")
+        try expect(codexParsed.omittedTools >= 1, "Codex tool calls are omitted")
+        try expect(codexParsed.turns[0]["text"] == "Badge the sessions tab", "Codex user text is the title source")
+        try expect(!codexParsed.turns.contains(where: { ($0["text"] ?? "").contains("cat ~/.env") }), "Codex copy omits tool commands")
+        try expect(Self.peekCodexMeta(in: codexFile)?.subagent == false, "parent Codex threads are listed")
+        let subagent = codexRoot.appendingPathComponent("rollout-sub.jsonl")
+        try Data("{\"type\":\"session_meta\",\"payload\":{\"id\":\"sub\",\"thread_source\":\"subagent\",\"cwd\":\"/repo\"}}\n".utf8).write(to: subagent)
+        try expect(Self.peekCodexMeta(in: subagent)?.subagent == true, "Codex subagents are not listed")
+        var listingDay = DateComponents()
+        listingDay.year = 2026
+        listingDay.month = 8
+        listingDay.day = 13
+        listingDay.hour = 12
+        let listingNow = Calendar.current.date(from: listingDay) ?? now
+        try FileManager.default.setAttributes([.modificationDate: listingNow], ofItemAtPath: codexFile.path)
+        let listedCodex = Self.recentCodexConversations(sessionsRoot: sessionsRoot, now: listingNow)
+        try expect(listedCodex.contains(where: { ($0["name"] as? String) == "Badge the sessions tab" }),
+                   "Codex parent threads appear in the Sessions list")
+        try expect(!listedCodex.contains(where: { ($0["id"] as? String) == "sub" }),
+                   "Codex subagents stay out of the Sessions list")
+        try expect(Self.findCodexSessionFile(sessionId: "../etc/passwd", sessionsRoot: sessionsRoot) == nil,
+                   "Codex lookup rejects path escape")
+        let pinnedDay = tmp.appendingPathComponent("codex/2026/05/08", isDirectory: true)
+        try FileManager.default.createDirectory(at: pinnedDay, withIntermediateDirectories: true)
+        let pinnedId = "019e0943-62c4-7643-bcff-1a7be9a52a4c"
+        let pinnedFile = pinnedDay.appendingPathComponent("rollout-2026-05-08T15-24-31-\(pinnedId).jsonl")
+        try Data((
+            "{\"timestamp\":\"2026-05-08T20:24:36.565Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"\(pinnedId)\",\"cwd\":\"/repo\",\"originator\":\"Codex Desktop\",\"timestamp\":\"2026-05-08T20:24:31.684Z\"}}\n"
+            + "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Plan Markt POS case study build\"}]}}\n"
+        ).utf8).write(to: pinnedFile)
+        try FileManager.default.setAttributes([.modificationDate: listingNow], ofItemAtPath: pinnedFile.path)
+        try Data("{\"id\":\"\(pinnedId)\",\"thread_name\":\"Markt POS 2.0 build\",\"updated_at\":\"2026-05-13T22:02:18Z\"}\n".utf8)
+            .write(to: tmp.appendingPathComponent("session_index.jsonl"))
+        let pinnedListed = Self.recentCodexConversations(sessionsRoot: sessionsRoot, now: listingNow)
+        try expect(pinnedListed.contains(where: { ($0["name"] as? String) == "Markt POS 2.0 build" }),
+                   "a pinned Codex thread lists by last write, not the May folder")
+        try expect(Self.findCodexSessionFile(sessionId: pinnedId, sessionsRoot: sessionsRoot)?.lastPathComponent == pinnedFile.lastPathComponent,
+                   "Codex lookup finds the original day-folder rollout")
+        try expect(Self.createdFromCodexFilename(pinnedFile.lastPathComponent) != nil,
+                   "Codex filenames carry the opened stamp")
+        let jewelryId = "019dfe42-d4ba-7152-b5ae-60f600a2675a"
+        let jewelryDay = tmp.appendingPathComponent("codex/2026/05/06", isDirectory: true)
+        try FileManager.default.createDirectory(at: jewelryDay, withIntermediateDirectories: true)
+        let jewelryFile = jewelryDay.appendingPathComponent("rollout-2026-05-06T12-08-05-\(jewelryId).jsonl")
+        try Data((
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(jewelryId)\",\"cwd\":\"/repo\",\"timestamp\":\"2026-05-06T17:08:05.000Z\"}}\n"
+            + "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Jewelry Edge bridge\"}]}}\n"
+        ).utf8).write(to: jewelryFile)
+        var jewelryDayStamp = DateComponents()
+        jewelryDayStamp.year = 2026
+        jewelryDayStamp.month = 5
+        jewelryDayStamp.day = 6
+        jewelryDayStamp.hour = 12
+        let jewelryMtime = Calendar.current.date(from: jewelryDayStamp) ?? listingNow.addingTimeInterval(-35 * 24 * 3600)
+        try FileManager.default.setAttributes([.modificationDate: jewelryMtime], ofItemAtPath: jewelryFile.path)
+        try Data("{\"id\":\"\(jewelryId)\",\"thread_name\":\"Jewelry 2.0 Build\"}\n".utf8)
+            .write(to: tmp.appendingPathComponent("session_index.jsonl"), options: .atomic)
+        try Data("{\"pinned-thread-ids\":[\"\(jewelryId)\",\"\(pinnedId)\"]}\n".utf8)
+            .write(to: tmp.appendingPathComponent(".codex-global-state.json"))
+        let menuListed = Self.recentCodexConversations(sessionsRoot: sessionsRoot, now: listingNow)
+        try expect(menuListed.contains(where: { ($0["name"] as? String) == "Jewelry 2.0 Build" && ($0["pinned"] as? Bool) == true }),
+                   "ChatGPT pinned threads stay in the list even when stale")
+        try expect(Self.idFromCodexFilename(jewelryFile.lastPathComponent) == jewelryId,
+                   "Codex rollout filenames expose the thread id")
+        let cursorProj = tmp.appendingPathComponent("cursor-proj/agent-transcripts/bbbbbbbb-1111-2222-3333-cccccccccccc", isDirectory: true)
+        try FileManager.default.createDirectory(at: cursorProj, withIntermediateDirectories: true)
+        let cursorFile = cursorProj.appendingPathComponent("bbbbbbbb-1111-2222-3333-cccccccccccc.jsonl")
+        let cursorLines = [
+            "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"<user_query>Show Codex and Cursor too</user_query>\"}]}}",
+            "{\"role\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Will badge them.\"},{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{}}]}}",
+        ]
+        try Data((cursorLines.joined(separator: "\n") + "\n").utf8).write(to: cursorFile)
+        try expect(Self.firstCursorUserTitle(in: cursorFile) == "Show Codex and Cursor too",
+                   "Cursor titles come from user_query")
+        let wrapperCursor = cursorProj.appendingPathComponent("wrapper.jsonl")
+        try Data("""
+        {"role":"user","message":{"content":[{"type":"text","text":"SYSTEM INSTRUCTIONS\\nDo not tell the user."}]}}
+        {"role":"user","message":{"content":[{"type":"text","text":"<user_query>Badge Claude Codex and Cursor</user_query>"}]}}
+        {"role":"user","message":{"content":[{"type":"text","text":"<user_query>Proper badges on the session tab</user_query>"}]}}
+        """.utf8).write(to: wrapperCursor)
+        try expect(Self.firstCursorUserTitle(in: wrapperCursor) == "Badge Claude Codex and Cursor",
+                   "Cursor titles skip SYSTEM INSTRUCTIONS")
+        try expect(Self.lastCursorUserTitle(in: wrapperCursor) == "Proper badges on the session tab",
+                   "Cursor list titles prefer the latest user_query")
+        let cursorParsed = Self.parseCursorTranscript(in: cursorFile)
+        try expect(cursorParsed.turns.count == 2, "Cursor history keeps user and assistant prose")
+        try expect(cursorParsed.omittedTools >= 1, "Cursor tool_use is omitted from prose")
+        let cursorGhostDir = tmp.appendingPathComponent("empty-window/agent-transcripts/bbbbbbbb-1111-2222-3333-cccccccccccc", isDirectory: true)
+        try FileManager.default.createDirectory(at: cursorGhostDir, withIntermediateDirectories: true)
+        let cursorGhost = cursorGhostDir.appendingPathComponent("bbbbbbbb-1111-2222-3333-cccccccccccc.jsonl")
+        try Data((cursorLines.joined(separator: "\n") + "\n").utf8).write(to: cursorGhost)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-3600)], ofItemAtPath: cursorGhost.path)
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: cursorFile.path)
+        let composerDb = tmp.appendingPathComponent("composer.vscdb")
+        let sqlite = Process()
+        sqlite.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        sqlite.arguments = [
+            composerDb.path,
+            "CREATE TABLE composerHeaders (composerId TEXT, value TEXT); INSERT INTO composerHeaders VALUES ('bbbbbbbb-1111-2222-3333-cccccccccccc', '{\"name\":\"V2 verification and performance\"}');",
+        ]
+        try sqlite.run()
+        sqlite.waitUntilExit()
+        try expect(sqlite.terminationStatus == 0, "composerHeaders fixture sqlite must succeed")
+        let composerNames = Self.loadCursorComposerNames(from: composerDb)
+        try expect(composerNames["bbbbbbbb-1111-2222-3333-cccccccccccc"] == "V2 verification and performance",
+                   "Cursor sidebar titles come from composerHeaders")
+        let listedCursor = Self.recentCursorConversations(projectsRoot: tmp, now: now, composerNames: composerNames)
+        try expect(listedCursor.count == 1, "empty-window copies of the same Cursor chat are dropped")
+        try expect(listedCursor.first?["name"] as? String == "V2 verification and performance",
+                   "Cursor list titles prefer the sidebar name")
+        try expect(listedCursor.first?["workspace"] as? String == "cursor-proj",
+                   "Cursor rows keep the real workspace, not empty-window")
+        try expect(Self.findCursorSessionFile(sessionId: "bbbbbbbb-1111-2222-3333-cccccccccccc", projectsRoot: tmp)?.path.contains("empty-window") != true,
+                   "Cursor lookup skips empty-window")
+        try expect(Self.findCursorSessionFile(sessionId: "../etc/passwd", projectsRoot: tmp) == nil,
+                   "Cursor lookup rejects path escape")
+        let claudeConfig = tmp.appendingPathComponent("claude_desktop_config.json")
+        let starredDesktopId = "f92b10f3-413a-461a-bee9-19d269355b15"
+        let starredJsonlId = "a4b2b4dd-e40c-4b08-8a11-c89a018c197d"
+        try Data("""
+        {"preferences":{"epitaxyPrefs":{"starred-local-code-sessions":["local_\(starredDesktopId)","local_\(starredJsonlId)"]}}}
+        """.utf8).write(to: claudeConfig)
+        try expect(Self.loadClaudeStarredIds(from: claudeConfig).contains(starredDesktopId),
+                   "Claude Desktop stars strip the local_ prefix")
+        let desktopDir = tmp.appendingPathComponent("claude-code-sessions/account/workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: desktopDir, withIntermediateDirectories: true)
+        let desktopFile = desktopDir.appendingPathComponent("local_\(starredDesktopId).json")
+        try Data("{\"sessionId\":\"local_\(starredDesktopId)\",\"cwd\":\"/repo\",\"title\":\"ThriftCart end-of-year campaign design\"}\n".utf8)
+            .write(to: desktopFile)
+        var julyStamp = DateComponents()
+        julyStamp.year = 2026
+        julyStamp.month = 7
+        julyStamp.day = 9
+        julyStamp.hour = 20
+        let julyMtime = Calendar.current.date(from: julyStamp) ?? listingNow.addingTimeInterval(-35 * 24 * 3600)
+        try FileManager.default.setAttributes([.modificationDate: julyMtime], ofItemAtPath: desktopFile.path)
+        let starredJsonl = project.appendingPathComponent("\(starredJsonlId).jsonl")
+        try Data("{\"type\":\"custom-title\",\"customTitle\":\"COS-glasses Server work (meetings)\"}\n".utf8).write(to: starredJsonl)
+        try FileManager.default.setAttributes([.modificationDate: jewelryMtime], ofItemAtPath: starredJsonl.path)
+        let starredClaude = Self.recentClaudeConversations(
+            liveIds: [],
+            projectsRoot: tmp,
+            now: listingNow,
+            starredIds: Self.loadClaudeStarredIds(from: claudeConfig),
+            desktopSessionsRoot: tmp.appendingPathComponent("claude-code-sessions")
+        )
+        try expect(starredClaude.contains(where: { ($0["name"] as? String) == "ThriftCart end-of-year campaign design" && ($0["pinned"] as? Bool) == true }),
+                   "Claude Desktop stars list even without a project jsonl")
+        try expect(starredClaude.contains(where: { ($0["name"] as? String) == "COS-glasses Server work (meetings)" && ($0["pinned"] as? Bool) == true }),
+                   "starred Claude jsonl stays in the list when stale")
+        let pinWs = tmp.appendingPathComponent("workspaceStorage/empty-window", isDirectory: true)
+        try FileManager.default.createDirectory(at: pinWs, withIntermediateDirectories: true)
+        let pinDb = pinWs.appendingPathComponent("state.vscdb")
+        let pinSqlite = Process()
+        pinSqlite.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        pinSqlite.arguments = [
+            pinDb.path,
+            "CREATE TABLE ItemTable (key TEXT, value BLOB); INSERT INTO ItemTable VALUES ('cursor/pinnedComposers', '[\"bbbbbbbb-1111-2222-3333-cccccccccccc\"]');",
+        ]
+        try pinSqlite.run()
+        pinSqlite.waitUntilExit()
+        try expect(pinSqlite.terminationStatus == 0, "pinnedComposers fixture sqlite must succeed")
+        try FileManager.default.setAttributes([.modificationDate: jewelryMtime], ofItemAtPath: cursorFile.path)
+        let cursorPins = Self.loadCursorPinnedIds(from: tmp.appendingPathComponent("workspaceStorage"))
+        try expect(cursorPins.contains("bbbbbbbb-1111-2222-3333-cccccccccccc"),
+                   "Cursor pins come from workspaceStorage pinnedComposers")
+        let stalePinnedCursor = Self.recentCursorConversations(
+            projectsRoot: tmp,
+            now: listingNow,
+            composerNames: composerNames,
+            pinnedIds: cursorPins
+        )
+        try expect(stalePinnedCursor.contains(where: { ($0["name"] as? String) == "V2 verification and performance" && ($0["pinned"] as? Bool) == true }),
+                   "Cursor sidebar pins stay in the list even when stale")
+        let posId = "c0ffeeee-aaaa-bbbb-cccc-ddddeeee0001"
+        let posJsonl = project.appendingPathComponent("\(posId).jsonl")
+        try Data("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Split by severity — this is the one that matters.\"}}\n".utf8)
+            .write(to: posJsonl)
+        try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: posJsonl.path)
+        let posDesktop = desktopDir.appendingPathComponent("local_\(posId).json")
+        try Data("{\"sessionId\":\"local_\(posId)\",\"cwd\":\"/Users/ukaoma/Documents/GitHub/MU-Chief-Staff\",\"title\":\"POS complexity and competitive challenges\"}\n".utf8)
+            .write(to: posDesktop)
+        let desktopRoot = tmp.appendingPathComponent("claude-code-sessions")
+        try expect(
+            Self.findClaudeDesktopFile(sessionId: String(posId.prefix(8)), sessionsRoot: desktopRoot)?.lastPathComponent
+                == "local_\(posId).json",
+            "an 8-char live id still finds the Claude Code sidebar file"
+        )
+        let posListed = Self.recentClaudeConversations(
+            liveIds: [],
+            projectsRoot: tmp,
+            desktopSessionsRoot: desktopRoot
+        )
+        try expect(
+            posListed.contains(where: { ($0["name"] as? String) == "POS complexity and competitive challenges" }),
+            "Claude Code sidebar titles beat the first prompt"
+        )
+        try expect(
+            Self.claudeSidebarTitle(
+                sessionId: String(posId.prefix(8)),
+                projectsRoot: tmp,
+                desktopIndex: Self.loadClaudeDesktopIndex(from: desktopRoot)
+            ) == "POS complexity and competitive challenges",
+            "live overlay uses the Claude Code sidebar title"
+        )
+        try expect(Self.tokenizeSessionQuery("aeo") == ["aeo"], "short tokens still search")
+        let aeoScored = Self.scoreSessionKeyword(
+            tokens: ["aeo"],
+            title: "AEO HS Setup",
+            haystack: "AEO HS Setup\nMU-Chief-Staff"
+        )
+        try expect(aeoScored.score > 0, "keyword search hits a listed title immediately")
+        let searchHome = tmp.appendingPathComponent("search-home", isDirectory: true)
+        let searchDesktop = searchHome.appendingPathComponent(
+            "Library/Application Support/Claude/claude-code-sessions/acct/ws", isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: searchDesktop, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: searchHome.appendingPathComponent(".claude/projects/proj", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let aeoId = "ae0ae0ae-1111-2222-3333-444444444444"
+        try Data("{\"title\":\"AEO HS Setup\",\"cwd\":\"/repo\"}\n".utf8)
+            .write(to: searchDesktop.appendingPathComponent("local_\(aeoId).json"))
+        let searchHits = Self.localSessionKeywordHits(query: "aeo", limit: 20, home: searchHome)
+        try expect(
+            searchHits.contains(where: { ($0["name"] as? String) == "AEO HS Setup" }),
+            "keyword search hits a sidebar title without re-reading transcripts"
+        )
+        try Data("{\"title\":\"POS complexity and competitive challenges\",\"cwd\":\"/repo\"}\n".utf8)
+            .write(to: searchDesktop.appendingPathComponent("local_\(posId).json"))
+        let posSearch = Self.localSessionKeywordHits(query: "POS complexity", limit: 20, home: searchHome)
+        try expect(
+            posSearch.contains(where: { ($0["name"] as? String) == "POS complexity and competitive challenges" }),
+            "keyword search finds a Claude Code sidebar title"
+        )
+        let ewicJsonl = searchHome.appendingPathComponent(".claude/projects/proj/\(posId).jsonl")
+        try Data("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Speaker 2 said EWIC is a month out of being something we could sell.\"}}\n".utf8)
+            .write(to: ewicJsonl)
+        try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: ewicJsonl.path)
+        try expect(
+            Self.peekSessionSearchBody(in: ewicJsonl).lowercased().contains("ewic"),
+            "body peek keeps user prose from the transcript head"
+        )
+        let ewicHits = Self.localSessionKeywordHits(query: "ewic", limit: 20, home: searchHome)
+        try expect(
+            ewicHits.contains(where: { ($0["name"] as? String) == "POS complexity and competitive challenges" }),
+            "keyword search hits EWIC in the transcript body"
+        )
+        try expect(
+            ewicHits.contains(where: { (($0["snippet"] as? String) ?? "").lowercased().contains("ewic") }),
+            "body match snippet keeps the EWIC sentence"
+        )
+        let deskId = "2954f44a-4ee3-46f5-adc1-87bf0d85db1f"
+        let cliId = "c5ec6a69-24c3-479d-bb40-9b3f1fe6eabf"
+        try Data("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Split by severity\"}}\n".utf8)
+            .write(to: project.appendingPathComponent("\(cliId).jsonl"))
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date()],
+            ofItemAtPath: project.appendingPathComponent("\(cliId).jsonl").path
+        )
+        try Data("{\"sessionId\":\"local_\(deskId)\",\"cliSessionId\":\"\(cliId)\",\"cwd\":\"/repo\",\"title\":\"POS complexity and competitive challenges\"}\n".utf8)
+            .write(to: desktopDir.appendingPathComponent("local_\(deskId).json"))
+        try expect(
+            Self.claudeSidebarTitle(
+                sessionId: String(cliId.prefix(8)),
+                projectsRoot: tmp,
+                desktopIndex: Self.loadClaudeDesktopIndex(from: desktopRoot)
+            ) == "POS complexity and competitive challenges",
+            "live overlay follows cliSessionId to the Desktop title"
+        )
+        let cursorCopy = Self.claudeKickstartCopy(
+            title: cursorParsed.title,
+            cwd: cursorParsed.cwd,
+            branch: "",
+            sessionId: cursorParsed.sessionId,
+            turns: cursorParsed.turns,
+            omittedTools: cursorParsed.omittedTools,
+            provider: "cursor"
+        )
+        try expect(cursorCopy.contains("Cursor session"), "kickstart names the provider")
         var missingScripts = ""
         do {
             _ = try Self.meetingSyncTooling(scriptsDir: nil, fileExists: { _ in true }, isExecutable: { _ in true })

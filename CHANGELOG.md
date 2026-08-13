@@ -1,5 +1,106 @@
 # Changelog
 
+## 0.5.40 (build 78)
+
+- **Sessions lookup reads recent transcript bodies.** Keyword search still
+  matches titles first. It then peeks the newest 80 Claude, Codex, and Cursor
+  transcripts from the last 7 days (96 KB each), so a term like EWIC in the
+  first user turn hits even when the sidebar title does not. Full-history
+  body scan is what hung before; this does not do that.
+
+## 0.5.39 (build 77)
+
+- **Sessions lookup no longer hangs.** Titles already in the open list match as
+  you type. The helper scores sidebar names instead of re-reading every
+  transcript, and lookup cannot spin forever.
+- **Claude Code sidebar titles on live rows.** Activity uses the Desktop
+  `title` (the name in the Claude Code sidebar), so chats like "POS complexity
+  and competitive challenges" show as that instead of the first prompt.
+
+## 0.5.38 (build 76)
+
+- **Sessions lookup.** Search titles, sidebar names, first prompts, and
+  transcript text — including chats older than the 7-day list. Keyword plus
+  meaning, same pattern as Meetings. Keyword works on this Mac even before
+  the server ships the lookup route; meaning needs that update and an
+  OpenAI key.
+
+## 0.5.37 (build 75)
+
+- **GOT COS lockup in the open panels.** The menu bar still uses eyeglasses
+  for a quick running/offline glance. Once Control or Activity is open, the
+  official COS lockup is the brand, at a quieter size. Headings use Fraunces,
+  UI copy uses DM Sans, and chrome numbers use JetBrains Mono — the same
+  trio as gotcos.com.
+
+## 0.5.36 (build 74)
+
+- **Pinned now includes Claude Desktop stars and Cursor sidebar pins.** Claude
+  `starred-local-code-sessions` and Cursor `pinnedComposers` use the same rule
+  as ChatGPT `pinned-thread-ids`: they show on Pinned at any age. Desktop-only
+  Claude chats (no `~/.claude` jsonl) still list by their Desktop title.
+
+## 0.5.35 (build 73)
+
+- **Pinned is its own Sessions clock.** Updated / Opened / Pinned. Codex/ChatGPT
+  `pinned-thread-ids` (Markt POS, Jewelry, G2, …) show there at any age. Cursor
+  and Claude pins were added in 0.5.36.
+- **Keep-warm `ready` rows stay out.** Claude CLI pre-warm (`ready`) and Control
+  provider-proof prompts are not real sessions; they no longer eat the list.
+
+## 0.5.34 (build 72)
+
+- **Cursor sidebar titles, not last user_query.** Sessions uses
+  `composerHeaders.name` so "V2 verification and performance" shows as that,
+  not the summarizer prompt. The `empty-window` copy of the same chat is
+  dropped.
+- **Pinned Codex threads stay visible.** ChatGPT `pinned-thread-ids` (Jewelry,
+  G2, ThriftCart, …) list even when the jsonl is weeks old. Updated vs Opened
+  picker is unchanged.
+
+## 0.5.33 (build 71)
+
+- **Sessions clocks: Updated vs Opened.** Default is last write in 7 days, so
+  pinned Codex/ChatGPT threads (Markt POS 2.0 build still lives in the May 8
+  rollout) show up when they get a new turn. Opened keeps the same window on
+  session start. Codex titles come from `session_index.jsonl`. Files over 32 MB
+  list; opening the full transcript is still capped.
+
+## 0.5.32 (build 70)
+
+- **Sessions look back 7 days.** Same Claude / Codex / Cursor mix. Codex day
+  folders now cover a week, not three calendar days. Empty copy says last 7
+  days.
+
+## 0.5.31 (build 69)
+
+- **Sessions lists Claude, Codex, and Cursor.** Same 48-hour window. Each row
+  is badged. Click and Copy session still work per provider. Codex subagents
+  and Cursor `subagents/` folders stay out. Files over 32 MB are skipped.
+  Cursor titles use the latest user query, not system-prompt wrappers.
+
+## 0.5.30 (build 68)
+
+- **Session history on click.** Activity → Sessions opens the local Claude Code
+  jsonl as a read-only You / Assistant transcript. Tool calls, tool output,
+  thinking, and subagent sidechains stay out.
+- **Copy session.** Same pane. Puts a kickstart brief on the clipboard for
+  another agent (Cursor, Codex, a new Claude chat). That is a paste, not a
+  Claude Code resume. Secrets matching known token shapes are redacted.
+  Huge sessions keep the original request and the newest turns.
+
+## 0.5.29 (build 67)
+
+- **Save still-live captures from Control.** Stranded G2 sessions (phone never
+  saved) now have Save / Save all. That is POST `/api/meeting/save`, not Recover
+  all — Recover all only works after the 4-hour quarantine cutoff. Session files
+  become meetings; they are not deleted.
+- **Sessions tab shows /rename titles and today’s conversations.** Live presence
+  used the workspace folder name, so "Fireflies meeting sync" rendered as
+  "MU-Chief-Staff" or as empty if Claude Desktop had just launched. The helper
+  now reads `custom-title` from the project jsonl and lists conversations from
+  the last 48 hours.
+
 ## 0.5.28 (build 66)
 
 - **Unsaved captures row hides when nothing is recoverable.** Recovered

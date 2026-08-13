@@ -29,6 +29,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/HelperClient.swift" \
   "$ROOT/Sources/ControllerModel.swift" \
+  "$ROOT/Sources/COSBrand.swift" \
   "$ROOT/Sources/Views.swift" \
   "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
@@ -38,6 +39,10 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
 
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+cp "$ROOT/Resources/COSMark.svg" "$APP/Contents/Resources/COSMark.svg"
+cp "$ROOT/Resources/COSLockup.svg" "$APP/Contents/Resources/COSLockup.svg"
+mkdir -p "$APP/Contents/Resources/Fonts"
+cp "$ROOT/Resources/Fonts/"*.ttf "$APP/Contents/Resources/Fonts/"
 chmod 700 "$APP/Contents/MacOS/COS Control" "$APP/Contents/Resources/cos-control-helper"
 /usr/bin/xattr -cr "$APP"
 # Public releases fail closed unless both Developer ID signing and notarization

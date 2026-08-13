@@ -216,6 +216,35 @@ struct ModelsContract {
         precondition(thread?.record.title == "Hubspot Theme Settings")
     }
 
+    private static func checkSessionSearchHit() {
+        let hit = SessionSearchHit(.object([
+            "id": .string("019dfe42-d4ba-7152-b5ae-60f600a2675a"),
+            "provider": .string("codex"),
+            "name": .string("Markt POS 2.0 build"),
+            "snippet": .string("Jewelry Edge bridge"),
+            "match": .string("both"),
+            "keywordScore": .number(0.8),
+            "semanticScore": .number(0.61),
+        ]))
+        precondition(hit?.matchLabel == "Keyword + meaning")
+        precondition(hit?.session.title == "Markt POS 2.0 build")
+        precondition(hit?.score == 0.8)
+        precondition(SessionSearchHit(.object(["snippet": .string("no id")])) == nil,
+                     "session search drops rows without id")
+        let listed = ClaudeSession(.object([
+            "id": .string("ae0ae0ae"),
+            "name": .string("AEO HS Setup"),
+            "workspace": .string("MU-Chief-Staff"),
+            "state": .string("recent"),
+        ]))
+        precondition(SessionSearchHit.tokenize("aeo") == ["aeo"])
+        if let listed {
+            let instant = SessionSearchHit.keywordHits(query: "aeo", sessions: [listed])
+            precondition(instant.contains(where: { $0.session.title == "AEO HS Setup" }),
+                         "listed titles match before the helper returns")
+        }
+    }
+
     private static func checkClaudeSession() {
         let waiting = ClaudeSession(.object([
             "id": .string("sess_1"),
@@ -225,7 +254,7 @@ struct ModelsContract {
             "waitingFor": .string("user"),
             "alive": .bool(true),
         ]))
-        precondition(waiting?.title == "MU-Chief-Staff")
+        precondition(waiting?.title == "hidden-name")
         precondition(waiting?.stateLabel == "Waiting")
         precondition(ClaudeSession(.object(["workspace": .string("MU-Chief-Staff")])) == nil,
                      "session rows without id are dropped")
@@ -238,6 +267,119 @@ struct ModelsContract {
         ]))
         precondition(unnamed?.title == "analysis")
         precondition(unnamed?.stateLabel == "Stale")
+        let renamed = ClaudeSession(.object([
+            "id": .string("d3786335"),
+            "name": .string("Fireflies meeting sync"),
+            "workspace": .string("MU-Chief-Staff"),
+            "state": .string("running"),
+            "alive": .bool(true),
+        ]))
+        precondition(renamed?.title == "Fireflies meeting sync")
+        precondition(renamed?.providerLabel == "Claude")
+        let cursorRow = ClaudeSession(.object([
+            "id": .string("a488f8e0"),
+            "provider": .string("cursor"),
+            "name": .string("Session badges"),
+            "workspace": .string("MU-Chief-Staff"),
+            "state": .string("recent"),
+            "alive": .bool(false),
+        ]))
+        precondition(cursorRow?.id == "cursor:a488f8e0")
+        precondition(cursorRow?.sessionId == "a488f8e0")
+        precondition(cursorRow?.providerLabel == "Cursor")
+        let codexRow = ClaudeSession(.object([
+            "id": .string("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+            "provider": .string("codex"),
+            "name": .string("Badge the sessions tab"),
+            "workspace": .string("MU-Chief-Staff"),
+            "state": .string("recent"),
+            "alive": .bool(false),
+        ]))
+        precondition(codexRow?.id == "codex:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        precondition(codexRow?.providerLabel == "Codex")
+        let stamped = ClaudeSession(.object([
+            "id": .string("019e0943-62c4-7643-bcff-1a7be9a52a4c"),
+            "provider": .string("codex"),
+            "name": .string("Markt POS 2.0 build"),
+            "createdAt": .string("2026-05-08T20:24:31Z"),
+            "updatedAt": .string("2026-08-13T18:43:00Z"),
+            "state": .string("recent"),
+            "alive": .bool(false),
+        ]))
+        precondition(stamped?.createdDate != nil)
+        precondition(stamped?.updatedDate != nil)
+        precondition(stamped?.createdDate ?? .distantFuture < stamped?.updatedDate ?? .distantPast)
+        let pinned = ClaudeSession(.object([
+            "id": .string("0196aaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+            "provider": .string("codex"),
+            "name": .string("Jewelry 2.0 Build"),
+            "pinned": .bool(true),
+            "state": .string("recent"),
+            "alive": .bool(false),
+        ]))
+        precondition(pinned?.pinned == true)
+        precondition(cursorRow?.pinned == false)
+        let pinnedRow = ClaudeSession(.object([
+            "id": .string("019dfe42-d4ba-7152-b5ae-60f600a2675a"),
+            "provider": .string("codex"),
+            "name": .string("Jewelry 2.0 Build"),
+            "pinned": .bool(true),
+            "state": .string("recent"),
+            "alive": .bool(false),
+        ]))
+        precondition(pinnedRow?.pinned == true)
+        precondition(cursorRow?.pinned == false)
+        let recent = ClaudeSession(.object([
+            "id": .string("sess_3"),
+            "name": .string("Fireflies meeting sync"),
+            "workspace": .string("MU-Chief-Staff"),
+            "state": .string("recent"),
+            "alive": .bool(false),
+        ]))
+        precondition(recent?.stateLabel == "Today")
+        precondition(ClaudeSession.isKeepWarmSessionTitle("ready"))
+        precondition(ClaudeSession.isKeepWarmSessionTitle("This is an automated local readiness check. Do not use tools. Reply with exactly"))
+        precondition(ClaudeSession.isKeepWarmSessionTitle("ready") && !ClaudeSession.isKeepWarmSessionTitle("Fireflies meeting sync"))
+        let warm = ClaudeSession(.object([
+            "id": .string("warm1"),
+            "name": .string("ready"),
+            "workspace": .string("MU-Chief-Staff"),
+            "state": .string("recent"),
+            "alive": .bool(false),
+        ]))
+        precondition(warm?.isKeepWarm == true)
+        precondition(renamed?.isKeepWarm == false)
+        let detail = ClaudeSessionDetail(.object([
+            "title": .string("Fireflies meeting sync"),
+            "cwd": .string("/repo"),
+            "branch": .string("main"),
+            "sessionId": .string("d3786335"),
+            "totalTurns": .number(2),
+            "omittedTools": .number(3),
+            "omittedSidechain": .number(0),
+            "truncated": .bool(false),
+            "copyText": .string("# Kickstart: Fireflies meeting sync"),
+            "turns": .array([
+                .object([
+                    "id": .string("1"),
+                    "role": .string("user"),
+                    "text": .string("Sync Fireflies"),
+                    "timestamp": .string(""),
+                ]),
+                .object([
+                    "id": .string("2"),
+                    "role": .string("assistant"),
+                    "text": .string("Synced the meeting."),
+                    "timestamp": .string(""),
+                ]),
+            ]),
+        ]))
+        precondition(detail?.title == "Fireflies meeting sync")
+        precondition(detail?.turns.count == 2)
+        precondition(detail?.turns.first?.isUser == true)
+        precondition(detail?.copyText.contains("Kickstart") == true)
+        precondition(ClaudeSessionDetail(.object(["title": .string("x")])) == nil,
+                     "session detail without turns or copy is dropped")
     }
 
     private static func checkOrphanCapture() {
@@ -617,6 +759,7 @@ struct ModelsContract {
         checkCountsSummary()
         checkLibraryMeeting()
         checkContextSearchHit()
+        checkSessionSearchHit()
         checkOrphanCapture()
         checkClaudeSession()
         checkAssertedSegmentsBackCompat()

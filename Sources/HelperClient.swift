@@ -4,12 +4,14 @@ enum HelperClientError: LocalizedError {
     case helperMissing
     case invalidResponse(String)
     case commandFailed(String)
+    case timedOut
 
     var errorDescription: String? {
         switch self {
         case .helperMissing: "COS Control helper is missing from the app bundle."
         case .invalidResponse(let value): "The helper returned an invalid response: \(value)"
         case .commandFailed(let value): value
+        case .timedOut: "Session lookup took too long."
         }
     }
 }
@@ -98,6 +100,22 @@ private final class HelperProcessCancellation: @unchecked Sendable {
     }
 }
 
+private func waitForProcessExit(
+    _ process: Process,
+    timeout: TimeInterval,
+    cancellation: HelperProcessCancellation
+) throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while process.isRunning && Date() < deadline {
+        Thread.sleep(forTimeInterval: 0.05)
+        try cancellation.checkCancellation()
+    }
+    if process.isRunning {
+        process.terminate()
+        throw HelperClientError.timedOut
+    }
+}
+
 actor HelperClient {
     private func helperURL() throws -> URL {
         if let bundled = Bundle.main.resourceURL?.appendingPathComponent("cos-control-helper"),
@@ -112,6 +130,7 @@ actor HelperClient {
 
     func run(
         _ arguments: [String],
+        timeout: TimeInterval? = nil,
         progress: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> HelperResponse {
         let executable = try helperURL()
@@ -133,6 +152,9 @@ actor HelperClient {
                     collector.consume(handle.availableData)
                 }
                 try cancellation.launch(process)
+                if let timeout {
+                    try waitForProcessExit(process, timeout: timeout, cancellation: cancellation)
+                }
                 let data = try outputPipe.fileHandleForReading.readToEnd() ?? Data()
                 process.waitUntilExit()
                 progressPipe.fileHandleForReading.readabilityHandler = nil

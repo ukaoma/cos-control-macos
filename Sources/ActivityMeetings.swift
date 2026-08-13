@@ -8,6 +8,7 @@ struct MeetingLibraryBody: View {
     @ObservedObject var model: ControllerModel
     let onOpen: (LibraryMeeting) -> Void
     @State private var confirmRecoverAllOrphans = false
+    @State private var confirmSaveAllStranded = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -42,6 +43,16 @@ struct MeetingLibraryBody: View {
         } message: {
             Text("Turns each unsaved capture into a meeting, one at a time. Session files are not deleted.")
         }
+        .confirmationDialog(
+            "Save still-live captures as meetings?",
+            isPresented: $confirmSaveAllStranded,
+            titleVisibility: .visible
+        ) {
+            Button("Save all") { model.saveAllStranded() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Finalizes each still-live G2 capture. Session files become meetings; they are not deleted.")
+        }
     }
 
     private var unsavedCaptureBanner: some View {
@@ -69,10 +80,21 @@ struct MeetingLibraryBody: View {
                     .disabled(model.busy || model.orphanBusy)
             }
             ForEach(model.strandedCaptures) { capture in
-                Text(capture.label)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                HStack {
+                    Text(capture.label)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                    Spacer()
+                    Button("Save") { model.saveStranded(capture.sessionId) }
+                        .controlSize(.small)
+                        .disabled(model.busy || model.orphanBusy)
+                }
+            }
+            if model.strandedCaptures.count > 1 {
+                Button("Save all still-live") { confirmSaveAllStranded = true }
+                    .controlSize(.small)
+                    .disabled(model.busy || model.orphanBusy)
             }
         }
         .padding(.horizontal, 24)

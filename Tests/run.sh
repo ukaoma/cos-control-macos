@@ -61,7 +61,26 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
 /usr/bin/grep -q 'case "reset-message-era"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "meeting-orphans"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "meeting-orphan-recover"' "$ROOT/HelperSources/main.swift"
-/usr/bin/grep -q 'case "meeting-orphan-recover-all"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "meeting-stranded-save"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "meeting-stranded-save-all"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'Save still-live captures as meetings' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'model.saveStranded' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'model.saveAllStranded' "$ROOT/Sources/ActivityMeetings.swift"
+/usr/bin/grep -q 'lastCustomTitle' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'recentClaudeConversations' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "claude-session-detail"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'claudeKickstartCopy' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'recentCodexConversations' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'recentCursorConversations' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'empty-window' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'loadCursorComposerNames' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'pinned-thread-ids' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'providerBadge' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'Claude · Codex · Cursor' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'isKeepWarmSessionTitle' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case pinned' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'case .pinned:' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'Fireflies meeting sync' "$ROOT/Tests/ModelsContract.swift"
 /usr/bin/grep -q 'case "meeting-sync-now"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'Run sync now' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'meetingSyncTooling' "$ROOT/HelperSources/main.swift"
@@ -206,6 +225,26 @@ PY
 /usr/bin/grep -q 'struct LibrarySearchHit' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'Search topics, ideas' "$ROOT/Sources/ActivityMeetings.swift"
 /usr/bin/grep -q 'Six views into the work' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'systemImage: model.status.running ? "eyeglasses"' "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q 'eyeglasses.slash' "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q 'COSLockupView' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'COSLockupView' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'COSGotcosCaption' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'Font.custom("Fraunces"' "$ROOT/Sources/COSBrand.swift"
+/usr/bin/grep -q 'Font.custom("DM Sans"' "$ROOT/Sources/COSBrand.swift"
+/usr/bin/grep -q 'Font.custom("JetBrains Mono"' "$ROOT/Sources/COSBrand.swift"
+/usr/bin/grep -q 'ATSApplicationFontsPath' "$ROOT/Resources/Info.plist"
+test -s "$ROOT/Resources/Fonts/Fraunces.ttf"
+test -s "$ROOT/Resources/Fonts/Fraunces-Italic.ttf"
+test -s "$ROOT/Resources/Fonts/DMSans.ttf"
+test -s "$ROOT/Resources/Fonts/JetBrainsMono.ttf"
+/usr/bin/grep -q 'Resources/Fonts/' "$ROOT/scripts/build-release.sh"
+/usr/bin/grep -q 'COSLockupView(height: 17)' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'COSLockupView(height: 12)' "$ROOT/Sources/ActivityWindow.swift"
+test -s "$ROOT/Resources/COSMark.svg"
+test -s "$ROOT/Resources/COSLockup.svg"
+/usr/bin/grep -q 'COSMark.svg' "$ROOT/scripts/build-release.sh"
+/usr/bin/grep -q 'COSLockup.svg' "$ROOT/scripts/build-release.sh"
 /usr/bin/grep -q 'case .meetings: meetingsList' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'struct MeetingLibraryDetailPane' "$ROOT/Sources/ActivityMeetings.swift"
 /usr/bin/grep -q 'struct MeetingMonthCalendar' "$ROOT/Sources/ActivityMeetings.swift"
@@ -222,6 +261,31 @@ fi
 /usr/bin/grep -q 'case sessions' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'struct ClaudeSession' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'case "claude-sessions"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "claude-sessions-search"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'struct SessionSearchHit' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'scheduleSessionSearch' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'sessionsSearchBar' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'Search titles, transcripts' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'localSessionKeywordHits' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'server_too_old' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'loadClaudeDesktopIndex' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'claudeSidebarTitle' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'keywordHits' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'timeout: 12' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'peekSessionSearchBody' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'sessionSearchBodyFileLimit' "$ROOT/HelperSources/main.swift"
+/usr/bin/python3 - "$ROOT" <<'PY'
+from pathlib import Path
+import sys
+text = Path(sys.argv[1], "HelperSources/main.swift").read_text()
+start = text.index("static func localSessionKeywordHits")
+end = text.index("private func emitClaudeSessionsSearch")
+body = text[start:end]
+for needle in ("findCodexSessionFile", "findClaudeSessionFile", "findCursorSessionFile", "sessionSearchMaxAge"):
+    if needle in body:
+        sys.exit(f"local session search must not {needle}")
+PY
+/usr/bin/grep -q 'if response.status == 404' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'COS_CLAUDE_SESSIONS_ENABLED' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'COS_CLAUDE_SESSIONS_SHOW_NAMES' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'struct SpeakerReviewPane' "$ROOT/Sources/Views.swift"
@@ -497,6 +561,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/HelperClient.swift" \
   "$ROOT/Sources/ControllerModel.swift" \
+  "$ROOT/Sources/COSBrand.swift" \
   "$ROOT/Sources/Views.swift" \
   "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
@@ -568,6 +633,22 @@ library_opener = re.search(r"func openLibraryMeeting\(.*?\n    \}", model, re.S)
 need(library_opener is not None, "openLibraryMeeting not found")
 need(re.search(r"openLibraryRow\s*=", library_opener.group(0)) is not None,
      "openLibraryMeeting never assigns openLibraryRow, so the route can never activate")
+
+need('selectedSessionID != nil' in activity, "session detail has no window-local selection gate")
+need(re.search(r"if model\.claudeSessionRouteActive\s*\{\s*ClaudeSessionDetailPane", activity) is not None,
+     "ClaudeSessionDetailPane is not gated on model.claudeSessionRouteActive")
+session_route = re.search(r"var claudeSessionRouteActive[^}]*\}", model, re.S)
+need(session_route is not None, "claudeSessionRouteActive not found")
+need(re.search(r"\bopenClaudeRow\b", session_route.group(0)) is not None,
+     "claudeSessionRouteActive does not read openClaudeRow itself")
+session_opener = re.search(r"func openClaudeSession\(.*?\n    \}", model, re.S)
+need(session_opener is not None, "openClaudeSession not found")
+need(re.search(r"openClaudeRow\s*=", session_opener.group(0)) is not None,
+     "openClaudeSession never assigns openClaudeRow, so the route can never activate")
+need('Copy session' in activity, "session detail has no Copy session button")
+need('copyClaudeSession' in model, "Copy session is not wired")
+need('"--provider", session.provider' in model, "session detail does not pass provider")
+need('providerBadge' in activity, "Sessions tab has no provider badge")
 
 # 4. The narrow menu panel has one doorway. Peer sections live in the
 #    persistent window, whose shell owns Home, Back, and the breadcrumb.

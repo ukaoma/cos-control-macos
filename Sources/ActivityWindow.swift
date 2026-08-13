@@ -96,7 +96,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         case .meetings: "Browse saved calls by day, with transcript, summary, and copy."
         case .memories: "Browse the durable context your COS can recall."
         case .threads: "Follow work that develops across meetings and time."
-        case .sessions: "Claude Code sessions on this Mac — waiting, running, or stale."
+        case .sessions: "Claude, Codex, and Cursor sessions on this Mac."
         }
     }
 }
@@ -144,6 +144,7 @@ struct ActivityWindow: View {
     @State private var voiceSort: VoiceDirectorySort = .attention
     @State private var selectedContextID: String?
     @State private var selectedLibraryRecordID: String?
+    @State private var selectedSessionID: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var selectedTurn: GlassesTurn? {
@@ -187,7 +188,7 @@ struct ActivityWindow: View {
         case .speakers: selectedVoiceName != nil || selectedSpeakerSessionID != nil
         case .meetings: selectedLibraryRecordID != nil
         case .memories, .threads: selectedContextID != nil
-        case .sessions: false
+        case .sessions: selectedSessionID != nil
         case nil: false
         }
     }
@@ -224,6 +225,12 @@ struct ActivityWindow: View {
                     } else {
                         centeredProgress("Loading meeting…")
                     }
+                } else if section == .sessions, selectedSessionID != nil {
+                    if model.claudeSessionRouteActive {
+                        ClaudeSessionDetailPane(model: model)
+                    } else {
+                        centeredProgress("Loading session…")
+                    }
                 } else if let section {
                     sectionList(section)
                 } else {
@@ -233,6 +240,7 @@ struct ActivityWindow: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 760, minHeight: 560)
+        .font(COSType.body(13))
         .background(COSPalette.panel)
         .task { await loadOverviewIfNeeded() }
         .alert("COS Control", isPresented: Binding(
@@ -250,6 +258,8 @@ struct ActivityWindow: View {
 
     private var navigationBar: some View {
         HStack(spacing: 10) {
+            COSLockupView(height: 12)
+                .foregroundStyle(COSPalette.ink)
             Button { goHome() } label: {
                 Label("Home", systemImage: "house")
             }
@@ -272,7 +282,7 @@ struct ActivityWindow: View {
                     .fill(model.status.running ? COSPalette.green : COSPalette.amber)
                     .frame(width: 7, height: 7)
                 Text(model.status.running ? "Server connected" : "Server offline")
-                    .font(.system(size: 10.5, design: .monospaced))
+                    .font(COSType.mono(10.5))
                     .foregroundStyle(.secondary)
             }
         }
@@ -284,7 +294,7 @@ struct ActivityWindow: View {
     private var breadcrumb: some View {
         HStack(spacing: 6) {
             Text("COS Control")
-                .font(.system(size: 11, weight: .semibold))
+                .font(COSType.body(11, weight: .semibold))
             if let section {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 8, weight: .semibold))
@@ -320,6 +330,11 @@ struct ActivityWindow: View {
         if section == .meetings, selectedLibraryRecordID != nil {
             if let row = model.openLibraryRow, row.id == selectedLibraryRecordID { return row.title }
             if model.libraryDetailLoading { return "Loading meeting" }
+        }
+        if section == .sessions, selectedSessionID != nil {
+            if let detail = model.claudeSessionDetail { return detail.title }
+            if let row = model.openClaudeRow, row.id == selectedSessionID { return row.title }
+            if model.claudeSessionDetailLoading { return "Loading session" }
         }
         if (section == .memories || section == .threads),
            selectedContextID != nil,
@@ -399,6 +414,9 @@ struct ActivityWindow: View {
         } else if section == .meetings, selectedLibraryRecordID != nil {
             selectedLibraryRecordID = nil
             model.closeLibraryDetail()
+        } else if section == .sessions, selectedSessionID != nil {
+            selectedSessionID = nil
+            model.closeClaudeSession()
         } else {
             withOptionalAnimation { section = nil }
         }
@@ -412,9 +430,11 @@ struct ActivityWindow: View {
         selectedSpeakerSessionID = nil
         selectedContextID = nil
         selectedLibraryRecordID = nil
+        selectedSessionID = nil
         model.closeSpeakerReview()
         model.closeContextDetail()
         model.closeLibraryDetail()
+        model.closeClaudeSession()
     }
 
     private func withOptionalAnimation(_ changes: () -> Void) {
@@ -427,11 +447,17 @@ struct ActivityWindow: View {
     private var activityHome: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                HStack(alignment: .center, spacing: 12) {
+                    COSLockupView(height: 17)
+                        .foregroundStyle(COSPalette.ink)
+                    Spacer()
+                    COSGotcosCaption(size: 12)
+                }
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Activity")
-                        .font(.system(size: 30, weight: .semibold, design: .rounded))
+                        .font(COSType.display(28, weight: .medium))
                     Text("Six views into the work your COS already holds.")
-                        .font(.system(size: 13))
+                        .font(COSType.display(13, italic: true))
                         .foregroundStyle(.secondary)
                 }
 
@@ -468,14 +494,14 @@ struct ActivityWindow: View {
             }
             VStack(alignment: .leading, spacing: 5) {
                 Text(item.title)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(COSType.body(16, weight: .semibold))
                 Text(item.summary)
-                    .font(.system(size: 11.5))
+                    .font(COSType.body(11.5))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Text(homeStat(item))
-                .font(.system(size: 10.5, design: .monospaced))
+                .font(COSType.mono(10.5))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, minHeight: 142, alignment: .topLeading)
@@ -514,7 +540,6 @@ struct ActivityWindow: View {
                 ? (model.threadHeadline.isEmpty ? "Ready" : model.threadHeadline)
                 : "Setup needed"
         case .sessions:
-            if !model.claudeSessionsEnabled { return "Off on this server" }
             if model.claudeSessions.isEmpty { return "Refresh to load" }
             return "\(model.claudeSessions.count) session(s)"
         }
@@ -561,42 +586,34 @@ struct ActivityWindow: View {
                 title: "Sessions",
                 detail: sessionsStatus,
                 refresh: { Task { await model.loadClaudeSessions() } },
-                refreshDisabled: model.claudeSessionsLoading
+                refreshDisabled: model.claudeSessionsLoading,
+                accessory: {
+                    if !model.isSessionQueryActive {
+                        Picker("Clock", selection: $model.sessionClock) {
+                            ForEach(SessionClock.allCases) { clock in
+                                Text(clock.title).tag(clock)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(maxWidth: 278)
+                        .labelsHidden()
+                    }
+                }
             )
-            if model.claudeSessionsLoading && model.claudeSessions.isEmpty {
+            sessionsSearchBar
+            if model.isSessionQueryActive {
+                sessionsSearchResults
+            } else if model.claudeSessionsLoading && visibleSessions.isEmpty {
                 centeredProgress("Loading sessions…")
-            } else if let error = model.claudeSessionsError, model.claudeSessions.isEmpty {
+            } else if let error = model.claudeSessionsError, visibleSessions.isEmpty {
                 emptyState(.sessions, text: error)
-            } else if !model.claudeSessionsEnabled {
-                emptyState(.sessions, text: sessionsDisabledCopy)
-            } else if model.claudeSessions.isEmpty {
-                emptyState(.sessions, text: "No Claude Code sessions on this Mac.")
+            } else if visibleSessions.isEmpty {
+                emptyState(.sessions, text: sessionsEmptyCopy)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(model.claudeSessions) { session in
-                            HStack(spacing: 13) {
-                                sectionGlyph(.sessions)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(session.title)
-                                        .font(.system(size: 12.5, weight: .medium))
-                                        .lineLimit(1)
-                                    HStack(spacing: 8) {
-                                        Text(session.stateLabel)
-                                            .font(.system(size: 10, weight: .semibold))
-                                            .foregroundStyle(sessionStateTint(session.state))
-                                        if !session.waitingFor.isEmpty {
-                                            Text(session.waitingFor)
-                                                .font(.system(size: 10.5))
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                        }
-                                    }
-                                }
-                                Spacer()
-                            }
-                            .padding(.vertical, 13)
-                            Divider().padding(.leading, 46)
+                        ForEach(visibleSessions) { session in
+                            sessionRow(session)
                         }
                     }
                     .padding(.horizontal, 22)
@@ -606,28 +623,258 @@ struct ActivityWindow: View {
         }
     }
 
-    private var sessionsStatus: String {
-        if model.claudeSessionsLoading { return "Loading…" }
-        if let error = model.claudeSessionsError { return error }
-        if !model.claudeSessionsEnabled { return "Off on this server" }
-        if model.claudeSessions.isEmpty { return "No sessions" }
-        return "Waiting, running, or stale · read-only"
+    private var sessionsSearchBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search titles, transcripts…", text: $model.sessionQuery)
+                    .textFieldStyle(.plain)
+                if !model.sessionQuery.isEmpty {
+                    Button {
+                        model.sessionQuery = ""
+                        model.scheduleSessionSearch()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Clear search")
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+            .frame(maxWidth: 320)
+            if model.isSessionQueryActive, !model.sessionSemanticAvailable {
+                Text(sessionSemanticHint)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 8)
+        .overlay(alignment: .bottom) { Divider() }
+        .onChange(of: model.sessionQuery) { _, _ in model.scheduleSessionSearch() }
     }
 
-    private var sessionsDisabledCopy: String {
-        model.claudeSessionsReason == "disabled"
-            ? "Claude sessions are off. Enable them from the server environment to see workspace presence here."
-            : (model.claudeSessionsReason.isEmpty
-                ? "Claude sessions are unavailable on this server."
-                : model.claudeSessionsReason)
+    private var sessionSemanticHint: String {
+        switch model.sessionSemanticReason ?? "" {
+        case "server_too_old":
+            return "Keyword only — meaning search needs a server update"
+        case "no_session_embeddings", "embeddings_unreachable":
+            return "Keyword only — meaning search needs an OpenAI key"
+        default:
+            return "Keyword only — meaning search is unavailable"
+        }
+    }
+
+    @ViewBuilder
+    private var sessionsSearchResults: some View {
+        if model.sessionSearching && model.sessionSearchHits.isEmpty && model.sessionSearchError == nil {
+            centeredProgress("Looking up…")
+        } else if let error = model.sessionSearchError, model.sessionSearchHits.isEmpty {
+            emptyState(.sessions, text: error)
+        } else if model.sessionSearchHits.isEmpty {
+            emptyState(.sessions, text: "No sessions match that lookup.")
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(model.sessionSearchHits) { hit in
+                        sessionRow(hit.session, snippet: hit.snippet, matchLabel: hit.matchLabel)
+                    }
+                }
+                .padding(.horizontal, 22)
+                .padding(.bottom, 22)
+            }
+        }
+    }
+
+    private var visibleSessions: [ClaudeSession] {
+        let window: TimeInterval = 7 * 24 * 3600
+        let now = Date()
+        let real = model.claudeSessions.filter { !$0.isKeepWarm }
+        switch model.sessionClock {
+        case .updated:
+            return real.sorted { $0.updatedAt > $1.updatedAt }
+        case .opened:
+            return real.filter { session in
+                if session.alive { return true }
+                guard let stamp = session.createdDate ?? session.updatedDate else { return false }
+                return now.timeIntervalSince(stamp) <= window
+            }.sorted {
+                ($0.createdAt) > ($1.createdAt)
+            }
+        case .pinned:
+            return real.filter(\.pinned).sorted { $0.updatedAt > $1.updatedAt }
+        }
+    }
+
+    private var sessionsEmptyCopy: String {
+        switch model.sessionClock {
+        case .updated:
+            return "No Claude, Codex, or Cursor sessions updated on this Mac in the last 7 days."
+        case .opened:
+            return "No sessions opened in the last 7 days. Pins are under Pinned."
+        case .pinned:
+            return "No pinned sessions. Star Claude Desktop chats, pin Cursor chats, or pin Codex/ChatGPT threads to see them here."
+        }
+    }
+
+    private func sessionClockHint(_ session: ClaudeSession) -> String? {
+        let opened = session.createdDate
+        let updated = session.updatedDate
+        switch model.sessionClock {
+        case .updated:
+            guard let opened, let updated, updated.timeIntervalSince(opened) > 36 * 3600 else { return nil }
+            return "Opened \(shortSessionDate(opened))"
+        case .opened:
+            guard let updated else { return nil }
+            return "Updated \(shortSessionDate(updated))"
+        case .pinned:
+            guard let updated else { return nil }
+            return "Updated \(shortSessionDate(updated))"
+        }
+    }
+
+    private func shortSessionDate(_ date: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInToday(date) {
+            return date.formatted(date: .omitted, time: .shortened)
+        }
+        return date.formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    private func sessionRow(_ session: ClaudeSession, snippet: String = "", matchLabel: String? = nil) -> some View {
+        VStack(spacing: 0) {
+            Button {
+                selectedSessionID = session.id
+                model.openClaudeSession(session)
+            } label: {
+                HStack(spacing: 13) {
+                    providerGlyph(session.provider)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(session.title)
+                            .font(.system(size: 12.5, weight: .medium))
+                            .lineLimit(1)
+                            .foregroundStyle(.primary)
+                        if !snippet.isEmpty {
+                            Text(snippet)
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                        HStack(spacing: 8) {
+                            providerBadge(session)
+                            if session.pinned {
+                                Text("PINNED")
+                                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                                    .tracking(0.6)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Capsule().fill(Color.primary.opacity(0.08)))
+                            }
+                            Text(session.stateLabel)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(sessionStateTint(session.state))
+                            if let hint = sessionClockHint(session) {
+                                Text(hint)
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            if !session.workspace.isEmpty, session.workspace != session.title {
+                                Text(session.workspace)
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            if !session.waitingFor.isEmpty {
+                                Text(session.waitingFor)
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                    Spacer()
+                    if let matchLabel {
+                        Text(matchLabel)
+                            .font(.system(size: 10, weight: .semibold))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(ActivitySection.sessions.tint.opacity(0.16)))
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, 13)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            Divider().padding(.leading, 46)
+        }
+    }
+
+    private var sessionsStatus: String {
+        if model.isSessionQueryActive {
+            if model.sessionSearching { return "Looking up…" }
+            return "Lookup across Claude, Codex, and Cursor"
+        }
+        if model.claudeSessionsLoading { return "Loading…" }
+        if let error = model.claudeSessionsError { return error }
+        if visibleSessions.isEmpty { return "No sessions" }
+        switch model.sessionClock {
+        case .updated:
+            return "Claude · Codex · Cursor · updated in last 7 days"
+        case .opened:
+            return "Claude · Codex · Cursor · opened in last 7 days"
+        case .pinned:
+            return "Claude · Codex · Cursor · pinned"
+        }
     }
 
     private func sessionStateTint(_ state: String) -> Color {
         switch state {
         case "waiting": COSPalette.amber
         case "running": Color(red: 0.22, green: 0.57, blue: 0.39)
+        case "recent": COSPalette.ink
         default: .secondary
         }
+    }
+
+    private func providerTint(_ provider: String) -> Color {
+        switch provider {
+        case "codex": Color(red: 0.10, green: 0.55, blue: 0.48)
+        case "cursor": Color(red: 0.42, green: 0.38, blue: 0.86)
+        default: Color(red: 0.78, green: 0.45, blue: 0.22)
+        }
+    }
+
+    private func providerGlyph(_ provider: String) -> some View {
+        let symbol = provider == "codex" ? "chevron.left.forwardslash.chevron.right"
+            : provider == "cursor" ? "macwindow"
+            : "text.bubble"
+        return ZStack {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(providerTint(provider).opacity(0.16))
+                .frame(width: 28, height: 28)
+            Image(systemName: symbol)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(providerTint(provider))
+        }
+    }
+
+    private func providerBadge(_ session: ClaudeSession) -> some View {
+        Text(session.providerLabel.uppercased())
+            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+            .tracking(0.6)
+            .foregroundStyle(providerTint(session.provider))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(providerTint(session.provider).opacity(0.14)))
     }
 
     private func openVoiceReviewFromLibrary(_ sessionId: String) {
@@ -1069,6 +1316,30 @@ struct ActivityWindow: View {
         secondaryAction: (() -> Void)? = nil,
         secondaryDisabled: Bool = false
     ) -> some View {
+        sectionHeader(
+            section: item,
+            title: title,
+            detail: detail,
+            refresh: refresh,
+            refreshDisabled: refreshDisabled,
+            secondaryTitle: secondaryTitle,
+            secondaryAction: secondaryAction,
+            secondaryDisabled: secondaryDisabled,
+            accessory: { EmptyView() }
+        )
+    }
+
+    private func sectionHeader<Accessory: View>(
+        section item: ActivitySection,
+        title: String,
+        detail: String,
+        refresh: @escaping () -> Void,
+        refreshDisabled: Bool = false,
+        secondaryTitle: String? = nil,
+        secondaryAction: (() -> Void)? = nil,
+        secondaryDisabled: Bool = false,
+        @ViewBuilder accessory: () -> Accessory
+    ) -> some View {
         HStack(alignment: .center, spacing: 14) {
             sectionGlyph(item, large: true)
             VStack(alignment: .leading, spacing: 3) {
@@ -1076,6 +1347,7 @@ struct ActivityWindow: View {
                 Text(detail).font(.system(size: 11.5)).foregroundStyle(.secondary)
             }
             Spacer()
+            accessory()
             if let secondaryTitle, let secondaryAction {
                 Button(secondaryTitle, action: secondaryAction)
                     .disabled(secondaryDisabled)
@@ -1523,5 +1795,120 @@ struct ActivityWindow: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(30)
+    }
+}
+
+struct ClaudeSessionDetailPane: View {
+    @ObservedObject var model: ControllerModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    if let row = model.openClaudeRow {
+                        Text(row.providerLabel.uppercased())
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .tracking(0.6)
+                            .foregroundStyle(Self.tint(row.provider))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Self.tint(row.provider).opacity(0.14)))
+                    }
+                    Text(model.claudeSessionDetail?.title ?? model.openClaudeRow?.title ?? "Session")
+                        .font(.system(size: 20, weight: .semibold))
+                        .textSelection(.enabled)
+                }
+                Text(model.claudeSessionDetail?.subtitle ?? "Read-only · local transcript")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                if let cwd = model.claudeSessionDetail?.cwd, !cwd.isEmpty {
+                    Text(cwd)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 18)
+            .padding(.bottom, 12)
+            Divider()
+
+            if model.claudeSessionDetailLoading && model.claudeSessionDetail == nil {
+                ProgressView("Loading session…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let error = model.claudeSessionDetailError, model.claudeSessionDetail == nil {
+                Text(error)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .padding(24)
+                if let row = model.openClaudeRow {
+                    Button("Retry") { model.openClaudeSession(row) }
+                        .padding(.horizontal, 24)
+                }
+                Spacer()
+            } else if let detail = model.claudeSessionDetail {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if detail.truncated {
+                            Text("Showing the last \(detail.turns.count) of \(detail.totalTurns) turns. Copy session keeps the original request plus the newest context.")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(.secondary)
+                        }
+                        if detail.turns.isEmpty {
+                            Text("This session has no user or assistant prose stored.")
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach(detail.turns) { turn in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(turn.isUser ? "YOU" : "ASSISTANT")
+                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                    .tracking(1.2)
+                                Text(turn.text)
+                                    .font(.system(size: 12.5))
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(16)
+                            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 13)
+                                    .stroke((turn.isUser ? ActivitySection.sessions.tint : COSPalette.green).opacity(0.22), lineWidth: 1)
+                            )
+                        }
+                    }
+                    .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Divider()
+                HStack(spacing: 10) {
+                    Button("Copy session") { model.copyClaudeSession() }
+                        .disabled(detail.copyText.isEmpty)
+                    Spacer()
+                    Text("Kickstart brief for another agent. Not a Claude Code resume.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+                .controlSize(.small)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 12)
+                if let note = model.copyNote {
+                    Text(note)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 10)
+                }
+            }
+        }
+    }
+
+    private static func tint(_ provider: String) -> Color {
+        switch provider {
+        case "codex": Color(red: 0.10, green: 0.55, blue: 0.48)
+        case "cursor": Color(red: 0.42, green: 0.38, blue: 0.86)
+        default: Color(red: 0.78, green: 0.45, blue: 0.22)
+        }
     }
 }

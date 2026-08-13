@@ -144,9 +144,11 @@ final class ControllerModel: ObservableObject {
     private var speakerReviewTask: Task<Void, Never>?
     private var contextDetailTask: Task<Void, Never>?
     private var libraryDetailTask: Task<Void, Never>?
+    private var claudeSessionDetailTask: Task<Void, Never>?
     private var librarySearchTask: Task<Void, Never>?
     private var memorySearchTask: Task<Void, Never>?
     private var threadSearchTask: Task<Void, Never>?
+    private var sessionSearchTask: Task<Void, Never>?
     private var mediaPreviewTask: Task<Void, Never>?
     private var thumbnailTasks: [String: Task<Void, Never>] = [:]
     private var thumbnailLoadIDs: [String: UUID] = [:]
@@ -201,9 +203,11 @@ final class ControllerModel: ObservableObject {
         speakerReviewTask?.cancel()
         contextDetailTask?.cancel()
         libraryDetailTask?.cancel()
+        claudeSessionDetailTask?.cancel()
         librarySearchTask?.cancel()
         memorySearchTask?.cancel()
         threadSearchTask?.cancel()
+        sessionSearchTask?.cancel()
         mediaPreviewTask?.cancel()
         thumbnailTasks.values.forEach { $0.cancel() }
     }
@@ -738,6 +742,40 @@ final class ControllerModel: ObservableObject {
         perform("meeting-orphan-recover-all")
     }
 
+    func saveStranded(_ sessionId: String) {
+        guard !sessionId.isEmpty, !busy, !orphanBusy else { return }
+        orphanBusy = true
+        Task {
+            defer { orphanBusy = false }
+            do {
+                let response = try await helper.run(["meeting-stranded-save", "--session", sessionId])
+                notice = response.message
+                await loadOrphans(quiet: true)
+                await refresh(quiet: true)
+            } catch {
+                self.error = error.localizedDescription
+                await loadOrphans(quiet: true)
+            }
+        }
+    }
+
+    func saveAllStranded() {
+        guard !busy, !orphanBusy else { return }
+        orphanBusy = true
+        Task {
+            defer { orphanBusy = false }
+            do {
+                let response = try await helper.run(["meeting-stranded-save-all"])
+                notice = response.message
+                await loadOrphans(quiet: true)
+                await refresh(quiet: true)
+            } catch {
+                self.error = error.localizedDescription
+                await loadOrphans(quiet: true)
+            }
+        }
+    }
+
     func setIdleMetalHqEnabled(_ enabled: Bool) {
         perform("set-idle-metal-hq", arguments: [enabled ? "on" : "off"])
     }
@@ -837,8 +875,20 @@ final class ControllerModel: ObservableObject {
     @Published var claudeSessionsReason = ""
     @Published var claudeSessionsLoading = false
     @Published var claudeSessionsError: String?
+    @Published var sessionClock: SessionClock = .updated
+    @Published var sessionQuery = ""
+    @Published var sessionSearchHits: [SessionSearchHit] = []
+    @Published var sessionSearching = false
+    @Published var sessionSearchError: String?
+    @Published var sessionSemanticAvailable = true
+    @Published var sessionSemanticReason: String?
+    @Published var openClaudeRow: ClaudeSession?
+    @Published var claudeSessionDetail: ClaudeSessionDetail?
+    @Published var claudeSessionDetailLoading = false
+    @Published var claudeSessionDetailError: String?
     private var libraryLoadID = UUID()
     private var librarySearchID = UUID()
+    private var sessionSearchID = UUID()
     private var libraryDayAutoApplied = false
 
     var isLibraryQueryActive: Bool {
@@ -938,6 +988,121 @@ final class ControllerModel: ObservableObject {
         } catch {
             claudeSessionsError = error.localizedDescription
         }
+    }
+
+    var isSessionQueryActive: Bool {
+        sessionQuery.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2
+    }
+
+    func scheduleSessionSearch() {
+        sessionSearchTask?.cancel()
+        let trimmed = sessionQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count < 2 {
+            sessionSearchHits = []
+            sessionSearchError = nil
+            sessionSearching = false
+            sessionSemanticReason = nil
+            return
+        }
+        sessionSearchHits = SessionSearchHit.keywordHits(query: trimmed, sessions: claudeSessions)
+        sessionSearchError = nil
+        let id = UUID()
+        sessionSearchID = id
+        sessionSearchTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled, self?.sessionSearchID == id else { return }
+            await self?.runSessionSearch(trimmed, id: id)
+        }
+    }
+
+    private func mergeSessionHits(_ instant: [SessionSearchHit], _ remote: [SessionSearchHit]) -> [SessionSearchHit] {
+        var byId: [String: SessionSearchHit] = [:]
+        for hit in instant + remote {
+            if let existing = byId[hit.id], existing.score >= hit.score { continue }
+            byId[hit.id] = hit
+        }
+        return byId.values.sorted { $0.score > $1.score }
+    }
+
+    private func runSessionSearch(_ query: String, id: UUID) async {
+        sessionSearching = sessionSearchHits.isEmpty
+        defer { if sessionSearchID == id { sessionSearching = false } }
+        do {
+            let response = try await helper.run(
+                ["claude-sessions-search", "--query", query, "--limit", "20"],
+                timeout: 12
+            )
+            guard sessionSearchID == id else { return }
+            let remote = (response.details["hits"]?.array ?? []).compactMap(SessionSearchHit.init)
+            sessionSearchHits = mergeSessionHits(sessionSearchHits, remote)
+            sessionSemanticAvailable = response.details["semanticAvailable"]?.bool ?? false
+            let reason = response.details["semanticReason"]?.string ?? ""
+            sessionSemanticReason = reason.isEmpty ? nil : reason
+            sessionSearchError = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            guard sessionSearchID == id else { return }
+            if sessionSearchHits.isEmpty {
+                sessionSearchError = error.localizedDescription
+            }
+        }
+    }
+
+    var claudeSessionRouteActive: Bool {
+        openClaudeRow != nil || claudeSessionDetail != nil || claudeSessionDetailLoading || claudeSessionDetailError != nil
+    }
+
+    func openClaudeSession(_ session: ClaudeSession) {
+        claudeSessionDetailTask?.cancel()
+        openClaudeRow = session
+        claudeSessionDetail = nil
+        claudeSessionDetailError = nil
+        copyNote = nil
+        claudeSessionDetailTask = Task { [weak self] in
+            await self?.fetchClaudeSessionDetail(session)
+        }
+    }
+
+    private func fetchClaudeSessionDetail(_ session: ClaudeSession) async {
+        claudeSessionDetailLoading = true
+        defer {
+            if openClaudeRow?.id == session.id { claudeSessionDetailLoading = false }
+        }
+        do {
+            let response = try await helper.run([
+                "claude-session-detail",
+                "--session", session.sessionId,
+                "--provider", session.provider,
+            ])
+            guard !Task.isCancelled, openClaudeRow?.id == session.id else { return }
+            guard let detail = ClaudeSessionDetail(.object(response.details)) else {
+                claudeSessionDetailError = "The helper returned a session this build cannot read."
+                return
+            }
+            claudeSessionDetail = detail
+        } catch {
+            guard !Task.isCancelled, openClaudeRow?.id == session.id else { return }
+            claudeSessionDetailError = error.localizedDescription
+        }
+    }
+
+    func closeClaudeSession() {
+        claudeSessionDetailTask?.cancel()
+        claudeSessionDetailTask = nil
+        claudeSessionDetailLoading = false
+        openClaudeRow = nil
+        claudeSessionDetail = nil
+        claudeSessionDetailError = nil
+        copyNote = nil
+    }
+
+    func copyClaudeSession() {
+        let text = claudeSessionDetail?.copyText.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else { copyNote = "Nothing to copy"; return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        copyNote = "Copied kickstart for another agent"
     }
 
     static func currentMeetingMonth(_ now: Date = Date()) -> String {

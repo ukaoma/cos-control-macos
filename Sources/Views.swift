@@ -82,7 +82,8 @@ enum COSPalette {
     static let panel = Color(nsColor: COSInk.panelNS)            // adaptive
     static let card = Color(nsColor: COSInk.cardNS)              // adaptive
     static let line = Color(nsColor: COSInk.lineNS)              // adaptive
-    static let cream = Color(red: 0.96, green: 0.94, blue: 0.90) // glasses mark on the ink tile
+    static let cream = Color(red: 0.96, green: 0.94, blue: 0.90) // COS mark on the ink tile
+    static let gold = Color(red: 0.79, green: 0.66, blue: 0.43)  // gotcos.com gold
     static let amber = Color(red: 0.79, green: 0.50, blue: 0.27)
     static let green = Color(red: 0.20, green: 0.58, blue: 0.34)
 }
@@ -100,6 +101,7 @@ struct ControlPanel: View {
     @State private var confirmClearStrandedVideoUploads = false
     @State private var confirmResetMessageCount = false
     @State private var confirmRecoverAllOrphans = false
+    @State private var confirmSaveAllStranded = false
     @State private var selectedIdleMetalHq = false
     @State private var selectedAdaptiveAudioCleanup = false
 
@@ -109,6 +111,7 @@ struct ControlPanel: View {
     var body: some View {
         mainPanel
         .frame(width: 390, height: 640)
+        .font(COSType.body(13))
         .background(COSPalette.panel)
         .background(WindowOpaquer())
         .onAppear {
@@ -226,17 +229,25 @@ struct ControlPanel: View {
         } message: {
             Text("Turns each unsaved capture into a meeting, one at a time. Already-recovering captures wait their turn. Session files are not deleted.")
         }
+        .confirmationDialog(
+            "Save still-live captures as meetings?",
+            isPresented: $confirmSaveAllStranded,
+            titleVisibility: .visible
+        ) {
+            Button("Save all") { model.saveAllStranded() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Finalizes each still-live G2 capture through the same save path as Stop on the phone. Session files become meetings; they are not deleted.")
+        }
     }
 
     private var header: some View {
         HStack(spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10).fill(COSPalette.ink)
-                Image(systemName: "eyeglasses").font(.title2).foregroundStyle(COSPalette.cream)
-            }.frame(width: 44, height: 44)
+            COSLockupView(height: 17)
+                .foregroundStyle(COSPalette.ink)
             VStack(alignment: .leading, spacing: 2) {
-                Text("COS Control").font(.title3.weight(.semibold))
-                Text("Your local glasses server").font(.caption).foregroundStyle(.secondary)
+                Text("Control").font(COSType.display(18, weight: .semibold))
+                Text("Your local glasses server").font(COSType.body(11)).foregroundStyle(.secondary)
             }
             Spacer()
             if model.busy { ProgressView().controlSize(.small) }
@@ -494,17 +505,34 @@ struct ControlPanel: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
                 }
                 if !model.strandedCaptures.isEmpty {
-                    Text("Still live — waiting on the phone. Session files are not deleted.")
+                    Text("Still live — phone never saved. Save here; do not wait for Recover all.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .trailing)
-                    ForEach(model.strandedCaptures) { capture in
-                        Text(capture.label)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
+                    VStack(alignment: .trailing, spacing: 6) {
+                        Button(model.strandedCaptures.count == 1 ? "Save" : "Save all") {
+                            if model.strandedCaptures.count > 1 {
+                                confirmSaveAllStranded = true
+                            } else if let only = model.strandedCaptures.first {
+                                model.saveStranded(only.sessionId)
+                            }
+                        }
+                        .controlSize(.small)
+                        .disabled(model.busy || model.orphanBusy)
+                        ForEach(model.strandedCaptures) { capture in
+                            HStack(spacing: 8) {
+                                Text(capture.label)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                                Button("Save") { model.saveStranded(capture.sessionId) }
+                                    .controlSize(.mini)
+                                    .disabled(model.busy || model.orphanBusy)
+                            }
                             .frame(maxWidth: .infinity, alignment: .trailing)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
             // One quick-glance row for all three agent backends. Cursor keeps
@@ -735,9 +763,9 @@ struct ControlPanel: View {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Activity")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(COSType.display(13, weight: .semibold))
                         Text("Browse without losing your place")
-                            .font(.system(size: 10.5))
+                            .font(COSType.body(10.5))
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -1221,7 +1249,7 @@ struct ControlPanel: View {
             Text(footerLabel)
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.link)
-        }.font(.caption2).foregroundStyle(.secondary)
+        }.font(COSType.mono(10)).foregroundStyle(.secondary)
     }
 
     /// Controller build from Info.plist; server version from live status (never a
@@ -1400,7 +1428,7 @@ struct ControlPanel: View {
             Spacer()
             Circle().fill(good ? COSPalette.green : Color.secondary.opacity(0.5)).frame(width: 7, height: 7)
             Text(value).fontWeight(.medium)
-        }.font(.callout)
+        }.font(COSType.body(13))
     }
 }
 

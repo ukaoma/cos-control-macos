@@ -373,8 +373,8 @@ struct OrphanCapture: Identifiable, Sendable {
 }
 
 /// A live recording whose phone went quiet. Not quarantined yet — do not
-/// delete its session files, and do not POST recover until it lands in
-/// quarantine.
+/// delete its session files. Save it with POST /api/meeting/save; the
+/// quarantine recover route will 404 until the 4h cutoff.
 struct StrandedCapture: Identifiable, Sendable {
     let sessionId: String
     let idleMinutes: Int
@@ -403,32 +403,238 @@ struct StrandedCapture: Identifiable, Sendable {
 
 struct ClaudeSession: Identifiable, Sendable {
     let id: String
+    let sessionId: String
+    let provider: String
     let name: String
     let workspace: String
     let state: String
     let waitingFor: String
     let alive: Bool
+    let createdAt: String
+    let updatedAt: String
+    let pinned: Bool
 
     var stateLabel: String {
         switch state {
         case "waiting": "Waiting"
         case "stale": "Stale"
+        case "recent": "Today"
         default: "Running"
         }
     }
 
     var title: String {
-        workspace.isEmpty ? (name.isEmpty ? id : name) : workspace
+        if !name.isEmpty { return name }
+        if !workspace.isEmpty { return workspace }
+        return sessionId
+    }
+
+    var isKeepWarm: Bool {
+        Self.isKeepWarmSessionTitle(name)
+    }
+
+    var providerLabel: String {
+        switch provider {
+        case "codex": "Codex"
+        case "cursor": "Cursor"
+        default: "Claude"
+        }
+    }
+
+    var createdDate: Date? { Self.parseStamp(createdAt) }
+    var updatedDate: Date? { Self.parseStamp(updatedAt) }
+
+    private static func parseStamp(_ raw: String) -> Date? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = withFraction.date(from: trimmed) { return date }
+        let basic = ISO8601DateFormatter()
+        basic.formatOptions = [.withInternetDateTime]
+        return basic.date(from: trimmed)
     }
 
     init?(_ value: JSONValue?) {
-        guard let o = value?.object, let id = o["id"]?.string, !id.isEmpty else { return nil }
-        self.id = id
+        guard let o = value?.object, let native = o["id"]?.string, !native.isEmpty else { return nil }
+        provider = o["provider"]?.string ?? "claude"
+        sessionId = native
+        id = "\(provider):\(native)"
         name = o["name"]?.string ?? ""
         workspace = o["workspace"]?.string ?? ""
         state = o["state"]?.string ?? "stale"
         waitingFor = o["waitingFor"]?.string ?? ""
         alive = o["alive"]?.bool ?? false
+        createdAt = o["createdAt"]?.string ?? ""
+        updatedAt = o["updatedAt"]?.string ?? ""
+        pinned = o["pinned"]?.bool ?? false
+    }
+
+    static func isKeepWarmSessionTitle(_ title: String) -> Bool {
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if t == "ready" { return true }
+        return t.hasPrefix("this is an automated local readiness check")
+    }
+}
+
+struct SessionSearchHit: Identifiable, Sendable {
+    let session: ClaudeSession
+    let snippet: String
+    let match: String
+    let score: Double
+
+    var id: String { session.id }
+
+    var matchLabel: String {
+        switch match {
+        case "both": "Keyword + meaning"
+        case "semantic": "Meaning"
+        default: "Keyword"
+        }
+    }
+
+    init(session: ClaudeSession, snippet: String, match: String = "keyword", score: Double) {
+        self.session = session
+        self.snippet = snippet
+        self.match = match
+        self.score = score
+    }
+
+    init?(_ value: JSONValue?) {
+        guard let session = ClaudeSession(value), let o = value?.object else { return nil }
+        self.session = session
+        snippet = o["snippet"]?.string ?? ""
+        match = o["match"]?.string ?? "keyword"
+        let keyword = o["keywordScore"]?.double ?? 0
+        let semantic = o["semanticScore"]?.double ?? 0
+        score = o["score"]?.double ?? max(keyword, semantic)
+    }
+
+    static let stopwords: Set<String> = [
+        "the", "a", "an", "and", "or", "of", "to", "in", "for", "on", "at", "by",
+        "with", "from", "vs", "is", "it", "be", "as", "we", "our",
+    ]
+
+    static func tokenize(_ query: String) -> [String] {
+        let matches = query.lowercased().split { !$0.isLetter && !$0.isNumber }
+        var seen = Set<String>()
+        var tokens: [String] = []
+        for part in matches {
+            let token = String(part)
+            guard token.count >= 2, !stopwords.contains(token), !seen.contains(token) else { continue }
+            seen.insert(token)
+            tokens.append(token)
+        }
+        return tokens
+    }
+
+    static func score(tokens: [String], title: String, haystack: String) -> Double {
+        guard !tokens.isEmpty else { return 0 }
+        let titleL = title.lowercased()
+        let hayL = haystack.lowercased()
+        var hits = 0
+        var titleHits = 0
+        for token in tokens {
+            let inTitle = titleL.contains(token)
+            let inHay = hayL.contains(token)
+            if !inTitle && !inHay { continue }
+            hits += 1
+            if inTitle { titleHits += 1 }
+        }
+        if hits == 0 { return 0 }
+        let coverage = Double(hits) / Double(tokens.count)
+        if coverage < 0.5 && titleHits == 0 { return 0 }
+        return min(1, coverage * 0.65 + (Double(titleHits) / Double(tokens.count)) * 0.35)
+    }
+
+    static func keywordHits(query: String, sessions: [ClaudeSession], limit: Int = 20) -> [SessionSearchHit] {
+        let tokens = tokenize(query)
+        guard !tokens.isEmpty else { return [] }
+        var hits: [SessionSearchHit] = []
+        for session in sessions {
+            let haystack = "\(session.name)\n\(session.workspace)\n\(session.title)"
+            let value = score(tokens: tokens, title: session.title, haystack: haystack)
+            if value <= 0 { continue }
+            hits.append(SessionSearchHit(session: session, snippet: session.title, match: "keyword", score: value))
+        }
+        hits.sort { $0.score > $1.score }
+        return Array(hits.prefix(max(1, min(limit, 50))))
+    }
+}
+
+enum SessionClock: String, CaseIterable, Identifiable, Sendable {
+    case updated
+    case opened
+    case pinned
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .updated: return "Updated"
+        case .opened: return "Opened"
+        case .pinned: return "Pinned"
+        }
+    }
+}
+
+struct ClaudeSessionTurn: Identifiable, Sendable {
+    let id: String
+    let role: String
+    let text: String
+    let timestamp: String
+
+    var isUser: Bool { role == "user" }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object else { return nil }
+        let text = o["text"]?.string ?? ""
+        guard !text.isEmpty else { return nil }
+        id = o["id"]?.string ?? UUID().uuidString
+        role = o["role"]?.string == "assistant" ? "assistant" : "user"
+        self.text = text
+        timestamp = o["timestamp"]?.string ?? ""
+    }
+}
+
+struct ClaudeSessionDetail: Sendable {
+    let title: String
+    let cwd: String
+    let branch: String
+    let sessionId: String
+    let provider: String
+    let turns: [ClaudeSessionTurn]
+    let totalTurns: Int
+    let omittedTools: Int
+    let omittedSidechain: Int
+    let truncated: Bool
+    let copyText: String
+
+    var subtitle: String {
+        var parts: [String] = []
+        parts.append(provider == "codex" ? "Codex" : provider == "cursor" ? "Cursor" : "Claude")
+        if !cwd.isEmpty { parts.append((cwd as NSString).lastPathComponent) }
+        if !branch.isEmpty { parts.append(branch) }
+        if truncated { parts.append("last \(turns.count) of \(totalTurns) turns") }
+        else { parts.append("\(totalTurns) turn\(totalTurns == 1 ? "" : "s")") }
+        if omittedTools > 0 { parts.append("tools omitted") }
+        return parts.joined(separator: " · ")
+    }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object else { return nil }
+        let copyText = o["copyText"]?.string ?? ""
+        let turns = (o["turns"]?.array ?? []).compactMap(ClaudeSessionTurn.init)
+        guard !copyText.isEmpty || !turns.isEmpty else { return nil }
+        title = o["title"]?.string ?? "Claude session"
+        cwd = o["cwd"]?.string ?? ""
+        branch = o["branch"]?.string ?? ""
+        sessionId = o["sessionId"]?.string ?? ""
+        provider = o["provider"]?.string ?? "claude"
+        self.turns = turns
+        totalTurns = o["totalTurns"]?.int ?? turns.count
+        omittedTools = o["omittedTools"]?.int ?? 0
+        omittedSidechain = o["omittedSidechain"]?.int ?? 0
+        truncated = o["truncated"]?.bool ?? false
+        self.copyText = copyText
     }
 }
 
