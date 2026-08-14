@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.5.42 (build 80)
+
+- **COS Data never switches your tier on its own.** Choosing a folder used to
+  re-derive which store you get from what that folder contains, preferring the
+  Python bridge whenever a workspace held both. So a user on plain markdown notes
+  who re-picked their own folder — after moving it, or because an error told them
+  to choose it again — was silently moved onto the pipeline. The two tiers serve
+  DIFFERENT data and never merge: a working bridge means the server stops reading
+  `memory/` and `threads/` entirely. Measured on a real install, that swap traded
+  11 memories and 6 threads for 21 and 5 sharing no content.
+- Resolution now happens WITHIN the tier you are already on. Nothing new is
+  stored: the preference was always durable as which env key is set, and the bug
+  was that resolution ignored it. Existing installs keep their tier by
+  construction. A brand-new install gets plain notes — no venv, no Python — and
+  the bridge is an explicit choice rather than something that happens to you.
+- Asking for the bridge in a folder that has none now says so, instead of quietly
+  handing back the other tier. A silent downgrade is the same surprise as the
+  silent upgrade.
+- **"This COS workspace uses an older Memory and Threads bridge" is gone.** It was
+  thrown for ANY non-zero exit from the bridge, and the common cause by far is
+  Qdrant being unreachable after Docker fails to restart. That wording sent three
+  separate sessions chasing a version problem, and it told the user to re-pick
+  their folder — which, before the fix above, is what swapped their tier. It now
+  reports the actual exit code and output and names Docker as the usual cause.
+- **A symlinked `memory/` or `threads/` is recognised again.** The check rejected
+  symlinks while the server follows them, so Control reported "no root" for a
+  store it was simultaneously reading 11 memories and 6 threads out of — then
+  offered "Create Folders" over folders that already existed.
+- Three execution self-tests cover these, alongside the ones added for the
+  2026-08-08 meetings-library case. Both guards are mutation-verified: restoring
+  bridge-first preference and re-rejecting symlinks each fail the suite while
+  still compiling.
+
 ## 0.5.41 (build 79)
 
 - **Lookup Recency next to Domain.** Meetings, Sessions, Memories, and Threads

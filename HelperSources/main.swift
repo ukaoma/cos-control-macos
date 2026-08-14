@@ -387,7 +387,9 @@ final class COSControlHelper {
         }
         case "set-context-dir": try withMutationLock {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing COS data directory") }
-            try setContextDirectory(value)
+            // No --tier means keep the current tier. Folder re-picks must never move
+            // a user between tiers; that is what `--tier` exists for.
+            try setContextDirectory(value, tier: option("--tier", in: args))
         }
         case "set-transcription-tier": try withMutationLock {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing transcription tier") }
@@ -4005,16 +4007,61 @@ final class COSControlHelper {
     /// the user as "COS Control broke my server".
     private func holdsContextFiles(_ url: URL) -> Bool {
         for name in ["memory", "memories", "threads", "thread"] {
-            if directoryExists(url.appendingPathComponent(name, isDirectory: true)) { return true }
+            // RESOLVE first. `directoryExists` deliberately rejects symlinks, which is
+            // right when deciding what a path IS, and wrong here: a symlinked
+            // `memory/` is a completely normal layout and the SERVER follows it. The
+            // mismatch made Control report contextResolvedRoot = nil for a store it
+            // was simultaneously reading 11 memories and 6 threads out of, which then
+            // offered "Create Folders" over folders that already exist and printed
+            // "No memory/ or threads/ folder yet" to a user who plainly had them.
+            let candidate = url.appendingPathComponent(name, isDirectory: true).resolvingSymlinksInPath()
+            if directoryExists(candidate) { return true }
         }
         return false
     }
 
-    private func validatedContextSource(_ path: String) throws -> ContextSource {
+    /// Which tier this install is ALREADY on, read from the env the server runs with.
+    ///
+    /// The preference is durable by construction: `setContextDirectory` writes one key
+    /// and removes the other, so exactly one of these is ever set. Nothing new to
+    /// persist — the bug was never storage, it was that resolution ignored this.
+    private func currentContextTier() -> String? {
+        let environment = serverEnvironment()
+        func has(_ key: String) -> Bool {
+            (environment[key]?.trimmingCharacters(in: .whitespaces).isEmpty == false)
+        }
+        if has("COS_SCRIPTS_DIR") { return "bridge" }
+        if has("COS_CONTEXT_DIR") { return "files" }
+        return nil
+    }
+
+    /// Resolve a folder WITHIN a tier. Never across one.
+    ///
+    /// This used to prefer the bridge whenever a workspace held both, so a user on
+    /// plain notes who re-picked their own folder — after a move, or after the
+    /// "older bridge" error told them to choose it again — was silently swapped onto
+    /// the pipeline. The two tiers serve DIFFERENT DATA and never merge: a working
+    /// bridge means the server stops reading `memory/` and `threads/` entirely, so
+    /// that swap replaces a live store rather than upgrading it. Measured on a real
+    /// install: 11 memories + 6 threads on files versus 21 + 5 on the bridge, sharing
+    /// no content.
+    ///
+    /// `tier` nil means "keep whatever this install is on", which is what every
+    /// ordinary folder re-pick passes. Changing tier is a separate, explicit action.
+    /// A brand-new install with no tier yet gets FILES — no venv, no Python, and the
+    /// bridge stays an opt-in upgrade rather than something that happens to you.
+    private func validatedContextSource(_ path: String, tier requested: String? = nil) throws -> ContextSource {
         let selected = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
-        // Bridge first, always. A workspace that has BOTH keeps the pipeline —
-        // downgrading an existing install to browse-only would be a silent
-        // regression for exactly the users who invested in setting it up.
+        let tier = requested ?? currentContextTier() ?? "files"
+        if tier == "files" {
+            for candidate in [selected, selected.appendingPathComponent("operations", isDirectory: true)]
+            where directoryExists(candidate) && holdsContextFiles(candidate) {
+                return .files(root: candidate.resolvingSymlinksInPath().path)
+            }
+            throw HelperError.message(
+                "Choose a folder that holds a memory or threads folder of markdown notes. "
+                + "To use the Python bridge instead, switch COS Data to the bridge tier explicitly.")
+        }
         let bridgeCandidates = [
             selected,
             selected.appendingPathComponent("operations/scripts", isDirectory: true),
@@ -4029,23 +4076,34 @@ final class COSControlHelper {
                   let data = result.output.data(using: .utf8),
                   let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   payload["protocol"] as? Int == 1 else {
-                throw HelperError.message("This COS workspace uses an older Memory and Threads bridge. Update the workspace, then choose it again.")
+                // NOT necessarily an old bridge. `context-status` exits non-zero for any
+                // reason, and the common one by far is Qdrant being unreachable — the
+                // Docker daemon failing to come back after a reboot. That wording sent
+                // three separate sessions chasing a version problem and told the user to
+                // re-pick the folder, which (before the tier fix above) is what silently
+                // swapped their tier. Report what actually failed.
+                let detail = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                let hint = detail.isEmpty ? "no output" : String(detail.prefix(200))
+                throw HelperError.message("The COS bridge did not answer (exit \(result.code)): \(hint). "
+                    + "Most often Qdrant is down — check Docker — rather than an outdated workspace.")
             }
             return .bridge(scripts: candidate.resolvingSymlinksInPath().path)
         }
-        // No bridge. Accept a folder of notes.
-        let fileCandidates = [
-            selected,
-            selected.appendingPathComponent("operations", isDirectory: true),
-        ]
-        for candidate in fileCandidates where directoryExists(candidate) && holdsContextFiles(candidate) {
-            return .files(root: candidate.resolvingSymlinksInPath().path)
-        }
-        throw HelperError.message("Choose a folder that holds a memory or threads folder of markdown notes, or a COS workspace with operations/scripts/cos_api_bridge.py and operations/scripts/venv/bin/python3. Meetings setup is separate.")
+        // Bridge tier was ASKED FOR and this folder has none. Say so rather than
+        // quietly handing back the other tier — a silent downgrade is the same class
+        // of surprise as the silent upgrade this function used to perform.
+        throw HelperError.message("No COS Python bridge in that folder. Choose a workspace with "
+            + "operations/scripts/cos_api_bridge.py and a venv, or switch COS Data to the notes tier.")
     }
 
-    private func setContextDirectory(_ path: String) throws {
-        let source = try validatedContextSource(path)
+    /// `tier` nil = keep the tier this install is already on. Only an explicit
+    /// `--tier` from the switch action may move a user between tiers, because the two
+    /// serve different data and switching replaces rather than merges.
+    private func setContextDirectory(_ path: String, tier: String? = nil) throws {
+        if let tier, tier != "bridge", tier != "files" {
+            throw HelperError.message("tier must be 'bridge' or 'files'")
+        }
+        let source = try validatedContextSource(path, tier: tier)
         let runningVersion = (maintenanceStatus()?["serverVersion"] as? String)
             ?? (request("/api/health", timeout: 8)?.body?["server_version"] as? String)
             ?? loadManifest()?.version
@@ -9660,6 +9718,60 @@ final class COSControlHelper {
         try expect(child["COS_SCRIPTS_DIR"] == "/live/scripts", "live LaunchAgent scripts dir wins")
         try expect(child["PATH"] == "/usr/bin", "child env keeps the helper PATH")
         try expect(Self.meetingSyncTimeout >= 60, "meeting sync must have a timeout")
+
+
+        // COS data TIER must never change on its own (Miles, 2026-08-14: "It should
+        // not swap anyone from their preference. Only when a user explicitly asks").
+        //
+        // `validatedContextSource` used to prefer the bridge whenever a workspace held
+        // BOTH, so a user on plain notes who re-picked their own folder was silently
+        // moved onto the pipeline. The tiers serve DIFFERENT data and never merge, so
+        // that swap replaces a live store: measured on a real install, 11 memories +
+        // 6 threads on files versus 21 + 5 on the bridge, sharing no content.
+        //
+        // EXECUTION, not a grep. A source assertion here would pass against a function
+        // that had been rewritten to swap again.
+        let tierRoot = home.appendingPathComponent("selftest-tier", isDirectory: true)
+        try? FileManager.default.removeItem(at: tierRoot)
+        let tierScripts = tierRoot.appendingPathComponent("operations/scripts", isDirectory: true)
+        try makeDir(tierScripts.appendingPathComponent("venv/bin", isDirectory: true))
+        try makeDir(tierRoot.appendingPathComponent("operations/memory", isDirectory: true))
+        FileManager.default.createFile(atPath: tierScripts.appendingPathComponent("cos_api_bridge.py").path,
+                                       contents: Data("x".utf8))
+        let fakePython = tierScripts.appendingPathComponent("venv/bin/python3")
+        FileManager.default.createFile(atPath: fakePython.path, contents: Data("#!/bin/sh\nexit 1\n".utf8),
+                                       attributes: [.posixPermissions: 0o755])
+
+        // Both tiers present. Asking for files MUST return files, never the bridge —
+        // this is the exact shape that used to swap a user.
+        if case .files = try validatedContextSource(tierRoot.path, tier: "files") {
+            passed += 1
+        } else {
+            throw HelperError.message("self-test failed: files tier resolved to the bridge")
+        }
+
+        // Asking for the bridge where none exists must SAY SO, not silently hand back
+        // the other tier. A quiet downgrade is the same surprise as a quiet upgrade.
+        let notesOnly = home.appendingPathComponent("selftest-notes", isDirectory: true)
+        try? FileManager.default.removeItem(at: notesOnly)
+        try makeDir(notesOnly.appendingPathComponent("memory", isDirectory: true))
+        var refusedBridge = false
+        do { _ = try validatedContextSource(notesOnly.path, tier: "bridge") } catch { refusedBridge = true }
+        try expect(refusedBridge, "bridge tier silently fell back to files")
+
+        // A SYMLINKED memory/ is a normal layout and the server follows it. Control
+        // rejected it, so a working store reported contextResolvedRoot = nil while
+        // simultaneously serving 11 memories and 6 threads out of it — which then
+        // offered "Create Folders" over folders that already existed.
+        let linkRoot = home.appendingPathComponent("selftest-symlink", isDirectory: true)
+        try? FileManager.default.removeItem(at: linkRoot)
+        try makeDir(linkRoot)
+        let realNotes = home.appendingPathComponent("selftest-symlink-target", isDirectory: true)
+        try? FileManager.default.removeItem(at: realNotes)
+        try makeDir(realNotes)
+        try FileManager.default.createSymbolicLink(at: linkRoot.appendingPathComponent("memory"),
+                                                   withDestinationURL: realNotes)
+        try expect(holdsContextFiles(linkRoot), "a symlinked memory/ was not recognised as a notes store")
 
         emit(ok: true, message: "\(passed) deterministic helper tests passed", details: ["tests": passed])
     }
