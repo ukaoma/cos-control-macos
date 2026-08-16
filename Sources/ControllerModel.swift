@@ -709,6 +709,10 @@ final class ControllerModel: ObservableObject {
         perform("set-meeting-preview", arguments: [enabled ? "on" : "off"])
     }
 
+    func setThreadAttachEnabled(_ enabled: Bool) {
+        perform("set-thread-attach", arguments: [enabled ? "on" : "off"])
+    }
+
     func setVideoUploadV2Enabled(_ enabled: Bool) {
         perform("set-video-upload-v2", arguments: [enabled ? "on" : "off"])
     }

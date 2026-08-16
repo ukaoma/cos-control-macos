@@ -98,6 +98,9 @@ struct ServerStatus: Sendable {
     var backgroundJobsEnabled: Bool?
     var meetingPreviewSupported = false
     var meetingPreviewEnabled: Bool?
+    var threadAttachSupported = false
+    var threadAttachEnabled: Bool?
+    var threadAttachProviders: [String] = []
     var videoUploadV2Supported = false
     var videoUploadV2Enabled: Bool?
     var videoUploadV2Receiving = 0
@@ -217,6 +220,9 @@ struct ServerStatus: Sendable {
         backgroundJobsEnabled = details["backgroundJobsEnabled"]?.bool
         meetingPreviewSupported = details["meetingPreviewSupported"]?.bool ?? false
         meetingPreviewEnabled = details["meetingPreviewEnabled"]?.bool
+        threadAttachSupported = details["threadAttachSupported"]?.bool ?? false
+        threadAttachEnabled = details["threadAttachEnabled"]?.bool
+        threadAttachProviders = (details["threadAttachProviders"]?.array ?? []).compactMap(\.string)
         videoUploadV2Supported = details["videoUploadV2Supported"]?.bool ?? false
         videoUploadV2Enabled = details["videoUploadV2Enabled"]?.bool
         videoUploadV2Receiving = details["videoUploadV2Receiving"]?.int ?? 0

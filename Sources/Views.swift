@@ -104,11 +104,20 @@ struct ControlPanel: View {
     @State private var confirmSaveAllStranded = false
     @State private var selectedIdleMetalHq = false
     @State private var selectedAdaptiveAudioCleanup = false
+    @State private var selectedThreadAttach = false
 
     /// The menu-bar panel stays the server console. Browsing activity lives in a
     /// real, persistent AppKit window: unlike a sheet, that
     /// window does not need the transient MenuBarExtra to remain key.
-    var body: some View {
+    /// Split out of `body` deliberately. The full chain of state sync plus every
+    /// alert and confirmation dialog exceeds what the SwiftUI type-checker will
+    /// solve in one expression, and it fails as "unable to type-check in
+    /// reasonable time" rather than as anything naming the real cause.
+    ///
+    /// Each toggle stays on its OWN observation on purpose. Syncing them all
+    /// from one shared handler would let an unrelated status change overwrite a
+    /// selection the user had flipped but not yet applied.
+    private var syncedPanel: some View {
         mainPanel
         .frame(width: 390, height: 640)
         .font(COSType.body(13))
@@ -124,6 +133,7 @@ struct ControlPanel: View {
             if let enabled = model.status.videoUploadV2Enabled { selectedVideoUploadV2 = enabled }
             if let enabled = model.status.idleMetalHqEnabled { selectedIdleMetalHq = enabled }
             if let enabled = model.status.adaptiveAudioCleanupEnabled { selectedAdaptiveAudioCleanup = enabled }
+            if let enabled = model.status.threadAttachEnabled { selectedThreadAttach = enabled }
         }
         .onChange(of: model.status.transcriptionRequestedTier) { _, tier in
             if let tier, tier == "max" || tier == "balanced" { selectedTranscriptionTier = tier }
@@ -143,6 +153,13 @@ struct ControlPanel: View {
         .onChange(of: model.status.adaptiveAudioCleanupEnabled) { _, enabled in
             if let enabled { selectedAdaptiveAudioCleanup = enabled }
         }
+        .onChange(of: model.status.threadAttachEnabled) { _, enabled in
+            if let enabled { selectedThreadAttach = enabled }
+        }
+    }
+
+    var body: some View {
+        syncedPanel
         .alert("COS Control", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
         } message: { Text(model.error ?? "") }
@@ -287,6 +304,13 @@ struct ControlPanel: View {
             }
             if model.status.meetingPreviewSupported, let enabled = model.status.meetingPreviewEnabled {
                 statusRow("Meeting preview", value: enabled ? "Turbo · On" : "Off", good: enabled)
+            }
+            if model.status.threadAttachSupported, let enabled = model.status.threadAttachEnabled {
+                let providers = model.status.threadAttachProviders
+                let detail = enabled
+                    ? (providers.isEmpty ? "On" : providers.joined(separator: " · "))
+                    : "Off"
+                statusRow("Continue threads", value: detail, good: enabled)
             }
             if model.status.videoUploadV2Supported, let enabled = model.status.videoUploadV2Enabled {
                 let receiving = model.status.videoUploadV2Receiving
@@ -1105,6 +1129,18 @@ struct ControlPanel: View {
                             || (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0)
                 }
                 Text("Shows fast provisional meeting text, then replaces it with the canonical speaker-attributed transcript. Disable for immediate rollback.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if model.status.threadAttachSupported {
+                HStack(spacing: 8) {
+                    Toggle("Continue agent threads", isOn: $selectedThreadAttach)
+                    Button("Apply") { model.setThreadAttachEnabled(selectedThreadAttach) }
+                        .disabled(model.busy
+                            || (!model.status.installed && model.status.runtimeState != "managedInPlace")
+                            || (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0)
+                }
+                Text("Off by default. Lets a reply write into a real Claude or Codex session on this Mac instead of starting a new thread. Off removes the setting completely, so the write routes are not registered at all.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

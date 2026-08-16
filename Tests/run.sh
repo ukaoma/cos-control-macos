@@ -296,6 +296,36 @@ PY
 /usr/bin/grep -q 'if response.status == 404' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'COS_CLAUDE_SESSIONS_ENABLED' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'COS_CLAUDE_SESSIONS_SHOW_NAMES' "$ROOT/HelperSources/main.swift"
+
+# --- 0.5.43 Continue an agent thread -------------------------------------
+# The server reads COS_THREAD_ATTACH_ENABLED straight off process.env and never
+# parses .env, so the LaunchAgent plist is the only channel and this helper
+# allowlist is the only thing that carries it through Install / Repair / Update
+# Server. Allowlist membership and the delete-on-off write shape are both
+# EXECUTED in the helper self-test; these pin the surfaces around them.
+/usr/bin/grep -q 'case "set-thread-attach"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'COS_THREAD_ATTACH_ENABLED' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'requireThreadAttach' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'threadAttachEnvironment' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'Continue agent threads' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'setThreadAttachEnabled' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'threadAttachSupported' "$ROOT/Sources/Models.swift"
+# The toggle must mount under the support flag the helper actually publishes. A
+# control gated on an unrelated flag compiles, reads correctly, and never appears.
+/usr/bin/grep -q 'if model.status.threadAttachSupported {' "$ROOT/Sources/Views.swift"
+# Default-off flag: Off REMOVES the key. Writing "0" would leave a permanent
+# artifact and contradict the server contract that absent means disabled.
+/usr/bin/python3 - "$ROOT" <<'PY'
+import sys, pathlib
+text = pathlib.Path(sys.argv[1], "HelperSources/main.swift").read_text()
+start = text.index("private func threadAttachEnvironment")
+end = text.index("private func requireThreadAttach")
+body = text[start:end]
+if '"COS_THREAD_ATTACH_ENABLED": "0"' in body:
+    sys.exit('Continue off must remove the key, not write "0"')
+if "removing" not in body:
+    sys.exit("Continue off must use the removingKeys delete path")
+PY
 /usr/bin/grep -q 'struct SpeakerReviewPane' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'activityLauncher' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'ActivitySection.allCases' "$ROOT/Sources/Views.swift"

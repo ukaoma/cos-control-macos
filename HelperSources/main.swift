@@ -306,6 +306,12 @@ final class COSControlHelper {
         "COS_VIDEO_UPLOAD_V2",
         "COS_CLAUDE_SESSIONS_ENABLED",
         "COS_CLAUDE_SESSIONS_SHOW_NAMES",
+        // Continue an agent thread. The server reads this key straight off
+        // process.env and never parses .env, so this allowlist is the ONLY
+        // channel that survives Install / Repair / Update Server. Omitting it
+        // is not a missing feature — it silently DROPS a hand-set flag on the
+        // next update, which is how COS_PROFILE_PATH was lost.
+        "COS_THREAD_ATTACH_ENABLED",
     ]
 
     private lazy var support = home.appendingPathComponent("Library/Application Support/COS Control", isDirectory: true)
@@ -418,6 +424,10 @@ final class COSControlHelper {
         case "set-claude-sessions": try withMutationLock {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing Claude sessions setting") }
             try setClaudeSessions(value)
+        }
+        case "set-thread-attach": try withMutationLock {
+            guard let value = args.dropFirst().first else { throw HelperError.message("missing Continue agent threads setting") }
+            try setThreadAttach(value)
         }
         case "claude-sessions": try emitClaudeSessions()
         case "claude-sessions-search": try emitClaudeSessionsSearch(args: args)
@@ -2056,6 +2066,20 @@ final class COSControlHelper {
         let meetingPreviewEnabled = meetingPreviewSupported
             ? ((health != nil ? loadedEnvironmentValue("COS_WHISPER_MEETING_PREVIEW") : configuredMeetingPreview) == "1")
             : nil
+        // Continue an agent thread. The running build answers this itself via
+        // its capability contract; the version compare only covers a build that
+        // is healthy but predates the fields, and the manifest covers a stopped
+        // managed server that has no health at all.
+        let threadAttachSupported = (health?["threadAttachSupported"] as? Bool == true)
+            || reportedVersion.map { versionAtLeast($0, threadAttachMinimumServer) } == true
+        let configuredThreadAttach = manifest?.providerEnvironment?["COS_THREAD_ATTACH_ENABLED"]
+            ?? (launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String])?["COS_THREAD_ATTACH_ENABLED"]
+        // Fail closed in the same direction the server's contract mandates:
+        // anything but a literal true, or an absent key, is off.
+        let threadAttachEnabled: Bool? = threadAttachSupported
+            ? (health.map { $0["threadAttachEnabled"] as? Bool == true } ?? (configuredThreadAttach == "1"))
+            : nil
+        let threadAttachProviders = (health?["threadAttachProviders"] as? [String]) ?? []
         let videoUploadStatus = maintenance?["videoUploads"] as? [String: Any]
         let videoUploadV2Supported = reportedVersion.map { versionAtLeast($0, "6.27.3") } == true
         let configuredVideoUploadV2 = manifest?.providerEnvironment?["COS_VIDEO_UPLOAD_V2"]
@@ -2146,6 +2170,9 @@ final class COSControlHelper {
             "backgroundJobsEnabled": backgroundJobsEnabled ?? NSNull(),
             "meetingPreviewSupported": meetingPreviewSupported,
             "meetingPreviewEnabled": meetingPreviewEnabled ?? NSNull(),
+            "threadAttachSupported": threadAttachSupported,
+            "threadAttachEnabled": threadAttachEnabled ?? NSNull(),
+            "threadAttachProviders": threadAttachProviders,
             "videoUploadV2Supported": videoUploadV2Supported,
             "videoUploadV2Enabled": videoUploadV2Enabled ?? NSNull(),
             "videoUploadV2Receiving": videoUploadStatus?["receiving"] ?? 0,
@@ -3795,6 +3822,114 @@ final class COSControlHelper {
         }
     }
 
+    /// First server build whose `/api/health` carries the thread-attach
+    /// capability contract and whose write routes honour the gate.
+    private let threadAttachMinimumServer = "6.29.0"
+
+    /// Continue an agent thread — the write path that appends into a real
+    /// Claude or Codex session on this Mac.
+    ///
+    /// Default OFF, and the OFF path REMOVES the key rather than writing "0".
+    /// That is deliberate and is the opposite of `setMeetingPreview`:
+    ///
+    ///   - Meeting Turbo preview defaults ON, so for that flag an absent key
+    ///     means ENABLED. Its Off must write an explicit "0" or the documented
+    ///     "Disable for immediate rollback" affordance silently stops working.
+    ///   - Continue defaults OFF, so an absent key already means disabled — the
+    ///     server's own capability contract states "ABSENT MEANS DISABLED. NEVER
+    ///     ENABLED." Removing the key returns the LaunchAgent to its pristine
+    ///     default instead of leaving a "0" artifact to be maintained forever,
+    ///     and it makes the disabled state provable by absence.
+    ///
+    /// `removingKeys` is the existing first-class, transaction-backed delete on
+    /// both apply paths, so Off is as reversible as On.
+    private func setThreadAttach(_ raw: String) throws {
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard ["on", "off"].contains(normalized) else {
+            throw HelperError.message("Unknown Continue agent threads setting. Choose On or Off.")
+        }
+        let health = request("/api/health", timeout: 12)?.body
+        let runningVersion = health?["server_version"] as? String
+        // Prefer the server's own answer over a version comparison.
+        // `threadAttachSupported` is a compile-time constant of the running
+        // build and is the field its capability contract tells every client to
+        // read; the version compare is only the fallback for a build that
+        // answers health without it.
+        let runningSupports = health?["threadAttachSupported"] as? Bool == true
+            || runningVersion.map { versionAtLeast($0, threadAttachMinimumServer) } == true
+        let stoppedCompatibleManagedServer = loadManifest().map {
+            $0.desiredState == "stopped" && versionAtLeast($0.version, threadAttachMinimumServer)
+        } ?? false
+        guard runningSupports || stoppedCompatibleManagedServer else {
+            throw HelperError.message("Update the managed server to \(threadAttachMinimumServer) or newer before changing Continue agent threads.")
+        }
+        let enabled = normalized == "on"
+        let (values, removing) = try threadAttachEnvironment(normalized)
+        let operationLabel = enabled ? "Continue agent threads" : "Continue agent threads off"
+        if let manifest = loadManifest() {
+            try applyManagedProviderEnvironment(
+                values,
+                removingKeys: removing,
+                current: manifest,
+                operationLabel: operationLabel,
+                requiredThreadAttach: enabled
+            )
+            return
+        }
+        guard inPlaceActive() else {
+            throw HelperError.message("Install the managed server or choose Manage in place first.")
+        }
+        try applyInPlaceProviderEnvironment(
+            values,
+            removingKeys: removing,
+            operationLabel: operationLabel,
+            requiredThreadAttach: enabled
+        )
+    }
+
+    /// The write shape for Continue, kept pure so the self-test can execute the
+    /// delete-vs-"0" decision rather than assert it against source text.
+    ///
+    /// On writes "1"; Off REMOVES the key. See `setThreadAttach` for why this is
+    /// correct here and wrong for a default-ON flag.
+    private func threadAttachEnvironment(_ raw: String) throws -> (values: [String: String], removing: Set<String>) {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "on":
+            return (["COS_THREAD_ATTACH_ENABLED": "1"], [])
+        case "off":
+            return ([:], ["COS_THREAD_ATTACH_ENABLED"])
+        default:
+            throw HelperError.message("Unknown Continue agent threads setting. Choose On or Off.")
+        }
+    }
+
+    /// Two independent proofs, because either one alone can lie. The launchd
+    /// environment proves what the service was HANDED; the capability contract
+    /// proves what the running build actually did with it.
+    private func requireThreadAttach(enabled: Bool) throws {
+        let loaded = loadedEnvironmentValue("COS_THREAD_ATTACH_ENABLED")
+        if enabled {
+            guard loaded == "1" else {
+                throw HelperError.message("the restarted server did not load Continue agent threads as enabled")
+            }
+        } else {
+            // Off is proven by ABSENCE, matching the delete this setter performs.
+            // A lingering value would mean the removal never reached launchd.
+            guard loaded == nil else {
+                throw HelperError.message("the restarted server still carries a Continue agent threads value of \(loaded ?? "")")
+            }
+        }
+        guard let health = request("/api/health", timeout: 12)?.body else {
+            throw HelperError.message("the restarted server did not answer a health check for Continue agent threads")
+        }
+        // Fail closed exactly the way the server's contract instructs clients
+        // to read it: anything but a literal true is off.
+        let reported = health["threadAttachEnabled"] as? Bool == true
+        guard reported == enabled else {
+            throw HelperError.message("the restarted server reported Continue agent threads as \(reported ? "enabled" : "disabled")")
+        }
+    }
+
     private func requireVideoUploadDowngradeSafe(targetVersion: String) throws {
         guard !versionAtLeast(targetVersion, "6.27.3") else { return }
         let currentVersion = (maintenanceStatus()?["serverVersion"] as? String) ?? loadManifest()?.version
@@ -4328,7 +4463,10 @@ final class COSControlHelper {
         current: RuntimeManifest,
         operationLabel: String,
         requiredMeetingLibrary: MeetingsDirectoryInspection? = nil,
-        requireContextProof: Bool = false
+        requireContextProof: Bool = false,
+        // Continue proves in BOTH directions, and its Off is a key removal, so
+        // it cannot be keyed off `values[...]` the way the "0"-writing flags are.
+        requiredThreadAttach: Bool? = nil
     ) throws {
         guard loadTransaction() == nil else {
             throw HelperError.message("A previous runtime change needs Repair before \(operationLabel.lowercased()) can change.")
@@ -4407,6 +4545,7 @@ final class COSControlHelper {
                 if let adaptiveAudioCleanup = values["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"] {
                     try requireAdaptiveAudioCleanup(adaptiveAudioCleanup)
                 }
+                if let requiredThreadAttach { try requireThreadAttach(enabled: requiredThreadAttach) }
                 if let requiredMeetingLibrary { try requireMeetingLibrary(requiredMeetingLibrary) }
                 if requireContextProof { try requireContextBrowser() }
                 try requireMaintenanceRelease(activeLease)
@@ -4436,7 +4575,8 @@ final class COSControlHelper {
         removingKeys: Set<String> = [],
         operationLabel: String,
         requiredMeetingLibrary: MeetingsDirectoryInspection? = nil,
-        requireContextProof: Bool = false
+        requireContextProof: Bool = false,
+        requiredThreadAttach: Bool? = nil
     ) throws {
         // Adopted self-managed installs get the same reversible bootout /
         // bootstrap transaction as work-folder changes. launchctl kickstart is
@@ -4515,6 +4655,7 @@ final class COSControlHelper {
                 if alreadyActive, let adaptiveAudioCleanup = values["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"] {
                     try requireAdaptiveAudioCleanup(adaptiveAudioCleanup)
                 }
+                if alreadyActive, let requiredThreadAttach { try requireThreadAttach(enabled: requiredThreadAttach) }
                 if alreadyActive, let requiredMeetingLibrary { try requireMeetingLibrary(requiredMeetingLibrary) }
                 if alreadyActive && requireContextProof { try requireContextBrowser() }
                 // Verification owns the transaction. Clearing before the health
@@ -4588,6 +4729,7 @@ final class COSControlHelper {
             if let adaptiveAudioCleanup = values["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"] {
                 try requireAdaptiveAudioCleanup(adaptiveAudioCleanup)
             }
+            if let requiredThreadAttach { try requireThreadAttach(enabled: requiredThreadAttach) }
             if let requiredMeetingLibrary { try requireMeetingLibrary(requiredMeetingLibrary) }
             if requireContextProof { try requireContextBrowser() }
             try requireMaintenanceRelease(activeLease)
@@ -8665,6 +8807,8 @@ final class COSControlHelper {
                    "COS_CLAUDE_SESSIONS_ENABLED must be allowlisted or Update Server strips it")
         try expect(providerEnvironmentKeys.contains("COS_CLAUDE_SESSIONS_SHOW_NAMES"),
                    "COS_CLAUDE_SESSIONS_SHOW_NAMES must be allowlisted or Update Server strips it")
+        try expect(providerEnvironmentKeys.contains("COS_THREAD_ATTACH_ENABLED"),
+                   "COS_THREAD_ATTACH_ENABLED must be allowlisted or Update Server silently drops Continue")
 
         // Create Folders — the button that replaces the two directories Queen had to
         // make by hand. Runs the SHIPPED function against a real temporary tree.
@@ -8742,6 +8886,7 @@ final class COSControlHelper {
                 "COS_HARNESS": "codex",
                 "COS_EXTRA_TOOLS": "mcp__calendar__*",
                 "COS_WHISPER_MEETING_PREVIEW": "1",
+                "COS_THREAD_ATTACH_ENABLED": "1",
                 "COS_BATCH_HQ_METAL": "1",
                 "COS_BATCH_HQ_FORCE_CPU": "0",
                 "COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK": "1",
@@ -8758,11 +8903,26 @@ final class COSControlHelper {
             filtered["COS_HARNESS"] == "codex"
                 && filtered["COS_EXTRA_TOOLS"] == "mcp__calendar__*"
                 && filtered["COS_WHISPER_MEETING_PREVIEW"] == "1"
+                && filtered["COS_THREAD_ATTACH_ENABLED"] == "1"
                 && filtered["COS_BATCH_HQ_METAL"] == "1"
                 && filtered["COS_BATCH_HQ_FORCE_CPU"] == "0"
                 && filtered["COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK"] == "1"
                 && filtered["COS_API_TOKEN"] == nil,
             "provider allowlist"
+        )
+        // Continue is a DEFAULT-OFF flag, so Off must REMOVE the key rather than
+        // write "0" — absence is the state the server documents as disabled, and
+        // it is what makes the disabled state provable by absence. Writing "0"
+        // here would leave a permanent artifact; this asserts the real function.
+        let threadAttachOn = try threadAttachEnvironment("ON")
+        let threadAttachOff = try threadAttachEnvironment("off")
+        try expect(
+            threadAttachOn.values["COS_THREAD_ATTACH_ENABLED"] == "1" && threadAttachOn.removing.isEmpty,
+            "Continue on must write the enabling value and remove nothing"
+        )
+        try expect(
+            threadAttachOff.values.isEmpty && threadAttachOff.removing == ["COS_THREAD_ATTACH_ENABLED"],
+            "Continue off must REMOVE the key, never write \"0\" — absent is the documented disabled state"
         )
         let idleMetalOn = try idleMetalHqEnvironment("ON")
         let idleMetalOff = try idleMetalHqEnvironment("off")

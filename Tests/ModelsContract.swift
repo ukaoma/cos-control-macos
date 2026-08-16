@@ -864,10 +864,23 @@ struct ModelsContract {
             "idleMetalHqForceCpu": .bool(false),
             "adaptiveAudioCleanupSupported": .bool(true),
             "adaptiveAudioCleanupEnabled": .bool(false),
+            "threadAttachSupported": .bool(true),
+            "threadAttachEnabled": .bool(true),
+            "threadAttachProviders": .array([.string("claude"), .string("codex")]),
         ])
         precondition(status.meetingPreviewSupported && status.meetingPreviewEnabled == true)
         precondition(status.idleMetalHqSupported && status.idleMetalHqEnabled == true && status.idleMetalHqForceCpu == false)
         precondition(status.adaptiveAudioCleanupSupported && status.adaptiveAudioCleanupEnabled == false)
+        precondition(status.threadAttachSupported && status.threadAttachEnabled == true)
+        precondition(status.threadAttachProviders == ["claude", "codex"])
+
+        // A server that predates the capability contract sends none of these
+        // fields. Absent MUST resolve to off, never to "probably on" — the same
+        // fail-closed posture the server's own contract mandates for clients.
+        let legacy = ServerStatus(["meetingPreviewSupported": .bool(true)])
+        precondition(!legacy.threadAttachSupported)
+        precondition(legacy.threadAttachEnabled == nil)
+        precondition(legacy.threadAttachProviders.isEmpty)
 
         // Decode into an owned in-memory image before deleting the source.
         let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")!

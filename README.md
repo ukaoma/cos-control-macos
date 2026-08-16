@@ -95,6 +95,26 @@ personalizes COS behavior and never prescribes directory names.
   early-sync result, and retained finalization work. Switching tiers updates the
   safe thread budget but does not silently enable the canary.
 
+## 0.5.43 Continue agent threads control
+
+- Continue an agent thread lets a reply write into a real Claude or Codex session
+  on this Mac instead of starting a new one. It requires server 6.29.0 or newer,
+  which publishes `threadAttachSupported`, `threadAttachEnabled`, and
+  `threadAttachProviders` on `/api/health`. Control reads that contract rather
+  than inferring support from a version string.
+- The server reads `COS_THREAD_ATTACH_ENABLED` directly from `process.env` and
+  never parses `.env`, so the LaunchAgent plist is the only channel that reaches
+  it. Control keeps the key in its provider allowlist, and that allowlist is what
+  carries the value through Install, Repair, and Update Server. Setting the key
+  by hand outside Control does not survive the next update.
+- Off by default, and Off REMOVES the key rather than writing `0`. Absence is the
+  documented disabled state, so removal restores the untouched default and makes
+  the off state provable by absence. Meeting Turbo preview is the opposite case:
+  it defaults on, so its Off must write an explicit `0`.
+- Applying a change is proven twice before it reports success, against the
+  environment launchd handed the service and against the capability the running
+  server reports.
+
 ## 0.3.8 meeting Turbo preview control
 
 - Meeting Turbo preview is a machine-wide canary for server 6.21.7 or newer.

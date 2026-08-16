@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.5.43 (build 81)
+
+- **Continue an agent thread survives Update Server.** Glasses server 6.29.0 gates
+  the Continue write path behind `COS_THREAD_ATTACH_ENABLED`, which it reads
+  straight off `process.env` and never parses out of a `.env` file. The
+  LaunchAgent plist is therefore the only channel that reaches it, and Control
+  rebuilds that plist from its own allowlist on every Install, Repair, and Update
+  Server. The key was not on that allowlist, so a hand-set flag was silently
+  dropped by the next update and Continue vanished from the session menu with no
+  message and nothing to point at. Same failure that lost `COS_PROFILE_PATH`. The
+  key is now allowlisted, and a self-test executes the real capture path to prove
+  it carries through.
+- **A toggle for it, in Tools.** "Continue agent threads" appears only when the
+  running server says it supports the feature, which that server now publishes
+  itself rather than having it inferred from a version number. Off by default.
+- **Off REMOVES the setting rather than writing a zero.** Continue defaults off,
+  so an absent key already means disabled, and the server states that contract
+  directly: absent means disabled, never enabled. Removing the key returns the
+  LaunchAgent to its untouched default instead of leaving a value behind to be
+  maintained forever, and it makes the off state provable by absence. This is
+  deliberately the opposite of Meeting Turbo preview, which defaults ON and must
+  write an explicit zero, because for that flag an absent key means enabled and a
+  delete would quietly disarm its rollback.
+- Applying the change is verified two independent ways before it reports success:
+  what launchd actually handed the service, and what the running build says it did
+  with it. Either one alone can be wrong.
+- Both new guards are mutation-verified against a green baseline. Dropping the key
+  from the allowlist, and changing Off to write a zero, each fail the suite while
+  still compiling.
+
 ## 0.5.42 (build 80)
 
 - **COS Data never switches your tier on its own.** Choosing a folder used to
