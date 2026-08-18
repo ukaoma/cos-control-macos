@@ -1361,6 +1361,102 @@ final class ControllerModel: ObservableObject {
         contextDetail != nil || contextDetailLoading || contextDetailError != nil
     }
 
+    // ── Fenced threads ──────────────────────────────────────
+    //
+    // A fence shuts a native thread that may already hold an undelivered COS turn.
+    // Until glasses-server 6.36.10 it was in-memory only and invisible, and the
+    // only thing that cleared it was restarting the server — which is precisely
+    // the shape Miles ruled out on 2026-08-12: "we couldn't do anything without
+    // bash, that shouldn't be the case."
+    //
+    // SPEAKERS SHAPE, deliberately: a list card in the main panel, and clicking a
+    // row routes the WHOLE panel to a detail view with its own release button. Not
+    // buttons in the controls row — that row fits about four at 390pt, and 0.5.17
+    // shipped two dead ones by mounting a pane under a flag nothing else set.
+
+    @Published var fenceRecords: [FenceRecord] = []
+    @Published var fenceRecordsLoading = false
+    @Published var fenceRecordsError: String?
+    @Published var fenceHeadline = ""
+    /// The server's last durable write failed, so its fences are memory-only and
+    /// will not survive a restart. Reported by the server, never inferred here.
+    @Published var fenceDegraded = false
+
+    /// The fence awaiting confirmation, and the result of the last attempt.
+    ///
+    /// NOT a route flag. Releasing a fence is a rare destructive action, not a
+    /// browse surface, so it uses the panel's `confirmationDialog` pattern — the
+    /// same one the legacy-restart and managed-install actions already use — rather
+    /// than a detail pane. Browsing lives in the Activity window; this panel is
+    /// 390pt and a pane here would be a fifth nested browser.
+    @Published var fencePendingRelease: FenceRecord?
+    @Published var fenceReleaseError: String?
+    @Published var fenceReleaseNote: String?
+    @Published var fenceReleasing = false
+
+    func loadFences() async {
+        fenceRecordsLoading = true
+        defer { fenceRecordsLoading = false }
+        do {
+            let response = try await helper.run(["fences"])
+            let rows = response.details["fences"]?.array?.compactMap { $0.object } ?? []
+            fenceRecords = rows.map(FenceRecord.from)
+            fenceDegraded = response.details["degraded"]?.bool ?? false
+            fenceHeadline = fenceRecords.isEmpty
+                ? "None"
+                : "\(fenceRecords.count) fenced"
+            // An empty list is the NORMAL state, not an error. Saying "no fenced
+            // threads" as a failure would train the reader to ignore this card.
+            fenceRecordsError = nil
+        } catch {
+            fenceRecordsError = error.localizedDescription
+        }
+    }
+
+    func askReleaseFence(_ record: FenceRecord) {
+        fencePendingRelease = record
+        fenceReleaseError = nil
+        fenceReleaseNote = nil
+    }
+
+    func cancelReleaseFence() {
+        fencePendingRelease = nil
+        fenceReleasing = false
+    }
+
+    /// Release the open fence.
+    ///
+    /// `confirm: false` is the PREVIEW call: the server fails closed and answers 400
+    /// with what it would reopen. That is the gate, not an error. Only the second
+    /// call carries `--confirm`, so a release is always two deliberate actions.
+    func releaseFence(confirm: Bool) async {
+        guard let record = fencePendingRelease else { return }
+        fenceReleasing = true
+        defer { fenceReleasing = false }
+        do {
+            var args = ["fence-release", "--target", record.target]
+            if confirm { args.append("--confirm") }
+            let response = try await helper.run(args)
+            let released = response.details["released"]?.bool ?? false
+            if released {
+                fenceReleaseNote = "Released. The thread accepts new turns once the previous binding expires."
+                fencePendingRelease = nil
+                await loadFences()
+                return
+            }
+            if response.details["confirmationRequired"]?.bool == true {
+                fenceReleaseNote = "Confirm to reopen this thread."
+                return
+            }
+            // 404 (stale handle) and 500 (the server could not durably release it)
+            // both land here. The helper already phrased them; do not re-word.
+            fenceReleaseError = response.message
+            await loadFences()
+        } catch {
+            fenceReleaseError = error.localizedDescription
+        }
+    }
+
     func loadContextRecords(kind: String) async {
         let isThread = kind == "thread"
         if isThread { threadRecordsLoading = true } else { memoryRecordsLoading = true }

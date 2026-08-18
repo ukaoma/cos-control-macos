@@ -16,6 +16,24 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
 SELF_TEST="$(COS_CONTROL_TEST_HOME="$TMP/home" "$TMP/cos-control-helper" self-test)"
 /usr/bin/python3 -c 'import json,sys; value=json.loads(sys.argv[1]); assert value["ok"] and value["details"]["tests"] >= 24' "$SELF_TEST"
 
+# THE APP ITSELF MUST COMPILE.
+#
+# Until 0.5.44 this suite built the helper and Models.swift and then only grepped
+# Views.swift and ControllerModel.swift -- so every UI and model change shipped
+# without ever being type-checked here, and "builds passed" meant something much
+# narrower than it read. Same source list as scripts/build-release.sh.
+swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+  "$ROOT/Sources/Models.swift" \
+  "$ROOT/Sources/HelperClient.swift" \
+  "$ROOT/Sources/ControllerModel.swift" \
+  "$ROOT/Sources/COSBrand.swift" \
+  "$ROOT/Sources/Views.swift" \
+  "$ROOT/Sources/ActivityWindow.swift" \
+  "$ROOT/Sources/ActivityMeetings.swift" \
+  "$ROOT/Sources/COSControlApp.swift" \
+  -framework SwiftUI -framework AppKit -framework ServiceManagement \
+  -o "$TMP/COS Control"
+
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Tests/ModelsContract.swift" \
@@ -527,6 +545,73 @@ fi
 # The route reads lastReviewSession, so it must be observable or the panel can
 # read a stale value and never re-render.
 /usr/bin/grep -q '@Published private var lastReviewSession' "$ROOT/Sources/ControllerModel.swift"
+
+# --- 0.5.44 fenced threads ---------------------------------------------------
+# A fence shuts a native thread that may already hold an undelivered turn. Before
+# glasses-server 6.36.10 the only way to clear one was restarting the server. These
+# assertions exist because 0.5.17 shipped two buttons that did nothing: the opener
+# wrote state no view was watching. Each link in the chain is pinned separately, so
+# a break names itself instead of silently going inert.
+
+# 1. The helper actually has the two commands the model calls.
+/usr/bin/grep -q 'case "fences": try emitFences()' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "fence-release": try emitFenceRelease(args: args)' "$ROOT/HelperSources/main.swift"
+
+# 2. The release is CONFIRM-GATED at the helper: --confirm is the only thing that
+#    puts `confirm` on the wire, so a release can never be one accidental call.
+/usr/bin/grep -q 'if args.contains("--confirm") { payload\["confirm"\] = true }' "$ROOT/HelperSources/main.swift"
+
+# 3. The helper must NOT throw on the server's 400 confirmation gate — that 400
+#    carries the preview. Throwing it is how the merge flow shipped broken in 0.4.0.
+#    Scoped to emitFenceRelease: `let gated = response.status == 400` appears in
+#    three helpers, so a bare grep passes even after this one is neutered (measured).
+/usr/bin/python3 - "$ROOT/HelperSources/main.swift" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+start = src.index("private func emitFenceRelease")
+end = src.index("\n    private func ", start + 10)
+body = src[start:end]
+assert "let gated = response.status == 400" in body, \
+    "emitFenceRelease no longer treats the server's 400 as the confirmation gate"
+assert "response.status != 200 && !gated" in body, \
+    "emitFenceRelease would throw on the gate instead of returning the preview"
+PY
+
+# 4. The model calls the helper, and only the confirmed path appends --confirm.
+/usr/bin/grep -q 'helper.run(\["fences"\])' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'if confirm { args.append("--confirm") }' "$ROOT/Sources/ControllerModel.swift"
+
+# 5. THE 0.5.17 LINK. The card is mounted, its rows call the opener, and the dialog
+#    is bound to the variable the opener writes. Without all three the feature is
+#    reachable-looking and dead.
+/usr/bin/grep -q 'if !model.fenceRecords.isEmpty { fencesCard }' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'private var fencesCard: some View' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'model.askReleaseFence(fence)' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'get: { model.fencePendingRelease != nil }' "$ROOT/Sources/Views.swift"
+
+# 6. Something must LOAD the fences on APPEAR, or a card gated on a non-empty list
+#    can never show up. Pinned to the onAppear site by its own comment, not to the
+#    bare call: the card's Refresh button contains the identical expression, so a
+#    plain grep for it passes even after the automatic load is deleted (measured --
+#    that exact mutation survived the first version of this assertion).
+/usr/bin/python3 - "$ROOT/Sources/Views.swift" <<'PY'
+import sys
+lines = open(sys.argv[1]).read().split("\n")
+# Walk the FIRST `.onAppear {` (the panel's own) to its closing brace at the same
+# indent, line by line -- a regex with a character cap silently matched the wrong
+# block when this was first written.
+start = next(i for i, l in enumerate(lines) if l.strip() == ".onAppear {")
+indent = len(lines[start]) - len(lines[start].lstrip())
+end = next(i for i in range(start + 1, len(lines))
+           if lines[i].strip() == "}" and len(lines[i]) - len(lines[i].lstrip()) == indent)
+block = "\n".join(lines[start:end])
+assert "await model.loadFences()" in block, \
+    "fences are never loaded when the panel appears -- the card can never render"
+PY
+
+# 7. The degraded flag reaches the user. A memory-only fence set behaves exactly
+#    like a durable one until the server restarts, so silence would be a lie.
+/usr/bin/grep -q 'model.fenceDegraded' "$ROOT/Sources/Views.swift"
 
 # --- 0.2.9 fixes -------------------------------------------------------------
 # A failed install must not strand in-place mode off: the marker is captured

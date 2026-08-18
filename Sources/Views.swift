@@ -124,6 +124,10 @@ struct ControlPanel: View {
         .background(COSPalette.panel)
         .background(WindowOpaquer())
         .onAppear {
+            // Fences are rare and urgent, and the card only renders when there is
+            // one — so something has to look. Opening the panel is the right
+            // cadence: it is one request, and it is the moment the user is here.
+            Task { await model.loadFences() }
             if let tier = model.status.transcriptionRequestedTier,
                tier == "max" || tier == "balanced" {
                 selectedTranscriptionTier = tier
@@ -177,6 +181,19 @@ struct ControlPanel: View {
             }
             Button("Skip for Now", role: .cancel) { model.meetingLibraryGuidance = nil }
         } message: { Text(model.meetingLibraryGuidance ?? "") }
+        .confirmationDialog(
+            "Release this fence?",
+            isPresented: Binding(
+                get: { model.fencePendingRelease != nil },
+                set: { if !$0 { model.cancelReleaseFence() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Release", role: .destructive) { Task { await model.releaseFence(confirm: true) } }
+            Button("Cancel", role: .cancel) { model.cancelReleaseFence() }
+        } message: {
+            Text(model.fencePendingRelease?.explanation ?? "")
+        }
         .confirmationDialog(
             "Restart this self-managed server?",
             isPresented: $confirmLegacyRestart,
@@ -768,6 +785,7 @@ struct ControlPanel: View {
                 statusCard
                 controls
                 activityLauncher
+                if !model.fenceRecords.isEmpty { fencesCard }
                 if !model.doctorChecks.isEmpty { doctorCard }
                 utilities
                 footer
@@ -829,6 +847,87 @@ struct ControlPanel: View {
         .padding(.horizontal, 7)
         .padding(.vertical, 5)
         .background(tint.opacity(0.10), in: Capsule())
+    }
+
+    /// Threads COS has shut because an earlier turn may already have landed.
+    ///
+    /// CONDITIONAL, like `doctorCard`: normally there are none, and a permanently
+    /// empty card teaches the reader to skim past it. It appears only when there is
+    /// something to act on — which is also the only time it can be found, since a
+    /// fence was previously discoverable only by being refused on the glasses.
+    private var fencesCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Fenced threads · \(model.fenceRecords.count)")
+                    .font(.caption2.weight(.bold))
+                    .tracking(1.3)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if model.fenceRecordsLoading {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Button("Refresh") { Task { await model.loadFences() } }
+                        .font(.system(size: 10))
+                        .controlSize(.small)
+                }
+            }
+
+            Text("COS sent a turn and never learned whether it arrived, so it stopped writing to the thread. Open it on your Mac before releasing.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if model.fenceDegraded {
+                // The server said its last durable write failed. A memory-only fence
+                // behaves identically until the process restarts, so saying nothing
+                // would be indistinguishable from working.
+                Label("These will not survive a server restart — the server could not write them to disk.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(model.fenceRecords) { fence in
+                    Button { model.askReleaseFence(fence) } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(fence.provider.isEmpty ? "thread" : fence.provider)
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .lineLimit(1)
+                                Text("fenced \(fence.fencedAtLabel)")
+                                    .font(.system(size: 9.5, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Spacer(minLength: 4)
+                            Text("Release")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Release this fence so COS can write to the thread again")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let note = model.fenceReleaseNote {
+                Text(note).font(.system(size: 10)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let err = model.fenceReleaseError {
+                Text(err).font(.system(size: 10)).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(13)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
+        .overlay(RoundedRectangle(cornerRadius: 13).stroke(COSPalette.line, lineWidth: 1))
     }
 
     private var reviewableMeetingsCard: some View {

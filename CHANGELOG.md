@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.5.44 (build 82)
+- **Fenced threads are visible and releasable from Control.** A fence shuts a native
+  thread that may already hold an undelivered COS turn, so a prompt cannot be
+  double-delivered into a real conversation. Until glasses-server 6.36.10 it was
+  in-memory only, wrote no log line, and the only thing that cleared it was
+  restarting the server. A new card lists fenced threads with when each was fenced,
+  and a Release action reopens one after a confirmation.
+- **The card is conditional, like Doctor.** Normally there are no fences and the card
+  is absent; a permanently empty card teaches you to skim past the one time it
+  matters. It loads when the panel opens, because a card gated on a non-empty list
+  cannot appear if nothing looks.
+- **Releasing is two deliberate actions.** The server fails closed and answers 400
+  with a preview of what it would reopen; only the confirmed call carries `confirm`.
+  Control shows a confirmation dialog first, the same pattern as the legacy-restart
+  and managed-install actions. A fence is addressed by digest, never by the raw
+  target key, which embeds the private native thread id.
+- **A release that could not be durably recorded is not reported as success.** The
+  server answers 500 and keeps the fence; Control says so rather than claiming the
+  thread is open. If the server's own fence writes are failing, the card says these
+  will not survive a restart — a memory-only fence behaves identically until then.
+- **Requires glasses-server 6.36.10** for the `/api/agent-sessions/fences` routes.
+- Seven assertions pin the chain: helper commands exist, the release is confirm-gated,
+  the helper does not throw on the server's 400 gate, the card is mounted, its rows
+  call the opener, the dialog is bound to what the opener writes, and the panel loads
+  fences on appear. Each was mutation-tested. Three of them initially passed against a
+  broken tree because a bare grep matched an identical line in another function, so
+  those are now scoped to the block they are about.
+
 ## 0.5.43 (build 81)
 
 - **Continue an agent thread survives Update Server.** Glasses server 6.29.0 gates

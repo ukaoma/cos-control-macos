@@ -338,6 +338,48 @@ struct ContextRecord: Identifiable, Equatable {
     }
 }
 
+/// A native thread COS has shut because an earlier turn may already have landed.
+///
+/// The server addresses a fence by DIGEST and never emits the raw target key, which
+/// embeds the private native thread id — so `target` is the only handle there is,
+/// and it is what the release call sends back.
+struct FenceRecord: Identifiable, Equatable {
+    var id: String { target }
+    var target: String
+    var provider: String
+    var reason: String
+    /// The thread head as it stood BEFORE the ambiguous turn. Absent only when the
+    /// failure happened before the head was read.
+    var headBefore: String?
+    var turnId: String
+    var fencedAt: Double
+
+    static func from(_ raw: [String: JSONValue]) -> FenceRecord {
+        FenceRecord(
+            target: raw["target"]?.string ?? "",
+            provider: raw["provider"]?.string ?? "",
+            reason: raw["reason"]?.string ?? "",
+            headBefore: raw["headBefore"]?.string,
+            turnId: raw["turnId"]?.string ?? "",
+            fencedAt: raw["fencedAt"]?.double ?? 0
+        )
+    }
+
+    var fencedAtLabel: String {
+        guard fencedAt > 0 else { return "unknown time" }
+        let f = DateFormatter()
+        f.dateFormat = "MMM d, HH:mm"
+        return f.string(from: Date(timeIntervalSince1970: fencedAt / 1000))
+    }
+
+    /// What the user is actually being told. The server's own copy is 126
+    /// characters, which is right for a Mac panel and far too long for the lens.
+    var explanation: String {
+        "An earlier turn on this thread may or may not have been delivered. "
+            + "Open the thread on your Mac and check before releasing this."
+    }
+}
+
 /// Quarantined meeting audio that Control can turn into a saved call.
 ///
 /// Distinct from Speakers' "Meetings to review" — those are identity

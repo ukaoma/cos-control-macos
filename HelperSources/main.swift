@@ -454,6 +454,8 @@ final class COSControlHelper {
         case "meeting-library-detail": try emitMeetingLibraryDetail(args: args)
         case "meeting-speakers": try emitMeetingSpeakers(args: args)
         case "meeting-content": try emitMeetingContent(args: args)
+        case "fences": try emitFences()
+        case "fence-release": try emitFenceRelease(args: args)
         case "voice-profiles": try emitVoiceProfiles()
         case "voice-directory": try emitVoiceDirectory(args: args)
         case "voice-merge": try emitVoiceMerge(args: args)
@@ -8153,6 +8155,73 @@ final class COSControlHelper {
     }
 
     /// Enrolled profiles, for the naming field's autocomplete.
+    // ── Fenced threads ──────────────────────────────────────
+    //
+    // A fence shuts a native thread that may already hold an undelivered COS turn,
+    // so a prompt cannot be double-delivered into a real conversation. Before
+    // glasses-server 6.36.10 it was in-memory only, invisible, and the only thing
+    // that cleared it was restarting the server. These two commands are what make
+    // it recoverable from Control instead of from a terminal.
+
+    private func emitFences() throws {
+        let body = try speakerReviewBody("/api/agent-sessions/fences")
+        emit(ok: true, message: "Fences ready", details: [
+            "fences": (body["fences"] as? [[String: Any]]) ?? [],
+            // True when the server's last durable write failed. A memory-only fence
+            // set behaves identically until the process restarts, so it is reported
+            // rather than inferred.
+            "degraded": body["degraded"] as? Bool ?? false,
+        ])
+    }
+
+    /// Release one fence.
+    ///
+    /// The server FAILS CLOSED: without `confirm` it answers 400 with a preview of
+    /// what would be reopened. That 400 is the gate, not an error — routing it
+    /// through `speakerReviewBody` would throw and the panel would show nothing
+    /// when a row is clicked, which is exactly how the merge flow shipped broken in
+    /// 0.4.0. 404 is a stale handle; 500 is a fence the server could not durably
+    /// release and is still holding.
+    private func emitFenceRelease(args: [String]) throws {
+        guard let target = option("--target", in: args), !target.isEmpty else {
+            throw HelperError.message("--target is required")
+        }
+        var payload: [String: Any] = ["target": target]
+        if args.contains("--confirm") { payload["confirm"] = true }
+        let json = String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8) ?? "{}"
+
+        let token = try speakerReviewToken()
+        guard let response = request("/api/agent-sessions/fences/release", method: "POST", token: token, body: json, timeout: 30) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        guard let body = response.body else { throw HelperError.message("Server stopped") }
+
+        let gated = response.status == 400
+        let missing = response.status == 404
+        let held = response.status == 500
+        if response.status != 200 && !gated && !missing && !held {
+            let reason = (body["reason"] as? String) ?? "Request failed (\(response.status))"
+            throw HelperError.message(reason)
+        }
+
+        let released = body["released"] as? Bool ?? false
+        let reason = body["reason"] as? String ?? ""
+        let message: String
+        if released { message = "Fence released" }
+        else if gated { message = "Confirmation required" }
+        else if missing { message = "That fence is no longer on record" }
+        else { message = "The server could not durably release it — the thread is still fenced" }
+
+        emit(ok: true, message: message, details: [
+            "released": released,
+            "reason": reason,
+            "confirmationRequired": gated,
+            "preview": (body["preview"] as? [String: Any]) ?? [:],
+            "target": target,
+        ])
+    }
+
     private func emitVoiceProfiles() throws {
         let body = try speakerReviewBody("/api/voice/profiles")
         emit(ok: true, message: "Voice profiles ready", details: [
