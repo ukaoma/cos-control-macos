@@ -546,6 +546,19 @@ fi
 # read a stale value and never re-render.
 /usr/bin/grep -q '@Published private var lastReviewSession' "$ROOT/Sources/ControllerModel.swift"
 
+# 0. The durability flag survives a Control plist rewrite. `providerEnvironment` is
+#    FILTERED to providerEnvironmentKeys, so a key missing from that set is dropped
+#    on the next Update Server -- silently reopening every fenced thread. This is the
+#    same seam that stopped COS_PROFILE_PATH from surviving updates.
+/usr/bin/python3 - "$ROOT/HelperSources/main.swift" <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+block = re.search(r"providerEnvironmentKeys: Set<String> = \[(.*?)\]", src, re.S)
+assert block, "providerEnvironmentKeys not found"
+assert '"COS_THREAD_FENCE_DURABLE"' in block.group(1), \
+    "COS_THREAD_FENCE_DURABLE is not allowlisted -- Control will drop it on the next plist rewrite"
+PY
+
 # --- 0.5.44 fenced threads ---------------------------------------------------
 # A fence shuts a native thread that may already hold an undelivered turn. Before
 # glasses-server 6.36.10 the only way to clear one was restarting the server. These

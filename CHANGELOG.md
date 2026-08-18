@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.45 (build 83)
+- **The durable-fence flag now survives an update.** `COS_THREAD_FENCE_DURABLE` was
+  not in `providerEnvironmentKeys`, and Control FILTERS the LaunchAgent environment
+  to that set on every plist rewrite — so setting it by hand would have been dropped
+  by the next Update Server, silently reopening every fenced thread. Same seam that
+  stopped `COS_PROFILE_PATH` from surviving updates. A test now fails if the key
+  leaves the allowlist.
+
 ## 0.5.44 (build 82)
 - **Fenced threads are visible and releasable from Control.** A fence shuts a native
   thread that may already hold an undelivered COS turn, so a prompt cannot be

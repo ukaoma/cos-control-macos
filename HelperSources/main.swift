@@ -288,6 +288,11 @@ final class COSControlHelper {
         "COS_MEETINGS_ROOT",
         "CODEX_GLASSES_WORKDIR",
         "COS_DURABLE_QUERY_JOBS",
+        // Durable thread fences. MUST be allowlisted or Control drops it on the next
+        // plist rewrite -- `providerEnvironment` is filtered to this set, which is
+        // exactly how COS_PROFILE_PATH stopped surviving updates. A dropped fence
+        // reopens a thread that may hold an undelivered turn.
+        "COS_THREAD_FENCE_DURABLE",
         "COS_TTS_BOOTSTRAP_PYTHON",
         "COS_TTS_PYTHON",
         "COS_TTS_ENGINE",
