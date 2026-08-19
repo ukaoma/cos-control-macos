@@ -5718,6 +5718,62 @@ final class COSControlHelper {
         return "running"
     }
 
+    /// `/api/agent-sessions` field names in the shape the Activity list parses.
+    ///
+    /// `project` already arrives as a workspace label, so it is NOT run through
+    /// `workspaceLabel` a second time.
+    static func agentSessionRowProjection(_ row: [String: Any]) -> [String: Any]? {
+        guard let id = row["session_id"] as? String, !id.isEmpty else { return nil }
+        let alive = row["alive"] as? Bool ?? false
+        return [
+            "id": id,
+            "provider": row["provider"] as? String ?? "claude",
+            "name": row["display_label"] as? String ?? "",
+            "workspace": row["project"] as? String ?? "",
+            "state": row["state"] as? String ?? "recent",
+            "status": "",
+            "waitingFor": "",
+            "alive": alive,
+            "reachable": alive,
+            "createdAt": row["created"] as? String ?? "",
+            "updatedAt": row["modified"] as? String ?? "",
+            "pinned": row["pinned"] as? Bool ?? false,
+        ]
+    }
+
+    /// Live status the list route does not carry.
+    ///
+    /// `/api/agent-sessions` already merges running sessions and sets `alive`, but it has
+    /// no `waitingFor` -- that exists only on `/api/claude-sessions`, whose ids are the
+    /// EIGHT-CHARACTER short form while list rows carry full UUIDs. Matching them by
+    /// equality silently does nothing, which is the same length mismatch that kept every
+    /// Claude pin off the Pinned view. They are matched by prefix.
+    static func overlayLiveState(onto rows: [[String: Any]], live: [[String: Any]]) -> [[String: Any]] {
+        guard !live.isEmpty else { return rows }
+        var merged = rows
+        var matched = Set<String>()
+        for index in merged.indices {
+            let rowId = (merged[index]["id"] as? String ?? "").lowercased()
+            guard !rowId.isEmpty else { continue }
+            guard let peer = live.first(where: { peer in
+                let peerId = (peer["id"] as? String ?? "").lowercased()
+                return !peerId.isEmpty && (rowId == peerId || rowId.hasPrefix(peerId))
+            }) else { continue }
+            matched.insert((peer["id"] as? String ?? "").lowercased())
+            merged[index]["alive"] = peer["alive"] ?? merged[index]["alive"]
+            merged[index]["state"] = peer["state"] ?? merged[index]["state"]
+            merged[index]["waitingFor"] = peer["waitingFor"] ?? ""
+            merged[index]["status"] = peer["status"] ?? ""
+        }
+        // A running session the list route did not return still belongs on screen.
+        for peer in live {
+            let peerId = (peer["id"] as? String ?? "").lowercased()
+            if peerId.isEmpty || matched.contains(peerId) { continue }
+            merged.append(peer)
+        }
+        return merged
+    }
+
     static func claudePeerProjection(_ row: [String: Any]) -> [String: Any]? {
         guard let id = row["id"] as? String, !id.isEmpty else { return nil }
         let alive = row["alive"] as? Bool ?? false
@@ -6868,25 +6924,53 @@ final class COSControlHelper {
                 liveIds = Set(peers.compactMap { $0["id"] as? String })
             }
         }
-        peers.append(contentsOf: Self.recentClaudeConversations(
-            liveIds: liveIds,
-            projectsRoot: claudeProjects,
-            starredIds: claudeStarred,
-            desktopSessionsRoot: claudeDesktop,
-            desktopIndex: desktopIndex
-        ))
-        peers.append(contentsOf: Self.recentCodexConversations(
-            sessionsRoot: home.appendingPathComponent(".codex/sessions", isDirectory: true)
-        ))
-        peers.append(contentsOf: Self.recentCursorConversations(
-            projectsRoot: home.appendingPathComponent(".cursor/projects", isDirectory: true),
-            composerNames: Self.loadCursorComposerNames(
-                from: home.appendingPathComponent("Library/Application Support/Cursor/User/globalStorage/state.vscdb")
-            ),
-            pinnedIds: Self.loadCursorPinnedIds(
-                from: home.appendingPathComponent("Library/Application Support/Cursor/User/workspaceStorage")
-            )
-        ))
+        // THE LIST COMES FROM THE SERVER.
+        //
+        // Control used to rebuild it locally, and that second implementation was missing
+        // two things the server has always had. It compared pins against an 8-character
+        // id when they are stored as full UUIDs, so `contains` was never true for Claude.
+        // And it walked only ~/.claude/projects, so a session living in the Claude Desktop
+        // store produced no row at all -- the desktop index was used to enrich a title,
+        // never to create one.
+        //
+        // Measured 2026-08-19: 7 starred Claude sessions, 6 with no projects transcript,
+        // and ZERO reaching the Pinned view. The server returned all 7 with correct
+        // titles. Rather than patch both sites, the divergent copy stops being the source.
+        var serverRows: [[String: Any]] = []
+        if let token = try? speakerReviewToken(),
+           let response = request("/api/agent-sessions?limit=80", token: token, timeout: 15),
+           response.status == 200,
+           let body = response.body,
+           let raw = body["sessions"] as? [[String: Any]] {
+            serverRows = raw.compactMap(Self.agentSessionRowProjection)
+        }
+
+        if serverRows.isEmpty {
+            // Degraded path, not the intended one: it cannot see Desktop-only sessions and
+            // its Claude pins are unreliable. Better than an empty window when the server
+            // is down or predates the route.
+            peers.append(contentsOf: Self.recentClaudeConversations(
+                liveIds: liveIds,
+                projectsRoot: claudeProjects,
+                starredIds: claudeStarred,
+                desktopSessionsRoot: claudeDesktop,
+                desktopIndex: desktopIndex
+            ))
+            peers.append(contentsOf: Self.recentCodexConversations(
+                sessionsRoot: home.appendingPathComponent(".codex/sessions", isDirectory: true)
+            ))
+            peers.append(contentsOf: Self.recentCursorConversations(
+                projectsRoot: home.appendingPathComponent(".cursor/projects", isDirectory: true),
+                composerNames: Self.loadCursorComposerNames(
+                    from: home.appendingPathComponent("Library/Application Support/Cursor/User/globalStorage/state.vscdb")
+                ),
+                pinnedIds: Self.loadCursorPinnedIds(
+                    from: home.appendingPathComponent("Library/Application Support/Cursor/User/workspaceStorage")
+                )
+            ))
+        } else {
+            peers = Self.overlayLiveState(onto: serverRows, live: peers)
+        }
         peers.removeAll { Self.isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
         peers.sort { a, b in
             let aLive = a["alive"] as? Bool == true

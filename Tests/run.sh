@@ -582,6 +582,40 @@ PY
 # The ambiguity set must union BOTH surfaces; the row is shared by the list and search.
 /usr/bin/grep -q 'visibleSessions + model.visibleSessionSearchHits' "$ROOT/Sources/ActivityWindow.swift"
 
+# --- 0.5.49 the sessions list has ONE source ---------------------------------
+# Control rebuilt the list locally and that copy compared pins against an 8-character
+# id when they are stored as full UUIDs, and walked only ~/.claude/projects so a
+# Desktop-store session produced no row. 7 starred Claude sessions, 0 shown.
+/usr/bin/python3 - "$ROOT/HelperSources/main.swift" <<'PY'
+import re, sys
+helper = open(sys.argv[1]).read()
+
+fn = helper[helper.index("private func emitClaudeSessions"):]
+fn = fn[:fn.index("\n    private func ", 10)]
+
+assert '"/api/agent-sessions?limit=80"' in fn, \
+    "the list must come from the server, not a second local scanner"
+
+# The local scan is the FALLBACK. If it runs unconditionally the divergent copy is back.
+assert "if serverRows.isEmpty {" in fn, "local scan must be gated on the server failing"
+assert fn.index("serverRows = raw.compactMap") < fn.index("recentClaudeConversations"), \
+    "the server must be consulted BEFORE the local scan"
+assert fn.count("recentClaudeConversations") == 1, "local scan must appear once, in the fallback"
+
+proj = helper[helper.index("static func agentSessionRowProjection"):]
+proj = proj[:proj.index("\n    /// Live status")]
+for src, dst in (("session_id", '"id"'), ("display_label", '"name"'), ("project", '"workspace"')):
+    assert src in proj, f"projection drops {src}"
+# `project` already arrives labelled; re-labelling it mangles the workspace column.
+assert "workspaceLabel(row[\"project\"]" not in proj, "project must not be re-labelled"
+
+ov = helper[helper.index("static func overlayLiveState"):]
+ov = ov[:ov.index("\n    static func claudePeerProjection")]
+assert "hasPrefix(peerId)" in ov, \
+    "live ids are the 8-char short form -- equality alone silently matches nothing"
+assert "waitingFor" in ov, "waitingFor exists only on the live route and must be overlaid"
+PY
+
 # --- 0.5.48 the search must not discard the server's answer on timing ---------
 # The route measured 1.44-2.40s against the running server and the client allowed 2s,
 # so the slowest of six consecutive calls already fell back to the local scanner -- and

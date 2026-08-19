@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.49 (build 87)
+- **None of your pinned Claude sessions reached the Pinned view.** Two causes, both in
+  Control. It compared pins against an 8-character session id when they are stored as full
+  UUIDs, so the lookup was never true for Claude. And it built the list by walking
+  `~/.claude/projects` only — six of seven pinned sessions have no file there, they live in
+  the Claude Desktop store, and the desktop index was used to enrich a row's title but
+  never to create one. Measured: 7 starred, 0 shown.
+- **The Sessions list now comes from the server instead of a second local scanner.** The
+  server already resolved both cases correctly and returned all 7 pins with the right
+  titles; Control simply never asked it. Live status is still overlaid from the live-peers
+  route, matched by prefix because those ids are the short form. If the server is
+  unreachable the old local scan still runs, so the window is never empty — but it is the
+  degraded path now, not the source of truth.
+
 ## 0.5.48 (build 86)
 - **Session search stopped discarding the server's answer over 400ms.** The lookup used a
   2s client timeout on a route measured at 1.44-2.40s — the slowest of six consecutive
