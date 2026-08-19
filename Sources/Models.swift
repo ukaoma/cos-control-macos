@@ -466,8 +466,29 @@ struct ClaudeSession: Identifiable, Sendable {
         switch state {
         case "waiting": "Waiting"
         case "stale": "Stale"
-        case "recent": "Today"
+        case "running": "Running"
+        case "recent": ""
         default: "Running"
+        }
+    }
+
+    /// `recent` means "not running". It has never been a date. Control used to
+    /// print "Today" for that bucket, so an 82-day-old row looked like it moved
+    /// this morning. The date lives in `clockHint`.
+    var showsStateChip: Bool { !stateLabel.isEmpty }
+
+    static func shortSessionDate(_ date: Date, now: Date = Date(), calendar: Calendar = .current) -> String {
+        if calendar.isDate(date, inSameDayAs: now) {
+            return date.formatted(date: .omitted, time: .shortened)
+        }
+        return date.formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    func clockHint(clock: SessionClock, now: Date = Date(), calendar: Calendar = .current) -> String? {
+        guard let updated = updatedDate else { return nil }
+        switch clock {
+        case .updated, .opened, .pinned:
+            return "Updated \(Self.shortSessionDate(updated, now: now, calendar: calendar))"
         }
     }
 
@@ -627,6 +648,39 @@ struct SessionSearchHit: Identifiable, Sendable {
         }
         hits.sort { $0.score > $1.score }
         return Array(hits.prefix(max(1, min(limit, 50))))
+    }
+}
+
+/// LIST caps that hid rows. Sibling of the session array, not a 13th row key.
+struct SessionListDropped: Sendable, Equatable {
+    var age: Int
+    var limit: Int
+    var oversized: Int
+
+    var total: Int { age + limit + oversized }
+
+    init(age: Int = 0, limit: Int = 0, oversized: Int = 0) {
+        self.age = max(0, age)
+        self.limit = max(0, limit)
+        self.oversized = max(0, oversized)
+    }
+
+    init(_ value: JSONValue?) {
+        let object = value?.object
+        self.init(
+            age: object?["age"]?.int ?? 0,
+            limit: object?["limit"]?.int ?? 0,
+            oversized: object?["oversized"]?.int ?? 0
+        )
+    }
+
+    var summary: String? {
+        guard total > 0 else { return nil }
+        var parts: [String] = []
+        if age > 0 { parts.append("\(age) older than 7 days") }
+        if limit > 0 { parts.append("\(limit) over the cap") }
+        if oversized > 0 { parts.append("\(oversized) too large") }
+        return parts.joined(separator: " · ") + " not shown"
     }
 }
 

@@ -882,6 +882,7 @@ final class ControllerModel: ObservableObject {
     @Published var claudeSessionsLoading = false
     @Published var claudeSessionsError: String?
     @Published var sessionClock: SessionClock = .updated
+    @Published var sessionListDropped = SessionListDropped()
     @Published var sessionQuery = ""
     @Published var sessionSearchHits: [SessionSearchHit] = []
     @Published var sessionSearching = false
@@ -1026,6 +1027,7 @@ final class ControllerModel: ObservableObject {
             claudeSessionsEnabled = response.details["enabled"]?.bool ?? false
             claudeSessionsReason = response.details["reason"]?.string ?? ""
             claudeSessions = (response.details["sessions"]?.array ?? []).compactMap(ClaudeSession.init)
+            sessionListDropped = SessionListDropped(response.details["dropped"])
             claudeSessionsError = nil
         } catch {
             claudeSessionsError = error.localizedDescription

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.50 (build 88)
+- **`recent` stopped meaning Today.** That state is the server's "not running"
+  bucket. Control printed it as a date word, so a session last touched 82 days ago
+  sat in the list looking like it moved this morning. The chip is gone for that
+  bucket. The row now always shows when it was actually updated — including
+  same-day rows, which used to be suppressed unless the open→update span exceeded
+  36 hours.
+- **The list now says what the caps hid.** The server reports how many sessions
+  the 7-day window, the 20-per-provider cap, and the Cursor 32 MB skip dropped.
+  Control surfaces that as a sibling of the session array (the 12-key row
+  projection is unchanged) and in the Sessions subtitle. Search still reaches
+  past the 7-day window.
+
 ## 0.5.49 (build 87)
 - **None of your pinned Claude sessions reached the Pinned view.** Two causes, both in
   Control. It compared pins against an 8-character session id when they are stored as full

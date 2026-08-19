@@ -616,6 +616,45 @@ assert "hasPrefix(peerId)" in ov, \
 assert "waitingFor" in ov, "waitingFor exists only on the live route and must be overlaid"
 PY
 
+# --- 0.5.50 Today is gone; LIST caps are counted -----------------------------
+# `recent` meant "not running" and Control printed "Today" for it, so an 82-day-old
+# row looked fresh. The 36-hour hint suppression hid the real timestamp on the
+# default clock. Caps (7-day / 20-per-provider / 32 MB) dropped rows with no
+# signal. dropped is a SIBLING of the session array, never a 13th row key.
+/usr/bin/grep -q 'case "recent": ""' "$ROOT/Sources/Models.swift"
+! /usr/bin/grep -q 'case "recent": "Today"' "$ROOT/Sources/Models.swift"
+! /usr/bin/grep -q '36 \* 3600' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'func clockHint(clock: SessionClock' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'session.clockHint(clock: model.sessionClock)' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'session.showsStateChip' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'struct SessionListDropped' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'sessionListDropped' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'static func agentSessionDroppedProjection' "$ROOT/HelperSources/main.swift"
+/usr/bin/python3 - "$ROOT/HelperSources/main.swift" "$ROOT/Sources/ActivityWindow.swift" <<'PY'
+import sys
+helper = open(sys.argv[1]).read()
+ui = open(sys.argv[2]).read()
+
+proj = helper[helper.index("static func agentSessionRowProjection"):]
+proj = proj[:proj.index("static func agentSessionDroppedProjection")]
+ret = proj[proj.index("return ["): proj.rindex("]") + 1]
+assert '"pinned"' in ret
+assert "dropped" not in ret, "dropped leaked into the 12-key row projection"
+
+drop = helper[helper.index("static func agentSessionDroppedProjection"):]
+drop = drop[:drop.index("\n    /// Live status")]
+for key in ('"age"', '"limit"', '"oversized"'):
+    assert key in drop, f"dropped projection missing {key}"
+
+fn = helper[helper.index("private func emitClaudeSessions"):]
+fn = fn[:fn.index("\n    private func ", 10)]
+assert "agentSessionDroppedProjection(body)" in fn
+assert '"dropped": dropped' in fn
+
+assert "sessionListDropped.summary" in ui
+assert "Last 7 days" in ui
+PY
+
 # --- 0.5.48 the search must not discard the server's answer on timing ---------
 # The route measured 1.44-2.40s against the running server and the client allowed 2s,
 # so the slowest of six consecutive calls already fell back to the local scanner -- and

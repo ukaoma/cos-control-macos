@@ -406,7 +406,32 @@ struct ModelsContract {
             "state": .string("recent"),
             "alive": .bool(false),
         ]))
-        precondition(recent?.stateLabel == "Today")
+        precondition(recent?.stateLabel != "Today", "recent is not a date word")
+        precondition(recent?.stateLabel == "", "recent has no chip; the date is on clockHint")
+        precondition(recent?.showsStateChip == false)
+        precondition(waiting?.showsStateChip == true)
+        precondition(stamped?.clockHint(clock: .updated) != nil,
+                     "a stamped recent row always shows when it was updated")
+        precondition(!(stamped?.clockHint(clock: .updated) ?? "").localizedCaseInsensitiveContains("today"),
+                     "clockHint must not resurrect the Today lie")
+        let closeCreated = ClaudeSession(.object([
+            "id": .string("sess_close"),
+            "name": .string("Same-day edit"),
+            "createdAt": .string("2026-08-19T16:00:00Z"),
+            "updatedAt": .string("2026-08-19T17:00:00Z"),
+            "state": .string("recent"),
+            "alive": .bool(false),
+        ]))
+        precondition(closeCreated?.clockHint(clock: .updated) != nil,
+                     "the 36-hour suppression is gone: a 1-hour span still shows Updated")
+        let dropped = SessionListDropped(.object([
+            "age": .number(412),
+            "limit": .number(6),
+            "oversized": .number(1),
+        ]))
+        precondition(dropped.total == 419)
+        precondition(dropped.summary == "412 older than 7 days · 6 over the cap · 1 too large not shown")
+        precondition(SessionListDropped().summary == nil)
         precondition(ClaudeSession.isKeepWarmSessionTitle("ready"))
         precondition(ClaudeSession.isKeepWarmSessionTitle("This is an automated local readiness check. Do not use tools. Reply with exactly"))
         precondition(ClaudeSession.isKeepWarmSessionTitle("ready") && !ClaudeSession.isKeepWarmSessionTitle("Fireflies meeting sync"))

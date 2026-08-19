@@ -5741,6 +5741,25 @@ final class COSControlHelper {
         ]
     }
 
+    /// LIST-level cap counts. Sibling of `sessions`, never a row field.
+    ///
+    /// An older server omits `dropped`; zeros here mean "this payload did not
+    /// measure", which is the same UI as "measured and hid nothing".
+    static func agentSessionDroppedProjection(_ body: [String: Any]) -> [String: Int] {
+        let raw = body["dropped"] as? [String: Any] ?? [:]
+        func count(_ key: String) -> Int {
+            if let n = raw[key] as? Int { return max(0, n) }
+            if let n = raw[key] as? Double { return max(0, Int(n)) }
+            if let s = raw[key] as? String, let n = Int(s) { return max(0, n) }
+            return 0
+        }
+        return [
+            "age": count("age"),
+            "limit": count("limit"),
+            "oversized": count("oversized"),
+        ]
+    }
+
     /// Live status the list route does not carry.
     ///
     /// `/api/agent-sessions` already merges running sessions and sets `alive`, but it has
@@ -6937,12 +6956,14 @@ final class COSControlHelper {
         // and ZERO reaching the Pinned view. The server returned all 7 with correct
         // titles. Rather than patch both sites, the divergent copy stops being the source.
         var serverRows: [[String: Any]] = []
+        var dropped: [String: Int] = ["age": 0, "limit": 0, "oversized": 0]
         if let token = try? speakerReviewToken(),
            let response = request("/api/agent-sessions?limit=80", token: token, timeout: 15),
            response.status == 200,
            let body = response.body,
            let raw = body["sessions"] as? [[String: Any]] {
             serverRows = raw.compactMap(Self.agentSessionRowProjection)
+            dropped = Self.agentSessionDroppedProjection(body)
         }
 
         if serverRows.isEmpty {
@@ -6993,6 +7014,7 @@ final class COSControlHelper {
             "sessions": peers,
             "counts": counts,
             "claudeLiveEnabled": enabled,
+            "dropped": dropped,
         ])
     }
 
@@ -9495,6 +9517,35 @@ final class COSControlHelper {
         try expect(sessionHit?["match"] as? String == "both", "session search keeps match kind")
         try expect(sessionHit?["score"] as? Double == 0.8, "session search score is the stronger signal")
         try expect(sessionHit?["workspace"] as? String == "MU-Chief-Staff", "session search keeps the repo name")
+
+        let rowKeys = Self.agentSessionRowProjection([
+            "session_id": "019dfe42-d4ba-7152-b5ae-60f600a2675a",
+            "provider": "codex",
+            "display_label": "Markt POS 2.0 build",
+            "project": "MU-Chief-Staff",
+            "state": "recent",
+            "alive": false,
+            "created": "2026-05-08T20:24:31Z",
+            "modified": "2026-08-13T18:43:00Z",
+            "pinned": true,
+        ])!
+        try expect(rowKeys.count == 12, "row projection stays 12 keys; dropped is a sibling")
+        try expect(rowKeys["dropped"] == nil, "dropped must not leak onto a row")
+        let measured = Self.agentSessionDroppedProjection([
+            "dropped": ["age": 412, "limit": 6, "oversized": 1, "extra": 9],
+        ])
+        try expect(measured["age"] == 412, "dropped.age survives the helper")
+        try expect(measured["limit"] == 6, "dropped.limit survives the helper")
+        try expect(measured["oversized"] == 1, "dropped.oversized survives the helper")
+        try expect(measured.count == 3, "unknown dropped keys are ignored")
+        let missing = Self.agentSessionDroppedProjection([:])
+        try expect(missing == ["age": 0, "limit": 0, "oversized": 0],
+                   "an old server with no dropped key reports zeros, not a parse failure")
+        let negative = Self.agentSessionDroppedProjection(["dropped": ["age": -4, "limit": 2.9, "oversized": "3"]])
+        try expect(negative["age"] == 0, "negative cap counts clamp to zero")
+        try expect(negative["limit"] == 2, "numeric dropped counts coerce")
+        try expect(negative["oversized"] == 3, "string dropped counts coerce")
+
         try expect(Self.tokenizeSessionQuery("Toast in grocery vs Clover") == ["toast", "grocery", "clover"],
                    "session search drops stopwords")
         let scored = Self.scoreSessionKeyword(

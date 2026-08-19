@@ -754,6 +754,9 @@ struct ActivityWindow: View {
     private var sessionsEmptyCopy: String {
         switch model.sessionClock {
         case .updated:
+            if let summary = model.sessionListDropped.summary, model.sessionListDropped.age > 0 {
+                return "No sessions updated on this Mac in the last 7 days. \(summary.replacingOccurrences(of: " not shown", with: " — search to find them."))"
+            }
             return "No Claude, Codex, or Cursor sessions updated on this Mac in the last 7 days."
         case .opened:
             return "No sessions opened in the last 7 days. Pins are under Pinned."
@@ -763,27 +766,7 @@ struct ActivityWindow: View {
     }
 
     private func sessionClockHint(_ session: ClaudeSession) -> String? {
-        let opened = session.createdDate
-        let updated = session.updatedDate
-        switch model.sessionClock {
-        case .updated:
-            guard let opened, let updated, updated.timeIntervalSince(opened) > 36 * 3600 else { return nil }
-            return "Opened \(shortSessionDate(opened))"
-        case .opened:
-            guard let updated else { return nil }
-            return "Updated \(shortSessionDate(updated))"
-        case .pinned:
-            guard let updated else { return nil }
-            return "Updated \(shortSessionDate(updated))"
-        }
-    }
-
-    private func shortSessionDate(_ date: Date) -> String {
-        let cal = Calendar.current
-        if cal.isDateInToday(date) {
-            return date.formatted(date: .omitted, time: .shortened)
-        }
-        return date.formatted(.dateTime.month(.abbreviated).day())
+        session.clockHint(clock: model.sessionClock)
     }
 
     private func sessionRow(_ session: ClaudeSession, snippet: String = "", matchLabel: String? = nil) -> some View {
@@ -816,9 +799,11 @@ struct ActivityWindow: View {
                                     .padding(.vertical, 2)
                                     .background(Capsule().fill(Color.primary.opacity(0.08)))
                             }
-                            Text(session.stateLabel)
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(sessionStateTint(session.state))
+                            if session.showsStateChip {
+                                Text(session.stateLabel)
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(sessionStateTint(session.state))
+                            }
                             if let hint = sessionClockHint(session) {
                                 Text(hint)
                                     .font(.system(size: 10.5))
@@ -826,19 +811,17 @@ struct ActivityWindow: View {
                                     .lineLimit(1)
                             }
                             // Two rows with the same name are almost always a fork and
-                            // its parent. `sessionClockHint` is suppressed on the default
-                            // clock unless the open->update span exceeds 36h, so without
-                            // this the rows are pixel-identical. Show when each was opened
-                            // — the one thing that actually differs and that a human can
-                            // act on.
+                            // its parent. The updated clock now always prints a real
+                            // date, but two forks can share that date too. Show when
+                            // each was opened — the one field that actually differs.
                             if ambiguousSessionTitles.contains(
                                 session.title.trimmingCharacters(in: .whitespacesAndNewlines)
                             ), let opened = session.createdDate {
-                                Text("Opened \(shortSessionDate(opened))")
+                                Text("Opened \(ClaudeSession.shortSessionDate(opened))")
                                     .font(.system(size: 10.5, weight: .medium))
                                     .foregroundStyle(COSPalette.amber)
                                     .lineLimit(1)
-                                    .help("Another session on screen has the same name. This one was opened \(shortSessionDate(opened)).")
+                                    .help("Another session on screen has the same name. This one was opened \(ClaudeSession.shortSessionDate(opened)).")
                             }
                             if !session.workspace.isEmpty, session.workspace != session.title {
                                 Text(session.workspace)
@@ -884,6 +867,9 @@ struct ActivityWindow: View {
         if visibleSessions.isEmpty { return "No sessions" }
         switch model.sessionClock {
         case .updated:
+            if let summary = model.sessionListDropped.summary {
+                return "Last 7 days · \(summary)"
+            }
             return "Claude · Codex · Cursor · updated in last 7 days"
         case .opened:
             return "Claude · Codex · Cursor · opened in last 7 days"
