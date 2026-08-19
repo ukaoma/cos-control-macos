@@ -8015,24 +8015,38 @@ final class COSControlHelper {
         }
         let limit = min(max(Int(option("--limit", in: args) ?? "20") ?? 20, 1), 50)
         let path = "/api/agent-sessions/search?q=\(queryEscape(query))&limit=\(limit)"
-        if let token = try? speakerReviewToken(),
-           let response = request(path, token: token, timeout: 2) {
-            if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
-            if response.status == 200 {
-                let body = response.body ?? [:]
-                let raw = (body["hits"] as? [[String: Any]]) ?? []
-                let rows = raw.compactMap(Self.sessionSearchHitProjection)
-                emit(ok: true, message: rows.isEmpty ? "No matching sessions" : "Session lookup ready", details: [
-                    "state": rows.isEmpty ? "empty" : "ready",
-                    "hits": rows,
-                    "count": rows.count,
-                    "keywordCount": body["keywordCount"] as? Int ?? rows.count,
-                    "semanticCount": body["semanticCount"] as? Int ?? 0,
-                    "semanticAvailable": body["semanticAvailable"] as? Bool ?? false,
-                    "semanticReason": body["semanticReason"] as? String ?? "",
-                ])
-                return
+        // 15s, up from 2s. The route was measured at 1.44-2.40s against the running
+        // server BEFORE the collector started ranking and examining more, so the old
+        // ceiling was already inside the noise: the slowest of six consecutive calls
+        // exceeded it. Every one of those became a silent fallback to the local scanner,
+        // which meant the server could compute a better answer and have it thrown away
+        // on nothing but timing.
+        var fallbackReason = "server_too_old"
+        if let token = try? speakerReviewToken() {
+            if let response = request(path, token: token, timeout: 15) {
+                if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+                if response.status == 200 {
+                    let body = response.body ?? [:]
+                    let raw = (body["hits"] as? [[String: Any]]) ?? []
+                    let rows = raw.compactMap(Self.sessionSearchHitProjection)
+                    emit(ok: true, message: rows.isEmpty ? "No matching sessions" : "Session lookup ready", details: [
+                        "state": rows.isEmpty ? "empty" : "ready",
+                        "hits": rows,
+                        "count": rows.count,
+                        "keywordCount": body["keywordCount"] as? Int ?? rows.count,
+                        "semanticCount": body["semanticCount"] as? Int ?? 0,
+                        "semanticAvailable": body["semanticAvailable"] as? Bool ?? false,
+                        "semanticReason": body["semanticReason"] as? String ?? "",
+                    ])
+                    return
+                }
+                // Only a 404 actually means the route is missing.
+                fallbackReason = response.status == 404 ? "server_too_old" : "server_error_\(response.status)"
+            } else {
+                fallbackReason = "server_unreachable"
             }
+        } else {
+            fallbackReason = "no_server_token"
         }
         let rows = Self.localSessionKeywordHits(query: query, limit: limit, home: FileManager.default.homeDirectoryForCurrentUser)
         emit(ok: true, message: rows.isEmpty ? "No matching sessions" : "Session lookup ready", details: [
@@ -8042,7 +8056,7 @@ final class COSControlHelper {
             "keywordCount": rows.count,
             "semanticCount": 0,
             "semanticAvailable": false,
-            "semanticReason": "server_too_old",
+            "semanticReason": fallbackReason,
         ])
     }
 

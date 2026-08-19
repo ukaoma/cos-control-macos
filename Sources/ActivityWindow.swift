@@ -670,9 +670,20 @@ struct ActivityWindow: View {
     }
 
     private var sessionSemanticHint: String {
-        switch model.sessionSemanticReason ?? "" {
+        let reason = model.sessionSemanticReason ?? ""
+        // These used to arrive as one string. A slow server, an unreachable one, a
+        // missing token and a genuinely old build all reported "server_too_old", which
+        // sent you looking for an update that was not the problem.
+        if reason.hasPrefix("server_error_") {
+            return "Keyword only — the server returned \(reason.dropFirst("server_error_".count))"
+        }
+        switch reason {
         case "server_too_old":
             return "Keyword only — meaning search needs a server update"
+        case "server_unreachable":
+            return "Keyword only — the server did not answer in time"
+        case "no_server_token":
+            return "Keyword only — no server token available"
         case "no_session_embeddings", "embeddings_unreachable":
             return "Keyword only — meaning search needs an OpenAI key"
         default:

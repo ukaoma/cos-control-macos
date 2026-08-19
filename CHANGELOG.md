@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.48 (build 86)
+- **Session search stopped discarding the server's answer over 400ms.** The lookup used a
+  2s client timeout on a route measured at 1.44-2.40s — the slowest of six consecutive
+  calls already exceeded it, so whether you got the server's ranked, semantic answer or a
+  local keyword scan came down to timing. Raised to 15s.
+- **"This server is too old" was reported for four different failures.** A missing token,
+  an unreachable server, a non-200 status and a genuinely absent route all emitted
+  `server_too_old`, which sent you looking for an update that was never the problem. Each
+  now reports what actually happened, and the hint under the search field says so.
+
 ## 0.5.47 (build 85)
 - **The Release button on a fenced thread could silently do nothing.** Dismissing the
   confirmation dialog nils `fencePendingRelease`, and the button deferred its work into

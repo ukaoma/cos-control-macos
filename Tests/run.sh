@@ -582,6 +582,36 @@ PY
 # The ambiguity set must union BOTH surfaces; the row is shared by the list and search.
 /usr/bin/grep -q 'visibleSessions + model.visibleSessionSearchHits' "$ROOT/Sources/ActivityWindow.swift"
 
+# --- 0.5.48 the search must not discard the server's answer on timing ---------
+# The route measured 1.44-2.40s against the running server and the client allowed 2s,
+# so the slowest of six consecutive calls already fell back to the local scanner -- and
+# reported "server_too_old" while doing it, which is a diagnosis the client had no basis
+# for. Four distinct failures shared that one label.
+/usr/bin/python3 - "$ROOT/HelperSources/main.swift" "$ROOT/Sources/ActivityWindow.swift" <<'PY'
+import re, sys
+helper = open(sys.argv[1]).read()
+ui = open(sys.argv[2]).read()
+
+fn = helper[helper.index("private func emitClaudeSessionsSearch"):]
+fn = fn[:fn.index("\n    private func ", 10)]
+
+assert "timeout: 2)" not in fn, "the 2s search timeout is back -- it is inside the route's own variance"
+m = re.search(r"request\(path, token: token, timeout: (\d+)\)", fn)
+assert m and int(m.group(1)) >= 10, f"search timeout must leave real headroom, got {m and m.group(1)}"
+
+assert '"semanticReason": fallbackReason' in fn, \
+    "the fallback must report why it fired, not a hardcoded server_too_old"
+for reason in ('"server_unreachable"', '"no_server_token"', 'server_error_'):
+    assert reason in fn, f"missing fallback reason {reason}"
+assert 'response.status == 404 ? "server_too_old"' in fn, \
+    "only a 404 means the route is actually missing"
+
+hint = ui[ui.index("private var sessionSemanticHint"):]
+hint = hint[:hint.index("\n    @ViewBuilder")]
+for reason in ("server_unreachable", "no_server_token", "server_error_"):
+    assert reason in hint, f"the hint does not distinguish {reason}"
+PY
+
 # --- 0.5.47 the release must not race its own dialog --------------------------
 # Dismissing the confirmation nils `fencePendingRelease`, and the Release button
 # defers into a Task. Reading the record inside that task races the dismissal and
