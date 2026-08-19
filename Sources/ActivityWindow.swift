@@ -721,6 +721,25 @@ struct ActivityWindow: View {
         }
     }
 
+    /// Titles that appear more than once on screen right now.
+    ///
+    /// A Claude fork is `claude -p --resume <id> --fork-session`, which inherits the
+    /// parent's history — so `firstClaudeUserTitle` derives the SAME title and the fork
+    /// renders as a second row with an identical name, workspace and state. Measured
+    /// 2026-08-18: two live sessions both titled "COS-glasses Server work (meetings)"
+    /// with distinct ids (31732572… and a4b2b4dd…), and 8 duplicate-title groups across
+    /// 69 rows. Miles: "I forked that COS glass server work, and now I can't see any of
+    /// the forks. I do see the original running, though." They were never missing; there
+    /// was nothing on the row to tell them apart.
+    ///
+    /// Unions BOTH surfaces because `sessionRow` is shared by the list and by search.
+    /// Over-inclusion is harmless: showing when a session was opened is never wrong.
+    private var ambiguousSessionTitles: Set<String> {
+        ClaudeSession.ambiguousTitles(
+            in: visibleSessions + model.visibleSessionSearchHits.map(\.session)
+        )
+    }
+
     private var sessionsEmptyCopy: String {
         switch model.sessionClock {
         case .updated:
@@ -794,6 +813,21 @@ struct ActivityWindow: View {
                                     .font(.system(size: 10.5))
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
+                            }
+                            // Two rows with the same name are almost always a fork and
+                            // its parent. `sessionClockHint` is suppressed on the default
+                            // clock unless the open->update span exceeds 36h, so without
+                            // this the rows are pixel-identical. Show when each was opened
+                            // — the one thing that actually differs and that a human can
+                            // act on.
+                            if ambiguousSessionTitles.contains(
+                                session.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                            ), let opened = session.createdDate {
+                                Text("Opened \(shortSessionDate(opened))")
+                                    .font(.system(size: 10.5, weight: .medium))
+                                    .foregroundStyle(COSPalette.amber)
+                                    .lineLimit(1)
+                                    .help("Another session on screen has the same name. This one was opened \(shortSessionDate(opened)).")
                             }
                             if !session.workspace.isEmpty, session.workspace != session.title {
                                 Text(session.workspace)

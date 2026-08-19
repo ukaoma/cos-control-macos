@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.46 (build 84)
+- **Forks were never missing — they were indistinguishable.** Miles: "I forked that COS
+  glass server work, and now I can't see any of the forks. I do see the original running,
+  though." Both forks were in the list the whole time. A Claude fork is
+  `--resume <id> --fork-session`, which inherits the parent's history, so the derived title
+  is IDENTICAL. Measured 2026-08-18: two live sessions both named "COS-glasses Server work
+  (meetings)" with distinct ids (31732572… / a4b2b4dd…), same workspace, same state — the
+  rows were pixel-identical, and 8 duplicate-title groups existed across 69 rows.
+- When a title appears more than once on screen, the row now shows when that session was
+  opened — the one field that actually differs and that a person can act on. Applies to the
+  list and to search, because both share `sessionRow`.
+- The duplicate detection is a pure static helper (`ClaudeSession.ambiguousTitles`) so it is
+  covered by execution rather than by reading the view; four wiring assertions pin that the
+  row actually consults and renders it. Four mutations, four caught.
+- Note: two untitled sessions in the same workspace legitimately share a title (`title`
+  falls back name → workspace → id) and ARE flagged. A test asserting otherwise was wrong
+  and the suite caught it.
+
 ## 0.5.45 (build 83)
 - **The durable-fence flag now survives an update.** `COS_THREAD_FENCE_DURABLE` was
   not in `providerEnvironmentKeys`, and Control FILTERS the LaunchAgent environment

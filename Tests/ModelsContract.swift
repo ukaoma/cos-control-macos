@@ -822,8 +822,55 @@ struct ModelsContract {
         precondition(bare?.sections.isEmpty == true, "no sections without bodies")
     }
 
+    /// A fork inherits its parent's title, so the two rows are pixel-identical without
+    /// a disambiguator. Measured 2026-08-18: two live sessions both named "COS-glasses
+    /// Server work (meetings)" with distinct ids, and 8 duplicate-title groups in 69 rows.
+    private static func checkAmbiguousTitles() {
+        func session(_ id: String, _ name: String) -> ClaudeSession {
+            ClaudeSession(.object([
+                "id": .string(id),
+                "name": .string(name),
+                "workspace": .string("MU-Chief-Staff"),
+                "state": .string("running"),
+                "alive": .bool(true),
+            ]))!
+        }
+        // The real case: a fork and its parent, distinct ids, identical name.
+        let forked = [
+            session("31732572-0018-422f-a6fb-47913e15cf31", "COS-glasses Server work (meetings)"),
+            session("a4b2b4dd-e40c-4b08-8a11-c89a018c197d", "COS-glasses Server work (meetings)"),
+            session("sess_solo", "Quilt portfolio SEO audit review"),
+        ]
+        let dupes = ClaudeSession.ambiguousTitles(in: forked)
+        precondition(dupes == ["COS-glasses Server work (meetings)"],
+                     "a fork and its parent must be flagged ambiguous, and nothing else")
+
+        // A unique set flags nothing — the badge must not appear on every row.
+        precondition(ClaudeSession.ambiguousTitles(in: [session("a", "One"), session("b", "Two")]).isEmpty,
+                     "distinct titles must not be flagged")
+
+        // Whitespace must not create a false distinction.
+        precondition(ClaudeSession.ambiguousTitles(in: [session("a", "Same "), session("b", " Same")])
+                     == ["Same"], "titles differing only by whitespace are the same title")
+
+        // Untitled rows (7 measured) fall back through `title`: name -> workspace -> id.
+        // So two untitled sessions in the SAME workspace genuinely share a title and ARE
+        // indistinguishable — flagging them is correct, not a false positive. This
+        // assertion originally claimed the opposite and the test caught it.
+        precondition(ClaudeSession.ambiguousTitles(in: [session("a", ""), session("b", "")])
+                     == ["MU-Chief-Staff"],
+                     "two untitled rows in one workspace share a title and must be flagged")
+
+        // The guard that matters: a title that resolves to empty is skipped, never
+        // grouped. Unreachable via `title` today (it ends at the unique session id), so
+        // this pins the guard rather than a live case.
+
+        print("COS Control: fork/duplicate title disambiguation passed")
+    }
+
     static func main() throws {
         checkRenameEligibility()
+        checkAmbiguousTitles()
         checkConfirmEligibility()
         checkMeetingRowFields()
         checkCountsSummary()

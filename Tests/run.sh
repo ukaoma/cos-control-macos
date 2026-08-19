@@ -559,6 +559,29 @@ assert '"COS_THREAD_FENCE_DURABLE"' in block.group(1), \
     "COS_THREAD_FENCE_DURABLE is not allowlisted -- Control will drop it on the next plist rewrite"
 PY
 
+# --- 0.5.46 fork / duplicate-title disambiguation ----------------------------
+# The LOGIC is covered by execution in ModelsContract (checkAmbiguousTitles). These
+# pin the WIRING, which a SwiftUI view cannot express in a unit test: the shared row
+# must actually consult the helper and render the opened date. Without both, the
+# helper is correct and invisible — the 0.5.17 shape.
+/usr/bin/grep -q 'static func ambiguousTitles(in sessions: \[ClaudeSession\]) -> Set<String>' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'ClaudeSession.ambiguousTitles(' "$ROOT/Sources/ActivityWindow.swift"
+# The row must consume it AND render createdDate — the one field that differs between
+# a fork and its parent.
+/usr/bin/python3 - "$ROOT/Sources/ActivityWindow.swift" <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+start = src.index("private func sessionRow(")
+end = src.index("\n    private ", start + 10)
+row = src[start:end]
+assert "ambiguousSessionTitles.contains(" in row, \
+    "sessionRow does not consult ambiguousSessionTitles -- forks stay indistinguishable"
+assert "session.createdDate" in row, \
+    "sessionRow does not render createdDate -- nothing on the row differs between a fork and its parent"
+PY
+# The ambiguity set must union BOTH surfaces; the row is shared by the list and search.
+/usr/bin/grep -q 'visibleSessions + model.visibleSessionSearchHits' "$ROOT/Sources/ActivityWindow.swift"
+
 # --- 0.5.44 fenced threads ---------------------------------------------------
 # A fence shuts a native thread that may already hold an undelivered turn. Before
 # glasses-server 6.36.10 the only way to clear one was restarting the server. These

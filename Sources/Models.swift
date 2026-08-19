@@ -477,6 +477,26 @@ struct ClaudeSession: Identifiable, Sendable {
         return sessionId
     }
 
+    /// Titles that appear more than once in a set of rows.
+    ///
+    /// A Claude fork (`--resume <id> --fork-session`) inherits the parent's history, so
+    /// the derived title is IDENTICAL to the parent's. Measured 2026-08-18: two live
+    /// sessions both named "COS-glasses Server work (meetings)" with distinct ids, and 8
+    /// duplicate-title groups across 69 rows. The forks were never missing from the
+    /// index — nothing on the row distinguished them.
+    ///
+    /// Pure and static so it is covered by execution rather than by reading the view.
+    static func ambiguousTitles(in sessions: [ClaudeSession]) -> Set<String> {
+        var seen: Set<String> = []
+        var dupes: Set<String> = []
+        for session in sessions {
+            let key = session.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { continue }
+            if seen.contains(key) { dupes.insert(key) } else { seen.insert(key) }
+        }
+        return dupes
+    }
+
     var isKeepWarm: Bool {
         Self.isKeepWarmSessionTitle(name)
     }
