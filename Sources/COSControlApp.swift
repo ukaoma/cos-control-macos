@@ -7,8 +7,8 @@ struct COSControlApp: App {
 
     var body: some Scene {
         MenuBarExtra("COS Control", systemImage: model.status.running ? "eyeglasses" : "eyeglasses.slash") {
-            ControlPanel(model: model) {
-                activityWindow.show(model: model)
+            ControlPanel(model: model) { section in
+                activityWindow.show(model: model, section: section)
             }
         }
         .menuBarExtraStyle(.window)

@@ -12,7 +12,11 @@ final class ActivityWindowPresenter: NSObject, ObservableObject, NSWindowDelegat
     private var windowController: NSWindowController?
     private weak var model: ControllerModel?
 
-    func show(model: ControllerModel) {
+    func show(model: ControllerModel, section: ActivitySection? = nil) {
+        self.model = model
+        if let section {
+            model.activityOpenSection = section
+        }
         if let window = windowController?.window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -252,6 +256,14 @@ struct ActivityWindow: View {
             Text(model.error ?? "")
         }
         .onExitCommand { goBack() }
+        .onAppear { applyLaunchSection() }
+        .onChange(of: model.activityOpenSection) { _, _ in applyLaunchSection() }
+    }
+
+    private func applyLaunchSection() {
+        guard let next = model.activityOpenSection else { return }
+        model.activityOpenSection = nil
+        select(next)
     }
 
     // MARK: - Navigation

@@ -90,7 +90,7 @@ enum COSPalette {
 
 struct ControlPanel: View {
     @ObservedObject var model: ControllerModel
-    let openActivity: () -> Void
+    let openActivity: (ActivitySection?) -> Void
     @State private var confirmLegacyRestart = false
     @State private var confirmInstallManaged = false
     @State private var confirmInstallAppUpdate = false
@@ -799,9 +799,9 @@ struct ControlPanel: View {
             VStack(alignment: .leading, spacing: 14) {
                 header
                 updateBanner
+                activityLauncher
                 statusCard
                 controls
-                activityLauncher
                 if !model.fenceRecords.isEmpty { fencesCard }
                 if !model.doctorChecks.isEmpty { doctorCard }
                 utilities
@@ -814,11 +814,13 @@ struct ControlPanel: View {
     /// One doorway instead of five nested browsers in a 390pt transient panel.
     /// The destination is a durable window with peer tabs and a real back stack.
     /// Chips come from ActivitySection.allCases so a new view cannot ship invisible.
+    /// Each chip opens that tab. The title/Open row opens the window without
+    /// resetting a place the user already had.
     private var activityLauncher: some View {
-        Button {
-            openActivity()
-        } label: {
-            VStack(alignment: .leading, spacing: 11) {
+        VStack(alignment: .leading, spacing: 11) {
+            Button {
+                openActivity(nil)
+            } label: {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Activity")
@@ -831,39 +833,46 @@ struct ControlPanel: View {
                     Label("Open", systemImage: "arrow.up.forward.app")
                         .font(.system(size: 10.5, weight: .medium))
                 }
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack(spacing: 7) {
-                        ForEach(Array(ActivitySection.allCases.prefix(3))) { item in
-                            activityChip(item.title, icon: item.icon, tint: item.tint)
-                        }
+            }
+            .buttonStyle(.plain)
+            .help("Open Messages, Speakers, Meetings, Memories, Threads, and Sessions in a separate window")
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 7) {
+                    ForEach(Array(ActivitySection.allCases.prefix(3))) { item in
+                        activityChip(item)
                     }
-                    HStack(spacing: 7) {
-                        ForEach(Array(ActivitySection.allCases.dropFirst(3))) { item in
-                            activityChip(item.title, icon: item.icon, tint: item.tint)
-                        }
+                }
+                HStack(spacing: 7) {
+                    ForEach(Array(ActivitySection.allCases.dropFirst(3))) { item in
+                        activityChip(item)
                     }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(13)
-            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
-            .overlay(RoundedRectangle(cornerRadius: 13).stroke(COSPalette.line, lineWidth: 1))
-            .contentShape(RoundedRectangle(cornerRadius: 13))
         }
-        .buttonStyle(.plain)
-        .help("Open Messages, Speakers, Meetings, Memories, Threads, and Sessions in a separate window")
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(13)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
+        .overlay(RoundedRectangle(cornerRadius: 13).stroke(COSPalette.line, lineWidth: 1))
     }
 
-    private func activityChip(_ title: String, icon: String, tint: Color) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon)
-            Text(title)
+    private func activityChip(_ item: ActivitySection) -> some View {
+        Button {
+            openActivity(item)
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: item.icon)
+                Text(item.title)
+            }
+            .font(.system(size: 9.5, weight: .medium))
+            .foregroundStyle(item.tint)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 5)
+            .background(item.tint.opacity(0.10), in: Capsule())
+            .contentShape(Capsule())
         }
-        .font(.system(size: 9.5, weight: .medium))
-        .foregroundStyle(tint)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 5)
-        .background(tint.opacity(0.10), in: Capsule())
+        .buttonStyle(.plain)
+        .help("Open \(item.title)")
+        .accessibilityLabel("Open \(item.title)")
     }
 
     /// Threads COS has shut because an earlier turn may already have landed.

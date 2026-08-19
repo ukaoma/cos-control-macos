@@ -347,9 +347,27 @@ PY
 /usr/bin/grep -q 'struct SpeakerReviewPane' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'activityLauncher' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'ActivitySection.allCases' "$ROOT/Sources/Views.swift"
+/usr/bin/python3 - "$ROOT/Sources/Views.swift" <<'PY'
+import sys
+views = open(sys.argv[1]).read()
+panel = views[views.index("private var mainPanel"): views.index("private var activityLauncher")]
+# Activity is the first destination in the menu bar, above Restart/Stop/Update.
+for name in ("header", "updateBanner", "activityLauncher", "statusCard", "controls"):
+    if name not in panel:
+        raise SystemExit(f"mainPanel lost {name}")
+if panel.index("activityLauncher") > panel.index("statusCard"):
+    raise SystemExit("Activity is below status again")
+if panel.index("activityLauncher") > panel.index("controls"):
+    raise SystemExit("Activity is below Restart/Stop/Update Server again")
+if "openActivity(item)" not in views:
+    raise SystemExit("chips do not call openActivity(item)")
+if "func activityChip(_ item: ActivitySection)" not in views:
+    raise SystemExit("chips are display-only again")
+print("Activity sits above controls; chips open their tab")
+PY
 /usr/bin/grep -q 'Open Messages, Speakers, Meetings' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'ActivityWindowPresenter' "$ROOT/Sources/COSControlApp.swift"
-/usr/bin/grep -q 'activityWindow.show(model: model)' "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q 'activityWindow.show(model: model, section: section)' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'window.isReleasedWhenClosed = false' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'window.setFrameAutosaveName("COSActivityWindow")' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'struct ActivityWindow' "$ROOT/Sources/ActivityWindow.swift"
@@ -1058,9 +1076,14 @@ need('providerBadge' in activity, "Sessions tab has no provider badge")
 
 # 4. The narrow menu panel has one doorway. Peer sections live in the
 #    persistent window, whose shell owns Home, Back, and the breadcrumb.
-need('openActivity()' in views, "the menu panel cannot open Activity")
-need('ActivityWindowPresenter' in app and 'activityWindow.show(model: model)' in app,
+need('openActivity(nil)' in views, "the menu panel cannot open Activity")
+need('openActivity(item)' in views, "Activity chips do not open their own tab")
+need('activityWindow.show(model: model, section: section)' in app,
      "the click-only Activity presenter is not wired")
+need('func show(model: ControllerModel, section: ActivitySection?' in activity,
+     "Activity cannot be opened onto a specific tab")
+need('activityOpenSection' in model, "the menu chips have no way to name a tab")
+need('applyLaunchSection' in activity, "Activity does not consume the chip's tab")
 need('case .messages: messagesList' in activity, "Messages is not mounted")
 need('case .speakers: speakersList' in activity, "Speakers is not mounted")
 need('case .memories: contextList(kind: "memory")' in activity, "Memories is not mounted")

@@ -63,6 +63,9 @@ final class ControllerModel: ObservableObject {
     @Published var recentGlassesStatus: RecentGlassesStatus = .idle
     @Published var recentGlassesDate: String?
     @Published var appUpdate = AppUpdateInfo()
+    /// Menu-bar chip → Activity tab. Consumed by the window, then cleared so the
+    /// same chip can be pressed again. Nil means "just show the window."
+    @Published var activityOpenSection: ActivitySection?
     @Published var mediaPreviewStates: [String: RecentMediaPreviewState] = [:]
     @Published var selectedMediaPreview: SelectedMediaPreview?
     @Published var previewingMediaID: String?

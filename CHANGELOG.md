@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.52 (build 90)
+- **Activity is the first thing in the menu bar.** It sat below Restart / Stop /
+  Update Server, so the main reason to open Control was the fourth block. It is
+  now directly under the header. Each chip (Messages, Speakers, Meetings,
+  Memories, Threads, Sessions) opens that tab. Open still restores the window
+  without wiping a place you already had.
+
 ## 0.5.51 (build 89)
 - **Install the update from the menu bar.** When gotcos.com advertises a newer
   Control build, the banner's Install button downloads the zip, checks the
