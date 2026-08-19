@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.51 (build 89)
+- **Install the update from the menu bar.** When gotcos.com advertises a newer
+  Control build, the banner's Install button downloads the zip, checks the
+  published SHA-256, verifies the signature and bundle identity, replaces this
+  app, and reopens it. The glasses server is not drained, restarted, or
+  rewritten. A meeting in progress refuses the install rather than interrupting
+  it. This is the last unzip: later releases install in place from here.
+
 ## 0.5.50 (build 88)
 - **`recent` stopped meaning Today.** That state is the server's "not running"
   bucket. Control printed it as a date word, so a session last touched 82 days ago

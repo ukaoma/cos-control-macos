@@ -117,13 +117,16 @@ private func waitForProcessExit(
 }
 
 actor HelperClient {
-    private func helperURL() throws -> URL {
+    private func helperURL(preferStable: Bool = false) throws -> URL {
+        let stable = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/COS Control/bin/cos-control-helper")
+        if preferStable, FileManager.default.isExecutableFile(atPath: stable.path) {
+            return stable
+        }
         if let bundled = Bundle.main.resourceURL?.appendingPathComponent("cos-control-helper"),
            FileManager.default.isExecutableFile(atPath: bundled.path) {
             return bundled
         }
-        let stable = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/COS Control/bin/cos-control-helper")
         guard FileManager.default.isExecutableFile(atPath: stable.path) else { throw HelperClientError.helperMissing }
         return stable
     }
@@ -131,9 +134,10 @@ actor HelperClient {
     func run(
         _ arguments: [String],
         timeout: TimeInterval? = nil,
+        preferStable: Bool = false,
         progress: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> HelperResponse {
-        let executable = try helperURL()
+        let executable = try helperURL(preferStable: preferStable)
         let cancellation = HelperProcessCancellation()
         return try await withTaskCancellationHandler {
             try await Task.detached(priority: .userInitiated) {

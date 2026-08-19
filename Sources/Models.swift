@@ -1006,15 +1006,16 @@ struct DoctorCheck: Identifiable, Sendable {
     let detail: String
 }
 
-/// Result of the P1 check-only update probe. Carries no ability to apply anything:
-/// the only action it enables is opening the download page in a browser.
+/// Result of the appcast probe. This build can also download, SHA-check, and
+/// swap the .app — the check-only era ended in 0.5.51.
 struct AppUpdateInfo: Sendable {
     var updateAvailable = false
     var latestVersion: String?
     var latestBuild: Int?
     var url: String?
+    var sha256: String?
     var notes: String?
-    /// newer / upToDate / killSwitch / unreachable / malformed / idle
+    /// newer / upToDate / killSwitch / unreachable / malformed / idle / requiresMacOS
     var reason: String = "idle"
 
     init() {}
@@ -1024,6 +1025,7 @@ struct AppUpdateInfo: Sendable {
         latestVersion = details["latestVersion"]?.string
         latestBuild = details["latestBuild"]?.int
         url = details["url"]?.string
+        sha256 = details["sha256"]?.string
         notes = details["notes"]?.string
         reason = details["reason"]?.string ?? "idle"
     }

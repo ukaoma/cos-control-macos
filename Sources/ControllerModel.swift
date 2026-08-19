@@ -165,6 +165,7 @@ final class ControllerModel: ObservableObject {
         // Update check: once at launch, then every 6h. Deliberately NOT on the 12s
         // status loop -- this is a network call to a static file, not live state.
         updateCheckTask = Task { [weak self] in
+            await self?.completeAppUpdateIfNeeded()
             await self?.checkForAppUpdate()
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(6 * 60 * 60))
@@ -173,7 +174,7 @@ final class ControllerModel: ObservableObject {
         }
     }
 
-    /// P1 check-only. Never mutates anything, never blocks the UI, and stays SILENT on
+    /// P1 check. Never mutates anything, never blocks the UI, and stays SILENT on
     /// failure: offline or a bad appcast leaves the previous state untouched rather than
     /// raising an error the user has to dismiss.
     func checkForAppUpdate() async {
@@ -189,8 +190,56 @@ final class ControllerModel: ObservableObject {
         }
     }
 
-    /// The ONLY action a check-only build offers. Opens the download page; it does not
-    /// download, stage, or swap anything (that is P1.5/P2, gated on P0 notarization).
+    /// Close the handshake after a swap. Does not touch the glasses server.
+    func completeAppUpdateIfNeeded() async {
+        do {
+            _ = try await helper.run([
+                "complete-app-update",
+                "--current-version", Self.currentVersion,
+                "--current-build", String(Self.currentBuild),
+            ])
+        } catch {
+            // Pending-absent is success; a real failure stays on disk as last-failure.json.
+        }
+    }
+
+    /// Download, SHA-256, unpack, then detach the swap and quit. The glasses server
+    /// stays running. The detached helper reopens this app.
+    func installAppUpdate() {
+        guard !busy else { return }
+        busy = true
+        operationProgress = "Downloading update…"
+        notice = nil
+        error = nil
+        let live = Bundle.main.bundleURL.path
+        Task {
+            do {
+                _ = try await helper.run([
+                    "stage-app-update",
+                    "--current-version", Self.currentVersion,
+                    "--current-build", String(Self.currentBuild),
+                    "--live-bundle", live,
+                ]) { [weak self] message in
+                    Task { @MainActor in self?.operationProgress = message }
+                }
+                operationProgress = "Installing…"
+                _ = try await helper.run([
+                    "apply-app-update",
+                    "--detach",
+                    "--live-bundle", live,
+                    "--current-version", Self.currentVersion,
+                    "--current-build", String(Self.currentBuild),
+                ], preferStable: true)
+                notice = "Installing. Control will reopen."
+                NSApplication.shared.terminate(nil)
+            } catch {
+                self.error = error.localizedDescription
+                busy = false
+                operationProgress = nil
+            }
+        }
+    }
+
     func openUpdatePage() {
         let target = appUpdate.url.flatMap(URL.init(string:))
             ?? URL(string: "https://www.gotcos.com/control/")

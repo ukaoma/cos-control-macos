@@ -832,6 +832,124 @@ if /usr/bin/grep -A60 'private func emitAppUpdateCheck' "$ROOT/HelperSources/mai
   exit 1
 fi
 
+# --- 0.5.51 click-to-update: SHA, swap, never touch the glasses server --------
+/usr/bin/grep -q 'case "stage-app-update"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "apply-app-update"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "complete-app-update"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'Button("Install")' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'func installAppUpdate' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'preferStable: true' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'completeAppUpdateIfNeeded' "$ROOT/Sources/ControllerModel.swift"
+# Apply must not drive the glasses-server lifecycle. Drain, launchctl on that
+# label, and ~/.cos-glasses writes are the R1/R9 forbid-list.
+/usr/bin/python3 - "$ROOT/HelperSources/main.swift" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+start = src.index("private func emitStageAppUpdate")
+end = src.index("/// Read-only Memory and Threads browsing on the desktop.")
+block = src[start:end]
+for needle, label in [
+    ("withMutationLock", "lifecycle lock"),
+    ("launchctl", "launchctl"),
+    ("com.cos.glasses-server", "glasses-server label"),
+    ("/api/maintenance/", "maintenance drain"),
+    ("configDir", "cos-glasses configDir"),
+]:
+    if needle in block:
+        raise SystemExit(f"app-update path touches {label} via {needle}")
+if "sha256(zipURL)" not in block:
+    raise SystemExit("stage does not SHA-256 the downloaded zip")
+if "replaceItemAt" not in block:
+    raise SystemExit("swap does not atomically replace the live bundle")
+if 'COS_CONTROL_TEST_HOME"] == nil' not in block:
+    raise SystemExit("swap must not /usr/bin/open during isolated tests")
+print("app-update forbid-list and SHA/swap wiring passed")
+PY
+
+make_dummy_app () {  # <dir> <version> <build>
+  local app="$1/COS Control.app"
+  /bin/mkdir -p "$app/Contents/MacOS"
+  /bin/cp /bin/echo "$app/Contents/MacOS/COS Control"
+  /usr/bin/plutil -create xml1 "$app/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c 'Add :CFBundleIdentifier string com.gotcos.control' "$app/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c 'Add :CFBundleName string COS Control' "$app/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c 'Add :CFBundleExecutable string COS Control' "$app/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $2" "$app/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $3" "$app/Contents/Info.plist"
+  /usr/bin/codesign --force --deep --sign - "$app" >/dev/null
+  /usr/bin/codesign --verify --deep --strict "$app"
+}
+
+AU_HOME="$TMP/app-update-home"
+AU_LIVE="$TMP/app-update-live"
+AU_NEW="$TMP/app-update-new"
+/bin/mkdir -p "$AU_HOME" "$AU_LIVE" "$AU_NEW" "$AC_DIR"
+make_dummy_app "$AU_LIVE" "0.5.50" "88"
+make_dummy_app "$AU_NEW" "0.5.99" "199"
+AU_ZIP="$AC_DIR/COS-Control-macOS-arm64-0.5.99.zip"
+/usr/bin/ditto -c -k --norsrc --keepParent "$AU_NEW/COS Control.app" "$AU_ZIP"
+AU_SHA="$(/usr/bin/shasum -a 256 "$AU_ZIP" | /usr/bin/awk '{print $1}')"
+/bin/cat > "$AC_DIR/apply-good.json" <<JSON
+{"schemaVersion":1,"channels":{"stable":{"version":"0.5.99","build":199,"url":"file://$AU_ZIP","sha256":"$AU_SHA","minMacOS":"14.0"}},"killSwitch":{"disableAutoUpdate":false}}
+JSON
+/bin/cat > "$AC_DIR/apply-bad-sha.json" <<JSON
+{"schemaVersion":1,"channels":{"stable":{"version":"0.5.99","build":199,"url":"file://$AU_ZIP","sha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","minMacOS":"14.0"}},"killSwitch":{"disableAutoUpdate":false}}
+JSON
+
+AU_ENV=(
+  COS_CONTROL_TEST_HOME="$AU_HOME"
+)
+# Wrong SHA must discard the file and leave no pending install.
+if COS_CONTROL_TEST_HOME="$AU_HOME" "$TMP/cos-control-helper" stage-app-update \
+    --current-version 0.5.50 --current-build 88 \
+    --appcast-url "file://$AC_DIR/apply-bad-sha.json" \
+    --live-bundle "$AU_LIVE/COS Control.app"; then
+  echo "stage-app-update accepted a SHA mismatch" >&2
+  exit 1
+fi
+if [ -f "$AU_HOME/Library/Application Support/COS Control/updates/pending.json" ]; then
+  echo "SHA mismatch left a pending update" >&2
+  exit 1
+fi
+
+GOOD_STAGE="$(COS_CONTROL_TEST_HOME="$AU_HOME" "$TMP/cos-control-helper" stage-app-update \
+    --current-version 0.5.50 --current-build 88 \
+    --appcast-url "file://$AC_DIR/apply-good.json" \
+    --live-bundle "$AU_LIVE/COS Control.app")"
+/usr/bin/python3 - "$GOOD_STAGE" <<'PY'
+import json,sys
+d=json.loads(sys.argv[1])
+assert d.get("ok") is True, d
+assert d.get("details",{}).get("reason")=="staged", d
+PY
+test -f "$AU_HOME/Library/Application Support/COS Control/updates/pending.json"
+
+COS_CONTROL_TEST_HOME="$AU_HOME" "$TMP/cos-control-helper" apply-app-update \
+    --swap --live-bundle "$AU_LIVE/COS Control.app" >/dev/null
+LIVE_VER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$AU_LIVE/COS Control.app/Contents/Info.plist")"
+LIVE_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$AU_LIVE/COS Control.app/Contents/Info.plist")"
+PREV_VER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$AU_HOME/Library/Application Support/COS Control/updates/previous/COS Control.app/Contents/Info.plist")"
+if [ "$LIVE_VER" != "0.5.99" ] || [ "$LIVE_BUILD" != "199" ]; then
+  echo "swap did not install the staged app (live=$LIVE_VER $LIVE_BUILD)" >&2
+  exit 1
+fi
+if [ "$PREV_VER" != "0.5.50" ]; then
+  echo "swap did not retain the previous app (previous=$PREV_VER)" >&2
+  exit 1
+fi
+COMPLETE="$(COS_CONTROL_TEST_HOME="$AU_HOME" "$TMP/cos-control-helper" complete-app-update --current-build 199)"
+/usr/bin/python3 - "$COMPLETE" <<'PY'
+import json,sys
+d=json.loads(sys.argv[1])
+assert d.get("ok") is True, d
+assert d.get("details",{}).get("reason")=="complete", d
+PY
+if [ -f "$AU_HOME/Library/Application Support/COS Control/updates/pending.json" ]; then
+  echo "complete-app-update left pending.json" >&2
+  exit 1
+fi
+echo "click-to-update SHA refuse, stage, swap, and complete passed"
+
 /usr/bin/grep -q 'com.cos.glasses-control-recovery' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q '"StartInterval": 60' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'flock(descriptor, LOCK_EX | LOCK_NB)' "$ROOT/HelperSources/main.swift"

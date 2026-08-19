@@ -93,6 +93,7 @@ struct ControlPanel: View {
     let openActivity: () -> Void
     @State private var confirmLegacyRestart = false
     @State private var confirmInstallManaged = false
+    @State private var confirmInstallAppUpdate = false
     @State private var showGuidedSetupTier = false
     @State private var selectedTranscriptionTier = "balanced"
     @State private var selectedBackgroundJobs = true
@@ -221,6 +222,16 @@ struct ControlPanel: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This stops your checkout LaunchAgent, then installs the current npm latest (@gotcos/glasses-server@latest). Finish active glasses work first. Prefer Manage in place if you only want status/restart without replacing the server.")
+        }
+        .confirmationDialog(
+            "Install COS Control \(model.appUpdate.latestVersion ?? "")?",
+            isPresented: $confirmInstallAppUpdate,
+            titleVisibility: .visible
+        ) {
+            Button("Install and reopen") { model.installAppUpdate() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Control will quit, verify the download SHA-256, replace itself, and reopen. The glasses server stays running.")
         }
         .confirmationDialog(
             "Choose transcription setup",
@@ -1356,9 +1367,9 @@ struct ControlPanel: View {
         .disabled(model.busy)
     }
 
-    /// P1 check-only banner. Renders ONLY when the appcast advertises a genuinely newer
-    /// build; offline, up-to-date, killSwitch and malformed all render nothing at all.
-    /// The button opens the download page. This build cannot download or swap anything.
+    /// Renders ONLY when the appcast advertises a genuinely newer build; offline,
+    /// up-to-date, killSwitch and malformed all render nothing at all. Install
+    /// downloads, SHA-checks, and swaps this app. The glasses server is not touched.
     @ViewBuilder private var updateBanner: some View {
         if model.appUpdate.shouldSurface {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -1374,9 +1385,10 @@ struct ControlPanel: View {
                     }
                 }
                 Spacer(minLength: 8)
-                Button("Get it") { model.openUpdatePage() }
+                Button("Install") { confirmInstallAppUpdate = true }
                     .controlSize(.small)
                     .layoutPriority(1)
+                    .disabled(model.busy)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(11)

@@ -260,8 +260,11 @@ final class COSControlHelper {
     private let fm = FileManager.default
     private let home: URL = {
         let environment = ProcessInfo.processInfo.environment
-        if CommandLine.arguments.dropFirst().first?.hasPrefix("self-test") == true,
-           let testHome = environment["COS_CONTROL_TEST_HOME"],
+        // Isolated home for ANY helper command, not only self-test. Stage/apply
+        // write under Application Support; a test that only overrode self-test
+        // would have mutated the real install. Production never sets this, and
+        // the /tmp/ prefix keeps a stray env var from relocating a live helper.
+        if let testHome = environment["COS_CONTROL_TEST_HOME"],
            testHome.hasPrefix("/tmp/") {
             return URL(fileURLWithPath: testHome, isDirectory: true).standardizedFileURL
         }
@@ -335,6 +338,11 @@ final class COSControlHelper {
     private lazy var mediaTransferRoot = controlCache.appendingPathComponent("MediaTransfers", isDirectory: true)
     private lazy var stableBin = support.appendingPathComponent("bin", isDirectory: true)
     private lazy var stableHelper = stableBin.appendingPathComponent("cos-control-helper")
+    private lazy var updatesRoot = support.appendingPathComponent("updates", isDirectory: true)
+    private lazy var updatesPrevious = updatesRoot.appendingPathComponent("previous", isDirectory: true)
+    private lazy var updatesPendingURL = updatesRoot.appendingPathComponent("pending.json")
+    private lazy var updatesSuccessURL = updatesRoot.appendingPathComponent("success.json")
+    private lazy var updatesFailureURL = updatesRoot.appendingPathComponent("last-failure.json")
     private lazy var logs = home.appendingPathComponent("Library/Logs/COS Glasses", isDirectory: true)
     private lazy var helperLog = logs.appendingPathComponent("control.log")
     private lazy var serverLog = logs.appendingPathComponent("server.log")
@@ -471,6 +479,9 @@ final class COSControlHelper {
         case "review-audio-list": try emitReviewAudioList(args: args)
         case "fetch-media": try emitFetchedMedia(args: args)
         case "check-app-update": try emitAppUpdateCheck(args: args)
+        case "stage-app-update": try emitStageAppUpdate(args: args)
+        case "apply-app-update": try emitApplyAppUpdate(args: args)
+        case "complete-app-update": try emitCompleteAppUpdate(args: args)
         case "run-server": try runServer()
         default: throw HelperError.message("unknown command: \(command)")
         }
@@ -5636,7 +5647,16 @@ final class COSControlHelper {
         details["latestVersion"] = latestVersion
         details["latestBuild"] = latestBuild
         details["url"] = url
+        if let sha = stable["sha256"] as? String { details["sha256"] = sha }
         if let notes = stable["notes"] as? String { details["notes"] = notes }
+        if let minMacOS = stable["minMacOS"] as? String {
+            details["minMacOS"] = minMacOS
+            if !Self.macOSAtLeast(minMacOS) {
+                details["reason"] = "requiresMacOS"
+                emit(ok: true, message: "This update needs macOS \(minMacOS)", details: details)
+                return
+            }
+        }
 
         if Self.appUpdateIsNewer(latestBuild: latestBuild, currentBuild: currentBuild) {
             details["updateAvailable"] = true
@@ -5646,6 +5666,378 @@ final class COSControlHelper {
             details["reason"] = "upToDate"
             emit(ok: true, message: "COS Control is up to date", details: details)
         }
+    }
+
+    static func macOSAtLeast(_ min: String) -> Bool {
+        let parts = min.split(separator: ".").compactMap { Int($0) }
+        let major = parts.indices.contains(0) ? parts[0] : 0
+        let minor = parts.indices.contains(1) ? parts[1] : 0
+        let patch = parts.indices.contains(2) ? parts[2] : 0
+        let current = ProcessInfo.processInfo.operatingSystemVersion
+        if current.majorVersion != major { return current.majorVersion > major }
+        if current.minorVersion != minor { return current.minorVersion > minor }
+        return current.patchVersion >= patch
+    }
+
+    private func ensureAppUpdateDirectories() throws {
+        try ensurePrivateDirectory(support)
+        try ensurePrivateDirectory(updatesRoot)
+        try ensurePrivateDirectory(stableBin)
+    }
+
+    private func appUpdatePending() -> [String: Any]? {
+        guard let data = try? Data(contentsOf: updatesPendingURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return json
+    }
+
+    private func writeAppUpdateJSON(_ url: URL, _ object: [String: Any]) throws {
+        try ensureAppUpdateDirectories()
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .prettyPrinted])
+        try data.write(to: url, options: .atomic)
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    /// Read-only. Never drains, never takes the lifecycle lock, never talks to launchd.
+    /// Isolated tests do not probe the live glasses server — a recording on this
+    /// machine must not fail the suite, and the suite must not mutate production.
+    private func appUpdateWorkBlockers() -> [String] {
+        if ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] != nil {
+            return []
+        }
+        guard let response = request("/api/health", timeout: 2), response.status == 200, let body = response.body else {
+            return []
+        }
+        var blockers: [String] = []
+        let lifecycle = body["lifecycle"] as? [String: Any] ?? [:]
+        let activeByKind = lifecycle["activeByKind"] as? [String: Any] ?? [:]
+        for (kind, value) in activeByKind.sorted(by: { $0.key < $1.key }) {
+            if let count = value as? Int, count > 0 { blockers.append("\(kind)=\(count)") }
+        }
+        if let video = body["videoUploads"] as? [String: Any], video["blocksRestart"] as? Bool == true {
+            blockers.append("video upload")
+        }
+        return blockers
+    }
+
+    private func downloadUpdate(from url: URL, to destination: URL, timeout: Int = 120) throws {
+        try? fm.removeItem(at: destination)
+        if url.isFileURL {
+            try fm.copyItem(at: url, to: destination)
+            return
+        }
+        guard url.scheme?.lowercased() == "https" else {
+            throw HelperError.message("Updates must be downloaded over HTTPS.")
+        }
+        progress("Downloading COS Control update…")
+        var request = URLRequest(url: url, timeoutInterval: TimeInterval(timeout))
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let done = DispatchSemaphore(value: 0)
+        let box = HTTPResultBox()
+        let task = URLSession.shared.downloadTask(with: request) { temp, response, _ in
+            if let temp {
+                try? FileManager.default.copyItem(at: temp, to: destination)
+            }
+            box.store(data: nil, response: response)
+            done.signal()
+        }
+        task.resume()
+        if done.wait(timeout: .now() + .seconds(timeout + 5)) != .success {
+            task.cancel()
+            throw HelperError.message("Download timed out.")
+        }
+        let (_, response) = box.load()
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              fm.fileExists(atPath: destination.path) else {
+            throw HelperError.message("Could not download the update.")
+        }
+    }
+
+    private func verifyStagedControlApp(_ app: URL, version: String, build: Int) throws {
+        let verify = try execute("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path], timeout: 30)
+        guard verify.code == 0 else {
+            throw HelperError.message("The downloaded app failed its signature check.")
+        }
+        let info = app.appendingPathComponent("Contents/Info.plist")
+        guard let plist = NSDictionary(contentsOf: info) else {
+            throw HelperError.message("The downloaded app is missing Info.plist.")
+        }
+        guard plist["CFBundleIdentifier"] as? String == "com.gotcos.control" else {
+            throw HelperError.message("The downloaded app is not COS Control.")
+        }
+        guard plist["CFBundleShortVersionString"] as? String == version else {
+            throw HelperError.message("The downloaded app version does not match the update listing.")
+        }
+        let listedBuild = plist["CFBundleVersion"] as? String
+        guard listedBuild == String(build) else {
+            throw HelperError.message("The downloaded app build does not match the update listing.")
+        }
+        _ = try execute("/usr/bin/xattr", ["-cr", app.path], timeout: 20)
+    }
+
+    private func findStagedControlApp(in extract: URL) throws -> URL {
+        let direct = extract.appendingPathComponent("COS Control.app")
+        if fm.fileExists(atPath: direct.path) { return direct }
+        guard let walker = fm.enumerator(at: extract, includingPropertiesForKeys: [.isDirectoryKey]) else {
+            throw HelperError.message("The downloaded update did not contain COS Control.")
+        }
+        for case let item as URL in walker {
+            if item.lastPathComponent == "COS Control.app" { return item }
+        }
+        throw HelperError.message("The downloaded update did not contain COS Control.")
+    }
+
+    private func emitStageAppUpdate(args: [String]) throws {
+        let currentVersion = option("--current-version", in: args) ?? ""
+        let currentBuild = Int(option("--current-build", in: args) ?? "") ?? 0
+        let source = option("--appcast-url", in: args)
+            ?? ProcessInfo.processInfo.environment["COS_APPCAST_URL"]
+            ?? Self.defaultAppcastURL
+        let liveBundle = option("--live-bundle", in: args)
+
+        var details: [String: Any] = [
+            "currentVersion": currentVersion,
+            "currentBuild": currentBuild,
+            "source": source,
+        ]
+
+        let blockers = appUpdateWorkBlockers()
+        if !blockers.isEmpty {
+            details["reason"] = "busy"
+            details["blockers"] = blockers
+            throw HelperError.message("Finish this first, then install: \(blockers.joined(separator: ", ")). The glasses server was not touched.")
+        }
+
+        guard let appcast = fetchAppcast(source) else {
+            details["reason"] = "unreachable"
+            emit(ok: true, message: "Update check unavailable", details: details)
+            return
+        }
+        if let kill = appcast["killSwitch"] as? [String: Any], kill["disableAutoUpdate"] as? Bool == true {
+            details["reason"] = "killSwitch"
+            emit(ok: true, message: "Update checks paused by publisher", details: details)
+            return
+        }
+        guard let channels = appcast["channels"] as? [String: Any],
+              let stable = channels["stable"] as? [String: Any],
+              let latestVersion = stable["version"] as? String,
+              let latestBuild = stable["build"] as? Int,
+              let urlString = stable["url"] as? String,
+              let expectedSHA = (stable["sha256"] as? String)?.lowercased(),
+              expectedSHA.count == 64,
+              expectedSHA.allSatisfy({ "0123456789abcdef".contains($0) }),
+              let url = URL(string: urlString) else {
+            details["reason"] = "malformed"
+            emit(ok: true, message: "Update listing is missing a SHA-256. Refusing to install.", details: details)
+            return
+        }
+        details["latestVersion"] = latestVersion
+        details["latestBuild"] = latestBuild
+        details["url"] = urlString
+        details["sha256"] = expectedSHA
+
+        guard Self.appUpdateIsNewer(latestBuild: latestBuild, currentBuild: currentBuild) else {
+            details["reason"] = "upToDate"
+            emit(ok: true, message: "COS Control is up to date", details: details)
+            return
+        }
+        if let minMacOS = stable["minMacOS"] as? String, !Self.macOSAtLeast(minMacOS) {
+            details["reason"] = "requiresMacOS"
+            throw HelperError.message("This update needs macOS \(minMacOS).")
+        }
+
+        try ensureAppUpdateDirectories()
+        let stageDir = updatesRoot.appendingPathComponent(String(latestBuild), isDirectory: true)
+        if fm.fileExists(atPath: stageDir.path) { try fm.removeItem(at: stageDir) }
+        try ensurePrivateDirectory(stageDir)
+        let zipURL = stageDir.appendingPathComponent("download.zip")
+        try downloadUpdate(from: url, to: zipURL)
+        progress("Checking SHA-256…")
+        let actualSHA = try sha256(zipURL).lowercased()
+        guard actualSHA == expectedSHA else {
+            try? fm.removeItem(at: stageDir)
+            details["reason"] = "shaMismatch"
+            details["actualSha256"] = actualSHA
+            throw HelperError.message("The download did not match the published SHA-256. The file was discarded.")
+        }
+        progress("Unpacking update…")
+        let extractDir = stageDir.appendingPathComponent("extract", isDirectory: true)
+        try ensurePrivateDirectory(extractDir)
+        let unzip = try execute("/usr/bin/ditto", ["-x", "-k", zipURL.path, extractDir.path], timeout: 60)
+        guard unzip.code == 0 else {
+            try? fm.removeItem(at: stageDir)
+            throw HelperError.message("Could not unpack the update.")
+        }
+        let stagedApp = try findStagedControlApp(in: extractDir)
+        try verifyStagedControlApp(stagedApp, version: latestVersion, build: latestBuild)
+        try installStableHelper()
+
+        var pending: [String: Any] = [
+            "version": latestVersion,
+            "build": latestBuild,
+            "sha256": expectedSHA,
+            "stagedAppPath": stagedApp.path,
+            "zipPath": zipURL.path,
+            "stagedAt": ISO8601DateFormatter().string(from: Date()),
+        ]
+        if let liveBundle { pending["liveBundlePath"] = liveBundle }
+        try writeAppUpdateJSON(updatesPendingURL, pending)
+        details["reason"] = "staged"
+        details["stagedAppPath"] = stagedApp.path
+        emit(ok: true, message: "Update \(latestVersion) verified and staged", details: details)
+    }
+
+    private func bundleHasRunningProcess(_ bundle: URL) -> Bool {
+        let exe = bundle.appendingPathComponent("Contents/MacOS/COS Control")
+        guard let result = try? execute("/usr/sbin/lsof", ["-t", exe.path], timeout: 5) else { return false }
+        return !result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func spawnDetached(executable: URL, arguments: [String]) throws -> pid_t {
+        try ensurePrivateDirectory(logs)
+        if !fm.fileExists(atPath: helperLog.path) {
+            fm.createFile(atPath: helperLog.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        }
+        var pid: pid_t = 0
+        let argvStrings = [executable.path] + arguments
+        var argv = argvStrings.map { strdup($0) }
+        argv.append(nil)
+        defer { for pointer in argv where pointer != nil { free(pointer) } }
+
+        var fileActions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&fileActions)
+        defer { posix_spawn_file_actions_destroy(&fileActions) }
+        posix_spawn_file_actions_addopen(&fileActions, STDIN_FILENO, "/dev/null", O_RDONLY, 0)
+        posix_spawn_file_actions_addopen(&fileActions, STDOUT_FILENO, helperLog.path, O_WRONLY | O_CREAT | O_APPEND, 0o600)
+        posix_spawn_file_actions_addopen(&fileActions, STDERR_FILENO, helperLog.path, O_WRONLY | O_CREAT | O_APPEND, 0o600)
+
+        var attr: posix_spawnattr_t?
+        posix_spawnattr_init(&attr)
+        defer { posix_spawnattr_destroy(&attr) }
+        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP))
+        posix_spawnattr_setpgroup(&attr, 0)
+
+        let rc = posix_spawn(&pid, executable.path, &fileActions, &attr, argv, environ)
+        guard rc == 0 else { throw HelperError.message("Could not start the updater.") }
+        return pid
+    }
+
+    private func emitApplyAppUpdate(args: [String]) throws {
+        guard let livePath = option("--live-bundle", in: args), !livePath.isEmpty else {
+            throw HelperError.message("apply-app-update requires --live-bundle")
+        }
+        let live = URL(fileURLWithPath: livePath).standardizedFileURL
+        guard live.pathExtension == "app" else {
+            throw HelperError.message("live bundle must be a .app")
+        }
+
+        if args.contains("--swap") {
+            try swapStagedApp(live: live)
+            return
+        }
+        guard args.contains("--detach") else {
+            throw HelperError.message("apply-app-update requires --detach")
+        }
+
+        try ensureAppUpdateDirectories()
+        try installStableHelper()
+        let selfPath = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.path
+        let applier = fm.isExecutableFile(atPath: stableHelper.path) ? stableHelper : URL(fileURLWithPath: selfPath)
+        var childArgs = ["apply-app-update", "--swap", "--live-bundle", live.path]
+        if let version = option("--current-version", in: args) {
+            childArgs += ["--current-version", version]
+        }
+        if let build = option("--current-build", in: args) {
+            childArgs += ["--current-build", build]
+        }
+        let pid = try spawnDetached(executable: applier, arguments: childArgs)
+        emit(ok: true, message: "detached", details: ["pid": Int(pid), "liveBundle": live.path])
+    }
+
+    private func swapStagedApp(live: URL) throws {
+        guard let pending = appUpdatePending(),
+              let stagedPath = pending["stagedAppPath"] as? String,
+              let version = pending["version"] as? String,
+              let build = Self.jsonInt(pending["build"]) else {
+            throw HelperError.message("No staged update to apply.")
+        }
+        let staged = URL(fileURLWithPath: stagedPath)
+        guard fm.fileExists(atPath: staged.path) else {
+            throw HelperError.message("The staged update is missing.")
+        }
+        try verifyStagedControlApp(staged, version: version, build: build)
+
+        let blockers = appUpdateWorkBlockers()
+        if !blockers.isEmpty {
+            try writeAppUpdateJSON(updatesFailureURL, [
+                "reason": "busy",
+                "blockers": blockers,
+                "at": ISO8601DateFormatter().string(from: Date()),
+            ])
+            if ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] == nil {
+                _ = try? execute("/usr/bin/open", [live.path], timeout: 10)
+            }
+            throw HelperError.message("Finish this first, then install: \(blockers.joined(separator: ", ")).")
+        }
+
+        let deadline = Date().addingTimeInterval(60)
+        while bundleHasRunningProcess(live), Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        if bundleHasRunningProcess(live) {
+            try writeAppUpdateJSON(updatesFailureURL, [
+                "reason": "quitTimeout",
+                "at": ISO8601DateFormatter().string(from: Date()),
+            ])
+            throw HelperError.message("COS Control did not quit in time. The update was not installed.")
+        }
+
+        try ensurePrivateDirectory(updatesPrevious)
+        let previousApp = updatesPrevious.appendingPathComponent("COS Control.app")
+        if fm.fileExists(atPath: live.path) {
+            if fm.fileExists(atPath: previousApp.path) { try fm.removeItem(at: previousApp) }
+            try fm.copyItem(at: live, to: previousApp)
+            _ = try fm.replaceItemAt(live, withItemAt: staged)
+        } else {
+            try fm.copyItem(at: staged, to: live)
+        }
+        _ = try execute("/usr/bin/xattr", ["-cr", live.path], timeout: 20)
+        try writeAppUpdateJSON(updatesSuccessURL, [
+            "version": version,
+            "build": build,
+            "appliedAt": ISO8601DateFormatter().string(from: Date()),
+        ])
+        if ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] == nil {
+            _ = try? execute("/usr/bin/open", [live.path], timeout: 10)
+        }
+        emit(ok: true, message: "Installed COS Control \(version)", details: [
+            "version": version,
+            "build": build,
+            "liveBundle": live.path,
+        ])
+    }
+
+    private func emitCompleteAppUpdate(args: [String]) throws {
+        let currentBuild = Int(option("--current-build", in: args) ?? "") ?? 0
+        guard let pending = appUpdatePending(),
+              let pendingBuild = Self.jsonInt(pending["build"]) else {
+            emit(ok: true, message: "No pending Control update", details: ["reason": "none"])
+            return
+        }
+        guard pendingBuild == currentBuild else {
+            emit(ok: true, message: "Pending update is for a different build", details: [
+                "reason": "buildMismatch",
+                "pendingBuild": pendingBuild,
+                "currentBuild": currentBuild,
+            ])
+            return
+        }
+        try installStableHelper()
+        try? fm.removeItem(at: updatesPendingURL)
+        emit(ok: true, message: "Control update complete", details: [
+            "reason": "complete",
+            "build": currentBuild,
+        ])
     }
 
     /// Read-only Memory and Threads browsing on the desktop.
