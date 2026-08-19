@@ -1429,8 +1429,20 @@ final class ControllerModel: ObservableObject {
     /// `confirm: false` is the PREVIEW call: the server fails closed and answers 400
     /// with what it would reopen. That is the gate, not an error. Only the second
     /// call carries `--confirm`, so a release is always two deliberate actions.
-    func releaseFence(confirm: Bool) async {
-        guard let record = fencePendingRelease else { return }
+    /// Release a fence.
+    ///
+    /// THE RECORD IS A PARAMETER, NOT A READ OF `fencePendingRelease`.
+    ///
+    /// The confirmation dialog's `isPresented` setter calls `cancelReleaseFence()` on
+    /// dismissal, which nils `fencePendingRelease`, and the Release button defers its
+    /// work into a `Task`. If SwiftUI runs the dismissal setter before the task body --
+    /// an ordering this code must not depend on and cannot verify -- a `guard let
+    /// record = fencePendingRelease` would return SILENTLY: no request, no error, no
+    /// note, and a Release button that does nothing. That is the 0.5.17 shape.
+    ///
+    /// Taking the record as an argument, captured synchronously in the button closure,
+    /// removes the dependency on the ordering rather than betting on it.
+    func releaseFence(_ record: FenceRecord, confirm: Bool) async {
         fenceReleasing = true
         defer { fenceReleasing = false }
         do {

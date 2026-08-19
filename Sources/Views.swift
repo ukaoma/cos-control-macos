@@ -189,7 +189,13 @@ struct ControlPanel: View {
             ),
             titleVisibility: .visible
         ) {
-            Button("Release", role: .destructive) { Task { await model.releaseFence(confirm: true) } }
+            // CAPTURED SYNCHRONOUSLY, before the Task. Dismissing this dialog nils
+            // `fencePendingRelease`, so reading it inside the deferred task races the
+            // dismissal and can silently do nothing.
+            Button("Release", role: .destructive) {
+                guard let pending = model.fencePendingRelease else { return }
+                Task { await model.releaseFence(pending, confirm: true) }
+            }
             Button("Cancel", role: .cancel) { model.cancelReleaseFence() }
         } message: {
             Text(model.fencePendingRelease?.explanation ?? "")

@@ -582,6 +582,32 @@ PY
 # The ambiguity set must union BOTH surfaces; the row is shared by the list and search.
 /usr/bin/grep -q 'visibleSessions + model.visibleSessionSearchHits' "$ROOT/Sources/ActivityWindow.swift"
 
+# --- 0.5.47 the release must not race its own dialog --------------------------
+# Dismissing the confirmation nils `fencePendingRelease`, and the Release button
+# defers into a Task. Reading the record inside that task races the dismissal and
+# can return silently -- a button that does nothing, which is the 0.5.17 shape and
+# is invisible to every source grep. The record is therefore a PARAMETER, captured
+# synchronously in the closure.
+/usr/bin/python3 - "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/Views.swift" <<'PY'
+import re, sys
+model = open(sys.argv[1]).read()
+views = open(sys.argv[2]).read()
+
+assert re.search(r"func releaseFence\(_ record: FenceRecord, confirm: Bool\) async", model), \
+    "releaseFence must take the record as a parameter, not read fencePendingRelease"
+
+body = model[model.index("func releaseFence(_ record"):]
+body = body[:body.index("\n    func ", 10)]
+assert "guard let record = fencePendingRelease" not in body, \
+    "releaseFence re-reads fencePendingRelease -- it races the dialog dismissal"
+
+btn = re.search(r'Button\("Release", role: \.destructive\) \{(.{0,400}?)\n            \}', views, re.S)
+assert btn, "Release button not found"
+assert "model.fencePendingRelease" in btn.group(1), "button must capture the record before the Task"
+assert btn.group(1).index("fencePendingRelease") < btn.group(1).index("Task {"), \
+    "the capture must happen BEFORE the Task, or it races the dismissal"
+PY
+
 # --- 0.5.44 fenced threads ---------------------------------------------------
 # A fence shuts a native thread that may already hold an undelivered turn. Before
 # glasses-server 6.36.10 the only way to clear one was restarting the server. These

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.47 (build 85)
+- **The Release button on a fenced thread could silently do nothing.** Dismissing the
+  confirmation dialog nils `fencePendingRelease`, and the button deferred its work into
+  a `Task` that began `guard let record = fencePendingRelease else { return }`. If
+  SwiftUI ran the dismissal setter first — an ordering this code must not depend on and
+  cannot verify from source — the release returned with no request, no error and no
+  note. That is the 0.5.17 dead-button shape, and no source grep can see it.
+- The record is now a PARAMETER, captured synchronously in the button closure before the
+  `Task`, which removes the dependency on the ordering rather than betting on it. Two
+  mutations fail the suite: moving the capture back inside the `Task`, and re-reading the
+  published property in the model.
+- **Not verified on a real fence.** There has never been one on this machine
+  (`GET /api/agent-sessions/fences` returns empty), so this path has still never been
+  exercised end to end. The fix is correct under either ordering; that is the claim, not
+  that it was observed working.
+
 ## 0.5.46 (build 84)
 - **Forks were never missing — they were indistinguishable.** Miles: "I forked that COS
   glass server work, and now I can't see any of the forks. I do see the original running,
