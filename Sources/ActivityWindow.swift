@@ -479,7 +479,9 @@ struct ActivityWindow: View {
             VStack(alignment: .leading, spacing: 22) {
                 HStack(alignment: .center, spacing: 12) {
                     COSLockupView(height: 17)
-                        .foregroundStyle(COSPalette.ink)
+                        // NOT COSPalette.ink: that is a fixed dark, correct on the brand
+                        // tile and black-on-black on the espresso panel in dark mode.
+                        .foregroundStyle(.primary)
                     Spacer()
                     COSGotcosCaption(size: 12)
                 }
@@ -499,7 +501,13 @@ struct ActivityWindow: View {
                             activityHomeCard(item, index: index)
                         }
                         .buttonStyle(.plain)
-                        .onHover { hoveredSection = $0 ? item : (hoveredSection == item ? nil : hoveredSection) }
+                        // Plain and explicit. The earlier one-liner also cleared state for
+                        // a tile that was no longer hovered, which races the enter event of
+                        // the tile you just moved onto.
+                        .onHover { inside in
+                            if inside { hoveredSection = item }
+                            else if hoveredSection == item { hoveredSection = nil }
+                        }
                     }
                 }
                 .onAppear { painted = true }
@@ -544,7 +552,7 @@ struct ActivityWindow: View {
 
                 Spacer(minLength: 8)
 
-                Text(homeCount(item))
+                Text(homeMetric(item).count)
                     .font(COSType.display(22, weight: .medium))
                     .monospacedDigit()
                     .foregroundStyle(hot ? COSPalette.gold : Color.primary)
@@ -561,7 +569,7 @@ struct ActivityWindow: View {
 
             Spacer(minLength: 0)
 
-            Text(homeUnit(item))
+            Text(homeMetric(item).unit)
                 .font(COSType.mono(9.5))
                 .tracking(hot ? 1.1 : 0.6)
                 .foregroundStyle(hot ? COSPalette.gold : Color.secondary.opacity(0.75))
@@ -571,6 +579,7 @@ struct ActivityWindow: View {
         .frame(maxWidth: .infinity, minHeight: 126, alignment: .topLeading)
         .padding(.horizontal, 16)
         .padding(.vertical, 15)
+        .background(hot ? COSPalette.gold.opacity(0.07) : Color.clear)
         .background(COSPalette.card)
         .background(alignment: .bottomTrailing) {
             HalftonePlate(section: item, strong: hot)
@@ -591,19 +600,38 @@ struct ActivityWindow: View {
         .contentShape(RoundedRectangle(cornerRadius: 14))
     }
 
-    /// The number alone. The old card buried it in a 10.5pt mono sentence at the bottom;
-    /// on this machine that sentence was the only place "5,522 memories" appeared.
-    private func homeCount(_ item: ActivitySection) -> String {
-        let stat = homeStat(item)
-        let digits = stat.prefix(while: { $0.isNumber || $0 == "," })
-        return digits.isEmpty ? "—" : String(digits)
-    }
-
-    /// What the number counts, in the app's own words.
-    private func homeUnit(_ item: ActivitySection) -> String {
-        let stat = homeStat(item)
-        let rest = stat.drop(while: { $0.isNumber || $0 == "," }).trimmingCharacters(in: .whitespaces)
-        return rest.isEmpty ? stat.uppercased() : rest.uppercased()
+    /// The count and what it counts, read from the model rather than scraped out of
+    /// `homeStat`'s prose.
+    ///
+    /// The first cut DID scrape it, taking leading digits and calling the remainder the
+    /// unit. That turned "50 of 5528" into `50 / OF 5528` and "30 shown · 11 active" into
+    /// `30 / SHOWN · 11 ACTIVE` — the smaller number promoted and the label left a
+    /// fragment. `status.memoryCount` and `status.threadCount` were there the whole time.
+    private func homeMetric(_ item: ActivitySection) -> (count: String, unit: String) {
+        func n(_ value: Int) -> String {
+            let f = NumberFormatter(); f.numberStyle = .decimal
+            return f.string(from: NSNumber(value: value)) ?? "\(value)"
+        }
+        switch item {
+        case .messages:
+            return model.recentMessages.isEmpty ? ("—", "REFRESH") : (n(model.recentMessages.count), "RECENT")
+        case .speakers:
+            return model.voiceDirectory.isEmpty ? ("—", "REFRESH") : (n(model.voiceDirectory.count), "ENROLLED")
+        case .meetings:
+            if !model.libraryMeetings.isEmpty {
+                return (n(model.libraryMeetings.count), MeetingMonth.title(model.libraryMonth).uppercased())
+            }
+            if model.status.meetingLibraryCount > 0 { return (n(model.status.meetingLibraryCount), "STORED") }
+            return ("—", "BY DAY")
+        case .memories:
+            guard model.status.memoryAvailable == true else { return ("—", "SETUP NEEDED") }
+            return (n(model.status.memoryCount), "STORED")
+        case .threads:
+            guard model.status.threadsAvailable == true else { return ("—", "SETUP NEEDED") }
+            return (n(model.status.threadCount), "TRACKED")
+        case .sessions:
+            return model.claudeSessions.isEmpty ? ("—", "REFRESH") : (n(model.claudeSessions.count), "ON DISK")
+        }
     }
 
     private func homeStat(_ item: ActivitySection) -> String {

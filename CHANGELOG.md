@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.54 (build 92)
+- **The plate was invisible.** `.drawingGroup()` rasterises into an offscreen buffer, which
+  does not survive being used as a mask, so the halftone composited to nothing. The stroke was
+  also 1.6pt under a 5pt dot screen, which punches through nearly the whole line and leaves
+  specks rather than an engraving. Stroke is 5pt now, and the resting opacity moved from .07
+  to .16 — the .07 was tuned against a mock where the dots covered the whole card, not a
+  single glyph.
+- **The COS lockup rendered black on the dark panel.** It used `COSPalette.ink`, which is a
+  fixed dark: correct on the brand tile it was written for, invisible on espresso. It takes an
+  adaptive style now.
+- **The counts were being scraped out of a sentence.** Leading digits became the number and
+  the remainder became the label, so "50 of 5528" showed **50** over `OF 5528` — the smaller
+  number promoted and the label left a fragment. Memories, Threads and Meetings now read
+  `status.memoryCount`, `status.threadCount` and the library count directly.
+- **Hover reads without depending on the plate.** A faint gold wash joins the border, lift and
+  cascade, and the hover handler no longer clears state for a tile you have already left,
+  which raced the enter event of the one you moved onto.
+
 ## 0.5.53 (build 91)
 - **The Activity gateway is rebuilt, and the accent bar is gone.** That bar was a 3pt pill
   overlaid on a 16pt-radius card — a CSS `border-left` moved into SwiftUI without reconciling

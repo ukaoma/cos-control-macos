@@ -611,7 +611,7 @@ win = open(sys.argv[1]).read()
 mot = open(sys.argv[2]).read()
 
 card = win[win.index("private func activityHomeCard"):]
-card = card[:card.index("\n    private func homeCount")]
+card = card[:card.index("\n    /// The count and what it counts")]
 
 # 1. No overlaid edge, in any form.
 assert ".overlay(alignment: .leading)" not in card, "the leading accent bar is back"
@@ -645,6 +645,26 @@ glyph = glyph[:glyph.index("\n    private func directoryNotice")]
 assert "SectionGlyph(section: item)" in glyph, "panes must use the same mark as the gateway"
 assert "Image(systemName: item.icon)" not in glyph, "the tinted pane chip is back"
 assert "large ? 42 : 32" in glyph, "pane glyph frame must stay 32/42pt — 8 call sites lay out around it"
+
+# 7. Two things that actually shipped broken in 0.5.53 and were visible on first launch.
+#    COSPalette.ink is a FIXED dark: correct on the brand tile, black-on-black on the
+#    espresso panel. The header lockup must take an adaptive style.
+header = win[win.index("private var activityHome"):]
+header = header[:header.index("\n    /// One gateway tile")]
+# Comments are stripped first: the fix's own explanation names COSPalette.ink, and an
+# assertion that reads prose about the code instead of the code always "finds" it.
+header_code = "\n".join(l for l in header.split("\n") if not l.strip().startswith("//"))
+assert "COSLockupView(height: 17)" in header_code, "header lockup missing"
+assert "COSPalette.ink" not in header_code, "the header lockup is fixed-dark again — invisible in dark mode"
+
+#    And the counts must come from the model, not from scraping homeStat's prose. Scraping
+#    turned "50 of 5528" into 50 / OF 5528: the smaller number promoted, the label a fragment.
+metric = win[win.index("private func homeMetric"):]
+metric = metric[:metric.index("\n    private func homeStat")]
+assert "status.memoryCount" in metric and "status.threadCount" in metric, \
+    "counts must read structured fields, not parse a sentence"
+assert "prefix(while:" not in metric and "drop(while:" not in metric, \
+    "the count is being scraped out of prose again"
 PY
 
 # The new source must be in BOTH build lists or it ships as a compile error, not a feature.

@@ -88,7 +88,6 @@ private struct DotScreen: View {
                 y += pitch
             }
         }
-        .drawingGroup()
     }
 }
 
@@ -103,14 +102,17 @@ struct HalftonePlate: View {
     var strong: Bool
 
     var body: some View {
+        // Stroke weight matters: at 1.6pt a 5pt dot pitch punches through almost the whole
+        // line and the plate reads as scattered specks. 5pt of ink under a 5pt screen is
+        // what makes it read as halftone rather than noise.
         SectionGlyph(section: section)
-            .stroke(style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+            .stroke(style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
             .foregroundStyle(COSPalette.plateInk)
             .mask(DotScreen())
             .mask(
-                RadialGradient(colors: [.black, .black.opacity(0.55), .clear],
-                               center: .init(x: 0.52, y: 0.48),
-                               startRadius: 0, endRadius: 78)
+                RadialGradient(colors: [.black, .black.opacity(0.6), .clear],
+                               center: .init(x: 0.5, y: 0.46),
+                               startRadius: 6, endRadius: 74)
             )
             .opacity(strong ? COSPalette.plateOpacityHover : COSPalette.plateOpacity)
             .scaleEffect(strong ? 1.05 : 1)
@@ -159,6 +161,6 @@ extension COSPalette {
             : NSColor(red: 0.17, green: 0.13, blue: 0.09, alpha: 1)   // #2b2117
     })
 
-    static let plateOpacity: Double = 0.07
-    static let plateOpacityHover: Double = 0.26
+    static let plateOpacity: Double = 0.16
+    static let plateOpacityHover: Double = 0.38
 }
