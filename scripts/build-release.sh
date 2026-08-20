@@ -30,6 +30,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/HelperClient.swift" \
   "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/COSBrand.swift" \
+  "$ROOT/Sources/COSMotion.swift" \
   "$ROOT/Sources/Views.swift" \
   "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \

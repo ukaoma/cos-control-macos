@@ -27,6 +27,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/HelperClient.swift" \
   "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/COSBrand.swift" \
+  "$ROOT/Sources/COSMotion.swift" \
   "$ROOT/Sources/Views.swift" \
   "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
@@ -600,6 +601,55 @@ PY
 # The ambiguity set must union BOTH surfaces; the row is shared by the list and search.
 /usr/bin/grep -q 'visibleSessions + model.visibleSessionSearchHits' "$ROOT/Sources/ActivityWindow.swift"
 
+# --- 0.5.50 the gateway paints itself in -------------------------------------
+# The accent bar was a 3pt pill overlaid on a 16pt-radius card: a CSS border-left moved
+# into SwiftUI without reconciling the geometry. It is gone, and the plate that replaced
+# it is a CHILD clipped by the tile, so the mismatch is impossible rather than avoided.
+/usr/bin/python3 - "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/COSMotion.swift" <<'PY'
+import re, sys
+win = open(sys.argv[1]).read()
+mot = open(sys.argv[2]).read()
+
+card = win[win.index("private func activityHomeCard"):]
+card = card[:card.index("\n    private func homeCount")]
+
+# 1. No overlaid edge, in any form.
+assert ".overlay(alignment: .leading)" not in card, "the leading accent bar is back"
+assert "item.tint" not in card, "the gateway must use one accent, not six hues"
+assert "clipShape(RoundedRectangle" in card, "the plate must be clipped to the card radius"
+
+# 2. The draw is real: trim is what makes sketch-then-ink possible at all.
+# Not just "a trim exists" — the trim must be DRIVEN by the paint state, or the glyph
+# renders complete and the draw never happens. A weaker assertion passed this mutation.
+assert re.search(r"trim\(from: 0, to: [^\n]*painted", card), \
+    "the glyph trim must be bound to `painted`, not a constant"
+assert "wipeIn(painted" in card, "headings take the wipe half of the paint-in"
+
+# 3. Stagger applies on the way IN only. A staggered exit reads as lag, not polish.
+assert "delay(hot ? 0.04 : 0)" in card, "hover delay must collapse to 0 on exit"
+
+# 4. Reduced motion lands the finished frame — a pre-state that hides content must never
+#    survive with animation disabled.
+assert "(reduceMotion || painted) ? 1 : 0" in card, "reduce-motion must not strand the tile hidden"
+assert "(reduceMotion || shown)" in mot, "reduce-motion must not strand a heading clipped to zero"
+
+# 5. One travelling indicator, not six that toggle.
+rail = win[win.index("private var lensRail"):]
+rail = rail[:rail.index("\n    private var ")]
+assert 'matchedGeometryEffect(id: "railIndicator"' in rail, "the rail indicator must travel"
+assert "section == item ? item.tint : Color.clear" not in rail, "per-tab tinted underline is back"
+
+# 6. The open panes speak the same vocabulary as the gateway.
+glyph = win[win.index("private func sectionGlyph"):]
+glyph = glyph[:glyph.index("\n    private func directoryNotice")]
+assert "SectionGlyph(section: item)" in glyph, "panes must use the same mark as the gateway"
+assert "Image(systemName: item.icon)" not in glyph, "the tinted pane chip is back"
+assert "large ? 42 : 32" in glyph, "pane glyph frame must stay 32/42pt — 8 call sites lay out around it"
+PY
+
+# The new source must be in BOTH build lists or it ships as a compile error, not a feature.
+/usr/bin/grep -q 'Sources/COSMotion.swift' "$ROOT/scripts/build-release.sh"
+
 # --- 0.5.49 the sessions list has ONE source ---------------------------------
 # Control rebuilt the list locally and that copy compared pins against an 8-character
 # id when they are stored as full UUIDs, and walked only ~/.claude/projects so a
@@ -986,6 +1036,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/HelperClient.swift" \
   "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/COSBrand.swift" \
+  "$ROOT/Sources/COSMotion.swift" \
   "$ROOT/Sources/Views.swift" \
   "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \

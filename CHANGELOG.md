@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.53 (build 91)
+- **The Activity gateway is rebuilt, and the accent bar is gone.** That bar was a 3pt pill
+  overlaid on a 16pt-radius card — a CSS `border-left` moved into SwiftUI without reconciling
+  the geometry, so the card curved away and the bar stayed straight. Nothing sits on the edge
+  now. Each tile carries its section's own mark as a ghosted, dot-screened plate, and the plate
+  is a child clipped by the tile, so it follows the radius by construction rather than by care.
+- **Six ad-hoc hues became one accent.** Gold marks hover and selection; nothing else on the
+  gateway is colored. Semantic color inside the panes — provider, speaker, review state — is
+  untouched, because there it carries information.
+- **Marks paint themselves in, the way the gotcos lockup does.** Each glyph draws its outline
+  on, each heading wipes in left to right, cascading 45ms per tile. Hover resolves a tile's
+  layers in sequence rather than together, and the delay applies on the way in only, since a
+  staggered exit reads as lag. Reduce Motion lands the finished frame rather than a half-drawn
+  one — the pre-states here hide content, so leaving them stranded would blank the headings.
+- **The tab indicator travels instead of blinking.** One gold underline slides between tabs
+  rather than six colored ones toggling.
+- **Three columns, two rows.** All six views sit above the fold in 266pt instead of 454pt.
+- **Open panes match.** The tinted chip in pane headers and rows is now the same stroked mark
+  as the gateway and the rail, at unchanged 32/42pt frames, so a pane no longer presents a
+  second vocabulary for the same six things.
+
 ## 0.5.52 (build 90)
 - **Activity is the first thing in the menu bar.** It sat below Restart / Stop /
   Update Server, so the main reason to open Control was the fourth block. It is

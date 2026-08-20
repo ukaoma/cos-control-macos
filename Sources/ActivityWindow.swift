@@ -150,6 +150,12 @@ struct ActivityWindow: View {
     @State private var selectedLibraryRecordID: String?
     @State private var selectedSessionID: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Drives the gateway paint-in. Flips once on appear; every tile reads it with its
+    /// own delay, which is how `anime.stagger` translates into SwiftUI.
+    @State private var painted = false
+    @State private var hoveredSection: ActivitySection?
+    /// One indicator that travels between tabs instead of six that blink.
+    @Namespace private var railIndicator
 
     private var selectedTurn: GlassesTurn? {
         guard let selectedTurnID else { return nil }
@@ -366,18 +372,30 @@ struct ActivityWindow: View {
         HStack(spacing: 6) {
             ForEach(Array(ActivitySection.allCases.enumerated()), id: \.element.id) { index, item in
                 Button {
-                    select(item)
+                    if reduceMotion { select(item) }
+                    else { withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) { select(item) } }
                 } label: {
                     VStack(spacing: 7) {
                         HStack(spacing: 7) {
-                            Image(systemName: item.icon)
+                            SectionGlyph(section: item)
+                                .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                                .frame(width: 13, height: 13)
                             Text(item.title)
                         }
                         .font(.system(size: 11.5, weight: section == item ? .semibold : .medium))
                         .foregroundStyle(section == item ? .primary : .secondary)
-                        Capsule()
-                            .fill(section == item ? item.tint : Color.clear)
-                            .frame(height: 3)
+                        // The indicator is ONE view that moves between tabs, not six that
+                        // toggle. `matchedGeometryEffect` interpolates its frame across the
+                        // change, so switching reads as travel rather than a hard cut.
+                        ZStack {
+                            Capsule().fill(Color.clear).frame(height: 3)
+                            if section == item {
+                                Capsule()
+                                    .fill(COSPalette.gold)
+                                    .frame(height: 2.5)
+                                    .matchedGeometryEffect(id: "railIndicator", in: railIndicator)
+                            }
+                        }
                     }
                     .padding(.horizontal, 10)
                     .padding(.top, 10)
@@ -473,14 +491,18 @@ struct ActivityWindow: View {
                         .foregroundStyle(.secondary)
                 }
 
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible())], spacing: 14) {
-                    ForEach(ActivitySection.allCases) { item in
+                // Three columns, two rows: all six stay above the fold. Two columns cost
+                // three rows for the same content, which is a row of scroll on a short window.
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 3), spacing: 14) {
+                    ForEach(Array(ActivitySection.allCases.enumerated()), id: \.element.id) { index, item in
                         Button { select(item) } label: {
-                            activityHomeCard(item)
+                            activityHomeCard(item, index: index)
                         }
                         .buttonStyle(.plain)
+                        .onHover { hoveredSection = $0 ? item : (hoveredSection == item ? nil : hoveredSection) }
                     }
                 }
+                .onAppear { painted = true }
             }
             .padding(28)
             .frame(maxWidth: 900, alignment: .leading)
@@ -488,45 +510,100 @@ struct ActivityWindow: View {
         }
     }
 
-    private func activityHomeCard(_ item: ActivitySection) -> some View {
-        VStack(alignment: .leading, spacing: 17) {
-            HStack {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(item.tint.opacity(0.13))
-                    Image(systemName: item.icon)
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(item.tint)
-                }
-                .frame(width: 42, height: 42)
-                Spacer()
-                Image(systemName: "arrow.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(item.tint)
-            }
-            VStack(alignment: .leading, spacing: 5) {
+    /// One gateway tile.
+    ///
+    /// The accent bar this replaced was a `RoundedRectangle(cornerRadius: 2)` overlaid on a
+    /// 16pt-radius card: a CSS `border-left` moved into SwiftUI without reconciling the
+    /// geometry, so the card curved away and the bar stayed straight. Nothing sits on the
+    /// edge now. The plate is a CHILD, clipped by the tile's own shape, so it cannot
+    /// disagree with the radius by construction rather than by care.
+    private func activityHomeCard(_ item: ActivitySection, index: Int) -> some View {
+        let hot = hoveredSection == item
+        // anime.stagger(45) is just an index-scaled delay.
+        let step = Double(index) * 0.045
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                SectionGlyph(section: item)
+                    .trim(from: 0, to: (reduceMotion || painted) ? 1 : 0)
+                    .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                    .foregroundStyle(hot ? COSPalette.gold : Color.secondary)
+                    .frame(width: 17, height: 17)
+                    .animation(reduceMotion ? nil
+                               : .timingCurve(0.42, 0, 0.22, 1, duration: 0.60).delay(step + 0.14),
+                               value: painted)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.18).delay(hot ? 0.04 : 0),
+                               value: hot)
+
                 Text(item.title)
-                    .font(COSType.body(16, weight: .semibold))
-                Text(item.summary)
-                    .font(COSType.body(11.5))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .font(COSType.body(14.5, weight: .semibold))
+                    .foregroundStyle(hot ? COSPalette.gold : Color.primary)
+                    .wipeIn(painted, delay: step + 0.33, reduceMotion: reduceMotion)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.18).delay(hot ? 0.07 : 0),
+                               value: hot)
+
+                Spacer(minLength: 8)
+
+                Text(homeCount(item))
+                    .font(COSType.display(22, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(hot ? COSPalette.gold : Color.primary)
+                    .lineLimit(1)
+                    .wipeIn(painted, delay: step + 0.47, reduceMotion: reduceMotion)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.18).delay(hot ? 0.10 : 0),
+                               value: hot)
             }
-            Text(homeStat(item))
-                .font(COSType.mono(10.5))
+
+            Text(item.summary)
+                .font(COSType.body(11.5))
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 0)
+
+            Text(homeUnit(item))
+                .font(COSType.mono(9.5))
+                .tracking(hot ? 1.1 : 0.6)
+                .foregroundStyle(hot ? COSPalette.gold : Color.secondary.opacity(0.75))
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.24).delay(hot ? 0.13 : 0),
+                           value: hot)
         }
-        .frame(maxWidth: .infinity, minHeight: 142, alignment: .topLeading)
-        .padding(18)
-        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 16))
-        .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(item.tint)
-                .frame(width: 3)
-                .padding(.vertical, 15)
+        .frame(maxWidth: .infinity, minHeight: 126, alignment: .topLeading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 15)
+        .background(COSPalette.card)
+        .background(alignment: .bottomTrailing) {
+            HalftonePlate(section: item, strong: hot)
+                .frame(width: 118, height: 118)
+                .offset(x: 26, y: 30)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.26), value: hot)
         }
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(COSPalette.line, lineWidth: 1))
-        .contentShape(RoundedRectangle(cornerRadius: 16))
+        .clipShape(RoundedRectangle(cornerRadius: 14))   // clips the plate to the radius
+        .overlay(RoundedRectangle(cornerRadius: 14)
+            .stroke(hot ? COSPalette.gold : COSPalette.line, lineWidth: 1))
+        .shadow(color: .black.opacity(hot ? 0.16 : 0), radius: hot ? 9 : 0, x: 0, y: hot ? 4 : 0)
+        .offset(y: hot ? -1 : 0)
+        .opacity((reduceMotion || painted) ? 1 : 0)
+        .offset(y: (reduceMotion || painted) ? 0 : 9)
+        .animation(reduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.88).delay(step),
+                   value: painted)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: hot)
+        .contentShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    /// The number alone. The old card buried it in a 10.5pt mono sentence at the bottom;
+    /// on this machine that sentence was the only place "5,522 memories" appeared.
+    private func homeCount(_ item: ActivitySection) -> String {
+        let stat = homeStat(item)
+        let digits = stat.prefix(while: { $0.isNumber || $0 == "," })
+        return digits.isEmpty ? "—" : String(digits)
+    }
+
+    /// What the number counts, in the app's own words.
+    private func homeUnit(_ item: ActivitySection) -> String {
+        let stat = homeStat(item)
+        let rest = stat.drop(while: { $0.isNumber || $0 == "," }).trimmingCharacters(in: .whitespaces)
+        return rest.isEmpty ? stat.uppercased() : rest.uppercased()
     }
 
     private func homeStat(_ item: ActivitySection) -> String {
@@ -1427,15 +1504,21 @@ struct ActivityWindow: View {
         .overlay(alignment: .bottom) { Divider() }
     }
 
+    /// The section mark inside an open pane.
+    ///
+    /// Same stroked `SectionGlyph` the gateway and the rail use, so a pane does not
+    /// present a different vocabulary for the same six things. The tinted chip it replaced
+    /// was six pastel squares carrying no information — the section is already named in
+    /// the breadcrumb and the rail beside it.
+    ///
+    /// Frame sizes are unchanged at 32/42pt: eight call sites lay out around this, and a
+    /// visual change should not become a layout change.
     private func sectionGlyph(_ item: ActivitySection, large: Bool = false) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: large ? 10 : 8)
-                .fill(item.tint.opacity(0.12))
-            Image(systemName: item.icon)
-                .font(.system(size: large ? 17 : 13, weight: .medium))
-                .foregroundStyle(item.tint)
-        }
-        .frame(width: large ? 42 : 32, height: large ? 42 : 32)
+        SectionGlyph(section: item)
+            .stroke(style: StrokeStyle(lineWidth: large ? 1.6 : 1.4, lineCap: .round, lineJoin: .round))
+            .foregroundStyle(.secondary)
+            .frame(width: large ? 21 : 16, height: large ? 21 : 16)
+            .frame(width: large ? 42 : 32, height: large ? 42 : 32)
     }
 
     private func directoryNotice(_ text: String, stale: Bool) -> some View {
