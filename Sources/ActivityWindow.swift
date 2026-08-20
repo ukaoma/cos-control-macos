@@ -277,7 +277,9 @@ struct ActivityWindow: View {
     private var navigationBar: some View {
         HStack(spacing: 10) {
             COSLockupView(height: 12)
-                .foregroundStyle(COSPalette.ink)
+                // Adaptive, like the header lockup. COSPalette.ink is a fixed dark meant
+                // for the brand tile; on the toolbar it renders black on espresso.
+                .foregroundStyle(.primary)
             Button { goHome() } label: {
                 Label("Home", systemImage: "house")
             }
@@ -583,8 +585,11 @@ struct ActivityWindow: View {
         .background(COSPalette.card)
         .background(alignment: .bottomTrailing) {
             HalftonePlate(section: item, strong: hot)
-                .frame(width: 118, height: 118)
-                .offset(x: 26, y: 30)
+                // Sized to bleed off the trailing corner rather than sit as a badge. A
+                // 118pt square inside a ~284x126 tile reads as a smudge in the corner;
+                // the field has to be big enough to fade across the card.
+                .frame(width: 210, height: 168)
+                .offset(x: 46, y: 46)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.26), value: hot)
         }
         .clipShape(RoundedRectangle(cornerRadius: 14))   // clips the plate to the radius

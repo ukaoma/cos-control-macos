@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.55 (build 93)
+- **The black lockup was in three places, and 0.5.54 fixed one.** The Activity header was
+  corrected; the window toolbar and the menu-bar panel header still used `COSPalette.ink`, a
+  fixed dark that renders black on espresso. All three are adaptive now, and the check sweeps
+  every source file rather than the one instance that happened to be on screen.
+- **The halftone is a field again, not a traced outline.** It was masking the dot screen to a
+  glyph stroke, so ink only landed along a thin line and the plate read as a few specks. It is
+  now an even field with the mark showing through as a density change, sized to bleed off the
+  trailing corner instead of sitting in it, at .22 resting and .52 on hover.
+
 ## 0.5.54 (build 92)
 - **The plate was invisible.** `.drawingGroup()` rasterises into an offscreen buffer, which
   does not survive being used as a mask, so the halftone composited to nothing. The stroke was

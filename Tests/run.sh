@@ -665,6 +665,19 @@ assert "status.memoryCount" in metric and "status.threadCount" in metric, \
     "counts must read structured fields, not parse a sentence"
 assert "prefix(while:" not in metric and "drop(while:" not in metric, \
     "the count is being scraped out of prose again"
+
+# 8. Every lockup must be adaptive. COSPalette.ink is a fixed dark and renders black on the
+#    espresso panel; three instances exist and fixing only the obvious one shipped twice.
+import glob, os
+root = os.path.dirname(os.path.dirname(sys.argv[1]))
+for f in glob.glob(os.path.join(root, "Sources", "*.swift")):
+    src = open(f).read()
+    code = "\n".join(l for l in src.split("\n") if not l.strip().startswith("//"))
+    for i, line in enumerate(code.split("\n")):
+        if "COSLockupView(" in line and "struct" not in line:
+            near = "\n".join(code.split("\n")[i:i+4])
+            assert "COSPalette.ink" not in near, \
+                f"fixed-dark lockup in {os.path.basename(f)} — invisible in dark mode"
 PY
 
 # The new source must be in BOTH build lists or it ships as a compile error, not a feature.

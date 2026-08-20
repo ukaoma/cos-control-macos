@@ -102,22 +102,32 @@ struct HalftonePlate: View {
     var strong: Bool
 
     var body: some View {
-        // Stroke weight matters: at 1.6pt a 5pt dot pitch punches through almost the whole
-        // line and the plate reads as scattered specks. 5pt of ink under a 5pt screen is
-        // what makes it read as halftone rather than noise.
-        SectionGlyph(section: section)
-            .stroke(style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
-            .foregroundStyle(COSPalette.plateInk)
-            .mask(DotScreen())
-            .mask(
-                RadialGradient(colors: [.black, .black.opacity(0.6), .clear],
-                               center: .init(x: 0.5, y: 0.46),
-                               startRadius: 6, endRadius: 74)
-            )
-            .opacity(strong ? COSPalette.plateOpacityHover : COSPalette.plateOpacity)
-            .scaleEffect(strong ? 1.05 : 1)
-            .rotationEffect(.degrees(strong ? -1.2 : 0))
-            .allowsHitTesting(false)
+        // A FIELD of dots, not dots confined to a glyph outline.
+        //
+        // The first cut masked the screen to a 5pt stroke, so the halftone only existed
+        // along a thin line and read as a few specks. The reference does the opposite: an
+        // even dot field faded by a gradient, with the mark showing THROUGH it as a
+        // density change rather than as the only place ink lands.
+        ZStack {
+            Rectangle().foregroundStyle(COSPalette.plateInk).opacity(0.55)
+            // The mark, doubling the ink where it falls, so the plate is not a flat wash.
+            SectionGlyph(section: section)
+                .stroke(style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
+                .foregroundStyle(COSPalette.plateInk)
+                .scaleEffect(0.82)
+        }
+        .mask(DotScreen())
+        .mask(
+            // Anchored toward the trailing edge and faded out well before the text, so the
+            // field bleeds off the corner instead of sitting behind the copy.
+            RadialGradient(colors: [.black, .black.opacity(0.72), .clear],
+                           center: .init(x: 0.66, y: 0.54),
+                           startRadius: 4, endRadius: 96)
+        )
+        .opacity(strong ? COSPalette.plateOpacityHover : COSPalette.plateOpacity)
+        .scaleEffect(strong ? 1.04 : 1)
+        .rotationEffect(.degrees(strong ? -1.2 : 0))
+        .allowsHitTesting(false)
     }
 }
 
@@ -161,6 +171,6 @@ extension COSPalette {
             : NSColor(red: 0.17, green: 0.13, blue: 0.09, alpha: 1)   // #2b2117
     })
 
-    static let plateOpacity: Double = 0.16
-    static let plateOpacityHover: Double = 0.38
+    static let plateOpacity: Double = 0.22
+    static let plateOpacityHover: Double = 0.52
 }

@@ -295,7 +295,9 @@ struct ControlPanel: View {
     private var header: some View {
         HStack(spacing: 10) {
             COSLockupView(height: 17)
-                .foregroundStyle(COSPalette.ink)
+                // Adaptive. This is the menu-bar panel header, not the brand tile, so the
+                // fixed dark rendered black on the dark panel.
+                .foregroundStyle(.primary)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Control").font(COSType.display(18, weight: .semibold))
                 Text("Your local glasses server").font(COSType.body(11)).foregroundStyle(.secondary)
