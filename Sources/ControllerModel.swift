@@ -74,6 +74,9 @@ final class ControllerModel: ObservableObject {
     // MARK: Speaker review (0.4.0)
     @Published var reviewableMeetings: [ReviewableMeeting] = []
     @Published var meetingsLoading = false
+    @Published var meetingsRefreshNeeded = false
+    @Published var pendingNewMeetingCount = 0
+    @Published var speakerListMemory = SpeakerListMemory.load()
     @Published var openReview: SpeakerReview?
     /// The readable meeting beside the speaker rows. nil when the server is
     /// older than 6.21.28 or the fetch failed — the review still renders.
@@ -888,6 +891,11 @@ final class ControllerModel: ObservableObject {
                 // Ask 30, show the first MEETING_LIST_VISIBLE survivors.
                 let response = try await helper.run(["meetings", "--limit", "30"])
             reviewableMeetings = (response.details["meetings"]?.array ?? []).compactMap(ReviewableMeeting.init)
+            persistSpeakerList { memory in
+                memory.seedIfEmpty(reviewableMeetings.map(\.sessionId))
+            }
+            meetingsRefreshNeeded = false
+            pendingNewMeetingCount = 0
             // A row without a sessionId is filtered out by the helper, because the
             // review is keyed on the session. Say so rather than showing an empty
             // list that looks like "no meetings".
@@ -901,6 +909,39 @@ final class ControllerModel: ObservableObject {
             reviewableMeetings = []
             reviewError = error.localizedDescription
         }
+    }
+
+    /// Quiet poll. Does not replace the list — that would shuffle while Miles
+    /// is working a meeting. Sets the Refresh cue when new sessionIds appear.
+    func peekReviewableMeetings() async {
+        guard !meetingsLoading else { return }
+        do {
+            let response = try await helper.run(["meetings", "--limit", "30"])
+            let ids = (response.details["meetings"]?.array ?? [])
+                .compactMap(ReviewableMeeting.init)
+                .map(\.sessionId)
+            let loaded = Set(reviewableMeetings.map(\.sessionId))
+            let incoming = ids.filter { !loaded.contains($0) }
+            pendingNewMeetingCount = incoming.count
+            meetingsRefreshNeeded = !incoming.isEmpty
+        } catch {
+            // A failed peek is not a list failure. Keep the last-good rows.
+        }
+    }
+
+    func isNewReviewableMeeting(_ sessionId: String) -> Bool {
+        speakerListMemory.isNew(sessionId)
+    }
+
+    func voiceTag(for meeting: ReviewableMeeting) -> MeetingVoiceTag? {
+        speakerListMemory.voiceTag(for: meeting)
+    }
+
+    private func persistSpeakerList(_ mutate: (inout SpeakerListMemory) -> Void) {
+        var next = speakerListMemory
+        mutate(&next)
+        speakerListMemory = next
+        next.save()
     }
 
     // MARK: Meeting library (Activity)
@@ -1717,6 +1758,7 @@ final class ControllerModel: ObservableObject {
     }
 
     func openSpeakerReview(sessionId: String) {
+        persistSpeakerList { $0.markOpened(sessionId) }
         speakerReviewTask?.cancel()
         stopPlayback()
         playbackNote = nil
@@ -1806,6 +1848,15 @@ final class ControllerModel: ObservableObject {
         // Audio kept playing after the panel closed, and a stale note followed the
         // user into the next meeting's rows.
         stopPlayback()
+        if let review = openReview {
+            persistSpeakerList {
+                $0.recordVisit(
+                    review.sessionId,
+                    voices: review.voices.count,
+                    unattributedVoices: review.voices.filter(\.isNameAssignment).count
+                )
+            }
+        }
         playbackNote = nil
         retainedAudioChunks = []
         audioRetentionDays = nil
@@ -1882,6 +1933,7 @@ final class ControllerModel: ObservableObject {
             return
         }
         let session = review.sessionId
+        let createsProfile = !voiceProfiles.contains { $0.name.caseInsensitiveCompare(to) == .orderedSame }
         mergeInFlight = true
         Task { [weak self] in
             guard let self else { return }
@@ -1893,7 +1945,7 @@ final class ControllerModel: ObservableObject {
                 let response = try await helper.run(args)
                 pendingCorrection = Self.correction(
                     from: from, to: to, scope: scope, response: response,
-                    isNameAssignment: isNameAssignment
+                    isNameAssignment: isNameAssignment, createsProfile: createsProfile
                 )
                 namingVoice = nil
                 reviewError = nil
@@ -1976,7 +2028,8 @@ final class ControllerModel: ObservableObject {
         to: String?,
         scope: CorrectionScope,
         response: HelperResponse,
-        isNameAssignment: Bool = false
+        isNameAssignment: Bool = false,
+        createsProfile: Bool = false
     ) -> PendingCorrection {
         let state = response.details["state"]?.string ?? ""
         let result = response.details["result"]?.object
@@ -2015,6 +2068,7 @@ final class ControllerModel: ObservableObject {
             forceable: pendingEarlier,
             proseStale: result?["proseStale"]?.bool ?? false,
             isNameAssignment: isNameAssignment,
+            createsProfile: createsProfile,
             wouldRetract: training?["wouldRetract"]?.int ?? 0,
             untraceable: training?["untraceable"]?.int ?? 0
         )
@@ -2076,14 +2130,29 @@ final class ControllerModel: ObservableObject {
                     // The card STAYS so the user can retry or cancel deliberately.
                     return
                 }
-                notice = correction.isDeattribution
-                    ? "Removed \(correction.from) from this meeting"
-                    : (correction.scope == .thisMeeting
-                        ? "\(correction.from) is now \(correction.to ?? "") in this meeting"
-                        : "Saved — \(correction.from) is now \(correction.to ?? "") everywhere")
+                let enrolment = response.details["result"]?.object?["enrolment"]?.object
+                let created = enrolment?["created"]?.bool ?? false
+                let enrolled = enrolment?["enrolled"]?.int ?? 0
+                let skipped = enrolment?["skipped"]?.string
+                if created, let to = correction.to, !to.isEmpty {
+                    notice = "\(to) added to voice profiles (\(enrolled) sample\(enrolled == 1 ? "" : "s"))"
+                } else if enrolled > 0, let to = correction.to {
+                    notice = "\(correction.from) is now \(to) in this meeting · \(enrolled) samples added"
+                } else if correction.isDeattribution {
+                    notice = "Removed \(correction.from) from this meeting"
+                } else if correction.scope == .thisMeeting {
+                    let reason = (skipped?.isEmpty == false) ? " · profile not updated (\(skipped!))" : ""
+                    notice = "\(correction.from) is now \(correction.to ?? "") in this meeting\(reason)"
+                } else {
+                    notice = "Saved — \(correction.from) is now \(correction.to ?? "") everywhere"
+                }
                 pendingCorrection = nil
                 correctionScope = .thisMeeting
                 await loadVoiceProfiles()
+                if created, let to = correction.to,
+                   !voiceProfiles.contains(where: { $0.name.caseInsensitiveCompare(to) == .orderedSame }) {
+                    voiceProfiles.append(VoiceProfileOption(name: to, embeddings: enrolled))
+                }
                 // The review is now stale — a label may have changed or gone, so
                 // re-read it rather than leave a row describing the old state.
                 await fetchReview(sessionId: session)

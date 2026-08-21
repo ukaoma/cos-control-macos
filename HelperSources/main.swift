@@ -7701,7 +7701,7 @@ final class COSControlHelper {
     /// Returns nil for a row with no sessionId: the speaker review is keyed on
     /// the session, so such a row would offer an action that does nothing.
     static func meetingRowFields(_ row: [String: Any]) -> [String: Any] {
-        [
+        var fields: [String: Any] = [
             "sessionId": row["sessionId"] as? String ?? "",
             "title": row["title"] as? String ?? "Untitled meeting",
             "date": row["date"] as? String ?? "",
@@ -7721,6 +7721,15 @@ final class COSControlHelper {
             "actionCount": Self.meetingCount(row["actionCount"]),
             "attendeeCount": Self.meetingCount(row["attendeeCount"]),
         ]
+        if let review = row["voiceReview"] as? [String: Any] {
+            fields["voiceReview"] = [
+                "voices": Self.meetingCount(review["voices"]),
+                "unattributedVoices": Self.meetingCount(review["unattributedVoices"]),
+                "namedVoices": Self.meetingCount(review["namedVoices"]),
+                "humanTouched": review["humanTouched"] as? Bool ?? false,
+            ]
+        }
+        return fields
     }
 
     static func meetingRowProjection(_ row: [String: Any]) -> [String: Any]? {
@@ -9867,6 +9876,16 @@ final class COSControlHelper {
         try expect(projected?["source"] as? String == "G2 Glasses", "projection carries source")
         try expect(Self.meetingRowProjection(["title": "no session"]) == nil,
                    "projection drops a row with no sessionId")
+        var taggedRow = fullRow
+        taggedRow["voiceReview"] = [
+            "voices": 4, "unattributedVoices": 2, "namedVoices": 2, "humanTouched": true,
+        ]
+        let tagged = Self.meetingRowProjection(taggedRow)
+        let review = tagged?["voiceReview"] as? [String: Any]
+        try expect(review?["unattributedVoices"] as? Int == 2, "projection carries unnamed count")
+        try expect(review?["humanTouched"] as? Bool == true, "projection carries humanTouched")
+        try expect(Self.meetingRowProjection(fullRow)?["voiceReview"] == nil,
+                   "older servers omit voiceReview rather than sending zeros")
         let libraryKept = Self.libraryMeetingProjection([
             "title": "Granola sync", "date": "2026-08-12", "domain": "quilt",
             "month": "2026-08", "filename": "2026-08-12_Granola_sync.md",

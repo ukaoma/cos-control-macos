@@ -107,8 +107,8 @@ enum ActivitySection: String, CaseIterable, Identifiable {
 
 
 private enum SpeakerSubview: String, CaseIterable, Identifiable {
-    case voices
     case meetings
+    case voices
 
     var id: String { rawValue }
     var title: String { self == .voices ? "Voices" : "Meetings to review" }
@@ -143,7 +143,7 @@ struct ActivityWindow: View {
     @State private var selectedSpeakerSessionID: String?
     @State private var selectedVoiceName: String?
     @State private var voiceParentName: String?
-    @State private var speakerSubview: SpeakerSubview = .voices
+    @State private var speakerSubview: SpeakerSubview = .meetings
     @State private var voiceSearch = ""
     @State private var voiceSort: VoiceDirectorySort = .attention
     @State private var selectedContextID: String?
@@ -253,6 +253,7 @@ struct ActivityWindow: View {
         .font(COSType.body(13))
         .background(COSPalette.panel)
         .task { await loadOverviewIfNeeded() }
+        .task(id: speakerPeekKey) { await peekMeetingsIfNeeded() }
         .alert("COS Control", isPresented: Binding(
             get: { model.error != nil },
             set: { if !$0 { model.error = nil } }
@@ -440,6 +441,7 @@ struct ActivityWindow: View {
                 selectedVoiceName = parent
                 voiceParentName = nil
             }
+            Task { await model.peekReviewableMeetings() }
         } else if (section == .memories || section == .threads), selectedContextID != nil {
             selectedContextID = nil
             model.closeContextDetail()
@@ -525,8 +527,8 @@ struct ActivityWindow: View {
     /// The accent bar this replaced was a `RoundedRectangle(cornerRadius: 2)` overlaid on a
     /// 16pt-radius card: a CSS `border-left` moved into SwiftUI without reconciling the
     /// geometry, so the card curved away and the bar stayed straight. Nothing sits on the
-    /// edge now. The plate is a CHILD, clipped by the tile's own shape, so it cannot
-    /// disagree with the radius by construction rather than by care.
+    /// edge now. The stipple is the card's paper — gotcos `.chapcard` 9pt gold dots, a
+    /// child clipped by the tile — not a corner glyph sitting on espresso.
     private func activityHomeCard(_ item: ActivitySection, index: Int) -> some View {
         let hot = hoveredSection == item
         // anime.stagger(45) is just an index-scaled delay.
@@ -582,17 +584,12 @@ struct ActivityWindow: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 15)
         .background(hot ? COSPalette.gold.opacity(0.07) : Color.clear)
-        .background(COSPalette.card)
-        .background(alignment: .bottomTrailing) {
-            HalftonePlate(section: item, strong: hot)
-                // Sized to bleed off the trailing corner rather than sit as a badge. A
-                // 118pt square inside a ~284x126 tile reads as a smudge in the corner;
-                // the field has to be big enough to fade across the card.
-                .frame(width: 210, height: 168)
-                .offset(x: 46, y: 46)
+        .background {
+            HalftonePlate(strong: hot)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.26), value: hot)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 14))   // clips the plate to the radius
+        .background(COSPalette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 14))   // clips the stipple to the radius
         .overlay(RoundedRectangle(cornerRadius: 14)
             .stroke(hot ? COSPalette.gold : COSPalette.line, lineWidth: 1))
         .shadow(color: .black.opacity(hot ? 0.16 : 0), radius: hot ? 9 : 0, x: 0, y: hot ? 4 : 0)
@@ -1095,7 +1092,9 @@ struct ActivityWindow: View {
                         else { await model.loadReviewableMeetings() }
                     }
                 },
-                refreshDisabled: speakerSubview == .voices ? model.voiceDirectoryLoading : model.meetingsLoading
+                refreshDisabled: speakerSubview == .voices ? model.voiceDirectoryLoading : model.meetingsLoading,
+                refreshTitle: speakerRefreshTitle,
+                refreshProminent: speakerSubview == .meetings && model.meetingsRefreshNeeded
             )
 
             HStack(spacing: 12) {
@@ -1145,9 +1144,23 @@ struct ActivityWindow: View {
 
     private var speakerDirectoryDetail: String {
         if speakerSubview == .meetings {
-            return model.reviewableMeetings.isEmpty
-                ? "Choose a saved meeting to name its voices."
-                : "\(model.reviewableMeetings.count) recent saved meetings"
+            if model.reviewableMeetings.isEmpty {
+                return "Choose a saved meeting to name its voices."
+            }
+            var parts = ["\(model.reviewableMeetings.count) recent saved meetings"]
+            let unnamed = model.reviewableMeetings.filter {
+                if case .needsNames = model.voiceTag(for: $0) { return true }
+                return false
+            }.count
+            let fresh = model.reviewableMeetings.filter { model.isNewReviewableMeeting($0.sessionId) }.count
+            let done = model.reviewableMeetings.filter {
+                if case .reviewed = model.voiceTag(for: $0) { return true }
+                return false
+            }.count
+            if unnamed > 0 { parts.append("\(unnamed) still need names") }
+            if done > 0 { parts.append("\(done) reviewed") }
+            if fresh > 0 { parts.append("\(fresh) new") }
+            return parts.joined(separator: " · ")
         }
         if model.voiceDirectory.isEmpty { return "Enrolled identities and cross-meeting evidence." }
         if model.voiceDirectoryRouteAvailable == false {
@@ -1269,6 +1282,7 @@ struct ActivityWindow: View {
                                         Text(meeting.countsSummary).font(.system(size: 10.5)).foregroundStyle(.tertiary)
                                     }
                                     Spacer()
+                                    meetingStatusTags(meeting)
                                     Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
                                 }
                                 .padding(.vertical, 13)
@@ -1487,6 +1501,8 @@ struct ActivityWindow: View {
         detail: String,
         refresh: @escaping () -> Void,
         refreshDisabled: Bool = false,
+        refreshTitle: String = "Refresh",
+        refreshProminent: Bool = false,
         secondaryTitle: String? = nil,
         secondaryAction: (() -> Void)? = nil,
         secondaryDisabled: Bool = false
@@ -1497,6 +1513,8 @@ struct ActivityWindow: View {
             detail: detail,
             refresh: refresh,
             refreshDisabled: refreshDisabled,
+            refreshTitle: refreshTitle,
+            refreshProminent: refreshProminent,
             secondaryTitle: secondaryTitle,
             secondaryAction: secondaryAction,
             secondaryDisabled: secondaryDisabled,
@@ -1510,6 +1528,8 @@ struct ActivityWindow: View {
         detail: String,
         refresh: @escaping () -> Void,
         refreshDisabled: Bool = false,
+        refreshTitle: String = "Refresh",
+        refreshProminent: Bool = false,
         secondaryTitle: String? = nil,
         secondaryAction: (() -> Void)? = nil,
         secondaryDisabled: Bool = false,
@@ -1527,8 +1547,9 @@ struct ActivityWindow: View {
                 Button(secondaryTitle, action: secondaryAction)
                     .disabled(secondaryDisabled)
             }
-            Button("Refresh", systemImage: "arrow.clockwise", action: refresh)
+            Button(refreshTitle, systemImage: "arrow.clockwise", action: refresh)
                 .disabled(refreshDisabled)
+                .tint(refreshProminent ? COSPalette.amber : Color.accentColor)
         }
         .controlSize(.small)
         .padding(.horizontal, 24)
@@ -1909,6 +1930,7 @@ struct ActivityWindow: View {
         // `running = false` placeholder from the unopened menu-bar panel.
         await model.refresh(quiet: true)
         if model.recentMessages.isEmpty { await model.refreshRecentMessages(quiet: true) }
+        if model.reviewableMeetings.isEmpty { await model.loadReviewableMeetings() }
         if model.voiceDirectory.isEmpty { await model.loadVoiceDirectory() }
         if model.status.memoryAvailable == true, model.memoryRecords.isEmpty {
             await model.loadContextRecords(kind: "memory")
@@ -1934,6 +1956,54 @@ struct ActivityWindow: View {
         case .sessions:
             await model.loadClaudeSessions()
         }
+    }
+
+    private var speakerPeekKey: String {
+        "\(section?.rawValue ?? "home")-\(speakerSubview.rawValue)-\(selectedSpeakerSessionID ?? "")"
+    }
+
+    private var speakerRefreshTitle: String {
+        guard speakerSubview == .meetings, model.meetingsRefreshNeeded else { return "Refresh" }
+        let count = model.pendingNewMeetingCount
+        if count == 1 { return "Refresh · 1 new recording" }
+        if count > 1 { return "Refresh · \(count) new recordings" }
+        return "Refresh needed"
+    }
+
+    private func peekMeetingsIfNeeded() async {
+        guard section == .speakers, speakerSubview == .meetings, selectedSpeakerSessionID == nil else { return }
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(45))
+            guard !Task.isCancelled else { return }
+            guard section == .speakers, speakerSubview == .meetings, selectedSpeakerSessionID == nil else { return }
+            await model.peekReviewableMeetings()
+        }
+    }
+
+    private func meetingStatusTags(_ meeting: ReviewableMeeting) -> some View {
+        HStack(spacing: 6) {
+            if model.isNewReviewableMeeting(meeting.sessionId) {
+                meetingTag("New", tint: COSPalette.amber)
+            }
+            switch model.voiceTag(for: meeting) {
+            case .reviewed:
+                meetingTag("Reviewed", tint: COSPalette.green)
+            case .needsNames(let count):
+                meetingTag(count == 1 ? "1 to name" : "\(count) to name", tint: COSPalette.amber)
+            case nil:
+                EmptyView()
+            }
+        }
+    }
+
+    private func meetingTag(_ text: String, tint: Color) -> some View {
+        Text(text.uppercased())
+            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+            .tracking(0.5)
+            .foregroundStyle(tint)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(tint.opacity(0.14)))
     }
 
     private var messagesStatus: String {

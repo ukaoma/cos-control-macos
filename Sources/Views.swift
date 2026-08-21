@@ -2297,6 +2297,11 @@ struct SpeakerReviewPane: View {
                             .font(.system(size: 10.5)).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    if correction.createsProfile && !correction.refused {
+                        Text("This name is not in voice profiles yet. Saving adds it so other segments in this meeting can use it.")
+                            .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if correction.wouldRetract > 0 {
                         Text("Also removes \(correction.wouldRetract) training sample(s) this meeting gave that profile, so the mistake stops reinforcing itself.")
                             .font(.system(size: 10.5)).foregroundStyle(.secondary)

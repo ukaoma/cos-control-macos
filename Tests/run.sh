@@ -232,6 +232,13 @@ PY
 /usr/bin/grep -q 'struct VoiceDirectoryPerson' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'private var voiceDirectoryList' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'Meetings to review' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'speakerSubview: SpeakerSubview = .meetings' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'case meetings' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'meetingsRefreshNeeded' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'peekReviewableMeetings' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'struct SpeakerListMemory' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'meetingStatusTags' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'voiceReview' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "meetings-library"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "meetings-library-search"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "context-memories-search"' "$ROOT/HelperSources/main.swift"
@@ -542,11 +549,19 @@ done
 # moment a comment moved the line, which is the wrong thing to be sensitive to.
 [ "$(/usr/bin/grep -c 'correctionScope = .thisMeeting' "$ROOT/Sources/ControllerModel.swift")" -ge 4 ]
 
-# The scope copy must not claim profile training. The correction-to-enrolment path
-# is not built: the per-chunk embedding store is write-only and nothing writes
-# `correction:` provenance.
-if /usr/bin/grep -q 'teaches the voice profile' "$ROOT/Sources/Models.swift"; then
-  echo "COS Control: the scope copy claims profile training that no code performs" >&2
+# The this-meeting scope must say it enrols a voice profile. Until 0.5.57 the
+# copy claimed the path was unbuilt while server 6.27.12+ already enrolled Ext,
+# and 6.36.17 enrols a new name from a wrong existing label (Nick → Milo).
+if /usr/bin/grep -q 'enrolment path is not built' "$ROOT/Sources/Models.swift"; then
+  echo "COS Control: scope copy still claims enrolment is unbuilt" >&2
+  exit 1
+fi
+if ! /usr/bin/grep -q 'adds samples to the voice profile' "$ROOT/Sources/Models.swift"; then
+  echo "COS Control: this-meeting scope copy does not mention the voice profile" >&2
+  exit 1
+fi
+if ! /usr/bin/grep -q '\["enrolment"\]' "$ROOT/Sources/ControllerModel.swift"; then
+  echo "COS Control: confirm path does not read the server enrolment report" >&2
   exit 1
 fi
 

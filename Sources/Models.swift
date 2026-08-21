@@ -1060,6 +1060,11 @@ struct ReviewableMeeting: Identifiable, Sendable, Hashable {
     let recordId: String
     let mutable: Bool
     let librarySource: String
+    /// Additive 6.36.18+. Nil on older servers — do not treat as zero unnamed.
+    let voiceCount: Int?
+    let unattributedVoices: Int?
+    let namedVoices: Int?
+    let humanTouched: Bool?
 
     var id: String { sessionId }
 
@@ -1097,7 +1102,84 @@ struct ReviewableMeeting: Identifiable, Sendable, Hashable {
         recordId = o["recordId"]?.string ?? ""
         mutable = o["mutable"]?.bool ?? true
         librarySource = o["librarySource"]?.string ?? "standalone_recordings"
+        let review = o["voiceReview"]?.object
+        voiceCount = review?["voices"]?.int
+        unattributedVoices = review?["unattributedVoices"]?.int
+        namedVoices = review?["namedVoices"]?.int
+        humanTouched = review?["humanTouched"]?.bool
     }
+}
+
+/// Local Speakers-list memory: which meetings are new, opened, or finished.
+///
+/// Server `voiceReview` is the assignment truth. This overlay remembers visits
+/// so a just-named meeting shows REVIEWED before the next list refresh, and so
+/// NEW does not re-tag the whole inbox on first launch of this feature.
+struct SpeakerListMemory: Codable, Equatable, Sendable {
+    struct Visit: Codable, Equatable, Sendable {
+        var voices: Int
+        var unattributedVoices: Int
+        var humanTouched: Bool
+    }
+
+    var acknowledged: [String] = []
+    var opened: [String] = []
+    var visits: [String: Visit] = [:]
+
+    private static let defaultsKey = "cos.speakerListMemory.v1"
+
+    var acknowledgedSet: Set<String> { Set(acknowledged) }
+    var openedSet: Set<String> { Set(opened) }
+
+    static func load() -> SpeakerListMemory {
+        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
+              let memory = try? JSONDecoder().decode(SpeakerListMemory.self, from: data)
+        else { return SpeakerListMemory() }
+        return memory
+    }
+
+    func save() {
+        if let data = try? JSONEncoder().encode(self) {
+            UserDefaults.standard.set(data, forKey: Self.defaultsKey)
+        }
+    }
+
+    mutating func seedIfEmpty(_ ids: [String]) {
+        guard acknowledged.isEmpty else { return }
+        acknowledged = ids
+    }
+
+    func isNew(_ sessionId: String) -> Bool {
+        !acknowledged.isEmpty && !acknowledgedSet.contains(sessionId)
+    }
+
+    mutating func markOpened(_ sessionId: String) {
+        if !acknowledged.contains(sessionId) { acknowledged.append(sessionId) }
+        if !opened.contains(sessionId) { opened.append(sessionId) }
+    }
+
+    mutating func recordVisit(_ sessionId: String, voices: Int, unattributedVoices: Int) {
+        markOpened(sessionId)
+        visits[sessionId] = Visit(
+            voices: voices,
+            unattributedVoices: unattributedVoices,
+            humanTouched: true
+        )
+    }
+
+    func voiceTag(for meeting: ReviewableMeeting) -> MeetingVoiceTag? {
+        let visit = visits[meeting.sessionId]
+        let unattributed = visit?.unattributedVoices ?? meeting.unattributedVoices
+        let finished = visit?.humanTouched == true || meeting.humanTouched == true
+        if let unattributed, unattributed == 0, finished { return .reviewed }
+        if let unattributed, unattributed > 0 { return .needsNames(unattributed) }
+        return nil
+    }
+}
+
+enum MeetingVoiceTag: Equatable, Sendable {
+    case needsNames(Int)
+    case reviewed
 }
 
 /// A saved meeting in the Activity library. sessionId is optional — Granola and
@@ -1752,6 +1834,11 @@ struct VoiceProfileOption: Identifiable, Sendable, Hashable {
         self.name = name
         embeddings = o["embeddings"]?.int ?? 0
     }
+
+    init(name: String, embeddings: Int) {
+        self.name = name
+        self.embeddings = embeddings
+    }
 }
 
 /// One occurrence of an enrolled voice in a saved meeting.
@@ -1867,10 +1954,10 @@ enum CorrectionScope: String, Sendable, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .thisMeeting:
-            // Deliberately does NOT claim to train the profile. The
-            // correction-to-enrolment path is not built: the per-chunk embedding
-            // store is write-only today and nothing writes `correction:` provenance.
-            return "Corrects this meeting only. Other meetings are left alone."
+            // Server 6.36.17+: a real target name enrols those chunks into a
+            // profile (creates one when the name is new). Other meetings are
+            // not rewritten — that remains the explicit "Every meeting" fold.
+            return "Corrects this meeting and adds samples to the voice profile. Other meetings are left alone."
         case .everywhere:
             return "Folds one profile into the other across every meeting. Cannot be undone here."
         }
@@ -1920,6 +2007,9 @@ struct PendingCorrection: Identifiable, Sendable {
     /// frequently several. Naming it writes that name onto every one of its
     /// segments, so the card says so before the click rather than after.
     let isNameAssignment: Bool
+    /// True when `to` is not in the enrolled-profile list. Saving should create
+    /// that profile so the next cluster in this meeting can pick the name.
+    let createsProfile: Bool
     /// Training samples this correction would retract from the profile.
     let wouldRetract: Int
     /// Samples that predate meeting-level provenance and cannot be retracted.

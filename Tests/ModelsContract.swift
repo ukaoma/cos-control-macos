@@ -64,6 +64,9 @@ struct ModelsContract {
         // is nothing to take back from a voice nobody was ever called.
         precondition(voice(label: "Ext", reliability: "unattributed")?.canDeattribute == false)
         precondition(voice(label: "Queen Ukaoma", reliability: "confident")?.canDeattribute == true)
+
+        precondition(CorrectionScope.thisMeeting.detail.contains("voice profile"),
+                     "this-meeting copy must mention the voice profile it enrols")
     }
 
     /// A meetings row as the HELPER now projects it.
@@ -107,6 +110,9 @@ struct ModelsContract {
         precondition(row.decisionCount == 2)
         precondition(row.actionCount == 1)
         precondition(row.attendeeCount == 3)
+        precondition(row.voiceCount == nil, "older payload must not invent a zero unnamed count")
+        precondition(row.unattributedVoices == nil)
+        precondition(row.humanTouched == nil)
     }
 
     /// The subtitle, including the case that would otherwise render blank.
@@ -125,6 +131,41 @@ struct ModelsContract {
         // a rendering bug rather than as a meeting with no extracted structure.
         precondition(meetingRow(topics: 0, decisions: 0, actions: 0, attendees: 0,
                                 source: "Granola")?.countsSummary == "Granola")
+    }
+
+    private static func checkSpeakerListMemory() {
+        guard let baseline = meetingRow() else { preconditionFailure("row failed to parse") }
+        var memory = SpeakerListMemory()
+        memory.seedIfEmpty([baseline.sessionId])
+        precondition(memory.isNew(baseline.sessionId) == false, "first-load rows are the baseline, not NEW")
+
+        guard let incoming = ReviewableMeeting(.object([
+            "sessionId": .string("meeting_new_record"),
+            "title": .string("New recording"),
+            "date": .string("2026-08-21"),
+            "domain": .string("quilt"),
+            "duration": .string("12 minutes"),
+            "month": .string("2026-08"),
+            "filename": .string("2026-08-21_New.md"),
+            "source": .string("G2 Glasses"),
+            "voiceReview": .object([
+                "voices": .number(4),
+                "unattributedVoices": .number(2),
+                "namedVoices": .number(2),
+                "humanTouched": .bool(false),
+            ]),
+        ])) else { preconditionFailure("incoming row failed to parse") }
+        precondition(incoming.unattributedVoices == 2)
+        precondition(incoming.humanTouched == false)
+        precondition(memory.isNew(incoming.sessionId), "a session not in the baseline is NEW")
+        precondition(memory.voiceTag(for: incoming) == .needsNames(2))
+
+        memory.recordVisit(incoming.sessionId, voices: 4, unattributedVoices: 0)
+        precondition(memory.isNew(incoming.sessionId) == false, "opening a meeting clears NEW")
+        precondition(memory.voiceTag(for: incoming) == .reviewed)
+
+        memory.recordVisit(incoming.sessionId, voices: 4, unattributedVoices: 1)
+        precondition(memory.voiceTag(for: incoming) == .needsNames(1), "partial review stays to-name")
     }
 
     /// Library rows must parse WITHOUT a sessionId. Reusing ReviewableMeeting
@@ -899,6 +940,7 @@ struct ModelsContract {
         checkConfirmEligibility()
         checkMeetingRowFields()
         checkCountsSummary()
+        checkSpeakerListMemory()
         checkLibraryMeeting()
         checkContextSearchHit()
         checkSessionSearchHit()

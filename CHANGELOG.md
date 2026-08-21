@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.5.58 (build 96)
+- **Speakers opens on Meetings to review.** Voices is the secondary tab.
+- **New recordings, refresh needed, and review progress are visible on the list.**
+  NEW tags meetings that arrived after the last baseline. Refresh turns amber
+  with a count when a quiet poll finds sessionIds not on the current list —
+  it does not shuffle the list while a meeting is open. Each row shows
+  **N to name** or **REVIEWED** from server `voiceReview` (6.36.18+) and from
+  the visit overlay after you leave a meeting.
+
+## 0.5.57 (build 95)
+- **Naming a new person in Speakers review now claims the voice profile it creates.**
+  Server 6.36.17 enrols a wrong existing label → new name (Nick Gurney → Milo
+  LeBaron). The confirm card says the name is not in profiles yet; after save the
+  toast reports samples added, and the picker can use that name on the next
+  cluster without retyping it as "new name." The this-meeting scope copy no longer
+  pretends enrolment is unbuilt.
+
+## 0.5.56 (build 94)
+- **Activity cards are gotcos paper, not espresso with a corner smudge.** The public
+  `.chapcard` treatment is a 9px gold stipple over the whole tile, faded 135° from
+  the leading edge. Control had been drawing that screen onto a trailing glyph, so
+  the gateway photographed as flat. The field is the card now; hover densifies it.
+  Same Canvas layer as before — still not a `.drawingGroup()` mask.
+
 ## 0.5.55 (build 93)
 - **The black lockup was in three places, and 0.5.54 fixed one.** The Activity header was
   corrected; the window toolbar and the menu-bar panel header still used `COSPalette.ink`, a

@@ -68,65 +68,48 @@ struct SectionGlyph: Shape {
 
 // MARK: - Halftone plate
 
-/// A dot screen, drawn rather than bundled.
+/// Full-card stipple, the gotcos.com `.chapcard` paper — not a corner glyph.
 ///
-/// Used as a mask: the glyph is stroked, then punched through this grid, which is what
-/// turns a line drawing into the engraving-halftone treatment the brand already uses on
-/// gotcos and milesukaoma. 5pt pitch matches the site's `background-size:5px 5px`.
-private struct DotScreen: View {
+/// Site CSS:
+///   background-image: radial-gradient(gold .10 / 1px, transparent 1.1px);
+///   background-size: 9px 9px;
+///   mask-image: linear-gradient(135deg, transparent 12%, #000 100%);
+///
+/// Earlier Control cuts confined the same 5pt screen to a section mark in the
+/// trailing corner. That is a different object than the brand: the public cards
+/// are a FIELD of dots the copy sits on. Drawn in Canvas (a layer, never a
+/// `.drawingGroup()` mask — that rasterises to nothing, 0.5.54).
+struct HalftonePlate: View {
+    var strong: Bool
+
     var body: some View {
         Canvas { ctx, size in
-            let pitch: CGFloat = 5, r: CGFloat = 1.05
+            let pitch: CGFloat = 9
+            let r: CGFloat = 1.05
+            let ink = COSPalette.plateInk.opacity(strong ? 0.28 : 0.14)
             var y: CGFloat = 0
             while y < size.height + pitch {
                 var x: CGFloat = 0
                 while x < size.width + pitch {
-                    ctx.fill(Path(ellipseIn: CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)),
-                             with: .color(.white))
+                    ctx.fill(
+                        Path(ellipseIn: CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)),
+                        with: .color(ink)
+                    )
                     x += pitch
                 }
                 y += pitch
             }
         }
-    }
-}
-
-/// The section's own mark at plate scale, dot-screened and radially faded.
-///
-/// Deliberately the SAME shape as the small icon rather than a separate illustration:
-/// one mark at two scales is a decision, where a drawn "engraving" would be a stand-in
-/// for the real public-domain plates the brand rule actually calls for. Swapping in real
-/// plates later means replacing this view and nothing else.
-struct HalftonePlate: View {
-    let section: ActivitySection
-    var strong: Bool
-
-    var body: some View {
-        // A FIELD of dots, not dots confined to a glyph outline.
-        //
-        // The first cut masked the screen to a 5pt stroke, so the halftone only existed
-        // along a thin line and read as a few specks. The reference does the opposite: an
-        // even dot field faded by a gradient, with the mark showing THROUGH it as a
-        // density change rather than as the only place ink lands.
-        ZStack {
-            Rectangle().foregroundStyle(COSPalette.plateInk).opacity(0.55)
-            // The mark, doubling the ink where it falls, so the plate is not a flat wash.
-            SectionGlyph(section: section)
-                .stroke(style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
-                .foregroundStyle(COSPalette.plateInk)
-                .scaleEffect(0.82)
-        }
-        .mask(DotScreen())
         .mask(
-            // Anchored toward the trailing edge and faded out well before the text, so the
-            // field bleeds off the corner instead of sitting behind the copy.
-            RadialGradient(colors: [.black, .black.opacity(0.72), .clear],
-                           center: .init(x: 0.66, y: 0.54),
-                           startRadius: 4, endRadius: 96)
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0.12),
+                    .init(color: .black, location: 1),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
         )
-        .opacity(strong ? COSPalette.plateOpacityHover : COSPalette.plateOpacity)
-        .scaleEffect(strong ? 1.04 : 1)
-        .rotationEffect(.degrees(strong ? -1.2 : 0))
         .allowsHitTesting(false)
     }
 }
@@ -171,6 +154,4 @@ extension COSPalette {
             : NSColor(red: 0.17, green: 0.13, blue: 0.09, alpha: 1)   // #2b2117
     })
 
-    static let plateOpacity: Double = 0.22
-    static let plateOpacityHover: Double = 0.52
 }
