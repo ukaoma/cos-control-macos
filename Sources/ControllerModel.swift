@@ -77,6 +77,8 @@ final class ControllerModel: ObservableObject {
     @Published var meetingsRefreshNeeded = false
     @Published var pendingNewMeetingCount = 0
     @Published var speakerListMemory = SpeakerListMemory.load()
+    @Published var hideReviewedMeetings = UserDefaults.standard.bool(forKey: ControllerModel.hideReviewedKey)
+    private static let hideReviewedKey = "cos.speakerHideReviewed"
     @Published var openReview: SpeakerReview?
     /// The readable meeting beside the speaker rows. nil when the server is
     /// older than 6.21.28 or the fetch failed — the review still renders.
@@ -933,8 +935,39 @@ final class ControllerModel: ObservableObject {
         speakerListMemory.isNew(sessionId)
     }
 
+    /// NEW only for the Speakers inbox. Older library rows are not in the
+    /// acknowledged baseline, so treating them as new would paint the calendar.
+    func isInboxNew(_ sessionId: String) -> Bool {
+        reviewableMeetings.contains { $0.sessionId == sessionId }
+            && speakerListMemory.isNew(sessionId)
+    }
+
     func voiceTag(for meeting: ReviewableMeeting) -> MeetingVoiceTag? {
         speakerListMemory.voiceTag(for: meeting)
+    }
+
+    func voiceTag(sessionId: String) -> MeetingVoiceTag? {
+        if let meeting = reviewableMeetings.first(where: { $0.sessionId == sessionId }) {
+            return voiceTag(for: meeting)
+        }
+        return speakerListMemory.voiceTag(sessionId: sessionId)
+    }
+
+    var rankedReviewableMeetings: [ReviewableMeeting] {
+        speakerListMemory.ranked(reviewableMeetings)
+    }
+
+    var visibleReviewableMeetings: [ReviewableMeeting] {
+        speakerListMemory.visible(reviewableMeetings, hideReviewed: hideReviewedMeetings)
+    }
+
+    func nextUnnamedMeeting(after sessionId: String) -> ReviewableMeeting? {
+        speakerListMemory.nextUnnamed(after: sessionId, in: reviewableMeetings)
+    }
+
+    func setHideReviewed(_ hide: Bool) {
+        hideReviewedMeetings = hide
+        UserDefaults.standard.set(hide, forKey: Self.hideReviewedKey)
     }
 
     private func persistSpeakerList(_ mutate: (inout SpeakerListMemory) -> Void) {

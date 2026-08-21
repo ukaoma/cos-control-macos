@@ -219,7 +219,12 @@ struct ActivityWindow: View {
                     voiceDirectoryDetail(selectedVoice)
                 } else if section == .speakers, selectedSpeakerSessionID != nil {
                     if model.reviewRouteActive {
-                        SpeakerReviewPane(model: model, showsBackButton: false)
+                        SpeakerReviewPane(
+                            model: model,
+                            showsBackButton: false,
+                            onNextUnnamed: openNextUnnamedReview,
+                            nextUnnamedAvailable: nextUnnamedReview != nil
+                        )
                     } else {
                         centeredProgress("Loading meeting…")
                     }
@@ -1045,6 +1050,20 @@ struct ActivityWindow: View {
         model.openSpeakerReview(sessionId: sessionId)
     }
 
+    private var nextUnnamedReview: ReviewableMeeting? {
+        guard let current = selectedSpeakerSessionID else { return nil }
+        return model.nextUnnamedMeeting(after: current)
+    }
+
+    private func openNextUnnamedReview() {
+        guard let next = nextUnnamedReview else { return }
+        voiceParentName = nil
+        selectedSpeakerSessionID = nil
+        model.closeSpeakerReview()
+        selectedSpeakerSessionID = next.sessionId
+        model.openSpeakerReview(next)
+    }
+
     private var messagesList: some View {
         VStack(spacing: 0) {
             sectionHeader(
@@ -1125,6 +1144,14 @@ struct ActivityWindow: View {
                     } label: {
                         Label(voiceSort.title, systemImage: "arrow.up.arrow.down")
                     }
+                } else {
+                    Toggle("Hide reviewed", isOn: Binding(
+                        get: { model.hideReviewedMeetings },
+                        set: { model.setHideReviewed($0) }
+                    ))
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 11))
+                    .help("Keep finished meetings off the list while you work through names.")
                 }
                 Spacer()
             }
@@ -1263,10 +1290,12 @@ struct ActivityWindow: View {
                 centeredProgress("Loading meetings…")
             } else if model.reviewableMeetings.isEmpty {
                 emptyState(.speakers, text: model.reviewError ?? "No reviewable meetings yet.")
+            } else if model.visibleReviewableMeetings.isEmpty {
+                emptyState(.speakers, text: "All recent meetings are reviewed. Turn off Hide reviewed to see them.")
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(model.reviewableMeetings) { meeting in
+                        ForEach(model.visibleReviewableMeetings) { meeting in
                             Button {
                                 voiceParentName = nil
                                 selectedSpeakerSessionID = meeting.sessionId
@@ -1949,6 +1978,9 @@ struct ActivityWindow: View {
             else { await model.loadReviewableMeetings() }
         case .meetings:
             await model.loadLibraryMeetings()
+            if model.reviewableMeetings.isEmpty {
+                await model.loadReviewableMeetings()
+            }
         case .memories:
             if model.status.memoryAvailable == true { await model.loadContextRecords(kind: "memory") }
         case .threads:
@@ -1981,29 +2013,10 @@ struct ActivityWindow: View {
     }
 
     private func meetingStatusTags(_ meeting: ReviewableMeeting) -> some View {
-        HStack(spacing: 6) {
-            if model.isNewReviewableMeeting(meeting.sessionId) {
-                meetingTag("New", tint: COSPalette.amber)
-            }
-            switch model.voiceTag(for: meeting) {
-            case .reviewed:
-                meetingTag("Reviewed", tint: COSPalette.green)
-            case .needsNames(let count):
-                meetingTag(count == 1 ? "1 to name" : "\(count) to name", tint: COSPalette.amber)
-            case nil:
-                EmptyView()
-            }
-        }
-    }
-
-    private func meetingTag(_ text: String, tint: Color) -> some View {
-        Text(text.uppercased())
-            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-            .tracking(0.5)
-            .foregroundStyle(tint)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Capsule().fill(tint.opacity(0.14)))
+        MeetingStatusPills(
+            isNew: model.isNewReviewableMeeting(meeting.sessionId),
+            tag: model.voiceTag(for: meeting)
+        )
     }
 
     private var messagesStatus: String {
@@ -2161,5 +2174,34 @@ struct ClaudeSessionDetailPane: View {
         case "cursor": Color(red: 0.42, green: 0.38, blue: 0.86)
         default: Color(red: 0.78, green: 0.45, blue: 0.22)
         }
+    }
+}
+
+struct MeetingStatusPills: View {
+    let isNew: Bool
+    let tag: MeetingVoiceTag?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if isNew { pill("New", COSPalette.amber) }
+            switch tag {
+            case .reviewed:
+                pill("Reviewed", COSPalette.green)
+            case .needsNames(let count):
+                pill(count == 1 ? "1 to name" : "\(count) to name", COSPalette.amber)
+            case nil:
+                EmptyView()
+            }
+        }
+    }
+
+    private func pill(_ text: String, _ tint: Color) -> some View {
+        Text(text.uppercased())
+            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+            .tracking(0.5)
+            .foregroundStyle(tint)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(tint.opacity(0.14)))
     }
 }

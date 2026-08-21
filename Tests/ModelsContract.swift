@@ -166,6 +166,90 @@ struct ModelsContract {
 
         memory.recordVisit(incoming.sessionId, voices: 4, unattributedVoices: 1)
         precondition(memory.voiceTag(for: incoming) == .needsNames(1), "partial review stays to-name")
+
+        guard let reviewed = ReviewableMeeting(.object([
+            "sessionId": .string("meeting_reviewed"),
+            "title": .string("Already named"),
+            "date": .string("2026-08-20"),
+            "domain": .string("quilt"),
+            "duration": .string("10 minutes"),
+            "month": .string("2026-08"),
+            "filename": .string("2026-08-20_Named.md"),
+            "source": .string("G2 Glasses"),
+            "voiceReview": .object([
+                "voices": .number(3),
+                "unattributedVoices": .number(0),
+                "namedVoices": .number(3),
+                "humanTouched": .bool(true),
+            ]),
+        ])), let untouched = ReviewableMeeting(.object([
+            "sessionId": .string("meeting_untouched"),
+            "title": .string("No tags yet"),
+            "date": .string("2026-08-19"),
+            "domain": .string("quilt"),
+            "duration": .string("8 minutes"),
+            "month": .string("2026-08"),
+            "filename": .string("2026-08-19_Untouched.md"),
+            "source": .string("G2 Glasses"),
+        ]))         else { preconditionFailure("rank fixtures failed to parse") }
+
+        let ranked = memory.ranked([reviewed, untouched, incoming, baseline])
+        precondition(ranked.map(\.sessionId) == [
+            incoming.sessionId, untouched.sessionId, baseline.sessionId, reviewed.sessionId
+        ], "unnamed, then new, then untagged, then reviewed")
+
+        let hidden = memory.visible([reviewed, incoming], hideReviewed: true)
+        precondition(hidden.map(\.sessionId) == [incoming.sessionId], "hide reviewed drops finished rows")
+
+        let next = memory.nextUnnamed(after: incoming.sessionId, in: [reviewed, incoming, untouched])
+        precondition(next?.sessionId == untouched.sessionId, "next skips reviewed")
+        precondition(memory.nextUnnamed(after: untouched.sessionId, in: [incoming, untouched])?.sessionId == incoming.sessionId,
+                     "next wraps to remaining unnamed")
+    }
+
+    private static func checkReviewVoiceQueue() {
+        guard let unnamed = voice(label: "Ext", reliability: "unattributed", segments: 4),
+              let withheld = voice(label: "Ty Clement", reliability: "weak", segments: 20),
+              let named = voice(label: "Queen Ukaoma", reliability: "confident", segments: 40)
+        else { preconditionFailure("voice queue fixtures failed") }
+        precondition(unnamed.reviewQueueRank < withheld.reviewQueueRank)
+        precondition(withheld.reviewQueueRank < named.reviewQueueRank)
+
+        guard let review = SpeakerReview(.object([
+            "sessionId": .string("meeting_queue"),
+            "title": .string("Queue"),
+            "segments": .number(64),
+            "attributed": .bool(true),
+            "durationMs": .number(1),
+            "voices": .array([
+                .object([
+                    "label": .string("Queen Ukaoma"),
+                    "segments": .number(40),
+                    "reliability": .string("confident"),
+                    "nameAsserted": .bool(true),
+                    "isOwner": .bool(false),
+                    "phrases": .array([]),
+                ]),
+                .object([
+                    "label": .string("Ext"),
+                    "segments": .number(4),
+                    "reliability": .string("unattributed"),
+                    "nameAsserted": .bool(false),
+                    "isOwner": .bool(false),
+                    "phrases": .array([]),
+                ]),
+                .object([
+                    "label": .string("Ty Clement"),
+                    "segments": .number(20),
+                    "reliability": .string("weak"),
+                    "nameAsserted": .bool(false),
+                    "isOwner": .bool(false),
+                    "phrases": .array([]),
+                ]),
+            ]),
+        ])) else { preconditionFailure("review queue failed to parse") }
+        precondition(review.unnamedVoiceCount == 1)
+        precondition(review.voicesForReview.map(\.label) == ["Ext", "Ty Clement", "Queen Ukaoma"])
     }
 
     /// Library rows must parse WITHOUT a sessionId. Reusing ReviewableMeeting
@@ -941,6 +1025,7 @@ struct ModelsContract {
         checkMeetingRowFields()
         checkCountsSummary()
         checkSpeakerListMemory()
+        checkReviewVoiceQueue()
         checkLibraryMeeting()
         checkContextSearchHit()
         checkSessionSearchHit()

@@ -1175,6 +1175,47 @@ struct SpeakerListMemory: Codable, Equatable, Sendable {
         if let unattributed, unattributed > 0 { return .needsNames(unattributed) }
         return nil
     }
+
+    /// Overlay-only tag for a library row that is not in the Speakers inbox.
+    func voiceTag(sessionId: String) -> MeetingVoiceTag? {
+        guard let visit = visits[sessionId] else { return nil }
+        if visit.unattributedVoices == 0, visit.humanTouched { return .reviewed }
+        if visit.unattributedVoices > 0 { return .needsNames(visit.unattributedVoices) }
+        return nil
+    }
+
+    /// Inbox order: still need names, then new, then untouched, reviewed last.
+    func reviewRank(of meeting: ReviewableMeeting) -> Int {
+        switch voiceTag(for: meeting) {
+        case .needsNames: return 0
+        case nil: return isNew(meeting.sessionId) ? 1 : 2
+        case .reviewed: return 3
+        }
+    }
+
+    func ranked(_ meetings: [ReviewableMeeting]) -> [ReviewableMeeting] {
+        meetings.sorted { a, b in
+            let ra = reviewRank(of: a)
+            let rb = reviewRank(of: b)
+            if ra != rb { return ra < rb }
+            if a.date != b.date { return a.date > b.date }
+            return a.title.localizedStandardCompare(b.title) == .orderedAscending
+        }
+    }
+
+    func visible(_ meetings: [ReviewableMeeting], hideReviewed: Bool) -> [ReviewableMeeting] {
+        let ordered = ranked(meetings)
+        return hideReviewed ? ordered.filter { voiceTag(for: $0) != .reviewed } : ordered
+    }
+
+    func nextUnnamed(after sessionId: String, in meetings: [ReviewableMeeting]) -> ReviewableMeeting? {
+        let queue = ranked(meetings).filter { voiceTag(for: $0) != .reviewed }
+        guard let index = queue.firstIndex(where: { $0.sessionId == sessionId }) else {
+            return queue.first
+        }
+        if index + 1 < queue.count { return queue[index + 1] }
+        return queue.first { $0.sessionId != sessionId }
+    }
 }
 
 enum MeetingVoiceTag: Equatable, Sendable {
@@ -1476,6 +1517,12 @@ struct ReviewVoice: Identifiable, Sendable, Hashable {
     /// wrong one. Worth distinguishing on the button, because "Actually someone
     /// else" reads as fixing a mistake the system made.
     var isNameAssignment: Bool { reliability == .unattributed }
+    /// Review pane order: unnamed first, then withheld names, then asserted.
+    var reviewQueueRank: Int {
+        if isNameAssignment { return 0 }
+        if !nameAsserted { return 1 }
+        return 2
+    }
     /// Can this row's OWN label be vouched for?
     ///
     /// Only when the identifier proposed a name that the floor then withheld.
@@ -1650,6 +1697,19 @@ struct SpeakerReview: Sendable {
 
     func displayName(for label: String) -> String {
         voices.first(where: { $0.label == label })?.displayName ?? label
+    }
+
+    var unnamedVoiceCount: Int { voices.filter(\.isNameAssignment).count }
+
+    /// Voice rows for the review list. Timeline stays in speaking order.
+    var voicesForReview: [ReviewVoice] {
+        voices.enumerated().sorted { a, b in
+            let ra = a.element.reviewQueueRank
+            let rb = b.element.reviewQueueRank
+            if ra != rb { return ra < rb }
+            if a.element.segments != b.element.segments { return a.element.segments > b.element.segments }
+            return a.offset < b.offset
+        }.map(\.element)
     }
 }
 

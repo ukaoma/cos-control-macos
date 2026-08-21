@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.59 (build 97)
+- **Meetings to review is a work queue.** Unnamed first, reviewed last. Hide
+  reviewed keeps finished rows off the list. The review pane puts unnamed
+  voices at the top, says how many still need names, and **Next to name**
+  (⌘]) jumps to the next unfinished meeting. The Meetings library shows the
+  same tags on G2 rows.
+
 ## 0.5.58 (build 96)
 - **Speakers opens on Meetings to review.** Voices is the secondary tab.
 - **New recordings, refresh needed, and review progress are visible on the list.**

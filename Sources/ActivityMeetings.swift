@@ -191,7 +191,7 @@ struct MeetingLibraryBody: View {
         } else {
             List(model.visibleLibraryMeetings) { meeting in
                 Button { onOpen(meeting) } label: {
-                    meetingRow(title: meeting.title, subtitle: meeting.subtitle)
+                    meetingRow(meeting.title, subtitle: meeting.subtitle, sessionId: meeting.sessionId)
                 }
                 .buttonStyle(.plain)
             }
@@ -249,6 +249,12 @@ struct MeetingLibraryBody: View {
                             .background(
                                 Capsule().fill(ActivitySection.meetings.tint.opacity(0.16))
                             )
+                        if !hit.meeting.sessionId.isEmpty {
+                            MeetingStatusPills(
+                                isNew: model.isInboxNew(hit.meeting.sessionId),
+                                tag: model.voiceTag(sessionId: hit.meeting.sessionId)
+                            )
+                        }
                         Image(systemName: "chevron.right")
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(.tertiary)
@@ -263,7 +269,7 @@ struct MeetingLibraryBody: View {
         }
     }
 
-    private func meetingRow(title: String, subtitle: String) -> some View {
+    private func meetingRow(_ title: String, subtitle: String, sessionId: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
@@ -276,6 +282,12 @@ struct MeetingLibraryBody: View {
                     .lineLimit(1)
             }
             Spacer()
+            if !sessionId.isEmpty {
+                MeetingStatusPills(
+                    isNew: model.isInboxNew(sessionId),
+                    tag: model.voiceTag(sessionId: sessionId)
+                )
+            }
             Image(systemName: "chevron.right")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.tertiary)
@@ -474,6 +486,10 @@ struct MeetingLibraryDetailPane: View {
                     Spacer()
                     if let sessionId = model.openLibraryRow?.sessionId, !sessionId.isEmpty {
                         Button("Review voices") { onReviewVoices(sessionId) }
+                        MeetingStatusPills(
+                            isNew: model.isInboxNew(sessionId),
+                            tag: model.voiceTag(sessionId: sessionId)
+                        )
                     }
                 }
                 .controlSize(.small)

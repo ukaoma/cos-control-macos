@@ -983,7 +983,7 @@ struct ControlPanel: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                let shown = Array(model.reviewableMeetings.prefix(MEETING_LIST_VISIBLE))
+                let shown = Array(model.rankedReviewableMeetings.prefix(MEETING_LIST_VISIBLE))
                 // Height follows CONTENT up to the cap, so a light day reserves no
                 // dead space. A flat maxHeight on a ScrollView is greedy in the
                 // scroll axis and would hold ~300pt open for three rows.
@@ -2052,6 +2052,8 @@ let MEETING_LIST_MAX_HEIGHT: CGFloat = 330
 struct SpeakerReviewPane: View {
     @ObservedObject var model: ControllerModel
     var showsBackButton = true
+    var onNextUnnamed: (() -> Void)? = nil
+    var nextUnnamedAvailable = false
     /// Which span the pointer is over. Held here so the bar and the legend
     /// highlight the same thing.
     @State private var hoveredSpan: SpeakerTimelineSpan?
@@ -2096,6 +2098,13 @@ struct SpeakerReviewPane: View {
                                 .font(.system(size: 10.5, design: .monospaced))
                                 .foregroundStyle(COSPalette.green)
                         }
+                        if review.unnamedVoiceCount > 0 {
+                            Text(review.unnamedVoiceCount == 1
+                                 ? "1 voice still needs a name"
+                                 : "\(review.unnamedVoiceCount) voices still need names")
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(COSPalette.amber)
+                        }
                         if let coverage = review.speakingCoverage, review.attributed {
                             Text(coverage < 0.6
                                  ? "only \(Int((coverage * 100).rounded()))% of the voice identified — shares unreliable"
@@ -2122,6 +2131,19 @@ struct SpeakerReviewPane: View {
                     }
                     .buttonStyle(.plain)
                     .help("Copy the meeting including the full transcript")
+                }
+                if onNextUnnamed != nil {
+                    Button {
+                        onNextUnnamed?()
+                    } label: {
+                        Label("Next to name", systemImage: "chevron.right").font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!nextUnnamedAvailable)
+                    .keyboardShortcut("]", modifiers: .command)
+                    .help(nextUnnamedAvailable
+                          ? "Open the next meeting that still needs names (⌘])"
+                          : "No other meetings still need names")
                 }
                 if showsBackButton {
                     Button {
@@ -2184,10 +2206,10 @@ struct SpeakerReviewPane: View {
                         }
 
                         Divider()
-                        ForEach(Array(review.voices.enumerated()), id: \.element.id) { index, voice in
+                        ForEach(Array(review.voicesForReview.enumerated()), id: \.element.id) { index, voice in
                             VoiceRow(model: model, voice: voice)
                                 .padding(.horizontal, 16)
-                            if index < review.voices.count - 1 { Divider() }
+                            if index < review.voicesForReview.count - 1 { Divider() }
                         }
 
                         // The write-up, BELOW the voice rows. Measured with
