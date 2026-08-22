@@ -46,6 +46,18 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
 /usr/bin/grep -q 'case "fetch-media"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q '/api/media/\\(id)/content?variant=\\(variant)' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'Copy + images' "$ROOT/Sources/Views.swift"
+
+# Claude sessions toggle. The helper shipped set-claude-sessions and wrote both env
+# keys through the manifest, but NOTHING in the app ever invoked it, so the feature
+# was reachable only via an undocumented env var and read as broken to a beta
+# tester. Pin all three links: helper command, model call, and a view that calls the
+# model. Three working parts with no wiring between them is the failure this catches.
+/usr/bin/grep -q 'case "set-claude-sessions"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'perform("set-claude-sessions"' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'model.setClaudeSessionsEnabled(' "$ROOT/Sources/Views.swift"
+# and the switched-off state must say so rather than render an ordinary empty list
+/usr/bin/grep -q 'Claude sessions are switched off' "$ROOT/Sources/ActivityWindow.swift"
+echo "COS Control: Claude sessions toggle wired helper -> model -> view"
 /usr/bin/grep -q 'MediaTransfers' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'Handoffs' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'inspect only its generated image-NN.jpg/png files before responding' "$ROOT/Sources/ControllerModel.swift"

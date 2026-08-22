@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.60 (build 98)
+- **Show Claude sessions is a switch again.** The helper has shipped
+  `set-claude-sessions` for some time, writing both `COS_CLAUDE_SESSIONS_ENABLED`
+  and `COS_CLAUDE_SESSIONS_SHOW_NAMES` through the manifest — but nothing in the
+  app ever called it. The feature was reachable only by knowing an undocumented
+  environment variable, so to a beta tester it looked broken. Advanced now has
+  the toggle, and because it routes through the helper it survives Control
+  rewriting the LaunchAgent, which a hand-set `launchctl setenv` does not.
+- **A switched-off list says so.** Sessions are off by default — the endpoint
+  projects another product's private 0700 state directory over a LAN-bound
+  socket, so it is opt-in. When off, the pane showed the ordinary empty copy,
+  which reads as "this is broken" rather than "this is turned off". It now names
+  the setting and where to find it.
+- Anyone who worked around this with a `launchctl setenv` login item can remove
+  it; the toggle is the supported path and writes the same keys durably.
+
 ## 0.5.59 (build 97)
 - **Meetings to review is a work queue.** Unnamed first, reviewed last. Hide
   reviewed keeps finished rows off the list. The review pane puts unnamed

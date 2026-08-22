@@ -731,6 +731,11 @@ struct ActivityWindow: View {
                 centeredProgress("Loading sessions…")
             } else if let error = model.claudeSessionsError, visibleSessions.isEmpty {
                 emptyState(.sessions, text: error)
+            } else if !model.claudeSessionsEnabled && visibleSessions.isEmpty {
+                // Off by default: the endpoint projects Claude Code's private 0700
+                // state dir over a LAN-bound socket, so it is opt-in. Showing the
+                // ordinary empty copy here made a switched-off feature look broken.
+                emptyState(.sessions, text: "Claude sessions are switched off. Turn them on in Advanced \u{2192} Show Claude sessions.")
             } else if visibleSessions.isEmpty {
                 emptyState(.sessions, text: sessionsEmptyCopy)
             } else {

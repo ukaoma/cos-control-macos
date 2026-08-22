@@ -98,6 +98,7 @@ struct ControlPanel: View {
     @State private var selectedTranscriptionTier = "balanced"
     @State private var selectedBackgroundJobs = true
     @State private var selectedMeetingPreview = false
+    @State private var selectedClaudeSessions = false
     @State private var selectedVideoUploadV2 = false
     @State private var confirmClearStrandedVideoUploads = false
     @State private var confirmResetMessageCount = false
@@ -139,6 +140,9 @@ struct ControlPanel: View {
             if let enabled = model.status.idleMetalHqEnabled { selectedIdleMetalHq = enabled }
             if let enabled = model.status.adaptiveAudioCleanupEnabled { selectedAdaptiveAudioCleanup = enabled }
             if let enabled = model.status.threadAttachEnabled { selectedThreadAttach = enabled }
+            // Sourced from the sessions endpoint rather than status, so it is only
+            // accurate once that has loaded; the onChange below resyncs it.
+            selectedClaudeSessions = model.claudeSessionsEnabled
         }
         .onChange(of: model.status.transcriptionRequestedTier) { _, tier in
             if let tier, tier == "max" || tier == "balanced" { selectedTranscriptionTier = tier }
@@ -148,6 +152,9 @@ struct ControlPanel: View {
         }
         .onChange(of: model.status.meetingPreviewEnabled) { _, enabled in
             if let enabled { selectedMeetingPreview = enabled }
+        }
+        .onChange(of: model.claudeSessionsEnabled) { _, enabled in
+            selectedClaudeSessions = enabled
         }
         .onChange(of: model.status.videoUploadV2Enabled) { _, enabled in
             if let enabled { selectedVideoUploadV2 = enabled }
@@ -1259,6 +1266,15 @@ struct ControlPanel: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+            HStack(spacing: 8) {
+                Toggle("Show Claude sessions", isOn: $selectedClaudeSessions)
+                Button("Apply") { model.setClaudeSessionsEnabled(selectedClaudeSessions) }
+                    .disabled(model.busy
+                        || (!model.status.installed && model.status.runtimeState != "managedInPlace"))
+            }
+            Text("Lists Claude, Codex and Cursor sessions from this Mac in the Activity window. Off by default: it reads another product's private state directory and serves names, workspaces and timestamps — not conversation content — over your local network. Leave it off on an untrusted network.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             if model.status.threadAttachSupported {
                 HStack(spacing: 8) {
                     Toggle("Continue agent threads", isOn: $selectedThreadAttach)

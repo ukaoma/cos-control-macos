@@ -774,6 +774,16 @@ final class ControllerModel: ObservableObject {
         perform("set-video-upload-v2", arguments: [enabled ? "on" : "off"])
     }
 
+    /// The helper has shipped `set-claude-sessions` (and written both
+    /// COS_CLAUDE_SESSIONS_ENABLED and _SHOW_NAMES through the manifest) for some
+    /// time; nothing in the app ever called it. The feature was therefore only
+    /// reachable by knowing an undocumented env var, which read as "sessions are
+    /// broken" to a beta tester. It routes through applyManagedProviderEnvironment,
+    /// so unlike a hand-set launchctl value it survives Control rewriting the plist.
+    func setClaudeSessionsEnabled(_ enabled: Bool) {
+        perform("set-claude-sessions", arguments: [enabled ? "on" : "off"])
+    }
+
     func clearStrandedVideoUploads() {
         perform("clear-stranded-video-uploads")
     }
