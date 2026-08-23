@@ -28,6 +28,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/COSBrand.swift" \
   "$ROOT/Sources/COSMotion.swift" \
+  "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" \
   "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
@@ -46,6 +47,59 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
 /usr/bin/grep -q 'case "fetch-media"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q '/api/media/\\(id)/content?variant=\\(variant)' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'Copy + images' "$ROOT/Sources/Views.swift"
+
+# Release build must compile the component too, or the shipped app loses it.
+/usr/bin/grep -q 'Sources/COSConfirm.swift' "$ROOT/scripts/build-release.sh"
+
+# ── Confirmations must never go back to .confirmationDialog ──────────────────
+# Inside MenuBarExtra(.window) a confirmationDialog's non-cancel button action
+# NEVER RUNS. Proven on-device 2026-08-23 by Tests/fence-canary: variants A and B
+# logged the dismissal and never the action; the inline component logged it every
+# time. Nine dialogs shipped that way and every destructive action among them was
+# inert -- Release fence, Reset live message count, Clear stranded video uploads,
+# Restart self-managed server, Stop legacy and install.
+#
+# Comments are stripped first ON PURPOSE. Views.swift and COSConfirm.swift both
+# explain this rule in prose, so a plain grep would match the explanation and pass
+# no matter what the code did -- the exact shape of assertion that let this through.
+/usr/bin/python3 - "$ROOT" <<'PYCHK'
+import io, re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+
+def code(rel):
+    text = io.open(root / rel, encoding='utf-8').read()
+    return chr(10).join(l for l in text.split(chr(10)) if not l.strip().startswith('//'))
+
+views = code('Sources/Views.swift')
+assert '.confirmationDialog(' not in views, \
+    'Views.swift uses .confirmationDialog - its actions do not run in MenuBarExtra(.window). Use .cosConfirm.'
+n = views.count('.cosConfirm(')
+assert n >= 10, 'expected >=10 .cosConfirm call sites, found %d' % n
+
+# Any surviving .alert may carry ONLY a cancel-role button: cancel actions do run,
+# everything else does not.
+for m in re.finditer(r'\.alert\(', views):
+    block = views[m.start():m.start() + 900]
+    for label, role in re.findall(r'Button\("([^"]+)"(?:, role: \.(\w+))?\)', block):
+        assert role == 'cancel', \
+            '.alert button "%s" has role=%s; only role:.cancel runs in this panel' % (label, role or 'none')
+
+confirm = code('Sources/COSConfirm.swift')
+assert '.confirmationDialog(' not in confirm and '.alert(' not in confirm, \
+    'COSConfirm must stay a plain inline overlay'
+assert 'overlay' in confirm, 'COSConfirm lost its inline overlay'
+
+# cosConfirm dismisses BEFORE running the action, and dismissal nils
+# fencePendingRelease, so an action that read the model would guard-out and release
+# nothing. The record is captured while the confirmation is on screen.
+assert 'let pending = model.fencePendingRelease' in views, \
+    'fenceConfirmActions must capture the record at build time, not read it in the action'
+
+# The canary compiles the SHIPPED component, not a copy of it.
+canary = io.open(root / 'Tests/fence-canary/run.sh', encoding='utf-8').read()
+assert 'Sources/COSConfirm.swift' in canary, 'canary must compile the real component'
+print('  confirmation-presentation guards passed (%d cosConfirm sites)' % n)
+PYCHK
 
 # Claude sessions toggle. The helper shipped set-claude-sessions and wrote both env
 # keys through the manifest, but NOTHING in the app ever invoked it, so the feature
@@ -837,11 +891,28 @@ body = body[:body.index("\n    func ", 10)]
 assert "guard let record = fencePendingRelease" not in body, \
     "releaseFence re-reads fencePendingRelease -- it races the dialog dismissal"
 
-btn = re.search(r'Button\("Release", role: \.destructive\) \{(.{0,400}?)\n            \}', views, re.S)
-assert btn, "Release button not found"
-assert "model.fencePendingRelease" in btn.group(1), "button must capture the record before the Task"
-assert btn.group(1).index("fencePendingRelease") < btn.group(1).index("Task {"), \
-    "the capture must happen BEFORE the Task, or it races the dismissal"
+# 0.5.63 RETARGETED. The previous form matched a `Button("Release", role: .destructive)`
+# inside a confirmationDialog and asserted the capture preceded the Task. It PASSED
+# for months against a button whose action never ran at all -- the text was in the
+# right order and the closure was unreachable. Assert the invariant, not the layout.
+#
+# `cosConfirm` dismisses BEFORE it runs the action, and dismissal nils
+# `fencePendingRelease`, so the action must close over a value captured while the
+# confirmation was still on screen and must never read the model itself.
+actions = views[views.index("private var fenceConfirmActions"):]
+actions = actions[:actions.index("\n    }\n") + 6]
+
+assert "let pending = model.fencePendingRelease" in actions, \
+    "fenceConfirmActions must capture the record into a local"
+assert actions.index("let pending = model.fencePendingRelease") < actions.index(".destructive("), \
+    "the capture must happen BEFORE the action is built"
+
+destructive = actions[actions.index(".destructive("):]
+destructive = destructive[:destructive.index(".cancel")]
+assert "model.fencePendingRelease" not in destructive, \
+    "the Release action reads model.fencePendingRelease -- dismissal has already nil'd it"
+assert "guard let pending" in destructive and "releaseFence(pending" in destructive, \
+    "the Release action must use the captured record"
 PY
 
 # --- 0.5.44 fenced threads ---------------------------------------------------
@@ -1102,6 +1173,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/COSBrand.swift" \
   "$ROOT/Sources/COSMotion.swift" \
+  "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" \
   "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \

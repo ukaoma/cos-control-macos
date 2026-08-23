@@ -119,6 +119,25 @@ struct ControlPanel: View {
     /// Each toggle stays on its OWN observation on purpose. Syncing them all
     /// from one shared handler would let an unrelated status change overwrite a
     /// selection the user had flipped but not yet applied.
+    /// Built while the confirmation is on screen, so the record is captured HERE
+    /// rather than read inside the button action.
+    ///
+    /// Dismissing runs the `isPresented` setter, which calls `cancelReleaseFence()`
+    /// and nils `fencePendingRelease`. `cosConfirm` dismisses BEFORE it runs the
+    /// action, so an action that read `model.fencePendingRelease` would find nil
+    /// and return silently -- no request, no error, the fence simply stays. That is
+    /// what the old comment here claimed to prevent while doing the opposite.
+    private var fenceConfirmActions: [COSConfirmAction] {
+        let pending = model.fencePendingRelease
+        return [
+            .destructive("Release") {
+                guard let pending else { return }
+                Task { await model.releaseFence(pending, confirm: true) }
+            },
+            .cancel { model.cancelReleaseFence() },
+        ]
+    }
+
     private var syncedPanel: some View {
         mainPanel
         .frame(width: 390, height: 640)
@@ -170,134 +189,135 @@ struct ControlPanel: View {
         }
     }
 
-    var body: some View {
+    /// Split in two ON PURPOSE, and the split is load-bearing rather than stylistic.
+    ///
+    /// Ten confirmations plus the error alert in one chained expression exceeds what
+    /// the SwiftUI type-checker will solve, and it fails as "unable to type-check this
+    /// expression in reasonable time" -- a message that names neither the confirmations
+    /// nor the count. Adding an eleventh here will reproduce it; add it to a third
+    /// group instead.
+    private var panelWithPrimaryConfirms: some View {
         syncedPanel
         .alert("COS Control", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
         } message: { Text(model.error ?? "") }
-        .alert("Meetings Library", isPresented: Binding(
-            get: { model.meetingLibraryGuidance != nil },
-            set: { if !$0 { model.meetingLibraryGuidance = nil } }
-        )) {
-            Button("Choose Again") {
-                model.meetingLibraryGuidance = nil
-                model.selectOperationsFolder()
-            }
-            Button("View Examples") {
-                model.meetingLibraryGuidance = nil
-                model.openSetupGuide()
-            }
-            Button("Skip for Now", role: .cancel) { model.meetingLibraryGuidance = nil }
-        } message: { Text(model.meetingLibraryGuidance ?? "") }
-        .confirmationDialog(
+        // Converted with the nine dialogs. NOT proven broken -- the canary's `.alert`
+        // variant was never run -- but it is the same presentation class in the same
+        // MenuBarExtra(.window) panel, and leaving one untested modal behind a fix
+        // that claims the panel works would be the same bet that lost here already.
+        .cosConfirm(
+            "Meetings Library",
+            isPresented: Binding(
+                get: { model.meetingLibraryGuidance != nil },
+                set: { if !$0 { model.meetingLibraryGuidance = nil } }
+            ),
+            message: model.meetingLibraryGuidance ?? "",
+            actions: [
+                .normal("Choose Again") {
+                    model.meetingLibraryGuidance = nil
+                    model.selectOperationsFolder()
+                },
+                .normal("View Examples") {
+                    model.meetingLibraryGuidance = nil
+                    model.openSetupGuide()
+                },
+                .cancel("Skip for Now") { model.meetingLibraryGuidance = nil },
+            ]
+        )
+        // INLINE, never .confirmationDialog. A destructive button's action does
+        // not run inside MenuBarExtra(.window) -- see Sources/COSConfirm.swift.
+        .cosConfirm(
             "Release this fence?",
             isPresented: Binding(
                 get: { model.fencePendingRelease != nil },
                 set: { if !$0 { model.cancelReleaseFence() } }
             ),
-            titleVisibility: .visible
-        ) {
-            // CAPTURED SYNCHRONOUSLY, before the Task. Dismissing this dialog nils
-            // `fencePendingRelease`, so reading it inside the deferred task races the
-            // dismissal and can silently do nothing.
-            Button("Release", role: .destructive) {
-                guard let pending = model.fencePendingRelease else { return }
-                Task { await model.releaseFence(pending, confirm: true) }
-            }
-            Button("Cancel", role: .cancel) { model.cancelReleaseFence() }
-        } message: {
-            Text(model.fencePendingRelease?.explanation ?? "")
-        }
-        .confirmationDialog(
+            message: model.fencePendingRelease?.explanation ?? "",
+            actions: fenceConfirmActions
+        )
+        .cosConfirm(
             "Restart this self-managed server?",
             isPresented: $confirmLegacyRestart,
-            titleVisibility: .visible
-        ) {
-            Button("Restart now", role: .destructive) { model.perform("restart") }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("This older server cannot prove that meetings and agent jobs are idle. Continue only when no work is active. COS Control will reload the LaunchAgent so the selected folder becomes active.")
-        }
-        .confirmationDialog(
+            message: "This older server cannot prove that meetings and agent jobs are idle. Continue only when no work is active. COS Control will reload the LaunchAgent so the selected folder becomes active.",
+            actions: [
+                .destructive("Restart now") { model.perform("restart") },
+                .cancel(),
+            ]
+        )
+        .cosConfirm(
             "Install the latest managed server?",
             isPresented: $confirmInstallManaged,
-            titleVisibility: .visible
-        ) {
-            Button("Stop legacy and install", role: .destructive) {
-                model.installLatestManagedFromLegacy()
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("This stops your checkout LaunchAgent, then installs the current npm latest (@gotcos/glasses-server@latest). Finish active glasses work first. Prefer Manage in place if you only want status/restart without replacing the server.")
-        }
-        .confirmationDialog(
+            message: "This stops your checkout LaunchAgent, then installs the current npm latest (@gotcos/glasses-server@latest). Finish active glasses work first. Prefer Manage in place if you only want status/restart without replacing the server.",
+            actions: [
+                .destructive("Stop legacy and install") { model.installLatestManagedFromLegacy() },
+                .cancel(),
+            ]
+        )
+        .cosConfirm(
             "Install COS Control \(model.appUpdate.latestVersion ?? "")?",
             isPresented: $confirmInstallAppUpdate,
-            titleVisibility: .visible
-        ) {
-            Button("Install and reopen") { model.installAppUpdate() }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Control will quit, verify the download SHA-256, replace itself, and reopen. The glasses server stays running.")
-        }
-        .confirmationDialog(
+            message: "Control will quit, verify the download SHA-256, replace itself, and reopen. The glasses server stays running.",
+            actions: [
+                .normal("Install and reopen") { model.installAppUpdate() },
+                .cancel(),
+            ]
+        )
+    }
+
+    var body: some View {
+        panelWithPrimaryConfirms
+        .cosConfirm(
             "Choose transcription setup",
             isPresented: $showGuidedSetupTier,
-            titleVisibility: .visible
-        ) {
-            Button("Balanced (Recommended)") {
-                selectedTranscriptionTier = "balanced"
-                model.runGuidedSetup(tier: "balanced")
-            }
-            Button("Max") {
-                selectedTranscriptionTier = "max"
-                model.runGuidedSetup(tier: "max")
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Balanced uses fast Small.en previews, Turbo commits, and Large-v3 polish. Max uses Large-v3 for live preview and commit too; choose it only on a powerful Mac.")
-        }
-        .confirmationDialog(
+            message: "Balanced uses fast Small.en previews, Turbo commits, and Large-v3 polish. Max uses Large-v3 for live preview and commit too; choose it only on a powerful Mac.",
+            actions: [
+                .normal("Balanced (Recommended)") {
+                    selectedTranscriptionTier = "balanced"
+                    model.runGuidedSetup(tier: "balanced")
+                },
+                .normal("Max") {
+                    selectedTranscriptionTier = "max"
+                    model.runGuidedSetup(tier: "max")
+                },
+                .cancel(),
+            ]
+        )
+        .cosConfirm(
             "Clear stranded video uploads?",
             isPresented: $confirmClearStrandedVideoUploads,
-            titleVisibility: .visible
-        ) {
-            Button("Clear stranded", role: .destructive) { model.clearStrandedVideoUploads() }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Cancels drafts that have not received bytes for 60 seconds. Uploads still in progress and videos being compressed are left alone. Repair does not do this — stranded drafts block Repair.")
-        }
-        .confirmationDialog(
+            message: "Cancels drafts that have not received bytes for 60 seconds. Uploads still in progress and videos being compressed are left alone. Repair does not do this — stranded drafts block Repair.",
+            actions: [
+                .destructive("Clear stranded") { model.clearStrandedVideoUploads() },
+                .cancel(),
+            ]
+        )
+        .cosConfirm(
             "Reset live message count?",
             isPresented: $confirmResetMessageCount,
-            titleVisibility: .visible
-        ) {
-            Button("Reset count", role: .destructive) { model.resetMessageEra() }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("The next message is #1. Older cards keep their own numbers, and history stays in ARCHIVE and Message History. Needs COS Glasses 6.8.423 or newer on the phone — on an older build this clears the phone's chat list.")
-        }
-        .confirmationDialog(
+            message: "The next message is #1. Older cards keep their own numbers, and history stays in ARCHIVE and Message History. Needs COS Glasses 6.8.423 or newer on the phone — on an older build this clears the phone's chat list.",
+            actions: [
+                .destructive("Reset count") { model.resetMessageEra() },
+                .cancel(),
+            ]
+        )
+        .cosConfirm(
             "Recover all unsaved captures?",
             isPresented: $confirmRecoverAllOrphans,
-            titleVisibility: .visible
-        ) {
-            Button("Recover all") { model.recoverAllOrphans() }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Turns each unsaved capture into a meeting, one at a time. Already-recovering captures wait their turn. Session files are not deleted.")
-        }
-        .confirmationDialog(
+            message: "Turns each unsaved capture into a meeting, one at a time. Already-recovering captures wait their turn. Session files are not deleted.",
+            actions: [
+                .normal("Recover all") { model.recoverAllOrphans() },
+                .cancel(),
+            ]
+        )
+        .cosConfirm(
             "Save still-live captures as meetings?",
             isPresented: $confirmSaveAllStranded,
-            titleVisibility: .visible
-        ) {
-            Button("Save all") { model.saveAllStranded() }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Finalizes each still-live G2 capture through the same save path as Stop on the phone. Session files become meetings; they are not deleted.")
-        }
-    }
+            message: "Finalizes each still-live G2 capture through the same save path as Stop on the phone. Session files become meetings; they are not deleted.",
+            actions: [
+                .normal("Save all") { model.saveAllStranded() },
+                .cancel(),
+            ]
+        )    }
 
     private var header: some View {
         HStack(spacing: 10) {

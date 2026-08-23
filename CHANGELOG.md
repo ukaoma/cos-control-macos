@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.5.63 (build 101)
+
+**Every confirmation button in the panel was dead except Cancel.**
+
+Inside `MenuBarExtra(.window)` a `.confirmationDialog`'s non-cancel button action
+never runs. Clicking it dismisses the sheet and executes nothing. `role: .cancel`
+DOES run, which is why this survived: the dialog appeared, Cancel closed it, and
+the panel looked healthy from every angle including code review.
+
+Nine dialogs were wired that way. Release fence, Reset live message count, Clear
+stranded video uploads, Restart self-managed server, and Stop legacy and install
+all did nothing when confirmed. Choose Again / View Examples / Recover all /
+Save all / Install and reopen were on the same mechanism.
+
+Proven on-device with `Tests/fence-canary`, which puts the presentations side by
+side in a real menu-bar popover and logs a breadcrumb at every step:
+
+    A  confirmationDialog + @State   Release NEVER fired; only Cancel dismissed
+    B  confirmationDialog + model    Release NEVER fired; the setter ran TWICE
+    C  inline overlay                fired, every time
+    E  the shipped cosConfirm        fired, and the captured value came through
+
+All ten confirmations now use `cosConfirm`, an inline overlay. The one surviving
+`.alert` carries a lone cancel-role button, and a test now enforces that any
+`.alert` may carry nothing else.
+
+The fence release also captures its record while the confirmation is on screen.
+`cosConfirm` dismisses before running the action and dismissal nils
+`fencePendingRelease`, so an action that read the model would guard out and
+release nothing. The previous code read the model inside the action while a
+comment above it claimed the opposite.
+
+Two test lessons are now enforced rather than written down. The 0.5.47 assertion
+that guarded this exact button passed for months against a button that never
+ran -- it checked that a capture preceded a `Task`, which was true and
+irrelevant. It now asserts the invariant. And the new guards strip comments
+before matching, because both files explain the rule in prose and a plain grep
+would match the explanation.
+
+`Tests/run.sh` is grep-over-source and cannot see whether a closure is entered,
+which is how this shipped. The canary is committed alongside it and compiles the
+shipped component rather than a copy, so a regression there fails here.
+
 ## 0.5.62 (build 100)
 
 **RESET # no longer rotates the era when it cannot reach the server.** The disk
