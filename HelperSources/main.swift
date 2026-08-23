@@ -2098,6 +2098,17 @@ final class COSControlHelper {
             ? (health.map { $0["threadAttachEnabled"] as? Bool == true } ?? (configuredThreadAttach == "1"))
             : nil
         let threadAttachProviders = (health?["threadAttachProviders"] as? [String]) ?? []
+        // Show Claude sessions. Same shape as threadAttach above, and it is in status
+        // for the same reason every other panel toggle is: the panel refreshes status
+        // on its own. It previously lived ONLY on GET /api/claude-sessions -- the call
+        // that also lists every session -- which the panel never makes, so the checkbox
+        // rendered false against a setting that was true.
+        let configuredClaudeSessions = manifest?.providerEnvironment?["COS_CLAUDE_SESSIONS_ENABLED"]
+            ?? (launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String])?["COS_CLAUDE_SESSIONS_ENABLED"]
+        // nil, NOT false, when a healthy server predates the field: an older server
+        // must leave the box alone rather than assert it is off.
+        let claudeSessionsEnabled: Bool? = (health?["features"] as? [String: Any])?["claudeSessions"] as? Bool
+            ?? (health == nil ? (configuredClaudeSessions == "1") : nil)
         let videoUploadStatus = maintenance?["videoUploads"] as? [String: Any]
         let videoUploadV2Supported = reportedVersion.map { versionAtLeast($0, "6.27.3") } == true
         let configuredVideoUploadV2 = manifest?.providerEnvironment?["COS_VIDEO_UPLOAD_V2"]
@@ -2188,6 +2199,7 @@ final class COSControlHelper {
             "backgroundJobsEnabled": backgroundJobsEnabled ?? NSNull(),
             "meetingPreviewSupported": meetingPreviewSupported,
             "meetingPreviewEnabled": meetingPreviewEnabled ?? NSNull(),
+            "claudeSessionsEnabled": claudeSessionsEnabled ?? NSNull(),
             "threadAttachSupported": threadAttachSupported,
             "threadAttachEnabled": threadAttachEnabled ?? NSNull(),
             "threadAttachProviders": threadAttachProviders,

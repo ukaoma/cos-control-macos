@@ -100,6 +100,9 @@ struct ServerStatus: Sendable {
     var meetingPreviewEnabled: Bool?
     var threadAttachSupported = false
     var threadAttachEnabled: Bool?
+    /// Optional on purpose: absent means a server too old to report it, and the
+    /// panel must then leave the toggle where it is rather than force it off.
+    var claudeSessionsEnabled: Bool?
     var threadAttachProviders: [String] = []
     var videoUploadV2Supported = false
     var videoUploadV2Enabled: Bool?
@@ -222,6 +225,7 @@ struct ServerStatus: Sendable {
         meetingPreviewEnabled = details["meetingPreviewEnabled"]?.bool
         threadAttachSupported = details["threadAttachSupported"]?.bool ?? false
         threadAttachEnabled = details["threadAttachEnabled"]?.bool
+        claudeSessionsEnabled = details["claudeSessionsEnabled"]?.bool
         threadAttachProviders = (details["threadAttachProviders"]?.array ?? []).compactMap(\.string)
         videoUploadV2Supported = details["videoUploadV2Supported"]?.bool ?? false
         videoUploadV2Enabled = details["videoUploadV2Enabled"]?.bool

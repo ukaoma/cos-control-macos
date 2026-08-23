@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.5.64 (build 102)
+
+**"Show Claude sessions" was telling you it was off while it was on.**
+
+The checkbox seeded from `model.claudeSessionsEnabled`, which only
+`loadClaudeSessions()` sets -- and every caller of that lives in the Activity
+window, never in the panel. Open the panel without visiting the Activity window's
+Claude tab and the box rendered false regardless of the real setting. The setting
+was on; Miles enabled it four times against a control that could only show him one
+value. The comment above the line named the hazard ("only accurate once that has
+loaded") and it shipped anyway.
+
+It now reads `status.claudeSessionsEnabled`, which the panel refreshes on its own,
+like every other toggle on that screen. Server 6.36.22 publishes it in
+`health.features` -- a pure env read, free on a poll -- rather than the panel
+paying for a 58-session listing to learn one boolean.
+
+ONE SOURCE, no fallback to the old path. A second source is how this broke, and it
+also defeated the new guard: the fallback mentioned `model.status` in a `== nil`
+check, which satisfied the check while assigning from somewhere else.
+
+Against a server older than 6.36.22 the field is absent and the toggle is left
+alone rather than forced off.
+
+**New guard: every panel toggle must be BOUND from status.** It took three
+attempts to write one that could actually fail. Whole-line matching was satisfied
+by that `== nil` guard; a four-line window was satisfied by the NEIGHBOURING
+toggle's status read, because every seed in `onAppear` sits within four lines of
+another. The check now requires the assigned value itself to come from status, and
+lives in `Tests/panel-toggle-source.py` because inlining it in a heredoc mangled
+its regexes into a syntax error that looked like a failing test.
+
 ## 0.5.63 (build 101)
 
 **Every confirmation button in the panel was dead except Cancel.**

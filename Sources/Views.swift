@@ -159,9 +159,23 @@ struct ControlPanel: View {
             if let enabled = model.status.idleMetalHqEnabled { selectedIdleMetalHq = enabled }
             if let enabled = model.status.adaptiveAudioCleanupEnabled { selectedAdaptiveAudioCleanup = enabled }
             if let enabled = model.status.threadAttachEnabled { selectedThreadAttach = enabled }
-            // Sourced from the sessions endpoint rather than status, so it is only
-            // accurate once that has loaded; the onChange below resyncs it.
-            selectedClaudeSessions = model.claudeSessionsEnabled
+            // 0.5.64: STATUS FIRST. This used to seed from `model.claudeSessionsEnabled`,
+            // which is populated only by loadClaudeSessions() -- and every caller of that
+            // lives in ActivityWindow, never here. Open the panel without visiting the
+            // Activity window's Claude tab and this rendered false against a setting that
+            // was true. Miles enabled it four times against a control that could not
+            // show him anything else.
+            //
+            // `if let` matters: an older server omits the field, and absent must leave the
+            // toggle alone rather than assert off.
+            // ONE SOURCE. No `else` reaching for model.claudeSessionsEnabled: a second
+            // source is how this broke, and it also defeated the guard below -- the
+            // fallback mentioned model.status in a `== nil` check, which satisfied a
+            // window search while assigning from somewhere else entirely.
+            //
+            // Against a server too old to report the field this shows false, which is
+            // exactly today's behaviour and no worse. 0.5.64 pairs with 6.36.22.
+            if let enabled = model.status.claudeSessionsEnabled { selectedClaudeSessions = enabled }
         }
         .onChange(of: model.status.transcriptionRequestedTier) { _, tier in
             if let tier, tier == "max" || tier == "balanced" { selectedTranscriptionTier = tier }
@@ -172,8 +186,8 @@ struct ControlPanel: View {
         .onChange(of: model.status.meetingPreviewEnabled) { _, enabled in
             if let enabled { selectedMeetingPreview = enabled }
         }
-        .onChange(of: model.claudeSessionsEnabled) { _, enabled in
-            selectedClaudeSessions = enabled
+        .onChange(of: model.status.claudeSessionsEnabled) { _, enabled in
+            if let enabled { selectedClaudeSessions = enabled }
         }
         .onChange(of: model.status.videoUploadV2Enabled) { _, enabled in
             if let enabled { selectedVideoUploadV2 = enabled }

@@ -109,6 +109,11 @@ PYCHK
 /usr/bin/grep -q 'case "set-claude-sessions"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'perform("set-claude-sessions"' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'model.setClaudeSessionsEnabled(' "$ROOT/Sources/Views.swift"
+
+# ── Every panel toggle must be bound from STATUS ─────────────────────────────
+# Extracted to its own file: the check needs regexes with backslashes, and inlining
+# it in a heredoc mangled them into a syntax error that LOOKED like a failing test.
+/usr/bin/python3 "$ROOT/Tests/panel-toggle-source.py" "$ROOT/Sources/Views.swift"
 # and the switched-off state must say so rather than render an ordinary empty list
 /usr/bin/grep -q 'Claude sessions are switched off' "$ROOT/Sources/ActivityWindow.swift"
 echo "COS Control: Claude sessions toggle wired helper -> model -> view"
