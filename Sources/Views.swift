@@ -275,7 +275,7 @@ struct ControlPanel: View {
             Button("Reset count", role: .destructive) { model.resetMessageEra() }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Archives live messages and starts numbering at #1. History stays in ARCHIVE and Message History. This does not delete anything.")
+            Text("The next message is #1. Older cards keep their own numbers, and history stays in ARCHIVE and Message History. Needs COS Glasses 6.8.423 or newer on the phone — on an older build this clears the phone's chat list.")
         }
         .confirmationDialog(
             "Recover all unsaved captures?",

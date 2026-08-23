@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.62 (build 100)
+
+**RESET # no longer rotates the era when it cannot reach the server.** The disk
+fallback ran whenever `request()` returned nil -- a timeout on a busy Mac was
+enough -- and it writes `message-era.json` directly, bypassing the server's
+confirm, in-flight and shutting-down refusals entirely. It also discarded the
+result of its own `POST /api/archive/now`, so the snapshot silently failed for
+exactly the reason the fallback triggered, and it still reported "Archived".
+Transport failure now surfaces an error. The disk path is reserved for a genuine
+404/405 -- a server too old to carry the route -- and fails closed if the
+snapshot does not return 2xx.
+
+**The confirmation dialog stopped describing behaviour that no longer exists.**
+It said "Archives live messages" and "This does not delete anything." Against
+server 6.36.20 nothing is archived, and against a phone older than 6.8.423 it
+deletes the entire chat list, the prompt queue, the nav position and any
+half-typed prompt. It now says what happens and names the version it needs.
+
 ## 0.5.61 (build 99)
 - **RESET # stops claiming it archived anything.** Server 6.36.19 rotates the
   message era without ending live sessions, so `archived` is now always 0 and the

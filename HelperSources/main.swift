@@ -3484,12 +3484,31 @@ final class COSControlHelper {
                 let error = posted.body?["error"] as? String ?? "Reset failed"
                 throw HelperError.message(error)
             }
+            // 404/405 only: a server too old to carry the route. Fall through.
+            try resetMessageEraFromDisk(token: token)
+            return
         }
-        try resetMessageEraFromDisk(token: token)
+        // request() returned nil -- transport failure, i.e. the server is
+        // unreachable or merely slow. This used to fall through to the disk
+        // path, which rotates the era with NO confirm check, NO activeRuns
+        // refusal and NO shuttingDown refusal, while its own archive snapshot
+        // silently failed for exactly the reason it was triggered. A 30s
+        // timeout on a busy Mac was enough to reach it mid-query.
+        throw HelperError.message(
+            "Could not reach the glasses server to reset the count. "
+            + "Check that it is running, then try again."
+        )
     }
 
     private func resetMessageEraFromDisk(token: String) throws {
-        _ = request("/api/archive/now", method: "POST", token: token, timeout: 20)
+        // Fail closed: this is the only snapshot before the rotation, and
+        // discarding its result meant reporting "Archived" when nothing was.
+        guard let snapshot = request("/api/archive/now", method: "POST", token: token, timeout: 20),
+              (200...299).contains(snapshot.status) else {
+            throw HelperError.message(
+                "Could not snapshot today's messages before resetting, so the count was left alone."
+            )
+        }
         let now = Date()
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -3504,7 +3523,7 @@ final class COSControlHelper {
         try atomicWriteData(data, to: dir.appendingPathComponent("message-era.json"), permissions: 0o600)
         emit(
             ok: true,
-            message: "Archived live messages and started numbering at #1. Reopen the phone companion if it still shows the old count.",
+            message: "Next message is #1. Older cards keep their numbers, and history stays in ARCHIVE. Reopen the phone companion if it still shows the old count.",
             details: ["era": era, "via": "disk"]
         )
     }
