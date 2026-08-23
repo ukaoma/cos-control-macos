@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.61 (build 99)
+- **RESET # stops claiming it archived anything.** Server 6.36.19 rotates the
+  message era without ending live sessions, so `archived` is now always 0 and the
+  old copy would have read "0 live sessions archived." The message now says what
+  actually happens: next message is #1, older cards keep their numbers, history
+  stays in ARCHIVE. The non-zero wording is kept for an older server.
+- Requires server **6.36.19** and app **6.8.422** before resetting from any
+  surface. On an older pair the reset still empties the chat.
+
 ## 0.5.60 (build 98)
 - **Show Claude sessions is a switch again.** The helper has shipped
   `set-claude-sessions` for some time, writing both `COS_CLAUDE_SESSIONS_ENABLED`

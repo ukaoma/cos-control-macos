@@ -3439,7 +3439,15 @@ final class COSControlHelper {
         return home.appendingPathComponent(".cos-glasses/data")
     }
 
+    /// Server 6.36.19 stopped ending sessions on reset, so `archived` is now
+    /// always 0. Saying "0 live sessions archived." would be both meaningless and
+    /// wrong about what just happened — the whole point is that nothing was
+    /// archived and nothing was ended. The old wording is only kept for a server
+    /// that still reports a non-zero count.
     private func resetMessageEraMessage(archived: Int, era: String) -> String {
+        if archived <= 0 {
+            return "Next message is #1. Older cards keep their numbers. History stays in ARCHIVE / Message History."
+        }
         let count = archived == 1 ? "1 live session archived." : "\(archived) live sessions archived."
         return "\(count) Next message is #1. History stays in ARCHIVE / Message History."
     }
