@@ -316,6 +316,44 @@ PY
 /usr/bin/grep -q 'meetingStatusTags' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'voiceReview' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "meetings-library"' "$ROOT/HelperSources/main.swift"
+
+# --- 0.5.65 empty-review reason (issues #1, #2) --------------------------------
+# An empty speaker-review list has more than one cause and the old text named the
+# only one that could not help: "predate speaker review. Update the server."
+# `skipped` counts rows dropped for having no sessionId, never a version problem.
+# The real cause for a new user is zero enrolled voices, which cannot self-heal
+# (autoEnroll needs a match against an existing profile and skips Ext).
+#
+# These pin the three things that would silently regress:
+#   1. the misleading sentence never comes back
+#   2. the zero-profile case is reported, and names the action
+#   3. the count is asked for, not inferred from a list another subview loads
+# COMMENT-AWARE. A plain grep here matched the doc comment that RECORDS the old
+# wording, so the guard failed on the very explanation that makes it legible.
+# That is the "assertion satisfied by the file's own prose" failure, caught by
+# running it. Strip comments, then assert against code only.
+/usr/bin/python3 - "$ROOT/Sources/ControllerModel.swift" <<'PYEOF'
+import io, sys
+src = io.open(sys.argv[1], encoding='utf-8').read()
+code = '\n'.join(l for l in src.split('\n') if not l.strip().startswith('//'))
+for banned in ('predate speaker review', 'Update the server to review new ones'):
+    assert banned not in code, f"FAIL: the 'Update the server' review error returned ({banned!r})"
+print('    misleading review error is gone from code (comments may still cite it)')
+PYEOF
+/usr/bin/grep -q 'func emptyReviewReason' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'voice-directory' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'No voices are enrolled yet' "$ROOT/Sources/ControllerModel.swift"
+# Both empty-state messages must name the enrolment phrase, or the user is told
+# what is wrong with no way to act on it. Control's Speakers pane is view-only.
+/usr/bin/python3 - "$ROOT/Sources/ControllerModel.swift" <<'PYEOF'
+import io, sys
+src = io.open(sys.argv[1], encoding='utf-8').read()
+code = '\n'.join(l for l in src.split('\n') if not l.strip().startswith('//'))
+hits = code.count('enroll my voice')
+assert hits >= 2, f'expected both empty-state messages to name the enrolment phrase, found {hits}'
+print('    empty-state messages name the enrolment phrase (%d sites)' % hits)
+PYEOF
+echo "    empty-review reason: misleading text gone, zero-profile case named"
 /usr/bin/grep -q 'case "meetings-library-search"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "context-memories-search"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "context-threads-search"' "$ROOT/HelperSources/main.swift"

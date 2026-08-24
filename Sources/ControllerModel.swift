@@ -894,6 +894,41 @@ final class ControllerModel: ObservableObject {
     }
     // MARK: - Speaker review
 
+    /// Why the review list is empty.
+    ///
+    /// The old text said "N recent meeting(s) predate speaker review. Update the
+    /// server to review new ones." That named the ONE action that cannot help.
+    /// `skipped` counts rows the helper dropped for having no sessionId; it has
+    /// nothing to do with the server version. Chelsie hit this on 2026-08-24
+    /// while already running the latest server and spent hours on it.
+    ///
+    /// The real cause, for a new user, is that no voices are enrolled. With zero
+    /// profiles the server's identifySpeaker finds no match and labels every
+    /// segment `Ext`, so there is genuinely nothing to review. It cannot fix
+    /// itself either: autoEnroll needs a match against an existing profile and
+    /// explicitly skips `Ext`, so it can never create the first one.
+    ///
+    /// This asks the server for the enrolled count rather than reading
+    /// `voiceDirectory`, which is loaded by a different subview and may never
+    /// have run. Only on the empty path, so the normal case costs nothing. If
+    /// the count cannot be established we say the honest thing instead of
+    /// guessing — an unanswered probe is not evidence of zero.
+    private func emptyReviewReason(skipped: Int) async -> String? {
+        var enrolled: Int? = nil
+        if let r = try? await helper.run(["voice-directory"]),
+           (r.details["state"]?.string ?? "ready") != "route_absent" {
+            enrolled = (r.details["profiles"]?.array ?? []).count
+        }
+
+        if enrolled == 0 {
+            return "No voices are enrolled yet, so every speaker is recorded as Ext and there is nothing to review. Say \"enroll my voice\" on the glasses to record a 30-second sample."
+        }
+        if skipped > 0 {
+            return "\(skipped) recent meeting(s) have no session id and cannot be reviewed. This is not a server version problem."
+        }
+        return nil
+    }
+
     func loadReviewableMeetings() async {
         meetingsLoading = true
         defer { meetingsLoading = false }
@@ -912,11 +947,9 @@ final class ControllerModel: ObservableObject {
             // review is keyed on the session. Say so rather than showing an empty
             // list that looks like "no meetings".
             let skipped = response.details["skipped"]?.int ?? 0
-            if reviewableMeetings.isEmpty && skipped > 0 {
-                reviewError = "\(skipped) recent meeting(s) predate speaker review. Update the server to review new ones."
-            } else {
-                reviewError = nil
-            }
+            reviewError = reviewableMeetings.isEmpty
+                ? await emptyReviewReason(skipped: skipped)
+                : nil
         } catch {
             reviewableMeetings = []
             reviewError = error.localizedDescription
@@ -1950,7 +1983,13 @@ final class ControllerModel: ObservableObject {
             if state == "route_absent" {
                 voiceDirectoryError = "Update the COS server to add cross-meeting voice history. Training sample counts are still available."
             } else if people.isEmpty {
-                voiceDirectoryError = "No voice profiles are enrolled yet. Enroll a voice before cross-meeting history can appear."
+                // Name the action. The old text was accurate and unactionable:
+                // Control's Speakers pane is view-only, so a user who reads it has
+                // nowhere to click. Enrollment IS built and wired -- a guided
+                // 30-second flow on the glasses (cos-glasses-app Main.ts
+                // startVoiceEnrollment) reachable by the voice command below. It
+                // was simply undiscoverable.
+                voiceDirectoryError = "No voice profiles are enrolled yet. Say \"enroll my voice\" on the glasses to record a 30-second sample. Until then every speaker is labelled Ext."
             }
         } catch {
             // Preserve last-good rows. Empty plus an error means unavailable;

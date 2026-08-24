@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.5.65 (build 103)
+
+Hotfix for issues #1 and #2. An empty speaker-review list told new users to do
+the one thing that could not help.
+
+Reported by Chelsie on 2026-08-24: server 6.36.28 (latest), `speaker_id: active`,
+voiceprint model installed, 31-minute G2 meeting transcribed entirely as
+`[Ext]`/`[Unknown]`, and no `voice-profiles.json` ever written. Speakers to
+Meetings-to-review said "1 recent meeting predates speaker review. Update the
+server to review new ones." She was already on latest. Hours lost.
+
+Nothing was broken. She had zero enrolled voices.
+
+- `voice-profiles.json` is created BY enrolment, so its absence is the initial
+  state, not a fault.
+- With zero profiles the server's `identifySpeaker` finds no match and labels
+  every segment `Ext`. 170 `[Ext]` lines was correct behaviour.
+- It cannot self-heal: `autoEnroll` needs a match against an EXISTING profile and
+  explicitly skips `Ext`, so it can never create the first one.
+
+The old message was wrong on its own terms too. `skipped` counts rows the helper
+dropped for having no sessionId; it has nothing to do with the server version.
+
+WHAT CHANGED
+
+- `emptyReviewReason` asks the server for the enrolled count and reports the
+  actual cause. Zero profiles now says so and names the fix. Rows dropped for a
+  missing sessionId say that, and no longer blame the server version.
+- The count is fetched rather than read from `voiceDirectory`, which a different
+  subview loads and may never have run. Only on the empty path, so the normal
+  case costs nothing. If the count cannot be established we say the honest thing
+  instead of guessing — an unanswered probe is not evidence of zero.
+- Both empty-state messages now name the action. Enrolment was already built and
+  wired (a guided 30-second flow on the glasses) but reachable only by the voice
+  command "enroll my voice", and Control's Speakers pane is view-only — so a user
+  who read the accurate message still had nowhere to click.
+
+Guards in Tests/run.sh, both mutation-verified: the misleading sentence cannot
+return, and both empty-state messages must name the enrolment phrase. The first
+guard is comment-aware — a plain grep matched the doc comment recording the old
+wording, which is the "assertion satisfied by the file's own prose" failure, and
+it was caught by running it.
+
+Not fixed here: there is still no enrol action in Control, and the 72-hour
+`ext-audio` recovery window is not surfaced anywhere. Both tracked in #2.
+
 ## 0.5.64 (build 102)
 
 **"Show Claude sessions" was telling you it was off while it was on.**
