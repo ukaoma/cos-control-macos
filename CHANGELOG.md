@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.5.66 (build 104)
+
+Add a voice, from the Speakers pane. Closes the second half of #2.
+
+Naming a voice already worked, but only INSIDE a meeting review, and that can
+only ever rename a voice the system had already separated out. A user whose
+whole transcript came back `[Ext]` has nothing to rename, and no reason to know
+the glasses voice command exists. 0.5.65 told them what was wrong; this gives
+them somewhere to click.
+
+WHERE THE AUDIO COMES FROM
+
+The server already holds unrecognized-speaker audio for 72 hours. Naming one of
+those sessions builds a real profile from real meeting audio, which is better
+training material than a cold 30-second sample and is exactly what a review
+would have used.
+
+SAFETY, all of it server behaviour rather than our guesses
+
+- Always scoped to ONE session. The server treats the unscoped form as a
+  profile-poisoning default -- it assumes one speaker across every held session
+  and deletes them all -- and gates it behind `confirmAllSessions`. The helper
+  never sends that flag and refuses a call without `--session`, so the dangerous
+  form is unreachable from Control by construction, not by discipline.
+- The panel says a held session can still contain MORE THAN ONE unknown speaker
+  before the user commits. That is a real risk, not a hypothetical: it is why an
+  earlier manual enrolment was declined.
+- It says the audio is consumed on success. There is no undo.
+- The expiry countdown is the server's own string, so it cannot drift from the
+  retention actually enforced.
+
+Shown in BOTH the empty and populated directory. A user with zero profiles is
+precisely who needs it, and an empty state that only explains the problem is
+what sent the original report to Discord instead of to the fix.
+
+Four guards in Tests/run.sh, all mutation-verified. One of them was decoration
+on the first pass: asserting the string `--session` appears only proved the flag
+is mentioned, and a mutation that defaulted it to `""` sailed through. It now
+pins the refusal message, which lives only in the guard's else branch.
+
 ## 0.5.65 (build 103)
 
 Hotfix for issues #1 and #2. An empty speaker-review list told new users to do

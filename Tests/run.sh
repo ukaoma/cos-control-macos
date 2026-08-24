@@ -354,6 +354,58 @@ assert hits >= 2, f'expected both empty-state messages to name the enrolment phr
 print('    empty-state messages name the enrolment phrase (%d sites)' % hits)
 PYEOF
 echo "    empty-review reason: misleading text gone, zero-profile case named"
+
+# --- 0.5.66 add a voice (#2) ---------------------------------------------------
+# The explicit surface for creating a NET-NEW profile. Naming inside a meeting
+# review can only rename a voice the system already separated; a user whose whole
+# transcript came back Ext has nothing to rename.
+#
+# Same shape as the other panel guards: tie the OPENER to the thing it renders,
+# and pin the safety properties that would regress silently.
+/usr/bin/grep -q 'case "voice-ext-audio"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "voice-enroll-ext"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'struct ExtAudioSession' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'func loadExtAudio' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'func addVoice' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'private var addVoiceSection' "$ROOT/Sources/ActivityWindow.swift"
+# The opener must reach the renderer. A button bound to state nothing renders is
+# the dead-wiring failure this suite already guards elsewhere.
+/usr/bin/grep -q 'addingVoiceSession = session.sessionId' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'addVoiceNameField(session)' "$ROOT/Sources/ActivityWindow.swift"
+# ZERO-PROFILE USERS ARE THE POINT. If addVoiceSection renders only in the
+# non-empty branch, the people who need it most never see it.
+/usr/bin/python3 - "$ROOT/Sources/ActivityWindow.swift" <<'PYEOF'
+import io, sys
+src = io.open(sys.argv[1], encoding='utf-8').read()
+code = '\n'.join(l for l in src.split('\n') if not l.strip().startswith('//'))
+uses = code.count('addVoiceSection')
+# one declaration + at least two render sites (empty and non-empty branches)
+assert uses >= 3, f'addVoiceSection must render in BOTH the empty and populated directory; found {uses} references'
+print('    add-a-voice renders in both empty and populated directory')
+PYEOF
+# SAFETY: the helper must never offer the unscoped enrol. The server calls it a
+# profile-poisoning default -- it assumes one speaker across every held session
+# and deletes them all.
+/usr/bin/python3 - "$ROOT/HelperSources/main.swift" <<'PYEOF'
+import io, sys
+src = io.open(sys.argv[1], encoding='utf-8').read()
+code = '\n'.join(l for l in src.split('\n') if not l.strip().startswith('//') and not l.strip().startswith('///'))
+assert 'confirmAllSessions' not in code, 'helper must never send confirmAllSessions'
+i = code.find('func emitVoiceEnrollExt')
+assert i > 0, 'emitVoiceEnrollExt missing'
+body = code[i:i + 2000]
+# Testing for the STRING '--session' only proves the flag is MENTIONED, not that
+# it is required: a mutation replacing the guard with a defaulted `?? ""` passed
+# that check. Pin the REFUSAL instead. This message lives only in the guard's
+# else branch, so it cannot survive the guard being removed.
+assert 'is not offered' in body, 'enrol-ext must REFUSE a missing session, not default it'
+assert 'guard let session' in body, 'enrol-ext must guard the session, not read it optionally'
+assert 'sessionId' in body, 'enrol-ext must scope the payload to one session'
+print('    enrol-ext is scoped to one session; unscoped form unreachable')
+PYEOF
+# The user must be told the audio is consumed and may hold more than one speaker.
+/usr/bin/grep -q 'more than one unknown speaker' "$ROOT/Sources/ActivityWindow.swift"
+echo "    add a voice: helper, model, view, and safety copy wired"
 /usr/bin/grep -q 'case "meetings-library-search"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "context-memories-search"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "context-threads-search"' "$ROOT/HelperSources/main.swift"

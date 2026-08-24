@@ -103,6 +103,16 @@ final class ControllerModel: ObservableObject {
     /// Which voice row has its naming field open. One at a time: two open fields
     /// invite naming the wrong row.
     @Published var namingVoice: String?
+
+    // ── Add a voice ────────────────────────────────────────────────────────
+    // Held unrecognized audio, and the in-flight state of naming one of them.
+    @Published var extAudioSessions: [ExtAudioSession] = []
+    @Published var extAudioLoading = false
+    @Published var extAudioError: String?
+    /// The session the user is currently naming, if any. Mirrors `namingVoice`.
+    @Published var addingVoiceSession: String?
+    @Published var addVoiceBusy = false
+    @Published var addVoiceResult: String?
     @Published var pendingCorrection: PendingCorrection?
     /// Scope the reviewer has chosen for the next rename. Defaults to this
     /// meeting — the whole point of 0.5.0.
@@ -1962,6 +1972,63 @@ final class ControllerModel: ObservableObject {
     /// transient server/token failure. An older server returns its lightweight
     /// enrolled-profile list with an explicit route-absent state; that is useful
     /// training coverage, but it is never presented as meeting evidence.
+    /// Held unrecognized audio: what a net-new voice can be built from.
+    func loadExtAudio() async {
+        guard !extAudioLoading else { return }
+        extAudioLoading = true
+        extAudioError = nil
+        defer { extAudioLoading = false }
+        do {
+            let response = try await helper.run(["voice-ext-audio"])
+            let state = response.details["state"]?.string ?? "ready"
+            extAudioSessions = (response.details["sessions"]?.array ?? []).compactMap(ExtAudioSession.init)
+            if state == "route_absent" {
+                extAudioError = "Update the COS server to add a voice from here."
+            } else if extAudioSessions.isEmpty {
+                // Distinguish "nothing held" from "we could not ask". An empty
+                // list after a successful call is a real answer.
+                extAudioError = "No unrecognized audio is being held. Record a meeting first, then come back within 72 hours."
+            }
+        } catch {
+            extAudioSessions = []
+            extAudioError = error.localizedDescription
+        }
+    }
+
+    /// Name one held session, creating a NEW voice profile from its audio.
+    ///
+    /// Scoped to a single session, always. The unscoped server form assumes one
+    /// speaker across every held session and deletes them all, which the server
+    /// itself calls a profile-poisoning default; the helper does not offer it.
+    ///
+    /// Even scoped, one session can hold more than one unknown speaker — the
+    /// view says so before the user commits, because the audio is CONSUMED on
+    /// success and there is no undo.
+    func addVoice(named name: String, from sessionId: String) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 2 else {
+            addVoiceResult = "A name needs at least two characters."
+            return
+        }
+        guard !addVoiceBusy else { return }
+        addVoiceBusy = true
+        addVoiceResult = nil
+        defer { addVoiceBusy = false }
+        do {
+            let response = try await helper.run([
+                "voice-enroll-ext", "--name", trimmed, "--session", sessionId,
+            ])
+            addVoiceResult = response.message
+            addingVoiceSession = nil
+            // The audio is gone on success and the directory has a new member,
+            // so neither list is trustworthy any more. Reload both.
+            await loadExtAudio()
+            await loadVoiceDirectory(refresh: true)
+        } catch {
+            addVoiceResult = error.localizedDescription
+        }
+    }
+
     func loadVoiceDirectory(refresh: Bool = false) async {
         guard !voiceDirectoryLoading else { return }
         voiceDirectoryLoading = true

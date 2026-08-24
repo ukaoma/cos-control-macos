@@ -1945,6 +1945,33 @@ struct VoiceDirectoryAppearance: Identifiable, Sendable, Hashable {
 }
 
 /// Server-built, bounded aggregate for one enrolled identity.
+/// One held session of unrecognized-speaker audio, the raw material for adding a
+/// net-new voice.
+///
+/// The server keeps this for 72 hours and then deletes it, so `expiresIn` is not
+/// decoration: it is the window in which a voice can still be named from real
+/// meeting audio rather than a cold sample.
+struct ExtAudioSession: Identifiable, Sendable, Hashable {
+    let sessionId: String
+    let chunks: Int
+    let ageHours: Double
+    /// Server-rendered, e.g. "68.4h". Rendered rather than computed so the
+    /// countdown cannot drift from the retention the server actually enforces.
+    let expiresIn: String
+
+    var id: String { sessionId }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object,
+              let sessionId = o["sessionId"]?.string,
+              !sessionId.isEmpty else { return nil }
+        self.sessionId = sessionId
+        chunks = o["chunks"]?.int ?? 0
+        ageHours = o["ageHours"]?.double ?? 0
+        expiresIn = o["expiresIn"]?.string ?? ""
+    }
+}
+
 struct VoiceDirectoryPerson: Identifiable, Sendable, Hashable {
     let name: String
     let isOwner: Bool

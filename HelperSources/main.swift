@@ -472,6 +472,8 @@ final class COSControlHelper {
         case "voice-profiles": try emitVoiceProfiles()
         case "voice-directory": try emitVoiceDirectory(args: args)
         case "voice-merge": try emitVoiceMerge(args: args)
+        case "voice-ext-audio": try emitVoiceExtAudio()
+        case "voice-enroll-ext": try emitVoiceEnrollExt(args: args)
         case "meeting-relabel": try emitMeetingRelabel(args: args)
         case "meeting-deattribute": try emitMeetingDeattribute(args: args)
         case "meeting-confirm": try emitMeetingConfirm(args: args)
@@ -8846,6 +8848,86 @@ final class COSControlHelper {
     /// similarity floor and its own confirmation, and the helper must not be a
     /// way to bypass either. Without --confirm this returns the server's
     /// preview, which is what the panel shows before asking.
+    /// GET /api/voice/ext-audio — unrecognized-speaker audio still inside the
+    /// 72-hour retention window.
+    ///
+    /// This is the raw material for adding a NET-NEW voice. Until now the only
+    /// enrolment surfaces were the glasses ("enroll my voice") and naming an
+    /// already-known voice inside a meeting review. A user whose transcript came
+    /// back entirely `[Ext]` had neither: nothing to name, and no reason to know
+    /// the voice command existed. Chelsie hit exactly that on 2026-08-24.
+    private func emitVoiceExtAudio() throws {
+        let token = try speakerReviewToken()
+        guard let response = request("/api/voice/ext-audio", token: token, timeout: 30) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if response.status == 404 {
+            emit(ok: true, message: "Update the COS server to add a voice from here.", details: [
+                "state": "route_absent", "sessions": [], "totalChunks": 0,
+            ])
+            return
+        }
+        guard response.status == 200, let body = response.body else {
+            throw HelperError.message("Request failed (\(response.status))")
+        }
+        let sessions = (body["sessions"] as? [[String: Any]]) ?? []
+        emit(ok: true, message: sessions.isEmpty
+                ? "No unrecognized audio is being held."
+                : "\(sessions.count) unrecognized session(s) available",
+            details: [
+                "state": "ready",
+                "sessions": sessions,
+                "totalChunks": body["totalChunks"] as? Int ?? 0,
+            ])
+    }
+
+    /// POST /api/voice/enroll-ext — name one held session, creating a NEW profile.
+    ///
+    /// ALWAYS SCOPED TO ONE SESSION. The server treats an unscoped call as a
+    /// profile-poisoning default and gates it behind `confirmAllSessions`,
+    /// because different sessions are usually different people. This command
+    /// never sends that flag and requires --session, so the dangerous form is
+    /// unreachable from Control by construction rather than by discipline.
+    ///
+    /// Two things the caller must surface, both server behaviour rather than
+    /// guesses: a single session can still hold MORE THAN ONE unknown speaker,
+    /// and a successful enrolment DELETES the audio it consumed.
+    private func emitVoiceEnrollExt(args: [String]) throws {
+        guard let name = option("--name", in: args), name.count >= 2 else {
+            throw HelperError.message("--name is required (min 2 characters)")
+        }
+        guard let session = option("--session", in: args), !session.isEmpty else {
+            throw HelperError.message("--session is required; enrolling every held session as one person is not offered")
+        }
+        let payload: [String: Any] = ["name": name, "sessionId": session]
+        let json = String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8) ?? "{}"
+
+        let token = try speakerReviewToken()
+        guard let response = request("/api/voice/enroll-ext", method: "POST", token: token, body: json, timeout: 120) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        guard let body = response.body else { throw HelperError.message("Server stopped") }
+        // A 400 here is the server's own gate and carries the reason. Surface it
+        // rather than throwing a generic failure, the same way voice-merge does.
+        if response.status != 200 {
+            let reason = (body["message"] as? String) ?? (body["error"] as? String)
+                ?? "Request failed (\(response.status))"
+            throw HelperError.message(reason)
+        }
+        let enrolled = body["enrolled"] as? Int ?? 0
+        emit(ok: enrolled > 0, message: enrolled > 0
+                ? "Enrolled \(name) from \(enrolled) sample(s)"
+                : ((body["message"] as? String) ?? "No usable audio in that session"),
+            details: [
+                "enrolled": enrolled,
+                "name": name,
+                "sessionId": session,
+                "totalChunks": body["totalChunks"] as? Int ?? 0,
+            ])
+    }
+
     private func emitVoiceMerge(args: [String]) throws {
         guard let into = option("--into", in: args), !into.isEmpty,
               let from = option("--from", in: args), !from.isEmpty else {

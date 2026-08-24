@@ -144,6 +144,9 @@ struct ActivityWindow: View {
     @State private var selectedVoiceName: String?
     @State private var voiceParentName: String?
     @State private var speakerSubview: SpeakerSubview = .meetings
+    /// Name being typed into Add a voice. Local to the view: it is transient and
+    /// must not survive a tab switch.
+    @State private var addVoiceName = ""
     @State private var voiceSearch = ""
     @State private var voiceSort: VoiceDirectorySort = .attention
     @State private var selectedContextID: String?
@@ -1112,7 +1115,10 @@ struct ActivityWindow: View {
                 detail: speakerDirectoryDetail,
                 refresh: {
                     Task {
-                        if speakerSubview == .voices { await model.loadVoiceDirectory(refresh: true) }
+                        if speakerSubview == .voices {
+                            await model.loadVoiceDirectory(refresh: true)
+                            await model.loadExtAudio()
+                        }
                         else { await model.loadReviewableMeetings() }
                     }
                 },
@@ -1132,7 +1138,10 @@ struct ActivityWindow: View {
                     selectedSpeakerSessionID = nil
                     model.closeSpeakerReview()
                     Task {
-                        if next == .voices { await model.loadVoiceDirectory() }
+                        if next == .voices {
+                            await model.loadVoiceDirectory()
+                            await model.loadExtAudio()
+                        }
                         else { await model.loadReviewableMeetings() }
                     }
                 }
@@ -1202,17 +1211,129 @@ struct ActivityWindow: View {
         return "\(model.voiceDirectory.count) enrolled · \(review) review occurrence\(review == 1 ? "" : "s")"
     }
 
+    /// ADD A VOICE — the explicit surface for creating a NET-NEW profile.
+    ///
+    /// Naming an unidentified voice inside a meeting review already worked, but
+    /// it can only ever rename a voice the system has already separated out. A
+    /// user whose whole transcript came back `[Ext]` has nothing to rename and no
+    /// reason to know the glasses voice command exists. Chelsie hit exactly that
+    /// on 2026-08-24: latest server, model installed, 170 lines, all Ext.
+    ///
+    /// The audio is real meeting audio the server is already holding for 72
+    /// hours, so this teaches from the same material a review would.
+    ///
+    /// Three things are stated before the user commits, all server behaviour and
+    /// none of them guesses:
+    ///   - a held session can contain MORE THAN ONE unknown speaker
+    ///   - a successful enrolment CONSUMES the audio; there is no undo
+    ///   - the window closes, and the countdown is the server's own
+    @ViewBuilder
+    private var addVoiceSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Label("Add a voice", systemImage: "person.badge.plus")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                if model.extAudioLoading { ProgressView().controlSize(.small) }
+                Button("Refresh") { Task { await model.loadExtAudio() } }
+                    .buttonStyle(.link).font(.system(size: 11))
+                    .disabled(model.extAudioLoading)
+            }
+
+            if let result = model.addVoiceResult {
+                Text(result).font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+
+            if model.extAudioSessions.isEmpty {
+                Text(model.extAudioError
+                     ?? "No unrecognized audio is being held. Record a meeting, then come back within 72 hours.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            } else {
+                Text("Unrecognized audio the server is holding. Naming a session creates a new voice from it.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                ForEach(model.extAudioSessions) { session in
+                    addVoiceRow(session)
+                }
+                Text("A session can hold more than one unknown speaker, and naming it uses up the audio.")
+                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.06)))
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
+    }
+
+    @ViewBuilder
+    private func addVoiceRow(_ session: ExtAudioSession) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text("\(session.chunks) sample\(session.chunks == 1 ? "" : "s")")
+                    .font(.system(size: 11, weight: .medium))
+                Text("expires in \(session.expiresIn)")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                Spacer()
+                if model.addingVoiceSession != session.sessionId {
+                    Button("Name this voice") { model.addingVoiceSession = session.sessionId }
+                        .buttonStyle(.link).font(.system(size: 11))
+                        .disabled(model.addVoiceBusy)
+                }
+            }
+            if model.addingVoiceSession == session.sessionId {
+                addVoiceNameField(session)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func addVoiceNameField(_ session: ExtAudioSession) -> some View {
+        HStack(spacing: 6) {
+            TextField("Who is this?", text: $addVoiceName)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 11))
+                .frame(maxWidth: 180)
+                .onSubmit { commitAddVoice(session) }
+            Button("Save") { commitAddVoice(session) }
+                .font(.system(size: 11))
+                .disabled(model.addVoiceBusy
+                          || addVoiceName.trimmingCharacters(in: .whitespacesAndNewlines).count < 2)
+            Button("Cancel") {
+                model.addingVoiceSession = nil
+                addVoiceName = ""
+            }
+            .buttonStyle(.link).font(.system(size: 11))
+            if model.addVoiceBusy { ProgressView().controlSize(.small) }
+        }
+    }
+
+    private func commitAddVoice(_ session: ExtAudioSession) {
+        let name = addVoiceName
+        Task {
+            await model.addVoice(named: name, from: session.sessionId)
+            addVoiceName = ""
+        }
+    }
+
     @ViewBuilder
     private var voiceDirectoryList: some View {
         if model.voiceDirectoryLoading && model.voiceDirectory.isEmpty {
             centeredProgress("Building the voice directory…")
         } else if model.voiceDirectory.isEmpty {
-            emptyState(.speakers, text: model.voiceDirectoryError ?? "No voice profiles are enrolled yet.")
+            // ADD-A-VOICE IS SHOWN HERE TOO, and this is the case that matters.
+            // A user with zero profiles is exactly who needs it, and an empty
+            // state that only explains the problem is what sent Chelsie to
+            // Discord instead of to the fix.
+            VStack(spacing: 10) {
+                emptyState(.speakers, text: model.voiceDirectoryError ?? "No voice profiles are enrolled yet.")
+                addVoiceSection
+            }
         } else {
             VStack(spacing: 0) {
                 if let error = model.voiceDirectoryError {
                     directoryNotice(error, stale: model.voiceDirectoryRouteAvailable != false)
                 }
+                addVoiceSection
                 if model.voiceDirectoryUnresolvedMeetings > 0 {
                     directoryNotice(
                         "\(model.voiceDirectoryUnresolvedSegments) unidentified segments remain local to \(model.voiceDirectoryUnresolvedMeetings) meeting\(model.voiceDirectoryUnresolvedMeetings == 1 ? "" : "s"). They are not treated as one person.",
@@ -1966,6 +2087,7 @@ struct ActivityWindow: View {
         if model.recentMessages.isEmpty { await model.refreshRecentMessages(quiet: true) }
         if model.reviewableMeetings.isEmpty { await model.loadReviewableMeetings() }
         if model.voiceDirectory.isEmpty { await model.loadVoiceDirectory() }
+        if model.extAudioSessions.isEmpty { await model.loadExtAudio() }
         if model.status.memoryAvailable == true, model.memoryRecords.isEmpty {
             await model.loadContextRecords(kind: "memory")
         }
@@ -1979,7 +2101,10 @@ struct ActivityWindow: View {
         switch item {
         case .messages: await model.refreshRecentMessages()
         case .speakers:
-            if speakerSubview == .voices { await model.loadVoiceDirectory() }
+            if speakerSubview == .voices {
+                await model.loadVoiceDirectory()
+                await model.loadExtAudio()
+            }
             else { await model.loadReviewableMeetings() }
         case .meetings:
             await model.loadLibraryMeetings()
