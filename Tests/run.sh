@@ -406,6 +406,34 @@ PYEOF
 # The user must be told the audio is consumed and may hold more than one speaker.
 /usr/bin/grep -q 'more than one unknown speaker' "$ROOT/Sources/ActivityWindow.swift"
 echo "    add a voice: helper, model, view, and safety copy wired"
+
+# --- 0.5.67 manual update check -----------------------------------------------
+# The automatic check runs at launch then every 6h and is deliberately SILENT on
+# failure. Silence is the wrong contract for a button: a user who clicks and sees
+# nothing cannot tell "up to date" from "the check failed" from "this is broken".
+# Measured 2026-08-24: a Control up since the previous afternoon was two builds
+# behind with no banner and no way to ask.
+/usr/bin/grep -q 'func checkForAppUpdateManually' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'Check for updates' "$ROOT/Sources/Views.swift"
+# Opener must reach the method it claims to call.
+/usr/bin/grep -q 'await model.checkForAppUpdateManually()' "$ROOT/Sources/Views.swift"
+# EVERY path must report. This is the whole point of the manual variant.
+/usr/bin/python3 - "$ROOT/Sources/ControllerModel.swift" <<'PYEOF'
+import io, re, sys
+src = io.open(sys.argv[1], encoding='utf-8').read()
+code = '\n'.join(l for l in src.split('\n')
+                 if not l.strip().startswith('//') and not l.strip().startswith('///'))
+i = code.find('func checkForAppUpdateManually')
+assert i > 0, 'checkForAppUpdateManually missing'
+body = code[i:i + 1800]
+assert 'is the latest version' in body, 'manual check must SAY when already up to date'
+assert 'Could not reach the update feed' in body, 'manual check must REPORT a failure'
+assert 'catch let' in body, 'must bind the caught error; a bare catch shadows self.error'
+# It must not inherit the background check's swallow.
+assert 'Intentionally swallowed' not in body, 'manual check must not swallow its failure'
+print('    manual update check reports up-to-date, offer, and failure')
+PYEOF
+echo "    manual update check: button, method, and all three outcomes"
 /usr/bin/grep -q 'case "meetings-library-search"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "context-memories-search"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "context-threads-search"' "$ROOT/HelperSources/main.swift"

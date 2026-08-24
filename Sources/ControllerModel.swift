@@ -63,6 +63,9 @@ final class ControllerModel: ObservableObject {
     @Published var recentGlassesStatus: RecentGlassesStatus = .idle
     @Published var recentGlassesDate: String?
     @Published var appUpdate = AppUpdateInfo()
+    /// True only while a MANUAL check is in flight, so the button can show it is
+    /// working. The 6-hourly background check deliberately shows nothing.
+    @Published var updateCheckInFlight = false
     /// Menu-bar chip → Activity tab. Consumed by the window, then cleared so the
     /// same chip can be pressed again. Nil means "just show the window."
     @Published var activityOpenSection: ActivitySection?
@@ -205,6 +208,48 @@ final class ControllerModel: ObservableObject {
             appUpdate = AppUpdateInfo(response.details)
         } catch {
             // Intentionally swallowed: a failed check is not a user-facing problem.
+        }
+    }
+
+    /// The same check, but ASKED FOR — so it must answer.
+    ///
+    /// WHY THIS IS NOT JUST `checkForAppUpdate()`. That one runs once at launch
+    /// and every 6 hours, and is deliberately silent: a background check that
+    /// raises errors is noise. Silence is the wrong contract for a button. A
+    /// user who clicks and sees nothing cannot tell "you are up to date" from
+    /// "the check failed" from "the button is broken" -- which is the same
+    /// indistinguishable-outcomes problem that has cost this project real days.
+    ///
+    /// Measured 2026-08-24: a Control running since the previous afternoon was
+    /// two builds behind and showed no banner, because every 6-hourly tick had
+    /// landed before the release. There was no way to ask.
+    ///
+    /// Every path here reports: an update, up-to-date, or the failure.
+    func checkForAppUpdateManually() async {
+        guard !updateCheckInFlight else { return }
+        updateCheckInFlight = true
+        notice = nil
+        error = nil
+        defer { updateCheckInFlight = false }
+        do {
+            let response = try await helper.run([
+                "check-app-update",
+                "--current-version", Self.currentVersion,
+                "--current-build", String(Self.currentBuild),
+            ])
+            appUpdate = AppUpdateInfo(response.details)
+            if appUpdate.shouldSurface {
+                // The banner is already rendering the offer; do not duplicate it
+                // in the notice line.
+                notice = nil
+            } else {
+                notice = "COS Control \(Self.currentVersion) is the latest version."
+            }
+        } catch let checkError {
+            // A manual check REPORTS its failure. The background one does not.
+            // Bound explicitly: a bare `catch` shadows `self.error` with the
+            // caught Error and the assignment does not compile.
+            self.error = "Could not reach the update feed: \(checkError.localizedDescription)"
         }
     }
 

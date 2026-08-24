@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.5.67 (build 105)
+
+A Check for updates button, in the footer.
+
+The automatic check runs once at launch and then every 6 hours. That is the right
+cadence for a background poll and the wrong one for a hotfix: a Control left
+running -- which is the normal case for a menu-bar app -- can sit behind a release
+for hours with no banner and no way to ask.
+
+Measured today. A Control up since the previous afternoon was TWO builds behind,
+0.5.64 against an appcast at 0.5.66, because every 6-hourly tick had landed
+before the releases went out. The only remedy was to quit and reopen the app.
+
+SILENCE IS THE WRONG CONTRACT FOR A BUTTON
+
+`checkForAppUpdate()` deliberately swallows its failures, and that is correct for
+a background check -- an offline laptop should not raise an error nobody asked
+for. But a user who clicks and sees nothing cannot tell "you are up to date" from
+"the check failed" from "the button is broken". That is the same
+indistinguishable-outcomes problem that has cost this project real days.
+
+So the manual check is a separate method rather than the same one wired to a
+button, and every path reports: an update (the banner already offers it), up to
+date (says so, with the version), or the failure (says what went wrong). It also
+shows "Checking…" while in flight, which the background check never does.
+
+Three guards in Tests/run.sh, all mutation-verified: removing the up-to-date
+message fails, swallowing the failure fails, and a button that stops calling the
+method fails.
+
 ## 0.5.66 (build 104)
 
 Add a voice, from the Speakers pane. Closes the second half of #2.

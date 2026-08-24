@@ -1462,6 +1462,19 @@ struct ControlPanel: View {
         HStack {
             Text(footerLabel)
             Spacer()
+            // ASK FOR AN UPDATE. The automatic check runs at launch and every 6
+            // hours, so a long-running Control can sit two builds behind with no
+            // banner and no way to ask -- which is exactly what happened on
+            // 2026-08-24. This is the ask.
+            if model.updateCheckInFlight {
+                Text("Checking…")
+            } else {
+                Button("Check for updates") {
+                    Task { await model.checkForAppUpdateManually() }
+                }
+                .buttonStyle(.link)
+                .disabled(model.busy)
+            }
             Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.link)
         }.font(COSType.mono(10)).foregroundStyle(.secondary)
     }
