@@ -2084,7 +2084,8 @@ final class COSControlHelper {
         let configuredMeetingPreview = manifest?.providerEnvironment?["COS_WHISPER_MEETING_PREVIEW"]
             ?? (launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String])?["COS_WHISPER_MEETING_PREVIEW"]
         let meetingPreviewEnabled = meetingPreviewSupported
-            ? ((health != nil ? loadedEnvironmentValue("COS_WHISPER_MEETING_PREVIEW") : configuredMeetingPreview) == "1")
+            ? COSControlHelper.featureGateDefaultOn(
+                health != nil ? loadedEnvironmentValue("COS_WHISPER_MEETING_PREVIEW") : configuredMeetingPreview)
             : nil
         // Continue an agent thread. The running build answers this itself via
         // its capability contract; the version compare only covers a build that
@@ -2097,7 +2098,8 @@ final class COSControlHelper {
         // Fail closed in the same direction the server's contract mandates:
         // anything but a literal true, or an absent key, is off.
         let threadAttachEnabled: Bool? = threadAttachSupported
-            ? (health.map { $0["threadAttachEnabled"] as? Bool == true } ?? (configuredThreadAttach == "1"))
+            ? (health.map { $0["threadAttachEnabled"] as? Bool == true }
+                ?? COSControlHelper.featureGateDefaultOn(configuredThreadAttach))
             : nil
         let threadAttachProviders = (health?["threadAttachProviders"] as? [String]) ?? []
         // Show Claude sessions. Same shape as threadAttach above, and it is in status
@@ -2116,7 +2118,8 @@ final class COSControlHelper {
         let configuredVideoUploadV2 = manifest?.providerEnvironment?["COS_VIDEO_UPLOAD_V2"]
             ?? (launchAgentPropertyList()?["EnvironmentVariables"] as? [String: String])?["COS_VIDEO_UPLOAD_V2"]
         let videoUploadV2Enabled = videoUploadV2Supported
-            ? ((videoUploadStatus?["enabled"] as? Bool) ?? (configuredVideoUploadV2 == "1"))
+            ? ((videoUploadStatus?["enabled"] as? Bool)
+                ?? COSControlHelper.featureGateDefaultOn(configuredVideoUploadV2))
             : nil
         let idleMetalHqSupported = reportedVersion.map { versionAtLeast($0, "6.21.20") } == true
         let configuredIdleMetalHq = manifest?.providerEnvironment?["COS_BATCH_HQ_METAL"]
@@ -2142,7 +2145,7 @@ final class COSControlHelper {
             // A stopped server has no live truth, so configured state is the
             // only state available. A running server that omits the capability
             // must remain Unknown rather than claiming its plist value is active.
-            adaptiveAudioCleanupEnabled = configuredAdaptiveAudioCleanup == "1"
+            adaptiveAudioCleanupEnabled = COSControlHelper.featureGateDefaultOn(configuredAdaptiveAudioCleanup)
         } else {
             adaptiveAudioCleanupEnabled = nil
         }
@@ -4867,6 +4870,25 @@ final class COSControlHelper {
     /// Duplicating resolution order across two languages is a real cost. It is
     /// accepted so the panel can name the resolved path, and the ORDER is asserted
     /// against the server's source in the self-test so the two cannot drift quietly.
+    /// Resolve a DEFAULT-ON server feature gate from its configured value.
+    ///
+    /// Mirrors the server contract exactly: absent, empty, or any value except a
+    /// literal "0" means ENABLED. The server reads these as
+    /// `process.env.X !== '0'` (glasses-server 6.37.0).
+    ///
+    /// This exists because the panel got it backwards. Meeting Turbo preview was
+    /// resolved as `== "1"`, and `loadedEnvironmentValue` returns nil for an
+    /// absent key, so `nil == "1"` rendered the checkbox OFF for every user who
+    /// had never set the variable -- while the server had the feature ON the
+    /// whole time. Chelsie Hodgkiss's 6.36.28 install reported
+    /// meetingPreviewEnabled:false against a server running it.
+    ///
+    /// A checkbox that misreports a running feature is worse than no checkbox:
+    /// the user turns it "on", nothing changes, and the control looks broken.
+    static func featureGateDefaultOn(_ configured: String?) -> Bool {
+        return configured != "0"
+    }
+
     struct ContextRootResolution {
         /// Roots consulted, in order, for the "Looked in:" line.
         var candidates: [String] = []
@@ -9445,6 +9467,23 @@ final class COSControlHelper {
         try makeDir(opsRoot.appendingPathComponent("context"))
         try makeDir(opsRoot.appendingPathComponent(".meeting_archive/meetings"))
         let found = COSControlHelper.discoverMeetingDomains(opsRoot)
+        // ── Default-ON feature gates (0.5.68) ────────────────────────────
+        //
+        // The panel resolved Meeting Turbo preview as `== "1"`, and
+        // loadedEnvironmentValue returns nil for an absent key, so the checkbox
+        // read OFF for every user who had never set the variable -- while the
+        // server had the feature ON. The truth table below IS the contract.
+        try expect(COSControlHelper.featureGateDefaultOn(nil),
+                   "an absent key must resolve ON -- this is the bug that shipped")
+        try expect(COSControlHelper.featureGateDefaultOn(""),
+                   "an empty value must resolve ON")
+        try expect(COSControlHelper.featureGateDefaultOn("1"),
+                   "an explicit 1 must resolve ON")
+        try expect(COSControlHelper.featureGateDefaultOn("true"),
+                   "a stray truthy value must resolve ON, never silently OFF")
+        try expect(!COSControlHelper.featureGateDefaultOn("0"),
+                   "a literal 0 is the ONLY value that turns a default-on gate off")
+
         try expect(found == ["DNP study", "ascension"],
                    "discovery must find arbitrary domain names and skip non-domains, got \(found)")
         try expect(COSControlHelper.operationsDirectoryRejection(opsRoot) == nil,

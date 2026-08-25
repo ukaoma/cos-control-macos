@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.5.68 (build 106)
+
+The Meeting Turbo preview checkbox was lying.
+
+It resolved its value as `== "1"`, and an absent environment key reads as nil,
+so the box rendered OFF for every user who had never set the variable — while
+the server had the feature ON the whole time (`COS_WHISPER_MEETING_PREVIEW` is
+`!== '0'` server-side, and always has been). Turning it "on" changed nothing,
+because it was already on. Seen on a first-time user's 6.36.28 install
+reporting meetingPreviewEnabled:false against a server running the feature.
+
+A checkbox that misreports a running feature is worse than no checkbox.
+
+Three more gates flipped to default-ON in glasses-server 6.37.0 — Continue
+agent threads, Reliable video uploads, Adaptive audio cleanup. Those read the
+server's live health first, so a running server was already reported
+correctly; their STOPPED-server fallbacks had the same `== "1"` mistake and are
+fixed too.
+
+All four now resolve through one `featureGateDefaultOn` helper, unit-tested in
+the helper self-test (absent, empty, "1", a stray truthy value → ON; only a
+literal "0" → OFF) with a Tests/run.sh assertion that every call site still
+goes through it. Both layers mutation-verified.
+
+Idle Metal HQ and Show Claude sessions are unchanged: they are genuinely
+opt-in server-side, so `== "1"` is correct for them.
+
 ## 0.5.67 (build 105)
 
 A Check for updates button, in the footer.

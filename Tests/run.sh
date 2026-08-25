@@ -114,6 +114,33 @@ PYCHK
 # Extracted to its own file: the check needs regexes with backslashes, and inlining
 # it in a heredoc mangled them into a syntax error that LOOKED like a failing test.
 /usr/bin/python3 "$ROOT/Tests/panel-toggle-source.py" "$ROOT/Sources/Views.swift"
+
+# THE FOUR DEFAULT-ON GATES MUST GO THROUGH THE SHARED RESOLVER.
+#
+# featureGateDefaultOn is unit-tested in the helper self-test, but that proves
+# nothing if a call site quietly reverts to `== "1"`. This asserts the wiring.
+# Comment lines are stripped first: the prose above each site explains the rule
+# and would otherwise satisfy the check on its own.
+/usr/bin/python3 - "$ROOT/HelperSources/main.swift" <<'PY'
+import io, re, sys
+code = '\n'.join(
+    l for l in io.open(sys.argv[1], encoding='utf-8').read().split('\n')
+    if not l.strip().startswith('//')
+)
+for key in ('COS_WHISPER_MEETING_PREVIEW', 'configuredThreadAttach',
+            'configuredVideoUploadV2', 'configuredAdaptiveAudioCleanup'):
+    # The key must appear within a featureGateDefaultOn(...) call.
+    if not re.search(r'featureGateDefaultOn\(\s*(?:\n\s*)?[^)]*' + re.escape(key), code):
+        raise SystemExit(
+            'FAIL: %s no longer resolves through featureGateDefaultOn. '
+            'A default-ON gate compared with == "1" renders OFF for every user '
+            'who never set the variable.' % key
+        )
+    # And it must NOT also be compared to "1" anywhere.
+    if re.search(re.escape(key) + r'\s*==\s*"1"', code):
+        raise SystemExit('FAIL: %s is still compared to == "1"' % key)
+print('default-on gate wiring: 4/4 OK')
+PY
 # and the switched-off state must say so rather than render an ordinary empty list
 /usr/bin/grep -q 'Claude sessions are switched off' "$ROOT/Sources/ActivityWindow.swift"
 echo "COS Control: Claude sessions toggle wired helper -> model -> view"
