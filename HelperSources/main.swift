@@ -310,6 +310,13 @@ final class COSControlHelper {
         "COS_MEETING_PROGRESSIVE_HQ_THREADS",
         "COS_BATCH_HQ_METAL",
         "COS_BATCH_HQ_FORCE_CPU",
+        // Standalone meeting summaries (glasses-server 6.37.0). Without these two
+        // here, Control silently DROPS a hand-set flag on the next plist rewrite —
+        // the same way COS_PROFILE_PATH stopped surviving updates. A user who
+        // turns summaries on would find them off again after Update Server, with
+        // nothing said.
+        "COS_MEETING_SUMMARY",
+        "COS_MEETING_SUMMARY_DAILY_CAP",
         "COS_MEETING_AUDIO_ADAPTIVE_PLAYBACK",
         "COS_VIDEO_UPLOAD_V2",
         "COS_CLAUDE_SESSIONS_ENABLED",

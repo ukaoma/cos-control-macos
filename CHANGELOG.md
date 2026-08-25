@@ -24,6 +24,12 @@ the helper self-test (absent, empty, "1", a stray truthy value → ON; only a
 literal "0" → OFF) with a Tests/run.sh assertion that every call site still
 goes through it. Both layers mutation-verified.
 
+Also allowlists COS_MEETING_SUMMARY and COS_MEETING_SUMMARY_DAILY_CAP in the
+provider environment. `providerEnvironment` is filtered to that set on every
+plist rewrite, so without them a user who enabled standalone meeting summaries
+would find them silently off again after the next Install / Repair / Update
+Server — the same failure that made COS_PROFILE_PATH stop surviving updates.
+
 Idle Metal HQ and Show Claude sessions are unchanged: they are genuinely
 opt-in server-side, so `== "1"` is correct for them.
 
