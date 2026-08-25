@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.69
+## 0.5.69 (build 107)
 
 Two CTAs that read wrong.
 
