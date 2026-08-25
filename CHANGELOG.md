@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.5.69
+
+Two CTAs that read wrong.
+
+DUPLICATE RECOVER. With exactly one recoverable capture the panel rendered two
+buttons both reading "Recover": a bulk button whose label collapsed to the
+singular, and the per-row button. Both fired the same recovery on the same
+session — the bulk branch fell through to `recoverableOrphans.first` — one
+appeared greyed because the row was mid-recovery, and nothing told the user which
+was authoritative. The bulk button is now guarded on `count > 1`, and its
+single-capture fallback is deleted with it since the guard makes it unreachable.
+The per-row button already covers one capture AND carries the label and chunk
+count that say what is being recovered.
+
+FOOTER CTAs. "Check for updates" and "Quit" were `.buttonStyle(.link)` at
+mono(10) with a secondary foreground and no spacing between them, in a panel
+where every other action is a bordered chip with an SF Symbol. They read as one
+run-on string, with nothing separating a harmless action from one that kills the
+app. Now bordered chips with icons, on their own row beneath the version label —
+the panel is a fixed 390pt and the label already wraps, so sharing a row would
+have squeezed it further.
+
+Both are pinned in Tests/run.sh, and both pins were mutation-verified: restoring
+the singular Recover label or returning Quit to `.link` fails the suite.
+
 ## 0.5.68 (build 106)
 
 The Meeting Turbo preview checkbox was lying.

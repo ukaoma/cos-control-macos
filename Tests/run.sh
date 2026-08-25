@@ -442,6 +442,26 @@ echo "    add a voice: helper, model, view, and safety copy wired"
 # behind with no banner and no way to ask.
 /usr/bin/grep -q 'func checkForAppUpdateManually' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'Check for updates' "$ROOT/Sources/Views.swift"
+
+# --- 0.5.69 duplicate Recover ---------------------------------------------------
+# With exactly ONE recoverable capture the panel rendered two buttons both
+# reading "Recover": a bulk button whose label collapsed to the singular, and the
+# per-row button. Both fired the same recovery on the same session, one appeared
+# greyed, and nothing told the user which was authoritative. Miles, 2026-08-25.
+# The bulk button must be guarded on count > 1.
+/usr/bin/grep -q 'if model.recoverableOrphans.count > 1 {' "$ROOT/Sources/Views.swift"
+# And its label must be the plural one only -- a ternary here means the singular
+# duplicate is back.
+/usr/bin/grep -q 'Button("Recover all") { confirmRecoverAllOrphans = true }' "$ROOT/Sources/Views.swift"
+! /usr/bin/grep -q 'recoverableOrphans.count == 1 ? "Recover"' "$ROOT/Sources/Views.swift"
+
+# --- 0.5.69 footer CTAs ---------------------------------------------------------
+# Both were .buttonStyle(.link) with no spacing, reading as one run-on string in
+# a panel where every other action is a bordered chip. Quit especially must not
+# look like body text.
+/usr/bin/grep -q 'Button("Quit", systemImage: "power")' "$ROOT/Sources/Views.swift"
+! /usr/bin/grep -q 'buttonStyle(.link)' "$ROOT/Sources/Views.swift"
+echo '  Recover is single-CTA; footer actions are chips'
 # Opener must reach the method it claims to call.
 /usr/bin/grep -q 'await model.checkForAppUpdateManually()' "$ROOT/Sources/Views.swift"
 # EVERY path must report. This is the whole point of the manual variant.

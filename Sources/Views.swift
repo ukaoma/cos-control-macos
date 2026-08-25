@@ -581,15 +581,23 @@ struct ControlPanel: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
                 if !model.recoverableOrphans.isEmpty {
                     VStack(alignment: .trailing, spacing: 6) {
-                        Button(model.recoverableOrphans.count == 1 ? "Recover" : "Recover all") {
-                            if model.recoverableOrphans.count > 1 {
-                                confirmRecoverAllOrphans = true
-                            } else if let only = model.recoverableOrphans.first {
-                                model.recoverOrphan(only.sessionId)
-                            }
+                        // ONLY when there is more than one. With exactly one
+                        // capture this rendered a second button reading
+                        // "Recover", identical to the per-row button below and
+                        // firing the same recovery on the same session (the
+                        // branch below falls through to .first). The user saw two
+                        // identical buttons, one greyed, and could not tell which
+                        // was authoritative. The per-row button already covers the
+                        // single case AND carries the label and chunk count that
+                        // say WHAT is being recovered.
+                        if model.recoverableOrphans.count > 1 {
+                            // The single-capture fallback that used to live here
+                            // is gone with the single-capture button: unreachable
+                            // once the guard above exists.
+                            Button("Recover all") { confirmRecoverAllOrphans = true }
+                                .controlSize(.small)
+                                .disabled(model.busy || model.orphanBusy)
                         }
-                        .controlSize(.small)
-                        .disabled(model.busy || model.orphanBusy)
                         ForEach(model.recoverableOrphans) { capture in
                             HStack(spacing: 8) {
                                 Text(capture.label)
@@ -1459,23 +1467,38 @@ struct ControlPanel: View {
     }
 
     private var footer: some View {
-        HStack {
+        // CHIPS, NOT LINKS. These were `.buttonStyle(.link)` at mono(10) with a
+        // secondary foreground and no spacing, in a panel where every other
+        // action is a bordered chip with an SF Symbol. The two read as one
+        // run-on string -- "Check for updates Quit" -- with no affordance and
+        // nothing separating a harmless action from one that kills the app.
+        //
+        // The label keeps its own line. The panel is a fixed 390pt (see :143)
+        // and footerLabel already wraps to two lines, so chips on the same row
+        // would squeeze it further; a VStack gives both their full width.
+        VStack(alignment: .leading, spacing: 8) {
             Text(footerLabel)
-            Spacer()
-            // ASK FOR AN UPDATE. The automatic check runs at launch and every 6
-            // hours, so a long-running Control can sit two builds behind with no
-            // banner and no way to ask -- which is exactly what happened on
-            // 2026-08-24. This is the ask.
-            if model.updateCheckInFlight {
-                Text("Checking…")
-            } else {
-                Button("Check for updates") {
-                    Task { await model.checkForAppUpdateManually() }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 10) {
+                Spacer()
+                // ASK FOR AN UPDATE. The automatic check runs at launch and every
+                // 6 hours, so a long-running Control can sit two builds behind
+                // with no banner and no way to ask -- which is exactly what
+                // happened on 2026-08-24. This is the ask.
+                if model.updateCheckInFlight {
+                    Text("Checking…")
+                } else {
+                    Button("Check for updates", systemImage: "arrow.triangle.2.circlepath") {
+                        Task { await model.checkForAppUpdateManually() }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(model.busy)
                 }
-                .buttonStyle(.link)
-                .disabled(model.busy)
+                Button("Quit", systemImage: "power") { NSApplication.shared.terminate(nil) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
             }
-            Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.link)
         }.font(COSType.mono(10)).foregroundStyle(.secondary)
     }
 
