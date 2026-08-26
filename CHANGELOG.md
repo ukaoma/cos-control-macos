@@ -1,3 +1,13 @@
+## 0.5.73 (build 111)
+
+Two environment keys for the new local-model support in server 6.39.0.
+
+COS_OLLAMA_MODEL (pin a local model) and COS_OLLAMA_HOST (alternate loopback)
+are now allowlisted into the LaunchAgent environment the helper writes. The
+helper builds that plist from a fixed key list, so without this a user's Ollama
+settings silently vanished on every Update Server. Pinned by two self-test
+assertions so the keys cannot drop out of the list unnoticed.
+
 ## 0.5.72 (build 110)
 
 Six months of conversation you could store but not reach.

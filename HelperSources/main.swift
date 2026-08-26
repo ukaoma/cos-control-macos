@@ -285,6 +285,8 @@ final class COSControlHelper {
         "COS_EXTRA_TOOLS",
         "COS_CLAUDE_MCP_CONFIG",
         "COS_CURSOR_AGENT_BIN",
+        "COS_OLLAMA_MODEL",
+        "COS_OLLAMA_HOST",
         "COS_SCRIPTS_DIR",
         "COS_CONTEXT_DIR",
         "COS_OPERATIONS_DIR",
@@ -9723,6 +9725,10 @@ final class COSControlHelper {
                    "COS_CLAUDE_SESSIONS_SHOW_NAMES must be allowlisted or Update Server strips it")
         try expect(providerEnvironmentKeys.contains("COS_THREAD_ATTACH_ENABLED"),
                    "COS_THREAD_ATTACH_ENABLED must be allowlisted or Update Server silently drops Continue")
+        try expect(providerEnvironmentKeys.contains("COS_OLLAMA_MODEL"),
+                   "COS_OLLAMA_MODEL must be allowlisted or Update Server silently drops a pinned local model")
+        try expect(providerEnvironmentKeys.contains("COS_OLLAMA_HOST"),
+                   "COS_OLLAMA_HOST must be allowlisted or Update Server silently drops the loopback override")
 
         // Create Folders — the button that replaces the two directories Queen had to
         // make by hand. Runs the SHIPPED function against a real temporary tree.
