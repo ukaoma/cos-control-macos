@@ -2244,6 +2244,31 @@ final class COSControlHelper {
             // nil -- and a banner keyed on nil never fires. Verified against the
             // live payload before wiring, not inferred from the assignment site.
             "speakerId": (health?["speaker_id"] as? String) ?? NSNull(),
+            // Ollama (server 6.39.0+). FLATTENED here, never a nested dump.
+            //
+            // Ready only when BOTH bools agree: `features.ollama` and
+            // `ollama_models.ready` come from different probes whose TTLs can
+            // disagree for ~30s, and requiring both is the lag-safe About gate.
+            // The TOP-LEVEL `ollama` key is ignored on purpose -- health spreads
+            // its checks, so that key is a STRING (live value today:
+            // "fetch failed"), and `as? Bool` on it would read as absent while a
+            // naive string check would invent a failure. The model tag is passed
+            // through verbatim: versionToken("qwen2.5-coder") would truncate to
+            // "2.5". Absent keys (a pre-6.39.0 server) emit NSNull so the app
+            // decodes nil, not false.
+            "ollamaReady": {
+                guard let features = health?["features"] as? [String: Any],
+                      let featureFlag = features["ollama"] as? Bool,
+                      let models = health?["ollama_models"] as? [String: Any],
+                      let modelsReady = models["ready"] as? Bool else { return NSNull() }
+                return featureFlag && modelsReady
+            }(),
+            "ollamaModel": {
+                guard let models = health?["ollama_models"] as? [String: Any],
+                      let tag = models["model"] as? String else { return NSNull() }
+                let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? NSNull() : trimmed
+            }(),
             "liveCommitModel": liveTranscription?["committedModel"] ?? NSNull(),
             "transcriptionRequestedTier": configuredRequestedTier ?? NSNull(),
             "transcriptionEffectiveTier": liveTranscription?["effectiveTier"] ?? NSNull(),
@@ -9500,6 +9525,21 @@ final class COSControlHelper {
         add("Codex CLI", codex.state, codex.detail)
         let cursor = cursorDoctorCheck(redacted: redacted)
         add("Cursor Agent", cursor.state, cursor.detail)
+        // Ollama appears ONLY when the server says a local daemon is ready with a
+        // pulled model. Absent otherwise: a warning row on every Mac would imply
+        // Ollama is expected setup, and probing the binary via findExecutable
+        // would hit the Finder-PATH gotcha (and the binary is absent here anyway).
+        // Same both-bools gate as statusDetails; the health body is re-used below
+        // for other checks so one extra read is not added.
+        if let ollamaHealth = request("/api/health", timeout: 12)?.body,
+           let features = ollamaHealth["features"] as? [String: Any],
+           features["ollama"] as? Bool == true,
+           let models = ollamaHealth["ollama_models"] as? [String: Any],
+           models["ready"] as? Bool == true,
+           let tag = (models["model"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !tag.isEmpty {
+            add("Ollama", "ok", tag)
+        }
         add("Whisper CLI", findExecutable("whisper-cli") == nil ? "warning" : "ok", findExecutable("whisper-cli") == nil ? "Not installed" : "Available")
         if let whisper = (request("/api/health", timeout: 12)?.body?["whisper_health"] as? [String: Any]) {
             let ready = whisper["server"] as? Bool == true
@@ -9729,6 +9769,30 @@ final class COSControlHelper {
                    "COS_OLLAMA_MODEL must be allowlisted or Update Server silently drops a pinned local model")
         try expect(providerEnvironmentKeys.contains("COS_OLLAMA_HOST"),
                    "COS_OLLAMA_HOST must be allowlisted or Update Server silently drops the loopback override")
+
+        // Ollama acknowledgement (0.5.74). Three properties, each of which failed
+        // in a plausible first draft during validation:
+        // (1) a healthy server with the Ollama daemon DOWN must not read as a
+        //     provider capability failure -- daemon-down is a normal state;
+        // (2) a pre-6.39.0 health body (no ollama keys at all) must also be clean;
+        // (3) the model tag must never pass through versionToken, which would
+        //     truncate "qwen2.5-coder" to "2.5".
+        let ollamaDownHealth: [String: Any] = [
+            "status": "ok", "server": "ok",
+            "features": ["claude": true, "ollama": false],
+            "ollama_models": ["ready": false, "model": ""],
+            "ollama": "fetch failed",
+        ]
+        try expect(providerCapabilityFailure(ollamaDownHealth) == nil,
+                   "features.ollama == false must not register as a provider capability failure")
+        let legacyHealth: [String: Any] = [
+            "status": "ok", "server": "ok",
+            "features": ["claude": true],
+        ]
+        try expect(providerCapabilityFailure(legacyHealth) == nil,
+                   "a pre-6.39.0 health body without ollama keys must stay clean")
+        try expect(versionToken("qwen2.5-coder") != "qwen2.5-coder",
+                   "guard premise: versionToken mangles model tags, so the tag must never route through it")
 
         // Create Folders — the button that replaces the two directories Queen had to
         // make by hand. Runs the SHIPPED function against a real temporary tree.

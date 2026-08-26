@@ -176,6 +176,12 @@ struct ServerStatus: Sendable {
     /// too old to publish `features`, or unreachable) — deliberately distinct
     /// from false so the UI never shows a confident red on missing data.
     var claudeCliReady: Bool?
+
+    /// Ollama local-model state (server 6.39.0+). nil = unknown or an older
+    /// server; the About row renders ONLY on true + a non-empty model, so nil
+    /// can never paint a red mark on a server that predates the feature.
+    var ollamaReady: Bool?
+    var ollamaModel: String?
     var claudeCliVersion: String?
     var codexCliReady: Bool?
     var codexCliVersion: String?
@@ -295,6 +301,8 @@ struct ServerStatus: Sendable {
         meetingFinalizationMalformed = details["meetingFinalizationMalformed"]?.int ?? 0
         unsavedCaptures = details["unsavedCaptures"]?.int ?? 0
         claudeCliReady = details["claudeCliReady"]?.bool
+        ollamaReady = details["ollamaReady"]?.bool
+        ollamaModel = details["ollamaModel"]?.string
         claudeCliVersion = details["claudeCliVersion"]?.string
         codexCliReady = details["codexCliReady"]?.bool
         codexCliVersion = details["codexCliVersion"]?.string

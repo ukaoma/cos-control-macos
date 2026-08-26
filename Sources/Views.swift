@@ -657,6 +657,12 @@ struct ControlPanel: View {
                     .textSelection(.enabled)
             }
             statusRow("Cursor CLI", value: cursorLabel, good: model.status.cursorReady)
+            // Hide-unless-ready, and never `good: ollamaReady ?? false` -- that
+            // would paint a red mark on every pre-6.39.0 server and on this Mac
+            // today. No row is the correct render for "no local daemon".
+            if model.status.ollamaReady == true, let ollamaName = model.status.ollamaModel, !ollamaName.isEmpty {
+                statusRow("Ollama", value: ollamaName, good: true)
+            }
             statusRow("Version", value: model.status.runtimeState == "managedInPlace" ? "Self-managed" : (model.status.version ?? model.status.installedVersion ?? "Not installed"), good: model.status.installed || model.status.runtimeState == "managedInPlace")
             Divider()
             HStack(alignment: .top) {

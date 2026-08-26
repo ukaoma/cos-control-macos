@@ -524,6 +524,36 @@ assert 'chat\\(chatCount == 1 ? "" : "s")' in models, 'countsSummary must report
 print('    archive browser: helper, model, view, and route_absent discriminator wired')
 PYEOF
 
+# --- 0.5.74 ollama acknowledgement ----------------------------------------------
+# The row is HIDE-UNLESS-READY, and the failure mode is painting a red mark on
+# every Mac without a local daemon. Pin the whole chain and its guards.
+/usr/bin/python3 - "$ROOT" <<'PYEOF'
+import io, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+helper = io.open(root / "HelperSources/main.swift", encoding="utf-8").read()
+models = io.open(root / "Sources/Models.swift", encoding="utf-8").read()
+views  = io.open(root / "Sources/Views.swift", encoding="utf-8").read()
+
+assert 'features["ollama"] as? Bool' in helper, 'ready must come from features.ollama'
+# Scoped to the ollamaReady closure: the Doctor check also reads models["ready"],
+# so a bare substring is satisfied even with the statusDetails gate gutted --
+# caught by mutation M1 staying green against the loose form.
+r = helper.index('"ollamaReady": {')
+closure = helper[r:r+700]
+assert 'models["ready"] as? Bool' in closure, 'statusDetails ready must ALSO require ollama_models.ready (TTL-lag gate)'
+assert 'featureFlag && modelsReady' in closure, 'the gate must be the conjunction of BOTH bools'
+assert 'health?["ollama"] as? Bool' not in helper, \
+    'the top-level ollama key is a spread-check STRING ("fetch failed"); a Bool read is always nil'
+o = helper.index('"ollamaModel": {')
+assert 'versionToken' not in helper[o:o+400], 'the model tag must never route through versionToken'
+assert 'ollamaReady = details["ollamaReady"]?.bool' in models
+assert 'model.status.ollamaReady == true' in views, 'the row renders only on an explicit true'
+assert 'good: model.status.ollamaReady ?? false' not in views, \
+    'coalescing nil to false paints a red mark on every pre-6.39.0 server'
+assert 'add("Ollama", "ok", tag)' in helper, 'doctor emits ok+tag only; no warning row for daemonless Macs'
+print('    ollama acknowledgement: both-bools gate, no versionToken, hide-unless-ready pinned')
+PYEOF
+
 # --- 0.5.70 speaker-model banner -----------------------------------------------
 # The failure this guards is INVISIBILITY, so the test pins the whole chain:
 # helper reads the field, model exposes it, view renders on it. Any link broken

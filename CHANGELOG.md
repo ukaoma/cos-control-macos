@@ -1,3 +1,20 @@
+## 0.5.74 (build 112)
+
+The panel now says when a local Ollama model is live.
+
+An "Ollama · {model}" row appears in About, and a matching line in Doctor, when
+the server reports a local daemon ready with a pulled model -- and both vanish
+entirely otherwise. No row is the correct render for "no local daemon": painting
+a red mark on every Mac without Ollama would imply it is expected setup, and a
+pre-6.39.0 server (which never reports the keys) must not look broken.
+
+Three properties are pinned by helper self-tests: a healthy server with the
+daemon down is not a provider capability failure; a pre-6.39.0 health body stays
+clean; and the model tag never routes through version parsing, which would
+truncate "qwen2.5-coder" to "2.5". The health read ignores the top-level
+`ollama` key deliberately -- it is a spread check STRING ("fetch failed" on a
+daemonless box), not a boolean.
+
 ## 0.5.73 (build 111)
 
 Two environment keys for the new local-model support in server 6.39.0.
