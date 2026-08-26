@@ -106,6 +106,14 @@ enum ActivitySection: String, CaseIterable, Identifiable {
 }
 
 
+private enum MessagesSubview: String, CaseIterable, Identifiable {
+    case recent
+    case archive
+
+    var id: String { rawValue }
+    var title: String { self == .archive ? "Archive" : "Recent" }
+}
+
 private enum SpeakerSubview: String, CaseIterable, Identifiable {
     case meetings
     case voices
@@ -144,6 +152,7 @@ struct ActivityWindow: View {
     @State private var selectedVoiceName: String?
     @State private var voiceParentName: String?
     @State private var speakerSubview: SpeakerSubview = .meetings
+    @State private var messagesSubview: MessagesSubview = .recent
     /// Name being typed into Add a voice. Local to the view: it is transient and
     /// must not survive a tab switch.
     @State private var addVoiceName = ""
@@ -1072,6 +1081,94 @@ struct ActivityWindow: View {
         model.openSpeakerReview(next)
     }
 
+    /// Archived days, or search results when a search is active. Results REPLACE
+    /// the day list rather than sitting beside it: a hit is a day, so showing both
+    /// would render the same rows twice under two headings.
+    @ViewBuilder private var archiveBody: some View {
+        if let notice = model.archiveNotice {
+            VStack(spacing: 8) {
+                Image(systemName: model.archiveRouteAbsent ? "arrow.up.circle" : "exclamationmark.triangle")
+                    .font(.system(size: 22)).foregroundStyle(.secondary)
+                Text(notice)
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: 420)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if model.archiveLoading {
+            centeredProgress("Reading the archive…")
+        } else if !model.archiveHits.isEmpty {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if let meta = model.archiveSearchMeta {
+                        Text(meta)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 14).padding(.bottom, 6)
+                    }
+                    ForEach(model.archiveHits) { hit in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 8) {
+                                Text(hit.date).font(.system(size: 12, weight: .semibold))
+                                Text("\(hit.matches) match\(hit.matches == 1 ? "" : "es")")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            }
+                            ForEach(Array(hit.snippets.enumerated()), id: \.offset) { _, snippet in
+                                Text(snippet)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(3)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        Divider().opacity(0.4)
+                    }
+                }
+                .padding(.top, 4)
+            }
+        } else if model.archiveDays.isEmpty {
+            emptyState(.messages, text: model.archiveQuery.isEmpty
+                       ? "Nothing is archived yet. Conversations move here at the end of each day."
+                       : "No archived day matched that search.")
+        } else {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if let meta = model.archiveSearchMeta {
+                        Text(meta)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 14).padding(.bottom, 6)
+                    }
+                    ForEach(model.archiveDays) { day in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 8) {
+                                Text(day.date).font(.system(size: 12, weight: .semibold))
+                                // Volume at a glance. A date list showing only the
+                                // latest line cannot tell a busy day from an idle one.
+                                Text(day.countsSummary)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let summary = day.summary, !summary.isEmpty {
+                                Text(summary)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        Divider().opacity(0.4)
+                    }
+                }
+                .padding(.top, 4)
+            }
+        }
+    }
+
     private var messagesList: some View {
         VStack(spacing: 0) {
             sectionHeader(
@@ -1083,7 +1180,41 @@ struct ActivityWindow: View {
                 secondaryAction: { model.copyHandoff() },
                 secondaryDisabled: model.recentMessages.isEmpty
             )
-            if model.recentGlassesStatus == .loading {
+            // Recent vs Archive. Recent is what the glasses hold now; Archive is the
+            // daily conversation store, which on a working install runs to months of
+            // history that nothing in Control could reach before 0.5.72.
+            HStack(spacing: 12) {
+                Picker("Message view", selection: $messagesSubview) {
+                    ForEach(MessagesSubview.allCases) { item in Text(item.title).tag(item) }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 260)
+                .onChange(of: messagesSubview) { _, next in
+                    selectedTurnID = nil
+                    if next == .archive, model.archiveDays.isEmpty {
+                        Task { await model.loadArchiveDays() }
+                    }
+                }
+
+                if messagesSubview == .archive {
+                    TextField("Search the archive", text: $model.archiveQuery)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 260)
+                        .onSubmit { Task { await model.runArchiveSearch() } }
+                    if model.archiveSearching { ProgressView().controlSize(.small) }
+                    if !model.archiveHits.isEmpty || !model.archiveQuery.isEmpty {
+                        Button("Clear") { model.clearArchiveSearch() }
+                            .buttonStyle(.link).font(.system(size: 11))
+                    }
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+
+            if messagesSubview == .archive {
+                archiveBody
+            } else if model.recentGlassesStatus == .loading {
                 centeredProgress("Loading messages…")
             } else if model.recentMessages.isEmpty {
                 emptyState(.messages, text: messagesEmptyCopy)

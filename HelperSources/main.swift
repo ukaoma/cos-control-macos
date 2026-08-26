@@ -480,6 +480,9 @@ final class COSControlHelper {
         case "voice-directory": try emitVoiceDirectory(args: args)
         case "voice-merge": try emitVoiceMerge(args: args)
         case "voice-ext-audio": try emitVoiceExtAudio()
+        case "archive-dates": try emitArchiveDates()
+        case "archive-search": try emitArchiveSearch(args: args)
+        case "archive-day": try emitArchiveDay(args: args)
         case "voice-enroll-ext": try emitVoiceEnrollExt(args: args)
         case "meeting-relabel": try emitMeetingRelabel(args: args)
         case "meeting-deattribute": try emitMeetingDeattribute(args: args)
@@ -8910,6 +8913,130 @@ final class COSControlHelper {
     /// already-known voice inside a meeting review. A user whose transcript came
     /// back entirely `[Ext]` had neither: nothing to name, and no reason to know
     /// the voice command existed. Chelsie hit exactly that on 2026-08-24.
+    // MARK: Archive (0.5.72)
+    //
+    // Three read-only proxies onto the server's daily conversation archive. Every
+    // one of them must survive an OLDER server that predates the route: COS Control
+    // updates independently of the npm server, so "route_absent" is a normal state
+    // to render, not an error to raise.
+
+    private func emitArchiveDates() throws {
+        let token = try speakerReviewToken()
+
+        // PROBE BEFORE LISTING. On a server that predates the archive index,
+        // GET /api/archive builds its summaries by JSON.parsing every day file --
+        // measured at 1.2 GB heap / 2.3 GB RSS for the largest single day on the
+        // real corpus, on the same process that runs the wearer's live session.
+        // Opening this view must never be what triggers that.
+        //
+        // The probe is the search route, which only the fixed server has. It is
+        // cheap (a two-character query, and an old server rejects it before doing
+        // any work) and it fails in the one way we can recognise: no
+        // /archive/search means the path falls through to /archive/:date and comes
+        // back 400 "Invalid date".
+        if let probe = request("/api/archive/search?q=__cos_probe__&limit=1", token: token, timeout: 20) {
+            let absent = probe.status == 404
+                || (probe.status == 400 && (probe.body?["error"] as? String) == "Invalid date")
+            if absent {
+                emit(ok: true, message: "Update the COS server to browse the archive.", details: [
+                    "state": "route_absent", "days": [],
+                ])
+                return
+            }
+        }
+
+        guard let response = request("/api/archive", token: token, timeout: 60) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if response.status == 404 {
+            emit(ok: true, message: "Update the COS server to browse the archive.", details: [
+                "state": "route_absent", "days": [],
+            ])
+            return
+        }
+        guard response.status == 200, let body = response.body else {
+            throw HelperError.message("Request failed (\(response.status))")
+        }
+        let days = (body["archives"] as? [[String: Any]]) ?? []
+        emit(ok: true, message: days.isEmpty ? "No archived days yet." : "\(days.count) archived day(s)", details: [
+            "state": "ready", "days": days,
+        ])
+    }
+
+    private func emitArchiveSearch(args: [String]) throws {
+        guard let q = option("--q", in: args), q.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 else {
+            throw HelperError.message("Type at least two characters to search.")
+        }
+        var path = "/api/archive/search?q=" + (q.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? q)
+        if let from = option("--from", in: args) { path += "&from=" + from }
+        if let to = option("--to", in: args) { path += "&to=" + to }
+        if let limit = option("--limit", in: args) { path += "&limit=" + limit }
+
+        let token = try speakerReviewToken()
+        // A cold index plus a wide window is a real multi-second scan on a large
+        // archive, so this timeout is generous on purpose.
+        guard let response = request(path, token: token, timeout: 120) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        // An older server does NOT 404 here. It has no /archive/search, so Express
+        // falls the path through to /archive/:date with date == "search", and that
+        // route's param validator answers 400 "Invalid date". Verified live against
+        // 6.37.3, which returned exactly that. Treat both as route_absent.
+        //
+        // The discriminator is safe because the current route never emits "Invalid
+        // date": its own 400s read "Invalid from", "Invalid to", or the minimum
+        // query-length message.
+        let oldServerFallthrough = response.status == 400
+            && (response.body?["error"] as? String) == "Invalid date"
+        if response.status == 404 || oldServerFallthrough {
+            emit(ok: true, message: "Update the COS server to search the archive.", details: [
+                "state": "route_absent", "hits": [],
+            ])
+            return
+        }
+        guard response.status == 200, let body = response.body else {
+            let reason = (response.body?["error"] as? String) ?? "Request failed (\(response.status))"
+            throw HelperError.message(reason)
+        }
+        let hits = (body["hits"] as? [[String: Any]]) ?? []
+        emit(ok: true, message: hits.isEmpty ? "No matches." : "\(hits.count) day(s) matched", details: [
+            "state": "ready",
+            "hits": hits,
+            "truncated": body["truncated"] as? Bool ?? false,
+            "scannedDays": body["scannedDays"] as? Int ?? 0,
+            "elapsedMs": body["elapsedMs"] as? Int ?? 0,
+        ])
+    }
+
+    private func emitArchiveDay(args: [String]) throws {
+        guard let date = option("--date", in: args), isArchiveDateString(date) else {
+            throw HelperError.message("Pass --date as YYYY-MM-DD.")
+        }
+        let token = try speakerReviewToken()
+        guard let response = request("/api/archive/\(date)/chats", token: token, timeout: 60) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if response.status == 404 {
+            emit(ok: true, message: "No archive for \(date).", details: ["state": "absent", "chats": []])
+            return
+        }
+        guard response.status == 200, let body = response.body else {
+            throw HelperError.message("Request failed (\(response.status))")
+        }
+        emit(ok: true, message: "Archive for \(date)", details: [
+            "state": "ready", "date": date, "chats": (body["chats"] as? [[String: Any]]) ?? [],
+        ])
+    }
+
+    /// Mirrors the server's own contract. The date reaches a filesystem path on the
+    /// other side, so a malformed one is rejected here rather than forwarded.
+    private func isArchiveDateString(_ value: String) -> Bool {
+        value.range(of: "^\\d{4}-\\d{2}-\\d{2}$", options: .regularExpression) != nil
+    }
+
     private func emitVoiceExtAudio() throws {
         let token = try speakerReviewToken()
         guard let response = request("/api/voice/ext-audio", token: token, timeout: 30) else {

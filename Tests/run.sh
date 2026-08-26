@@ -475,6 +475,55 @@ assert 'model.dismissNotice(id)' in views, 'banner must offer dismiss'
 print('    publisher notice: parsed pre-return, minBuild-gated, update-independent, dismissible')
 PYEOF
 
+# --- 0.5.72 archive browser ---------------------------------------------------
+# Same shape as the other panel guards: tie the OPENER to the thing it renders and
+# pin the properties that would regress silently.
+#
+# The route_absent branch is the load-bearing one. COS Control updates
+# independently of the npm server, and an older server does NOT 404 for
+# /archive/search -- it falls the path through to /archive/:date and answers 400
+# "Invalid date". Verified live against 6.37.3. Without that discriminator a user
+# on an older server sees "Invalid date" instead of "update your server".
+/usr/bin/grep -q 'case "archive-dates"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "archive-search"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "archive-day"' "$ROOT/HelperSources/main.swift"
+/usr/bin/python3 - "$ROOT" <<'PYEOF'
+import io, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+helper = io.open(root / "HelperSources/main.swift", encoding="utf-8").read()
+model  = io.open(root / "Sources/ControllerModel.swift", encoding="utf-8").read()
+view   = io.open(root / "Sources/ActivityWindow.swift", encoding="utf-8").read()
+models = io.open(root / "Sources/Models.swift", encoding="utf-8").read()
+
+assert 'response.status == 400' in helper and '"Invalid date"' in helper, \
+    'search must treat an older server\'s 400 "Invalid date" as route_absent'
+assert 'response.status == 404 || oldServerFallthrough' in helper, \
+    'both the 404 and the 400 fallthrough must reach route_absent'
+assert 'isArchiveDateString(date)' in helper, 'a date reaching a filesystem path must be validated'
+# The listing must PROBE before it lists. On a server predating the archive index,
+# GET /api/archive parses every day file (1.2 GB on the real corpus). Opening the
+# view must never be what triggers that.
+assert '__cos_probe__' in helper, 'archive-dates must probe the search route before calling /api/archive'
+probe_at = helper.index('__cos_probe__')
+list_at = helper.index('request("/api/archive", token: token')
+assert probe_at < list_at, 'the probe must run BEFORE the expensive listing call'
+
+assert 'func loadArchiveDays()' in model and 'func runArchiveSearch()' in model
+assert 'archiveQuery.trimmingCharacters' in model, 'search must reject a too-short query before calling out'
+
+assert 'messagesSubview == .archive' in view, 'the Archive subview must render on its own flag'
+assert 'archiveBody' in view, 'the picker must reach a body'
+assert '.onSubmit { Task { await model.runArchiveSearch() } }' in view, \
+    'search runs on submit, never per keystroke -- a wide window is a multi-second server scan'
+# `day.countsSummary`, not bare 'countsSummary': meeting.countsSummary also lives
+# in this file, so the loose form is satisfied by an unrelated row and the
+# assertion survives deleting the archive counts entirely. Caught by mutating the
+# archive row and watching the suite stay green.
+assert 'Text(day.countsSummary)' in view, 'the ARCHIVE day list must show chat/message VOLUME, not just a date'
+assert 'chat\\(chatCount == 1 ? "" : "s")' in models, 'countsSummary must report chat count'
+print('    archive browser: helper, model, view, and route_absent discriminator wired')
+PYEOF
+
 # --- 0.5.70 speaker-model banner -----------------------------------------------
 # The failure this guards is INVISIBILITY, so the test pins the whole chain:
 # helper reads the field, model exposes it, view renders on it. Any link broken

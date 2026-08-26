@@ -2050,6 +2050,54 @@ struct VoiceDirectoryPerson: Identifiable, Sendable, Hashable {
 /// meeting that person appears in — Miles: "I thought that what we wanted to do
 /// was make this much more segmented." A voice misheard in one room is not
 /// evidence that every past attribution was wrong.
+/// One archived day, from the server's sidecar index. Counts come from the index,
+/// never from parsing the day — a single real day can cost gigabytes to
+/// materialise, which is why the index exists at all.
+struct ArchiveDay: Identifiable, Sendable, Hashable {
+    let date: String
+    let summary: String?
+    let chatCount: Int
+    let exchangeCount: Int
+
+    var id: String { date }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let date = o["date"]?.string, !date.isEmpty else { return nil }
+        self.date = date
+        summary = o["summary"]?.string
+        chatCount = o["chatCount"]?.int ?? 0
+        exchangeCount = o["exchangeCount"]?.int ?? 0
+    }
+
+    /// Miles, 2026: a date list must show VOLUME, not just the latest line —
+    /// "date, N chats, topic". Without the counts there is no way to tell a busy
+    /// day from an idle one at a glance.
+    var countsSummary: String {
+        let chats = "\(chatCount) chat\(chatCount == 1 ? "" : "s")"
+        let ex = "\(exchangeCount) message\(exchangeCount == 1 ? "" : "s")"
+        return "\(chats) · \(ex)"
+    }
+}
+
+/// A day that matched an archive search, with the text around the match. Hits are
+/// attributed to a DATE, not a chat: the server scans day files as raw bytes and
+/// never materialises one, so chat-level attribution is not available from a
+/// search. Opening the day loads its chats through the normal route.
+struct ArchiveHit: Identifiable, Sendable, Hashable {
+    let date: String
+    let matches: Int
+    let snippets: [String]
+
+    var id: String { date }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let date = o["date"]?.string, !date.isEmpty else { return nil }
+        self.date = date
+        matches = o["matches"]?.int ?? 0
+        snippets = (o["snippets"]?.array ?? []).compactMap { $0.string }
+    }
+}
+
 enum CorrectionScope: String, Sendable, CaseIterable, Identifiable {
     case thisMeeting
     case everywhere

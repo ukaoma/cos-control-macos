@@ -131,6 +131,18 @@ final class ControllerModel: ObservableObject {
     /// The session the user is currently naming, if any. Mirrors `namingVoice`.
     @Published var addingVoiceSession: String?
     @Published var addVoiceBusy = false
+
+    // MARK: Archive (0.5.72)
+    @Published var archiveDays: [ArchiveDay] = []
+    @Published var archiveHits: [ArchiveHit] = []
+    @Published var archiveLoading = false
+    @Published var archiveSearching = false
+    @Published var archiveQuery = ""
+    @Published var archiveNotice: String?
+    /// True when the server predates the archive routes. Rendered as guidance, not
+    /// as an error: COS Control updates independently of the npm server.
+    @Published var archiveRouteAbsent = false
+    @Published var archiveSearchMeta: String?
     @Published var addVoiceResult: String?
     @Published var pendingCorrection: PendingCorrection?
     /// Scope the reviewer has chosen for the next rename. Defaults to this
@@ -2065,6 +2077,63 @@ final class ControllerModel: ObservableObject {
     /// Even scoped, one session can hold more than one unknown speaker — the
     /// view says so before the user commits, because the audio is CONSUMED on
     /// success and there is no undo.
+    func loadArchiveDays() async {
+        archiveLoading = true
+        defer { archiveLoading = false }
+        do {
+            let response = try await helper.run(["archive-dates"])
+            archiveRouteAbsent = response.details["state"]?.string == "route_absent"
+            archiveDays = (response.details["days"]?.array ?? []).compactMap(ArchiveDay.init)
+            archiveNotice = archiveRouteAbsent ? response.message : nil
+        } catch {
+            archiveDays = []
+            archiveNotice = error.localizedDescription
+        }
+    }
+
+    /// Literal search across archived days. Deliberately NOT fired per keystroke:
+    /// a wide window is a real multi-second scan on the server, so this runs on
+    /// submit only.
+    func runArchiveSearch() async {
+        let q = archiveQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= 2 else {
+            archiveNotice = "Type at least two characters to search."
+            archiveHits = []
+            return
+        }
+        archiveSearching = true
+        defer { archiveSearching = false }
+        archiveNotice = nil
+        do {
+            let response = try await helper.run(["archive-search", "--q", q])
+            archiveRouteAbsent = response.details["state"]?.string == "route_absent"
+            if archiveRouteAbsent {
+                archiveHits = []
+                archiveNotice = response.message
+                archiveSearchMeta = nil
+                return
+            }
+            archiveHits = (response.details["hits"]?.array ?? []).compactMap(ArchiveHit.init)
+            let scanned = response.details["scannedDays"]?.int ?? 0
+            let ms = response.details["elapsedMs"]?.int ?? 0
+            let truncated = response.details["truncated"]?.bool ?? false
+            archiveSearchMeta = archiveHits.isEmpty
+                ? "No matches in \(scanned) day(s)."
+                : "\(archiveHits.count) day(s)\(truncated ? "+" : "") · scanned \(scanned) · \(ms) ms"
+        } catch {
+            archiveHits = []
+            archiveNotice = error.localizedDescription
+            archiveSearchMeta = nil
+        }
+    }
+
+    func clearArchiveSearch() {
+        archiveQuery = ""
+        archiveHits = []
+        archiveSearchMeta = nil
+        archiveNotice = nil
+    }
+
     func addVoice(named name: String, from sessionId: String) async {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 2 else {

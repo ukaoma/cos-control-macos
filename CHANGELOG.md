@@ -1,3 +1,40 @@
+## 0.5.72 (build 110)
+
+Six months of conversation you could store but not reach.
+
+COS archives every day's conversations. On a working install that is 175 day
+files going back six months, and nothing in COS Control could open any of it --
+no helper command touched the archive at all.
+
+Messages now has a Recent / Archive switch. Archive lists every archived day with
+its volume (chats and messages, not just a date, so a busy day is distinguishable
+from an idle one at a glance) and searches the whole store by text. Search runs on
+submit rather than per keystroke, because a wide window is a real multi-second
+scan on the server, not a local filter.
+
+A hit is attributed to a DAY, with the text around each match. Not to a chat: the
+server scans day files as raw bytes and never materialises one, which is what
+makes searching six months affordable at all.
+
+OPENING THIS VIEW WILL NOT WAKE A SLEEPING GIANT. On a server predating the
+archive index, GET /api/archive builds its summaries by parsing every day file --
+1.2 GB on the real corpus, and 2.3 GB RSS for the largest single day, on the same
+process running the wearer's live session. So the listing PROBES the search route
+first and refuses with "update your server" rather than making the request. An
+older server does not 404 for that probe; it falls the path through to
+/archive/:date and answers 400 "Invalid date", which is the signature this checks
+for. Verified live against 6.37.3.
+
+Until a server carrying the archive routes is published, Archive shows that update
+notice. Everything else in this build is unaffected.
+
+Four guards pinned in Tests/run.sh, each mutation-verified red: the 400
+fallthrough, probe-before-list ordering, search-on-submit, and the day list's
+volume counts. Two of those pins were decoration when first written -- one loose
+substring was satisfied by an unrelated row elsewhere in the same file, and one
+mutation never applied at all -- and were tightened until the mutation actually
+turned the suite red.
+
 ## 0.5.71 (build 109)
 
 A way to tell people what they can now do.
