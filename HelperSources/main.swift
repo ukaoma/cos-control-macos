@@ -286,6 +286,7 @@ final class COSControlHelper {
         "COS_CLAUDE_MCP_CONFIG",
         "COS_CURSOR_AGENT_BIN",
         "COS_OLLAMA_MODEL",
+        "COS_OLLAMA_THINK",
         "COS_OLLAMA_HOST",
         "COS_SCRIPTS_DIR",
         "COS_CONTEXT_DIR",
@@ -10099,6 +10100,8 @@ final class COSControlHelper {
                    "COS_THREAD_ATTACH_ENABLED must be allowlisted or Update Server silently drops Continue")
         try expect(providerEnvironmentKeys.contains("COS_OLLAMA_MODEL"),
                    "COS_OLLAMA_MODEL must be allowlisted or Update Server silently drops a pinned local model")
+        try expect(providerEnvironmentKeys.contains("COS_OLLAMA_THINK"),
+                   "COS_OLLAMA_THINK must be allowlisted or an opted-in thinking budget silently drops on Update Server")
         try expect(providerEnvironmentKeys.contains("COS_OLLAMA_HOST"),
                    "COS_OLLAMA_HOST must be allowlisted or Update Server silently drops the loopback override")
 

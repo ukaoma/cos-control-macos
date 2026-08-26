@@ -1,5 +1,17 @@
 ## 0.5.77 (build 115)
 
+One environment key for server 6.39.3: COS_OLLAMA_THINK.
+
+Server 6.39.3 turns local-model thinking off by default (a thinking-class
+model spent 98 seconds of hidden reasoning on a two-second answer) and reads
+COS_OLLAMA_THINK for anyone who wants it back ("1", or a budget: low, medium,
+high, max). The helper builds the LaunchAgent environment from a fixed key
+list, so without this entry an opted-in thinking budget silently vanished on
+every Update Server. Pinned by a self-test assertion beside the
+COS_OLLAMA_MODEL one from 0.5.73, which was this exact lesson.
+
+## 0.5.77 (build 115)
+
 Review speakers no longer runs off the window.
 
 Add a voice lists the unrecognized audio the server is holding, and the server
