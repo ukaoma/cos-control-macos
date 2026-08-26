@@ -1027,6 +1027,12 @@ struct AppUpdateInfo: Sendable {
     var url: String?
     var sha256: String?
     var notes: String?
+    /// Publisher notice, independent of whether an update is offered. Someone who
+    /// just updated is up to date, so gating this on `updateAvailable` would hide
+    /// it from the exact audience it is written for.
+    var noticeId: String?
+    var noticeTitle: String?
+    var noticeBody: String?
     /// newer / upToDate / killSwitch / unreachable / malformed / idle / requiresMacOS
     var reason: String = "idle"
 
@@ -1039,11 +1045,18 @@ struct AppUpdateInfo: Sendable {
         url = details["url"]?.string
         sha256 = details["sha256"]?.string
         notes = details["notes"]?.string
+        noticeId = details["noticeId"]?.string
+        noticeTitle = details["noticeTitle"]?.string
+        noticeBody = details["noticeBody"]?.string
         reason = details["reason"]?.string ?? "idle"
     }
 
     /// Only a reachable, well-formed, genuinely-newer appcast may surface UI.
     var shouldSurface: Bool { updateAvailable && latestVersion != nil }
+
+    /// Deliberately NOT gated on `shouldSurface`. The helper already applied
+    /// minBuild, so anything that arrives here is meant for this build.
+    var hasNotice: Bool { noticeId != nil && noticeTitle != nil && noticeBody != nil }
 }
 
 // MARK: - Speaker review (0.4.0)

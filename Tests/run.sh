@@ -443,6 +443,38 @@ echo "    add a voice: helper, model, view, and safety copy wired"
 /usr/bin/grep -q 'func checkForAppUpdateManually' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'Check for updates' "$ROOT/Sources/Views.swift"
 
+# --- 0.5.71 publisher notice --------------------------------------------------
+# The property that matters is INDEPENDENCE FROM updateAvailable. The audience is
+# people who just finished updating, so any coupling to the update-offer path
+# hides the notice from exactly the readers it is written for.
+/usr/bin/python3 - "$ROOT" <<'PYEOF'
+import io, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+helper = io.open(root / "HelperSources/main.swift", encoding="utf-8").read()
+models = io.open(root / "Sources/Models.swift", encoding="utf-8").read()
+ctrl   = io.open(root / "Sources/ControllerModel.swift", encoding="utf-8").read()
+views  = io.open(root / "Sources/Views.swift", encoding="utf-8").read()
+
+# The notice must be parsed BEFORE the early returns, or killSwitch/malformed/
+# requiresMacOS silently swallow it.
+i_notice = helper.index('details["noticeId"] = noticeId')
+i_kill   = helper.index('details["reason"] = "killSwitch"')
+assert i_notice < i_kill, 'notice must be attached BEFORE the killSwitch early return'
+assert 'currentBuild >= minBuild' in helper, 'minBuild must gate the notice to builds that have the feature'
+
+assert 'noticeId = details["noticeId"]?.string' in models, 'model must parse noticeId'
+assert 'var hasNotice: Bool' in models, 'model must expose hasNotice'
+assert 'updateAvailable && ' not in models.split('var hasNotice')[1][:200], \
+    'hasNotice must NOT depend on updateAvailable'
+
+assert 'dismissedNoticeIds' in ctrl and 'UserDefaults' in ctrl, 'dismissal must persist'
+assert 'dismissedNoticeIds.contains(id)' in ctrl, 'dismissal must be keyed per notice id'
+
+assert 'noticeBanner' in views.split('updateBanner')[1][:400], 'banner must render in the panel'
+assert 'model.dismissNotice(id)' in views, 'banner must offer dismiss'
+print('    publisher notice: parsed pre-return, minBuild-gated, update-independent, dismissible')
+PYEOF
+
 # --- 0.5.70 speaker-model banner -----------------------------------------------
 # The failure this guards is INVISIBILITY, so the test pins the whole chain:
 # helper reads the field, model exposes it, view renders on it. Any link broken

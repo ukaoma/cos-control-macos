@@ -63,6 +63,22 @@ final class ControllerModel: ObservableObject {
     @Published var recentGlassesStatus: RecentGlassesStatus = .idle
     @Published var recentGlassesDate: String?
     @Published var appUpdate = AppUpdateInfo()
+
+    /// Dismissed notice ids. Keyed by id so a NEW notice appears even though an
+    /// older one was dismissed, and re-reading the same one never nags.
+    @Published var dismissedNoticeIds: Set<String> = Set(
+        UserDefaults.standard.stringArray(forKey: "dismissedNoticeIds") ?? [])
+
+    var visibleNotice: AppUpdateInfo? {
+        guard appUpdate.hasNotice, let id = appUpdate.noticeId,
+              !dismissedNoticeIds.contains(id) else { return nil }
+        return appUpdate
+    }
+
+    func dismissNotice(_ id: String) {
+        dismissedNoticeIds.insert(id)
+        UserDefaults.standard.set(Array(dismissedNoticeIds), forKey: "dismissedNoticeIds")
+    }
     /// True only while a MANUAL check is in flight, so the button can show it is
     /// working. The 6-hourly background check deliberately shows nothing.
     @Published var updateCheckInFlight = false

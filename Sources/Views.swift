@@ -850,6 +850,7 @@ struct ControlPanel: View {
             VStack(alignment: .leading, spacing: 14) {
                 header
                 updateBanner
+                noticeBanner
                 activityLauncher
                 statusCard
                 controls
@@ -1473,6 +1474,43 @@ struct ControlPanel: View {
     /// Renders ONLY when the appcast advertises a genuinely newer build; offline,
     /// up-to-date, killSwitch and malformed all render nothing at all. Install
     /// downloads, SHA-checks, and swaps this app. The glasses server is not touched.
+    /// A publisher notice from the appcast. Sits with the update banner at the top
+    /// of the panel because that is where release-time news already lives, but it
+    /// is NOT gated on an update being available: the person who most needs to
+    /// read "you can now do X" is the one who just finished updating.
+    ///
+    /// Dismissal is per notice id, so a later notice still appears and this one
+    /// never comes back.
+    @ViewBuilder private var noticeBanner: some View {
+        if let notice = model.visibleNotice, let id = notice.noticeId {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: "sparkles").foregroundStyle(COSPalette.gold)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(notice.noticeTitle ?? "")
+                        .font(.caption.weight(.semibold))
+                    Text(notice.noticeBody ?? "")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button {
+                    model.dismissNotice(id)
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .layoutPriority(1)
+                .help("Dismiss")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(11)
+            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11).stroke(COSPalette.gold.opacity(0.45), lineWidth: 1))
+        }
+    }
+
     @ViewBuilder private var updateBanner: some View {
         if model.appUpdate.shouldSurface {
             HStack(alignment: .firstTextBaseline, spacing: 10) {

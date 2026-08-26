@@ -5703,6 +5703,25 @@ final class COSControlHelper {
             return
         }
 
+        // A publisher notice, attached BEFORE every early return below. It must
+        // reach people who are already UP TO DATE -- they just updated, which is
+        // exactly when a "here is what you can now do" message is worth reading --
+        // so it cannot ride the updateAvailable path.
+        //
+        // minBuild gates it to builds that actually have the feature, so someone
+        // on an older Control is never told about something they cannot use.
+        if let notice = appcast["notice"] as? [String: Any],
+           let noticeId = notice["id"] as? String,
+           let noticeTitle = notice["title"] as? String,
+           let noticeBody = notice["body"] as? String {
+            let minBuild = notice["minBuild"] as? Int ?? 0
+            if currentBuild >= minBuild {
+                details["noticeId"] = noticeId
+                details["noticeTitle"] = noticeTitle
+                details["noticeBody"] = noticeBody
+            }
+        }
+
         if let kill = appcast["killSwitch"] as? [String: Any], kill["disableAutoUpdate"] as? Bool == true {
             details["reason"] = "killSwitch"
             details["killSwitch"] = true

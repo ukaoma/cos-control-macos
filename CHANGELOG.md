@@ -1,3 +1,22 @@
+## 0.5.71 (build 109)
+
+A way to tell people what they can now do.
+
+The appcast can carry a `notice` block: an id, a title, a body, and a minBuild.
+COS Control shows it as a dismissible banner at the top of the panel, beside the
+update banner, and it is edited on the server rather than shipped in a build.
+
+It is deliberately NOT gated on an update being available. Somebody who just
+finished updating is up to date, and that is precisely the moment a "here is what
+you can now do" message is worth reading. Gating it on `updateAvailable` would
+hide it from the only audience it is for. It is parsed before the killSwitch,
+malformed and requiresMacOS returns for the same reason, so those paths cannot
+swallow it.
+
+`minBuild` keeps it off builds that lack the feature being announced, so nobody
+is told about something they cannot use. Dismissal is stored per notice id, so a
+later notice still appears and a dismissed one never returns.
+
 ## 0.5.70 (build 108)
 
 Named speakers failed silently, in the one panel built to fix them.
