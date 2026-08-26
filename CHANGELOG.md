@@ -1,6 +1,10 @@
-## 0.5.77 (build 115)
+## 0.5.78 (build 116)
 
 One environment key for server 6.39.3: COS_OLLAMA_THINK.
+
+(Renumbered from a 0.5.77 collision: a parallel session published 0.5.77
+with the Review speakers overflow fix while this entry was being cut. Two
+different binaries must never share a version string.)
 
 Server 6.39.3 turns local-model thinking off by default (a thinking-class
 model spent 98 seconds of hidden reasoning on a two-second answer) and reads
