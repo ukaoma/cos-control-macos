@@ -1,3 +1,30 @@
+## 0.5.70 (build 108)
+
+Named speakers failed silently, in the one panel built to fix them.
+
+The 26 MB voiceprint model that separates speakers is fetched by Guided Setup and
+by nothing else. Installing COS Control does not fetch it and neither does
+Update Server: both stage the server with `npm install --ignore-scripts` and
+never execute `bin/cli.cjs`, and the package ships no install hook. Without the
+model, diarization falls back to wearer/Ext.
+
+That produced the worst version of the failure. Open a five-person meeting in
+Review speakers, see two voices called Me and Ext, and get no reason. The server
+has reported `speaker_id` on /api/health the whole time. Control had never read
+it.
+
+Control now reads it and, when it is not `active`, the Review speakers card
+carries a banner saying every voice stays Me or Ext until the model is
+installed, with a button that opens Guided Setup. An older server that predates
+the field reports nothing and the banner stays hidden, so upgrading does not
+start nagging.
+
+The field is read from the TOP LEVEL of the health body. health.ts assigns
+`checks.speaker_id` but spreads `checks` into the response, so the nested path
+the source implies is always nil. Wiring it from the assignment site would have
+shipped a banner that could never appear. Verified against the live payload
+first, and pinned in Tests/run.sh.
+
 # Changelog
 
 ## 0.5.69 (build 107)

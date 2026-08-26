@@ -2233,6 +2233,12 @@ final class COSControlHelper {
             "livePreviewModel": liveTranscription?["effectiveModel"] ?? NSNull(),
             "livePreviewReady": liveTranscription?["ready"] ?? NSNull(),
             "livePreviewDegraded": previewDegraded,
+            // Read from the TOP LEVEL of /api/health, not health["checks"].
+            // health.ts assigns `checks.speaker_id` but spreads `checks` into the
+            // response body, so the nested path a source read suggests is always
+            // nil -- and a banner keyed on nil never fires. Verified against the
+            // live payload before wiring, not inferred from the assignment site.
+            "speakerId": (health?["speaker_id"] as? String) ?? NSNull(),
             "liveCommitModel": liveTranscription?["committedModel"] ?? NSNull(),
             "transcriptionRequestedTier": configuredRequestedTier ?? NSNull(),
             "transcriptionEffectiveTier": liveTranscription?["effectiveTier"] ?? NSNull(),

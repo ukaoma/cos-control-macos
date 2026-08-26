@@ -1026,6 +1026,40 @@ struct ControlPanel: View {
                 }
             }
 
+            // Named diarization depends on a 26 MB voiceprint model that NO install
+            // or update path fetches: COS Control stages the server with
+            // `npm install --ignore-scripts` and never executes bin/cli.cjs, and the
+            // package ships no install hook. Guided Setup is the only route to it.
+            //
+            // Without this the failure was invisible in the one place it matters:
+            // the panel listed two voices for a five-person meeting, called them Me
+            // and Ext, and said nothing. /api/health has reported the state all
+            // along and Control had never read it.
+            if model.status.speakerIdNeedsSetup {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(model.status.speakerId == "error"
+                            ? "Voiceprint model failed to load"
+                            : "Named speakers are off",
+                          systemImage: "person.crop.circle.badge.exclamationmark")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(COSPalette.amber)
+                    Text(model.status.speakerId == "error"
+                         ? "The voiceprint model is present but did not load. Every voice shows as Me or Ext until it does."
+                         : "Every voice shows as Me or Ext until the voiceprint model is installed. Guided Setup fetches it (about 26 MB).")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Run Guided Setup", systemImage: "terminal") {
+                        showGuidedSetupTier = true
+                    }
+                    .font(.system(size: 11))
+                    .controlSize(.small)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 6))
+            }
+
             if model.reviewableMeetings.isEmpty {
                 Text(model.reviewError ?? "Name the voices in a saved meeting.")
                     .font(.system(size: 11))

@@ -122,6 +122,13 @@ struct ServerStatus: Sendable {
     var livePreviewModel: String?
     var livePreviewReady: Bool?
     var livePreviewDegraded = false
+
+    /// `active` | `unavailable` | `error`, straight from /api/health. nil means an
+    /// older server that predates the field -- treated as "say nothing", never as
+    /// broken, so an upgrade path does not start nagging.
+    var speakerId: String?
+    /// Named diarization is off unless the server says `active`. nil stays quiet.
+    var speakerIdNeedsSetup: Bool { speakerId != nil && speakerId != "active" }
     var liveCommitModel: String?
     var transcriptionRequestedTier: String?
     var transcriptionEffectiveTier: String?
@@ -245,6 +252,7 @@ struct ServerStatus: Sendable {
         livePreviewModel = details["livePreviewModel"]?.string
         livePreviewReady = details["livePreviewReady"]?.bool
         livePreviewDegraded = details["livePreviewDegraded"]?.bool ?? false
+        speakerId = details["speakerId"]?.string
         liveCommitModel = details["liveCommitModel"]?.string
         transcriptionRequestedTier = details["transcriptionRequestedTier"]?.string
         transcriptionEffectiveTier = details["transcriptionEffectiveTier"]?.string

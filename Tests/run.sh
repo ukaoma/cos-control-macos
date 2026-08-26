@@ -443,6 +443,33 @@ echo "    add a voice: helper, model, view, and safety copy wired"
 /usr/bin/grep -q 'func checkForAppUpdateManually' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'Check for updates' "$ROOT/Sources/Views.swift"
 
+# --- 0.5.70 speaker-model banner -----------------------------------------------
+# The failure this guards is INVISIBILITY, so the test pins the whole chain:
+# helper reads the field, model exposes it, view renders on it. Any link broken
+# and the banner silently never appears, which is the exact bug being fixed.
+#
+# The path assertion is the load-bearing one. health.ts assigns `checks.speaker_id`
+# but spreads `checks` into the body, so a nested read is always nil.
+/usr/bin/python3 - "$ROOT" <<'PYEOF'
+import io, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+helper = io.open(root / "HelperSources/main.swift", encoding="utf-8").read()
+models = io.open(root / "Sources/Models.swift", encoding="utf-8").read()
+views  = io.open(root / "Sources/Views.swift", encoding="utf-8").read()
+
+assert '"speakerId": (health?["speaker_id"] as? String)' in helper, \
+    'helper must read speaker_id from the TOP LEVEL of /api/health'
+assert 'health?["checks"] as? [String: Any])?["speaker_id"]' not in helper, \
+    'speaker_id is NOT under checks; that nested read is always nil'
+assert 'speakerId = details["speakerId"]?.string' in models, 'model must parse speakerId'
+assert 'speakerId != nil && speakerId != "active"' in models, \
+    'nil (older server) must NOT trigger the banner'
+assert 'model.status.speakerIdNeedsSetup' in views, 'view must render on the flag'
+assert 'showGuidedSetupTier = true' in views.split('speakerIdNeedsSetup')[1][:1200], \
+    'the banner must offer Guided Setup, the only path that fetches the model'
+print('    speaker-model banner: helper -> model -> view, top-level path pinned')
+PYEOF
+
 # --- 0.5.69 duplicate Recover ---------------------------------------------------
 # With exactly ONE recoverable capture the panel rendered two buttons both
 # reading "Recover": a bulk button whose label collapsed to the singular, and the
