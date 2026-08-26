@@ -1145,6 +1145,25 @@ final class ControllerModel: ObservableObject {
     @Published var claudeSessionDetail: ClaudeSessionDetail?
     @Published var claudeSessionDetailLoading = false
     @Published var claudeSessionDetailError: String?
+    // ── Session Chat (0.5.75) ──
+    @Published var chatDraft = ""
+    @Published var chatMessages: [SessionChatMessage] = []
+    @Published var chatBinding: SessionChatBinding?
+    @Published var chatVerdict: SessionChatVerdict?
+    @Published var chatRefusal: String?
+    /// Control-owned second line for refusals whose server copy names an
+    /// action Control does not have (detach, fork). Never replaces the copy.
+    @Published var chatSupplement: String?
+    @Published var chatSending = false
+    @Published var chatPolling = false
+    /// Set only by a native_thread_changed refusal; enables Continue Anyway.
+    @Published var chatChangedRevision: String?
+    /// Pending caution confirm: the verdict was attachable with ownerCount>0.
+    @Published var chatCautionPending = false
+    @Published var chatRetryAvailable = false
+    private var chatPendingTurn: SessionChatPendingTurn?
+    private var chatPollTask: Task<Void, Never>?
+    private var chatDidReattach = false
     private var libraryLoadID = UUID()
     private var librarySearchID = UUID()
     private var sessionSearchID = UUID()
@@ -1355,9 +1374,11 @@ final class ControllerModel: ObservableObject {
         claudeSessionDetail = nil
         claudeSessionDetailError = nil
         copyNote = nil
+        resetSessionChat()
         claudeSessionDetailTask = Task { [weak self] in
             await self?.fetchClaudeSessionDetail(session)
         }
+        prepareSessionChat(session)
     }
 
     private func fetchClaudeSessionDetail(_ session: ClaudeSession) async {
@@ -1391,6 +1412,439 @@ final class ControllerModel: ObservableObject {
         claudeSessionDetail = nil
         claudeSessionDetailError = nil
         copyNote = nil
+        resetSessionChat()
+    }
+
+    // ── Session Chat (0.5.75) ────────────────────────────────────────
+    //
+    // Text-only continue into the session on screen, over the same binding API
+    // the glasses' Continue ships on. The turn is async server-side (202 +
+    // poll, idempotent by clientTurnId); the RUNNING state polls as 404, so
+    // anything non-terminal stays pending and only wall-clock time bounds it.
+
+    private static let chatPendingTurnKey = "sessionChatPendingTurn"
+    private static let chatPollCeiling: TimeInterval = 22 * 60
+    /// Refusals whose copy is literally "Attach again": one silent re-attach,
+    /// then re-POST the SAME clientTurnId. Never for stale_epoch or
+    /// target_mismatch — those mean Control's own state is wrong, and a retry
+    /// would hide the bug.
+    private static let chatReattachReasons: Set<String> = [
+        "binding_expired", "unknown_binding", "binding_detached", "binding_not_active",
+    ]
+    private static let chatWaitReasons: Set<String> = [
+        "native_thread_working", "native_turn_in_progress",
+    ]
+    private var chatCautionAcknowledged = false
+
+    /// Whether the composer renders at all for this session, and with which
+    /// message when it cannot. Order: provider gate (server-published list,
+    /// hardcoded set only as the old-server fallback), then the tri-state
+    /// toggle. `nil` means "render the composer".
+    func sessionChatGateMessage(for session: ClaudeSession) -> String? {
+        let published = status.threadAttachProviders
+        let allowed = published.isEmpty ? ["claude", "codex", "cursor"] : published
+        guard allowed.contains(session.provider) else {
+            return "Continue is not available for \(session.provider) sessions."
+        }
+        switch status.threadAttachEnabled {
+        case .some(true): return nil
+        case .some(false): return "Continue agent threads is off in Settings."
+        case .none: return "Update the COS server to continue a thread from here."
+        }
+    }
+
+    private func resetSessionChat() {
+        chatPollTask?.cancel()
+        chatPollTask = nil
+        chatDraft = ""
+        chatMessages = []
+        chatBinding = nil
+        chatVerdict = nil
+        chatRefusal = nil
+        chatSupplement = nil
+        chatSending = false
+        chatPolling = false
+        chatChangedRevision = nil
+        chatCautionPending = false
+        chatRetryAvailable = false
+        chatPendingTurn = nil
+        chatDidReattach = false
+        chatCautionAcknowledged = false
+    }
+
+    private func prepareSessionChat(_ session: ClaudeSession) {
+        guard sessionChatGateMessage(for: session) == nil else { return }
+        // A relaunched or reopened panel resumes polling the SAME clientTurnId
+        // rather than inviting a re-send — the idempotency key is the only
+        // thing standing between a retry and a second copy in a real thread.
+        if let data = UserDefaults.standard.data(forKey: Self.chatPendingTurnKey),
+           let pending = try? JSONDecoder().decode(SessionChatPendingTurn.self, from: data),
+           pending.sessionId == session.sessionId, pending.provider == session.provider {
+            if Date().timeIntervalSince1970 - pending.sentAt < Self.chatPollCeiling {
+                chatPendingTurn = pending
+                chatMessages.append(SessionChatMessage(role: .user, text: pending.prompt))
+                startChatPoll(session, pending: pending)
+            } else {
+                clearPendingTurn()
+            }
+        }
+        Task { [weak self] in
+            await self?.probeChatAttachability(session)
+        }
+    }
+
+    private func probeChatAttachability(_ session: ClaudeSession) async {
+        do {
+            let response = try await helper.run([
+                "session-chat-attachability",
+                "--provider", session.provider,
+                "--thread-id", session.sessionId,
+            ], timeout: 20)
+            guard openClaudeRow?.id == session.id else { return }
+            let state = response.details["state"]?.string ?? ""
+            if state == "route_absent" {
+                chatRefusal = "Update the COS server to continue a thread from here."
+                return
+            }
+            chatVerdict = SessionChatVerdict(
+                attachable: response.details["attachable"]?.bool ?? false,
+                reason: response.details["reason"]?.string ?? "",
+                reasonCopy: response.details["reasonCopy"]?.string ?? "",
+                ownerCount: response.details["ownerCount"]?.int ?? 0
+            )
+            if chatVerdict?.attachable == false {
+                chatRefusal = chatVerdict?.reasonCopy
+                chatSupplement = Self.chatSupplementLine(
+                    reason: chatVerdict?.reason ?? "", copy: chatVerdict?.reasonCopy ?? "")
+            }
+        } catch {
+            guard openClaudeRow?.id == session.id else { return }
+            chatRefusal = error.localizedDescription
+        }
+    }
+
+    /// A Control-owned second line for server copy that names an action this
+    /// surface does not have. The server copy itself always renders verbatim —
+    /// suppressing or rewriting it would be a lie — but an instruction with no
+    /// affordance and no alternative is a dead end.
+    static func chatSupplementLine(reason: String, copy: String) -> String? {
+        switch reason {
+        case "native_target_busy":
+            return "It frees itself within 30 minutes. Detaching is not available in Control yet."
+        case "native_target_fenced":
+            return "Fences can be released from the Fences card in this panel."
+        default:
+            if copy.contains("Fork") { return "Forking is not available in Control yet." }
+            return nil
+        }
+    }
+
+    func sendChatMessage() {
+        guard let session = openClaudeRow, !chatSending, !chatPolling else { return }
+        let prompt = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { return }
+        guard prompt.count <= 32_000 else {
+            chatRefusal = "That message is too long for one turn (32,000 characters max)."
+            return
+        }
+        if chatVerdict?.caution == true, !chatCautionAcknowledged {
+            chatCautionPending = true
+            return
+        }
+        chatRefusal = nil
+        chatSupplement = nil
+        chatChangedRevision = nil
+        chatRetryAvailable = false
+        chatSending = true
+        chatDidReattach = false
+        Task { [weak self] in
+            await self?.performChatSend(session, prompt: prompt)
+        }
+    }
+
+    func confirmChatCaution() {
+        chatCautionAcknowledged = true
+        chatCautionPending = false
+        sendChatMessage()
+    }
+
+    func cancelChatCaution() {
+        chatCautionPending = false
+    }
+
+    /// Retry after a wait-class refusal: re-POST the SAME clientTurnId against
+    /// the same binding. NEVER a re-attach — create() would refuse target_busy
+    /// against our own live binding, a self-inflicted 30-minute dead end.
+    func retryChatTurn() {
+        guard let session = openClaudeRow, let pending = chatPendingTurn, !chatSending else { return }
+        chatRefusal = nil
+        chatRetryAvailable = false
+        chatSending = true
+        Task { [weak self] in
+            await self?.postChatTurn(session, pending: pending, acknowledgedRevision: nil)
+            await MainActor.run { self?.chatSending = false }
+        }
+    }
+
+    /// The ONLY path that sends acknowledgedRevision — an explicit user
+    /// gesture answering a native_thread_changed refusal, carrying the
+    /// revision that refusal handed back. Auto-echoing it would be an
+    /// un-consented write into a thread a human just edited.
+    func continueChatAnyway() {
+        guard let session = openClaudeRow, let pending = chatPendingTurn,
+              let revision = chatChangedRevision, !chatSending else { return }
+        chatRefusal = nil
+        chatChangedRevision = nil
+        chatSending = true
+        Task { [weak self] in
+            await self?.postChatTurn(session, pending: pending, acknowledgedRevision: revision)
+            await MainActor.run { self?.chatSending = false }
+        }
+    }
+
+    func refreshChatTranscript() {
+        guard let session = openClaudeRow else { return }
+        chatChangedRevision = nil
+        chatRefusal = nil
+        claudeSessionDetailTask?.cancel()
+        claudeSessionDetailTask = Task { [weak self] in
+            await self?.fetchClaudeSessionDetail(session)
+        }
+    }
+
+    private func performChatSend(_ session: ClaudeSession, prompt: String) async {
+        defer { chatSending = false }
+        if chatBinding == nil || chatBinding?.expired == true {
+            guard await attachChatBinding(session) else { return }
+        }
+        guard let binding = chatBinding else { return }
+        let pending = SessionChatPendingTurn(
+            provider: session.provider,
+            sessionId: session.sessionId,
+            bindingId: binding.bindingId,
+            epoch: binding.epoch,
+            boundTo: binding.boundTo,
+            clientTurnId: UUID().uuidString,
+            prompt: prompt,
+            sentAt: Date().timeIntervalSince1970
+        )
+        chatPendingTurn = pending
+        persistPendingTurn(pending)
+        chatMessages.append(SessionChatMessage(role: .user, text: prompt))
+        chatDraft = ""
+        await postChatTurn(session, pending: pending, acknowledgedRevision: nil)
+    }
+
+    private func attachChatBinding(_ session: ClaudeSession) async -> Bool {
+        do {
+            let response = try await helper.run([
+                "session-chat-attach",
+                "--provider", session.provider,
+                "--thread-id", session.sessionId,
+            ], timeout: 35)
+            guard openClaudeRow?.id == session.id else { return false }
+            switch response.details["state"]?.string ?? "" {
+            case "attached":
+                chatBinding = SessionChatBinding(
+                    bindingId: response.details["bindingId"]?.string ?? "",
+                    epoch: response.details["epoch"]?.int ?? 0,
+                    boundTo: response.details["boundTo"]?.string ?? "",
+                    expiresAt: response.details["expiresAt"]?.double ?? 0
+                )
+                return chatBinding?.bindingId.isEmpty == false
+            case "disabled":
+                chatRefusal = "Continue agent threads is off in Settings."
+                await refresh()
+                return false
+            default:
+                let copy = response.details["reasonCopy"]?.string ?? "COS could not attach to this thread."
+                chatRefusal = copy
+                chatSupplement = Self.chatSupplementLine(
+                    reason: response.details["reason"]?.string ?? "", copy: copy)
+                return false
+            }
+        } catch {
+            guard openClaudeRow?.id == session.id else { return false }
+            chatRefusal = error.localizedDescription
+            return false
+        }
+    }
+
+    private func postChatTurn(
+        _ session: ClaudeSession,
+        pending: SessionChatPendingTurn,
+        acknowledgedRevision: String?
+    ) async {
+        var args = [
+            "session-chat-send",
+            "--provider", pending.provider,
+            "--thread-id", pending.sessionId,
+            "--binding-id", pending.bindingId,
+            "--epoch", String(pending.epoch),
+            "--bound-to", pending.boundTo,
+            "--client-turn-id", pending.clientTurnId,
+        ]
+        if let acknowledgedRevision { args += ["--acknowledged-revision", acknowledgedRevision] }
+        do {
+            let response = try await helper.run(
+                args, timeout: 35, stdinData: Data(pending.prompt.utf8))
+            guard openClaudeRow?.id == session.id else { return }
+            let state = response.details["state"]?.string ?? ""
+            switch state {
+            case "queued":
+                startChatPoll(session, pending: pending)
+            case "completed":
+                await finishChatTurn(session)
+            case "ambiguous":
+                chatRefusal = response.details["reasonCopy"]?.string
+                    ?? "COS cannot tell whether this turn landed. Check the transcript before sending again."
+                clearPendingTurn()
+            case "disabled":
+                chatRefusal = "Continue agent threads is off in Settings."
+                clearPendingTurn()
+                await refresh()
+            default:
+                await handleChatRefusal(session, pending: pending, details: response.details)
+            }
+        } catch {
+            guard openClaudeRow?.id == session.id else { return }
+            chatRefusal = error.localizedDescription
+        }
+    }
+
+    private func handleChatRefusal(
+        _ session: ClaudeSession,
+        pending: SessionChatPendingTurn,
+        details: [String: JSONValue]
+    ) async {
+        let reason = details["reason"]?.string ?? ""
+        let copy = details["reasonCopy"]?.string ?? "The turn was refused."
+        if Self.chatReattachReasons.contains(reason), !chatDidReattach {
+            chatDidReattach = true
+            chatBinding = nil
+            guard await attachChatBinding(session), let binding = chatBinding else { return }
+            let rebased = SessionChatPendingTurn(
+                provider: pending.provider,
+                sessionId: pending.sessionId,
+                bindingId: binding.bindingId,
+                epoch: binding.epoch,
+                boundTo: binding.boundTo,
+                clientTurnId: pending.clientTurnId,
+                prompt: pending.prompt,
+                sentAt: pending.sentAt
+            )
+            chatPendingTurn = rebased
+            persistPendingTurn(rebased)
+            await postChatTurn(session, pending: rebased, acknowledgedRevision: nil)
+            return
+        }
+        if reason == "native_thread_changed" {
+            chatChangedRevision = details["revision"]?.string
+            chatRefusal = copy
+            return
+        }
+        if Self.chatWaitReasons.contains(reason) {
+            chatRefusal = copy
+            chatRetryAvailable = true
+            return
+        }
+        chatRefusal = copy
+        chatSupplement = Self.chatSupplementLine(reason: reason, copy: copy)
+        clearPendingTurn()
+    }
+
+    private func startChatPoll(_ session: ClaudeSession, pending: SessionChatPendingTurn) {
+        chatPollTask?.cancel()
+        chatPolling = true
+        chatPollTask = Task { [weak self] in
+            // Tiered so a short turn lands fast without forking a helper
+            // Process every 2 seconds for a 20-minute run. Bounded by wall
+            // clock from the ORIGINAL send, never by poll count — a reaped
+            // binding polls as 404 forever, and 404 is pending by contract.
+            while !Task.isCancelled {
+                let elapsed = Date().timeIntervalSince1970 - pending.sentAt
+                if elapsed > Self.chatPollCeiling {
+                    self?.chatMessages.append(SessionChatMessage(
+                        role: .status,
+                        text: "COS can no longer tell whether this turn is running. Check the transcript above before sending again."))
+                    self?.chatPolling = false
+                    self?.clearPendingTurn()
+                    return
+                }
+                try? await Task.sleep(for: .seconds(elapsed < 30 ? 2 : 10))
+                guard !Task.isCancelled else { return }
+                let done = await self?.pollChatTurnOnce(session, pending: pending) ?? true
+                if done { return }
+            }
+        }
+    }
+
+    /// One poll. Returns true when the loop should stop.
+    private func pollChatTurnOnce(_ session: ClaudeSession, pending: SessionChatPendingTurn) async -> Bool {
+        guard openClaudeRow?.id == session.id, chatPendingTurn?.clientTurnId == pending.clientTurnId else {
+            chatPolling = false
+            return true
+        }
+        do {
+            let response = try await helper.run([
+                "session-chat-turn",
+                "--binding-id", pending.bindingId,
+                "--client-turn-id", pending.clientTurnId,
+            ], timeout: 20)
+            guard openClaudeRow?.id == session.id else { chatPolling = false; return true }
+            switch response.details["state"]?.string ?? "pending" {
+            case "completed":
+                chatPolling = false
+                await finishChatTurn(session)
+                return true
+            case "refused", "ambiguous":
+                chatPolling = false
+                chatRefusal = response.details["reasonCopy"]?.string ?? "The turn did not land."
+                clearPendingTurn()
+                return true
+            default:
+                return false
+            }
+        } catch {
+            // A helper failure is indistinguishable from a stopped server; the
+            // turn may still be running. Stay pending — the ceiling bounds it.
+            return false
+        }
+    }
+
+    private func finishChatTurn(_ session: ClaudeSession) async {
+        clearPendingTurn()
+        do {
+            let response = try await helper.run([
+                "session-chat-reply",
+                "--provider", session.provider,
+                "--session-id", session.sessionId,
+            ], timeout: 20)
+            guard openClaudeRow?.id == session.id else { return }
+            let reply = response.details["reply"]?.string ?? ""
+            if reply.isEmpty {
+                chatMessages.append(SessionChatMessage(
+                    role: .status, text: "The turn completed. The reply is in the transcript above."))
+            } else {
+                chatMessages.append(SessionChatMessage(role: .assistant, text: reply))
+            }
+        } catch {
+            guard openClaudeRow?.id == session.id else { return }
+            chatMessages.append(SessionChatMessage(
+                role: .status, text: "The turn completed. The reply is in the transcript above."))
+        }
+        refreshChatTranscript()
+    }
+
+    private func persistPendingTurn(_ pending: SessionChatPendingTurn) {
+        if let data = try? JSONEncoder().encode(pending) {
+            UserDefaults.standard.set(data, forKey: Self.chatPendingTurnKey)
+        }
+    }
+
+    private func clearPendingTurn() {
+        chatPendingTurn = nil
+        UserDefaults.standard.removeObject(forKey: Self.chatPendingTurnKey)
     }
 
     func copyClaudeSession() {

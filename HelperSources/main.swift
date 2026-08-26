@@ -454,6 +454,11 @@ final class COSControlHelper {
         case "claude-sessions": try emitClaudeSessions()
         case "claude-sessions-search": try emitClaudeSessionsSearch(args: args)
         case "claude-session-detail": try emitClaudeSessionDetail(args: args)
+        case "session-chat-attachability": try emitSessionChatAttachability(args: args)
+        case "session-chat-attach": try emitSessionChatAttach(args: args)
+        case "session-chat-send": try emitSessionChatSend(args: args)
+        case "session-chat-turn": try emitSessionChatTurn(args: args)
+        case "session-chat-reply": try emitSessionChatReply(args: args)
         case "meeting-stranded-save": try emitMeetingStrandedSave(args: args)
         case "meeting-stranded-save-all": try emitMeetingStrandedSaveAll()
         case "clear-stranded-video-uploads": try clearStrandedVideoUploads()
@@ -3993,16 +3998,22 @@ final class COSControlHelper {
     }
 
     /// The write shape for Continue, kept pure so the self-test can execute the
-    /// delete-vs-"0" decision rather than assert it against source text.
+    /// write-"0"-vs-delete decision rather than assert it against source text.
     ///
-    /// On writes "1"; Off REMOVES the key. See `setThreadAttach` for why this is
-    /// correct here and wrong for a default-ON flag.
+    /// On writes "1"; Off writes "0" — NEVER a delete. The flag became
+    /// default-ON in server 6.37.0 (`!== '0'`), so an absent key now means
+    /// ENABLED, and the original delete-on-Off silently re-enabled the feature
+    /// for anyone who opted out (and then failed the post-restart proof,
+    /// stranding a stuck transaction). "0" reads as Off on BOTH server eras:
+    /// old strict `=== '1'` treats anything else as off, new `!== '0'` treats
+    /// exactly "0" as off. This is the one value with the same meaning
+    /// everywhere.
     private func threadAttachEnvironment(_ raw: String) throws -> (values: [String: String], removing: Set<String>) {
         switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "on":
             return (["COS_THREAD_ATTACH_ENABLED": "1"], [])
         case "off":
-            return ([:], ["COS_THREAD_ATTACH_ENABLED"])
+            return (["COS_THREAD_ATTACH_ENABLED": "0"], [])
         default:
             throw HelperError.message("Unknown Continue agent threads setting. Choose On or Off.")
         }
@@ -4018,10 +4029,12 @@ final class COSControlHelper {
                 throw HelperError.message("the restarted server did not load Continue agent threads as enabled")
             }
         } else {
-            // Off is proven by ABSENCE, matching the delete this setter performs.
-            // A lingering value would mean the removal never reached launchd.
-            guard loaded == nil else {
-                throw HelperError.message("the restarted server still carries a Continue agent threads value of \(loaded ?? "")")
+            // Off is proven by an explicit "0", matching the write this setter
+            // performs. Absence would mean the write never reached launchd —
+            // and on a 6.37+ server absence reads as ENABLED, which is exactly
+            // the inversion this proof exists to catch.
+            guard loaded == "0" else {
+                throw HelperError.message("the restarted server did not load Continue agent threads as disabled (found \(loaded ?? "no value"))")
             }
         }
         guard let health = request("/api/health", timeout: 12)?.body else {
@@ -4930,6 +4943,57 @@ final class COSControlHelper {
     /// the user turns it "on", nothing changes, and the control looks broken.
     static func featureGateDefaultOn(_ configured: String?) -> Bool {
         return configured != "0"
+    }
+
+    // ── Session Chat pure functions (0.5.75) ─────────────────────────
+    //
+    // Kept pure so the self-test executes them rather than grepping for them.
+    // The three of them carry the entire cross-repo contract surface of the
+    // chat composer: the targetKey format, the poll classifier, and the id
+    // shapes. Everything else in the feature is plumbing.
+
+    /// The length-prefixed target key the turns route checks against the
+    /// binding: `<len>:<provider>:<len>:<threadId>`. Reconstructed here, never
+    /// received — the attach response deliberately withholds it (it embeds the
+    /// private native id), and the server recomputes it on every turn. This
+    /// format is duplicated in three repos with no shared module; the
+    /// self-test pins it byte-for-byte against a known-good pair.
+    static func sessionChatTargetKey(provider: String, threadId: String) -> String {
+        return "\(provider.count):\(provider):\(threadId.count):\(threadId)"
+    }
+
+    /// Classify one poll of GET /agent-sessions/bindings/:id/turns/:turnId.
+    ///
+    /// THE RUNNING STATE IS 404. The server's ledger records a turn only at a
+    /// terminal outcome; the 202 admission writes nothing. So for the entire
+    /// duration of a running turn — seconds to the 21-minute budget — the poll
+    /// answers 404 with copy that says "Nothing was sent", and admitted-and-
+    /// running is indistinguishable from never-admitted. The reference client's
+    /// rule, adopted verbatim: anything that is not a 200 body carrying a
+    /// terminal outcome is PENDING, because reporting a failure invites the
+    /// retry that puts a second copy into a real conversation. The caller
+    /// bounds the pending state with wall-clock time, never with this function.
+    static func classifyTurnPoll(status: Int?, outcome: String?) -> String {
+        guard status == 200 else { return "pending" }
+        switch outcome {
+        case "completed", "refused", "ambiguous": return outcome ?? "pending"
+        default: return "pending"
+        }
+    }
+
+    /// Provider + thread id validation before either reaches a URL. The
+    /// provider set mirrors the server's BINDABLE_PROVIDERS; the id shape is
+    /// the canonical lowercase UUID the server's NATIVE_THREAD_ID_RE enforces.
+    /// Returns nil when valid, or the user-facing rejection.
+    static func sessionChatValidationError(provider: String, threadId: String) -> String? {
+        guard ["claude", "codex", "cursor"].contains(provider) else {
+            return "Continue is not available for \(provider) sessions."
+        }
+        let uuid = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        guard threadId.range(of: uuid, options: .regularExpression) != nil else {
+            return "That session id is not something COS can continue."
+        }
+        return nil
     }
 
     struct ContextRootResolution {
@@ -8873,6 +8937,226 @@ final class COSControlHelper {
         ])
     }
 
+    // ── Session Chat proxies (0.5.75) ────────────────────────────────
+    //
+    // Five commands, one shape: `request()` + status branching, modeled on
+    // emitFenceRelease — NOT speakerReviewBody, which throws on any non-200
+    // and would convert the 201 attach, the 202 turn admission, every refusal
+    // verdict, and every pending poll into thrown errors. Refusals are data
+    // (`ok: true` with a state), because rendering a verdict as a transport
+    // failure is the same class of lie in the other direction.
+
+    /// The one identity Control presents to the binding registry. Constant by
+    /// design: the registry uses cosSessionId to recognize its own surface,
+    /// and there is one Control per Mac. Matches COS_SESSION_ID_RE.
+    private static let sessionChatCosSessionId = "cos-control:panel"
+
+    private func sessionChatIds(args: [String]) throws -> (provider: String, threadId: String) {
+        guard let provider = option("--provider", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !provider.isEmpty else {
+            throw HelperError.message("--provider is required")
+        }
+        guard let threadId = option("--thread-id", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !threadId.isEmpty else {
+            throw HelperError.message("--thread-id is required")
+        }
+        if let rejection = Self.sessionChatValidationError(provider: provider, threadId: threadId) {
+            throw HelperError.message(rejection)
+        }
+        return (provider, threadId)
+    }
+
+    /// Server-issued binding id / app-minted turn id, validated before either
+    /// becomes a URL path component. The turn-id shape is the server's
+    /// CLIENT_TURN_ID_RE verbatim.
+    private func sessionChatHandle(_ name: String, in args: [String], pattern: String) throws -> String {
+        guard let value = option(name, in: args)?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            throw HelperError.message("\(name) is required")
+        }
+        guard value.range(of: pattern, options: .regularExpression) != nil else {
+            throw HelperError.message("\(name) is not a shape COS recognizes")
+        }
+        return value
+    }
+
+    private func emitSessionChatAttachability(args: [String]) throws {
+        let (provider, threadId) = try sessionChatIds(args: args)
+        let token = try speakerReviewToken()
+        guard let response = request("/api/agent-sessions/\(provider)/\(threadId)/attachability", token: token, timeout: 15) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if response.status == 404 {
+            // Attachability is registered UNCONDITIONALLY on every server that
+            // has the feature at all, so a 404 here — unlike on the write
+            // routes — really does mean the server predates it.
+            emit(ok: true, message: "Continue is not available on this server", details: ["state": "route_absent"])
+            return
+        }
+        guard response.status == 200, let body = response.body else {
+            throw HelperError.message("Attachability check failed (\(response.status))")
+        }
+        emit(ok: true, message: "Attachability ready", details: [
+            "state": "verdict",
+            "attachable": body["attachable"] as? Bool ?? false,
+            "reason": body["reason"] as? String ?? "",
+            "reasonCopy": body["reasonCopy"] as? String ?? "",
+            // The only wire signal for the idle-holder case: attachable with
+            // ownerCount > 0 means a live process holds this thread and merely
+            // looks quiet this second. The app renders that as caution, never
+            // as a green light.
+            "ownerCount": body["ownerCount"] as? Int ?? 0,
+        ])
+    }
+
+    private func emitSessionChatAttach(args: [String]) throws {
+        let (provider, threadId) = try sessionChatIds(args: args)
+        let payload = ["cosSessionId": Self.sessionChatCosSessionId]
+        let json = String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8) ?? "{}"
+        let token = try speakerReviewToken()
+        guard let response = request("/api/agent-sessions/\(provider)/\(threadId)/attach", method: "POST", token: token, body: json, timeout: 30) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if response.status == 404 {
+            // The write routes are registered behind the Continue toggle, so a
+            // 404 here means the toggle is OFF — not an old server. The
+            // attachability probe already proved the route family exists.
+            emit(ok: true, message: "Continue agent threads is off", details: ["state": "disabled"])
+            return
+        }
+        guard let body = response.body else { throw HelperError.message("Server stopped") }
+        if response.status == 201, body["attached"] as? Bool == true {
+            let binding = body["binding"] as? [String: Any] ?? [:]
+            emit(ok: true, message: "Attached", details: [
+                "state": "attached",
+                "bindingId": body["bindingId"] as? String ?? "",
+                "epoch": body["epoch"] as? Int ?? 0,
+                "boundTo": body["boundTo"] as? String ?? "",
+                "revision": body["revision"] as? String ?? "",
+                "expiresAt": binding["expiresAt"] as? Double ?? 0,
+            ])
+            return
+        }
+        // 400 / 409 / 503 are verdicts with copy, not errors.
+        emit(ok: true, message: "Attach refused", details: [
+            "state": "refused",
+            "reason": body["reason"] as? String ?? "",
+            "reasonCopy": body["reasonCopy"] as? String ?? "",
+        ])
+    }
+
+    private func emitSessionChatSend(args: [String]) throws {
+        let (provider, threadId) = try sessionChatIds(args: args)
+        let bindingId = try sessionChatHandle("--binding-id", in: args, pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{1,127}$")
+        let clientTurnId = try sessionChatHandle("--client-turn-id", in: args, pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$")
+        guard let epochRaw = option("--epoch", in: args), let epoch = Int(epochRaw) else {
+            throw HelperError.message("--epoch is required")
+        }
+        // THE PROMPT ARRIVES ON STDIN, NEVER ARGV. argv is world-readable
+        // through `ps` for every process on the box, and the prompt is the
+        // user's private instruction to an agent that will run tools. The
+        // server refuses argv prompts one layer down for the same reason.
+        let promptData = FileHandle.standardInput.readDataToEndOfFile()
+        let prompt = String(decoding: promptData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { throw HelperError.message("The message is empty") }
+        guard prompt.count <= 32_000 else {
+            throw HelperError.message("That message is too long for one turn (32,000 characters max)")
+        }
+        var payload: [String: Any] = [
+            "prompt": prompt,
+            "epoch": epoch,
+            "targetKey": Self.sessionChatTargetKey(provider: provider, threadId: threadId),
+            "clientTurnId": clientTurnId,
+        ]
+        if let boundTo = option("--bound-to", in: args), !boundTo.isEmpty {
+            payload["boundTo"] = boundTo
+        }
+        // acknowledgedRevision is the Continue-Anyway override — it silently
+        // advances the divergence baseline. It is NEVER sent on a normal turn;
+        // only the app's explicit Continue-Anyway gesture passes this option,
+        // carrying the revision a native_thread_changed refusal handed back.
+        if let acknowledged = option("--acknowledged-revision", in: args), !acknowledged.isEmpty {
+            payload["acknowledgedRevision"] = acknowledged
+        }
+        let json = String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8) ?? "{}"
+        let token = try speakerReviewToken()
+        guard let response = request("/api/agent-sessions/bindings/\(bindingId)/turns", method: "POST", token: token, body: json, timeout: 30) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if response.status == 404, response.body?["reason"] == nil {
+            emit(ok: true, message: "Continue agent threads is off", details: ["state": "disabled"])
+            return
+        }
+        guard let body = response.body else { throw HelperError.message("Server stopped") }
+        if response.status == 202 {
+            emit(ok: true, message: "Sent", details: [
+                "state": "queued",
+                "clientTurnId": body["clientTurnId"] as? String ?? clientTurnId,
+            ])
+            return
+        }
+        // A replayed terminal result (idempotent re-send of the same
+        // clientTurnId) comes back 200 with the recorded outcome.
+        if response.status == 200, let outcome = body["outcome"] as? String,
+           ["completed", "refused", "ambiguous"].contains(outcome) {
+            emit(ok: true, message: "Already recorded", details: [
+                "state": outcome,
+                "reason": body["reason"] as? String ?? "",
+                "reasonCopy": body["reasonCopy"] as? String ?? "",
+            ])
+            return
+        }
+        emit(ok: true, message: "Turn refused", details: [
+            "state": "refused",
+            "reason": body["reason"] as? String ?? "",
+            "reasonCopy": body["reasonCopy"] as? String ?? "",
+            "changed": body["changed"] as? Bool ?? false,
+            "revision": body["revision"] as? String ?? "",
+            "retryable": body["retryable"] as? Bool ?? false,
+        ])
+    }
+
+    private func emitSessionChatTurn(args: [String]) throws {
+        let bindingId = try sessionChatHandle("--binding-id", in: args, pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{1,127}$")
+        let clientTurnId = try sessionChatHandle("--client-turn-id", in: args, pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$")
+        let token = try speakerReviewToken()
+        let response = request("/api/agent-sessions/bindings/\(bindingId)/turns/\(clientTurnId)", token: token, timeout: 15)
+        if let status = response?.status, status == 401 || status == 403 { throw HelperError.message("Unauthorized") }
+        let body = response?.body
+        let state = Self.classifyTurnPoll(status: response?.status, outcome: body?["outcome"] as? String)
+        emit(ok: true, message: state == "pending" ? "Still working" : "Turn \(state)", details: [
+            "state": state,
+            "reason": body?["reason"] as? String ?? "",
+            "reasonCopy": state == "pending" ? "" : (body?["reasonCopy"] as? String ?? ""),
+        ])
+    }
+
+    private func emitSessionChatReply(args: [String]) throws {
+        guard let provider = option("--provider", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              let sessionId = option("--session-id", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              Self.sessionChatValidationError(provider: provider, threadId: sessionId) == nil else {
+            throw HelperError.message("--provider and --session-id are required")
+        }
+        let token = try speakerReviewToken()
+        guard let response = request("/api/agent-sessions/\(provider)/\(sessionId)", token: token, timeout: 15) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        // The reply comes from the server's session store (latest_reply,
+        // capped at 4,000 chars server-side) rather than the local JSONL
+        // re-parse: Desktop-store sessions have no local transcript at all,
+        // and the local claude branch carries no size guard. An absent or
+        // unknown session emits an empty reply; the app falls back to the
+        // transcript refresh it performs anyway.
+        let reply = (response.body?["latest_reply"] as? String) ?? ""
+        emit(ok: true, message: reply.isEmpty ? "No reply on record yet" : "Reply ready", details: [
+            "state": reply.isEmpty ? "empty" : "reply",
+            "reply": reply,
+        ])
+    }
+
     private func emitVoiceProfiles() throws {
         let body = try speakerReviewBody("/api/voice/profiles")
         emit(ok: true, message: "Voice profiles ready", details: [
@@ -9894,10 +10178,11 @@ final class COSControlHelper {
                 && filtered["COS_API_TOKEN"] == nil,
             "provider allowlist"
         )
-        // Continue is a DEFAULT-OFF flag, so Off must REMOVE the key rather than
-        // write "0" — absence is the state the server documents as disabled, and
-        // it is what makes the disabled state provable by absence. Writing "0"
-        // here would leave a permanent artifact; this asserts the real function.
+        // Continue became a DEFAULT-ON flag in server 6.37.0 (`!== '0'`), so Off
+        // must WRITE "0" — an absent key now reads as ENABLED, and the original
+        // delete-on-Off silently re-enabled the feature for anyone who opted
+        // out (then failed the post-restart proof, stranding a stuck
+        // transaction). "0" reads as Off on both server eras.
         let threadAttachOn = try threadAttachEnvironment("ON")
         let threadAttachOff = try threadAttachEnvironment("off")
         try expect(
@@ -9905,8 +10190,8 @@ final class COSControlHelper {
             "Continue on must write the enabling value and remove nothing"
         )
         try expect(
-            threadAttachOff.values.isEmpty && threadAttachOff.removing == ["COS_THREAD_ATTACH_ENABLED"],
-            "Continue off must REMOVE the key, never write \"0\" — absent is the documented disabled state"
+            threadAttachOff.values["COS_THREAD_ATTACH_ENABLED"] == "0" && threadAttachOff.removing.isEmpty,
+            "Continue off must write an explicit \"0\" — deleting the key re-enables it on a 6.37+ server"
         )
         let idleMetalOn = try idleMetalHqEnvironment("ON")
         let idleMetalOff = try idleMetalHqEnvironment("off")
@@ -10955,6 +11240,49 @@ final class COSControlHelper {
         try FileManager.default.createSymbolicLink(at: linkRoot.appendingPathComponent("memory"),
                                                    withDestinationURL: realNotes)
         try expect(holdsContextFiles(linkRoot), "a symlinked memory/ was not recognised as a notes store")
+
+        // ── Session Chat contract (0.5.75) ──────────────────────────
+        //
+        // These execute the pure functions rather than grepping for them: the
+        // targetKey format, the poll classifier, the id shapes, and the
+        // toggle's Off write are the load-bearing contract surface.
+
+        // targetKey, byte-for-byte against a known-good pair. The format is
+        // duplicated in three repos with no shared module.
+        try expect(Self.sessionChatTargetKey(provider: "claude", threadId: "1c45222f-038d-460f-9a86-b8ea72c424ea")
+                       == "6:claude:36:1c45222f-038d-460f-9a86-b8ea72c424ea",
+                   "session chat targetKey must be <len>:<provider>:<len>:<threadId>")
+
+        // THE RUNNING STATE IS 404. The ledger records a turn only at a
+        // terminal outcome, so anything that is not a 200 body carrying one
+        // is PENDING — mapping any of these to a failure invites the retry
+        // that double-posts into a real conversation.
+        try expect(Self.classifyTurnPoll(status: 404, outcome: nil) == "pending",
+                   "a 404 poll is a RUNNING turn and must classify pending")
+        try expect(Self.classifyTurnPoll(status: 503, outcome: "unavailable") == "pending",
+                   "a 503 poll (ledger read threw) must classify pending")
+        try expect(Self.classifyTurnPoll(status: nil, outcome: nil) == "pending",
+                   "an unreachable server must classify pending, never failed")
+        try expect(Self.classifyTurnPoll(status: 400, outcome: nil) == "pending",
+                   "an unexpected status must classify pending; wall clock bounds it")
+        try expect(Self.classifyTurnPoll(status: 200, outcome: "completed") == "completed",
+                   "a 200 completed body is terminal")
+        try expect(Self.classifyTurnPoll(status: 200, outcome: "refused") == "refused",
+                   "a 200 refused body is terminal")
+        try expect(Self.classifyTurnPoll(status: 200, outcome: "ambiguous") == "ambiguous",
+                   "a 200 ambiguous body is terminal")
+        try expect(Self.classifyTurnPoll(status: 200, outcome: "queued") == "pending",
+                   "queued is NOT terminal — treating it terminal skips the whole turn")
+
+        // Provider + thread id validation, before either reaches a URL.
+        try expect(Self.sessionChatValidationError(provider: "claude", threadId: "1c45222f-038d-460f-9a86-b8ea72c424ea") == nil,
+                   "a bindable provider with a canonical UUID must validate")
+        try expect(Self.sessionChatValidationError(provider: "ollama", threadId: "1c45222f-038d-460f-9a86-b8ea72c424ea") != nil,
+                   "a non-bindable provider must be rejected before the URL is built")
+        try expect(Self.sessionChatValidationError(provider: "claude", threadId: "1c45222f") != nil,
+                   "the 8-char display form of a session id must never validate")
+        try expect(Self.sessionChatValidationError(provider: "claude", threadId: "../../etc/passwd") != nil,
+                   "a path-shaped id must be rejected before the URL is built")
 
         emit(ok: true, message: "\(passed) deterministic helper tests passed", details: ["tests": passed])
     }

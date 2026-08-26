@@ -1366,7 +1366,7 @@ struct ControlPanel: View {
                             || (!model.status.installed && model.status.runtimeState != "managedInPlace")
                             || (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0)
                 }
-                Text("Off by default. Lets a reply write into a real Claude or Codex session on this Mac instead of starting a new thread. Off removes the setting completely, so the write routes are not registered at all.")
+                Text("On by default since server 6.37. Lets a reply write into a real Claude or Codex session on this Mac instead of starting a new thread. Off writes an explicit 0, so the write routes stay dark on every server era.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

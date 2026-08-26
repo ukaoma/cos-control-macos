@@ -135,6 +135,7 @@ actor HelperClient {
         _ arguments: [String],
         timeout: TimeInterval? = nil,
         preferStable: Bool = false,
+        stdinData: Data? = nil,
         progress: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> HelperResponse {
         let executable = try helperURL(preferStable: preferStable)
@@ -152,6 +153,21 @@ actor HelperClient {
                 process.arguments = arguments
                 process.standardOutput = outputPipe
                 process.standardError = progressPipe
+                // Free text (a chat prompt) travels over stdin, never argv:
+                // argv is world-readable through `ps` for every process on the
+                // box. Wired only when a command opts in, so the other 40+
+                // call sites keep inheriting the app's stdin untouched.
+                let inputPipe: Pipe? = stdinData.map { data in
+                    let pipe = Pipe()
+                    process.standardInput = pipe
+                    let handle = pipe.fileHandleForWriting
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        try? handle.write(contentsOf: data)
+                        try? handle.close()
+                    }
+                    return pipe
+                }
+                _ = inputPipe
                 progressPipe.fileHandleForReading.readabilityHandler = { handle in
                     collector.consume(handle.availableData)
                 }

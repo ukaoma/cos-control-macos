@@ -1,3 +1,31 @@
+## 0.5.75 (build 113)
+
+Continue a session from the Sessions view — text in, reply back.
+
+A composer now sits under every Claude, Codex, and Cursor session detail. Type
+a message, and it lands in the real thread on this Mac through the same
+attach/turn API the glasses' Continue ships on: attach a binding, post one
+idempotent turn, poll to a terminal outcome, then show the session's newest
+reply. Text only, by design — files and images wait until the text path has
+earned them.
+
+The poll classifier encodes the server's least obvious truth: a RUNNING turn
+polls as 404, because the ledger records only terminal outcomes. Anything that
+is not a 200 body carrying completed/refused/ambiguous stays pending, bounded
+by wall clock — mapping it to a failure would invite the retry that double-
+posts into a real conversation. Refusals render the server's copy verbatim
+with the composer disabled; native_thread_changed gets an explicit Refresh /
+Continue-anyway choice, and only that gesture ever sends an acknowledgement.
+An attachable verdict with a live owner (a session that merely looks idle this
+second) asks before the first send instead of showing a green light. The
+prompt travels to the helper over stdin, never argv.
+
+Also fixed: the Continue agent threads OFF toggle wrote nothing. It deleted
+the environment key, which servers 6.37.0+ (default-ON) read as ENABLED — so
+opting out silently re-enabled the feature and then stranded a stuck
+transaction on the failed proof. Off now writes an explicit "0", which means
+disabled on every server era, and the self-test executes the write.
+
 ## 0.5.74 (build 112)
 
 The panel now says when a local Ollama model is live.

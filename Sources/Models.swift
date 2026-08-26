@@ -469,6 +469,54 @@ struct StrandedCapture: Identifiable, Sendable {
     }
 }
 
+// ── Session Chat (0.5.75) ───────────────────────────────────────────
+
+struct SessionChatMessage: Identifiable, Sendable {
+    enum Role: Sendable { case user, assistant, status }
+    let id = UUID()
+    let role: Role
+    let text: String
+}
+
+struct SessionChatBinding: Sendable {
+    let bindingId: String
+    let epoch: Int
+    let boundTo: String
+    /// Server epoch-millis. The binding self-expires in ~30 minutes and there
+    /// is no detach route — expiry is the only cleanup, and the composer must
+    /// not fight it.
+    let expiresAt: Double
+
+    var expired: Bool { Date().timeIntervalSince1970 * 1000 >= expiresAt }
+}
+
+struct SessionChatVerdict: Sendable {
+    let attachable: Bool
+    let reason: String
+    let reasonCopy: String
+    /// The only wire signal for the idle-holder case: attachable with owners
+    /// means a live process holds this thread and merely looks quiet this
+    /// second. Rendered as caution behind an explicit confirm, never green.
+    let ownerCount: Int
+
+    var caution: Bool { attachable && ownerCount > 0 }
+}
+
+/// Persisted at send so a relaunched panel can resume polling the SAME
+/// clientTurnId — the idempotency key that prevents a second copy landing in a
+/// real conversation. The server's bindings listing is redacted past the point
+/// of reconnecting, so this local record is the only way back.
+struct SessionChatPendingTurn: Codable, Sendable {
+    let provider: String
+    let sessionId: String
+    let bindingId: String
+    let epoch: Int
+    let boundTo: String
+    let clientTurnId: String
+    let prompt: String
+    let sentAt: Double
+}
+
 struct ClaudeSession: Identifiable, Sendable {
     let id: String
     let sessionId: String

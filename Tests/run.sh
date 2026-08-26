@@ -718,18 +718,22 @@ PY
 # The toggle must mount under the support flag the helper actually publishes. A
 # control gated on an unrelated flag compiles, reads correctly, and never appears.
 /usr/bin/grep -q 'if model.status.threadAttachSupported {' "$ROOT/Sources/Views.swift"
-# Default-off flag: Off REMOVES the key. Writing "0" would leave a permanent
-# artifact and contradict the server contract that absent means disabled.
+# DEFAULT-ON flag since server 6.37 (`!== '0'`): Off must WRITE "0". The old
+# delete-on-Off left the key absent, which a 6.37+ server reads as ENABLED —
+# the toggle silently re-enabled the feature for anyone who opted out, and the
+# post-restart proof then threw mid-transaction. This guard used to enforce
+# that inverted behavior; it now enforces the write, and the self-test
+# EXECUTES threadAttachEnvironment("off") to prove it.
 /usr/bin/python3 - "$ROOT" <<'PY'
 import sys, pathlib
 text = pathlib.Path(sys.argv[1], "HelperSources/main.swift").read_text()
 start = text.index("private func threadAttachEnvironment")
 end = text.index("private func requireThreadAttach")
 body = text[start:end]
-if '"COS_THREAD_ATTACH_ENABLED": "0"' in body:
-    sys.exit('Continue off must remove the key, not write "0"')
-if "removing" not in body:
-    sys.exit("Continue off must use the removingKeys delete path")
+if '"COS_THREAD_ATTACH_ENABLED": "0"' not in body:
+    sys.exit('Continue off must write an explicit "0" — deleting the key re-enables the feature on a 6.37+ server')
+if '["COS_THREAD_ATTACH_ENABLED"]' in body:
+    sys.exit("Continue off must not use the removingKeys delete path any more")
 PY
 /usr/bin/grep -q 'struct SpeakerReviewPane' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'activityLauncher' "$ROOT/Sources/Views.swift"
@@ -1603,5 +1607,82 @@ need('recentGlassesCard' not in main_panel.group(1), "Recent Glasses is still ne
 need('reviewableMeetingsCard' not in main_panel.group(1), "Review Speakers is still nested in the menu panel")
 need('contextListCard' not in main_panel.group(1), "Memory/Threads are still nested in the menu panel")
 ROUTECHK
+
+# ── Session Chat (0.5.75) ────────────────────────────────────────────
+#
+# The pure contract surface (targetKey format, poll classifier, id shapes,
+# the toggle's Off write) is EXECUTED by the helper self-test above. These
+# pins cover what only source shape can see: which call site carries the
+# Continue-Anyway override, that the prompt never rides argv, and that the
+# caution and teardown paths exist where the composer mounts.
+/usr/bin/python3 - "$ROOT" <<'CHATCHK'
+import re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+helper = (root / "HelperSources/main.swift").read_text()
+model = (root / "Sources/ControllerModel.swift").read_text()
+models = (root / "Sources/Models.swift").read_text()
+activity = (root / "Sources/ActivityWindow.swift").read_text()
+
+def need(cond, msg):
+    if not cond: sys.exit(f"session-chat: {msg}")
+
+# The prompt travels over stdin, never argv — argv is world-readable via ps.
+send_start = helper.index("private func emitSessionChatSend")
+send_end = helper.index("private func emitSessionChatTurn")
+send = helper[send_start:send_end]
+need("readDataToEndOfFile" in send, "send does not read the prompt from stdin")
+need('option("--text"' not in send and 'option("--prompt"' not in send,
+     "send must not accept the prompt as an argv option")
+
+# targetKey is built helper-side from provider+threadId, never accepted as an
+# argument — the app never touches the cross-repo format contract.
+need('option("--target-key"' not in helper, "the helper must never accept a targetKey argument")
+need("sessionChatTargetKey(provider: provider, threadId: threadId)" in send,
+     "send does not reconstruct targetKey itself")
+
+# acknowledgedRevision is the Continue-Anyway override. Exactly one app call
+# site passes a real revision — the explicit user gesture — and every other
+# post passes nil. Auto-echoing the refusal's revision would be an
+# un-consented write into a thread a human just edited.
+need(model.count("acknowledgedRevision: revision") == 1,
+     "exactly one call site may pass a real acknowledgedRevision")
+anyway = re.search(r"func continueChatAnyway\(\).*?\n    \}", model, re.S)
+need(anyway is not None and "acknowledgedRevision: revision" in anyway.group(0),
+     "the real acknowledgedRevision must come from continueChatAnyway only")
+retry = re.search(r"func retryChatTurn\(\).*?\n    \}", model, re.S)
+need(retry is not None and "acknowledgedRevision: nil" in retry.group(0),
+     "retry must re-post WITHOUT an acknowledgement")
+
+# Retry never re-mints: the same clientTurnId is the idempotency key that
+# prevents a second copy landing in a real conversation.
+need("UUID().uuidString" not in (retry.group(0) if retry else ""),
+     "retry must reuse the pending clientTurnId, never mint a new one")
+
+# ownerCount is load-bearing: attachable-with-owners is caution behind an
+# explicit confirm, never a green light.
+need("attachable && ownerCount > 0" in models, "SessionChatVerdict.caution does not read ownerCount")
+send_fn = re.search(r"func sendChatMessage\(\).*?\n    \}", model, re.S)
+need(send_fn is not None and "chatCautionPending = true" in send_fn.group(0),
+     "sendChatMessage does not gate on the caution verdict")
+need("Send into an open session?" in activity, "the caution confirm is not rendered")
+
+# A wait-class refusal retries the same turn; it must NEVER trigger a
+# re-attach (create() would refuse target_busy against our own live binding).
+wait_set = re.search(r"chatWaitReasons: Set<String> = \[(.*?)\]", model, re.S)
+reattach_set = re.search(r"chatReattachReasons: Set<String> = \[(.*?)\]", model, re.S)
+need(wait_set is not None and "native_thread_working" in wait_set.group(1),
+     "native_thread_working is not a wait-class refusal")
+need(reattach_set is not None and "native_thread_working" not in reattach_set.group(1),
+     "native_thread_working must never trigger a re-attach")
+
+# Composer mounts INSIDE ClaudeSessionDetailPane (the route regex above pins
+# the pane as the branch's first token) and consults the gate.
+need("SessionChatComposer(model: model)" in activity, "the composer is not mounted in the session pane")
+need("sessionChatGateMessage" in activity, "the composer does not consult the gate")
+need("model?.closeClaudeSession()" in activity, "windowWillClose does not tear the chat down")
+close_fn = re.search(r"func closeClaudeSession\(\).*?\n    \}", model, re.S)
+need(close_fn is not None and "resetSessionChat()" in close_fn.group(0),
+     "closeClaudeSession does not reset chat state")
+CHATCHK
 
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"

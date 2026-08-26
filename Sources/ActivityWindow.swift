@@ -46,6 +46,9 @@ final class ActivityWindowPresenter: NSObject, ObservableObject, NSWindowDelegat
         model?.closeSpeakerReview()
         model?.closeContextDetail()
         model?.closeLibraryDetail()
+        // Session chat holds a poll Task and a live binding reference; a
+        // window close must not leave either running against a stale row.
+        model?.closeClaudeSession()
         windowController = nil
     }
 }
@@ -2426,7 +2429,24 @@ struct ClaudeSessionDetailPane: View {
                         .padding(.bottom, 10)
                 }
             }
+            // At the pane ROOT, outside the `if let detail` branch, so the
+            // composer renders on the local-transcript-error path too — a
+            // Desktop-store session has no local JSONL, and it is exactly the
+            // session the server-side Continue can still reach.
+            SessionChatComposer(model: model)
         }
+        .cosConfirm(
+            "Send into an open session?",
+            isPresented: Binding(
+                get: { model.chatCautionPending },
+                set: { if !$0 { model.cancelChatCaution() } }
+            ),
+            message: "Another app on this Mac has this session open. It looks idle right now, but a reply will run with that session's own permissions.",
+            actions: [
+                .destructive("Send anyway") { model.confirmChatCaution() },
+                .cancel(),
+            ]
+        )
     }
 
     private static func tint(_ provider: String) -> Color {
@@ -2435,6 +2455,114 @@ struct ClaudeSessionDetailPane: View {
         case "cursor": Color(red: 0.42, green: 0.38, blue: 0.86)
         default: Color(red: 0.78, green: 0.45, blue: 0.22)
         }
+    }
+}
+
+/// Text-only continue under the Session view (0.5.75). Renders only when the
+/// server publishes the session's provider as bindable AND the Continue toggle
+/// is on — the gate message otherwise. Refusals are verdicts: the server copy
+/// renders verbatim (Text(verbatim:) — the LocalizedStringKey overload parses
+/// markdown) with the composer disabled, never a spinner.
+struct SessionChatComposer: View {
+    @ObservedObject var model: ControllerModel
+
+    var body: some View {
+        if let session = model.openClaudeRow {
+            VStack(alignment: .leading, spacing: 0) {
+                Divider()
+                if let gate = model.sessionChatGateMessage(for: session) {
+                    Text(gate)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 10)
+                } else {
+                    chatBody
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var chatBody: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(model.chatMessages) { message in
+                switch message.role {
+                case .user:
+                    HStack {
+                        Spacer(minLength: 60)
+                        Text(verbatim: message.text)
+                            .font(.system(size: 12.5))
+                            .textSelection(.enabled)
+                            .padding(10)
+                            .background(ActivitySection.sessions.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 11))
+                    }
+                case .assistant:
+                    HStack {
+                        Text(verbatim: message.text)
+                            .font(.system(size: 12.5))
+                            .textSelection(.enabled)
+                            .padding(10)
+                            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 11))
+                        Spacer(minLength: 60)
+                    }
+                case .status:
+                    Text(verbatim: message.text)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if model.chatPolling {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Working — it keeps running if you close this window.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let refusal = model.chatRefusal {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(verbatim: refusal)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                    if let supplement = model.chatSupplement {
+                        Text(verbatim: supplement)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                    }
+                    HStack(spacing: 8) {
+                        if model.chatChangedRevision != nil {
+                            Button("Refresh") { model.refreshChatTranscript() }
+                            Button("Continue anyway") { model.continueChatAnyway() }
+                        }
+                        if model.chatRetryAvailable {
+                            Button("Retry") { model.retryChatTurn() }
+                        }
+                    }
+                    .controlSize(.small)
+                }
+                .padding(10)
+                .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            }
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField("Continue this session…", text: $model.chatDraft, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1...6)
+                    .disabled(model.chatSending || model.chatPolling)
+                    .onSubmit { model.sendChatMessage() }
+                Button("Send") { model.sendChatMessage() }
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(model.chatSending || model.chatPolling
+                        || model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            if model.chatVerdict?.caution == true {
+                Text("Another app on this Mac has this session open. COS will ask before the first send.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
     }
 }
 
