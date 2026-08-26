@@ -1675,6 +1675,25 @@ need(wait_set is not None and "native_thread_working" in wait_set.group(1),
 need(reattach_set is not None and "native_thread_working" not in reattach_set.group(1),
      "native_thread_working must never trigger a re-attach")
 
+# Fork (0.5.76). The button appears wherever the rendered copy recommends it,
+# and the match is CASE-INSENSITIVE — the server writes "or fork it" in
+# lowercase, and a capital-F match shipped in 0.5.75 rendered the instruction
+# with no affordance at all (caught live, first session).
+fork_fn = re.search(r"static func chatCopyRecommendsFork.*?\n    \}", model, re.S)
+need(fork_fn is not None and ".caseInsensitive" in fork_fn.group(0),
+     "fork copy matching must be case-insensitive — the server says 'fork it' in lowercase")
+need(model.count("chatCopyRecommendsFork(") >= 5,
+     "every refusal path must arm the Fork button from its rendered copy")
+need("Fork with this message" in activity and "forkChatThread()" in activity,
+     "the Fork button is not rendered")
+fork_send = helper[helper.index("private func emitSessionChatFork"):helper.index("private func emitSessionChatReply")]
+need("readDataToEndOfFile" in fork_send, "fork does not read the prompt from stdin")
+need('option("--text"' not in fork_send and 'option("--prompt"' not in fork_send,
+     "fork must not accept the prompt as an argv option")
+fork_done = re.search(r'case "forked":.*?case "route_absent"', model, re.S)
+need(fork_done is not None and "clearPendingTurn()" in fork_done.group(0),
+     "a successful fork must abandon the original pending turn — the message went to the fork")
+
 # Composer mounts INSIDE ClaudeSessionDetailPane (the route regex above pins
 # the pane as the branch's first token) and consults the gate.
 need("SessionChatComposer(model: model)" in activity, "the composer is not mounted in the session pane")

@@ -2520,6 +2520,14 @@ struct SessionChatComposer: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            if model.chatForking {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Forking — copying this thread and running your message there…")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
             if let refusal = model.chatRefusal {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(verbatim: refusal)
@@ -2538,8 +2546,18 @@ struct SessionChatComposer: View {
                         if model.chatRetryAvailable {
                             Button("Retry") { model.retryChatTurn() }
                         }
+                        if model.chatForkAvailable {
+                            Button("Fork with this message") { model.forkChatThread() }
+                                .disabled(model.chatForkPrompt.isEmpty || model.chatForking)
+                                .help("Runs your message in a copy of this thread. The original is untouched.")
+                        }
                     }
                     .controlSize(.small)
+                    if model.chatForkAvailable && model.chatForkPrompt.isEmpty && !model.chatForking {
+                        Text("Type a message below to fork with it.")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                    }
                 }
                 .padding(10)
                 .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
@@ -2548,11 +2566,11 @@ struct SessionChatComposer: View {
                 TextField("Continue this session…", text: $model.chatDraft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...6)
-                    .disabled(model.chatSending || model.chatPolling)
+                    .disabled(model.chatSending || model.chatPolling || model.chatForking)
                     .onSubmit { model.sendChatMessage() }
                 Button("Send") { model.sendChatMessage() }
                     .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(model.chatSending || model.chatPolling
+                    .disabled(model.chatSending || model.chatPolling || model.chatForking
                         || model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             if model.chatVerdict?.caution == true {

@@ -1161,6 +1161,10 @@ final class ControllerModel: ObservableObject {
     /// Pending caution confirm: the verdict was attachable with ownerCount>0.
     @Published var chatCautionPending = false
     @Published var chatRetryAvailable = false
+    /// True when the rendered refusal copy recommends forking — the button
+    /// appears exactly where the instruction does.
+    @Published var chatForkAvailable = false
+    @Published var chatForking = false
     private var chatPendingTurn: SessionChatPendingTurn?
     private var chatPollTask: Task<Void, Never>?
     private var chatDidReattach = false
@@ -1467,6 +1471,8 @@ final class ControllerModel: ObservableObject {
         chatChangedRevision = nil
         chatCautionPending = false
         chatRetryAvailable = false
+        chatForkAvailable = false
+        chatForking = false
         chatPendingTurn = nil
         chatDidReattach = false
         chatCautionAcknowledged = false
@@ -1516,11 +1522,29 @@ final class ControllerModel: ObservableObject {
                 chatRefusal = chatVerdict?.reasonCopy
                 chatSupplement = Self.chatSupplementLine(
                     reason: chatVerdict?.reason ?? "", copy: chatVerdict?.reasonCopy ?? "")
+                chatForkAvailable = Self.chatCopyRecommendsFork(chatVerdict?.reasonCopy ?? "")
             }
         } catch {
             guard openClaudeRow?.id == session.id else { return }
             chatRefusal = error.localizedDescription
         }
+    }
+
+    /// The refusal copy is the trigger: seventeen server strings recommend
+    /// forking, in lowercase ("or fork it") and capitalised forms. Matching
+    /// the copy case-insensitively ties the affordance to the instruction the
+    /// user is actually reading — a reason-code allowlist would drift.
+    static func chatCopyRecommendsFork(_ copy: String) -> Bool {
+        return copy.range(of: "fork", options: .caseInsensitive) != nil
+    }
+
+    /// What a fork would run: a fresh draft wins (the user typed something
+    /// new); otherwise the refused pending turn's prompt (the message that
+    /// could not land in the original).
+    var chatForkPrompt: String {
+        let draft = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !draft.isEmpty { return draft }
+        return chatPendingTurn?.prompt ?? ""
     }
 
     /// A Control-owned second line for server copy that names an action this
@@ -1534,7 +1558,7 @@ final class ControllerModel: ObservableObject {
         case "native_target_fenced":
             return "Fences can be released from the Fences card in this panel."
         default:
-            if copy.contains("Fork") { return "Forking is not available in Control yet." }
+            // Fork-recommending copy gets the real Fork button, not a line.
             return nil
         }
     }
@@ -1602,6 +1626,70 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    /// Fork: run the message in a COPY of this thread, leaving the original
+    /// byte-identical. This is the action the refusal copy recommends — the
+    /// server spawns the provider CLI seeded with the thread's history, runs
+    /// the prompt there, and withholds the new thread's id (forkRef is a
+    /// digest), so the way to the fork is the refreshed Sessions list.
+    func forkChatThread() {
+        guard let session = openClaudeRow, !chatForking, !chatSending else { return }
+        let prompt = chatForkPrompt
+        guard !prompt.isEmpty else { return }
+        guard prompt.count <= 32_000 else {
+            chatRefusal = "That message is too long for one turn (32,000 characters max)."
+            return
+        }
+        chatForking = true
+        chatRefusal = nil
+        chatSupplement = nil
+        Task { [weak self] in
+            await self?.performChatFork(session, prompt: prompt)
+        }
+    }
+
+    private func performChatFork(_ session: ClaudeSession, prompt: String) async {
+        defer { chatForking = false }
+        do {
+            let response = try await helper.run([
+                "session-chat-fork",
+                "--provider", session.provider,
+                "--thread-id", session.sessionId,
+            ], timeout: 310, stdinData: Data(prompt.utf8))
+            guard openClaudeRow?.id == session.id else { return }
+            switch response.details["state"]?.string ?? "" {
+            case "forked":
+                let copy = response.details["reasonCopy"]?.string ?? "Copied into a new thread. Your original is untouched."
+                chatMessages.append(SessionChatMessage(role: .user, text: prompt))
+                chatMessages.append(SessionChatMessage(
+                    role: .status, text: copy + " It is at the top of the Sessions list."))
+                // The original's pending turn is abandoned by choice — the
+                // message went to the fork instead.
+                chatPollTask?.cancel()
+                chatPolling = false
+                chatRetryAvailable = false
+                chatForkAvailable = false
+                clearPendingTurn()
+                chatDraft = ""
+                await loadClaudeSessions()
+            case "route_absent":
+                chatRefusal = "Fork needs a newer COS server."
+            default:
+                let copy = response.details["reasonCopy"]?.string ?? "COS could not fork this thread."
+                chatRefusal = copy
+                chatForkAvailable = Self.chatCopyRecommendsFork(copy)
+                // "orphan possible" means the server cannot prove no child
+                // ran. Refresh the list so a maybe-created fork is visible
+                // rather than narrated.
+                if response.details["orphanPossible"]?.bool == true {
+                    await loadClaudeSessions()
+                }
+            }
+        } catch {
+            guard openClaudeRow?.id == session.id else { return }
+            chatRefusal = error.localizedDescription
+        }
+    }
+
     func refreshChatTranscript() {
         guard let session = openClaudeRow else { return }
         chatChangedRevision = nil
@@ -1661,6 +1749,7 @@ final class ControllerModel: ObservableObject {
                 chatRefusal = copy
                 chatSupplement = Self.chatSupplementLine(
                     reason: response.details["reason"]?.string ?? "", copy: copy)
+                chatForkAvailable = Self.chatCopyRecommendsFork(copy)
                 return false
             }
         } catch {
@@ -1746,10 +1835,12 @@ final class ControllerModel: ObservableObject {
         if Self.chatWaitReasons.contains(reason) {
             chatRefusal = copy
             chatRetryAvailable = true
+            chatForkAvailable = Self.chatCopyRecommendsFork(copy)
             return
         }
         chatRefusal = copy
         chatSupplement = Self.chatSupplementLine(reason: reason, copy: copy)
+        chatForkAvailable = Self.chatCopyRecommendsFork(copy)
         clearPendingTurn()
     }
 

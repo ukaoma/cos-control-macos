@@ -458,6 +458,7 @@ final class COSControlHelper {
         case "session-chat-attach": try emitSessionChatAttach(args: args)
         case "session-chat-send": try emitSessionChatSend(args: args)
         case "session-chat-turn": try emitSessionChatTurn(args: args)
+        case "session-chat-fork": try emitSessionChatFork(args: args)
         case "session-chat-reply": try emitSessionChatReply(args: args)
         case "meeting-stranded-save": try emitMeetingStrandedSave(args: args)
         case "meeting-stranded-save-all": try emitMeetingStrandedSaveAll()
@@ -9130,6 +9131,53 @@ final class COSControlHelper {
             "state": state,
             "reason": body?["reason"] as? String ?? "",
             "reasonCopy": state == "pending" ? "" : (body?["reasonCopy"] as? String ?? ""),
+        ])
+    }
+
+    private func emitSessionChatFork(args: [String]) throws {
+        let (provider, threadId) = try sessionChatIds(args: args)
+        // The fork PROMPT is a prompt: stdin, never argv, same rule as send.
+        let promptData = FileHandle.standardInput.readDataToEndOfFile()
+        let prompt = String(decoding: promptData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { throw HelperError.message("The message is empty") }
+        guard prompt.count <= 32_000 else {
+            throw HelperError.message("That message is too long for one turn (32,000 characters max)")
+        }
+        let payload: [String: Any] = ["prompt": prompt, "cosSessionId": Self.sessionChatCosSessionId]
+        let json = String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8) ?? "{}"
+        let token = try speakerReviewToken()
+        // The route spawns a provider CLI and runs a real model turn in the
+        // fork before answering, so the timeout is minutes, not seconds.
+        guard let response = request("/api/agent-sessions/\(provider)/\(threadId)/fork", method: "POST", token: token, body: json, timeout: 300) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if response.status == 404, response.body?["reason"] == nil {
+            // Fork is registered UNCONDITIONALLY (not behind the Continue
+            // toggle), so a bare 404 really is an old server.
+            emit(ok: true, message: "Fork is not available on this server", details: ["state": "route_absent"])
+            return
+        }
+        guard let body = response.body else { throw HelperError.message("Server stopped") }
+        // Branch on the BODY, not a status allowlist: refusals carry copy at
+        // 400, 409 AND 503, and a 5xx with `forked:false` is still a verdict.
+        if body["forked"] as? Bool == true {
+            emit(ok: true, message: "Forked", details: [
+                "state": "forked",
+                "reasonCopy": body["reasonCopy"] as? String ?? "",
+                "sourceIntegrity": body["sourceIntegrity"] as? String ?? "",
+            ])
+            return
+        }
+        emit(ok: true, message: "Fork refused", details: [
+            "state": "refused",
+            "reason": body["reason"] as? String ?? "",
+            "reasonCopy": body["reasonCopy"] as? String ?? "",
+            // True when the server cannot prove no child ran. The app renders
+            // it — a possible orphan session must not be reported as a clean
+            // failure.
+            "orphanPossible": body["orphanPossible"] as? Bool ?? false,
+            "retryable": body["retryable"] as? Bool ?? true,
         ])
     }
 

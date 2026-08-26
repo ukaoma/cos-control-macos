@@ -1,3 +1,21 @@
+## 0.5.76 (build 114)
+
+The refusal said "fork it." Now you can.
+
+0.5.75 shipped the composer rendering the server's busy-thread copy — "Wait a
+few seconds and try again, or fork it" — with no fork anywhere in Control, an
+instruction with no affordance. Caught live in the first session. A "Fork with
+this message" button now appears wherever the rendered copy recommends it:
+your message runs in a copy of the thread, seeded with its history, while the
+original stays byte-identical. The fork lands at the top of the Sessions list
+(the server deliberately withholds the new thread's id). Cursor sessions
+refuse with the server's own copy — bindable, not forkable.
+
+The 0.5.75 fallback line ("Forking is not available in Control yet") never
+rendered either: it matched capital-F "Fork" against copy that says "fork it".
+The button's trigger matches case-insensitively, and that exact regression is
+pinned red. The fork prompt travels over stdin like the send path.
+
 ## 0.5.75 (build 113)
 
 Continue a session from the Sessions view — text in, reply back.
