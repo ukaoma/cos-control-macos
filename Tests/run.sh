@@ -408,6 +408,20 @@ code = '\n'.join(l for l in src.split('\n') if not l.strip().startswith('//'))
 uses = code.count('addVoiceSection')
 # one declaration + at least two render sites (empty and non-empty branches)
 assert uses >= 3, f'addVoiceSection must render in BOTH the empty and populated directory; found {uses} references'
+
+# THE CARD MUST STAY A CARD. addVoiceSection renders OUTSIDE the voice
+# directory's ScrollView, so an uncapped ForEach over held sessions grew the
+# layout past the window and took the section header, the view picker and the
+# breadcrumbs with it (production, 2026-08-26, 30+ held sessions).
+import re as _re
+section = code[code.index('private var addVoiceSection'):]
+section = section[:section.index('private func addVoiceRow')]
+assert 'extAudioInlineRowLimit' in section, \
+    'the held-audio list must be capped before it renders inline'
+assert 'ScrollView' in section and 'extAudioListHeight' in section, \
+    'a capped held-audio list must scroll inside a fixed frame, never expand the layout'
+assert _re.search(r'\.frame\(height: Self\.extAudioListHeight\)', section), \
+    'the held-audio ScrollView needs an explicit height; maxHeight lets it grow'
 print('    add-a-voice renders in both empty and populated directory')
 PYEOF
 # SAFETY: the helper must never offer the unscoped enrol. The server calls it a

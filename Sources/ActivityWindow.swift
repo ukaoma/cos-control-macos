@@ -1361,6 +1361,22 @@ struct ActivityWindow: View {
     ///   - a held session can contain MORE THAN ONE unknown speaker
     ///   - a successful enrolment CONSUMES the audio; there is no undo
     ///   - the window closes, and the countdown is the server's own
+    /// Rows shown at natural height before the list starts scrolling in place.
+    private static let extAudioInlineRowLimit = 5
+    /// Height of the scrolling frame once the limit is passed. Roughly six rows,
+    /// so the card stays a card and never becomes the whole window.
+    private static let extAudioListHeight: CGFloat = 200
+
+    /// Says how many are held once the list is capped, because a scrolling box
+    /// hides its own length and "some audio" is not an amount.
+    private var extAudioLead: String {
+        let count = model.extAudioSessions.count
+        if count > Self.extAudioInlineRowLimit {
+            return "\(count) unrecognized sessions the server is holding. Naming one creates a new voice from it."
+        }
+        return "Unrecognized audio the server is holding. Naming a session creates a new voice from it."
+    }
+
     @ViewBuilder
     private var addVoiceSection: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1383,10 +1399,30 @@ struct ActivityWindow: View {
                      ?? "No unrecognized audio is being held. Record a meeting, then come back within 72 hours.")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             } else {
-                Text("Unrecognized audio the server is holding. Naming a session creates a new voice from it.")
+                Text(extAudioLead)
                     .font(.system(size: 11)).foregroundStyle(.secondary)
-                ForEach(model.extAudioSessions) { session in
-                    addVoiceRow(session)
+                // BOUNDED, ALWAYS. The server holds unrecognized audio for 72
+                // hours, so a busy week is dozens of sessions. This card sits
+                // OUTSIDE the voice directory's ScrollView, so an uncapped
+                // ForEach grew the whole layout past the window and carried the
+                // section header, the view picker and the breadcrumbs off
+                // screen with it. Reported in production 2026-08-26 with 30+
+                // held sessions. Short lists keep their natural height; long
+                // ones scroll inside a fixed frame instead of pushing chrome.
+                if model.extAudioSessions.count > Self.extAudioInlineRowLimit {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(model.extAudioSessions) { session in
+                                addVoiceRow(session)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(height: Self.extAudioListHeight)
+                } else {
+                    ForEach(model.extAudioSessions) { session in
+                        addVoiceRow(session)
+                    }
                 }
                 Text("A session can hold more than one unknown speaker, and naming it uses up the audio.")
                     .font(.system(size: 10)).foregroundStyle(.tertiary)

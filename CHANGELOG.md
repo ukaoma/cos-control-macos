@@ -1,3 +1,18 @@
+## 0.5.77 (build 115)
+
+Review speakers no longer runs off the window.
+
+Add a voice lists the unrecognized audio the server is holding, and the server
+holds it for 72 hours. With thirty-odd sessions that list grew without limit,
+and because the card sits outside the voice directory's scroll area it pushed
+the section header, the view picker and the breadcrumbs off screen. There was
+no way back to navigation without resizing the window.
+
+Past five held sessions the list now scrolls inside a fixed frame and the lead
+line says how many are held, since a scrolling box hides its own length. Five
+or fewer keeps its natural height. A test pins the cap and goes red if the
+list ever renders uncapped again.
+
 ## 0.5.76 (build 114)
 
 The refusal said "fork it." Now you can.
