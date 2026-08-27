@@ -1,3 +1,17 @@
+## 0.5.81 (build 119)
+
+The video fix from 0.5.80, actually reaching the screen.
+
+0.5.80 widened the app's attachment parser and shipped. It changed nothing
+visible, because the helper has its OWN image-only allowlist sitting in
+front of it: a video ref died in `normalizeAttachment` and the app received
+`attachments: null`. Caught by querying the shipped 0.5.80 helper for the
+real Message #29 rather than trusting that the change had worked. Both
+filters now carry the same vocabulary, and the helper forwards the
+`category`, `bytes` and `durationMs` the poster needs to say "1:16" and
+"2.1 MB". Pinned by self-tests that run the actual #29 payload through the
+normalizer, and by mutations that restore each half of the old behavior.
+
 ## 0.5.80 (build 118)
 
 Readable timestamps, and your videos and files finally show up.

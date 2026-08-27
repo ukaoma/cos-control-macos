@@ -5749,13 +5749,31 @@ final class COSControlHelper {
         return value.dropFirst(2).allSatisfy { "0123456789abcdef".contains($0) }
     }
 
+    /// The media vocabulary from shared/media-attachment.ts.
+    ///
+    /// THIS IS THE SECOND OF TWO FILTERS. Widening only the app's
+    /// GlassesAttachmentRef fixed nothing, because a video ref died here
+    /// first and the app received `attachments: null` -- verified against
+    /// Message #29 on the shipped 0.5.80 helper. Both layers carry the same
+    /// list ON PURPOSE (helper output is a trust boundary the app re-checks),
+    /// so both must be widened together.
+    static let acceptedMediaKinds: Set<String> = [
+        "user_photo", "traffic_frame", "generated_visual", "user_video", "user_document",
+    ]
+    static let acceptedMediaMimes: Set<String> = [
+        "image/jpeg", "image/png",
+        "video/mp4", "video/quicktime",
+        "application/pdf", "application/json",
+        "text/plain", "text/markdown", "text/csv",
+    ]
+
     private func normalizeAttachment(_ raw: Any) -> [String: Any]? {
         guard let value = raw as? [String: Any],
               let id = value["id"] as? String, validMediaID(id),
               let kind = value["kind"] as? String,
-              ["user_photo", "traffic_frame", "generated_visual"].contains(kind),
+              Self.acceptedMediaKinds.contains(kind),
               let mime = value["mime"] as? String,
-              ["image/jpeg", "image/png"].contains(mime),
+              Self.acceptedMediaMimes.contains(mime),
               let width = value["width"] as? Int, (1...65_535).contains(width),
               let height = value["height"] as? Int, (1...65_535).contains(height),
               let createdAt = value["createdAt"] as? String,
@@ -5771,6 +5789,15 @@ final class COSControlHelper {
         if let label = value["label"] as? String, !label.isEmpty {
             out["label"] = String(label.prefix(120))
         }
+        // Carried so the Mac can say "1:16" and "2.1 MB" on the poster. A ref
+        // that survived the allowlist above but arrived with these stripped
+        // renders as an untyped grey tile, which is how the old path failed.
+        if let category = value["category"] as? String,
+           ["image", "document", "video"].contains(category) {
+            out["category"] = category
+        }
+        if let bytes = value["bytes"] as? Int, bytes > 0 { out["bytes"] = bytes }
+        if let durationMs = value["durationMs"] as? Int, durationMs > 0 { out["durationMs"] = durationMs }
         return out
     }
 
@@ -11370,6 +11397,36 @@ final class COSControlHelper {
         // These execute the pure functions rather than grepping for them: the
         // targetKey format, the poll classifier, the id shapes, and the
         // toggle's Off write are the load-bearing contract surface.
+
+        // The real Message #29 video ref (0.5.80/0.5.81). Verified live: the
+        // shipped 0.5.80 helper answered `attachments: null` for this exact
+        // turn, because this normalizer is a SECOND image-only filter sitting
+        // in front of the app's own.
+        let videoAttachment = normalizeAttachment([
+            "id": "m_93c30da025af44a2f617a926",
+            "kind": "user_video",
+            "mime": "video/quicktime",
+            "width": 480, "height": 360,
+            "createdAt": "2026-08-26T22:30:20.926Z",
+            "category": "video",
+            "bytes": 2_196_720,
+            "durationMs": 75_755,
+            "label": "80947613953__F2726445.MOV",
+        ])
+        try expect(videoAttachment != nil, "a video attachment must survive the helper normalizer")
+        try expect(videoAttachment?["durationMs"] as? Int == 75_755,
+                   "duration must reach the Mac or the poster cannot say how long the video is")
+        try expect(videoAttachment?["bytes"] as? Int == 2_196_720, "size must reach the Mac")
+        try expect(videoAttachment?["category"] as? String == "video", "the category discriminator must survive")
+        let docAttachment = normalizeAttachment([
+            "id": "m_4b754cfbf2164a2722ae1b48", "kind": "user_document", "mime": "application/pdf",
+            "width": 612, "height": 792, "createdAt": "2026-08-26T22:30:20.926Z", "category": "document",
+        ])
+        try expect(docAttachment != nil, "a document attachment must survive the helper normalizer")
+        try expect(normalizeAttachment([
+            "id": "m_4b754cfbf2164a2722ae1b48", "kind": "executable", "mime": "application/x-mach-binary",
+            "width": 1, "height": 1, "createdAt": "2026-08-26T22:30:20.926Z",
+        ]) == nil, "widening the vocabulary must not accept an unknown kind")
 
         // Local-model pin write shape (0.5.79), executed not grepped.
         let pinWrite = try ollamaModelEnvironment("qwen3.8:27b")
