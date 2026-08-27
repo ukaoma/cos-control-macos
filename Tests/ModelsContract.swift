@@ -569,6 +569,31 @@ struct ModelsContract {
         ]))
         precondition(warm?.isKeepWarm == true)
         precondition(renamed?.isKeepWarm == false)
+        let petWaiting = ClaudeSession(.object([
+            "id": .string("pet-wait"),
+            "name": .string("Waiting on you"),
+            "workspace": .string("MU-Chief-Staff"),
+            "state": .string("waiting"),
+            "waitingFor": .string("user"),
+            "alive": .bool(true),
+            "updatedAt": .string("2026-08-27T16:00:00Z"),
+            "discussion_summary": .string("Inspecting cos-starter diffs"),
+        ]))
+        precondition(petWaiting?.isPetVisible == true, "waiting is a live pet session")
+        precondition(petWaiting?.discussionSummary == "Inspecting cos-starter diffs")
+        precondition(petWaiting?.petSubtitle == "Inspecting cos-starter diffs")
+        let petNow = ISO8601DateFormatter().date(from: "2026-08-27T16:03:00Z") ?? Date()
+        precondition(petWaiting?.relativeAgeLabel(now: petNow) == "Updated 3m ago")
+        let petWarm = ClaudeSession(.object([
+            "id": .string("pet-warm"),
+            "name": .string("ready"),
+            "state": .string("running"),
+            "alive": .bool(true),
+        ]))
+        precondition(petWarm?.isPetVisible == false, "keep-warm never becomes a pet")
+        precondition(recent?.isPetVisible == false, "recent without alive is not a pet")
+        let visible = ClaudeSession.petVisibleSessions(in: [warm!, recent!, petWaiting!, renamed!])
+        precondition(visible.map(\.id) == ["claude:pet-wait", "claude:d3786335"])
         let detail = ClaudeSessionDetail(.object([
             "title": .string("Fireflies meeting sync"),
             "cwd": .string("/repo"),

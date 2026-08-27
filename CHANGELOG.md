@@ -1,3 +1,16 @@
+## 0.5.87 (build 125)
+
+Live sessions stay on the desktop when Activity is closed.
+
+The Sessions list already knew which Claude, Cursor, and Codex threads were
+Running or Waiting, but that knowledge lived inside a window you had to keep
+open. The pet is a floating COS figure that appears only while those rows are
+live, shows a count when more than one is, and jumps to the native app that
+owns the thread — Cursor, Claude Desktop, or ChatGPT — without bringing
+Control forward. Clicking the waveform is the fallback: it opens that same
+row in Activity, because Cursor still has no composer deeplink. The toggle
+sits with Launch at login; it never talks to the server.
+
 ## 0.5.86 (build 124)
 
 The whole calendar square selects the day.

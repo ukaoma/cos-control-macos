@@ -205,3 +205,50 @@ extension COSPalette {
     })
 
 }
+
+/// Pixel COS figure for the desktop session pet. Working opens the visor dots;
+/// waiting keeps them as dashes. Drawn on a 16-unit grid so nearest-neighbor
+/// scale stays blocky at the 48pt sprite size.
+struct SessionPetSprite: View {
+    var working: Bool
+    var reduceMotion: Bool
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: reduceMotion ? 3600 : 0.42, paused: reduceMotion)) { timeline in
+            let phase = reduceMotion ? 0.0 : sin(timeline.date.timeIntervalSinceReferenceDate * (working ? 6.2 : 2.4))
+            Canvas { ctx, size in
+                let unit = floor(min(size.width, size.height) / 16)
+                let ox = (size.width - unit * 16) / 2
+                let oy = (size.height - unit * 16) / 2 + (working && !reduceMotion ? CGFloat(phase) * 1.4 : 0)
+                func cell(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ color: Color) {
+                    ctx.fill(
+                        Path(CGRect(x: ox + x * unit, y: oy + y * unit, width: w * unit, height: h * unit)),
+                        with: .color(color)
+                    )
+                }
+                let ink = COSPalette.ink
+                let gold = COSPalette.gold
+                let cream = COSPalette.cream
+                let visor = Color(red: 0.18, green: 0.12, blue: 0.08)
+                cell(3, 2, 10, 7, ink)
+                cell(4, 3, 8, 5, gold)
+                cell(5, 4, 6, 3, visor)
+                if working {
+                    cell(6, 5, 1, 1, cream)
+                    cell(9, 5, 1, 1, cream)
+                } else {
+                    cell(6, 5, 2, 1, cream)
+                    cell(8, 5, 2, 1, cream)
+                }
+                cell(5, 9, 6, 5, gold)
+                cell(6, 10, 4, 2, cream)
+                cell(6, 11, 1, 1, ink)
+                cell(8, 11, 2, 1, ink)
+                cell(5, 14, 2, 1, ink)
+                cell(9, 14, 2, 1, ink)
+            }
+        }
+        .frame(width: 64, height: 64)
+        .accessibilityHidden(true)
+    }
+}

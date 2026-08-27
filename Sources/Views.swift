@@ -1495,6 +1495,7 @@ struct ControlPanel: View {
             }
             Divider()
             Toggle("Launch COS Control at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
+            Toggle("Session pet", isOn: Binding(get: { model.petEnabled }, set: { model.setPetEnabled($0) }))
             DisclosureGroup("Advanced") {
                 HStack {
                     Button("Rollback Server") { model.perform("rollback") }

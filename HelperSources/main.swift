@@ -458,8 +458,10 @@ final class COSControlHelper {
             try setThreadAttach(value)
         }
         case "claude-sessions": try emitClaudeSessions()
+        case "session-pet-live": try emitClaudeSessions(liveOnly: true)
         case "claude-sessions-search": try emitClaudeSessionsSearch(args: args)
         case "claude-session-detail": try emitClaudeSessionDetail(args: args)
+        case "session-reveal": try emitSessionReveal(args: args)
         case "session-chat-attachability": try emitSessionChatAttachability(args: args)
         case "session-chat-attach": try emitSessionChatAttach(args: args)
         case "session-chat-send": try emitSessionChatSend(args: args)
@@ -6421,7 +6423,72 @@ final class COSControlHelper {
             "createdAt": row["created"] as? String ?? "",
             "updatedAt": row["modified"] as? String ?? "",
             "pinned": row["pinned"] as? Bool ?? false,
+            "discussion_summary": row["discussion_summary"] as? String ?? "",
         ]
+    }
+
+    static func isPetLiveRow(_ row: [String: Any]) -> Bool {
+        if isKeepWarmSessionTitle((row["name"] as? String) ?? "") { return false }
+        if row["alive"] as? Bool == true { return true }
+        let state = row["state"] as? String ?? ""
+        return state == "running" || state == "waiting"
+    }
+
+    static func sessionRevealValidationError(sessionId: String?) -> String? {
+        let trimmed = sessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty { return "--session is required" }
+        if trimmed.contains("..") || trimmed.contains("/") { return "invalid session id" }
+        return nil
+    }
+
+    static func sessionIdsMatch(_ left: String, _ right: String) -> Bool {
+        let a = left.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let b = right.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if a.isEmpty || b.isEmpty { return false }
+        return a == b || a.hasPrefix(b) || b.hasPrefix(a)
+    }
+
+    static func liveClaudePid(sessionId: String, sessionsRoot: URL) -> Int? {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: sessionsRoot,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        for file in entries where file.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: file),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            let rawId = obj["sessionId"] as? String ?? ""
+            guard sessionIdsMatch(sessionId, rawId) else { continue }
+            let pid = jsonInt(obj["pid"]) ?? 0
+            if pid > 0 { return pid }
+        }
+        return nil
+    }
+
+    static func desktopApp(for provider: String) -> (path: String, bundleId: String)? {
+        let candidates: [(String, String)]
+        switch provider {
+        case "cursor":
+            candidates = [("/Applications/Cursor.app", "com.todesktop.230313mzl4w4u92")]
+        case "codex":
+            candidates = [
+                ("/Applications/Codex.app", "com.openai.codex"),
+                ("/Applications/ChatGPT.app", "com.openai.codex"),
+            ]
+        default:
+            candidates = [("/Applications/Claude.app", "com.anthropic.claudefordesktop")]
+        }
+        return candidates.first { FileManager.default.fileExists(atPath: $0.0) }
+    }
+
+    static func resolvedWorkspacePath(label: String, workDirectory: String?) -> String? {
+        let work = workDirectory?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !work.isEmpty, FileManager.default.fileExists(atPath: work) else { return nil }
+        let name = URL(fileURLWithPath: work).lastPathComponent
+        let needle = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if needle.isEmpty { return nil }
+        if name == needle { return work }
+        return nil
     }
 
     /// LIST-level cap counts. Sibling of `sessions`, never a row field.
@@ -7585,7 +7652,7 @@ final class COSControlHelper {
         return (title, workspaceLabel(cwd), "", sessionId, turns, omittedTools, 0)
     }
 
-    private func emitClaudeSessions() throws {
+    private func emitClaudeSessions(liveOnly: Bool = false) throws {
         var enabled = false
         var reason = ""
         var peers: [[String: Any]] = []
@@ -7676,6 +7743,9 @@ final class COSControlHelper {
             peers = Self.overlayLiveState(onto: serverRows, live: peers)
         }
         peers.removeAll { Self.isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
+        if liveOnly {
+            peers = peers.filter { Self.isPetLiveRow($0) }
+        }
         peers.sort { a, b in
             let aLive = a["alive"] as? Bool == true
             let bLive = b["alive"] as? Bool == true
@@ -7687,9 +7757,9 @@ final class COSControlHelper {
         }
         let message: String
         if peers.isEmpty {
-            message = enabled ? "No sessions" : "No Codex or Cursor sessions"
+            message = liveOnly ? "No live sessions" : (enabled ? "No sessions" : "No Codex or Cursor sessions")
         } else {
-            message = "\(peers.count) session(s)"
+            message = liveOnly ? "\(peers.count) live session(s)" : "\(peers.count) session(s)"
         }
         emit(ok: true, message: message, details: [
             "enabled": true,
@@ -7698,6 +7768,69 @@ final class COSControlHelper {
             "counts": counts,
             "claudeLiveEnabled": enabled,
             "dropped": dropped,
+        ])
+    }
+
+    private func emitSessionReveal(args: [String]) throws {
+        if let error = Self.sessionRevealValidationError(sessionId: option("--session", in: args)) {
+            throw HelperError.message(error)
+        }
+        let sessionId = option("--session", in: args)!.trimmingCharacters(in: .whitespacesAndNewlines)
+        let provider = (option("--provider", in: args) ?? "claude")
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let app = Self.desktopApp(for: provider)
+        var path: String?
+        var pid: Int?
+        switch provider {
+        case "cursor":
+            path = Self.resolvedWorkspacePath(
+                label: option("--workspace", in: args) ?? "",
+                workDirectory: loadManifest()?.workDirectory
+            )
+            if path == nil, let found = Self.findCursorSessionFile(
+                sessionId: sessionId,
+                projectsRoot: home.appendingPathComponent(".cursor/projects", isDirectory: true)
+            ) {
+                let parsed = Self.parseCursorTranscript(in: found)
+                path = Self.resolvedWorkspacePath(
+                    label: parsed.cwd,
+                    workDirectory: loadManifest()?.workDirectory
+                )
+            }
+        case "codex":
+            if let found = Self.findCodexSessionFile(
+                sessionId: sessionId,
+                sessionsRoot: home.appendingPathComponent(".codex/sessions", isDirectory: true)
+            ), let meta = Self.peekCodexMeta(in: found) {
+                let cwd = meta.cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !cwd.isEmpty, FileManager.default.fileExists(atPath: cwd) {
+                    path = cwd
+                }
+            }
+            if path == nil {
+                path = Self.resolvedWorkspacePath(
+                    label: option("--workspace", in: args) ?? "",
+                    workDirectory: loadManifest()?.workDirectory
+                )
+            }
+        default:
+            pid = Self.liveClaudePid(
+                sessionId: sessionId,
+                sessionsRoot: home.appendingPathComponent(".claude/sessions", isDirectory: true)
+            )
+            path = Self.resolvedWorkspacePath(
+                label: option("--workspace", in: args) ?? "",
+                workDirectory: loadManifest()?.workDirectory
+            )
+        }
+        emit(ok: true, message: "Session ready", details: [
+            "provider": provider,
+            "sessionId": sessionId,
+            "app": app?.path ?? NSNull(),
+            "bundleId": app?.bundleId ?? NSNull(),
+            "path": path ?? NSNull(),
+            "pid": pid ?? NSNull(),
         ])
     }
 
@@ -10824,8 +10957,10 @@ final class COSControlHelper {
             "modified": "2026-08-13T18:43:00Z",
             "pinned": true,
         ])!
-        try expect(rowKeys.count == 12, "row projection stays 12 keys; dropped is a sibling")
+        try expect(rowKeys.count == 13, "row projection stays 13 keys; dropped is a sibling")
         try expect(rowKeys["dropped"] == nil, "dropped must not leak onto a row")
+        try expect(rowKeys["discussion_summary"] as? String == "",
+                   "discussion_summary is a row key even when the server omitted it")
         let measured = Self.agentSessionDroppedProjection([
             "dropped": ["age": 412, "limit": 6, "oversized": 1, "extra": 9],
         ])
@@ -11010,6 +11145,50 @@ final class COSControlHelper {
         try expect(Self.isKeepWarmSessionTitle("This is an automated local readiness check. Do not use tools. Reply with exactly"),
                    "provider-proof prompts are keep-warm")
         try expect(!Self.isKeepWarmSessionTitle("Fireflies meeting sync"), "real session titles stay visible")
+        try expect(Self.isPetLiveRow([
+            "name": "Waiting on you", "alive": true, "state": "waiting",
+        ]), "an alive waiting row is a pet session")
+        try expect(Self.isPetLiveRow([
+            "name": "Fireflies meeting sync", "alive": false, "state": "running",
+        ]), "a running row without alive still shows as a pet")
+        try expect(!Self.isPetLiveRow([
+            "name": "ready", "alive": true, "state": "running",
+        ]), "keep-warm never becomes a pet")
+        try expect(!Self.isPetLiveRow([
+            "name": "Fireflies meeting sync", "alive": false, "state": "recent",
+        ]), "recent without alive is not a pet")
+        try expect(Self.sessionRevealValidationError(sessionId: nil) == "--session is required",
+                   "reveal without --session fails closed")
+        try expect(Self.sessionRevealValidationError(sessionId: "  ") == "--session is required",
+                   "blank --session fails closed")
+        try expect(Self.sessionRevealValidationError(sessionId: "../etc/passwd") == "invalid session id",
+                   "reveal rejects path escape")
+        try expect(Self.sessionRevealValidationError(sessionId: "1c45222f-038d-460f-9a86-b8ea72c424ea") == nil,
+                   "a real session id is accepted")
+        try expect(Self.sessionIdsMatch("1c45222f-038d-460f-9a86-b8ea72c424ea", "1c45222f"),
+                   "an 8-char presence id matches the full UUID")
+        try expect(
+            Self.agentSessionRowProjection([
+                "session_id": "abc",
+                "display_label": "Inspecting",
+                "discussion_summary": "Inspecting diffs",
+                "alive": true,
+                "state": "running",
+            ])?["discussion_summary"] as? String == "Inspecting diffs",
+            "the list projection keeps discussion_summary for the pet bubble"
+        )
+        let petTmp = FileManager.default.temporaryDirectory.appendingPathComponent("cos-pet-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: petTmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: petTmp) }
+        try expect(Self.resolvedWorkspacePath(label: petTmp.lastPathComponent, workDirectory: petTmp.path) == petTmp.path,
+                   "a matching workspace label resolves to the COS work folder")
+        try expect(Self.resolvedWorkspacePath(label: "other", workDirectory: petTmp.path) == nil,
+                   "a mismatched workspace label does not invent a folder")
+        try expect(Self.resolvedWorkspacePath(label: "", workDirectory: petTmp.path) == nil,
+                   "an empty workspace label does not invent the COS folder")
+        try expect(Self.desktopApp(for: "cursor")?.path == "/Applications/Cursor.app"
+                   || Self.desktopApp(for: "cursor") == nil,
+                   "cursor maps to Cursor.app when installed")
         let readyJsonl = project.appendingPathComponent("bbbbbbbb-bbbb-cccc-dddd-ffffffffffff.jsonl")
         try Data("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"ready\"}}\n".utf8).write(to: readyJsonl)
         try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(60)], ofItemAtPath: readyJsonl.path)

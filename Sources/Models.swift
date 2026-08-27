@@ -532,6 +532,7 @@ struct ClaudeSession: Identifiable, Sendable {
     let createdAt: String
     let updatedAt: String
     let pinned: Bool
+    let discussionSummary: String
 
     var stateLabel: String {
         switch state {
@@ -593,6 +594,41 @@ struct ClaudeSession: Identifiable, Sendable {
         Self.isKeepWarmSessionTitle(name)
     }
 
+    /// Live pet gate: keep-warm off, then `alive` or Running/Waiting.
+    /// Not `showsStateChip` — `stale` chips and `alive && recent` does not.
+    var isPetVisible: Bool {
+        if isKeepWarm { return false }
+        if alive { return true }
+        return state == "running" || state == "waiting"
+    }
+
+    var petSubtitle: String {
+        let summary = discussionSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !summary.isEmpty { return summary }
+        if !waitingFor.isEmpty { return waitingFor }
+        return workspace
+    }
+
+    static func petVisibleSessions(in sessions: [ClaudeSession]) -> [ClaudeSession] {
+        sessions.filter(\.isPetVisible).sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    func relativeAgeLabel(now: Date = Date()) -> String? {
+        guard let updated = updatedDate else { return nil }
+        let seconds = max(0, now.timeIntervalSince(updated))
+        let value: String
+        if seconds < 60 {
+            value = "\(Int(seconds.rounded(.down)))s ago"
+        } else if seconds < 3600 {
+            value = "\(Int((seconds / 60).rounded(.down)))m ago"
+        } else if seconds < 86400 {
+            value = "\(Int((seconds / 3600).rounded(.down)))h ago"
+        } else {
+            value = "\(Int((seconds / 86400).rounded(.down)))d ago"
+        }
+        return "Updated \(value)"
+    }
+
     var providerLabel: String {
         switch provider {
         case "codex": "Codex"
@@ -628,6 +664,7 @@ struct ClaudeSession: Identifiable, Sendable {
         createdAt = o["createdAt"]?.string ?? ""
         updatedAt = o["updatedAt"]?.string ?? ""
         pinned = o["pinned"]?.bool ?? false
+        discussionSummary = o["discussion_summary"]?.string ?? o["discussionSummary"]?.string ?? ""
     }
 
     static func isKeepWarmSessionTitle(_ title: String) -> Bool {

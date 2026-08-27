@@ -285,12 +285,21 @@ struct ActivityWindow: View {
         .onExitCommand { goBack() }
         .onAppear { applyLaunchSection() }
         .onChange(of: model.activityOpenSection) { _, _ in applyLaunchSection() }
+        .onChange(of: model.activityOpenSessionID) { _, _ in applyLaunchSection() }
     }
 
     private func applyLaunchSection() {
-        guard let next = model.activityOpenSection else { return }
+        let sessionID = model.activityOpenSessionID
+        let next = model.activityOpenSection
+        if next == nil && sessionID == nil { return }
         model.activityOpenSection = nil
-        select(next)
+        model.activityOpenSessionID = nil
+        let staged = sessionID.flatMap { model.petSession(id: $0) }
+        if let next { select(next) }
+        if let staged {
+            selectedSessionID = staged.id
+            model.openClaudeSession(staged)
+        }
     }
 
     // MARK: - Navigation

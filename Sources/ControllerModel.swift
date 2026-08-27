@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import Darwin
 import Foundation
 import ServiceManagement
 
@@ -102,6 +103,7 @@ final class ControllerModel: ObservableObject {
     @Published var speakerListMemory = SpeakerListMemory.load()
     @Published var hideReviewedMeetings = UserDefaults.standard.bool(forKey: ControllerModel.hideReviewedKey)
     private static let hideReviewedKey = "cos.speakerHideReviewed"
+    private static let petEnabledKey = "cos.sessionPetEnabled"
     @Published var openReview: SpeakerReview?
     /// The readable meeting beside the speaker rows. nil when the server is
     /// older than 6.21.28 or the fetch failed — the review still renders.
@@ -202,6 +204,7 @@ final class ControllerModel: ObservableObject {
     private var memorySearchTask: Task<Void, Never>?
     private var threadSearchTask: Task<Void, Never>?
     private var sessionSearchTask: Task<Void, Never>?
+    private var petPollInFlight = false
     private var mediaPreviewTask: Task<Void, Never>?
     private var thumbnailTasks: [String: Task<Void, Never>] = [:]
     private var thumbnailLoadIDs: [String: UUID] = [:]
@@ -1197,6 +1200,15 @@ final class ControllerModel: ObservableObject {
     @Published var claudeSessionsReason = ""
     @Published var claudeSessionsLoading = false
     @Published var claudeSessionsError: String?
+    @Published var petEnabled = UserDefaults.standard.object(forKey: ControllerModel.petEnabledKey) as? Bool ?? true
+    @Published var petSessions: [ClaudeSession] = []
+    @Published var petExpanded = false
+    @Published var petFocusID: String?
+    /// Reveal/jump copy when Activity and the menu extra are both closed.
+    @Published var petNotice: String?
+    /// Waveform on the pet opens this session inside Activity. Consumed by
+    /// `applyLaunchSection` the same way chips consume `activityOpenSection`.
+    @Published var activityOpenSessionID: String?
     @Published var sessionClock: SessionClock = .updated
     @Published var sessionListDropped = SessionListDropped()
     @Published var sessionQuery = ""
@@ -1371,6 +1383,169 @@ final class ControllerModel: ObservableObject {
         } catch {
             claudeSessionsError = error.localizedDescription
         }
+    }
+
+    /// Helper `session-pet-live` waits `/api/claude-sessions` (timeout+2) then
+    /// `/api/agent-sessions` (timeout+2). 12+2+15+2 = 31s worst case.
+    private static let petLiveHelperTimeout: TimeInterval = 12 + 2 + 15 + 2 + 5
+
+    func setPetEnabled(_ enabled: Bool) {
+        petEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.petEnabledKey)
+        if enabled {
+            Task { await loadPetSessions() }
+        } else {
+            petSessions = []
+            petExpanded = false
+            petFocusID = nil
+            petNotice = nil
+        }
+    }
+
+    func loadPetSessions() async {
+        guard petEnabled else {
+            if !petSessions.isEmpty { petSessions = [] }
+            return
+        }
+        if petPollInFlight { return }
+        petPollInFlight = true
+        defer { petPollInFlight = false }
+        if !claudeSessions.isEmpty {
+            applyPetSessions(ClaudeSession.petVisibleSessions(in: claudeSessions))
+        }
+        // Skip the extra helper only when Activity already gave us live rows.
+        // Empty + loading used to return here and hide the pet for another 20s.
+        if claudeSessionsLoading, !petSessions.isEmpty { return }
+        do {
+            let response = try await helper.run(["session-pet-live"], timeout: Self.petLiveHelperTimeout)
+            applyPetSessions(ClaudeSession.petVisibleSessions(
+                in: (response.details["sessions"]?.array ?? []).compactMap(ClaudeSession.init)
+            ))
+        } catch is CancellationError {
+            return
+        } catch {
+            // Keep the last snapshot. A timeout must not flash the pet away.
+        }
+    }
+
+    private func applyPetSessions(_ sessions: [ClaudeSession]) {
+        petSessions = sessions
+        if petSessions.count < 2 { petExpanded = false }
+        if let petFocusID, !petSessions.contains(where: { $0.id == petFocusID }) {
+            self.petFocusID = nil
+        }
+    }
+
+    var petFocusSession: ClaudeSession? {
+        if let petFocusID, let row = petSessions.first(where: { $0.id == petFocusID }) {
+            return row
+        }
+        return petSessions.first
+    }
+
+    func focusPetSession(_ session: ClaudeSession) {
+        petFocusID = session.id
+        Task { await revealPetSession(session) }
+    }
+
+    func openPetSessionInControl(_ session: ClaudeSession) {
+        petFocusID = session.id
+        activityOpenSessionID = session.id
+        activityOpenSection = .sessions
+    }
+
+    func petSession(id: String) -> ClaudeSession? {
+        petSessions.first { $0.id == id } ?? claudeSessions.first { $0.id == id }
+    }
+
+    private func revealPetSession(_ session: ClaudeSession) async {
+        var arguments = [
+            "session-reveal",
+            "--provider", session.provider,
+            "--session", session.sessionId,
+        ]
+        if !session.workspace.isEmpty {
+            arguments += ["--workspace", session.workspace]
+        }
+        do {
+            let response = try await helper.run(arguments, timeout: 8)
+            applySessionReveal(response)
+        } catch {
+            self.error = error.localizedDescription
+            petNotice = error.localizedDescription
+        }
+    }
+
+    func applySessionReveal(_ response: HelperResponse) {
+        petNotice = nil
+        let pid = response.details["pid"]?.int.map { pid_t($0) }
+        let path = response.details["path"]?.string
+        let appPath = response.details["app"]?.string
+        let bundleId = response.details["bundleId"]?.string
+        if let pid, activateProcess(pid) { return }
+        let appURL = appPath.flatMap { FileManager.default.fileExists(atPath: $0) ? URL(fileURLWithPath: $0) : nil }
+        if let path, FileManager.default.fileExists(atPath: path), let appURL {
+            let folder = URL(fileURLWithPath: path, isDirectory: true)
+            NSWorkspace.shared.open([folder], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration()) { [weak self] _, openError in
+                Task { @MainActor in
+                    if let openError {
+                        self?.error = openError.localizedDescription
+                        self?.petNotice = openError.localizedDescription
+                    }
+                }
+            }
+            return
+        }
+        if let appURL {
+            NSWorkspace.shared.openApplication(at: appURL, configuration: NSWorkspace.OpenConfiguration()) { [weak self] _, openError in
+                Task { @MainActor in
+                    if let openError {
+                        self?.error = openError.localizedDescription
+                        self?.petNotice = openError.localizedDescription
+                    }
+                }
+            }
+            return
+        }
+        if let bundleId,
+           let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
+            running.activate()
+            return
+        }
+        let miss = "Could not open that session's app."
+        error = miss
+        petNotice = miss
+    }
+
+    @discardableResult
+    func activateProcess(_ pid: pid_t) -> Bool {
+        var current = pid
+        var seen = Set<pid_t>()
+        for _ in 0..<12 {
+            if !seen.insert(current).inserted { break }
+            if let app = NSRunningApplication(processIdentifier: current),
+               app.activationPolicy == .regular {
+                return app.activate()
+            }
+            guard let parent = parentProcessID(of: current), parent > 1 else { break }
+            current = parent
+        }
+        if let app = NSRunningApplication(processIdentifier: pid) {
+            return app.activate()
+        }
+        return false
+    }
+
+    private func parentProcessID(of pid: pid_t) -> pid_t? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        let result = mib.withUnsafeMutableBufferPointer { buf -> Int32 in
+            sysctl(buf.baseAddress, 4, &info, &size, nil, 0)
+        }
+        guard result == 0, size >= MemoryLayout<kinfo_proc>.stride else { return nil }
+        let parent = info.kp_eproc.e_ppid
+        return parent > 0 ? parent : nil
     }
 
     var isSessionQueryActive: Bool {

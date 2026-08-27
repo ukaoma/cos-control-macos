@@ -32,6 +32,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/Views.swift" \
   "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
+  "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   -o "$TMP/COS Control"
@@ -773,6 +774,14 @@ PY
 /usr/bin/grep -q 'Open Messages, Speakers, Meetings' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'ActivityWindowPresenter' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'activityWindow.show(model: model, section: section)' "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q 'SessionPetPresenter' "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q 'Session pet' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'case "session-pet-live"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'emitClaudeSessions(liveOnly: true)' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "session-reveal"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'if model.petExpanded { model.petExpanded = false }' "$ROOT/Sources/SessionPet.swift"
+/usr/bin/grep -q 'activityOpenSessionID' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'object(forKey: ControllerModel.petEnabledKey) as? Bool ?? true' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'window.isReleasedWhenClosed = false' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'window.setFrameAutosaveName("COSActivityWindow")' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'struct ActivityWindow' "$ROOT/Sources/ActivityWindow.swift"
@@ -1503,6 +1512,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/Views.swift" \
   "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
+  "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   -o "$TMP/COS Control"
@@ -1620,6 +1630,17 @@ need(main_panel is not None, "mainPanel not found")
 need('recentGlassesCard' not in main_panel.group(1), "Recent Glasses is still nested in the menu panel")
 need('reviewableMeetingsCard' not in main_panel.group(1), "Review Speakers is still nested in the menu panel")
 need('contextListCard' not in main_panel.group(1), "Memory/Threads are still nested in the menu panel")
+need('SessionPetPresenter' in app, "the pet presenter is not constructed at launch")
+need('sessionPet.bindIfNeeded' in app, "the pet does not start unless the menu opens")
+need('Toggle("Session pet"' in views, "the Session pet toggle is missing")
+need('activityOpenSessionID' in activity, "waveform open does not consume activityOpenSessionID")
+need('openClaudeSession(staged)' in activity, "waveform open does not restage the session after select()")
+need('if model.petExpanded { model.petExpanded = false }' in
+     (root / "Sources/SessionPet.swift").read_text(),
+     "hiding the pet must not assign petExpanded when it is already false")
+close = re.search(r"func windowWillClose\([^)]*\)[^{]*\{(.*?)(?:\n    \}|\n\}\n)", activity, re.S)
+need(close is not None, "windowWillClose not found")
+need('SessionPet' not in close.group(0), "closing Activity must not tear down the pet")
 ROUTECHK
 
 # ── Calendar day cell hit target (0.5.86) ────────────────────────────
