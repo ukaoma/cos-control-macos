@@ -1646,6 +1646,12 @@ need("attachment.fileExtension" in model, "the temp file does not carry a mime-d
 need("attachment.label" not in model.split("func openExternally")[1].split("func ")[0],
      "the external opener must not build a filename from the untrusted label")
 
+# The list badge names the TYPE. A hardcoded photo glyph over a video is
+# the same lie one layer out from the strip.
+need('systemImage: "photo"' not in activity,
+     "a hardcoded photo glyph survives in the row badge")
+need("turn.attachmentGlyph" in activity, "the row badge does not derive its icon from the attachments")
+
 # A video reads as a video before you click it.
 # BOUND to its condition, not merely present. A bare substring check for
 # `attachment.isVideo` passed while the play affordance was disabled,

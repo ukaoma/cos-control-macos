@@ -1123,6 +1123,45 @@ struct ModelsContract {
         precondition(lastYearLabel.contains("2025"), "a prior-year row must carry the year, got \(lastYearLabel)")
         precondition(GlassesTurn.dayAnchoredTime(nil, now: now, calendar: gregorian) == "—")
 
+        // Row badge glyphs (0.5.84). Every attachment rendered `photo`, so a
+        // 75-second video wore an image icon.
+        func badgeTurn(_ refs: [GlassesAttachmentRef]) -> GlassesTurn {
+            GlassesTurn(id: "t", no: 1, timestamp: 1, query: "q", text: "a",
+                        sessionId: "s", source: "live", attachments: refs)
+        }
+        func badgeRef(_ kind: String, _ mime: String, _ category: String) -> GlassesAttachmentRef {
+            GlassesAttachmentRef(object: [
+                "id": .string("m_4b754cfbf2164a2722ae1b48"),
+                "kind": .string(kind), "mime": .string(mime),
+                "width": .number(10), "height": .number(10),
+                "createdAt": .string("2026-08-26T22:30:20.926Z"),
+                "category": .string(category),
+            ])!
+        }
+        let videoRow = badgeTurn([badgeRef("user_video", "video/quicktime", "video")])
+        precondition(videoRow.attachmentGlyph == "video",
+                     "a video must not wear an image icon, got \(videoRow.attachmentGlyph ?? "nil")")
+        precondition(videoRow.attachmentSummary == "1 video")
+        let imageRow = badgeTurn([badgeRef("user_photo", "image/jpeg", "image")])
+        precondition(imageRow.attachmentGlyph == "photo")
+        precondition(imageRow.attachmentSummary == "1 image")
+        let fileRow = badgeTurn([badgeRef("user_document", "application/pdf", "document")])
+        precondition(fileRow.attachmentGlyph == "doc.text")
+        precondition(fileRow.attachmentSummary == "1 file")
+        let mixedRow = badgeTurn([
+            badgeRef("user_video", "video/quicktime", "video"),
+            badgeRef("user_photo", "image/jpeg", "image"),
+        ])
+        precondition(mixedRow.attachmentGlyph == "paperclip",
+                     "a mixed turn must not claim to be one type")
+        precondition(mixedRow.attachmentSummary == "2 attachments")
+        precondition(badgeTurn([]).attachmentGlyph == nil, "no attachments means no badge")
+        let twoVideos = badgeTurn([
+            badgeRef("user_video", "video/quicktime", "video"),
+            badgeRef("user_video", "video/mp4", "video"),
+        ])
+        precondition(twoVideos.attachmentSummary == "2 videos", "the noun must pluralize")
+
         // The FOURTH image-only filter (0.5.83). The helper answered
         // `state: ready, mime: video/quicktime` and the app threw it away
         // here, so the poster rendered and the click still failed.

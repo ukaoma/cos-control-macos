@@ -1,3 +1,16 @@
+## 0.5.84 (build 122)
+
+The message list says WHAT is attached.
+
+Every attachment badge rendered the same `photo` glyph, so a 75-second video
+sat in the list wearing an image icon and there was no way to tell a video
+from a picture from a file without opening the message. The badge now takes
+its icon from what is actually attached: a video glyph for video, a document
+glyph for files, a photo glyph for images, and a paperclip when a turn mixes
+types rather than picking a winner among its parts. Hovering names it in
+words -- "1 video", "2 files" -- because a 9.5pt glyph is a hint and the
+tooltip is where the answer should be unambiguous.
+
 ## 0.5.83 (build 121)
 
 The fourth filter. Video playback now actually works.

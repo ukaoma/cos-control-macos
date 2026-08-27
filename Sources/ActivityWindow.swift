@@ -1962,10 +1962,11 @@ struct ActivityWindow: View {
                     Text(turn.timeLabel)
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.tertiary)
-                    if !turn.attachments.isEmpty {
-                        Label("\(turn.attachments.count)", systemImage: "photo")
+                    if let glyph = turn.attachmentGlyph {
+                        Label("\(turn.attachments.count)", systemImage: glyph)
                             .font(.system(size: 9.5))
                             .foregroundStyle(.secondary)
+                            .help(turn.attachmentSummary ?? "")
                     }
                 }
                 Text(turn.previewQuery)

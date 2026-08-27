@@ -1170,6 +1170,39 @@ struct GlassesTurn: Identifiable, Sendable, Equatable {
 
     var timeLabel: String { Self.dayAnchoredTime(timestamp) }
 
+    /// The row badge's icon, chosen by what is actually attached.
+    ///
+    /// Every attachment used to render `photo`, so Message #29 -- a 75-second
+    /// video -- wore an image icon and you could not tell a video from a
+    /// picture from a file without opening it (Miles, 2026-08-26). A mixed
+    /// turn gets a paperclip rather than picking a winner among its parts.
+    var attachmentGlyph: String? {
+        guard !attachments.isEmpty else { return nil }
+        let categories = Set(attachments.map(\.category))
+        guard categories.count == 1 else { return "paperclip" }
+        switch categories.first {
+        case "video": return "video"
+        case "document": return "doc.text"
+        default: return "photo"
+        }
+    }
+
+    /// Hover text naming the type in words, because a 9.5pt glyph is a hint
+    /// and the tooltip is where the answer should be unambiguous.
+    var attachmentSummary: String? {
+        guard !attachments.isEmpty else { return nil }
+        let count = attachments.count
+        let categories = Set(attachments.map(\.category))
+        guard categories.count == 1 else { return "\(count) attachments" }
+        let noun: String
+        switch categories.first {
+        case "video": noun = count == 1 ? "video" : "videos"
+        case "document": noun = count == 1 ? "file" : "files"
+        default: noun = count == 1 ? "image" : "images"
+        }
+        return "\(count) \(noun)"
+    }
+
     var turnClipboardText: String {
         let label = no.map { "Msg \($0)" } ?? "Msg"
         return "[\(label)] User: \(query)\n[\(label)] COS: \(text)"
