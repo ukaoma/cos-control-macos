@@ -2153,9 +2153,9 @@ struct ActivityWindow: View {
                 .controlSize(.small)
 
                 messageBlock(label: "You", text: turn.query, tint: ActivitySection.messages.tint)
-                attachmentStrip(title: "Your image", attachments: turn.attachments.filter(\.isUserPhoto))
+                attachmentStrip(attachments: turn.attachments.filter(\.isUserPhoto), fallback: "Your attachments")
                 messageBlock(label: "COS", text: turn.text, tint: COSPalette.green)
-                attachmentStrip(title: "Answer image", attachments: turn.attachments.filter { !$0.isUserPhoto })
+                attachmentStrip(attachments: turn.attachments.filter { !$0.isUserPhoto }, fallback: "From COS")
             }
             .padding(28)
             .frame(maxWidth: 820, alignment: .leading)
@@ -2180,8 +2180,14 @@ struct ActivityWindow: View {
         .overlay(RoundedRectangle(cornerRadius: 13).stroke(tint.opacity(0.22), lineWidth: 1))
     }
 
-    @ViewBuilder
-    private func attachmentStrip(title: String, attachments: [GlassesAttachmentRef]) -> some View {
+    /// Titles itself from what it holds, because a turn can now carry a video
+    /// or a file, not just an image -- a hardcoded "Your image" over a .mov
+    /// would be the same lie the old parser told by dropping it.
+    private func attachmentStrip(attachments: [GlassesAttachmentRef], fallback: String) -> some View {
+        let title = Set(attachments.map(\.category)).count == 1
+            ? (attachments.first?.displayLabel ?? fallback)
+            : fallback
+        return Group {
         if !attachments.isEmpty {
             VStack(alignment: .leading, spacing: 7) {
                 Text(title.uppercased())
@@ -2196,14 +2202,46 @@ struct ActivityWindow: View {
                                     RoundedRectangle(cornerRadius: 10).fill(COSPalette.card)
                                     switch model.mediaPreviewStates[attachment.id] {
                                     case .ready(let image):
+                                        // A video's `thumb` variant is a real
+                                        // JPEG poster frame, so this renders
+                                        // for video exactly as for a photo.
                                         Image(nsImage: image)
                                             .resizable()
                                             .aspectRatio(contentMode: .fill)
                                     case .unavailable:
-                                        Image(systemName: "photo.badge.exclamationmark")
+                                        // A text file has no poster to fetch.
+                                        // That is expected, not an error state.
+                                        Image(systemName: attachment.isDocument
+                                              ? "doc.text"
+                                              : (attachment.isVideo ? "film" : "photo.badge.exclamationmark"))
+                                            .font(.system(size: 21))
                                             .foregroundStyle(.secondary)
                                     case .loading, nil:
                                         ProgressView().controlSize(.small)
+                                    }
+                                    if attachment.isVideo {
+                                        // Reads as a video at a glance, and
+                                        // says how long before you commit to
+                                        // launching a player.
+                                        Image(systemName: "play.circle.fill")
+                                            .font(.system(size: 27))
+                                            .foregroundStyle(.white.opacity(0.93))
+                                            .shadow(radius: 3)
+                                    }
+                                    if let badge = attachment.durationLabel ?? attachment.sizeLabel {
+                                        VStack {
+                                            Spacer()
+                                            HStack {
+                                                Spacer()
+                                                Text(badge)
+                                                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                                    .foregroundStyle(.white)
+                                                    .padding(.horizontal, 5)
+                                                    .padding(.vertical, 2)
+                                                    .background(Color.black.opacity(0.62), in: Capsule())
+                                                    .padding(6)
+                                            }
+                                        }
                                     }
                                     if model.previewingMediaID == attachment.id {
                                         Color.black.opacity(0.16)
@@ -2223,6 +2261,7 @@ struct ActivityWindow: View {
                 }
                 .scrollIndicators(.hidden)
             }
+        }
         }
     }
 

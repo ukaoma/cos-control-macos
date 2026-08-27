@@ -1622,6 +1622,51 @@ need('reviewableMeetingsCard' not in main_panel.group(1), "Review Speakers is st
 need('contextListCard' not in main_panel.group(1), "Memory/Threads are still nested in the menu panel")
 ROUTECHK
 
+# ── Video and file attachments (0.5.80) ──────────────────────────────
+#
+# The MODEL half (parsing the server's real video ref, category fallback,
+# extension mapping) is EXECUTED by Tests/ModelsContract.swift. These pin
+# the wiring the contract test cannot see.
+/usr/bin/python3 - "$ROOT" <<'MEDIACHK'
+import sys, pathlib
+root = pathlib.Path(sys.argv[1])
+activity = (root / "Sources/ActivityWindow.swift").read_text()
+model = (root / "Sources/ControllerModel.swift").read_text()
+
+def need(cond, msg):
+    if not cond: sys.exit(f"media-attachments: {msg}")
+
+# A non-image must never be decoded as an NSImage -- that is how a video
+# used to fail -- and its temp file must survive for the system opener.
+need("attachment.opensInline" in model, "the preview path does not branch on opensInline")
+need("NSWorkspace.shared.open" in model, "there is no external open path for video or documents")
+need("openExternally" in model, "the external opener is not wired")
+# Extension comes from the MIME, never the server-supplied label.
+need("attachment.fileExtension" in model, "the temp file does not carry a mime-derived extension")
+need("attachment.label" not in model.split("func openExternally")[1].split("func ")[0],
+     "the external opener must not build a filename from the untrusted label")
+
+# A video reads as a video before you click it.
+# BOUND to its condition, not merely present. A bare substring check for
+# `attachment.isVideo` passed while the play affordance was disabled,
+# because the same identifier appears in the fallback-glyph ternary.
+import re
+play_block = re.search(r"if attachment\.isVideo \{(.{0,900}?)\n\s*\}", activity, re.S)
+need(play_block is not None, "the play affordance is not guarded by attachment.isVideo")
+need("play.circle.fill" in play_block.group(1),
+     "the video branch does not render a play affordance")
+need("attachment.isDocument" in activity, "the strip has no document fallback glyph")
+need("durationLabel" in activity, "the poster does not show duration")
+# Titles derive from CONTENTS. The old signature passed a hardcoded
+# title:, which put "Your image" over a .mov. Checked as a call
+# signature, not as a bare string -- the string legitimately appears in
+# the doc comment explaining why it is gone.
+need("attachmentStrip(title:" not in activity,
+     "the hardcoded-title attachmentStrip signature survives")
+need("attachmentStrip(attachments:" in activity and "fallback:" in activity,
+     "the strip is not called with a derived title")
+MEDIACHK
+
 # ── Local model picker (0.5.79) ──────────────────────────────────────
 #
 # The pin's write shape and charset guard are EXECUTED by the helper

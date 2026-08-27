@@ -929,15 +929,37 @@ struct GlassesAttachmentRef: Identifiable, Sendable, Equatable {
     let height: Int
     let createdAt: String
     let label: String?
+    /// Additive discriminator from the server contract. Legacy image refs
+    /// omit it, so `category` below falls back to the mime.
+    let declaredCategory: String?
+    let bytes: Int?
+    let durationMs: Int?
+
+    /// The canonical vocabulary from shared/media-attachment.ts. Control used
+    /// to accept images ONLY -- `user_photo|traffic_frame|generated_visual`
+    /// crossed with `image/jpeg|image/png` -- so a video or document ref
+    /// failed this initializer and was dropped in silence. The server was
+    /// sending it the whole time: Message #29 carried a 75-second
+    /// video/quicktime with 13 extracted frames, and the Mac showed nothing at
+    /// all (Miles, 2026-08-26). Widened to the full contract.
+    static let acceptedKinds: Set<String> = [
+        "user_photo", "traffic_frame", "generated_visual", "user_video", "user_document",
+    ]
+    static let acceptedMimes: Set<String> = [
+        "image/jpeg", "image/png",
+        "video/mp4", "video/quicktime",
+        "application/pdf", "application/json",
+        "text/plain", "text/markdown", "text/csv",
+    ]
 
     init?(object: [String: JSONValue]) {
         guard let id = object["id"]?.string,
               id.count == 26, id.hasPrefix("m_"),
               id.dropFirst(2).allSatisfy({ "0123456789abcdef".contains($0) }),
               let kind = object["kind"]?.string,
-              ["user_photo", "traffic_frame", "generated_visual"].contains(kind),
+              Self.acceptedKinds.contains(kind),
               let mime = object["mime"]?.string,
-              ["image/jpeg", "image/png"].contains(mime),
+              Self.acceptedMimes.contains(mime),
               let widthValue = object["width"]?.double,
               widthValue.isFinite, widthValue.rounded() == widthValue,
               (1.0...65_535.0).contains(widthValue),
@@ -953,6 +975,9 @@ struct GlassesAttachmentRef: Identifiable, Sendable, Equatable {
         self.height = Int(heightValue)
         self.createdAt = createdAt
         self.label = object["label"]?.string.map { String($0.prefix(120)) }
+        self.declaredCategory = object["category"]?.string
+        self.bytes = object["bytes"]?.int
+        self.durationMs = object["durationMs"]?.int
     }
 
     private static func validTimestamp(_ value: String) -> Bool {
@@ -964,8 +989,65 @@ struct GlassesAttachmentRef: Identifiable, Sendable, Equatable {
         return wholeSecond.date(from: value) != nil
     }
 
-    var isUserPhoto: Bool { kind == "user_photo" }
-    var displayLabel: String { isUserPhoto ? "Your image" : "Answer image" }
+    /// image | video | document. Trusts the server's discriminator when it is
+    /// present and falls back to the mime, so a legacy ref that predates
+    /// `category` still classifies correctly.
+    var category: String {
+        if let declaredCategory, ["image", "video", "document"].contains(declaredCategory) {
+            return declaredCategory
+        }
+        if mime.hasPrefix("video/") { return "video" }
+        if mime.hasPrefix("image/") { return "image" }
+        return "document"
+    }
+
+    var isVideo: Bool { category == "video" }
+    var isDocument: Bool { category == "document" }
+    /// True only for things this app can render as an inline picture. A video
+    /// still HAS a poster frame (the thumb variant is a JPEG), so this gates
+    /// the full-size open path, never the thumbnail.
+    var opensInline: Bool { category == "image" }
+
+    var isUserPhoto: Bool { kind == "user_photo" || kind == "user_video" || kind == "user_document" }
+
+    var displayLabel: String {
+        switch category {
+        case "video": return isUserPhoto ? "Your video" : "Answer video"
+        case "document": return isUserPhoto ? "Your file" : "Answer file"
+        default: return isUserPhoto ? "Your image" : "Answer image"
+        }
+    }
+
+    /// "1:15" / "12s" -- shown on the poster so a video reads as a video.
+    var durationLabel: String? {
+        guard let durationMs, durationMs > 0 else { return nil }
+        let total = Int((Double(durationMs) / 1000).rounded())
+        if total < 60 { return "\(total)s" }
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    var sizeLabel: String? {
+        guard let bytes, bytes > 0 else { return nil }
+        if bytes < 1_024 * 1_024 { return "\(max(1, bytes / 1_024)) KB" }
+        return String(format: "%.1f MB", Double(bytes) / (1_024 * 1_024))
+    }
+
+    /// A filename for the temp file the external opener hands to QuickTime or
+    /// Preview. The extension is derived from the MIME, never from the
+    /// server-supplied label, which is untrusted text.
+    var fileExtension: String {
+        switch mime {
+        case "video/quicktime": return "mov"
+        case "video/mp4": return "mp4"
+        case "application/pdf": return "pdf"
+        case "application/json": return "json"
+        case "text/markdown": return "md"
+        case "text/csv": return "csv"
+        case "text/plain": return "txt"
+        case "image/png": return "png"
+        default: return "jpg"
+        }
+    }
 }
 
 enum RecentMediaPreviewState {
@@ -1046,13 +1128,38 @@ struct GlassesTurn: Identifiable, Sendable, Equatable {
         return String(trimmed.prefix(57)) + "…"
     }
 
-    var timeLabel: String {
-        guard let timestamp else { return "--:--" }
+    /// Day-anchored, locale-formatted time.
+    ///
+    /// This was a hardcoded `HH:mm`, so a list spanning several days rendered
+    /// every row as a bare 24-hour clock: "19:15" over "18:31" over "17:42"
+    /// with no way to tell today from Monday, and no AM/PM on a machine whose
+    /// locale uses it (a fixed dateFormat ignores locale entirely). Miles,
+    /// 2026-08-26: "hard to skim".
+    ///
+    /// Every row now carries its day. The TIME half is `.shortened`, which is
+    /// locale-driven -- an en_US machine gets "7:15 PM" while a 24-hour locale
+    /// keeps 24-hour rather than having AM/PM forced onto it.
+    static func dayAnchoredTime(
+        _ timestamp: TimeInterval?,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> String {
+        guard let timestamp, timestamp > 0 else { return "—" }
         let date = Date(timeIntervalSince1970: timestamp)
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
-        return formatter.string(from: date)
+        let time = date.formatted(date: .omitted, time: .shortened)
+        if calendar.isDate(date, inSameDayAs: now) { return "Today \(time)" }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+           calendar.isDate(date, inSameDayAs: yesterday) {
+            return "Yesterday \(time)"
+        }
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+        let day = sameYear
+            ? date.formatted(.dateTime.month(.abbreviated).day())
+            : date.formatted(.dateTime.month(.abbreviated).day().year())
+        return "\(day), \(time)"
     }
+
+    var timeLabel: String { Self.dayAnchoredTime(timestamp) }
 
     var turnClipboardText: String {
         let label = no.map { "Msg \($0)" } ?? "Msg"

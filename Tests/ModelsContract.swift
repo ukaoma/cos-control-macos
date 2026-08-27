@@ -1089,6 +1089,99 @@ struct ModelsContract {
         try FileManager.default.removeItem(at: source)
         precondition(decoded?.tiffRepresentation != nil)
 
+        // ── Day-anchored timestamps (0.5.80) ──────────────────────────
+        //
+        // Every row used to render a bare `HH:mm`, so a list spanning days gave
+        // no way to tell today from Monday and no AM/PM on a locale that uses
+        // it. `now` and `calendar` are injected so these assertions do not
+        // drift with the wall clock.
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = TimeZone(identifier: "America/Chicago")!
+        gregorian.locale = Locale(identifier: "en_US")
+        var when = DateComponents()
+        when.year = 2026; when.month = 8; when.day = 26
+        when.hour = 19; when.minute = 15
+        let now = gregorian.date(from: when)!
+
+        func label(_ date: Date) -> String {
+            GlassesTurn.dayAnchoredTime(date.timeIntervalSince1970, now: now, calendar: gregorian)
+        }
+        let todayLabel = label(now)
+        precondition(todayLabel.hasPrefix("Today "), "today must carry a day anchor, got \(todayLabel)")
+        // The 24-hour "19:15" is exactly what Miles could not skim.
+        precondition(!todayLabel.contains("19:15"), "en_US must not render 24-hour, got \(todayLabel)")
+        precondition(todayLabel.contains("7:15"), "en_US must render 12-hour, got \(todayLabel)")
+
+        let yesterdayLabel = label(gregorian.date(byAdding: .day, value: -1, to: now)!)
+        precondition(yesterdayLabel.hasPrefix("Yesterday "), "got \(yesterdayLabel)")
+
+        let olderLabel = label(gregorian.date(byAdding: .day, value: -3, to: now)!)
+        precondition(olderLabel.contains("Aug 23"), "an older row must name its date, got \(olderLabel)")
+        precondition(olderLabel.contains("7:15"), "an older row keeps its time, got \(olderLabel)")
+
+        let lastYearLabel = label(gregorian.date(byAdding: .year, value: -1, to: now)!)
+        precondition(lastYearLabel.contains("2025"), "a prior-year row must carry the year, got \(lastYearLabel)")
+        precondition(GlassesTurn.dayAnchoredTime(nil, now: now, calendar: gregorian) == "—")
+
+        // ── Video and document attachments (0.5.80) ───────────────────
+        //
+        // Control accepted images ONLY, so the video ref the server sent for
+        // Message #29 failed the parser and vanished: no badge, no poster, no
+        // asset anywhere in the Mac UI. This is that exact payload.
+        let videoRef = GlassesAttachmentRef(object: [
+            "id": .string("m_93c30da025af44a2f617a926"),
+            "kind": .string("user_video"),
+            "mime": .string("video/quicktime"),
+            "width": .number(480), "height": .number(360),
+            "createdAt": .string("2026-08-26T22:30:20.926Z"),
+            "category": .string("video"),
+            "bytes": .number(2_196_720),
+            "durationMs": .number(75_755),
+            "label": .string("80947613953__F2726445.MOV"),
+        ])
+        precondition(videoRef != nil, "the server's real video ref must parse")
+        precondition(videoRef?.isVideo == true)
+        precondition(videoRef?.opensInline == false, "a .mov must never take the inline image path")
+        precondition(videoRef?.durationLabel == "1:16", "got \(videoRef?.durationLabel ?? "nil")")
+        precondition(videoRef?.sizeLabel == "2.1 MB", "got \(videoRef?.sizeLabel ?? "nil")")
+        precondition(videoRef?.fileExtension == "mov", "LaunchServices routes on the extension")
+        precondition(videoRef?.displayLabel == "Your video")
+
+        let docRef = GlassesAttachmentRef(object: [
+            "id": .string("m_4b754cfbf2164a2722ae1b48"),
+            "kind": .string("user_document"),
+            "mime": .string("application/pdf"),
+            "width": .number(612), "height": .number(792),
+            "createdAt": .string("2026-08-26T22:30:20.926Z"),
+            "category": .string("document"),
+            "bytes": .number(48_000),
+        ])
+        precondition(docRef?.isDocument == true)
+        precondition(docRef?.opensInline == false)
+        precondition(docRef?.fileExtension == "pdf")
+        precondition(docRef?.displayLabel == "Your file")
+
+        // A legacy image ref omits `category` on purpose, so classification
+        // must still fall back to the mime rather than defaulting to document.
+        let legacyImage = GlassesAttachmentRef(object: [
+            "id": .string("m_4b754cfbf2164a2722ae1b48"),
+            "kind": .string("user_photo"),
+            "mime": .string("image/jpeg"),
+            "width": .number(472), "height": .number(1024),
+            "createdAt": .string("2026-08-24T13:01:38.348Z"),
+        ])
+        precondition(legacyImage?.category == "image", "a ref without category must classify by mime")
+        precondition(legacyImage?.opensInline == true, "an image still opens inline")
+        precondition(legacyImage?.displayLabel == "Your image")
+
+        // Widening the vocabulary must not have opened the door to anything.
+        precondition(GlassesAttachmentRef(object: [
+            "id": .string("m_4b754cfbf2164a2722ae1b48"),
+            "kind": .string("executable"), "mime": .string("application/x-mach-binary"),
+            "width": .number(1), "height": .number(1),
+            "createdAt": .string("2026-08-24T13:01:38.348Z"),
+        ]) == nil, "an unknown kind/mime must still be refused")
+
         print("COS Control: Swift attachment parsing and owned-image decoding passed")
     }
 }

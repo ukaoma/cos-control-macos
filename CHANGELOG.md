@@ -1,3 +1,27 @@
+## 0.5.80 (build 118)
+
+Readable timestamps, and your videos and files finally show up.
+
+Every message row rendered a bare 24-hour clock. Thirty turns spanning
+several days all looked like "19:15" over "18:31", with no way to tell today
+from Monday, and no AM/PM on a machine whose locale uses it, because a
+hardcoded date format ignores locale entirely. Rows now carry their day:
+"Today 7:15 PM", "Yesterday 6:31 PM", "Aug 24, 2:19 PM". The time half is
+locale-driven, so a 24-hour locale keeps 24-hour rather than having AM/PM
+forced onto it.
+
+Video and file attachments were being DROPPED IN SILENCE. Control's parser
+accepted three image kinds crossed with JPEG and PNG, so a video ref failed
+it and disappeared: no badge in the list, no asset in the detail, nothing to
+click. The server had been sending the whole ref all along, including a
+75-second video with 13 extracted frames. The parser now accepts the full
+media contract, and because a video's thumbnail variant is already a real
+JPEG poster frame, posters render through the existing path. Video shows a
+play affordance and its duration; documents get a file glyph and size;
+clicking either hands the file to QuickTime or Preview with an extension
+derived from its MIME rather than from the server's untrusted label. Images
+still open inline exactly as before.
+
 ## 0.5.79 (build 117)
 
 Pick your local model, and pin it.

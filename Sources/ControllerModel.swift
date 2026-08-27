@@ -462,8 +462,20 @@ final class ControllerModel: ObservableObject {
             }
             do {
                 let file = try await fetchMediaFile(attachment, variant: "phone", purpose: "preview")
+                guard !Task.isCancelled, previewingMediaID == attachment.id else {
+                    try? FileManager.default.removeItem(at: file.url)
+                    return
+                }
+                // A video or a document cannot become an NSImage. Decoding one
+                // as an image is how they used to fail, so they hand off to the
+                // system opener instead -- QuickTime for a .mov, Preview for a
+                // .pdf -- and the temp file must OUTLIVE this function for that
+                // to work, which is why only the inline path deletes it here.
+                guard attachment.opensInline else {
+                    try openExternally(file: file.url, attachment: attachment)
+                    return
+                }
                 defer { try? FileManager.default.removeItem(at: file.url) }
-                guard !Task.isCancelled, previewingMediaID == attachment.id else { return }
                 guard let image = RecentMediaImageDecoder.decode(url: file.url, expectedBytes: file.bytes) else {
                     throw MediaFetchError.invalidResponse
                 }
@@ -473,6 +485,21 @@ final class ControllerModel: ObservableObject {
                 self.error = error.localizedDescription
             }
         }
+    }
+
+    /// Hand a fetched non-image attachment to the system opener.
+    ///
+    /// The file is renamed to carry the extension implied by its MIME before
+    /// opening: LaunchServices routes on the extension, and the fetched temp
+    /// file has none, so without this a .mov opens in a text editor. The name
+    /// is derived from the mime and the media id, never from the server's
+    /// `label`, which is untrusted text that could carry path separators.
+    private func openExternally(file: URL, attachment: GlassesAttachmentRef) throws {
+        let named = file.deletingLastPathComponent()
+            .appendingPathComponent("\(attachment.id).\(attachment.fileExtension)")
+        try? FileManager.default.removeItem(at: named)
+        try FileManager.default.moveItem(at: file, to: named)
+        NSWorkspace.shared.open(named)
     }
 
     func closeMediaPreview() {
