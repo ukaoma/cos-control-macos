@@ -1187,6 +1187,14 @@ struct GlassesTurn: Identifiable, Sendable, Equatable {
         }
     }
 
+    /// The single category this turn's attachments share, or "mixed". Nil when
+    /// the turn has no attachments at all.
+    var attachmentCategory: String? {
+        guard !attachments.isEmpty else { return nil }
+        let categories = Set(attachments.map(\.category))
+        return categories.count == 1 ? categories.first : "mixed"
+    }
+
     /// Hover text naming the type in words, because a 9.5pt glyph is a hint
     /// and the tooltip is where the answer should be unambiguous.
     var attachmentSummary: String? {

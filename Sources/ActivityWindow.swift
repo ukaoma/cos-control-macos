@@ -1892,6 +1892,41 @@ struct ActivityWindow: View {
     ///
     /// Frame sizes are unchanged at 32/42pt: eight call sites lay out around this, and a
     /// visual change should not become a layout change.
+    /// Tint per attachment category, drawn from the Activity section palette
+    /// so the badge speaks a color the app already uses.
+    private func attachmentTint(_ category: String) -> Color {
+        switch category {
+        case "video": return ActivitySection.memories.tint
+        case "document": return ActivitySection.meetings.tint
+        case "photo": return ActivitySection.threads.tint
+        default: return ActivitySection.messages.tint
+        }
+    }
+
+    /// The message bubble wearing a filled type mark on its corner.
+    ///
+    /// The glyph grows 16 -> 20pt INSIDE the existing 32pt frame, so the badge
+    /// has room without any row moving. The mark sits over a background-colored
+    /// halo so it reads against the bubble stroke rather than merging with it.
+    private func messageGlyph(_ turn: GlassesTurn) -> some View {
+        ZStack(alignment: .bottomTrailing) {
+            SectionGlyph(section: .messages)
+                .stroke(style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
+                .foregroundStyle(.secondary)
+                .frame(width: turn.attachmentCategory == nil ? 16 : 20,
+                       height: turn.attachmentCategory == nil ? 16 : 20)
+            if let category = turn.attachmentCategory {
+                AttachmentMark(category: category)
+                    .fill(attachmentTint(category))
+                    .frame(width: 11, height: 11)
+                    .padding(1.7)
+                    .background(Circle().fill(COSPalette.panel))
+                    .offset(x: 5, y: 5)
+            }
+        }
+        .frame(width: 32, height: 32)
+    }
+
     private func sectionGlyph(_ item: ActivitySection, large: Bool = false) -> some View {
         SectionGlyph(section: item)
             .stroke(style: StrokeStyle(lineWidth: large ? 1.6 : 1.4, lineCap: .round, lineJoin: .round))
@@ -1954,7 +1989,7 @@ struct ActivityWindow: View {
 
     private func messageRow(_ turn: GlassesTurn) -> some View {
         HStack(alignment: .top, spacing: 13) {
-            sectionGlyph(.messages)
+            messageGlyph(turn)
             VStack(alignment: .leading, spacing: 5) {
                 HStack {
                     Text(turn.no.map { "Message #\($0)" } ?? "Message")

@@ -1,3 +1,21 @@
+## 0.5.85 (build 123)
+
+The message icon itself says what is attached.
+
+The left-column bubble was the same for every row, so a video and a text-only
+turn were identical until your eye reached the far side of the row. The bubble
+now wears a small filled type mark on its corner: a camcorder for video, a
+framed peak for photos, a folded page for files, and stacked cards when a turn
+holds more than one kind. The bubble grows from 16 to 20pt INSIDE its existing
+32pt frame, so nothing about row height or alignment moves.
+
+The marks are filled rather than stroked, and that is the reason they work. A
+first pass drew them as 1.15pt outlines and every one collapsed into an
+indistinct speck at that size. Each shape was then rendered at 64pt to confirm
+it is the thing it claims to be, which is how the original paperclip was caught
+reading as a battery and became stacked cards instead. Colors come from the
+Activity section palette, so the badge and the right-hand count badge agree.
+
 ## 0.5.84 (build 122)
 
 The message list says WHAT is attached.

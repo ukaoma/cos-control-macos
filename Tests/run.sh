@@ -1646,6 +1646,16 @@ need("attachment.fileExtension" in model, "the temp file does not carry a mime-d
 need("attachment.label" not in model.split("func openExternally")[1].split("func ")[0],
      "the external opener must not build a filename from the untrusted label")
 
+# The left glyph wears the type. A row that renders the bare section glyph
+# cannot tell a video from a text-only turn, which is the whole point.
+need("messageGlyph(turn)" in activity, "the message row does not use the badged glyph")
+need("AttachmentMark(category:" in activity, "the corner badge is not drawn")
+mark_shape = (root / "Sources/COSMotion.swift").read_text()
+need("struct AttachmentMark" in mark_shape, "the AttachmentMark shape is missing")
+# FILLED, not stroked: a 1.15pt outline at 11pt collapses into a speck, which
+# is exactly what the first design pass proved.
+need(".fill(attachmentTint(" in activity, "the badge must be filled, never stroked")
+
 # The list badge names the TYPE. A hardcoded photo glyph over a video is
 # the same lie one layer out from the strip.
 need('systemImage: "photo"' not in activity,

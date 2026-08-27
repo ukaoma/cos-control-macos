@@ -1162,6 +1162,14 @@ struct ModelsContract {
         ])
         precondition(twoVideos.attachmentSummary == "2 videos", "the noun must pluralize")
 
+        // Corner-badge category (0.5.85). The badge is drawn from this.
+        precondition(videoRow.attachmentCategory == "video")
+        precondition(imageRow.attachmentCategory == "image")
+        precondition(fileRow.attachmentCategory == "document")
+        precondition(mixedRow.attachmentCategory == "mixed",
+                     "a turn holding two kinds must not claim to be one of them")
+        precondition(badgeTurn([]).attachmentCategory == nil, "no attachments means no badge")
+
         // The FOURTH image-only filter (0.5.83). The helper answered
         // `state: ready, mime: video/quicktime` and the app threw it away
         // here, so the poster rendered and the click still failed.

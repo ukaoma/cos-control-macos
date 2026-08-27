@@ -8,6 +8,56 @@ import SwiftUI
 /// sketch-then-ink draw possible: an `Image(systemName:)` is a raster at draw time and
 /// has no length to travel along. Every path is authored in a 20x20 design space and
 /// scaled to the rect, so the same shape serves the 17pt icon and the large ghosted plate.
+/// The filled type mark that rides the corner of a message bubble.
+///
+/// FILLED, not stroked, and that is the whole reason it works. The first pass
+/// drew these as 1.15pt outlines at 10pt and every one collapsed into an
+/// indistinct speck; a solid silhouette survives at that size where a hairline
+/// cannot. Rendered at 64pt during design to confirm each shape is the thing
+/// it claims to be -- which is how the original "mixed" paperclip was caught
+/// reading as a battery, and became stacked cards instead.
+struct AttachmentMark: Shape {
+    /// "video" | "photo" | "document" | "mixed"
+    let category: String
+
+    func path(in rect: CGRect) -> Path {
+        let s = min(rect.width, rect.height) / 10
+        let ox = rect.minX, oy = rect.minY
+        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: ox + x * s, y: oy + y * s) }
+        func box(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) -> CGRect {
+            CGRect(x: ox + x * s, y: oy + y * s, width: w * s, height: h * s)
+        }
+        var path = Path()
+        switch category {
+        case "video":
+            // Camcorder body plus lens wedge. A bare triangle would read as
+            // "play" on anything, including a photo.
+            path.addRoundedRect(in: box(1.9, 3.2, 4.6, 3.9), cornerSize: CGSize(width: 0.9 * s, height: 0.9 * s))
+            path.move(to: p(7, 4.4)); path.addLine(to: p(8.4, 3.3))
+            path.addLine(to: p(8.4, 7)); path.addLine(to: p(7, 5.9)); path.closeSubpath()
+        case "photo":
+            // Frame with the peak knocked out, so the silhouette is not just a
+            // rectangle at 11pt.
+            path.addRoundedRect(in: box(1.7, 2.6, 6.6, 5.2), cornerSize: CGSize(width: s, height: s))
+            path.move(to: p(2.5, 7)); path.addLine(to: p(4.3, 4.9))
+            path.addLine(to: p(6.1, 7)); path.closeSubpath()
+        case "document":
+            // Page with a folded corner; the fold is what separates it from
+            // the photo frame in a glance.
+            path.move(to: p(2.6, 2.2)); path.addLine(to: p(6, 2.2)); path.addLine(to: p(7.6, 3.8))
+            path.addLine(to: p(7.6, 7.8)); path.addLine(to: p(2.6, 7.8)); path.closeSubpath()
+        default:
+            // Stacked cards for a mixed turn. Deliberately NOT a paperclip: a
+            // clip needs a thin curved stem, and at this size that stem fills
+            // in and reads as a battery.
+            path.addRoundedRect(in: box(1.6, 1.6, 5, 5), cornerSize: CGSize(width: s, height: s))
+            path.addRoundedRect(in: box(3.2, 3.2, 2.2, 2.2), cornerSize: CGSize(width: 0.6 * s, height: 0.6 * s))
+            path.addRoundedRect(in: box(3.9, 3.9, 5, 5), cornerSize: CGSize(width: s, height: s))
+        }
+        return path
+    }
+}
+
 struct SectionGlyph: Shape {
     let section: ActivitySection
 
