@@ -1,3 +1,15 @@
+## 0.5.86 (build 124)
+
+The whole calendar square selects the day.
+
+Picking a day in Meetings meant hitting the date number itself or the little
+dot under it. Everything else inside the highlighted square did nothing, so
+the target was an 11.5pt glyph and a 5pt dot instead of the cell you can see.
+Under `.buttonStyle(.plain)` SwiftUI hit-tests only the RENDERED content, and
+the cell's background is clear until the day is selected, so the surrounding
+area was never a target at all. The cell now declares its own content shape
+and the entire square is clickable. Days with no meetings stay disabled.
+
 ## 0.5.85 (build 123)
 
 The message icon itself says what is attached.

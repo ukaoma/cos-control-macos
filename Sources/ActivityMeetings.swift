@@ -370,6 +370,13 @@ struct MeetingMonthCalendar: View {
                                 RoundedRectangle(cornerRadius: 6)
                                     .fill(selectedDay == cell.date ? tint.opacity(0.18) : Color.clear)
                             )
+                            // THE WHOLE CELL IS THE TARGET. With a plain
+                            // button style SwiftUI hit-tests only the RENDERED
+                            // content, so a clear background is not clickable:
+                            // the tap target was the 11.5pt date glyph and a
+                            // 5pt dot, and every pixel of the highlighted
+                            // square around them did nothing.
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .disabled(count == 0)

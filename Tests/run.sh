@@ -1622,6 +1622,23 @@ need('reviewableMeetingsCard' not in main_panel.group(1), "Review Speakers is st
 need('contextListCard' not in main_panel.group(1), "Memory/Threads are still nested in the menu panel")
 ROUTECHK
 
+# ── Calendar day cell hit target (0.5.86) ────────────────────────────
+#
+# Under .buttonStyle(.plain) SwiftUI hit-tests only rendered content, so a
+# clear background is dead space. Without contentShape the tap target is the
+# date glyph and a 5pt dot rather than the square the user can see.
+/usr/bin/python3 - "$ROOT" <<'CALCHK'
+import sys, pathlib, re
+meetings = (pathlib.Path(sys.argv[1]) / "Sources/ActivityMeetings.swift").read_text()
+# Anchored on the day cell's OWN action, which is unique. A generic
+# RoundedRectangle anchor matched an unrelated button earlier in the file
+# and failed against correct code.
+block = re.search(r"onSelectDay\(selectedDay == cell\.date(.{0,1400}?)\.buttonStyle\(\.plain\)", meetings, re.S)
+if block is None: sys.exit("calendar: day-cell button block not found")
+if ".contentShape(" not in block.group(1):
+    sys.exit("calendar: the day cell has no contentShape, so only the date glyph is clickable")
+CALCHK
+
 # ── Video and file attachments (0.5.80) ──────────────────────────────
 #
 # The MODEL half (parsing the server's real video ref, category fallback,
