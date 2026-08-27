@@ -1,3 +1,24 @@
+## 0.5.82 (build 120)
+
+Playing a video actually plays it.
+
+0.5.81 got the poster, the play badge and the duration onto the screen.
+Clicking it still failed with "This image is unavailable", because the media
+FETCH path carried a third image-only gate: it sniffed magic bytes with a
+JPEG/PNG-only sniffer and refused anything else. That was the last of three
+independent image-only filters between the server and the screen.
+
+Fetched bytes are now verified against the type the server declared, per
+family: images by magic bytes exactly as before, video by its ISO base media
+`ftyp` container, PDF by its signature, and text by decoding as UTF-8, which
+is the honest check for a family with no magic bytes. The declared-vs-actual
+cross-check is KEPT and pinned in both directions -- a container declared as
+a PNG is still refused, and so is a JPEG declared as video. The temp file is
+now written with the extension its type implies, since LaunchServices routes
+on that, and the full-size ceiling rises to the 100 MB the server's own video
+contract already allows. The error copy no longer calls a video an image, and
+a verification failure now says so instead of hiding behind "unavailable".
+
 ## 0.5.81 (build 119)
 
 The video fix from 0.5.80, actually reaching the screen.

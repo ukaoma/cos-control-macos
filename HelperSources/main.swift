@@ -9859,6 +9859,61 @@ final class COSControlHelper {
         return nil
     }
 
+    /// Verify fetched bytes against the type the server DECLARED.
+    ///
+    /// THIS IS THE THIRD OF THREE image-only filters. The other two dropped a
+    /// video ref before it could be rendered; this one let the poster render
+    /// and then failed the click, because `imageMIME` returns nil for a .mov
+    /// and the caller reported `state: "invalid"` -- surfacing as "This image
+    /// is unavailable" over a video (Miles, 2026-08-26).
+    ///
+    /// The declared-vs-actual cross-check is a real security property and is
+    /// KEPT, not dropped: a server that says "image/png" and sends something
+    /// else is still refused. It is now type-aware rather than image-only.
+    /// Text-family types carry no magic bytes, so they are verified by
+    /// decoding as UTF-8 instead -- the honest check for that family.
+    func verifiedMediaMIME(_ data: Data, declared: String) -> String? {
+        guard !data.isEmpty else { return nil }
+        switch declared {
+        case "image/jpeg", "image/png":
+            guard let sniffed = imageMIME(data), sniffed == declared else { return nil }
+            return sniffed
+        case "video/mp4", "video/quicktime":
+            // ISO base media format: a 4-byte size then the 'ftyp' box type.
+            // Confirms a real container rather than a script that claims to be
+            // one; the exact brand is deliberately not policed, because real
+            // files carry many valid brands.
+            let head = [UInt8](data.prefix(12))
+            guard head.count >= 8,
+                  head[4] == 0x66, head[5] == 0x74, head[6] == 0x79, head[7] == 0x70 else { return nil }
+            return declared
+        case "application/pdf":
+            guard [UInt8](data.prefix(5)) == [0x25, 0x50, 0x44, 0x46, 0x2d] else { return nil }
+            return declared
+        case "text/plain", "text/markdown", "text/csv", "application/json":
+            guard String(data: data, encoding: .utf8) != nil else { return nil }
+            return declared
+        default:
+            return nil
+        }
+    }
+
+    /// The extension the fetched file is written with. LaunchServices routes
+    /// on this, so a .mov written as .jpg opens in an image viewer.
+    private func mediaFileExtension(for mime: String) -> String {
+        switch mime {
+        case "image/png": return "png"
+        case "video/quicktime": return "mov"
+        case "video/mp4": return "mp4"
+        case "application/pdf": return "pdf"
+        case "application/json": return "json"
+        case "text/markdown": return "md"
+        case "text/csv": return "csv"
+        case "text/plain": return "txt"
+        default: return "jpg"
+        }
+    }
+
     private func pruneMediaTransfers(now: Date = Date()) throws {
         try ensurePrivateDirectory(controlCache)
         try ensurePrivateDirectory(mediaTransferRoot)
@@ -9894,7 +9949,12 @@ final class COSControlHelper {
             emit(ok: true, message: "Media unavailable", details: ["state": "unauthorized"])
             return
         }
-        let maximumBytes = variant == "thumb" ? 2 * 1_024 * 1_024 : 12 * 1_024 * 1_024
+        // A poster frame is small; a full video is not. The server's own
+        // contract allows 100 MB (MAX_VIDEO_MEDIA_BYTES), and a 12 MB ceiling
+        // here would refuse most real clips with the same opaque "unavailable"
+        // the image-only sniffer produced. The helper is a one-shot process,
+        // so the peak buffer dies with it.
+        let maximumBytes = variant == "thumb" ? 2 * 1_024 * 1_024 : 100 * 1_024 * 1_024
         // Sweep crash-orphaned transfers even when this attempt fails before a
         // new file is committed.
         try pruneMediaTransfers()
@@ -9920,13 +9980,12 @@ final class COSControlHelper {
             return
         }
         guard !data.isEmpty, data.count <= maximumBytes,
-              let sniffed = imageMIME(data),
               let declared = response.headers["content-type"]?.lowercased().split(separator: ";").first.map(String.init),
-              declared == sniffed else {
+              let sniffed = verifiedMediaMIME(data, declared: declared) else {
             emit(ok: true, message: "Media unavailable", details: ["state": "invalid"])
             return
         }
-        let ext = sniffed == "image/png" ? "png" : "jpg"
+        let ext = mediaFileExtension(for: sniffed)
         let destination = mediaTransferRoot.appendingPathComponent("\(UUID().uuidString.lowercased()).\(ext)")
         try atomicWriteData(data, to: destination, permissions: 0o600)
         emit(ok: true, message: "Media ready", details: [
@@ -11397,6 +11456,33 @@ final class COSControlHelper {
         // These execute the pure functions rather than grepping for them: the
         // targetKey format, the poll classifier, the id shapes, and the
         // toggle's Off write are the load-bearing contract surface.
+
+        // Fetched-bytes verification (0.5.82). The image-only sniffer let the
+        // poster render and then failed the click with "This image is
+        // unavailable" over a video.
+        let movBytes = Data([0, 0, 0, 0x14, 0x66, 0x74, 0x79, 0x70, 0x71, 0x74, 0x20, 0x20])
+        try expect(verifiedMediaMIME(movBytes, declared: "video/quicktime") == "video/quicktime",
+                   "a real QuickTime container must verify")
+        try expect(verifiedMediaMIME(movBytes, declared: "video/mp4") == "video/mp4",
+                   "ISO base media covers mp4 as well")
+        try expect(mediaFileExtension(for: "video/quicktime") == "mov",
+                   "LaunchServices routes on the extension; a .mov written as .jpg opens in an image viewer")
+        let jpegBytes = Data([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0])
+        try expect(verifiedMediaMIME(jpegBytes, declared: "image/jpeg") == "image/jpeg",
+                   "images must keep verifying exactly as before")
+        // The declared-vs-actual cross-check is a security property, not a
+        // formality: widening the types must not have weakened it.
+        try expect(verifiedMediaMIME(movBytes, declared: "image/png") == nil,
+                   "a container declared as a PNG must still be refused")
+        try expect(verifiedMediaMIME(jpegBytes, declared: "video/quicktime") == nil,
+                   "a JPEG declared as video must still be refused")
+        try expect(verifiedMediaMIME(Data([0x4d, 0x5a, 0x90, 0x00]), declared: "application/pdf") == nil,
+                   "a non-PDF declared as PDF must be refused")
+        try expect(verifiedMediaMIME(Data("id,name\n1,ok".utf8), declared: "text/csv") == "text/csv",
+                   "text has no magic bytes and is verified by decoding")
+        try expect(verifiedMediaMIME(Data([0xff, 0xfe, 0xff]), declared: "text/plain") == nil,
+                   "bytes that are not valid UTF-8 must not pass as text")
+        try expect(verifiedMediaMIME(Data(), declared: "image/jpeg") == nil, "empty bytes never verify")
 
         // The real Message #29 video ref (0.5.80/0.5.81). Verified live: the
         // shipped 0.5.80 helper answered `attachments: null` for this exact

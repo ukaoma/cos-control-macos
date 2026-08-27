@@ -27,15 +27,19 @@ private enum MediaFetchError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        // "image" was wrong copy the moment a turn could carry a video or a
+        // file: clicking a .mov reported "This image is unavailable", which
+        // named the wrong thing AND hid the real cause.
         case .unavailable(let state):
             switch state {
-            case "expired": return "This image has expired."
-            case "missing": return "This image is no longer available."
-            case "unauthorized": return "Image access is unauthorized. Refresh the pairing token."
+            case "expired": return "This attachment has expired."
+            case "missing": return "This attachment is no longer available."
+            case "unauthorized": return "Attachment access is unauthorized. Refresh the pairing token."
             case "offline": return "The COS server is offline."
-            default: return "This image is unavailable."
+            case "invalid": return "COS could not verify this attachment's contents."
+            default: return "This attachment is unavailable."
             }
-        case .invalidResponse: return "COS returned an invalid image response."
+        case .invalidResponse: return "COS returned an invalid attachment response."
         }
     }
 }
