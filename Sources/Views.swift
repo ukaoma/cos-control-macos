@@ -88,6 +88,10 @@ enum COSPalette {
     static let green = Color(red: 0.20, green: 0.58, blue: 0.34)
 }
 
+private enum OpenPetsGallery {
+    static let height: CGFloat = 220
+}
+
 struct ControlPanel: View {
     @ObservedObject var model: ControllerModel
     let openActivity: (ActivitySection?) -> Void
@@ -108,6 +112,9 @@ struct ControlPanel: View {
     @State private var selectedAdaptiveAudioCleanup = false
     @State private var selectedThreadAttach = false
     @State private var selectedOllamaModel = ""
+    @State private var openPetsQuery = ""
+    @State private var confirmOpenPetsSprite = false
+    @State private var pendingOpenPetsRow: OpenPetsCatalogRow?
 
     /// The menu-bar panel stays the server console. Browsing activity lives in a
     /// real, persistent AppKit window: unlike a sheet, that
@@ -209,13 +216,10 @@ struct ControlPanel: View {
         }
     }
 
-    /// Split in two ON PURPOSE, and the split is load-bearing rather than stylistic.
-    ///
-    /// Ten confirmations plus the error alert in one chained expression exceeds what
-    /// the SwiftUI type-checker will solve, and it fails as "unable to type-check this
-    /// expression in reasonable time" -- a message that names neither the confirmations
-    /// nor the count. Adding an eleventh here will reproduce it; add it to a third
-    /// group instead.
+    /// Split in three ON PURPOSE. Ten confirmations plus the error alert in one
+    /// chained expression exceeds what the SwiftUI type-checker will solve.
+    /// Adding an eleventh on panelWithPrimaryConfirms or panelWithSecondaryConfirms
+    /// reproduces "unable to type-check this expression in reasonable time".
     private var panelWithPrimaryConfirms: some View {
         syncedPanel
         .alert("COS Control", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
@@ -284,7 +288,7 @@ struct ControlPanel: View {
         )
     }
 
-    var body: some View {
+    private var panelWithSecondaryConfirms: some View {
         panelWithPrimaryConfirms
         .cosConfirm(
             "Choose transcription setup",
@@ -337,7 +341,113 @@ struct ControlPanel: View {
                 .normal("Save all") { model.saveAllStranded() },
                 .cancel(),
             ]
-        )    }
+        )
+    }
+
+    var body: some View {
+        panelWithSecondaryConfirms
+        .cosConfirm(
+            pendingOpenPetsRow.map { "Use \($0.displayName) as the session pet figure?" }
+                ?? "Use this figure as the session pet figure?",
+            isPresented: $confirmOpenPetsSprite,
+            message: "Replaces the current session pet sprite with this gallery thumbnail. Use COS figure restores the original.",
+            actions: [
+                .normal("Use") {
+                    if let row = pendingOpenPetsRow {
+                        Task { await model.installOpenPetsThumb(id: row.id, preview: row.preview) }
+                    }
+                    pendingOpenPetsRow = nil
+                },
+                .cancel() { pendingOpenPetsRow = nil },
+            ]
+        )
+    }
+
+    private var visibleOpenPetsRows: [OpenPetsCatalogRow] {
+        let q = openPetsQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        if q.isEmpty { return model.openPetsRows }
+        return model.openPetsRows.filter {
+            $0.displayName.localizedCaseInsensitiveContains(q)
+                || $0.id.localizedCaseInsensitiveContains(q)
+                || $0.category.localizedCaseInsensitiveContains(q)
+        }
+    }
+
+    private var petGalleryCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if model.openPetsLoading && model.openPetsRows.isEmpty {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text("Loading gallery")
+                }
+                .foregroundStyle(.secondary)
+            } else if model.openPetsUnavailable {
+                HStack {
+                    Text("Pet gallery unavailable right now.")
+                        .foregroundStyle(.secondary)
+                    Button("Try again") {
+                        Task { await model.loadOpenPetsCatalog() }
+                    }
+                    .buttonStyle(.borderless)
+                }
+            } else {
+                Text(model.openPetsStale
+                     ? "Curated set. \(model.openPetsRows.count) pets. Showing saved list."
+                     : "Curated set. \(model.openPetsRows.count) pets.")
+                    .foregroundStyle(.secondary)
+                Text("Art from the OpenPets community gallery (openpets.dev). No license metadata is published. Personal use.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                TextField("Search pets", text: $openPetsQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
+                if visibleOpenPetsRows.isEmpty {
+                    Text("No pets match.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 72), spacing: 8)], spacing: 8) {
+                            ForEach(visibleOpenPetsRows) { row in
+                                Button {
+                                    pendingOpenPetsRow = row
+                                    confirmOpenPetsSprite = true
+                                } label: {
+                                    VStack(spacing: 4) {
+                                        if let image = model.openPetsThumbs[row.preview] {
+                                            Image(nsImage: image)
+                                                .resizable()
+                                                .interpolation(.none)
+                                                .scaledToFit()
+                                                .frame(width: 44, height: 44)
+                                        } else {
+                                            RoundedRectangle(cornerRadius: 6)
+                                                .fill(COSPalette.line.opacity(0.35))
+                                                .frame(width: 44, height: 44)
+                                                .onAppear {
+                                                    model.prefetchOpenPetsThumb(id: row.id, preview: row.preview)
+                                                }
+                                        }
+                                        Text(row.displayName)
+                                            .font(.caption2)
+                                            .lineLimit(1)
+                                            .foregroundStyle(.primary)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .frame(height: OpenPetsGallery.height)
+                }
+            }
+        }
+        .onAppear {
+            Task { await model.loadOpenPetsCatalog() }
+        }
+    }
 
     private var header: some View {
         HStack(spacing: 10) {
@@ -1496,6 +1606,22 @@ struct ControlPanel: View {
             Divider()
             Toggle("Launch COS Control at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
             Toggle("Session pet", isOn: Binding(get: { model.petEnabled }, set: { model.setPetEnabled($0) }))
+            if model.petEnabled {
+                PetSizeControls(model: model)
+                Text("Pet gallery")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                petGalleryCard
+                HStack {
+                    Button(model.petCustomSprite == nil ? "Choose sprite" : "Replace sprite") {
+                        model.choosePetSprite()
+                    }
+                    .help("Your own PNG, GIF, or JPEG. A small square pixel figure stays sharp.")
+                    if model.petCustomSprite != nil {
+                        Button("Use COS figure") { model.resetPetSprite() }
+                    }
+                }
+            }
             DisclosureGroup("Advanced") {
                 HStack {
                     Button("Rollback Server") { model.perform("rollback") }
@@ -2721,5 +2847,64 @@ struct ContextDetailPane: View {
             Spacer(minLength: 0)
         }
         .padding(16)
+    }
+}
+
+private struct PetSizeControls: View {
+    @ObservedObject var model: ControllerModel
+    @State private var pixelDraft = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Pet size")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker("Pet size", selection: Binding(
+                get: { model.petSize.preset },
+                set: { model.setPetSizePreset($0) }
+            )) {
+                ForEach(PetSizePreset.allCases, id: \.self) { preset in
+                    Text(preset.title).tag(preset)
+                }
+            }
+            .pickerStyle(.segmented)
+            .controlSize(.small)
+            .labelsHidden()
+            if model.petSize.preset == .custom {
+                HStack(spacing: 8) {
+                    TextField("64", text: $pixelDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 56)
+                        .onSubmit { commitPixels() }
+                    Text("px")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Stepper("", value: Binding(
+                        get: { model.petSize.pixels },
+                        set: { model.setPetCustomPixels($0) }
+                    ), in: PetSize.minPixels...PetSize.maxPixels)
+                    .labelsHidden()
+                }
+                Text("Sprite size. Medium is \(PetSize.mediumPixels) px.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("\(model.petSize.pixels) px. Custom sets the sprite in pixels.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .onAppear { pixelDraft = "\(model.petSize.pixels)" }
+        .onChange(of: model.petSize.pixels) { _, value in
+            pixelDraft = "\(value)"
+        }
+    }
+
+    private func commitPixels() {
+        let trimmed = pixelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let value = Int(trimmed) {
+            model.setPetCustomPixels(value)
+        }
+        pixelDraft = "\(model.petSize.pixels)"
     }
 }

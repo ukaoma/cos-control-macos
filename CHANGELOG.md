@@ -1,3 +1,194 @@
+## 0.5.107 (build 145)
+
+The Accessibility grant survives updates, and the repair notice tells the truth.
+
+macOS keys the Accessibility grant to each build's code signature. Ad-hoc
+signing gave every build a new signature, so each update stranded the grant
+while System Settings still showed COS Control enabled, and the old notice
+("quit and reopen") could not fix that state. Local builds now sign with a
+stable identity (`COS_LOCAL_SIGN_IDENTITY`), so a grant made once keeps
+working across updates. The Claude and Cursor jumps share one Accessibility
+gate; when it fails, the pet says to toggle COS Control off and on under
+Accessibility and opens that Settings pane directly.
+
+## 0.5.106 (build 144)
+
+A Claude pet click opens that session.
+
+0.5.105 opened the workspace folder, which only raises the last Claude tab.
+Claude Desktop has no working link for an existing Code session. This build
+turns on Claude's accessibility tree, then clicks the sidebar row whose title
+matches the session name. It does not start a new Claude session.
+
+## 0.5.105 (build 143)
+
+A Codex pet click opens that thread.
+
+0.5.104 showed the running Codex row, then opened the workspace folder, which
+only raises the last Codex tab. This build opens `codex://threads/<id>`, the
+link Codex Desktop documents for a local chat. It does not start a new thread.
+
+## 0.5.104 (build 142)
+
+The pet shows a Codex turn that is actually running.
+
+The session list treated every Codex row as idle, so a live Codex thread never
+made the pet. A transcript written in the last three minutes is now Running,
+same window Cursor uses for file mtime. Clicking a Cursor row no longer raises
+Cursor when this build cannot use Accessibility. Quit Control and open it
+again after the Accessibility toggle. The Agents jump no longer activates
+every Cursor window. That raise was the IDE.
+
+## 0.5.103 (build 141)
+
+The Cursor card selects that session's Agents tab.
+
+0.5.102 opened Agents, then left whichever tab was already front. This build
+still raises Agents first, then clicks the list row whose title matches the
+session name. It does not match that name against Cursor window titles. That
+raise is the IDE. Tab jump needs Accessibility for this Control build.
+
+## 0.5.102 (build 140)
+
+The Cursor card opens Cursor again.
+
+0.5.101 named an Agents miss and then did nothing. The older jump already
+brought Cursor forward. It was the IDE, not Agents. This build tries Agents
+first. If that misses, it activates the running Cursor app. The pet says so.
+It still does not spawn `--glass --new-window` while Cursor is already
+running.
+
+## 0.5.101 (build 139)
+
+The pet names a Cursor Agents miss instead of opening another IDE window.
+
+0.5.96 and 0.5.99 still raised the IDE when Cursor was already running. This
+build does not spawn `--glass --new-window` in that case. The pet prints
+whether Accessibility is on, which window titles it saw, and whether it
+spawned. The session card stays clickable under that notice.
+
+## 0.5.100 (build 138)
+
+The pet session card opens the session.
+
+The list row only changed which figure was focused. The square-arrow was the
+only open. The whole card, including the empty space, now opens that session
+the same way the arrow does. The focused status bubble does too.
+
+## 0.5.99 (build 137)
+
+The pet target opens Cursor's Agents Window, not the IDE.
+
+`--glass` by itself is a Cursor architecture flag. A running Cursor treats it
+as focus-the-last-window, which is the IDE. The jump now raises a window titled
+Cursor Agents, uses Switch / Open or Focus / New Agents Window, and only then
+launches `cursor --glass --new-window` with no folder.
+
+## 0.5.98 (build 136)
+
+The session pet comes back onto the screen.
+
+0.5.97 grew Large downward from the bottom corner, and autosave parked the
+panel under the display. An off-screen pet frame snaps back. Size still
+follows Small, Medium, Large, or custom pixels.
+
+## 0.5.97 (build 135)
+
+The session pet has a size you can set.
+
+Small, Medium, and Large are 25 percent off the original 64 px figure.
+Custom types the sprite size in pixels (32 to 128). The rest of the pet
+chrome follows that size. The target still opens Cursor's Agents Window.
+
+## 0.5.96 (build 134)
+
+The pet target opens Cursor's Agents Window.
+
+`--chat` is a documented Cursor flag that the running app never reads, so
+0.5.95 still raised the IDE. The target on a Cursor row now focuses an
+existing Agents window, or opens one with `--glass`. Claude and Codex still
+open that row in Activity. Open in platform for Cursor uses the same Agents
+jump. Cursor still has no composer-id deep link, so that jump focuses Agents,
+not one thread.
+
+## 0.5.95 (build 133)
+
+The pet follows the session that is actually working.
+
+A Claude Desktop process that is still alive is not a turn in flight, so
+Blocker Clearance no longer stays Running while Cursor is the live thread.
+A Cursor agent that is still generating no longer drops off the pet just
+because the transcript file went quiet. Open in platform for Cursor uses the
+standalone chat window (`cursor --chat`) instead of opening the workspace
+folder in the IDE. A minimized Claude or Cursor window comes back the way
+clicking the Dock icon does. Cursor still has no composer-id deep link, so
+that jump focuses Agents, not one thread.
+
+## 0.5.94 (build 132)
+
+Open in platform no longer quits Control.
+
+0.5.93 handled the Cursor jump on Apple's Launch Services queue while the rest
+of Control is main-actor, so the square-arrow control trapped and the app
+exited. That open now waits on the async AppKit call, unhides the platform
+window, and brings it forward. The pet prints Running, Waiting, or Idle. The
+target opens that row in Activity. Two or more live sessions expand the list.
+
+## 0.5.93 (build 131)
+
+Gallery thumbs stay put while you scroll.
+
+0.5.92 only kept 32 stills in memory, so loading the next row dropped ones
+still on screen. Loaded thumbs now stay for the session, and a thumb already
+on disk is not fetched again.
+
+## 0.5.92 (build 130)
+
+The OpenPets gallery is on the panel.
+
+0.5.90 hid it behind a collapsed Pet gallery disclosure under Choose sprite, so
+the only obvious path was the Mac file picker. Session pet now shows the
+curated OpenPets thumbnails, with search, as soon as that toggle is on. Choose
+sprite is still your own PNG.
+
+## 0.5.91 (build 129)
+
+The menu-bar eyeglasses keep their shape.
+
+0.5.90 drew that symbol into a square so it could carry the update pip, and
+the lenses went wide. The tray is the system eyeglasses glyph again. The pip
+still appears on the corner when an update is waiting.
+
+## 0.5.90 (build 128)
+
+A gallery of community pet figures, without leaving Control.
+
+Pet gallery next to Choose sprite loads the OpenPets thumbnail catalog (300
+curated stills, not the zip packs). Picking one copies that thumb through the
+same sprite store Choose sprite already uses. Sessions, prompts, and Open in
+platform stay on COS. The closed-tray update pip from 0.5.89 is unchanged.
+
+## 0.5.89 (build 127)
+
+The closed tray shows when an update is waiting.
+
+The eyeglasses glyph still says whether the server is up. A small pip appears
+on that same icon only when the appcast has a newer Control build, so you do
+not have to open the panel to know. Install stays the banner already in the
+panel. An offline tick no longer wipes a real offer, and Check for updates
+says it could not reach the feed instead of claiming you are current.
+
+## 0.5.88 (build 126)
+
+Open in platform from the session, and a sprite you picked.
+
+The waveform still opens the Activity session. That split was right. What was
+missing is the jump to Cursor, Claude Desktop, or ChatGPT from the session
+itself, so the footer next to Copy session now says Open in platform. The pet
+grows the same control. Choose sprite copies a PNG into Application Support
+without resampling, so a 32x32 pixel figure stays blocky. Use COS figure puts
+the original visor back.
+
 ## 0.5.87 (build 125)
 
 Live sessions stay on the desktop when Activity is closed.

@@ -582,6 +582,29 @@ struct ModelsContract {
         precondition(petWaiting?.isPetVisible == true, "waiting is a live pet session")
         precondition(petWaiting?.discussionSummary == "Inspecting cos-starter diffs")
         precondition(petWaiting?.petSubtitle == "Inspecting cos-starter diffs")
+        precondition(petWaiting?.petStateCaption == "Waiting")
+        precondition(petWaiting?.isPetWorking == false)
+        let petRunning = ClaudeSession(.object([
+            "id": .string("pet-run"),
+            "name": .string("Live turn"),
+            "workspace": .string("MU-Chief-Staff"),
+            "state": .string("running"),
+            "alive": .bool(true),
+            "updatedAt": .string("2026-08-27T16:02:00Z"),
+        ]))
+        precondition(petRunning?.isPetWorking == true)
+        precondition(petRunning?.petStateCaption == "Running")
+        let petIdleAlive = ClaudeSession(.object([
+            "id": .string("pet-idle"),
+            "name": .string("COS session pet feature"),
+            "workspace": .string("MU-Chief-Staff"),
+            "state": .string("recent"),
+            "alive": .bool(true),
+            "updatedAt": .string("2026-08-27T16:01:00Z"),
+        ]))
+        precondition(petIdleAlive?.isPetVisible == true, "an alive idle row still belongs on the pet")
+        precondition(petIdleAlive?.isPetWorking == false)
+        precondition(petIdleAlive?.petStateCaption == "Idle")
         let petNow = ISO8601DateFormatter().date(from: "2026-08-27T16:03:00Z") ?? Date()
         precondition(petWaiting?.relativeAgeLabel(now: petNow) == "Updated 3m ago")
         let petWarm = ClaudeSession(.object([
@@ -593,7 +616,62 @@ struct ModelsContract {
         precondition(petWarm?.isPetVisible == false, "keep-warm never becomes a pet")
         precondition(recent?.isPetVisible == false, "recent without alive is not a pet")
         let visible = ClaudeSession.petVisibleSessions(in: [warm!, recent!, petWaiting!, renamed!])
-        precondition(visible.map(\.id) == ["claude:pet-wait", "claude:d3786335"])
+        precondition(visible.map(\.id) == ["claude:d3786335", "claude:pet-wait"],
+                     "a running row sits above waiting even without a newer stamp")
+        let petIdleNewer = ClaudeSession(.object([
+            "id": .string("pet-claude-stuck"),
+            "provider": .string("claude"),
+            "name": .string("Plan validation and blocker clearance"),
+            "workspace": .string("MU-Chief-Staff"),
+            "state": .string("recent"),
+            "alive": .bool(true),
+            "updatedAt": .string("2026-08-27T18:51:00Z"),
+        ]))
+        let petCursorRun = ClaudeSession(.object([
+            "id": .string("pet-cursor-live"),
+            "provider": .string("cursor"),
+            "name": .string("COS session pet feature"),
+            "workspace": .string("MU-Chief-Staff"),
+            "state": .string("running"),
+            "alive": .bool(true),
+            "updatedAt": .string("2026-08-27T18:50:00Z"),
+        ]))
+        let ranked = ClaudeSession.petVisibleSessions(in: [petIdleNewer!, petCursorRun!])
+        precondition(ranked.map(\.id) == ["cursor:pet-cursor-live", "claude:pet-claude-stuck"],
+                     "an idle-but-alive Claude row cannot outrank a running Cursor turn")
+        precondition(
+            ClaudeSession.petPreferredFocus(in: ranked, focusedID: "claude:pet-claude-stuck")?.id
+                == "cursor:pet-cursor-live",
+            "sticky focus on an idle Claude row yields to the running Cursor session"
+        )
+        precondition(
+            ClaudeSession.petPreferredFocus(in: ranked, focusedID: "cursor:pet-cursor-live")?.id
+                == "cursor:pet-cursor-live",
+            "sticky focus on the running row is kept"
+        )
+        precondition(petCursorRun!.petTargetOpensAgentWindow,
+                     "the pet target on a Cursor row opens the Agents Window")
+        precondition(!petIdleNewer!.petTargetOpensAgentWindow,
+                     "the pet target on a Claude row still opens Activity")
+        let petCodexRun = ClaudeSession(.object([
+            "id": .string("pet-codex-live"),
+            "provider": .string("codex"),
+            "name": .string("Execute POS Nation SEO fixes"),
+            "workspace": .string("MU-Chief-Staff"),
+            "state": .string("running"),
+            "alive": .bool(true),
+            "updatedAt": .string("2026-08-27T18:52:00Z"),
+        ]))
+        let vsCodex = ClaudeSession.petVisibleSessions(in: [petIdleNewer!, petCodexRun!])
+        precondition(vsCodex.map(\.id) == ["codex:pet-codex-live", "claude:pet-claude-stuck"],
+                     "an idle-but-alive Claude row cannot outrank a running Codex turn")
+        precondition(
+            ClaudeSession.petPreferredFocus(in: vsCodex, focusedID: "claude:pet-claude-stuck")?.id
+                == "codex:pet-codex-live",
+            "sticky focus on an idle Claude row yields to the running Codex session"
+        )
+        precondition(petCodexRun!.petTargetOpensAgentWindow == false,
+                     "the pet target on a Codex row still opens Activity")
         let detail = ClaudeSessionDetail(.object([
             "title": .string("Fireflies meeting sync"),
             "cwd": .string("/repo"),
@@ -625,6 +703,194 @@ struct ModelsContract {
         precondition(detail?.copyText.contains("Kickstart") == true)
         precondition(ClaudeSessionDetail(.object(["title": .string("x")])) == nil,
                      "session detail without turns or copy is dropped")
+    }
+
+    private static func checkPetSpriteStore() {
+        precondition(PetSpriteStore.isAllowedImage(URL(fileURLWithPath: "/tmp/face.png")))
+        precondition(PetSpriteStore.isAllowedImage(URL(fileURLWithPath: "/tmp/face.PNG")))
+        precondition(PetSpriteStore.isAllowedImage(URL(fileURLWithPath: "/tmp/face.gif")))
+        precondition(!PetSpriteStore.isAllowedImage(URL(fileURLWithPath: "/tmp/face.exe")))
+        precondition(!PetSpriteStore.isAllowedImage(URL(fileURLWithPath: "/tmp/face.svg")))
+
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.appendingPathComponent("pet-sprite-\(UUID().uuidString)", isDirectory: true)
+        try! fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tmp) }
+
+        // 1x1 PNG. Copied bytes must match so pixel art is not resampled.
+        let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")!
+        let source = tmp.appendingPathComponent("face.png")
+        try! png.write(to: source)
+        let support = tmp.appendingPathComponent("support", isDirectory: true)
+        let dest = try! PetSpriteStore.install(from: source, into: support)
+        precondition(dest.lastPathComponent == "session-pet-sprite.png")
+        precondition((try! Data(contentsOf: dest)) == png, "pixel art must be copied, not re-encoded")
+        precondition(PetSpriteStore.existingSpriteURL(in: support)?.path == dest.path)
+
+        let empty = tmp.appendingPathComponent("empty.png")
+        try! Data().write(to: empty)
+        do {
+            _ = try PetSpriteStore.install(from: empty, into: support)
+            precondition(false, "empty sprite must be refused")
+        } catch PetSpriteStore.InstallError.empty {
+        } catch {
+            precondition(false, "empty sprite must throw InstallError.empty, got \(error)")
+        }
+
+        PetSpriteStore.remove(from: support)
+        precondition(PetSpriteStore.existingSpriteURL(in: support) == nil)
+        precondition(!PetSpriteStore.isAllowedImage(URL(fileURLWithPath: "/tmp/face.zip")))
+    }
+
+    private static func checkPetSize() {
+        let medium = PetSize.load(preset: nil, pixels: nil)
+        precondition(medium.preset == .medium)
+        precondition(medium.pixels == 64, "medium is the original sprite size")
+        precondition(PetSize.load(preset: "small", pixels: nil).pixels == 48,
+                     "small is 25 percent under medium")
+        precondition(PetSize.load(preset: "large", pixels: nil).pixels == 80,
+                     "large is 25 percent over medium")
+        let custom = PetSize.load(preset: "custom", pixels: 72)
+        precondition(custom.preset == .custom)
+        precondition(custom.pixels == 72)
+        precondition(PetSize.load(preset: "custom", pixels: 12).pixels == 32,
+                     "custom pixels clamp at the floor")
+        precondition(PetSize.load(preset: "custom", pixels: 400).pixels == 128,
+                     "custom pixels clamp at the ceiling")
+        precondition(PetSize.load(preset: "CUSTOM", pixels: 90).pixels == 90)
+        precondition(PetSize.load(preset: "huge", pixels: 90).preset == .medium,
+                     "an unknown preset falls back to medium")
+        precondition(abs(PetSize.load(preset: "small", pixels: nil).scale - 0.75) < 0.001)
+        precondition(PetSize.load(preset: "medium", pixels: nil).length(248) == 248)
+        let hidden = CGRect(x: 12, y: -401, width: 310, height: 362)
+        let primary = CGRect(x: 0, y: 0, width: 2880, height: 1590)
+        let healed = PetPanelFrame.clamped(hidden, screens: [primary])
+        precondition(primary.intersects(healed),
+                     "an off-screen pet frame must snap back onto a display")
+        precondition(healed.minY >= primary.minY)
+        let parked = CGRect(x: 2500, y: 40, width: 260, height: 180)
+        precondition(PetPanelFrame.clamped(parked, screens: [primary]) == parked,
+                     "an on-screen pet frame stays put")
+    }
+
+    /// Agents list rows, not Cursor window titles. Contains matching against
+    /// windows raises the IDE because the workspace name sits in both.
+    private static func checkCursorAgentTabMatch() {
+        precondition(CursorAgentTabMatch.matches("Hello there world", want: "Hello there world"))
+        precondition(CursorAgentTabMatch.matches("HELLO THERE WORLD", want: "Hello there world"))
+        precondition(!CursorAgentTabMatch.matches("short", want: "short"),
+                     "short labels are too common to click")
+        precondition(CursorAgentTabMatch.matches("Hello there…", want: "Hello there world extra"))
+        precondition(CursorAgentTabMatch.matches("Hello there...", want: "Hello there world extra"))
+        precondition(CursorAgentTabMatch.matches("Hello there world extra stuff", want: "Hello there world extra"))
+        precondition(!CursorAgentTabMatch.matches("MU-Chief-Staff — ControllerModel.swift",
+                                                  want: "ControllerModel.swift extra words"),
+                     "an IDE window title must not match a session name")
+        precondition(!CursorAgentTabMatch.matches("something else entirely here",
+                                                  want: "Hello there world extra"))
+        precondition(
+            ClaudeSessionRowMatch.matches(
+                "Idle Reddit Posts GOTCOS.com(fork)",
+                want: "Reddit Posts GOTCOS.com(fork)"
+            ),
+            "Claude sidebar rows prefix Idle"
+        )
+        precondition(
+            ClaudeSessionRowMatch.matches(
+                "Awaiting input Fireflies meeting sync",
+                want: "Fireflies meeting sync"
+            )
+        )
+        precondition(
+            !CursorAgentTabMatch.matches(
+                "Idle Reddit Posts GOTCOS.com(fork)",
+                want: "Reddit Posts GOTCOS.com(fork)"
+            ),
+            "the Agents matcher must not treat Idle as part of the title"
+        )
+        precondition(
+            !ClaudeSessionRowMatch.matches("Idle short", want: "short"),
+            "short Claude labels are too common to click"
+        )
+    }
+
+    private static func checkAppUpdateMerging() {
+        let offer = AppUpdateInfo([
+            "updateAvailable": .bool(true),
+            "latestVersion": .string("0.5.89"),
+            "latestBuild": .number(127),
+            "reason": .string("newer"),
+            "noticeId": .string("keep-me"),
+            "noticeTitle": .string("Title"),
+            "noticeBody": .string("Body"),
+        ])
+        precondition(offer.shouldSurface)
+        precondition(offer.hasNotice)
+
+        let unreachable = AppUpdateInfo([
+            "updateAvailable": .bool(false),
+            "reason": .string("unreachable"),
+        ])
+        let kept = AppUpdateInfo.merging(previous: offer, incoming: unreachable)
+        precondition(kept.shouldSurface, "unreachable must not wipe a live offer")
+        precondition(kept.latestVersion == "0.5.89")
+        precondition(kept.hasNotice, "unreachable must not wipe the publisher notice")
+
+        let malformed = AppUpdateInfo([
+            "updateAvailable": .bool(false),
+            "reason": .string("malformed"),
+        ])
+        precondition(AppUpdateInfo.merging(previous: offer, incoming: malformed).shouldSurface)
+
+        let upToDate = AppUpdateInfo([
+            "updateAvailable": .bool(false),
+            "latestVersion": .string("0.5.89"),
+            "reason": .string("upToDate"),
+        ])
+        let cleared = AppUpdateInfo.merging(previous: offer, incoming: upToDate)
+        precondition(!cleared.shouldSurface, "upToDate must clear the badge")
+
+        let kill = AppUpdateInfo([
+            "updateAvailable": .bool(false),
+            "reason": .string("killSwitch"),
+        ])
+        precondition(!AppUpdateInfo.merging(previous: offer, incoming: kill).shouldSurface)
+
+        let idle = AppUpdateInfo()
+        let fromIdle = AppUpdateInfo.merging(previous: idle, incoming: unreachable)
+        precondition(!fromIdle.shouldSurface, "no prior offer means unreachable stays quiet")
+        print("COS Control: AppUpdateInfo.merging sticky-offer contract passed")
+    }
+
+    private static func checkMenuBarIcon() {
+        let running = MenuBarIcon.compose(systemName: "eyeglasses", updateAvailable: false)
+        let runningBadge = MenuBarIcon.compose(systemName: "eyeglasses", updateAvailable: true)
+        let down = MenuBarIcon.compose(systemName: "eyeglasses.slash", updateAvailable: false)
+        let downBadge = MenuBarIcon.compose(systemName: "eyeglasses.slash", updateAvailable: true)
+        let tiffs = [running, runningBadge, down, downBadge].map { $0.tiffRepresentation ?? Data() }
+        precondition(tiffs.allSatisfy { !$0.isEmpty }, "composed status images must have pixels")
+        precondition(Set(tiffs).count == 4, "running x update must produce 4 distinct template images")
+        precondition(running.isTemplate && runningBadge.isTemplate)
+        precondition(running.size.width > running.size.height + 1,
+                     "eyeglasses must stay landscape; a square canvas is the 0.5.90 skew")
+        print("COS Control: MenuBarIcon compose distinctness passed")
+    }
+
+    private static func checkOpenPetsCatalogRow() {
+        let row = OpenPetsCatalogRow(.object([
+            "id": .string("tmuxai"),
+            "displayName": .string("TmuxAI Official"),
+            "description": .string("ignored"),
+            "preview": .string("https://openpets.dev/pets/tmuxai-openpets/thumb.webp"),
+            "zip": .string("https://zip.openpets.dev/pets/tmuxai-openpets/tmuxai.zip"),
+            "category": .string("western"),
+            "subcategory": .string("tools"),
+        ]))
+        precondition(row?.id == "tmuxai")
+        precondition(row?.preview == "https://openpets.dev/pets/tmuxai-openpets/thumb.webp",
+                     "preview must be the catalog URL, never synthesized from id")
+        precondition(OpenPetsCatalogRow(.object(["displayName": .string("x")])) == nil)
+        print("COS Control: OpenPets catalog row decode passed")
     }
 
     private static func checkOrphanCapture() {
@@ -1056,6 +1322,12 @@ struct ModelsContract {
         checkSessionSearchHit()
         checkOrphanCapture()
         checkClaudeSession()
+        checkPetSpriteStore()
+        checkPetSize()
+        checkCursorAgentTabMatch()
+        checkAppUpdateMerging()
+        checkMenuBarIcon()
+        checkOpenPetsCatalogRow()
         checkAssertedSegmentsBackCompat()
         checkSpeakingTime()
         checkMeetingContent()

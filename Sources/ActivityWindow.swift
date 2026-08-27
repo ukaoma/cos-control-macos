@@ -2529,14 +2529,21 @@ struct ClaudeSessionDetailPane: View {
                     .padding(24)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+            }
+            if let row = model.openClaudeRow {
                 Divider()
                 HStack(spacing: 10) {
-                    Button("Copy session") { model.copyClaudeSession() }
-                        .disabled(detail.copyText.isEmpty)
-                    Spacer()
-                    Text("Kickstart brief for another agent. Not a Claude Code resume.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
+                    Button("Open in platform") { model.openSessionInPlatform(row) }
+                    if let detail = model.claudeSessionDetail {
+                        Button("Copy session") { model.copyClaudeSession() }
+                            .disabled(detail.copyText.isEmpty)
+                        Spacer()
+                        Text("Kickstart brief for another agent. Not a Claude Code resume.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        Spacer()
+                    }
                 }
                 .controlSize(.small)
                 .padding(.horizontal, 24)

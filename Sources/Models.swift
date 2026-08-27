@@ -609,8 +609,57 @@ struct ClaudeSession: Identifiable, Sendable {
         return workspace
     }
 
+    /// Running vs idle for the desktop pet. `alive` still shows the row; this
+    /// is what the figure and list print so a waiting Cursor thread is not
+    /// mistaken for work in flight.
+    var petStateCaption: String {
+        switch state {
+        case "running": "Running"
+        case "waiting": "Waiting"
+        case "stale": "Stale"
+        default: "Idle"
+        }
+    }
+
+    var isPetWorking: Bool { state == "running" }
+
+    /// Cursor rows use the platform jump (Agents raise). Claude and Codex still
+    /// open the Activity row from the target control.
+    var petTargetOpensAgentWindow: Bool { provider == "cursor" }
+
+    /// Running first, then waiting, then the newest stamp. An idle-but-alive
+    /// Claude row must not sit above a Cursor turn that is actually in flight.
     static func petVisibleSessions(in sessions: [ClaudeSession]) -> [ClaudeSession] {
-        sessions.filter(\.isPetVisible).sorted { $0.updatedAt > $1.updatedAt }
+        sessions.filter(\.isPetVisible).sorted { a, b in
+            let aRank = petLiveRank(a)
+            let bRank = petLiveRank(b)
+            if aRank != bRank { return aRank < bRank }
+            return a.updatedAt > b.updatedAt
+        }
+    }
+
+    private static func petLiveRank(_ session: ClaudeSession) -> Int {
+        switch session.state {
+        case "running": 0
+        case "waiting": 1
+        default: 2
+        }
+    }
+
+    /// Follow the working session. A clicked idle row stays only when nothing
+    /// else is Running, so a leftover Claude PID cannot pin the bubble.
+    static func petPreferredFocus(in sessions: [ClaudeSession], focusedID: String?) -> ClaudeSession? {
+        let working = sessions.filter(\.isPetWorking)
+        if let focusedID, let row = working.first(where: { $0.id == focusedID }) {
+            return row
+        }
+        if let firstWorking = working.first {
+            return firstWorking
+        }
+        if let focusedID, let row = sessions.first(where: { $0.id == focusedID }) {
+            return row
+        }
+        return sessions.first
     }
 
     func relativeAgeLabel(now: Date = Date()) -> String? {
@@ -671,6 +720,55 @@ struct ClaudeSession: Identifiable, Sendable {
         let t = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if t == "ready" { return true }
         return t.hasPrefix("this is an automated local readiness check")
+    }
+}
+
+/// Match an Agents list row to a pet session name.
+///
+/// Never used against Cursor window titles. That raise is the IDE.
+enum CursorAgentTabMatch {
+    static let minimumCount = 8
+
+    static func matches(_ rawHave: String, want rawWant: String) -> Bool {
+        let have = rawHave.trimmingCharacters(in: .whitespacesAndNewlines)
+        let want = rawWant.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard have.count >= minimumCount, want.count >= minimumCount else { return false }
+        if have.caseInsensitiveCompare(want) == .orderedSame { return true }
+        let haveCore = have.trimmingCharacters(in: CharacterSet(charactersIn: ".…"))
+        if haveCore.count >= minimumCount, want.lowercased().hasPrefix(haveCore.lowercased()) {
+            return true
+        }
+        if have.lowercased().hasPrefix(want.lowercased()) { return true }
+        return false
+    }
+}
+
+/// Claude Desktop prefixes sidebar rows with Idle / Awaiting input / etc.
+/// Strip that before reusing the Agents matcher. Never used against window
+/// titles.
+enum ClaudeSessionRowMatch {
+    static let statusPrefixes = [
+        "Idle ",
+        "Awaiting input ",
+        "Unread response ",
+        "Error ",
+        "Running ",
+    ]
+
+    static func displayLabel(_ rawHave: String) -> String {
+        let have = rawHave.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = have.lowercased()
+        for prefix in statusPrefixes {
+            if lower.hasPrefix(prefix.lowercased()) {
+                return String(have.dropFirst(prefix.count))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return have
+    }
+
+    static func matches(_ rawHave: String, want: String) -> Bool {
+        CursorAgentTabMatch.matches(displayLabel(rawHave), want: want)
     }
 }
 
@@ -1310,6 +1408,52 @@ struct AppUpdateInfo: Sendable {
     /// Deliberately NOT gated on `shouldSurface`. The helper already applied
     /// minBuild, so anything that arrives here is meant for this build.
     var hasNotice: Bool { noticeId != nil && noticeTitle != nil && noticeBody != nil }
+
+    /// Background ticks must not erase a live offer when the helper returns
+    /// ok:true with reason unreachable or malformed. Those payloads look like
+    /// "no update" (`updateAvailable: false`) because the helper never throws
+    /// on a missed fetch. A completed check (upToDate, newer, killSwitch,
+    /// requiresMacOS) always replaces.
+    static func merging(previous: AppUpdateInfo, incoming: AppUpdateInfo) -> AppUpdateInfo {
+        if previous.shouldSurface && (incoming.reason == "unreachable" || incoming.reason == "malformed") {
+            return previous
+        }
+        return incoming
+    }
+}
+
+/// Status-item glyph. Template image so it follows the menu bar tint.
+/// The eyeglasses / eyeglasses.slash literals stay at the call site so running
+/// state remains visible with the panel closed. The badge is a mask pip, not
+/// a colored overlay.
+enum MenuBarIcon {
+    static let pointSize: CGFloat = 16
+
+    static func compose(systemName: String, updateAvailable: Bool) -> NSImage {
+        let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
+        let base = (NSImage(systemSymbolName: systemName, accessibilityDescription: nil)?
+            .withSymbolConfiguration(config)) ?? NSImage(size: NSSize(width: pointSize * 1.6, height: pointSize * 0.7))
+        let glyph = base.size
+        guard glyph.width > 0, glyph.height > 0 else {
+            let empty = NSImage(size: NSSize(width: pointSize, height: pointSize))
+            empty.isTemplate = true
+            return empty
+        }
+        // Draw 1:1 at the symbol's own size. Filling a square is what squashed
+        // eyeglasses in 0.5.90.
+        let pip: CGFloat = 5
+        let composed = NSImage(size: glyph, flipped: false) { rect in
+            base.draw(in: NSRect(origin: .zero, size: glyph))
+            if updateAvailable {
+                let pipRect = NSRect(x: rect.maxX - pip, y: rect.maxY - pip, width: pip, height: pip)
+                NSColor.black.setFill()
+                NSBezierPath(ovalIn: pipRect).fill()
+            }
+            return true
+        }
+        composed.isTemplate = true
+        return composed
+    }
 }
 
 // MARK: - Speaker review (0.4.0)
@@ -2430,4 +2574,157 @@ struct PendingCorrection: Identifiable, Sendable {
 
     var id: String { "\(from)->\(to ?? "«unidentified»")@\(scope.rawValue)" }
     var isDeattribution: Bool { to == nil }
+}
+
+/// Desktop pet figure size. Medium is the original 64 px sprite. Small and
+/// Large are 25% off that. Custom is the sprite in pixels.
+enum PetSizePreset: String, CaseIterable, Hashable {
+    case small
+    case medium
+    case large
+    case custom
+
+    var title: String {
+        switch self {
+        case .small: "Small"
+        case .medium: "Medium"
+        case .large: "Large"
+        case .custom: "Custom"
+        }
+    }
+}
+
+struct PetSize: Equatable {
+    static let mediumPixels = 64
+    static let minPixels = 32
+    static let maxPixels = 128
+
+    var preset: PetSizePreset
+    var customPixels: Int
+
+    var pixels: Int {
+        switch preset {
+        case .small: Int((Double(Self.mediumPixels) * 0.75).rounded())
+        case .medium: Self.mediumPixels
+        case .large: Int((Double(Self.mediumPixels) * 1.25).rounded())
+        case .custom: Self.clamp(customPixels)
+        }
+    }
+
+    var scale: CGFloat { CGFloat(pixels) / CGFloat(Self.mediumPixels) }
+
+    func length(_ base: CGFloat) -> CGFloat { (base * scale).rounded() }
+
+    func typeSize(_ base: CGFloat) -> CGFloat { max(8, length(base)) }
+
+    static func clamp(_ value: Int) -> Int {
+        min(max(value, minPixels), maxPixels)
+    }
+
+    static func load(preset raw: String?, pixels: Int?) -> PetSize {
+        let preset = PetSizePreset(rawValue: (raw ?? "").lowercased()) ?? .medium
+        return PetSize(preset: preset, customPixels: clamp(pixels ?? mediumPixels))
+    }
+}
+
+/// Keep the floating pet on a visible display. 0.5.97 grew Large downward from
+/// the bottom corner and autosave parked the panel under the screen.
+enum PetPanelFrame {
+    static func clamped(_ frame: CGRect, screens: [CGRect]) -> CGRect {
+        var frame = frame
+        guard let fallback = screens.max(by: { $0.width * $0.height < $1.width * $1.height }) else {
+            return frame
+        }
+        if !screens.contains(where: { $0.intersects(frame) }) {
+            frame.origin = CGPoint(x: fallback.maxX - frame.width - 20, y: fallback.minY + 28)
+        }
+        let screen = screens.first(where: { $0.intersects(frame) }) ?? fallback
+        if frame.height > screen.height { frame.size.height = screen.height }
+        if frame.width > screen.width { frame.size.width = screen.width }
+        if frame.minY < screen.minY { frame.origin.y = screen.minY }
+        if frame.maxY > screen.maxY { frame.origin.y = screen.maxY - frame.height }
+        if frame.minX < screen.minX { frame.origin.x = screen.minX }
+        if frame.maxX > screen.maxX { frame.origin.x = screen.maxX - frame.width }
+        return frame
+    }
+}
+
+/// Custom session-pet figure. Copied byte-for-byte so a 32x32 PNG stays blocky.
+enum PetSpriteStore {
+    static let fileStem = "session-pet-sprite"
+    static let maxBytes = 8 * 1024 * 1024
+    static let allowedExtensions: Set<String> = ["png", "gif", "jpg", "jpeg", "tiff", "tif", "webp"]
+
+    enum InstallError: LocalizedError {
+        case notAnImage
+        case empty
+        case tooLarge
+
+        var errorDescription: String? {
+            switch self {
+            case .notAnImage: return "Choose a PNG, GIF, or JPEG of the figure."
+            case .empty: return "That file is empty."
+            case .tooLarge: return "Sprite must be 8 MB or smaller."
+            }
+        }
+    }
+
+    static func supportDirectory(fileManager: FileManager = .default, home: URL? = nil) -> URL {
+        let root = home ?? fileManager.homeDirectoryForCurrentUser
+        return root.appendingPathComponent("Library/Application Support/COS Control", isDirectory: true)
+    }
+
+    static func isAllowedImage(_ url: URL) -> Bool {
+        allowedExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    static func existingSpriteURL(in directory: URL, fileManager: FileManager = .default) -> URL? {
+        for ext in ["png", "gif", "webp", "jpg", "jpeg", "tiff", "tif"] {
+            let candidate = directory.appendingPathComponent("\(fileStem).\(ext)")
+            if fileManager.fileExists(atPath: candidate.path) { return candidate }
+        }
+        return nil
+    }
+
+    static func install(from source: URL, into directory: URL, fileManager: FileManager = .default) throws -> URL {
+        guard isAllowedImage(source) else { throw InstallError.notAnImage }
+        let size = (try fileManager.attributesOfItem(atPath: source.path)[.size] as? Int) ?? 0
+        if size <= 0 { throw InstallError.empty }
+        if size > maxBytes { throw InstallError.tooLarge }
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        remove(from: directory, fileManager: fileManager)
+        let dest = directory.appendingPathComponent("\(fileStem).\(source.pathExtension.lowercased())")
+        try fileManager.copyItem(at: source, to: dest)
+        guard NSImage(contentsOf: dest) != nil else {
+            try? fileManager.removeItem(at: dest)
+            throw InstallError.notAnImage
+        }
+        return dest
+    }
+
+    static func remove(from directory: URL, fileManager: FileManager = .default) {
+        for ext in allowedExtensions {
+            let url = directory.appendingPathComponent("\(fileStem).\(ext)")
+            try? fileManager.removeItem(at: url)
+        }
+    }
+}
+
+/// One OpenPets gallery row. Preview is the catalog URL; never reconstructed from id.
+struct OpenPetsCatalogRow: Identifiable, Sendable, Hashable {
+    let id: String
+    let displayName: String
+    let category: String
+    let preview: String
+
+    init?(_ value: JSONValue) {
+        guard let object = value.object else { return nil }
+        guard let id = object["id"]?.string, !id.isEmpty else { return nil }
+        guard let displayName = object["displayName"]?.string, !displayName.isEmpty else { return nil }
+        guard let preview = object["preview"]?.string, !preview.isEmpty else { return nil }
+        self.id = id
+        self.displayName = displayName
+        self.category = object["category"]?.string ?? ""
+        self.preview = preview
+    }
 }

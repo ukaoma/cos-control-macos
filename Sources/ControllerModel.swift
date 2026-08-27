@@ -1,8 +1,10 @@
 import AppKit
+import ApplicationServices
 import AVFoundation
 import Darwin
 import Foundation
 import ServiceManagement
+import UniformTypeIdentifiers
 
 private actor MediaFetchGate {
     private var available = 2
@@ -104,6 +106,8 @@ final class ControllerModel: ObservableObject {
     @Published var hideReviewedMeetings = UserDefaults.standard.bool(forKey: ControllerModel.hideReviewedKey)
     private static let hideReviewedKey = "cos.speakerHideReviewed"
     private static let petEnabledKey = "cos.sessionPetEnabled"
+    private static let petSizeKey = "cos.sessionPetSize"
+    private static let petSizePixelsKey = "cos.sessionPetSizePixels"
     @Published var openReview: SpeakerReview?
     /// The readable meeting beside the speaker rows. nil when the server is
     /// older than 6.21.28 or the fetch failed — the review still renders.
@@ -208,6 +212,8 @@ final class ControllerModel: ObservableObject {
     private var mediaPreviewTask: Task<Void, Never>?
     private var thumbnailTasks: [String: Task<Void, Never>] = [:]
     private var thumbnailLoadIDs: [String: UUID] = [:]
+    private let openPetsThumbGate = MediaFetchGate()
+    private var openPetsThumbTasks: [String: Task<Void, Never>] = [:]
 
     init() {
         try? Self.pruneMediaHandoffs()
@@ -228,11 +234,14 @@ final class ControllerModel: ObservableObject {
                 await self?.checkForAppUpdate()
             }
         }
+        loadPetSprite()
     }
 
-    /// P1 check. Never mutates anything, never blocks the UI, and stays SILENT on
-    /// failure: offline or a bad appcast leaves the previous state untouched rather than
-    /// raising an error the user has to dismiss.
+    /// P1 check. Silent on helper crash. The helper itself returns ok:true with
+    /// reason unreachable/malformed when the appcast miss is a network or JSON
+    /// miss, and that payload would wipe a live offer if assigned wholesale.
+    /// Merge keeps a surfacing offer across those ticks; upToDate and killSwitch
+    /// still replace.
     func checkForAppUpdate() async {
         do {
             let response = try await helper.run([
@@ -240,9 +249,9 @@ final class ControllerModel: ObservableObject {
                 "--current-version", Self.currentVersion,
                 "--current-build", String(Self.currentBuild),
             ])
-            appUpdate = AppUpdateInfo(response.details)
+            appUpdate = AppUpdateInfo.merging(previous: appUpdate, incoming: AppUpdateInfo(response.details))
         } catch {
-            // Intentionally swallowed: a failed check is not a user-facing problem.
+            // Intentionally swallowed: a helper crash is not a user-facing problem.
         }
     }
 
@@ -272,7 +281,14 @@ final class ControllerModel: ObservableObject {
                 "--current-version", Self.currentVersion,
                 "--current-build", String(Self.currentBuild),
             ])
-            appUpdate = AppUpdateInfo(response.details)
+            let incoming = AppUpdateInfo(response.details)
+            if incoming.reason == "unreachable" || incoming.reason == "malformed" {
+                appUpdate = AppUpdateInfo.merging(previous: appUpdate, incoming: incoming)
+                self.error = "Could not reach the update feed: update check unavailable"
+                notice = nil
+                return
+            }
+            appUpdate = incoming
             if appUpdate.shouldSurface {
                 // The banner is already rendering the offer; do not duplicate it
                 // in the notice line.
@@ -1201,11 +1217,21 @@ final class ControllerModel: ObservableObject {
     @Published var claudeSessionsLoading = false
     @Published var claudeSessionsError: String?
     @Published var petEnabled = UserDefaults.standard.object(forKey: ControllerModel.petEnabledKey) as? Bool ?? true
+    @Published var petSize = PetSize.load(
+        preset: UserDefaults.standard.string(forKey: ControllerModel.petSizeKey),
+        pixels: UserDefaults.standard.object(forKey: ControllerModel.petSizePixelsKey) as? Int
+    )
+    @Published var petCustomSprite: NSImage?
     @Published var petSessions: [ClaudeSession] = []
     @Published var petExpanded = false
     @Published var petFocusID: String?
     /// Reveal/jump copy when Activity and the menu extra are both closed.
     @Published var petNotice: String?
+    @Published var openPetsRows: [OpenPetsCatalogRow] = []
+    @Published var openPetsLoading = false
+    @Published var openPetsUnavailable = false
+    @Published var openPetsStale = false
+    @Published var openPetsThumbs: [String: NSImage] = [:]
     /// Waveform on the pet opens this session inside Activity. Consumed by
     /// `applyLaunchSection` the same way chips consume `activityOpenSection`.
     @Published var activityOpenSessionID: String?
@@ -1399,6 +1425,141 @@ final class ControllerModel: ObservableObject {
             petExpanded = false
             petFocusID = nil
             petNotice = nil
+            cancelOpenPetsThumbs()
+        }
+    }
+
+    func setPetSizePreset(_ preset: PetSizePreset) {
+        var next = petSize
+        if preset == .custom, next.preset != .custom {
+            next.customPixels = next.pixels
+        }
+        next.preset = preset
+        persistPetSize(next)
+    }
+
+    func setPetCustomPixels(_ pixels: Int) {
+        var next = petSize
+        next.preset = .custom
+        next.customPixels = PetSize.clamp(pixels)
+        persistPetSize(next)
+    }
+
+    private func persistPetSize(_ size: PetSize) {
+        petSize = size
+        UserDefaults.standard.set(size.preset.rawValue, forKey: Self.petSizeKey)
+        UserDefaults.standard.set(size.customPixels, forKey: Self.petSizePixelsKey)
+    }
+
+    func loadPetSprite() {
+        if let url = PetSpriteStore.existingSpriteURL(in: PetSpriteStore.supportDirectory()) {
+            petCustomSprite = NSImage(contentsOf: url)
+        } else {
+            petCustomSprite = nil
+        }
+    }
+
+    func choosePetSprite() {
+        let panel = NSOpenPanel()
+        panel.title = "Session pet sprite"
+        panel.message = "Choose a small PNG of the figure. Pixel art stays sharp."
+        panel.prompt = "Use sprite"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.png, .gif, .jpeg, .tiff, .webP]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        installPetSprite(from: url)
+    }
+
+    func installPetSprite(from url: URL) {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let dest = try PetSpriteStore.install(from: url, into: PetSpriteStore.supportDirectory())
+            petCustomSprite = NSImage(contentsOf: dest)
+        } catch {
+            self.error = error.localizedDescription
+            petNotice = error.localizedDescription
+        }
+    }
+
+    func resetPetSprite() {
+        PetSpriteStore.remove(from: PetSpriteStore.supportDirectory())
+        petCustomSprite = nil
+    }
+
+    private static let openPetsHelperTimeout: TimeInterval = 12
+
+    func loadOpenPetsCatalog() async {
+        guard !openPetsLoading else { return }
+        if !openPetsRows.isEmpty { return }
+        openPetsLoading = true
+        openPetsUnavailable = false
+        defer { openPetsLoading = false }
+        do {
+            let response = try await helper.run([
+                "openpets-catalog",
+                "--current-version", Self.currentVersion,
+            ], timeout: Self.openPetsHelperTimeout)
+            openPetsRows = (response.details["rows"]?.array ?? []).compactMap(OpenPetsCatalogRow.init)
+            openPetsStale = response.details["stale"]?.bool == true
+            openPetsUnavailable = openPetsRows.isEmpty
+        } catch is CancellationError {
+            return
+        } catch {
+            if openPetsRows.isEmpty { openPetsUnavailable = true }
+        }
+    }
+
+    func prefetchOpenPetsThumb(id: String, preview: String) {
+        guard openPetsThumbs[preview] == nil, openPetsThumbTasks[preview] == nil else { return }
+        openPetsThumbTasks[preview] = Task { [weak self] in
+            await self?.openPetsThumbGate.acquire()
+            defer { Task { await self?.openPetsThumbGate.release() } }
+            guard let self, !Task.isCancelled else { return }
+            do {
+                let response = try await self.helper.run([
+                    "openpets-thumb",
+                    "--id", id,
+                    "--url", preview,
+                    "--current-version", Self.currentVersion,
+                ], timeout: Self.openPetsHelperTimeout)
+                guard let path = response.details["path"]?.string,
+                      let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+                      let image = NSImage(data: data) else { return }
+                await MainActor.run {
+                    self.openPetsThumbs[preview] = image
+                    self.openPetsThumbTasks[preview] = nil
+                }
+            } catch {
+                await MainActor.run { self.openPetsThumbTasks[preview] = nil }
+            }
+        }
+    }
+
+    func cancelOpenPetsThumbs() {
+        openPetsThumbTasks.values.forEach { $0.cancel() }
+        openPetsThumbTasks.removeAll()
+    }
+
+    func installOpenPetsThumb(id: String, preview: String) async {
+        do {
+            let response = try await helper.run([
+                "openpets-thumb",
+                "--id", id,
+                "--url", preview,
+                "--current-version", Self.currentVersion,
+            ], timeout: Self.openPetsHelperTimeout)
+            guard let path = response.details["path"]?.string else {
+                petNotice = "Pet gallery unavailable right now."
+                return
+            }
+            installPetSprite(from: URL(fileURLWithPath: path))
+        } catch is CancellationError {
+            return
+        } catch {
+            petNotice = "Pet gallery unavailable right now."
         }
     }
 
@@ -1429,21 +1590,27 @@ final class ControllerModel: ObservableObject {
     }
 
     private func applyPetSessions(_ sessions: [ClaudeSession]) {
+        let previousCount = petSessions.count
         petSessions = sessions
-        if petSessions.count < 2 { petExpanded = false }
+        if petSessions.count < 2 {
+            petExpanded = false
+        } else if previousCount < 2 {
+            petExpanded = true
+        }
         if let petFocusID, !petSessions.contains(where: { $0.id == petFocusID }) {
             self.petFocusID = nil
         }
     }
 
     var petFocusSession: ClaudeSession? {
-        if let petFocusID, let row = petSessions.first(where: { $0.id == petFocusID }) {
-            return row
-        }
-        return petSessions.first
+        ClaudeSession.petPreferredFocus(in: petSessions, focusedID: petFocusID)
     }
 
     func focusPetSession(_ session: ClaudeSession) {
+        openSessionInPlatform(session)
+    }
+
+    func openSessionInPlatform(_ session: ClaudeSession) {
         petFocusID = session.id
         Task { await revealPetSession(session) }
     }
@@ -1469,52 +1636,519 @@ final class ControllerModel: ObservableObject {
         }
         do {
             let response = try await helper.run(arguments, timeout: 8)
-            applySessionReveal(response)
+            await jumpFromReveal(response, session: session)
         } catch {
             self.error = error.localizedDescription
             petNotice = error.localizedDescription
         }
     }
 
-    func applySessionReveal(_ response: HelperResponse) {
+    /// Reveal must not use NSWorkspace completion handlers. Those run on
+    /// `com.apple.launchservices.open-queue`. ControllerModel is @MainActor, so
+    /// the 0.5.93 handler trapped (EXC_BREAKPOINT / dispatch_assert_queue) and
+    /// quit Control instead of opening Cursor.
+    ///
+    /// Cursor `openMode=chat` must not open the workspace folder. That is the
+    /// IDE. `--chat` is unused by Cursor's main process. `--glass` alone
+    /// focuses the last window (the IDE). This path raises a Cursor Agents
+    /// window when Accessibility can see one, then presses the Agents list
+    /// row whose title matches the session name. It never matches that name
+    /// against Cursor window titles. It does not activate every Cursor window.
+    /// That raise is the IDE.
+    ///
+    /// Codex `openMode=thread` opens `codex://threads/<id>`. Opening the
+    /// workspace folder only raises the last Codex tab.
+    ///
+    /// Claude `openMode=session` presses the Desktop sidebar row whose title
+    /// matches the session name. Opening the workspace folder only raises the
+    /// last Claude tab. Anthropic's Code link for an existing session is
+    /// gated off; the documented Code link starts a new session.
+    private func jumpFromReveal(_ response: HelperResponse, session: ClaudeSession) async {
         petNotice = nil
         let pid = response.details["pid"]?.int.map { pid_t($0) }
         let path = response.details["path"]?.string
         let appPath = response.details["app"]?.string
         let bundleId = response.details["bundleId"]?.string
-        if let pid, activateProcess(pid) { return }
+        let openMode = response.details["openMode"]?.string ?? "app"
         let appURL = appPath.flatMap { FileManager.default.fileExists(atPath: $0) ? URL(fileURLWithPath: $0) : nil }
-        if let path, FileManager.default.fileExists(atPath: path), let appURL {
-            let folder = URL(fileURLWithPath: path, isDirectory: true)
-            NSWorkspace.shared.open([folder], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration()) { [weak self] _, openError in
-                Task { @MainActor in
-                    if let openError {
-                        self?.error = openError.localizedDescription
-                        self?.petNotice = openError.localizedDescription
-                    }
-                }
+        if openMode == "chat" {
+            guard let appURL else {
+                petNotice = "Agents miss (no Cursor.app path; did not open the folder)."
+                return
             }
+            await revealCursorAgentsWindow(appURL: appURL, bundleId: bundleId, agentTab: session.name)
             return
         }
-        if let appURL {
-            NSWorkspace.shared.openApplication(at: appURL, configuration: NSWorkspace.OpenConfiguration()) { [weak self] _, openError in
-                Task { @MainActor in
-                    if let openError {
-                        self?.error = openError.localizedDescription
-                        self?.petNotice = openError.localizedDescription
-                    }
+        if openMode == "thread" {
+            await revealCodexThread(deepLink: response.details["deepLink"]?.string, appURL: appURL)
+            return
+        }
+        if openMode == "session" {
+            await revealClaudeSession(appURL: appURL, bundleId: bundleId, sessionName: session.name)
+            return
+        }
+        if let pid, activateProcess(pid) { return }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        do {
+            if let path, FileManager.default.fileExists(atPath: path), let appURL {
+                let folder = URL(fileURLWithPath: path, isDirectory: true)
+                _ = try await NSWorkspace.shared.open([folder], withApplicationAt: appURL, configuration: configuration)
+                if let bundleId,
+                   let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
+                    _ = activateRunningApp(running)
                 }
+                return
             }
+            if let appURL {
+                _ = try await NSWorkspace.shared.openApplication(at: appURL, configuration: configuration)
+                if let bundleId,
+                   let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
+                    _ = activateRunningApp(running)
+                }
+                return
+            }
+        } catch {
+            let message = error.localizedDescription
+            self.error = message
+            petNotice = message
             return
         }
         if let bundleId,
            let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
-            running.activate()
+            _ = activateRunningApp(running)
             return
         }
         let miss = "Could not open that session's app."
         error = miss
         petNotice = miss
+    }
+
+    /// Codex Desktop's documented local-thread jump. Do not open the workspace
+    /// folder. That only raises the last tab. Do not start a blank Codex chat.
+    private func revealCodexThread(deepLink: String?, appURL: URL?) async {
+        if let raw = deepLink?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let url = URL(string: raw),
+           url.scheme?.lowercased() == "codex",
+           codexThreadID(from: url) != nil,
+           NSWorkspace.shared.open(url) {
+            return
+        }
+        if let appURL {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            _ = try? await NSWorkspace.shared.openApplication(at: appURL, configuration: configuration)
+            petNotice = "Opened Codex. Could not open that thread."
+            return
+        }
+        petNotice = "Could not open that Codex thread."
+    }
+
+    /// Claude Desktop has no working link for an existing Code session.
+    /// Chromium hides the sidebar until AXManualAccessibility is on. Then
+    /// press the Code radio, then the row whose title matches the session
+    /// name. Do not match that name against Claude window titles. Do not
+    /// open the workspace folder.
+    private func revealClaudeSession(appURL: URL?, bundleId: String?, sessionName: String) async {
+        func runningClaude() -> NSRunningApplication? {
+            let ids = [bundleId, "com.anthropic.claudefordesktop"].compactMap { $0 }
+            for id in ids {
+                if let running = NSRunningApplication.runningApplications(withBundleIdentifier: id).first {
+                    return running
+                }
+            }
+            return nil
+        }
+        if runningClaude() == nil, let appURL {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            _ = try? await NSWorkspace.shared.openApplication(at: appURL, configuration: configuration)
+            try? await Task.sleep(for: .milliseconds(800))
+        }
+        guard let running = runningClaude() else {
+            petNotice = "Could not open Claude."
+            return
+        }
+        guard ensureAccessibilityTrust() else { return }
+        enableClaudeSidebarAccess(of: running)
+        raiseFirstWindow(of: running)
+        running.unhide()
+        _ = running.activate(from: NSRunningApplication.current)
+        try? await Task.sleep(for: .milliseconds(250))
+        _ = pressClaudeCodeTab(of: running)
+        try? await Task.sleep(for: .milliseconds(350))
+        if pressClaudeSessionRow(named: sessionName, of: running) {
+            running.unhide()
+            _ = running.activate(from: NSRunningApplication.current)
+            return
+        }
+        try? await Task.sleep(for: .milliseconds(400))
+        _ = pressClaudeCodeTab(of: running)
+        try? await Task.sleep(for: .milliseconds(250))
+        if pressClaudeSessionRow(named: sessionName, of: running) {
+            running.unhide()
+            _ = running.activate(from: NSRunningApplication.current)
+            return
+        }
+        petNotice = "Opened Claude. Could not select that session."
+    }
+
+    private func enableClaudeSidebarAccess(of app: NSRunningApplication) {
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetAttributeValue(element, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    }
+
+    /// macOS keys the Accessibility grant to this build's code signature, so
+    /// after an update the Settings row can read ON while this process stays
+    /// untrusted. Relaunching cannot repair that state; only toggling the row
+    /// off and on re-keys the grant. Say that, and open the pane it names.
+    private func ensureAccessibilityTrust() -> Bool {
+        var trusted = AXIsProcessTrusted()
+        if !trusted {
+            _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+            trusted = AXIsProcessTrusted()
+        }
+        if !trusted {
+            petNotice = "Enable COS Control under Accessibility. Already on? Toggle it off and on, then reopen COS Control."
+            openAccessibilitySettings()
+        }
+        return trusted
+    }
+
+    private func openAccessibilitySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    @discardableResult
+    private func raiseFirstWindow(of app: NSRunningApplication) -> Bool {
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement],
+              let window = windows.first else { return false }
+        AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+        AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+        AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+        return true
+    }
+
+    @discardableResult
+    private func pressClaudeCodeTab(of app: NSRunningApplication) -> Bool {
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        return pressClaudeCodeTab(from: element, depth: 0)
+    }
+
+    private func pressClaudeCodeTab(from element: AXUIElement, depth: Int) -> Bool {
+        guard depth < 28 else { return false }
+        let role = axString(element, kAXRoleAttribute as CFString) ?? ""
+        if role == "AXMenuBar" { return false }
+        var childrenRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+           let children = childrenRef as? [AXUIElement] {
+            for child in children {
+                if pressClaudeCodeTab(from: child, depth: depth + 1) {
+                    return true
+                }
+            }
+        }
+        guard role == "AXRadioButton" else { return false }
+        let labels = [
+            axString(element, kAXTitleAttribute as CFString),
+            axString(element, kAXDescriptionAttribute as CFString),
+            axString(element, kAXValueAttribute as CFString),
+        ].compactMap { $0 }
+        guard labels.contains(where: { $0.caseInsensitiveCompare("Code") == .orderedSame }) else {
+            return false
+        }
+        return AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+    }
+
+    /// Press the Claude sidebar row for this session. Walk Claude windows
+    /// only. Skip the window itself, the menu bar, text fields, and the
+    /// row overflow menu. Never match the session name against window titles.
+    @discardableResult
+    private func pressClaudeSessionRow(named rawWant: String, of app: NSRunningApplication) -> Bool {
+        let want = rawWant.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard want.count >= CursorAgentTabMatch.minimumCount else { return false }
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else { return false }
+        for window in windows {
+            if pressClaudeSessionRow(named: want, from: window, depth: 0) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func pressClaudeSessionRow(named want: String, from element: AXUIElement, depth: Int) -> Bool {
+        guard depth < 28 else { return false }
+        let role = axString(element, kAXRoleAttribute as CFString) ?? ""
+        if role == "AXMenuBar" || role == "AXTextField" || role == "AXTextArea"
+            || role == "AXSearchField" || role == "AXPopUpButton" {
+            return false
+        }
+        var childrenRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+           let children = childrenRef as? [AXUIElement] {
+            for child in children {
+                if pressClaudeSessionRow(named: want, from: child, depth: depth + 1) {
+                    return true
+                }
+            }
+        }
+        if role == "AXWindow" || role == "AXApplication" || role == "AXStaticText"
+            || role == "AXRadioButton" {
+            return false
+        }
+        let labels = [
+            axString(element, kAXTitleAttribute as CFString),
+            axString(element, kAXDescriptionAttribute as CFString),
+            axString(element, kAXValueAttribute as CFString),
+        ].compactMap { $0 }
+        if labels.contains(where: { $0.localizedCaseInsensitiveContains("More options")
+            || $0.localizedCaseInsensitiveContains("New session in") }) {
+            return false
+        }
+        guard labels.contains(where: { ClaudeSessionRowMatch.matches($0, want: want) }) else {
+            return false
+        }
+        return AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+    }
+
+    private func codexThreadID(from url: URL) -> String? {
+        let parts = url.path.split(separator: "/").map(String.init)
+        let thread: String
+        if url.host?.lowercased() == "threads" {
+            thread = parts.last ?? ""
+        } else if parts.first?.lowercased() == "threads" {
+            thread = parts.dropFirst().last ?? ""
+        } else {
+            return nil
+        }
+        let id = thread.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard id.count >= 8, id.lowercased() != "new" else { return nil }
+        guard id.allSatisfy({ $0.isHexDigit || $0 == "-" }) else { return nil }
+        return id
+    }
+
+    /// Try Agents first, then activate Cursor, then click the Agents row whose
+    /// title matches this session. Do not match that title against Cursor
+    /// window titles. Do not spawn `--glass --new-window` while Cursor is
+    /// already running.
+    private func revealCursorAgentsWindow(appURL: URL, bundleId: String?, agentTab: String) async {
+        func runningCursor() -> NSRunningApplication? {
+            bundleId.flatMap {
+                NSRunningApplication.runningApplications(withBundleIdentifier: $0).first
+            }
+        }
+        if let running = runningCursor() {
+            guard ensureAccessibilityTrust() else { return }
+            if !raiseCursorAgentsWindow(of: running) {
+                let menuNames = [
+                    "Switch to Agents Window",
+                    "Open or Focus Agents Window",
+                    "Open Agents Window",
+                    "New Agents Window",
+                ]
+                if pressCursorMenuItems(menuNames, of: running) {
+                    try? await Task.sleep(for: .milliseconds(600))
+                    _ = raiseCursorAgentsWindow(of: running)
+                }
+            }
+            _ = activateCursorAgentsApp(running)
+            try? await Task.sleep(for: .milliseconds(350))
+            if !pressCursorAgentTab(named: agentTab, of: running) {
+                let want = agentTab.trimmingCharacters(in: .whitespacesAndNewlines)
+                if want.count >= CursorAgentTabMatch.minimumCount {
+                    petNotice = "Opened Agents. Could not select that tab."
+                }
+            }
+            return
+        }
+        spawnCursorAgentsWindow(appURL: appURL)
+        for _ in 0..<10 {
+            try? await Task.sleep(for: .milliseconds(250))
+            if let running = runningCursor(), raiseCursorAgentsWindow(of: running) {
+                try? await Task.sleep(for: .milliseconds(350))
+                _ = pressCursorAgentTab(named: agentTab, of: running)
+                return
+            }
+        }
+        if runningCursor() == nil {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            configuration.arguments = ["--glass", "--new-window"]
+            _ = try? await NSWorkspace.shared.openApplication(at: appURL, configuration: configuration)
+            for _ in 0..<8 {
+                try? await Task.sleep(for: .milliseconds(250))
+                if let running = runningCursor(), raiseCursorAgentsWindow(of: running) {
+                    try? await Task.sleep(for: .milliseconds(350))
+                    _ = pressCursorAgentTab(named: agentTab, of: running)
+                    return
+                }
+            }
+        }
+        petNotice = cursorAgentsMissNotice(
+            trusted: AXIsProcessTrusted(),
+            titles: runningCursor().map { cursorWindowTitles(of: $0) } ?? [],
+            branch: "cold-start",
+            spawned: true
+        )
+    }
+
+    private func cursorWindowTitles(of app: NSRunningApplication) -> [String] {
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else { return [] }
+        var titles: [String] = []
+        for window in windows {
+            var titleRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef) == .success,
+                  let title = titleRef as? String, !title.isEmpty else { continue }
+            titles.append(String(title.prefix(40)))
+            if titles.count == 6 { break }
+        }
+        return titles
+    }
+
+    private func cursorAgentsMissNotice(
+        trusted: Bool,
+        titles: [String],
+        branch: String,
+        spawned: Bool
+    ) -> String {
+        let ax = trusted ? "AX on" : "AX off"
+        let titleBit = titles.isEmpty ? "no titles" : titles.joined(separator: " | ")
+        let spawnBit = spawned ? "spawned" : "no spawn"
+        return "Agents miss (\(branch); \(ax); \(titleBit); \(spawnBit))"
+    }
+
+    private func spawnCursorAgentsWindow(appURL: URL) {
+        let cli = appURL.appendingPathComponent("Contents/Resources/app/bin/cursor")
+        guard FileManager.default.isExecutableFile(atPath: cli.path) else { return }
+        let proc = Process()
+        proc.executableURL = cli
+        proc.arguments = ["--glass", "--new-window"]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try? proc.run()
+    }
+
+    @discardableResult
+    private func raiseCursorAgentsWindow(of app: NSRunningApplication) -> Bool {
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        guard let window = cursorAgentsWindow(from: element) else {
+            return false
+        }
+        AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+        AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+        AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+        return app.activate(from: NSRunningApplication.current)
+    }
+
+    private func cursorAgentsWindow(from app: AXUIElement) -> AXUIElement? {
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else { return nil }
+        for window in windows {
+            var titleRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef) == .success,
+                  let title = titleRef as? String else {
+                continue
+            }
+            if title.localizedCaseInsensitiveContains("Cursor Agents")
+                || title.localizedCaseInsensitiveContains("Agents Window") {
+                return window
+            }
+        }
+        return nil
+    }
+
+    private func axString(_ element: AXUIElement, _ attribute: CFString) -> String? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &ref) == .success else { return nil }
+        return ref as? String
+    }
+
+    /// Press the Agents list row for this session. Walk the Agents window
+    /// only. Skip the window itself, the menu bar, and text fields. Never
+    /// match the session name against Cursor window titles.
+    @discardableResult
+    private func pressCursorAgentTab(named rawWant: String, of app: NSRunningApplication) -> Bool {
+        let want = rawWant.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard want.count >= CursorAgentTabMatch.minimumCount else { return false }
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        guard let window = cursorAgentsWindow(from: element) else { return false }
+        return pressCursorAgentTab(named: want, from: window, depth: 0)
+    }
+
+    private func pressCursorAgentTab(named want: String, from element: AXUIElement, depth: Int) -> Bool {
+        guard depth < 24 else { return false }
+        let role = axString(element, kAXRoleAttribute as CFString) ?? ""
+        if role == "AXMenuBar" || role == "AXTextField" || role == "AXTextArea"
+            || role == "AXSearchField" {
+            return false
+        }
+        var childrenRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+           let children = childrenRef as? [AXUIElement] {
+            for child in children {
+                if pressCursorAgentTab(named: want, from: child, depth: depth + 1) {
+                    return true
+                }
+            }
+        }
+        if role == "AXWindow" || role == "AXApplication" {
+            return false
+        }
+        let labels = [
+            axString(element, kAXTitleAttribute as CFString),
+            axString(element, kAXDescriptionAttribute as CFString),
+            axString(element, kAXValueAttribute as CFString),
+        ].compactMap { $0 }
+        guard labels.contains(where: { CursorAgentTabMatch.matches($0, want: want) }) else {
+            return false
+        }
+        return AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+    }
+
+    @discardableResult
+    private func pressCursorMenuItems(_ names: [String], of app: NSRunningApplication) -> Bool {
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        var barRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXMenuBarAttribute as CFString, &barRef) == .success else {
+            return false
+        }
+        return pressMenuItem(named: names, from: barRef as! AXUIElement, depth: 0)
+    }
+
+    private func pressMenuItem(named names: [String], from element: AXUIElement, depth: Int) -> Bool {
+        guard depth < 5 else { return false }
+        var titleRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &titleRef) == .success,
+           let title = titleRef as? String,
+           names.contains(where: { title.caseInsensitiveCompare($0) == .orderedSame }) {
+            return AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+        }
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+              let children = childrenRef as? [AXUIElement] else { return false }
+        for child in children {
+            if pressMenuItem(named: names, from: child, depth: depth + 1) { return true }
+        }
+        return false
+    }
+
+    /// Raise Cursor without activating every window. That option brings the
+    /// IDE forward on top of Agents.
+    @discardableResult
+    private func activateCursorAgentsApp(_ app: NSRunningApplication) -> Bool {
+        app.unhide()
+        return app.activate(from: NSRunningApplication.current)
     }
 
     @discardableResult
@@ -1525,15 +2159,50 @@ final class ControllerModel: ObservableObject {
             if !seen.insert(current).inserted { break }
             if let app = NSRunningApplication(processIdentifier: current),
                app.activationPolicy == .regular {
-                return app.activate()
+                return activateRunningApp(app)
             }
             guard let parent = parentProcessID(of: current), parent > 1 else { break }
             current = parent
         }
         if let app = NSRunningApplication(processIdentifier: pid) {
-            return app.activate()
+            return activateRunningApp(app)
         }
         return false
+    }
+
+    @discardableResult
+    private func activateRunningApp(_ app: NSRunningApplication) -> Bool {
+        app.unhide()
+        if let bundleId = app.bundleIdentifier {
+            sendReopenEvent(bundleIdentifier: bundleId)
+        }
+        deminiaturizeWindows(of: app)
+        return app.activate(from: NSRunningApplication.current, options: [.activateAllWindows])
+    }
+
+    /// Dock-click equivalent. `unhide()` does not restore miniaturized windows.
+    private func sendReopenEvent(bundleIdentifier: String) {
+        let escaped = bundleIdentifier
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let source = """
+        tell application id "\(escaped)"
+          reopen
+          activate
+        end tell
+        """
+        var error: NSDictionary?
+        NSAppleScript(source: source)?.executeAndReturnError(&error)
+    }
+
+    private func deminiaturizeWindows(of app: NSRunningApplication) {
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else { return }
+        for window in windows {
+            AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+        }
     }
 
     private func parentProcessID(of pid: pid_t) -> pid_t? {

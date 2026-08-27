@@ -19,10 +19,22 @@ struct COSControlApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra("COS Control", systemImage: model.status.running ? "eyeglasses" : "eyeglasses.slash") {
+        MenuBarExtra {
             ControlPanel(model: model) { section in
                 activityWindow.show(model: model, section: section)
             }
+        } label: {
+            Image(systemName: model.status.running ? "eyeglasses" : "eyeglasses.slash")
+                .fixedSize()
+                .overlay(alignment: .topTrailing) {
+                    if model.appUpdate.shouldSurface {
+                        Circle()
+                            .fill(.primary)
+                            .frame(width: 5, height: 5)
+                            .offset(x: 2, y: -1)
+                    }
+                }
+                .accessibilityLabel("COS Control")
         }
         .menuBarExtraStyle(.window)
     }

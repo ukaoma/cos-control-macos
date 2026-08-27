@@ -645,8 +645,47 @@ echo "    manual update check: button, method, and all three outcomes"
 /usr/bin/grep -q 'struct LibrarySearchHit' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'Search topics, ideas' "$ROOT/Sources/ActivityMeetings.swift"
 /usr/bin/grep -q 'Six views into the work' "$ROOT/Sources/ActivityWindow.swift"
-/usr/bin/grep -q 'systemImage: model.status.running ? "eyeglasses"' "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q 'Image(systemName: model.status.running ? "eyeglasses"' "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q '\.fixedSize()' "$ROOT/Sources/COSControlApp.swift"
+! /usr/bin/grep -q 'Image(nsImage:' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'eyeglasses.slash' "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q 'model.appUpdate.shouldSurface' "$ROOT/Sources/COSControlApp.swift"
+! /usr/bin/grep -q 'hasNotice' "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q 'AppUpdateInfo.merging(previous: appUpdate, incoming:' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'static func merging(previous: AppUpdateInfo, incoming: AppUpdateInfo)' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'enum MenuBarIcon' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'case "openpets-catalog"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "openpets-thumb"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'static func isAllowedThumbURL' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -F -q 'COSControl/\(label) (macOS; +https://www.gotcos.com)' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'func loadOpenPetsCatalog' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'func installOpenPetsThumb' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'Pet gallery' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Pet gallery unavailable right now.' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q '.frame(height: OpenPetsGallery.height)' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'TextField("Search pets"' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'await model.loadOpenPetsCatalog()' "$ROOT/Sources/Views.swift"
+! /usr/bin/grep -q 'DisclosureGroup("Pet gallery"' "$ROOT/Sources/Views.swift"
+/usr/bin/python3 - "$ROOT" <<'PY'
+import io, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+models = io.open(root / "Sources/Models.swift", encoding="utf-8").read()
+helper = io.open(root / "HelperSources/main.swift", encoding="utf-8").read()
+code_models = "\n".join(l for l in models.splitlines() if not l.strip().startswith("//"))
+assert 'static let allowedExtensions: Set<String> = ["png", "gif", "jpg", "jpeg", "tiff", "tif", "webp"]' in code_models, \
+    'PetSpriteStore allowedExtensions drifted'
+assert '"zip"' not in code_models.split("allowedExtensions")[1].split("\n")[0], \
+    "zip must not enter PetSpriteStore allowedExtensions"
+assert 'url.host?.lowercased() == "openpets.dev"' in helper, 'thumb host gate missing'
+assert 'refuseRedirects: true' in helper, 'OpenPets fetches must refuse redirects'
+assert 'static func isOpenPetsWebP' in helper, 'webp magic check must be shared'
+assert 'if let existing = try? Data(contentsOf: dest), Self.isOpenPetsWebP(existing)' in helper, \
+    'openpets-thumb must reuse a valid on-disk thumb'
+controller = io.open(root / "Sources/ControllerModel.swift", encoding="utf-8").read()
+assert 'openPetsThumbOrder' not in controller, '32-thumb LRU must not evict gallery stills'
+assert 'NSImage(data: data)' in controller, 'gallery thumbs must be memory-backed'
+print("    openpets gallery pins: extensions, host gate, no-redirect")
+PY
 /usr/bin/grep -q 'COSLockupView' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'COSLockupView' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'COSGotcosCaption' "$ROOT/Sources/ActivityWindow.swift"
@@ -776,6 +815,14 @@ PY
 /usr/bin/grep -q 'activityWindow.show(model: model, section: section)' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'SessionPetPresenter' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'Session pet' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Choose sprite' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Open in platform' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'func openSessionInPlatform' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'jumpFromReveal' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'try await NSWorkspace.shared.open' "$ROOT/Sources/ControllerModel.swift"
+! /usr/bin/grep -q 'func applySessionReveal' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'func choosePetSprite' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -q 'enum PetSpriteStore' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'case "session-pet-live"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'emitClaudeSessions(liveOnly: true)' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "session-reveal"' "$ROOT/HelperSources/main.swift"
@@ -1633,11 +1680,157 @@ need('contextListCard' not in main_panel.group(1), "Memory/Threads are still nes
 need('SessionPetPresenter' in app, "the pet presenter is not constructed at launch")
 need('sessionPet.bindIfNeeded' in app, "the pet does not start unless the menu opens")
 need('Toggle("Session pet"' in views, "the Session pet toggle is missing")
+need('Picker("Pet size"' in views, "Session pet has no size picker")
+need('setPetSizePreset' in model, "pet size presets are not wired")
+need('setPetCustomPixels' in model, "custom pet pixels are not wired")
+need('petSizeKey' in model, "pet size is not persisted")
+need('petSizePixelsKey' in model, "custom pet pixels are not persisted")
+need('Choose sprite' in views, "Session pet has no Choose sprite control")
+need('Open in platform' in activity, "session detail has no Open in platform button")
+need('openSessionInPlatform' in model, "Open in platform is not wired")
+need('choosePetSprite' in model, "Choose sprite is not wired")
+need('installPetSprite' in model, "dropped sprites have no install path")
+need('customImage' in (root / "Sources/COSMotion.swift").read_text(), "the pet sprite cannot render a custom PNG")
+need('arrow.up.forward.app' in (root / "Sources/SessionPet.swift").read_text(), "the pet has no Open in platform control")
+need('petButton("scope"' in (root / "Sources/SessionPet.swift").read_text(), "Activity jump must be a target, not a waveform")
+need('Open in Activity' in (root / "Sources/SessionPet.swift").read_text(), "the target control must name Activity")
+need('Open Agents Window' in (root / "Sources/SessionPet.swift").read_text(), "the Cursor target must name the Agents Window")
+need('openTarget' in (root / "Sources/SessionPet.swift").read_text(), "the target control has no Cursor/Activity split")
+need('petTargetOpensAgentWindow' in (root / "Sources/Models.swift").read_text(),
+     "Cursor target routing is not on the session model")
+need('petButton("waveform"' not in (root / "Sources/SessionPet.swift").read_text(), "waveform on the pet collides with Codex playback")
+need('jumpFromReveal' in model, "platform jump is not isolated from the Launch Services queue")
+need('try await NSWorkspace.shared.open' in model, "NSWorkspace completion handlers crash Control on the LS queue")
+need('applySessionReveal' not in model, "the MainActor LS completion path must stay gone")
+need('openMode == "chat"' in model, "Cursor reveal must branch off the IDE folder open")
+need('openMode == "thread"' in model, "Codex reveal must branch off the workspace folder open")
+need('openMode == "session"' in model, "Claude reveal must branch off the workspace folder open")
+need('revealCodexThread' in model, "Codex jump does not open the thread deep link")
+need('revealClaudeSession' in model, "Claude jump does not press the Desktop sidebar")
+need('sessionName: session.name' in model,
+     "Claude row match must use the session name, not the workspace fallback title")
+need('codexThreadID' in model, "Codex deep link is not checked before opening")
+need('lowercased() != "new"' in model, "a Codex pet click must not start a blank chat")
+codex_jump = model.split("func revealCodexThread")[1].split("func revealClaudeSession")[0]
+need('open([folder]' not in codex_jump, "Codex thread jump still opens the workspace folder")
+claude_jump = model.split("func revealClaudeSession")[1].split("func revealCursorAgentsWindow")[0]
+need('open([folder]' not in claude_jump, "Claude session jump still opens the workspace folder")
+need('AXManualAccessibility' in claude_jump, "Claude sidebar is hidden until Chromium AX is on")
+need('pressClaudeSessionRow' in claude_jump, "Claude jump does not press the sidebar row")
+need('pressClaudeCodeTab' in claude_jump, "Claude jump does not switch to the Code tab")
+need('AXPopUpButton' in claude_jump, "Claude jump must not press the row overflow menu")
+need('AXWindow' in claude_jump, "Claude row press does not skip AXWindow")
+need('AXMenuBar' in claude_jump, "Claude row press does not skip AXMenuBar")
+need('AXTextField' in claude_jump, "Claude row press does not skip text fields")
+need('activateAllWindows' not in claude_jump,
+     "raising Claude must not activate every window as a substitute for the row")
+need('code/new' not in claude_jump, "a Claude pet click must not start a blank Code session")
+need('codex://threads/' in (root / "HelperSources/main.swift").read_text(),
+     "Codex thread deep link is not named")
+need('sessionRevealDeepLink' in (root / "HelperSources/main.swift").read_text(),
+     "Codex thread deep link is not built")
+need('["--glass", "--new-window"]' in model, "cold-start still launches cursor --glass --new-window")
+need('proc.arguments = ["--glass"]' not in model, "Cursor --glass alone focuses the IDE")
+need('["--chat"]' not in model, "Cursor --chat is unused and raises the IDE")
+need('revealCursorAgentsWindow' in model, "Cursor jump does not raise the Agents Window")
+need('localizedCaseInsensitiveContains("Cursor Agents")' in model,
+     "Cursor Agents window title is not matched")
+need('localizedCaseInsensitiveContains("Agents Window")' in model,
+     "Agents Window title is not matched")
+need('Switch to Agents Window' in model, "Cursor jump does not switch to an existing Agents Window")
+need('Open or Focus Agents Window' in model, "Cursor jump does not use Open or Focus Agents Window")
+need('New Agents Window' in model, "Cursor jump does not use New Agents Window")
+need('AXIsProcessTrusted()' in model, "Cursor miss notice does not record Accessibility trust")
+need('Toggle it off and on' in model,
+     "an untrusted AX jump does not say to re-key the stale grant")
+need(model.count('Toggle it off and on') == 1,
+     "the Accessibility repair notice must live in exactly one shared gate")
+need('Privacy_Accessibility' in model,
+     "an untrusted AX jump does not open the Accessibility pane")
+need('Quit COS Control and open it again' not in model,
+     "the relaunch advice is back; relaunching cannot repair a stale TCC grant")
+need(model.count('ensureAccessibilityTrust()') >= 3,
+     "Claude and Cursor jumps do not share the single Accessibility gate")
+need('Opened Agents. Could not select that tab' in model,
+     "a tab miss is not named on the pet")
+need('pressCursorAgentTab' in model, "Cursor jump does not press the Agents list row")
+need('agentTab: session.name' in model,
+     "Cursor tab match must use the session name, not the workspace fallback title")
+need('Agents miss' in model, "Cursor miss is not named on the pet")
+need('did not open the folder' in model, "a missing Cursor.app path still opens the IDE folder")
+need('no spawn' in model, "the running-Cursor miss notice does not say no spawn")
+reveal = model.split("func revealCursorAgentsWindow")[1].split("func cursorWindowTitles")[0]
+running_branch = reveal.split("if let running = runningCursor()")[1].split("spawnCursorAgentsWindow")[0]
+need('activateRunningApp(running)' not in running_branch,
+     "running Cursor still raises every Cursor window, including the IDE")
+need('activateCursorAgentsApp' in running_branch,
+     "running Cursor does not activate Cursor without raising the IDE")
+need('pressCursorAgentTab' in running_branch,
+     "running Cursor does not press the Agents list row")
+need('ensureAccessibilityTrust()' in running_branch,
+     "running Cursor does not gate on Accessibility before the tab press")
+need('spawnCursorAgentsWindow(' not in running_branch,
+     "running Cursor still spawns --glass --new-window")
+need('localizedCaseInsensitiveContains(trimmed)' not in model,
+     "matching the session title against Cursor windows raises the IDE")
+tab = "func pressCursorAgentTab".join(model.split("func pressCursorAgentTab")[1:]).split("func pressCursorMenuItems")[0]
+need('AXWindow' in tab, "the tab press does not skip AXWindow")
+need('AXMenuBar' in tab, "the tab press does not skip AXMenuBar")
+need('AXTextField' in tab, "the tab press does not skip text fields")
+need('cursorAgentsWindow(from: element) else { return false }' in tab,
+     "tab press must not walk the IDE when the Agents window is missing")
+need('activateAllWindows' not in model.split("func revealCursorAgentsWindow")[1].split("func activateProcess")[0],
+     "raising the Agents Window must not also raise the IDE")
+need('enum CursorAgentTabMatch' in (root / "Sources/Models.swift").read_text(),
+     "Agents tab matching is not named")
+need('enum ClaudeSessionRowMatch' in (root / "Sources/Models.swift").read_text(),
+     "Claude sidebar matching is not named")
+need('sendReopenEvent' in model, "minimized platform windows have no Dock-click reopen")
+need('deminiaturizeWindows' in model, "miniaturized windows are not restored")
+need('sessionRevealOpenMode' in (root / "HelperSources/main.swift").read_text(),
+     "Cursor reveal openMode is not named")
+need('petPreferredFocus' in (root / "Sources/Models.swift").read_text(),
+     "pet focus does not prefer the running session")
+need('applyLiveWorkingState' in (root / "HelperSources/main.swift").read_text(),
+     "server Cursor rows are not overlaid with composer working state")
+helper_src = (root / "HelperSources/main.swift").read_text()
+live_work = helper_src.split("func applyLiveWorkingState")[1].split("func loadCursorComposerMeta")[0]
+need('provider == "codex"' in live_work,
+     "server Codex rows are not overlaid with transcript working state")
+need('readDataToEndOfFile' in (root / "HelperSources/main.swift").read_text().split("func loadCursorComposerMeta")[1].split("func loadCursorComposerNames")[0],
+     "composer sqlite must drain stdout or a 64KB JSON pipe deadlocks")
 need('activityOpenSessionID' in activity, "waveform open does not consume activityOpenSessionID")
 need('openClaudeSession(staged)' in activity, "waveform open does not restage the session after select()")
+need('model.$petSize.sink' in (root / "Sources/SessionPet.swift").read_text(),
+     "the pet panel does not refit when size changes")
+need('model.$petNotice.sink' in (root / "Sources/SessionPet.swift").read_text(),
+     "the pet panel does not refit when a Cursor miss notice appears")
+need('size: CGFloat' in (root / "Sources/COSMotion.swift").read_text(),
+     "the pet sprite cannot take a pixel size")
+need('case custom' in (root / "Sources/Models.swift").read_text(),
+     "pet size has no custom pixel preset")
+need('PetPanelFrame.clamped' in (root / "Sources/SessionPet.swift").read_text(),
+     "an off-screen pet frame is not snapped back onto a display")
+need('top - frame.size.height' not in (root / "Sources/SessionPet.swift").read_text(),
+     "growing the pet downward parks it under the screen")
 need('if model.petExpanded { model.petExpanded = false }' in
      (root / "Sources/SessionPet.swift").read_text(),
      "hiding the pet must not assign petExpanded when it is already false")
+pet = (root / "Sources/SessionPet.swift").read_text()
+need('} else if let focus {' not in pet,
+     "a Cursor miss notice must not replace the clickable status bubble")
+listed = pet.split("private var sessionList")[1].split("private func statusBubble")[0]
+need('model.openSessionInPlatform(session)' in listed,
+     "a pet list row only changes focus and does not open the session")
+need('.contentShape(Rectangle())' in listed,
+     "the pet list row does not hit-test the empty card")
+need('model.petFocusID = session.id' in listed,
+     "opening a list row must still focus that session")
+bubble = pet.split("private func statusBubble")[1].split("private var targetHelp")[0]
+need('model.openSessionInPlatform(session)' in bubble,
+     "the focused pet card does not open the session")
+need('.contentShape(Capsule())' in bubble,
+     "the focused pet card does not hit-test the empty capsule")
 close = re.search(r"func windowWillClose\([^)]*\)[^{]*\{(.*?)(?:\n    \}|\n\}\n)", activity, re.S)
 need(close is not None, "windowWillClose not found")
 need('SessionPet' not in close.group(0), "closing Activity must not tear down the pet")

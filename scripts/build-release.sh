@@ -54,9 +54,15 @@ chmod 700 "$APP/Contents/MacOS/COS Control" "$APP/Contents/Resources/cos-control
 # COS_NOTARY_PROFILE: `xcrun notarytool store-credentials` profile name.
 SIGN_ID="${COS_SIGN_IDENTITY:-}"
 NOTARY_PROFILE="${COS_NOTARY_PROFILE:-}"
+# COS_LOCAL_SIGN_IDENTITY: a stable (self-signed) keychain identity. macOS
+# keys TCC grants (Accessibility) to the designated requirement; ad-hoc
+# signing changes the cdhash every build, stranding the grant while System
+# Settings still shows the app enabled. A stable identity keeps the grant
+# across updates. No notarization; Gatekeeper story matches ad-hoc.
+LOCAL_SIGN_ID="${COS_LOCAL_SIGN_IDENTITY:-}"
 ALLOW_ADHOC="${COS_ALLOW_ADHOC:-0}"
-if [ -z "$SIGN_ID" ] && [ "$ALLOW_ADHOC" != "1" ]; then
-  echo "Public release requires COS_SIGN_IDENTITY. Use COS_ALLOW_ADHOC=1 only for local QA." >&2
+if [ -z "$SIGN_ID" ] && [ -z "$LOCAL_SIGN_ID" ] && [ "$ALLOW_ADHOC" != "1" ]; then
+  echo "Release requires COS_SIGN_IDENTITY (public) or COS_LOCAL_SIGN_IDENTITY (stable local). COS_ALLOW_ADHOC=1 is throwaway-QA only." >&2
   exit 66
 fi
 if [ -n "$SIGN_ID" ] && [ -z "$NOTARY_PROFILE" ]; then
@@ -67,6 +73,8 @@ if [ -n "$SIGN_ID" ]; then
   /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP/Contents/Resources/cos-control-helper"
   /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP/Contents/MacOS/COS Control"
   /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP"
+elif [ -n "$LOCAL_SIGN_ID" ]; then
+  /usr/bin/codesign --force --deep --sign "$LOCAL_SIGN_ID" "$APP"
 else
   /usr/bin/codesign --force --deep --sign - "$APP"
 fi

@@ -93,6 +93,7 @@ private final class HTTPResultBox: @unchecked Sendable {
 /// make Control buffer an unbounded response before the size check runs.
 private final class BoundedMediaRequestDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let maximumBytes: Int
+    private let refuseRedirects: Bool
     private let lock = NSLock()
     private let completion = DispatchSemaphore(value: 0)
     private var data = Data()
@@ -102,8 +103,9 @@ private final class BoundedMediaRequestDelegate: NSObject, URLSessionDataDelegat
     private var transportFailed = false
     private var finished = false
 
-    init(maximumBytes: Int) {
+    init(maximumBytes: Int, refuseRedirects: Bool = false) {
         self.maximumBytes = maximumBytes
+        self.refuseRedirects = refuseRedirects
         super.init()
     }
 
@@ -149,6 +151,20 @@ private final class BoundedMediaRequestDelegate: NSObject, URLSessionDataDelegat
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         if !accept(data) { dataTask.cancel() }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        if refuseRedirects {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
@@ -344,6 +360,8 @@ final class COSControlHelper {
     private lazy var mutationLockURL = runtimeRoot.appendingPathComponent("operation.lock")
     private lazy var clipboardReceiptURL = support.appendingPathComponent("clipboard-receipt.json")
     private lazy var cursorProbeCacheURL = support.appendingPathComponent("cursor-probe-cache.json")
+    private lazy var openPetsCatalogCacheURL = support.appendingPathComponent("openpets-catalog.json")
+    private lazy var openPetsThumbsDir = support.appendingPathComponent("openpets-thumbs", isDirectory: true)
     private lazy var controlCache = home.appendingPathComponent("Library/Caches/com.gotcos.COSControl", isDirectory: true)
     private lazy var mediaTransferRoot = controlCache.appendingPathComponent("MediaTransfers", isDirectory: true)
     private lazy var stableBin = support.appendingPathComponent("bin", isDirectory: true)
@@ -507,6 +525,8 @@ final class COSControlHelper {
         case "review-audio-list": try emitReviewAudioList(args: args)
         case "fetch-media": try emitFetchedMedia(args: args)
         case "check-app-update": try emitAppUpdateCheck(args: args)
+        case "openpets-catalog": try emitOpenPetsCatalog(args: args)
+        case "openpets-thumb": try emitOpenPetsThumb(args: args)
         case "stage-app-update": try emitStageAppUpdate(args: args)
         case "apply-app-update": try emitApplyAppUpdate(args: args)
         case "complete-app-update": try emitCompleteAppUpdate(args: args)
@@ -5879,6 +5899,174 @@ final class COSControlHelper {
         latestBuild > currentBuild
     }
 
+    static let openPetsCatalogURL = URL(string: "https://openpets.dev/pets/catalog.v2.json")!
+    static let openPetsCatalogTTL: TimeInterval = 24 * 60 * 60
+    static let openPetsThumbMaxBytes = 512 * 1024
+    static let openPetsCatalogMaxBytes = 2 * 1024 * 1024
+
+    static func isOpenPetsWebP(_ data: Data) -> Bool {
+        data.count >= 12
+            && data.prefix(4).elementsEqual("RIFF".utf8)
+            && data.dropFirst(8).prefix(4).elementsEqual("WEBP".utf8)
+    }
+
+    static func openPetsUserAgent(version: String) -> String {
+        let trimmed = version.trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = trimmed.isEmpty ? "0" : trimmed
+        return "COSControl/\(label) (macOS; +https://www.gotcos.com)"
+    }
+
+    /// Catalog JSON is untrusted. Only https://openpets.dev/**/thumb.webp may be fetched.
+    static func isAllowedThumbURL(_ url: URL?) -> Bool {
+        guard let url else { return false }
+        guard url.user == nil, url.password == nil else { return false }
+        guard url.scheme?.lowercased() == "https" else { return false }
+        guard url.host?.lowercased() == "openpets.dev" else { return false }
+        return url.path.hasSuffix("/thumb.webp")
+    }
+
+    static func projectOpenPetsRows(from catalog: [String: Any]) -> [[String: String]] {
+        let pets = catalog["pets"] as? [[String: Any]] ?? []
+        var rows: [[String: String]] = []
+        for pet in pets {
+            guard let id = pet["id"] as? String, !id.isEmpty,
+                  let displayName = pet["displayName"] as? String, !displayName.isEmpty,
+                  let preview = pet["preview"] as? String,
+                  let url = URL(string: preview), isAllowedThumbURL(url) else { continue }
+            rows.append([
+                "id": id,
+                "displayName": displayName,
+                "category": pet["category"] as? String ?? "",
+                "preview": preview,
+            ])
+        }
+        return rows
+    }
+
+    static func sanitizedOpenPetsId(_ id: String) -> String? {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 80 else { return nil }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+        guard trimmed.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
+        return trimmed
+    }
+
+    private func fetchBoundedHTTPS(
+        url: URL,
+        timeout: Int,
+        userAgent: String,
+        maximumBytes: Int
+    ) -> (status: Int, data: Data)? {
+        guard url.scheme?.lowercased() == "https", !url.isFileURL else { return nil }
+        var request = URLRequest(url: url, timeoutInterval: TimeInterval(timeout))
+        request.httpMethod = "GET"
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let delegate = BoundedMediaRequestDelegate(maximumBytes: maximumBytes, refuseRedirects: true)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = TimeInterval(timeout)
+        configuration.timeoutIntervalForResource = TimeInterval(timeout + 2)
+        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        let task = session.dataTask(with: request)
+        task.resume()
+        guard let (data, response, tooLarge, transportFailed) = delegate.wait(timeout: TimeInterval(timeout + 2)) else {
+            task.cancel()
+            session.invalidateAndCancel()
+            return nil
+        }
+        session.finishTasksAndInvalidate()
+        guard !tooLarge, !transportFailed, let http = response as? HTTPURLResponse else { return nil }
+        return (http.statusCode, data)
+    }
+
+    private func readOpenPetsCatalogCache() -> (fetchedAt: Date, catalog: [String: Any])? {
+        guard let data = try? Data(contentsOf: openPetsCatalogCacheURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let fetchedRaw = object["fetchedAt"] as? String,
+              let fetchedAt = ISO8601DateFormatter().date(from: fetchedRaw),
+              let catalog = object["catalog"] as? [String: Any] else { return nil }
+        return (fetchedAt, catalog)
+    }
+
+    private func writeOpenPetsCatalogCache(_ catalog: [String: Any]) {
+        try? fm.createDirectory(at: support, withIntermediateDirectories: true)
+        let payload: [String: Any] = [
+            "fetchedAt": ISO8601DateFormatter().string(from: Date()),
+            "catalog": catalog,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else { return }
+        let tmp = openPetsCatalogCacheURL.appendingPathExtension("tmp")
+        try? data.write(to: tmp, options: .atomic)
+        _ = try? fm.replaceItemAt(openPetsCatalogCacheURL, withItemAt: tmp)
+    }
+
+    private func emitOpenPetsRows(_ rows: [[String: String]], stale: Bool, reason: String?) {
+        var details: [String: Any] = [
+            "rows": rows,
+            "stale": stale,
+            "count": rows.count,
+        ]
+        if let reason { details["reason"] = reason }
+        emit(ok: true, message: stale ? "Showing a saved pet list" : "Pet gallery ready", details: details)
+    }
+
+    private func emitOpenPetsCatalog(args: [String]) throws {
+        let userAgent = Self.openPetsUserAgent(version: option("--current-version", in: args) ?? "")
+        let cached = readOpenPetsCatalogCache()
+        if let cached, Date().timeIntervalSince(cached.fetchedAt) < Self.openPetsCatalogTTL {
+            emitOpenPetsRows(Self.projectOpenPetsRows(from: cached.catalog), stale: false, reason: nil)
+            return
+        }
+        if let fetched = fetchBoundedHTTPS(
+            url: Self.openPetsCatalogURL,
+            timeout: 6,
+            userAgent: userAgent,
+            maximumBytes: Self.openPetsCatalogMaxBytes
+        ), fetched.status == 200,
+           let catalog = try? JSONSerialization.jsonObject(with: fetched.data) as? [String: Any] {
+            writeOpenPetsCatalogCache(catalog)
+            emitOpenPetsRows(Self.projectOpenPetsRows(from: catalog), stale: false, reason: nil)
+            return
+        }
+        if let cached {
+            emitOpenPetsRows(Self.projectOpenPetsRows(from: cached.catalog), stale: true, reason: "unavailable")
+            return
+        }
+        emitOpenPetsRows([], stale: false, reason: "unavailable")
+    }
+
+    private func emitOpenPetsThumb(args: [String]) throws {
+        let userAgent = Self.openPetsUserAgent(version: option("--current-version", in: args) ?? "")
+        guard let rawURL = option("--url", in: args), let url = URL(string: rawURL), Self.isAllowedThumbURL(url) else {
+            throw HelperError.message("That pet thumbnail is not from the OpenPets gallery.")
+        }
+        let id = Self.sanitizedOpenPetsId(option("--id", in: args) ?? "")
+            ?? Self.sanitizedOpenPetsId(url.deletingLastPathComponent().lastPathComponent)
+        guard let id else {
+            throw HelperError.message("That pet thumbnail is not from the OpenPets gallery.")
+        }
+        try fm.createDirectory(at: openPetsThumbsDir, withIntermediateDirectories: true)
+        let dest = openPetsThumbsDir.appendingPathComponent("\(id).webp")
+        if let existing = try? Data(contentsOf: dest), Self.isOpenPetsWebP(existing) {
+            emit(ok: true, message: "Thumbnail ready", details: ["path": dest.path, "id": id])
+            return
+        }
+        guard let fetched = fetchBoundedHTTPS(
+            url: url,
+            timeout: 6,
+            userAgent: userAgent,
+            maximumBytes: Self.openPetsThumbMaxBytes
+        ), fetched.status == 200 else {
+            throw HelperError.message("Pet gallery unavailable right now.")
+        }
+        let bytes = fetched.data
+        guard Self.isOpenPetsWebP(bytes) else {
+            throw HelperError.message("That gallery file is not a thumbnail.")
+        }
+        try bytes.write(to: dest, options: .atomic)
+        emit(ok: true, message: "Thumbnail ready", details: ["path": dest.path, "id": id])
+    }
+
     private func emitAppUpdateCheck(args: [String]) throws {
         let currentVersion = option("--current-version", in: args) ?? ""
         let currentBuild = Int(option("--current-build", in: args) ?? "") ?? 0
@@ -6397,10 +6585,66 @@ final class COSControlHelper {
         return nil
     }
 
-    static func claudePeerState(alive: Bool, status: String, waitingFor: String) -> String {
+    /// Same 180s window Cursor already uses for transcript mtime. A leftover
+    /// Claude Desktop PID is `alive`; it is not a turn in flight.
+    static let petWorkingMaxAge: TimeInterval = 180
+
+    static func parseISODate(_ raw: String) -> Date? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: trimmed) { return date }
+        let wholeSecond = ISO8601DateFormatter()
+        wholeSecond.formatOptions = [.withInternetDateTime]
+        return wholeSecond.date(from: trimmed)
+    }
+
+    static func claudePeerState(
+        alive: Bool,
+        status: String,
+        waitingFor: String,
+        lastActiveAt: String = "",
+        now: Date = Date()
+    ) -> String {
         if !alive { return "stale" }
         if !waitingFor.isEmpty || status == "waiting" { return "waiting" }
+        if let last = parseISODate(lastActiveAt), now.timeIntervalSince(last) > petWorkingMaxAge {
+            return "recent"
+        }
         return "running"
+    }
+
+    /// Cursor rows skip the IDE folder open. The token stays `chat` so older
+    /// helpers still take this branch. Control tries Agents, then activates
+    /// the running Cursor app. It does not treat `--chat` or `--glass` as a
+    /// proven Agents flag.
+    ///
+    /// Codex rows use `thread` so Control opens `codex://threads/<id>` instead
+    /// of the workspace folder. Folder-open only raises the last Codex tab.
+    ///
+    /// Claude rows use `session` so Control presses the Desktop sidebar row.
+    /// Folder-open only raises the last Claude tab. Anthropic documents
+    /// `code/new` for a blank Code session, not an existing one.
+    static func sessionRevealOpenMode(provider: String) -> String {
+        switch provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "cursor": "chat"
+        case "codex": "thread"
+        case "claude": "session"
+        default: "app"
+        }
+    }
+
+    /// Codex Desktop's documented local-thread link. `new` is a different
+    /// route and would start a blank chat.
+    static func sessionRevealDeepLink(provider: String, sessionId: String) -> String? {
+        let provider = provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let id = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard provider == "codex" else { return nil }
+        guard id.count >= 8, id.lowercased() != "new" else { return nil }
+        guard id.allSatisfy({ $0.isHexDigit || $0 == "-" }) else { return nil }
+        guard !id.contains(".."), !id.contains("/") else { return nil }
+        return "codex://threads/\(id)"
     }
 
     /// `/api/agent-sessions` field names in the shape the Activity list parses.
@@ -6553,7 +6797,12 @@ final class COSControlHelper {
             "provider": "claude",
             "name": row["name"] as? String ?? "",
             "workspace": Self.workspaceLabel(row["workspace"] as? String ?? ""),
-            "state": claudePeerState(alive: alive, status: status, waitingFor: waitingFor),
+            "state": claudePeerState(
+                alive: alive,
+                status: status,
+                waitingFor: waitingFor,
+                lastActiveAt: row["lastActiveAt"] as? String ?? ""
+            ),
             "status": status,
             "waitingFor": waitingFor,
             "alive": alive,
@@ -7328,15 +7577,22 @@ final class COSControlHelper {
             let created = meta.created.isEmpty
                 ? isoString(from: createdFromCodexFilename(file.lastPathComponent) ?? values?.creationDate ?? mtime)
                 : meta.created
+            let work = cursorWorkingState(
+                mtime: mtime,
+                now: now,
+                lastUpdated: nil,
+                checkpoint: nil,
+                unfinished: nil
+            )
             let row: [String: Any] = [
                 "id": nativeId,
                 "provider": "codex",
                 "name": title,
                 "workspace": workspaceLabel(meta.cwd),
-                "state": "recent",
+                "state": work.state,
                 "status": "recent",
                 "waitingFor": "",
-                "alive": false,
+                "alive": work.alive,
                 "reachable": false,
                 "pinned": pinned || pinnedIds.contains(nativeId.lowercased()),
                 "createdAt": created,
@@ -7440,36 +7696,161 @@ final class COSControlHelper {
         folder == "empty-window" || folder.contains("var-folders") || folder.contains("private-var")
     }
 
-    static func loadCursorComposerNames(from db: URL) -> [String: String] {
-        guard FileManager.default.fileExists(atPath: db.path) else { return [:] }
+    struct CursorComposerActivity {
+        var lastUpdated: Date?
+        var checkpoint: Date?
+        var unfinished: Date?
+    }
+
+    struct CursorComposerMeta {
+        var names: [String: String]
+        var activity: [String: CursorComposerActivity]
+    }
+
+    static func dateFromEpochMillis(_ value: Any?) -> Date? {
+        if value is NSNull { return nil }
+        let millis: Double
+        if let number = value as? NSNumber {
+            millis = number.doubleValue
+        } else if let n = value as? Double {
+            millis = n
+        } else if let n = value as? Int {
+            millis = Double(n)
+        } else if let s = value as? String, let n = Double(s) {
+            millis = n
+        } else {
+            return nil
+        }
+        guard millis > 1_000_000_000_000 else { return nil }
+        return Date(timeIntervalSince1970: millis / 1000)
+    }
+
+    /// Cursor jsonl mtime is the last *user* line. During a long agent turn the
+    /// composer checkpoint and unfinishedRunAt keep moving instead.
+    static let petUnfinishedMaxAge: TimeInterval = 15 * 60
+
+    static func cursorWorkingState(
+        mtime: Date,
+        now: Date,
+        lastUpdated: Date?,
+        checkpoint: Date?,
+        unfinished: Date?
+    ) -> (state: String, alive: Bool) {
+        let newest = [mtime, lastUpdated, checkpoint].compactMap { $0 }.max() ?? mtime
+        let age = now.timeIntervalSince(newest)
+        if age <= petWorkingMaxAge {
+            return ("running", true)
+        }
+        if unfinished != nil, age <= petUnfinishedMaxAge {
+            return ("running", true)
+        }
+        return ("recent", false)
+    }
+
+    static func applyLiveWorkingState(
+        _ rows: [[String: Any]],
+        now: Date = Date(),
+        composerActivity: [String: CursorComposerActivity] = [:]
+    ) -> [[String: Any]] {
+        var out = rows
+        for index in out.indices {
+            let provider = (out[index]["provider"] as? String ?? "claude").lowercased()
+            if provider == "cursor" {
+                let id = out[index]["id"] as? String ?? ""
+                let activity = composerActivity[id]
+                let mtime = parseISODate(out[index]["updatedAt"] as? String ?? "") ?? .distantPast
+                let work = cursorWorkingState(
+                    mtime: mtime,
+                    now: now,
+                    lastUpdated: activity?.lastUpdated,
+                    checkpoint: activity?.checkpoint,
+                    unfinished: activity?.unfinished
+                )
+                out[index]["state"] = work.state
+                out[index]["alive"] = work.alive
+                continue
+            }
+            if provider == "codex" {
+                let mtime = parseISODate(out[index]["updatedAt"] as? String ?? "") ?? .distantPast
+                let work = cursorWorkingState(
+                    mtime: mtime,
+                    now: now,
+                    lastUpdated: nil,
+                    checkpoint: nil,
+                    unfinished: nil
+                )
+                out[index]["state"] = work.state
+                out[index]["alive"] = work.alive
+                continue
+            }
+            if provider != "claude" { continue }
+            out[index]["state"] = claudePeerState(
+                alive: out[index]["alive"] as? Bool ?? false,
+                status: out[index]["status"] as? String ?? "",
+                waitingFor: out[index]["waitingFor"] as? String ?? "",
+                lastActiveAt: out[index]["updatedAt"] as? String ?? "",
+                now: now
+            )
+        }
+        return out
+    }
+
+    static func loadCursorComposerMeta(from db: URL) -> CursorComposerMeta {
+        guard FileManager.default.fileExists(atPath: db.path) else {
+            return CursorComposerMeta(names: [:], activity: [:])
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
         process.arguments = [
             "-readonly",
             "-json",
             db.path,
-            "SELECT composerId AS id, json_extract(value, '$.name') AS name FROM composerHeaders WHERE json_extract(value, '$.name') IS NOT NULL AND json_extract(value, '$.name') != ''",
+            """
+            SELECT composerId AS id,
+                   json_extract(value, '$.name') AS name,
+                   json_extract(value, '$.lastUpdatedAt') AS lastUpdatedAt,
+                   json_extract(value, '$.conversationCheckpointLastUpdatedAt') AS checkpointAt,
+                   json_extract(value, '$.unfinishedRunAt') AS unfinishedRunAt
+            FROM composerHeaders
+            WHERE json_extract(value, '$.name') IS NOT NULL
+              AND json_extract(value, '$.name') != ''
+            """,
         ]
         let stdout = Pipe()
         process.standardOutput = stdout
         process.standardError = Pipe()
-        do { try process.run() } catch { return [:] }
-        let deadline = Date().addingTimeInterval(4)
-        while process.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-        if process.isRunning { process.terminate() }
+        do { try process.run() } catch { return CursorComposerMeta(names: [:], activity: [:]) }
+        // Drain stdout while sqlite runs. A wait-loop without a read deadlocks
+        // once the JSON exceeds the pipe buffer (~64 KB); 535 composer rows
+        // with checkpoint fields is past that, so terminationStatus then
+        // traps and the pet never sees an in-flight Cursor turn.
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         guard process.terminationStatus == 0,
-              let rows = try? JSONSerialization.jsonObject(with: stdout.fileHandleForReading.readDataToEndOfFile()) as? [[String: Any]]
-        else { return [:] }
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return CursorComposerMeta(names: [:], activity: [:]) }
         var names: [String: String] = [:]
+        var activity: [String: CursorComposerActivity] = [:]
         for row in rows {
             let id = ((row["id"] as? String) ?? (row["composerId"] as? String) ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty else { continue }
             let name = (row["name"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if !id.isEmpty, !name.isEmpty { names[id] = String(name.prefix(120)) }
+            if !name.isEmpty { names[id] = String(name.prefix(120)) }
+            let meta = CursorComposerActivity(
+                lastUpdated: dateFromEpochMillis(row["lastUpdatedAt"]),
+                checkpoint: dateFromEpochMillis(row["checkpointAt"]),
+                unfinished: dateFromEpochMillis(row["unfinishedRunAt"])
+            )
+            if meta.lastUpdated != nil || meta.checkpoint != nil || meta.unfinished != nil {
+                activity[id] = meta
+            }
         }
-        return names
+        return CursorComposerMeta(names: names, activity: activity)
+    }
+
+    static func loadCursorComposerNames(from db: URL) -> [String: String] {
+        loadCursorComposerMeta(from: db).names
     }
 
     static func recentCursorConversations(
@@ -7478,6 +7859,7 @@ final class COSControlHelper {
         maxAge: TimeInterval = agentSessionMaxAge,
         limit: Int = agentSessionListLimit,
         composerNames: [String: String] = [:],
+        composerActivity: [String: CursorComposerActivity] = [:],
         pinnedIds: Set<String> = []
     ) -> [[String: Any]] {
         guard let projects = try? FileManager.default.contentsOfDirectory(
@@ -7516,15 +7898,23 @@ final class COSControlHelper {
                     ?? "Cursor session"
                 if isKeepWarmSessionTitle(title) { continue }
                 let workspace = workspaceLabel(folder)
+                let activity = composerActivity[nativeId]
+                let work = cursorWorkingState(
+                    mtime: mtime,
+                    now: now,
+                    lastUpdated: activity?.lastUpdated,
+                    checkpoint: activity?.checkpoint,
+                    unfinished: activity?.unfinished
+                )
                 let row: [String: Any] = [
                     "id": nativeId,
                     "provider": "cursor",
                     "name": title,
                     "workspace": workspace,
-                    "state": now.timeIntervalSince(mtime) < 180 ? "running" : "recent",
+                    "state": work.state,
                     "status": "recent",
                     "waitingFor": "",
-                    "alive": now.timeIntervalSince(mtime) < 180,
+                    "alive": work.alive,
                     "reachable": false,
                     "pinned": pinned,
                     "createdAt": isoString(from: created),
@@ -7659,6 +8049,9 @@ final class COSControlHelper {
         var counts: Any = ["alive": 0, "reachable": 0, "stale": 0]
         var liveIds: Set<String> = []
         let home = FileManager.default.homeDirectoryForCurrentUser
+        let composerMeta = Self.loadCursorComposerMeta(
+            from: home.appendingPathComponent("Library/Application Support/Cursor/User/globalStorage/state.vscdb")
+        )
         let claudeProjects = home.appendingPathComponent(".claude/projects", isDirectory: true)
         let claudeStarred = Self.loadClaudeStarredIds(
             from: home.appendingPathComponent("Library/Application Support/Claude/claude_desktop_config.json")
@@ -7732,9 +8125,8 @@ final class COSControlHelper {
             ))
             peers.append(contentsOf: Self.recentCursorConversations(
                 projectsRoot: home.appendingPathComponent(".cursor/projects", isDirectory: true),
-                composerNames: Self.loadCursorComposerNames(
-                    from: home.appendingPathComponent("Library/Application Support/Cursor/User/globalStorage/state.vscdb")
-                ),
+                composerNames: composerMeta.names,
+                composerActivity: composerMeta.activity,
                 pinnedIds: Self.loadCursorPinnedIds(
                     from: home.appendingPathComponent("Library/Application Support/Cursor/User/workspaceStorage")
                 )
@@ -7742,6 +8134,7 @@ final class COSControlHelper {
         } else {
             peers = Self.overlayLiveState(onto: serverRows, live: peers)
         }
+        peers = Self.applyLiveWorkingState(peers, composerActivity: composerMeta.activity)
         peers.removeAll { Self.isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
         if liveOnly {
             peers = peers.filter { Self.isPetLiveRow($0) }
@@ -7831,6 +8224,8 @@ final class COSControlHelper {
             "bundleId": app?.bundleId ?? NSNull(),
             "path": path ?? NSNull(),
             "pid": pid ?? NSNull(),
+            "openMode": Self.sessionRevealOpenMode(provider: provider),
+            "deepLink": Self.sessionRevealDeepLink(provider: provider, sessionId: sessionId) ?? NSNull(),
         ])
     }
 
@@ -11122,6 +11517,134 @@ final class COSControlHelper {
                    "an alive waiting session is waiting")
         try expect(Self.claudePeerState(alive: true, status: "running", waitingFor: "") == "running",
                    "an alive session with no wait is running")
+        let staleNow = Self.parseISODate("2026-08-27T18:50:00Z") ?? Date()
+        try expect(
+            Self.claudePeerState(
+                alive: true,
+                status: "running",
+                waitingFor: "",
+                lastActiveAt: "2026-08-27T17:22:59.689Z",
+                now: staleNow
+            ) == "recent",
+            "an alive Claude PID with no recent activity is idle, not running"
+        )
+        try expect(
+            Self.claudePeerState(
+                alive: true,
+                status: "running",
+                waitingFor: "",
+                lastActiveAt: "2026-08-27T18:49:00Z",
+                now: staleNow
+            ) == "running",
+            "a Claude turn with activity inside the working window stays running"
+        )
+        try expect(Self.dateFromEpochMillis(NSNumber(value: 1_787_857_717_954)) != nil,
+                   "sqlite JSON numbers arrive as NSNumber, not Int")
+        try expect(Self.dateFromEpochMillis(NSNull()) == nil,
+                   "a JSON null unfinishedRunAt is not a date")
+        try expect(Self.sessionRevealOpenMode(provider: "claude") == "session",
+                   "Claude reveal presses the Desktop sidebar, not the folder")
+        try expect(Self.sessionRevealOpenMode(provider: "cursor") == "chat",
+                   "Cursor reveal stays off the IDE folder open")
+        try expect(Self.sessionRevealOpenMode(provider: "codex") == "thread",
+                   "Codex reveal uses the thread deep link, not the workspace folder")
+        try expect(
+            Self.sessionRevealDeepLink(
+                provider: "codex",
+                sessionId: "01a0451c-a914-7853-8732-14ed944a2d56"
+            ) == "codex://threads/01a0451c-a914-7853-8732-14ed944a2d56",
+            "a Codex pet click opens that thread id"
+        )
+        try expect(Self.sessionRevealDeepLink(provider: "codex", sessionId: "new") == nil,
+                   "codex://threads/new would start a blank chat")
+        try expect(Self.sessionRevealDeepLink(provider: "codex", sessionId: "../evil") == nil,
+                   "a path-shaped Codex id is not a deep link")
+        try expect(Self.sessionRevealDeepLink(provider: "cursor", sessionId: "abc") == nil,
+                   "Cursor has no local composer deep link")
+        try expect(
+            Self.sessionRevealDeepLink(
+                provider: "claude",
+                sessionId: "d3786335-cfb4-4556-9a4a-7308ce66eab1"
+            ) == nil,
+            "Claude has no documented existing-session deep link"
+        )
+        let workNow = Self.parseISODate("2026-08-27T19:01:00Z") ?? Date()
+        try expect(
+            Self.cursorWorkingState(
+                mtime: Self.parseISODate("2026-08-27T18:50:47Z") ?? Date.distantPast,
+                now: workNow,
+                lastUpdated: Self.parseISODate("2026-08-27T18:50:06Z"),
+                checkpoint: Self.parseISODate("2026-08-27T19:00:34Z"),
+                unfinished: Self.parseISODate("2026-08-27T18:50:06Z")
+            ).alive,
+            "an in-flight Cursor turn stays live from the composer checkpoint, not jsonl mtime"
+        )
+        try expect(
+            Self.cursorWorkingState(
+                mtime: Self.parseISODate("2026-08-27T18:50:47Z") ?? Date.distantPast,
+                now: workNow,
+                lastUpdated: Self.parseISODate("2026-08-27T18:50:06Z"),
+                checkpoint: Self.parseISODate("2026-08-27T18:50:06Z"),
+                unfinished: nil
+            ).state == "recent",
+            "a quiet Cursor transcript without an unfinished run is idle"
+        )
+        let refreshed = Self.applyLiveWorkingState([
+            [
+                "id": "e753aa95-8821-4dcf-8f18-44f7641e84fc",
+                "provider": "claude",
+                "name": "Plan validation and blocker clearance",
+                "state": "running",
+                "alive": true,
+                "updatedAt": "2026-08-27T17:22:59.689Z",
+                "status": "",
+                "waitingFor": "",
+            ],
+            [
+                "id": "69358ebd-e2f8-491e-a59e-b27f104fea33",
+                "provider": "cursor",
+                "name": "COS session pet feature",
+                "state": "recent",
+                "alive": false,
+                "updatedAt": "2026-08-27T18:50:47.418Z",
+            ],
+        ], now: workNow, composerActivity: [
+            "69358ebd-e2f8-491e-a59e-b27f104fea33": CursorComposerActivity(
+                lastUpdated: Self.parseISODate("2026-08-27T18:50:06Z"),
+                checkpoint: Self.parseISODate("2026-08-27T19:00:34Z"),
+                unfinished: Self.parseISODate("2026-08-27T18:50:06Z")
+            ),
+        ])
+        try expect(refreshed.first?["state"] as? String == "recent",
+                   "applyLiveWorkingState idles a stale-alive Claude PID")
+        try expect(refreshed.last?["alive"] as? Bool == true,
+                   "applyLiveWorkingState marks the in-flight Cursor composer alive")
+        try expect(refreshed.last?["state"] as? String == "running",
+                   "applyLiveWorkingState marks the in-flight Cursor composer running")
+        let codexLive = Self.applyLiveWorkingState([
+            [
+                "id": "01a0451c-a914-7853-8732-14ed944a2d56",
+                "provider": "codex",
+                "name": "Execute POS Nation SEO fixes",
+                "state": "recent",
+                "alive": false,
+                "updatedAt": "2026-08-27T19:00:30Z",
+            ],
+            [
+                "id": "01a043ea-6584-73c0-aa32-7386728d0e83",
+                "provider": "codex",
+                "name": "Quiet Codex thread",
+                "state": "recent",
+                "alive": false,
+                "updatedAt": "2026-08-27T18:00:00Z",
+            ],
+        ], now: workNow)
+        try expect(codexLive.first?["alive"] as? Bool == true,
+                   "applyLiveWorkingState marks a Codex transcript inside the working window alive")
+        try expect(codexLive.first?["state"] as? String == "running",
+                   "applyLiveWorkingState marks a Codex transcript inside the working window running")
+        try expect(codexLive.last?["alive"] as? Bool == false,
+                   "applyLiveWorkingState leaves a quiet Codex transcript idle")
         try expect(Self.claudePeerProjection(["workspace": "MU-Chief-Staff"]) == nil,
                    "Claude session rows without an id are dropped")
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("cos-claude-title-\(UUID().uuidString)", isDirectory: true)
@@ -11352,7 +11875,7 @@ final class COSControlHelper {
         sqlite.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
         sqlite.arguments = [
             composerDb.path,
-            "CREATE TABLE composerHeaders (composerId TEXT, value TEXT); INSERT INTO composerHeaders VALUES ('bbbbbbbb-1111-2222-3333-cccccccccccc', '{\"name\":\"V2 verification and performance\"}');",
+            "CREATE TABLE composerHeaders (composerId TEXT, value TEXT); INSERT INTO composerHeaders VALUES ('bbbbbbbb-1111-2222-3333-cccccccccccc', '{\"name\":\"V2 verification and performance\",\"lastUpdatedAt\":1787856606270,\"conversationCheckpointLastUpdatedAt\":1787857717954,\"unfinishedRunAt\":1787856606270}');",
         ]
         try sqlite.run()
         sqlite.waitUntilExit()
@@ -11360,6 +11883,11 @@ final class COSControlHelper {
         let composerNames = Self.loadCursorComposerNames(from: composerDb)
         try expect(composerNames["bbbbbbbb-1111-2222-3333-cccccccccccc"] == "V2 verification and performance",
                    "Cursor sidebar titles come from composerHeaders")
+        let composerMeta = Self.loadCursorComposerMeta(from: composerDb)
+        try expect(composerMeta.activity["bbbbbbbb-1111-2222-3333-cccccccccccc"]?.checkpoint != nil,
+                   "composerHeaders checkpoint millis become a Date")
+        try expect(composerMeta.activity["bbbbbbbb-1111-2222-3333-cccccccccccc"]?.unfinished != nil,
+                   "composerHeaders unfinishedRunAt millis become a Date")
         let listedCursor = Self.recentCursorConversations(projectsRoot: tmp, now: now, composerNames: composerNames)
         try expect(listedCursor.count == 1, "empty-window copies of the same Cursor chat are dropped")
         try expect(listedCursor.first?["name"] as? String == "V2 verification and performance",
@@ -11743,6 +12271,53 @@ final class COSControlHelper {
                    "the 8-char display form of a session id must never validate")
         try expect(Self.sessionChatValidationError(provider: "claude", threadId: "../../etc/passwd") != nil,
                    "a path-shaped id must be rejected before the URL is built")
+
+        let allowedPreview = URL(string: "https://openpets.dev/pets/tmuxai-openpets/thumb.webp")
+        try expect(Self.isAllowedThumbURL(allowedPreview),
+                   "a live catalog preview URL must be accepted")
+        try expect(!Self.isAllowedThumbURL(URL(string: "http://openpets.dev/pets/tmuxai-openpets/thumb.webp")),
+                   "http thumb URLs must be refused")
+        try expect(!Self.isAllowedThumbURL(URL(string: "https://zip.openpets.dev/pets/tmuxai-openpets/tmuxai.zip")),
+                   "the pack zip host must never be fetched")
+        try expect(!Self.isAllowedThumbURL(URL(string: "https://openpets.dev.evil.com/pets/x/thumb.webp")),
+                   "a suffix host must be refused")
+        try expect(!Self.isAllowedThumbURL(URL(string: "https://openpets.dev@evil.com/pets/x/thumb.webp")),
+                   "userinfo tricks must be refused")
+        try expect(!Self.isAllowedThumbURL(URL(string: "https://openpets.dev/pets/tmuxai/thumb.png")),
+                   "non-thumb paths must be refused")
+        try expect(Self.openPetsUserAgent(version: "0.5.90")
+                    == "COSControl/0.5.90 (macOS; +https://www.gotcos.com)",
+                   "OpenPets fetches must send the Control UA")
+
+        let openPetsProjected = Self.projectOpenPetsRows(from: [
+            "pets": [
+                [
+                    "id": "tmuxai",
+                    "displayName": "TmuxAI Official",
+                    "description": "ignored",
+                    "preview": "https://openpets.dev/pets/tmuxai-openpets/thumb.webp",
+                    "zip": "https://zip.openpets.dev/pets/tmuxai-openpets/tmuxai.zip",
+                    "category": "western",
+                    "subcategory": "tools",
+                ],
+                [
+                    "id": "evil",
+                    "displayName": "Nope",
+                    "preview": "https://evil.example/pets/x/thumb.webp",
+                    "category": "x",
+                ],
+            ],
+        ])
+        try expect(openPetsProjected.count == 1 && openPetsProjected[0]["id"] == "tmuxai"
+                    && openPetsProjected[0]["preview"] == "https://openpets.dev/pets/tmuxai-openpets/thumb.webp",
+                   "row projection must ignore extra keys, keep slug!=id preview, and drop off-host URLs")
+        try expect(Self.sanitizedOpenPetsId("tmuxai") == "tmuxai", "a catalog id must pass")
+        try expect(Self.sanitizedOpenPetsId("../etc") == nil, "path-shaped ids must not become filenames")
+        var webpHeader = Data("RIFF".utf8)
+        webpHeader.append(contentsOf: [0, 0, 0, 0])
+        webpHeader.append(Data("WEBP".utf8))
+        try expect(Self.isOpenPetsWebP(webpHeader), "a RIFF/WEBP header must pass")
+        try expect(!Self.isOpenPetsWebP(Data("PNG".utf8)), "a non-webp payload must not pass")
 
         emit(ok: true, message: "\(passed) deterministic helper tests passed", details: ["tests": passed])
     }

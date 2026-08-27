@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Always-on-top pet for live Claude / Cursor / Codex sessions.
 ///
@@ -27,11 +28,20 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         observers.append(model.$petEnabled.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
+        observers.append(model.$petCustomSprite.sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
+        observers.append(model.$petSize.sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
         observers.append(model.$petExpanded.sink { [weak self] expanded in
             Task { @MainActor in
                 self?.syncOutsideClickMonitor(expanded)
                 self?.syncPanel()
             }
+        })
+        observers.append(model.$petNotice.sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
         })
         pollTask = Task { [weak self] in
             await self?.model?.loadPetSessions()
@@ -48,6 +58,14 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         showActivity?(.sessions)
     }
 
+    func openTarget(_ session: ClaudeSession) {
+        if session.petTargetOpensAgentWindow {
+            model?.openSessionInPlatform(session)
+            return
+        }
+        openInControl(session)
+    }
+
     private func syncPanel() {
         guard let model else { return }
         let sessions = model.petSessions
@@ -62,10 +80,12 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         let panel = existingPanel()
         if let host = panel.contentViewController as? NSHostingController<SessionPetRoot> {
             host.rootView = SessionPetRoot(model: model, presenter: self)
-            let fitting = host.sizeThatFits(in: NSSize(width: 260, height: 900))
+            let width = max(model.petSize.length(260), CGFloat(model.petSize.pixels) + model.petSize.length(24))
+            let fitting = host.sizeThatFits(in: NSSize(width: width, height: 900))
             var frame = panel.frame
-            frame.size = NSSize(width: 260, height: max(fitting.height, 120))
-            panel.setFrame(frame, display: true)
+            frame.size = NSSize(width: width, height: max(fitting.height, model.petSize.length(120)))
+            let screens = NSScreen.screens.map(\.visibleFrame)
+            panel.setFrame(PetPanelFrame.clamped(frame, screens: screens), display: true)
         }
         panel.orderFrontRegardless()
     }
@@ -97,9 +117,12 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         panel.delegate = self
         panel.setFrameAutosaveName("COSSessionPet")
         panel.contentViewController = host
-        if panel.frame.origin == .zero, let screen = NSScreen.main?.visibleFrame {
-            panel.setFrameOrigin(NSPoint(x: screen.maxX - 280, y: screen.minY + 28))
+        let screens = NSScreen.screens.map(\.visibleFrame)
+        var frame = panel.frame
+        if frame.origin == .zero, let screen = NSScreen.main?.visibleFrame {
+            frame.origin = NSPoint(x: screen.maxX - 280, y: screen.minY + 28)
         }
+        panel.setFrame(PetPanelFrame.clamped(frame, screens: screens), display: false)
         self.panel = panel
         return panel
     }
@@ -125,31 +148,48 @@ private struct SessionPetRoot: View {
 
     private var sessions: [ClaudeSession] { model.petSessions }
     private var focus: ClaudeSession? { model.petFocusSession }
+    private var size: PetSize { model.petSize }
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: size.length(8)) {
             ZStack(alignment: .topTrailing) {
                 Button {
                     handleSpriteClick()
                 } label: {
-                    SessionPetSprite(working: focus?.state == "running", reduceMotion: reduceMotion)
+                    ZStack(alignment: .bottomLeading) {
+                        SessionPetSprite(
+                            working: focus?.isPetWorking == true,
+                            reduceMotion: reduceMotion,
+                            customImage: model.petCustomSprite,
+                            size: CGFloat(size.pixels)
+                        )
+                        if let focus {
+                            Circle()
+                                .fill(petStateColor(focus))
+                                .frame(width: size.length(8), height: size.length(8))
+                                .offset(x: size.length(4), y: -size.length(2))
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
-                .help(focus.map { "Open \($0.providerLabel)" } ?? "Live session")
+                .help(focus.map { "\($0.petStateCaption) · \($0.providerLabel)" } ?? "Live session")
                 if sessions.count > 1 {
                     Text("\(sessions.count)")
-                        .font(COSType.mono(9, weight: .bold))
+                        .font(COSType.mono(size.typeSize(9), weight: .bold))
                         .foregroundStyle(COSPalette.cream)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
+                        .padding(.horizontal, size.length(5))
+                        .padding(.vertical, size.length(2))
                         .background(Capsule().fill(COSPalette.gold))
-                        .offset(x: 6, y: -4)
+                        .offset(x: size.length(6), y: -size.length(4))
                         .allowsHitTesting(false)
                 }
             }
-            HStack(spacing: 8) {
-                petButton("waveform", help: "Open in COS Control") {
-                    if let focus { presenter.openInControl(focus) }
+            HStack(spacing: size.length(8)) {
+                petButton("scope", help: targetHelp) {
+                    if let focus { presenter.openTarget(focus) }
+                }
+                petButton("arrow.up.forward.app", help: "Open in platform") {
+                    if let focus { model.openSessionInPlatform(focus) }
                 }
                 if sessions.count > 1 {
                     petButton(model.petExpanded ? "chevron.down" : "chevron.up", help: "Live sessions") {
@@ -157,25 +197,29 @@ private struct SessionPetRoot: View {
                     }
                 }
             }
+            if let focus {
+                statusBubble(focus)
+            }
             if let notice = model.petNotice, !notice.isEmpty {
                 Text(notice)
-                    .font(COSType.body(10))
+                    .font(COSType.body(size.typeSize(10)))
                     .foregroundStyle(.primary)
-                    .lineLimit(2)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
+                    .lineLimit(4)
+                    .padding(.horizontal, size.length(12))
+                    .padding(.vertical, size.length(6))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Capsule().fill(COSPalette.card))
                     .overlay(Capsule().stroke(COSPalette.line, lineWidth: 1))
-            } else if let focus {
-                statusBubble(focus)
             }
             if model.petExpanded, sessions.count > 1 {
                 sessionList
             }
         }
-        .padding(10)
-        .frame(width: 248)
+        .padding(size.length(10))
+        .frame(width: max(size.length(248), CGFloat(size.pixels) + size.length(20)))
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            handleSpriteDrop(providers)
+        }
     }
 
     private var sessionList: some View {
@@ -183,30 +227,34 @@ private struct SessionPetRoot: View {
             ForEach(sessions) { session in
                 Button {
                     model.petFocusID = session.id
-                    model.petExpanded = false
-                    model.focusPetSession(session)
+                    model.openSessionInPlatform(session)
                 } label: {
-                    HStack(alignment: .top, spacing: 8) {
+                    HStack(alignment: .top, spacing: size.length(8)) {
                         Text(session.providerLabel.uppercased())
-                            .font(COSType.mono(8, weight: .bold))
+                            .font(COSType.mono(size.typeSize(8), weight: .bold))
                             .foregroundStyle(providerTint(session.provider))
-                            .frame(width: 44, alignment: .leading)
-                        VStack(alignment: .leading, spacing: 2) {
+                            .frame(width: size.length(44), alignment: .leading)
+                        VStack(alignment: .leading, spacing: size.length(2)) {
                             Text(session.title)
-                                .font(COSType.body(11, weight: .medium))
+                                .font(COSType.body(size.typeSize(11), weight: .medium))
                                 .foregroundStyle(.primary)
                                 .lineLimit(1)
-                            Text(session.relativeAgeLabel() ?? session.workspace)
-                                .font(COSType.body(10))
+                            Text(listSubtitle(session))
+                                .font(COSType.body(size.typeSize(10)))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
                         Spacer(minLength: 0)
+                        Image(systemName: "arrow.up.forward.app")
+                            .font(.system(size: size.typeSize(11), weight: .semibold))
+                            .foregroundStyle(COSPalette.ink)
                     }
-                    .padding(.vertical, 7)
+                    .padding(.vertical, size.length(7))
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help("Open in platform")
                 if session.id != sessions.last?.id {
                     Divider()
                 }
@@ -217,49 +265,63 @@ private struct SessionPetRoot: View {
                 ScrollView {
                     content
                 }
-                .frame(height: 200)
+                .frame(height: size.length(200))
             } else {
                 content
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
+        .padding(.horizontal, size.length(10))
+        .padding(.vertical, size.length(4))
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: size.length(12), style: .continuous)
                 .fill(COSPalette.card)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: size.length(12), style: .continuous)
                 .stroke(COSPalette.line, lineWidth: 1)
         )
     }
 
     private func statusBubble(_ session: ClaudeSession) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(session.title)
-                .font(COSType.body(11, weight: .semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-            Text(session.petSubtitle)
-                .font(COSType.body(10))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+        Button {
+            model.openSessionInPlatform(session)
+        } label: {
+            VStack(alignment: .leading, spacing: size.length(2)) {
+                Text(session.title)
+                    .font(COSType.body(size.typeSize(11), weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(session.petStateCaption)
+                    .font(COSType.mono(size.typeSize(9), weight: .bold))
+                    .foregroundStyle(petStateColor(session))
+                Text(session.petSubtitle)
+                    .font(COSType.body(size.typeSize(10)))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, size.length(12))
+            .padding(.vertical, size.length(8))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                Capsule().fill(COSPalette.card)
+            )
+            .overlay(Capsule().stroke(COSPalette.line, lineWidth: 1))
+            .contentShape(Capsule())
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            Capsule().fill(COSPalette.card)
-        )
-        .overlay(Capsule().stroke(COSPalette.line, lineWidth: 1))
+        .buttonStyle(.plain)
+        .help("Open in platform")
+    }
+
+    private var targetHelp: String {
+        focus?.petTargetOpensAgentWindow == true ? "Open Agents Window" : "Open in Activity"
     }
 
     private func petButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: size.typeSize(11), weight: .semibold))
                 .foregroundStyle(COSPalette.ink)
-                .frame(width: 22, height: 22)
+                .frame(width: size.length(22), height: size.length(22))
                 .background(Circle().fill(COSPalette.card))
                 .overlay(Circle().stroke(COSPalette.line, lineWidth: 1))
         }
@@ -272,7 +334,42 @@ private struct SessionPetRoot: View {
             model.petExpanded.toggle()
             return
         }
-        if let focus { model.focusPetSession(focus) }
+        if let focus { model.openSessionInPlatform(focus) }
+    }
+
+    private func handleSpriteDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }) else {
+            return false
+        }
+        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+            let url: URL? = {
+                if let url = item as? URL { return url }
+                if let data = item as? Data {
+                    return URL(dataRepresentation: data, relativeTo: nil)
+                }
+                return nil
+            }()
+            guard let url else { return }
+            Task { @MainActor in
+                model.installPetSprite(from: url)
+            }
+        }
+        return true
+    }
+
+    private func listSubtitle(_ session: ClaudeSession) -> String {
+        if let age = session.relativeAgeLabel() {
+            return "\(session.petStateCaption) · \(age)"
+        }
+        return session.petStateCaption
+    }
+
+    private func petStateColor(_ session: ClaudeSession) -> Color {
+        switch session.state {
+        case "running": COSPalette.green
+        case "waiting": COSPalette.amber
+        default: Color.secondary
+        }
     }
 
     private func providerTint(_ provider: String) -> Color {
