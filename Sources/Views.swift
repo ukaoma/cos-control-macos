@@ -107,6 +107,7 @@ struct ControlPanel: View {
     @State private var selectedIdleMetalHq = false
     @State private var selectedAdaptiveAudioCleanup = false
     @State private var selectedThreadAttach = false
+    @State private var selectedOllamaModel = ""
 
     /// The menu-bar panel stays the server console. Browsing activity lives in a
     /// real, persistent AppKit window: unlike a sheet, that
@@ -159,6 +160,8 @@ struct ControlPanel: View {
             if let enabled = model.status.idleMetalHqEnabled { selectedIdleMetalHq = enabled }
             if let enabled = model.status.adaptiveAudioCleanupEnabled { selectedAdaptiveAudioCleanup = enabled }
             if let enabled = model.status.threadAttachEnabled { selectedThreadAttach = enabled }
+            selectedOllamaModel = model.status.ollamaConfiguredModel ?? ""
+            model.loadOllamaTags()
             // 0.5.64: STATUS FIRST. This used to seed from `model.claudeSessionsEnabled`,
             // which is populated only by loadClaudeSessions() -- and every caller of that
             // lives in ActivityWindow, never here. Open the panel without visiting the
@@ -200,6 +203,9 @@ struct ControlPanel: View {
         }
         .onChange(of: model.status.threadAttachEnabled) { _, enabled in
             if let enabled { selectedThreadAttach = enabled }
+        }
+        .onChange(of: model.status.ollamaConfiguredModel) { _, pinned in
+            selectedOllamaModel = pinned ?? ""
         }
     }
 
@@ -1367,6 +1373,31 @@ struct ControlPanel: View {
                             || (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0)
                 }
                 Text("On by default since server 6.37. Lets a reply write into a real Claude or Codex session on this Mac instead of starting a new thread. Off writes an explicit 0, so the write routes stay dark on every server era.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if model.status.ollamaReady == true || model.status.ollamaConfiguredModel != nil || !model.ollamaTags.isEmpty {
+                HStack(spacing: 8) {
+                    Picker("Local model", selection: $selectedOllamaModel) {
+                        Text("Automatic (newest pull)").tag("")
+                        ForEach(model.ollamaTags, id: \.self) { tag in
+                            Text(tag).tag(tag)
+                        }
+                        // A configured pin whose model is gone from the daemon
+                        // must still render, or the picker would lie about the
+                        // server's actual configuration.
+                        if let pinned = model.status.ollamaConfiguredModel, !model.ollamaTags.contains(pinned) {
+                            Text("\(pinned) (not pulled)").tag(pinned)
+                        }
+                    }
+                    Button("Apply") { model.setOllamaModel(selectedOllamaModel.isEmpty ? nil : selectedOllamaModel) }
+                        .disabled(model.busy
+                            || (!model.status.installed && model.status.runtimeState != "managedInPlace")
+                            || selectedOllamaModel == (model.status.ollamaConfiguredModel ?? ""))
+                }
+                Text(model.ollamaTagsState == "daemon_down"
+                     ? "Ollama is not running, so the list may be stale. A pin still applies once the daemon is back."
+                     : "Automatic follows the newest pulled model, which silently changes when anything is pulled. Pin one to make it deterministic. Applying restarts the server.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

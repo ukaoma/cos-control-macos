@@ -448,6 +448,11 @@ final class COSControlHelper {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing Claude sessions setting") }
             try setClaudeSessions(value)
         }
+        case "set-ollama-model": try withMutationLock {
+            guard let value = args.dropFirst().first else { throw HelperError.message("missing model tag") }
+            try setOllamaModel(value)
+        }
+        case "ollama-tags": try emitOllamaTags()
         case "set-thread-attach": try withMutationLock {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing Continue agent threads setting") }
             try setThreadAttach(value)
@@ -2276,6 +2281,9 @@ final class COSControlHelper {
                 let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
                 return trimmed.isEmpty ? NSNull() : trimmed
             }(),
+            // The PIN, not the selection: what COS_OLLAMA_MODEL is configured
+            // to, or NSNull when unpinned (automatic). The picker renders this.
+            "ollamaConfiguredModel": loadedEnvironmentValue("COS_OLLAMA_MODEL") ?? NSNull(),
             "liveCommitModel": liveTranscription?["committedModel"] ?? NSNull(),
             "transcriptionRequestedTier": configuredRequestedTier ?? NSNull(),
             "transcriptionEffectiveTier": liveTranscription?["effectiveTier"] ?? NSNull(),
@@ -4019,6 +4027,71 @@ final class COSControlHelper {
         default:
             throw HelperError.message("Unknown Continue agent threads setting. Choose On or Off.")
         }
+    }
+
+    /// The write shape for the local-model pin, pure so the self-test
+    /// executes it. "automatic" (or empty) REMOVES the key -- unpinned, the
+    /// server takes the daemon's newest model, which is the right default for
+    /// a single-model box and the whole problem on a multi-model one: pull
+    /// order silently repoints the lens. A tag pins it. The charset guard
+    /// keeps a pasted shell fragment out of the LaunchAgent environment.
+    private func ollamaModelEnvironment(_ raw: String) throws -> (values: [String: String], removing: Set<String>) {
+        let tag = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if tag.isEmpty || tag.lowercased() == "automatic" {
+            return ([:], ["COS_OLLAMA_MODEL"])
+        }
+        guard tag.count <= 128,
+              tag.range(of: "^[A-Za-z0-9][A-Za-z0-9._:/-]*$", options: .regularExpression) != nil else {
+            throw HelperError.message("That model tag is not something COS can pin.")
+        }
+        return (["COS_OLLAMA_MODEL": tag], [])
+    }
+
+    private func setOllamaModel(_ raw: String) throws {
+        let (values, removing) = try ollamaModelEnvironment(raw)
+        let operationLabel = values.isEmpty ? "Local model automatic" : "Local model"
+        if let manifest = loadManifest() {
+            try applyManagedProviderEnvironment(values, removingKeys: removing, current: manifest, operationLabel: operationLabel)
+            return
+        }
+        guard inPlaceActive() else {
+            throw HelperError.message("Install the managed server or choose Manage in place first.")
+        }
+        try applyInPlaceProviderEnvironment(values, removingKeys: removing, operationLabel: operationLabel)
+    }
+
+    /// The daemon's own tag list, straight from Ollama on loopback. The
+    /// server is deliberately not in this path: its health reports only the
+    /// SELECTED model, and the picker exists to show the ones it did not
+    /// select. An unreachable daemon is a verdict, not an error.
+    private func emitOllamaTags() throws {
+        let origin = loadedEnvironmentValue("COS_OLLAMA_HOST").flatMap { raw -> String? in
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : (trimmed.hasPrefix("http") ? trimmed : "http://\(trimmed)")
+        } ?? "http://127.0.0.1:11434"
+        guard let url = URL(string: "\(origin)/api/tags") else {
+            throw HelperError.message("Bad Ollama host")
+        }
+        var request = URLRequest(url: url, timeoutInterval: 4)
+        request.httpMethod = "GET"
+        let box = HTTPResultBox()
+        let done = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            box.store(data: data, response: response)
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 6)
+        let (data, response) = box.load()
+        guard let data,
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = body["models"] as? [[String: Any]] else {
+            emit(ok: true, message: "Ollama is not running", details: ["state": "daemon_down", "tags": [String]()])
+            return
+        }
+        let tags = models.compactMap { ($0["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        emit(ok: true, message: "\(tags.count) local models", details: ["state": "ready", "tags": tags])
     }
 
     /// Two independent proofs, because either one alone can lie. The launchd
@@ -11297,6 +11370,20 @@ final class COSControlHelper {
         // These execute the pure functions rather than grepping for them: the
         // targetKey format, the poll classifier, the id shapes, and the
         // toggle's Off write are the load-bearing contract surface.
+
+        // Local-model pin write shape (0.5.79), executed not grepped.
+        let pinWrite = try ollamaModelEnvironment("qwen3.8:27b")
+        try expect(pinWrite.values["COS_OLLAMA_MODEL"] == "qwen3.8:27b" && pinWrite.removing.isEmpty,
+                   "a model tag must write the pin")
+        let pinAuto = try ollamaModelEnvironment("Automatic")
+        try expect(pinAuto.values.isEmpty && pinAuto.removing == ["COS_OLLAMA_MODEL"],
+                   "Automatic must remove the pin, returning selection to the daemon's newest model")
+        let pinEmpty = try ollamaModelEnvironment("  ")
+        try expect(pinEmpty.removing == ["COS_OLLAMA_MODEL"],
+                   "an empty tag reads as Automatic, never as a pin to an empty string")
+        var pinRejected = false
+        do { _ = try ollamaModelEnvironment("qwen; rm -rf /") } catch { pinRejected = true }
+        try expect(pinRejected, "a shell-fragment tag must be rejected before it reaches the LaunchAgent environment")
 
         // targetKey, byte-for-byte against a known-good pair. The format is
         // duplicated in three repos with no shared module.

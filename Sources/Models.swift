@@ -104,6 +104,8 @@ struct ServerStatus: Sendable {
     /// panel must then leave the toggle where it is rather than force it off.
     var claudeSessionsEnabled: Bool?
     var threadAttachProviders: [String] = []
+    /// The configured COS_OLLAMA_MODEL pin; nil means automatic (newest pull).
+    var ollamaConfiguredModel: String?
     var videoUploadV2Supported = false
     var videoUploadV2Enabled: Bool?
     var videoUploadV2Receiving = 0
@@ -240,6 +242,7 @@ struct ServerStatus: Sendable {
         threadAttachEnabled = details["threadAttachEnabled"]?.bool
         claudeSessionsEnabled = details["claudeSessionsEnabled"]?.bool
         threadAttachProviders = (details["threadAttachProviders"]?.array ?? []).compactMap(\.string)
+        ollamaConfiguredModel = details["ollamaConfiguredModel"]?.string
         videoUploadV2Supported = details["videoUploadV2Supported"]?.bool ?? false
         videoUploadV2Enabled = details["videoUploadV2Enabled"]?.bool
         videoUploadV2Receiving = details["videoUploadV2Receiving"]?.int ?? 0

@@ -1,3 +1,20 @@
+## 0.5.79 (build 117)
+
+Pick your local model, and pin it.
+
+With more than one Ollama model pulled, the server's automatic selection
+follows the NEWEST pull -- so pulling anything silently repoints the lens.
+A "Local model" picker now sits in Settings beside the other server
+switches: it lists the daemon's pulled tags, shows Automatic for what the
+server does unpinned, and Apply writes COS_OLLAMA_MODEL through the same
+restart transaction every other setting uses. A pin whose model is no
+longer pulled still renders (marked "not pulled") rather than lying about
+the configuration, and an unreachable daemon is a rendered state, not an
+error. The tag charset is guarded so a pasted shell fragment can never
+reach the LaunchAgent environment; the write shape is executed by
+self-tests. Pairs with server 6.40.0, which scales local thinking with the
+requested effort.
+
 ## 0.5.78 (build 116)
 
 One environment key for server 6.39.3: COS_OLLAMA_THINK.

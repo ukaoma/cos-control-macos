@@ -1622,6 +1622,34 @@ need('reviewableMeetingsCard' not in main_panel.group(1), "Review Speakers is st
 need('contextListCard' not in main_panel.group(1), "Memory/Threads are still nested in the menu panel")
 ROUTECHK
 
+# ── Local model picker (0.5.79) ──────────────────────────────────────
+#
+# The pin's write shape and charset guard are EXECUTED by the helper
+# self-test. These pins cover the wiring: the picker renders the configured
+# pin even when its model is gone from the daemon, Apply routes through the
+# same perform() transaction as every other setting, and the allowlist
+# carries the key (0.5.73's lesson).
+/usr/bin/python3 - "$ROOT" <<'OLLAMACHK'
+import sys, pathlib
+root = pathlib.Path(sys.argv[1])
+helper = (root / "HelperSources/main.swift").read_text()
+model = (root / "Sources/ControllerModel.swift").read_text()
+views = (root / "Sources/Views.swift").read_text()
+
+def need(cond, msg):
+    if not cond: sys.exit(f"ollama-picker: {msg}")
+
+need('case "set-ollama-model"' in helper and "withMutationLock" in helper,
+     "set-ollama-model is not dispatched under the mutation lock")
+need('"ollamaConfiguredModel": loadedEnvironmentValue("COS_OLLAMA_MODEL")' in helper,
+     "status does not expose the configured pin")
+need('perform("set-ollama-model"' in model, "the picker does not route through perform()")
+need('(not pulled)' in views, "a pin whose model is gone from the daemon must still render")
+need('Automatic (newest pull)' in views, "the automatic option is not rendered")
+need('"daemon_down"' in model and "Ollama is not running" in views,
+     "an unreachable daemon must render as a state, not an error")
+OLLAMACHK
+
 # ── Session Chat (0.5.75) ────────────────────────────────────────────
 #
 # The pure contract surface (targetKey format, poll classifier, id shapes,

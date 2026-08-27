@@ -853,6 +853,31 @@ final class ControllerModel: ObservableObject {
         perform("set-thread-attach", arguments: [enabled ? "on" : "off"])
     }
 
+    // ── Local model picker (0.5.79) ──
+    @Published var ollamaTags: [String] = []
+    @Published var ollamaTagsState = ""
+
+    /// The daemon's tag list, for the picker. An unreachable daemon is a
+    /// rendered state ("Ollama is not running"), never an error banner.
+    func loadOllamaTags() {
+        Task { [weak self] in
+            do {
+                let response = try await self?.helper.run(["ollama-tags"], timeout: 12)
+                self?.ollamaTags = (response?.details["tags"]?.array ?? []).compactMap(\.string)
+                self?.ollamaTagsState = response?.details["state"]?.string ?? ""
+            } catch {
+                self?.ollamaTags = []
+                self?.ollamaTagsState = "daemon_down"
+            }
+        }
+    }
+
+    /// Pin the local model, or return to automatic (nil). Restarts the server
+    /// through the same transaction machinery every other setting uses.
+    func setOllamaModel(_ tag: String?) {
+        perform("set-ollama-model", arguments: [tag ?? "automatic"])
+    }
+
     func setVideoUploadV2Enabled(_ enabled: Bool) {
         perform("set-video-upload-v2", arguments: [enabled ? "on" : "off"])
     }
