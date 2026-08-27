@@ -1123,6 +1123,18 @@ struct ModelsContract {
         precondition(lastYearLabel.contains("2025"), "a prior-year row must carry the year, got \(lastYearLabel)")
         precondition(GlassesTurn.dayAnchoredTime(nil, now: now, calendar: gregorian) == "—")
 
+        // The FOURTH image-only filter (0.5.83). The helper answered
+        // `state: ready, mime: video/quicktime` and the app threw it away
+        // here, so the poster rendered and the click still failed.
+        precondition(GlassesAttachmentRef.acceptsFetchedMime("video/quicktime"),
+                     "a fetched video payload must be accepted or the click cannot open it")
+        precondition(GlassesAttachmentRef.acceptsFetchedMime("video/mp4"))
+        precondition(GlassesAttachmentRef.acceptsFetchedMime("application/pdf"))
+        precondition(GlassesAttachmentRef.acceptsFetchedMime("image/jpeg"),
+                     "images must still be accepted exactly as before")
+        precondition(!GlassesAttachmentRef.acceptsFetchedMime("application/x-mach-binary"),
+                     "widening must not accept an arbitrary payload type")
+
         // ── Video and document attachments (0.5.80) ───────────────────
         //
         // Control accepted images ONLY, so the video ref the server sent for

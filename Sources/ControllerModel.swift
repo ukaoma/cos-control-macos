@@ -571,7 +571,7 @@ final class ControllerModel: ObservableObject {
         guard state == "ready" else { throw MediaFetchError.unavailable(state) }
         guard let path = response.details["path"]?.string,
               let mime = response.details["mime"]?.string,
-              ["image/jpeg", "image/png"].contains(mime),
+              GlassesAttachmentRef.acceptsFetchedMime(mime),
               let bytes = response.details["bytes"]?.int, bytes > 0 else {
             throw MediaFetchError.invalidResponse
         }
@@ -602,7 +602,14 @@ final class ControllerModel: ObservableObject {
         var totalBytes = 0
         for (index, attachment) in turn.attachments.prefix(5).enumerated() {
             do {
-                let file = try await fetchMediaFile(attachment, variant: "phone", purpose: "handoff")
+                // A handoff exists so another agent can LOOK at the bytes, and
+                // no agent can look at a .mov. For anything that is not an
+                // image, the poster frame is exported instead: it is a real
+                // JPEG, it survives the decode guard below, and it is the only
+                // inspectable thing a video has. Fetching the full video here
+                // would write a container out under an image extension.
+                let variant = attachment.opensInline ? "phone" : "thumb"
+                let file = try await fetchMediaFile(attachment, variant: variant, purpose: "handoff")
                 defer { if fm.fileExists(atPath: file.url.path) { try? fm.removeItem(at: file.url) } }
                 guard totalBytes + file.bytes <= 25 * 1_024 * 1_024 else {
                     imageLines.append("- \(attachment.displayLabel) (\(attachment.mime), \(attachment.width)×\(attachment.height)): omitted (25 MiB handoff limit)")
@@ -612,7 +619,8 @@ final class ControllerModel: ObservableObject {
                     throw MediaFetchError.invalidResponse
                 }
                 let ext = file.mime == "image/png" ? "png" : "jpg"
-                let name = String(format: "image-%02d.%@", index + 1, ext)
+                let stem = attachment.opensInline ? "image" : "poster"
+                let name = String(format: "%@-%02d.%@", stem, index + 1, ext)
                 let destination = staging.appendingPathComponent(name)
                 try fm.moveItem(at: file.url, to: destination)
                 try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)

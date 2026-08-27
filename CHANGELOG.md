@@ -1,3 +1,23 @@
+## 0.5.83 (build 121)
+
+The fourth filter. Video playback now actually works.
+
+There were FOUR independent image-only gates between the server and the
+screen, not three. 0.5.82 fixed the helper's byte verifier and I confirmed
+the helper returned `state: ready, mime: video/quicktime` — then shipped
+without tracing what the app did with that response. `fetchMediaFile` re-
+checked the mime against a JPEG/PNG allowlist of its own and threw the
+ready video away, so the poster still rendered and the click still failed.
+The helper working was not the feature working.
+
+That decision now lives in one place, on the attachment model, where the
+contract test executes it rather than a grep asserting it. Also fixed in
+the same pass: the agent handoff exported the full video under an
+`image-NN.jpg` name (masked until now by its image-decode guard, which
+rejected the video and printed "unavailable"). It exports the poster frame
+instead, named `poster-NN.jpg`, because a poster is the only part of a video
+another agent can actually inspect.
+
 ## 0.5.82 (build 120)
 
 Playing a video actually plays it.

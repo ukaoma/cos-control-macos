@@ -1001,6 +1001,15 @@ struct GlassesAttachmentRef: Identifiable, Sendable, Equatable {
         return "document"
     }
 
+    /// Whether a FETCHED payload's mime is one this app will accept off the
+    /// helper. Extracted so the contract test can execute the decision: this
+    /// was the FOURTH image-only filter, sitting in `fetchMediaFile`, and it
+    /// rejected the helper's own `state: ready` video response — so the poster
+    /// rendered and the click failed anyway.
+    static func acceptsFetchedMime(_ mime: String) -> Bool {
+        acceptedMimes.contains(mime)
+    }
+
     var isVideo: Bool { category == "video" }
     var isDocument: Bool { category == "document" }
     /// True only for things this app can render as an inline picture. A video
