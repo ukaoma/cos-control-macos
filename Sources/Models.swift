@@ -3233,8 +3233,10 @@ enum PetSpriteStrip {
 
     /// A strip's manifest declares its frame count — that is artistic intent,
     /// not a hint. Cuts start at the equal-grid positions and nudge to the
-    /// emptiest nearby column, so a figure is never bisected when a valley
-    /// exists and continuous art degrades to a plain equal slice. Measured on
+    /// emptiest nearby column WITHIN cell/6, so a figure is not bisected when a
+    /// valley exists that close to the authored cut; a boundary with no valley
+    /// in reach keeps the equal cut and may still split a figure. Continuous
+    /// art degrades to a plain equal slice. Measured on
     /// the Windu combat board: the fight scenes connect through 2px bolt
     /// bridges, so zero-gap island logic cannot separate them, but each scene
     /// boundary is still the local ink minimum.
@@ -3255,14 +3257,32 @@ enum PetSpriteStrip {
             opaqueCol[x] = Double(hits) / Double(max(buffer.height, 1))
         }
         let cell = Double(buffer.width) / Double(count)
-        let window = max(2, buffer.width / (count * 3))
+        // A cut may only MOVE to a column that is genuinely empty. Searching a
+        // third of a cell for the "emptiest" column let cuts wander deep into
+        // the figure whenever a strip has no real gaps: the meditation board
+        // was sliced through the character in all eight frames, one of them on
+        // both sides at 206px against a 271px cell, which clipped his crossed
+        // leg. Evenly drawn art is better served by the equal cut it was
+        // authored on, so an ambiguous boundary stays put.
+        // Keep the search near the authored grid. A wider sweep was measured
+        // worse: it finds columns that clear the ink threshold inside a dim
+        // aura edge and still clip the figure (a 200px frame against a 271px
+        // cell). The threshold is deliberately strict — a cut only moves to a
+        // column that is essentially clean.
+        let window = max(2, Int(cell / 6))
+        // Absolute rows, not a fraction. opaqueCol is hits/height on the RAW
+        // source, so a fixed fraction means different things per pack: 0.005 is
+        // one stray pixel on a 256-tall board and ten rows of real ink on a
+        // 2000-tall one, and it disabled the valley search entirely on short art.
+        let emptyEnough = Double(max(1, buffer.height / 400)) / Double(max(buffer.height, 1))
         var cuts: [Int] = [0]
         for k in 1..<count {
             let center = Int((Double(k) * cell).rounded())
             let lo = max((cuts.last ?? 0) + 1, center - window)
             let hi = min(buffer.width - (count - k), center + window)
+            let fallback = min(max(center, (cuts.last ?? 0) + 1), buffer.width - 1)
             guard lo <= hi else {
-                cuts.append(min(max(center, (cuts.last ?? 0) + 1), buffer.width - 1))
+                cuts.append(fallback)
                 continue
             }
             var best = center
@@ -3275,7 +3295,15 @@ enum PetSpriteStrip {
                     best = x
                 }
             }
-            cuts.append(best)
+            // No valley here — do not carve one out of the subject.
+            // `best` is the argmin over a window that contains `center`, so it
+            // is never worse than the grid column — rejecting it outright threw
+            // away a strictly cleaner cut and put the blade back through the
+            // figure on unevenly spaced art. Move when the column is empty, or
+            // when it is clearly better than the grid column.
+            let centerInk = opaqueCol[min(max(fallback, 0), buffer.width - 1)]
+            let clearlyBetter = bestInk < centerInk * 0.5
+            cuts.append(bestInk <= emptyEnough || clearlyBetter ? best : fallback)
         }
         cuts.append(buffer.width)
         var out: [NSImage] = []
@@ -3291,11 +3319,10 @@ enum PetSpriteStrip {
     /// A cut that lands inside a figure leaves a truncated sliver of the
     /// NEIGHBOUR frame at this frame's edge; it flickers during playback and
     /// breaks the animation. Signature: a connected component, not the frame's
-    /// largest, that meets the edge band (first or last two columns) across at
-    /// least 30% of the primary figure's row span — a cut face. The primary
-    /// stays even when it reaches the edge, and a bolt or debris speck touching
-    /// the edge over a few rows stays, because sliceRowByIslands deliberately
-    /// keeps those with their scene.
+    /// largest, that meets the edge band (first or last two columns). Size and
+    /// row span are NOT consulted — a small fragment cut by the boundary goes
+    /// too, because being cut is the signal. The primary stays even when it
+    /// reaches the edge: it is the subject.
     static func suppressTruncatedEdgeSlivers(_ image: NSImage) -> NSImage {
         guard var buffer = PetSpriteAlpha.rgbaBuffer(image) else { return image }
         let width = buffer.width
@@ -3452,8 +3479,18 @@ enum PetSpriteStrip {
         }
         let unionW = boxes.map(\.w).max() ?? 1
         let unionH = boxes.map(\.h).max() ?? 1
-        let pad = max(8, Int((CGFloat(max(unionW, unionH)) * paddingRatio).rounded()))
-        let canvasW = unionW + pad * 2
+        // Per-axis. Driving both from max(w,h) let one wide effect frame inflate
+        // VERTICAL padding for every frame, widening the canvas aspect and
+        // shrinking the figure at render — the "runner tiny" failure again.
+        let padX = max(8, Int((CGFloat(unionW) * paddingRatio).rounded()))
+        let pad = max(8, Int((CGFloat(unionH) * paddingRatio).rounded()))
+        let canvasW = unionW + padX * 2
+        // The canvas is the strip's own union ink. Sizing it from the source
+        // cell instead was measured worse: the art is not drawn at one scale
+        // across strips — the runner occupies 25% of its cell where idle
+        // occupies 70% — so source-relative canvases rendered the runner tiny.
+        // No scaling happens HERE; prepare's fitHeight applies one factor to
+        // this shared canvas, which is what keeps a strip internally consistent.
         let canvasH = unionH + pad * 2
         var out: [NSImage] = []
         out.reserveCapacity(frames.count)
@@ -4056,7 +4093,7 @@ enum PetSpriteStore {
     }
 
     /// The shipped character. Bundled already PROCESSED (sliced, cleaned,
-    /// stitched, with its state map and cinematic strip), so a fresh install
+    /// stitched, with its state map), so a fresh install
     /// shows it without running the pipeline or asking for a pack.
     static let defaultCharacterName = "Jedi Miles Windu"
     static let bundledDefaultFolder = "DefaultPet"
@@ -4096,15 +4133,28 @@ enum PetSpriteStore {
             at: source, includingPropertiesForKeys: nil
         ) else { return false }
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        var copied = false
+        // Every file must land. Reporting success off the FIRST copy let a
+        // partial install through — idle.png present, the state map missing —
+        // which leaves a pet that cannot be read back.
+        var wanted = 0
+        var copied = 0
         for file in files {
             let ext = file.pathExtension.lowercased()
             guard ext == "png" || ext == "json" else { continue }
+            wanted += 1
             let dest = directory.appendingPathComponent(file.lastPathComponent)
             try? fileManager.removeItem(at: dest)
-            if (try? fileManager.copyItem(at: file, to: dest)) != nil { copied = true }
+            do {
+                try fileManager.copyItem(at: file, to: dest)
+                copied += 1
+            } catch {
+                NSLog("COSControl pet-default copy failed: %@", file.lastPathComponent)
+            }
         }
-        return copied
+        let stateLanded = fileManager.fileExists(
+            atPath: directory.appendingPathComponent(stateFileName).path
+        )
+        return wanted > 0 && copied == wanted && stateLanded
     }
 
     static func remove(from directory: URL, fileManager: FileManager = .default) {

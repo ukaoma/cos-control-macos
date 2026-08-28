@@ -1487,6 +1487,45 @@ final class ControllerModel: ObservableObject {
 
     var petCharacterFactor: CGFloat { PetCharacterScale.factor(petCharacterPercent) }
 
+    /// Put the shipped character back. Kept separate from the OpenPets gallery
+    /// because that gallery's attribution and licence note cover its own art,
+    /// not this one.
+    func restoreDefaultCharacter() {
+        let directory = PetSpriteStore.supportDirectory()
+        guard PetSpriteStore.bundledDefaultURL() != nil else {
+            petNotice = "This build does not carry the default character."
+            NSLog("COSControl pet-default restore failed: no bundled DefaultPet folder")
+            return
+        }
+        PetSpriteStore.removeAll(from: directory)
+        if PetSpriteStore.installBundledDefault(into: directory) {
+            petNotice = nil
+        } else {
+            petNotice = "Could not restore the default character."
+            NSLog("COSControl pet-default restore failed after clearing %@", directory.path)
+        }
+        loadPetSprite()
+    }
+
+    /// Always the BUNDLED art, and one FRAME of it. Reading the installed idle
+    /// pose showed whichever pack owns idle right now, so the row labelled
+    /// "Jedi Miles Windu" displayed a different character; reading the bundled
+    /// file raw showed the whole 8-frame strip squeezed into 44pt. Cached: this
+    /// is a 259 KB decode and the panel re-renders on every published change.
+    private var defaultCharacterThumbCache: NSImage??
+    var defaultCharacterThumb: NSImage? {
+        if let cached = defaultCharacterThumbCache { return cached }
+        let made: NSImage? = {
+            guard let folder = PetSpriteStore.bundledDefaultURL() else { return nil }
+            let url = folder.appendingPathComponent(PetSpriteStore.poseFileName(.idle))
+            guard let strip = NSImage(contentsOf: url) else { return nil }
+            let frames = PetSpriteStore.loadStateMap(in: folder)[.idle]?.frames ?? 1
+            return PetSpriteStrip.slice(strip, frames: frames).first ?? strip
+        }()
+        defaultCharacterThumbCache = .some(made)
+        return made
+    }
+
     /// Solo clips an action pose settles into between bursts. The character has
     /// a breathing idle, a meditation, a draw-and-flourish and a guard sequence;
     /// rotating all of them is what keeps a long "working" stretch alive, and

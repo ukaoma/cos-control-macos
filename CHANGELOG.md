@@ -1,3 +1,33 @@
+## 0.5.125 (build 163)
+
+The default character is polished art, and the pet gallery can restore it.
+
+Miles Windu V4 becomes the bundled default: rebuilt meditation frames with
+corrected crossed-leg anatomy, the violet aura contained inside safe margins,
+and body scale plus baseline normalised across every state. Validated through
+the real importer — 74 of 74 declared frames preserved, and ZERO frames in any
+of the ten poses now touch a frame boundary, where the previous pack had all
+eight meditation frames cut through the character.
+
+Frame cuts only leave the authored grid for a column that is empty, or clearly
+cleaner than the grid column. A search that roamed a third of a cell for the
+"emptiest" column carved through the figure whenever a strip had no real gaps.
+
+The pet gallery gains a Restore row for the shipped character, above the
+community gallery so its attribution still covers only its own art. Restore
+deletes the installed pack, so it now asks first — installing a gallery pet,
+which is less destructive, already did.
+
+From a two-agent QA pass, all mutation-verified: the gallery thumbnail read
+whichever pack owned idle, so the row labelled with the shipped character could
+show someone else's art, and read raw it rendered an eight-frame strip into
+44pt; restore wiped the installed pack BEFORE checking a replacement existed;
+a partial copy reported success; the empty-column threshold was a fraction of
+source height, so it meant one stray pixel on a short board and ten rows of ink
+on a tall one; canvas padding took both axes from max(width, height), so one
+wide effect frame shrank the figure everywhere. Three canaries that could not
+fail were replaced with probes that do — proven by re-running each mutation.
+
 ## 0.5.124 (build 162)
 
 Settled beats rotate through every solo clip.

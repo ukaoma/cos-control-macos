@@ -1749,6 +1749,19 @@ need('installBundledDefault(into: directory)' in model,
 need('petDefaultSeededKey' in model,
      "default seeding is not gated by a flag, so Use COS figure would be undone on relaunch")
 need('Jedi Miles Windu' in models_src, "the shipped character lost its name")
+# Scope to the gallery card's BODY: str.index finds the `private var`
+# declaration first, so an ordering check against the whole file passed even
+# after the row was moved below the attribution.
+need('private var petGalleryCard' in views, "the pet gallery card is gone")
+gallery_body = views.split('private var petGalleryCard')[1]
+need('openpets.dev' in gallery_body, "the OpenPets attribution is gone")
+need('defaultCharacterRow' in gallery_body,
+     "the shipped-character row is declared but never mounted in the gallery card")
+need(gallery_body.index('defaultCharacterRow') < gallery_body.index('openpets.dev'),
+     "the shipped character must render ABOVE the OpenPets attribution, not inside that gallery")
+need('restoreDefaultCharacter' in views, "the gallery has no way back to the shipped character")
+need('Button("Restore") { confirmRestoreDefaultCharacter = true }' in views,
+     "Restore deletes the installed pack with no confirmation, while installing one has a dialog")
 need('DefaultPet' in (root / "scripts/build-release.sh").read_text(),
      "the release does not bundle the shipped character")
 need('retireCinematic: false' in model,

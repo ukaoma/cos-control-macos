@@ -1118,6 +1118,63 @@ struct ModelsContract {
         precondition(inkFraction(prepared.image, topHalf: true) > inkFraction(prepared.image, topHalf: false),
                      "prepare flipped a top-heavy sprite")
 
+        // VALLEY GATE. Both halves are mutation-checked: reverting the gate or
+        // widening the window back to width/(count*3) must fail here. Earlier
+        // fixtures could not tell the versions apart — one had perfectly empty
+        // windows (the gate is a no-op), another uniform ink (the tie-break
+        // already returned centre) — so seven mutations survived, including
+        // deleting the gate outright.
+        //
+        // Case A: the emptiest column in the window is INKED and only mildly
+        // better than the grid column (8 rows vs 12 of 100). The gate keeps the
+        // authored cut; the old rule slid onto the thin spot.
+        // Segments, not overlaps: spriteProbe only ADDS ink, so a "thin spot"
+        // drawn on top of the bridge is not thinner at all.
+        let mildlyBetter = spriteProbe(width: 400, height: 100, blobs: [
+            (x: 10, w: 161, y: 10, h: 80),    // figure one, ends at 170
+            (x: 171, w: 43, y: 44, h: 12),    // bridge, 12 rows, through the grid cut at 200
+            (x: 214, w: 12, y: 46, h: 8),     // 8 rows — better, but not clearly so
+            (x: 226, w: 4, y: 44, h: 12),     // bridge resumes
+            (x: 230, w: 160, y: 10, h: 80),   // figure two
+        ])
+        do {
+            let f = PetSpriteStrip.sliceStripByValleys(mildlyBetter, frames: 2)
+            precondition(f.count == 2, "declared count survives")
+            precondition(abs(Int(f[0].size.width) - 200) <= 1,
+                         "a merely-thinner column must not pull the cut off the grid, got \(Int(f[0].size.width))")
+        }
+
+        // Case B: the only clean column sits outside cell/6 but inside the old
+        // width/(count*3) sweep. The narrow window must not reach it.
+        var farBlobs: [(x: Int, w: Int, y: Int, h: Int)] = [(x: 10, w: 180, y: 10, h: 80)]
+        for x in stride(from: 190, to: 249, by: 1) { farBlobs.append((x: x, w: 1, y: 40, h: 20)) }
+        farBlobs.append((x: 252, w: 140, y: 10, h: 80))
+        let farValley = spriteProbe(width: 400, height: 100, blobs: farBlobs)
+        do {
+            let f = PetSpriteStrip.sliceStripByValleys(farValley, frames: 2)
+            precondition(f.count == 2, "declared count survives")
+            precondition(Int(f[0].size.width) < 240,
+                         "the cut reached a column the narrow window excludes, got \(Int(f[0].size.width))")
+        }
+
+        // Case C: a genuine gap NEAR the grid cut still moves the cut, and both
+        // figures survive whole.
+        let realValley = spriteProbe(width: 400, height: 100, blobs: [
+            (x: 10, w: 200, y: 10, h: 80),
+            (x: 232, w: 158, y: 10, h: 80),
+        ])
+        do {
+            let moved = PetSpriteStrip.sliceStripByValleys(realValley, frames: 2)
+            precondition(moved.count == 2, "declared count survives a real valley")
+            precondition(Int(moved[0].size.width) != 200,
+                         "a genuine gap must pull the cut off the grid position")
+            guard let b = PetSpriteStrip.inkBounds(moved[0]), let c = PetSpriteStrip.inkBounds(moved[1]) else {
+                preconditionFailure("both valley frames must hold ink")
+            }
+            precondition(b.w == 200, "figure one was clipped, kept \(b.w) of 200 px")
+            precondition(c.w == 158, "figure two was clipped, kept \(c.w) of 158 px")
+        }
+
         // CELL BOARDS: islands + gap merge, forced to the manifest cell count.
         // The narrow 'bolt' 20px from scene one must ride with it.
         let strip = spriteProbe(width: 1600, height: 100, blobs: [

@@ -114,6 +114,7 @@ struct ControlPanel: View {
     @State private var selectedOllamaModel = ""
     @State private var openPetsQuery = ""
     @State private var confirmOpenPetsSprite = false
+    @State private var confirmRestoreDefaultCharacter = false
     @State private var pendingOpenPetsRow: OpenPetsCatalogRow?
 
     /// The menu-bar panel stays the server console. Browsing activity lives in a
@@ -350,7 +351,7 @@ struct ControlPanel: View {
             pendingOpenPetsRow.map { "Use \($0.displayName) as the session pet figure?" }
                 ?? "Use this figure as the session pet figure?",
             isPresented: $confirmOpenPetsSprite,
-            message: "Replaces the current session pet sprite with this gallery thumbnail. Use COS figure restores the original.",
+            message: "Replaces the current session pet sprite with this gallery thumbnail. Restore puts \(PetSpriteStore.defaultCharacterName) back; Use COS figure switches to the drawn figure.",
             actions: [
                 .normal("Use") {
                     if let row = pendingOpenPetsRow {
@@ -359,6 +360,17 @@ struct ControlPanel: View {
                     pendingOpenPetsRow = nil
                 },
                 .cancel() { pendingOpenPetsRow = nil },
+            ]
+        )
+        .cosConfirm(
+            "Restore \(PetSpriteStore.defaultCharacterName)?",
+            isPresented: $confirmRestoreDefaultCharacter,
+            message: "Deletes the sprites currently installed — every pose, the "
+                + "stitched strip and the state map — and puts the shipped character back. "
+                + "A pack you installed yourself would have to be installed again.",
+            actions: [
+                .normal("Restore") { model.restoreDefaultCharacter() },
+                .cancel(),
             ]
         )
     }
@@ -373,8 +385,36 @@ struct ControlPanel: View {
         }
     }
 
+    /// The shipped character sits above the community gallery, not inside it:
+    /// the OpenPets attribution below covers that gallery's art only.
+    private var defaultCharacterRow: some View {
+        HStack(spacing: 8) {
+            if let thumb = model.defaultCharacterThumb {
+                Image(nsImage: thumb)
+                    .resizable()
+                    .interpolation(.none)
+                    .scaledToFit()
+                    .frame(width: 44, height: 44)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(PetSpriteStore.defaultCharacterName)
+                    .font(.caption.weight(.medium))
+                Text("Ships with COS Control. Ten animated states.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            Button("Restore") { confirmRestoreDefaultCharacter = true }
+                .controlSize(.small)
+        }
+        .padding(.bottom, 2)
+    }
+
     private var petGalleryCard: some View {
         VStack(alignment: .leading, spacing: 8) {
+            defaultCharacterRow
+            Divider()
             if model.openPetsLoading && model.openPetsRows.isEmpty {
                 HStack {
                     ProgressView().controlSize(.small)
