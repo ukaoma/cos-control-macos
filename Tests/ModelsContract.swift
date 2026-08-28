@@ -1186,8 +1186,10 @@ struct ModelsContract {
             precondition((rep.colorAt(x: 90, y: 20)?.alphaComponent ?? 0) > 0.5,
                          "the primary must survive")
         }
-        // A deliberate bolt at the edge is small in BOTH dimensions; the old
-        // area rule erased it, contradicting the island splitter that keeps it.
+        // A small fragment CUT by the boundary is spillover however few rows it
+        // spans — the real case is a 5%-area bolt from the next scene against
+        // the left edge, which both an area rule and a cut-face-height rule
+        // kept, and which reads on screen as a flash in the corner.
         let bolt = spriteProbe(width: 200, height: 40, blobs: [
             (x: 40, w: 100, y: 4, h: 32),
             (x: 194, w: 6, y: 18, h: 4),
@@ -1197,8 +1199,21 @@ struct ModelsContract {
                   let rep = NSBitmapImageRep(data: tiff) else {
                 preconditionFailure("bolt frame must rasterize")
             }
-            precondition((rep.colorAt(x: 196, y: 19)?.alphaComponent ?? 0) > 0.5,
-                         "a blaster bolt at the edge belongs to its scene and stays")
+            precondition((rep.colorAt(x: 196, y: 19)?.alphaComponent ?? 1) < 0.1,
+                         "a fragment cut by the frame boundary is spillover and must go")
+        }
+        // Detail composed INSIDE the frame is part of the scene and stays.
+        let insideDetail = spriteProbe(width: 200, height: 40, blobs: [
+            (x: 40, w: 100, y: 4, h: 32),
+            (x: 160, w: 8, y: 18, h: 4),
+        ])
+        do {
+            guard let tiff = PetSpriteStrip.suppressTruncatedEdgeSlivers(insideDetail).tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff) else {
+                preconditionFailure("inside-detail frame must rasterize")
+            }
+            precondition((rep.colorAt(x: 163, y: 19)?.alphaComponent ?? 0) > 0.5,
+                         "a bolt inside the frame belongs to its scene and stays")
         }
         // A sliver whose COLUMNS overlap the figure is invisible to a column
         // projection; only 2D components catch it (three run-cycle slivers hid
@@ -1285,6 +1300,31 @@ struct ModelsContract {
                      "trio must climb the ladder only to its own rung")
         precondition(ladder.frames(for: .swarm).count == 4,
                      "swarm plays the full ladder")
+
+        // SHIPPED DEFAULT: seeds an empty install, and never overwrites the
+        // user's own sprites (which would undo Choose sprite or Use COS figure).
+        let seedRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cos-seed-\(ProcessInfo.processInfo.processIdentifier)")
+        let seedSource = seedRoot.appendingPathComponent("DefaultPet", isDirectory: true)
+        let seedDest = seedRoot.appendingPathComponent("support", isDirectory: true)
+        try? FileManager.default.removeItem(at: seedRoot)
+        try! FileManager.default.createDirectory(at: seedSource, withIntermediateDirectories: true)
+        try! FileManager.default.createDirectory(at: seedDest, withIntermediateDirectories: true)
+        let seedArt = spriteProbe(width: 40, height: 40, blobs: [(x: 8, w: 24, y: 8, h: 24)])
+        try! NSBitmapImageRep(data: seedArt.tiffRepresentation!)!
+            .representation(using: .png, properties: [:])!
+            .write(to: seedSource.appendingPathComponent("session-pet-idle.png"))
+        try! Data(#"{"poses":{"idle":{"file":"session-pet-idle.png","frames":1}}}"#.utf8)
+            .write(to: seedSource.appendingPathComponent("session-pet-states.json"))
+        precondition(PetSpriteStore.installDefault(into: seedDest, from: seedSource),
+                     "an empty install must be seeded with the shipped character")
+        precondition(PetSpriteStore.loadStateMap(in: seedDest)[.idle]?.frames == 1,
+                     "the seeded state map must be readable")
+        precondition(!PetSpriteStore.installDefault(into: seedDest, from: seedSource),
+                     "seeding must never overwrite sprites that are already installed")
+        precondition(!PetSpriteStore.installDefault(into: seedDest, from: nil),
+                     "a build without the bundled character must degrade quietly")
+        try? FileManager.default.removeItem(at: seedRoot)
 
         // CHARACTER DIAL: scales the figure, never the card.
         precondition(PetCharacterScale.clamp(40) == PetCharacterScale.minPercent)

@@ -2863,7 +2863,7 @@ private struct PetSpriteStateControls: View {
             Text("State sprites")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text("Patrol to five-droid swarm. Saber on running, success, error, and attention.")
+            Text("\(PetSpriteStore.defaultCharacterName) ships as the default. Patrol to five-droid swarm. Saber on running, success, error, and attention.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

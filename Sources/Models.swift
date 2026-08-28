@@ -3217,8 +3217,6 @@ enum PetSpriteStrip {
         var label = [Int](repeating: 0, count: width * height)
         var areas: [Int] = [0]
         var touchesEdge: [Bool] = [false]
-        var rowSpans: [Set<Int>] = [[]]
-        var edgeRows: [Set<Int>] = [[]]
         var next = 1
         var queue: [Int] = []
         for start in 0..<(width * height) {
@@ -3226,8 +3224,6 @@ enum PetSpriteStrip {
             label[start] = next
             areas.append(0)
             touchesEdge.append(false)
-            rowSpans.append([])
-            edgeRows.append([])
             queue.removeAll(keepingCapacity: true)
             queue.append(start)
             var head = 0
@@ -3236,12 +3232,7 @@ enum PetSpriteStrip {
                 head += 1
                 areas[next] += 1
                 let x = index % width
-                let row = index / width
-                rowSpans[next].insert(row)
-                if x <= 1 || x >= width - 2 {
-                    touchesEdge[next] = true
-                    edgeRows[next].insert(row)
-                }
+                if x <= 1 || x >= width - 2 { touchesEdge[next] = true }
                 let y = index / width
                 for (nx, ny) in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)] {
                     guard nx >= 0, ny >= 0, nx < width, ny < height else { continue }
@@ -3255,16 +3246,18 @@ enum PetSpriteStrip {
         }
         guard next > 2, let largest = areas.max(), largest > 0,
               let primary = (1..<next).max(by: { areas[$0] < areas[$1] }) else { return image }
-        // Area is the wrong discriminator: a bisected neighbour can be 42% of
-        // the figure (survived) while a deliberate blaster bolt is 1.6%
-        // (erased) — wrong in both directions. A CUT face is the signature:
-        // a truncated figure meets the frame edge across much of its height,
-        // where a bolt or debris speck touches it over a few rows.
-        let primaryRows = max(1, rowSpans[primary].count)
+        // Neither area nor cut-face height is the discriminator — being CUT is.
+        // This runs on the raw slice, where the frame boundary IS the cut line,
+        // so anything reaching it continues into the neighbouring scene: a
+        // bisected figure, or a fragment of one. The combat board leaves a
+        // 540px blaster bolt from the next scene against the left edge — 5% of
+        // the figure and a few rows tall, which an area rule and a cut-face
+        // rule both kept, and which reads as a flash in the corner. Art
+        // composed inside the frame never abuts the boundary, because
+        // cropOpaque pads afterwards. The primary is exempt: it is the subject.
         var erase = [Bool](repeating: false, count: next)
         var cleared = false
         for id in 1..<next where id != primary && touchesEdge[id] {
-            guard Double(edgeRows[id].count) >= Double(primaryRows) * 0.30 else { continue }
             erase[id] = true
             cleared = true
         }
@@ -3909,6 +3902,58 @@ enum PetSpriteStore {
             map[pose] = (file, frames)
         }
         return map
+    }
+
+    /// The shipped character. Bundled already PROCESSED (sliced, cleaned,
+    /// stitched, with its state map and cinematic strip), so a fresh install
+    /// shows it without running the pipeline or asking for a pack.
+    static let defaultCharacterName = "Jedi Miles Windu"
+    static let bundledDefaultFolder = "DefaultPet"
+
+    static func bundledDefaultURL(bundle: Bundle = .main) -> URL? {
+        guard let resources = bundle.resourceURL else { return nil }
+        let folder = resources.appendingPathComponent(bundledDefaultFolder, isDirectory: true)
+        return FileManager.default.fileExists(atPath: folder.path) ? folder : nil
+    }
+
+    /// Copies the bundled character in only when the user has none of their
+    /// own. Returns false when anything is already installed, so this can never
+    /// overwrite a chosen sprite or undo "Use COS figure".
+    @discardableResult
+    static func installBundledDefault(
+        into directory: URL,
+        bundle: Bundle = .main,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        installDefault(into: directory, from: bundledDefaultURL(bundle: bundle), fileManager: fileManager)
+    }
+
+    @discardableResult
+    static func installDefault(
+        into directory: URL,
+        from source: URL?,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        guard let source else { return false }
+        let hasState = fileManager.fileExists(atPath: directory.appendingPathComponent(stateFileName).path)
+        let hasPose = PetSpritePose.allCases.contains {
+            existingPoseURL($0, in: directory, fileManager: fileManager) != nil
+        }
+        let hasCustom = existingSpriteURL(in: directory, fileManager: fileManager) != nil
+        guard !hasState, !hasPose, !hasCustom else { return false }
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: source, includingPropertiesForKeys: nil
+        ) else { return false }
+        try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        var copied = false
+        for file in files {
+            let ext = file.pathExtension.lowercased()
+            guard ext == "png" || ext == "json" else { continue }
+            let dest = directory.appendingPathComponent(file.lastPathComponent)
+            try? fileManager.removeItem(at: dest)
+            if (try? fileManager.copyItem(at: file, to: dest)) != nil { copied = true }
+        }
+        return copied
     }
 
     static func remove(from directory: URL, fileManager: FileManager = .default) {

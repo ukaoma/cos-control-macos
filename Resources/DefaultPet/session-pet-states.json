@@ -1,0 +1,68 @@
+{
+  "poses" : {
+    "attention" : {
+      "file" : "session-pet-attention.png",
+      "frames" : 1
+    },
+    "done" : {
+      "file" : "session-pet-done.png",
+      "frames" : 1
+    },
+    "duel" : {
+      "file" : "session-pet-duel.png",
+      "frames" : 7
+    },
+    "error" : {
+      "file" : "session-pet-error.png",
+      "frames" : 1
+    },
+    "grepping" : {
+      "file" : "session-pet-grepping.png",
+      "frames" : 1
+    },
+    "idle" : {
+      "file" : "session-pet-idle.png",
+      "frames" : 1
+    },
+    "patrol" : {
+      "file" : "session-pet-patrol.png",
+      "frames" : 1
+    },
+    "reading" : {
+      "file" : "session-pet-reading.png",
+      "frames" : 1
+    },
+    "searching" : {
+      "file" : "session-pet-searching.png",
+      "frames" : 1
+    },
+    "stopped" : {
+      "file" : "session-pet-stopped.png",
+      "frames" : 1
+    },
+    "swarm" : {
+      "file" : "session-pet-swarm.png",
+      "frames" : 1
+    },
+    "thinking" : {
+      "file" : "session-pet-thinking.png",
+      "frames" : 1
+    },
+    "trio" : {
+      "file" : "session-pet-trio.png",
+      "frames" : 1
+    },
+    "waiting" : {
+      "file" : "session-pet-waiting.png",
+      "frames" : 1
+    },
+    "working" : {
+      "file" : "session-pet-working.png",
+      "frames" : 8
+    },
+    "writing" : {
+      "file" : "session-pet-writing.png",
+      "frames" : 1
+    }
+  }
+}

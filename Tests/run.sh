@@ -1730,6 +1730,13 @@ need(pet_src.count('scale: model.petCharacterFactor') >= 2,
 need('characterScale: model.petCharacterFactor' in pet_src,
      "the sprite view never receives the character dial")
 need('Character size' in views, "Settings has no character-size control")
+need('installBundledDefault(into: directory)' in model,
+     "a fresh install no longer seeds the shipped character")
+need('petDefaultSeededKey' in model,
+     "default seeding is not gated by a flag, so Use COS figure would be undone on relaunch")
+need('Jedi Miles Windu' in models_src, "the shipped character lost its name")
+need('DefaultPet' in (root / "scripts/build-release.sh").read_text(),
+     "the release does not bundle the shipped character")
 need('retireCinematic: false' in model,
      "a pack install retires its own board's cinematic strip mid-install")
 need('schedulePetNoticeExpiry' in model,

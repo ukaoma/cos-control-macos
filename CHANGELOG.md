@@ -1,3 +1,19 @@
+## 0.5.120 (build 158)
+
+Jedi Miles Windu ships as the default character, and the corner flash is gone.
+
+The processed character is bundled with the app and seeded on a fresh install,
+so the pet has real art without installing a pack. Seeding is gated on a
+one-time flag rather than an empty folder, so choosing your own sprite or Use
+COS figure is never undone.
+
+Frame edges: a fragment CUT by the frame boundary is spillover from the
+neighbouring scene, whatever its size. The combat board leaves a 540px blaster
+bolt against the left edge — 5% of the figure and a few rows tall — which the
+area rule and then the cut-face rule both kept, and which showed as a flash in
+the pet's top-left corner. Anything reaching the boundary now goes; detail
+composed inside the frame stays, because cropOpaque pads afterwards.
+
 ## 0.5.119 (build 157)
 
 Character size is its own dial, and the fight stops blinking out.

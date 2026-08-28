@@ -109,6 +109,7 @@ final class ControllerModel: ObservableObject {
     private static let petSizeKey = "cos.sessionPetSize"
     private static let petSizePixelsKey = "cos.sessionPetSizePixels"
     private static let petCharacterPercentKey = "cos.sessionPetCharacterPercent"
+    private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     @Published var openReview: SpeakerReview?
     /// The readable meeting beside the speaker rows. nil when the server is
     /// older than 6.21.28 or the fetch failed — the review still renders.
@@ -1495,6 +1496,12 @@ final class ControllerModel: ObservableObject {
 
     func loadPetSprite() {
         let directory = PetSpriteStore.supportDirectory()
+        // Seed the shipped character once, ever. Gated on a flag rather than on
+        // "is the folder empty" so that Use COS figure stays chosen.
+        if !UserDefaults.standard.bool(forKey: Self.petDefaultSeededKey) {
+            UserDefaults.standard.set(true, forKey: Self.petDefaultSeededKey)
+            PetSpriteStore.installBundledDefault(into: directory)
+        }
         if let url = PetSpriteStore.existingSpriteURL(in: directory) {
             petCustomSprite = NSImage(contentsOf: url)
         } else {

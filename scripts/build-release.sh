@@ -46,6 +46,9 @@ cp "$ROOT/Resources/COSMark.svg" "$APP/Contents/Resources/COSMark.svg"
 cp "$ROOT/Resources/COSLockup.svg" "$APP/Contents/Resources/COSLockup.svg"
 mkdir -p "$APP/Contents/Resources/Fonts"
 cp "$ROOT/Resources/Fonts/"*.ttf "$APP/Contents/Resources/Fonts/"
+# The shipped character, already processed. A fresh install seeds it once.
+mkdir -p "$APP/Contents/Resources/DefaultPet"
+cp "$ROOT/Resources/DefaultPet/"*.png "$ROOT/Resources/DefaultPet/"*.json "$APP/Contents/Resources/DefaultPet/"
 chmod 700 "$APP/Contents/MacOS/COS Control" "$APP/Contents/Resources/cos-control-helper"
 /usr/bin/xattr -cr "$APP"
 # Public releases fail closed unless both Developer ID signing and notarization
