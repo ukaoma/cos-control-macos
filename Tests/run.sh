@@ -1734,10 +1734,14 @@ need('enum PetPlaylist' in models_src and 'usesActivityPlaylist' in models_src,
      "running and patrol loop forever again instead of playing as bursts")
 cosmotion_src = (root / "Sources/COSMotion.swift").read_text()
 sessionpet_src = (root / "Sources/SessionPet.swift").read_text()
-need('PetPlaylist.plan(' in cosmotion_src and 'restFrames' in cosmotion_src,
+need('PetPlaylist.plan(' in cosmotion_src and 'restClips' in cosmotion_src,
      "the sprite view does not run the activity playlist")
-need('restFrames: model.petSpriteKit.frames(for: .idle)' in sessionpet_src,
-     "the playlist has no rest clip to settle into")
+need('restClips: model.petRestClips(for: pose)' in sessionpet_src,
+     "the playlist has no rest clips to settle into")
+need('func petRestClips(' in model and '.idle, .waiting, .done, .attention' in model,
+     "the rest rotation stopped using the solo clips it exists to surface")
+need('func restClip(' in models_src,
+     "settled beats no longer rotate across rest clips")
 need(models_src.count('normalizeStrip(') >= 2,
      "strip frames are normalised individually again, so the character resizes mid-animation")
 need('installBundledDefault(into: directory)' in model,

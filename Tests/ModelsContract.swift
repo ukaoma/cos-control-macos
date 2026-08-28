@@ -1337,16 +1337,34 @@ struct ModelsContract {
         precondition(runs > 40, "action beats must recur, not clump into one stretch")
         precondition(longest <= 2,
                      "a burst is at most two beats; a third is a loop, longest was \(longest)")
-        let restPlan = PetPlaylist.plan(elapsed: 0.0, actionCount: 8, restCount: 8, interval: 0.1)
+        let restPlan = PetPlaylist.plan(elapsed: 0.0, actionCount: 8, restCounts: [8], interval: 0.1)
         precondition(restPlan.index == 0, "a beat starts at its first frame")
-        let midPlan = PetPlaylist.plan(elapsed: 0.35, actionCount: 8, restCount: 8, interval: 0.1)
+        let midPlan = PetPlaylist.plan(elapsed: 0.35, actionCount: 8, restCounts: [8], interval: 0.1)
         precondition(midPlan.index == 3, "frames step at the pose interval, got \(midPlan.index)")
-        let wrapPlan = PetPlaylist.plan(elapsed: 1.25, actionCount: 4, restCount: 4, interval: 0.1)
+        let wrapPlan = PetPlaylist.plan(elapsed: 1.25, actionCount: 4, restCounts: [4], interval: 0.1)
         precondition(wrapPlan.index < 4, "the index must stay inside the clip")
-        precondition(PetPlaylist.plan(elapsed: -5, actionCount: 8, restCount: 8, interval: 0.1).index == 0,
+        precondition(PetPlaylist.plan(elapsed: -5, actionCount: 8, restCounts: [8], interval: 0.1).index == 0,
                      "a negative clock must not index out of the clip")
-        precondition(PetPlaylist.plan(elapsed: 3, actionCount: 0, restCount: 0, interval: 0).index == 0,
+        precondition(PetPlaylist.plan(elapsed: 3, actionCount: 0, restCounts: [], interval: 0).index == 0,
                      "an empty clip must degrade safely")
+        precondition(PetPlaylist.plan(elapsed: 3, actionCount: 6, restCounts: [], interval: 0.1).useAction,
+                     "with no rest clips the action must still play")
+
+        // REST ROTATION: settled beats must spread across EVERY solo clip, or
+        // the meditation, flourish and guard sequences go unused.
+        var restUse = [Int: Int]()
+        var restBeats = 0
+        for segment in 0..<600 where !PetPlaylist.isActionSegment(segment) {
+            restBeats += 1
+            restUse[PetPlaylist.restClip(segment, count: 4), default: 0] += 1
+        }
+        precondition(restUse.count == 4, "all four rest clips must appear, saw \(restUse.count)")
+        let leanest = restUse.values.min() ?? 0
+        precondition(Double(leanest) > Double(restBeats) / 4.0 * 0.5,
+                     "no rest clip may be starved, leanest got \(leanest) of \(restBeats)")
+        precondition(PetPlaylist.restClip(9, count: 4) == PetPlaylist.restClip(9, count: 4),
+                     "rest selection must be deterministic")
+        precondition(PetPlaylist.restClip(9, count: 1) == 0, "a single rest clip is always index 0")
 
         // STRIP NORMALISATION: authored size differences must SURVIVE, and ink
         // must share a baseline. Per-frame fitHeight rendered a short pose and

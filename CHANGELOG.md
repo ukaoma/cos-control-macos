@@ -1,3 +1,15 @@
+## 0.5.124 (build 162)
+
+Settled beats rotate through every solo clip.
+
+Running and patrol already broke into bursts against a rest clip, but that clip
+was always idle — so the meditation, the draw-and-flourish and the guard
+sequences sat unused behind states that are rarely on screen. A settled beat now
+picks among all of them (idle, waiting, success, attention), on a hash
+independent of the action schedule so the two do not move together, and the
+active pose is never used as its own rest. Measured across 1200 beats, no clip
+is starved.
+
 ## 0.5.123 (build 161)
 
 Running is a burst, not a treadmill — and the character holds its size.

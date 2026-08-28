@@ -186,7 +186,7 @@ private struct SessionPetRoot: View {
                             pose: pose,
                             size: CGFloat(size.pixels),
                             characterScale: model.petCharacterFactor,
-                            restFrames: model.petSpriteKit.frames(for: .idle)
+                            restClips: model.petRestClips(for: pose)
                         )
                         if let focus {
                             Circle()

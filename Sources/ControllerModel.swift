@@ -1487,6 +1487,17 @@ final class ControllerModel: ObservableObject {
 
     var petCharacterFactor: CGFloat { PetCharacterScale.factor(petCharacterPercent) }
 
+    /// Solo clips an action pose settles into between bursts. The character has
+    /// a breathing idle, a meditation, a draw-and-flourish and a guard sequence;
+    /// rotating all of them is what keeps a long "working" stretch alive, and
+    /// they would otherwise only appear on states that are rarely on screen.
+    func petRestClips(for pose: PetSpritePose) -> [[NSImage]] {
+        [PetSpritePose.idle, .waiting, .done, .attention]
+            .filter { $0 != pose }
+            .map { petSpriteKit.frames(for: $0) }
+            .filter { $0.count > 1 }
+    }
+
     func setPetCharacterPercent(_ value: Int) {
         let clamped = PetCharacterScale.clamp(value)
         guard clamped != petCharacterPercent else { return }

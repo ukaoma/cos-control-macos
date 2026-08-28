@@ -219,13 +219,17 @@ struct SessionPetSprite: View {
     var size: CGFloat = 64
     /// The character dial only; the card around this view sizes off PetSize.
     var characterScale: CGFloat = 1
-    /// The settled clip an action pose returns to between bursts.
-    var restFrames: [NSImage] = []
+    /// The settled clips an action pose rotates through between bursts.
+    var restClips: [[NSImage]] = []
 
     /// Running and patrol are actions, not states: play them as periodic
-    /// bursts against the rest clip instead of one loop forever.
+    /// bursts against the rest clips instead of one loop forever.
     private var playlists: Bool {
-        pose.usesActivityPlaylist && frames.count > 1 && restFrames.count > 1 && !reduceMotion
+        pose.usesActivityPlaylist && frames.count > 1 && !usableRestClips.isEmpty && !reduceMotion
+    }
+
+    private var usableRestClips: [[NSImage]] {
+        restClips.filter { $0.count > 1 }
     }
 
     var body: some View {
@@ -332,13 +336,14 @@ struct SessionPetSprite: View {
     /// Absolute-time schedule, so no per-instance state has to survive the
     /// panel rebuilding its root view on every poll.
     private func playlistFrame(at date: Date) -> NSImage? {
+        let rests = usableRestClips
         let plan = PetPlaylist.plan(
             elapsed: date.timeIntervalSinceReferenceDate,
             actionCount: frames.count,
-            restCount: restFrames.count,
+            restCounts: rests.map(\.count),
             interval: pose.frameInterval
         )
-        let clip = plan.useAction ? frames : restFrames
+        let clip = plan.useAction ? frames : rests[min(plan.restClip, rests.count - 1)]
         guard !clip.isEmpty else { return nil }
         return clip[min(plan.index, clip.count - 1)]
     }

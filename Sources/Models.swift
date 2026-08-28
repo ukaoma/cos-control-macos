@@ -2669,20 +2669,37 @@ enum PetPlaylist {
         return !(rawPick(segment - 1) && rawPick(segment - 2))
     }
 
+    /// Which REST clip a settled beat draws from. Independent of the action
+    /// hash so the two choices do not move together. Rotating across several
+    /// solo clips is the point: the character has a meditation, a flourish and
+    /// a guard sequence that otherwise only appear on rare states, and one
+    /// rest clip on repeat wastes them.
+    static func restClip(_ segment: Int, count: Int) -> Int {
+        guard count > 1 else { return 0 }
+        var x = UInt64(bitPattern: Int64(segment)) &* 0xD6E8_FEB8_6659_FD93
+        x ^= x >> 32
+        x = x &* 0xFF51_AFD7_ED55_8CCD
+        x ^= x >> 29
+        return Int(x % UInt64(count))
+    }
+
     /// Which clip to draw from, and which frame of it, at `elapsed` seconds.
+    /// `restCounts` is the frame count of each available rest clip.
     static func plan(
         elapsed: Double,
         actionCount: Int,
-        restCount: Int,
+        restCounts: [Int],
         interval: Double
-    ) -> (useAction: Bool, index: Int) {
-        guard actionCount > 0, restCount > 0, interval > 0 else { return (true, 0) }
+    ) -> (useAction: Bool, restClip: Int, index: Int) {
+        let rests = restCounts.filter { $0 > 0 }
+        guard actionCount > 0, interval > 0 else { return (true, 0, 0) }
         let segment = Int((max(0, elapsed) / segmentSeconds).rounded(.down))
-        let useAction = isActionSegment(segment)
+        let useAction = rests.isEmpty || isActionSegment(segment)
         let within = max(0, elapsed) - Double(segment) * segmentSeconds
-        let count = useAction ? actionCount : restCount
-        let index = Int(within / interval) % count
-        return (useAction, index)
+        let clip = useAction ? 0 : restClip(segment, count: rests.count)
+        let count = useAction ? actionCount : rests[clip]
+        let index = count > 0 ? Int(within / interval) % count : 0
+        return (useAction, clip, index)
     }
 }
 
