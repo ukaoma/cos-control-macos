@@ -1,3 +1,54 @@
+## 0.5.113 (build 151)
+
+The sprite pipeline is orientation-true, and the pet reads in dark mode.
+
+Root cause of every recurring flip: the shared bitmap buffer applied a flip
+transform, but a Quartz bitmap-context round trip is already orientation-true,
+so each pass inverted the image once and upright-ness depended on how many
+passes a path made — it also mirrored cropOpaque's bounding box, which is why
+droids kept getting cropped out. The flip is deleted and an executable probe
+in ModelsContract pins orientation through fitHeight, cropOpaque, and prepare.
+Cell boards split on ink islands with narrow gaps merged (a detached bolt or
+debris cloud rides with its scene) forced to the manifest cell count. Strips
+keep their declared frame count, with each cut nudged to the emptiest nearby
+column — the Windu fight scenes connect through 2px bolt bridges, so equal
+cuts bisected droids and pure gap logic could not separate them at all.
+Playback slices by the count that was stitched. Cinematic scenes render a
+step larger.
+Pet buttons use adaptive plate ink instead of fixed ink, ending black-on-black
+in dark mode.
+
+## 0.5.112 (build 150)
+
+The three-droid fight loops, and the droids stay in frame.
+
+Equal-width slices cut the escalation board through the droids, then a tight
+crop shaved the rest. Three or more sessions now play the four fight scenes
+as a loop in a wider pet. Install the pack again after this update.
+
+## 0.5.111 (build 149)
+
+Pack sprites sit upright and fill the pet.
+
+0.5.109 wrote each installed PNG upside down and kept the empty board cell
+around the figure, so Running and Duel shrank into a speck. Install the pack
+again after this update.
+
+## 0.5.110 (build 148)
+
+A Cursor pet click survives contact with real Cursor.
+
+Three breaks, all found by probing Cursor's live accessibility tree. Agents
+rows expose their title as "Chat title. <name>", which defeated every matcher
+branch; the matcher now strips that chrome (contract-tested). The closed-window
+fallback pressed four menu items current Cursor no longer has; it now presses
+File > New Agent, the one persistent command that opens the Agents window. The
+Agents list is Electron-virtualized, so a scrolled-away row is absent from the
+tree; a missing row is now driven through the window's own Search affordance.
+The raise is verified against the frontmost app, the notice only says "Opened
+Agents" when that is true, and every jump logs raised/fronted/window-titles to
+Console so a field miss names its own cause.
+
 ## 0.5.109 (build 147)
 
 The pet escalates from patrol to a five-droid swarm.

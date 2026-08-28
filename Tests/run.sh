@@ -1709,6 +1709,16 @@ need('openSessionInPlatform' in model, "Open in platform is not wired")
 need('choosePetSprite' in model, "Choose sprite is not wired")
 need('installPetSprite' in model, "dropped sprites have no install path")
 need('customImage' in (root / "Sources/COSMotion.swift").read_text(), "the pet sprite cannot render a custom PNG")
+need('drawUpright' not in (root / "Sources/Models.swift").read_text(),
+     "the spurious Quartz flip is back; buffer round trips are orientation-true (see checkPetSpritePipeline)")
+need('forceCount: true' in (root / "Sources/Models.swift").read_text(),
+     "cell boards no longer force the manifest scene count in the island split")
+need('sliceStripByValleys' in (root / "Sources/Models.swift").read_text(),
+     "strips no longer valley-align their declared frame cuts")
+need('COSPalette.plateInk' in (root / "Sources/SessionPet.swift").read_text(),
+     "pet controls regressed to fixed ink: black-on-black in dark mode")
+need('foregroundStyle(COSPalette.ink)' not in (root / "Sources/SessionPet.swift").read_text(),
+     "a pet control paints fixed ink on the adaptive card: black-on-black in dark mode")
 need('arrow.up.forward.app' in (root / "Sources/SessionPet.swift").read_text(), "the pet has no Open in platform control")
 need('petButton("scope"' in (root / "Sources/SessionPet.swift").read_text(), "Activity jump must be a target, not a waveform")
 need('Open in Activity' in (root / "Sources/SessionPet.swift").read_text(), "the target control must name Activity")
@@ -1755,9 +1765,16 @@ need('localizedCaseInsensitiveContains("Cursor Agents")' in model,
      "Cursor Agents window title is not matched")
 need('localizedCaseInsensitiveContains("Agents Window")' in model,
      "Agents Window title is not matched")
-need('Switch to Agents Window' in model, "Cursor jump does not switch to an existing Agents Window")
-need('Open or Focus Agents Window' in model, "Cursor jump does not use Open or Focus Agents Window")
-need('New Agents Window' in model, "Cursor jump does not use New Agents Window")
+need('["New Agent", "Cursor Agents"]' in model,
+     "the closed-Agents-window fallback does not press the menu items current Cursor actually has")
+need('Switch to Agents Window' not in model,
+     "stale Cursor menu names are back; current Cursor has no such items (menu bar probed 2026-08-27)")
+need('searchAndPressCursorAgentTab' in model,
+     "a virtualized (scrolled-away) Agents row has no search fallback")
+need('cursorFrontmostVerified' in model,
+     "the raise is not verified against the frontmost app before the notice claims Opened")
+need('Could not bring the Agents window forward' in model,
+     "a failed raise has no honest notice")
 need('AXIsProcessTrusted()' in model, "Cursor miss notice does not record Accessibility trust")
 need('Toggle it off and on' in model,
      "an untrusted AX jump does not say to re-key the stale grant")

@@ -86,8 +86,14 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         let panel = existingPanel()
         if let host = panel.contentViewController as? NSHostingController<SessionPetRoot> {
             host.rootView = SessionPetRoot(model: model, presenter: self)
-            let spriteWidth = model.petSpritePose.spriteWidth(model.petSize.pixels)
-            let width = max(model.petSize.length(260), spriteWidth + model.petSize.length(24))
+            let spriteWidth = max(
+                model.petSpritePose.spriteWidth(model.petSize.pixels),
+                CGFloat(model.petSize.pixels)
+            )
+            let width = max(
+                model.petSize.length(260),
+                spriteWidth + model.petSize.length(36)
+            )
             let fitting = host.sizeThatFits(in: NSSize(width: width, height: 900))
             var frame = panel.frame
             frame.size = NSSize(width: width, height: max(fitting.height, model.petSize.length(120)))
@@ -226,7 +232,7 @@ private struct SessionPetRoot: View {
             }
         }
         .padding(size.length(10))
-        .frame(width: max(size.length(248), pose.spriteWidth(size.pixels) + size.length(20)))
+        .frame(width: max(size.length(248), pose.spriteWidth(size.pixels) + size.length(36)))
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleSpriteDrop(providers)
         }
@@ -257,7 +263,7 @@ private struct SessionPetRoot: View {
                         Spacer(minLength: 0)
                         Image(systemName: "arrow.up.forward.app")
                             .font(.system(size: size.typeSize(11), weight: .semibold))
-                            .foregroundStyle(COSPalette.ink)
+                            .foregroundStyle(COSPalette.plateInk)
                     }
                     .padding(.vertical, size.length(7))
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -330,7 +336,9 @@ private struct SessionPetRoot: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: size.typeSize(11), weight: .semibold))
-                .foregroundStyle(COSPalette.ink)
+                // Fixed ink on the adaptive card disc is invisible in dark mode;
+                // plateInk flips to gold there. The documented black-on-black fix.
+                .foregroundStyle(COSPalette.plateInk)
                 .frame(width: size.length(22), height: size.length(22))
                 .background(Circle().fill(COSPalette.card))
                 .overlay(Circle().stroke(COSPalette.line, lineWidth: 1))

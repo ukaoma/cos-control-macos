@@ -730,7 +730,14 @@ enum CursorAgentTabMatch {
     static let minimumCount = 8
 
     static func matches(_ rawHave: String, want rawWant: String) -> Bool {
-        let have = rawHave.trimmingCharacters(in: .whitespacesAndNewlines)
+        var have = rawHave.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Cursor's Agents rows expose their accessible title as
+        // "Chat title. <name>" (AX tree probed 2026-08-27). Strip that chrome;
+        // the minimum-length gate applies to what remains.
+        for prefix in ["chat title.", "chat title"] where have.lowercased().hasPrefix(prefix) {
+            have = String(have.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            break
+        }
         let want = rawWant.trimmingCharacters(in: .whitespacesAndNewlines)
         guard have.count >= minimumCount, want.count >= minimumCount else { return false }
         if have.caseInsensitiveCompare(want) == .orderedSame { return true }
@@ -2741,8 +2748,8 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
         case .searching, .grepping: 0.14
         case .working: 0.10
         case .duel: 0.11
-        case .trio: 0.10
-        case .swarm: 0.08
+        case .trio: 0.22
+        case .swarm: 0.22
         case .done: 0.16
         case .error, .attention: 0.14
         }
@@ -2762,9 +2769,13 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
         }
     }
 
-    func spriteWidth(_ pixels: Int) -> CGFloat {
+    func spriteHeight(_ pixels: Int) -> CGFloat {
         let size = CGFloat(pixels)
-        return cinematic ? (size * 1.85).rounded() : size
+        return cinematic ? (size * 1.55).rounded() : size
+    }
+
+    func spriteWidth(_ pixels: Int) -> CGFloat {
+        cinematic ? (spriteHeight(pixels) * 2.6).rounded() : CGFloat(pixels)
     }
 
     var fallbackPoses: [PetSpritePose] {
@@ -2839,18 +2850,22 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
 struct PetSpriteKit {
     var fallback: NSImage?
     var poses: [PetSpritePose: [NSImage]] = [:]
+    var cinematic: [NSImage] = []
 
     func frames(for pose: PetSpritePose) -> [NSImage] {
+        if pose == .duel, let fight = poses[.duel], fight.count > 1 { return fight }
+        if (pose == .trio || pose == .swarm), cinematic.count > 1 { return cinematic }
         if let frames = poses[pose], !frames.isEmpty { return frames }
         for fallback in pose.fallbackPoses {
             if let frames = poses[fallback], !frames.isEmpty { return frames }
         }
+        if (pose == .trio || pose == .swarm), cinematic.count > 1 { return cinematic }
         if let fallback { return [fallback] }
         return []
     }
 
     var hasAnyCustom: Bool {
-        fallback != nil || poses.contains { !$0.value.isEmpty }
+        fallback != nil || !cinematic.isEmpty || poses.contains { !$0.value.isEmpty }
     }
 
     func preview(for pose: PetSpritePose) -> NSImage? {
@@ -2868,13 +2883,16 @@ enum PetSpriteStrip {
     }
 
     static func raster(_ image: NSImage) -> CGImage? {
+        var rect = CGRect(origin: .zero, size: image.size)
+        if let cg = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) {
+            return cg
+        }
         if let tiff = image.tiffRepresentation,
            let rep = NSBitmapImageRep(data: tiff),
            let cg = rep.cgImage {
             return cg
         }
-        var rect = CGRect(origin: .zero, size: image.size)
-        return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+        return nil
     }
 
     static func slice(_ image: NSImage, frames: Int) -> [NSImage] {
@@ -2912,24 +2930,277 @@ enum PetSpriteStrip {
         return out.isEmpty ? [image] : out
     }
 
+    /// Escalation boards pack scenes of different widths — equal columns cut
+    /// droids in half. Scenes are ink islands found at a low column threshold.
+    /// A detached blaster bolt or debris cloud sits a SMALL gap from its scene
+    /// while scene gutters are wide, so narrow gaps merge before cutting, and a
+    /// speck island attaches to its nearest neighbor. `count` is a hint: with
+    /// `forceCount` (cell boards whose manifest names each scene) islands merge
+    /// down to exactly `count` or the equal grid applies; otherwise the natural
+    /// scene count wins.
+    static func sliceRowByIslands(_ image: NSImage, count: Int, forceCount: Bool = false) -> [NSImage] {
+        let hint = max(1, count)
+        guard let buffer = PetSpriteAlpha.rgbaBuffer(image),
+              let cg = raster(image) else {
+            return sliceGrid(image, columns: hint, rows: 1)
+        }
+        var opaqueCol = [Double](repeating: 0, count: buffer.width)
+        for x in 0..<buffer.width {
+            var hits = 0
+            for y in 0..<buffer.height {
+                let byte = (y * buffer.width + x) * 4
+                if PetSpriteAlpha.isSpriteInk(buffer.pixels, at: byte) { hits += 1 }
+            }
+            opaqueCol[x] = Double(hits) / Double(max(buffer.height, 1))
+        }
+        var islands: [(x: Int, w: Int)] = []
+        var i = 0
+        while i < buffer.width {
+            while i < buffer.width && opaqueCol[i] <= 0.015 { i += 1 }
+            guard i < buffer.width else { break }
+            let start = i
+            while i < buffer.width && opaqueCol[i] > 0.015 { i += 1 }
+            islands.append((start, i - start))
+        }
+        // Intra-scene gaps (a bolt or debris beside its figure) and scene
+        // gutters form two clusters, and their sizes vary per board — a fixed
+        // divisor swallowed six fight scenes into one cell. Take the threshold
+        // from the data: the largest relative jump in the sorted gap sizes,
+        // clamped to scale; fixed width/64 when the gaps have no structure.
+        var gaps: [Int] = []
+        for j in 1..<max(1, islands.count) {
+            gaps.append(islands[j].x - (islands[j - 1].x + islands[j - 1].w))
+        }
+        let distinct = Array(Set(gaps.filter { $0 >= 2 })).sorted()
+        var gutter = max(2, buffer.width / 64)
+        if distinct.count >= 2 {
+            var bestRatio = 0.0
+            var bestMid = gutter
+            for j in 1..<distinct.count {
+                let ratio = Double(distinct[j]) / Double(max(distinct[j - 1], 1))
+                if ratio > bestRatio {
+                    bestRatio = ratio
+                    bestMid = (distinct[j - 1] + distinct[j]) / 2
+                }
+            }
+            if bestRatio >= 1.8 {
+                gutter = min(max(bestMid, max(2, buffer.width / 200)), max(2, buffer.width / 32))
+            }
+        }
+        var scenes: [(x: Int, w: Int)] = []
+        for island in islands {
+            if let last = scenes.last, island.x - (last.x + last.w) < gutter {
+                scenes[scenes.count - 1] = (last.x, island.x + island.w - last.x)
+            } else {
+                scenes.append(island)
+            }
+        }
+        let speck = max(2, buffer.width / 200)
+        func mergePair(at index: Int) {
+            let a = scenes[index - 1]
+            let b = scenes[index]
+            scenes[index - 1] = (a.x, b.x + b.w - a.x)
+            scenes.remove(at: index)
+        }
+        while scenes.count > 1, let speckIndex = scenes.firstIndex(where: { $0.w < speck }) {
+            if speckIndex == 0 {
+                mergePair(at: 1)
+            } else if speckIndex == scenes.count - 1 {
+                mergePair(at: speckIndex)
+            } else {
+                let leftGap = scenes[speckIndex].x - (scenes[speckIndex - 1].x + scenes[speckIndex - 1].w)
+                let rightGap = scenes[speckIndex + 1].x - (scenes[speckIndex].x + scenes[speckIndex].w)
+                mergePair(at: leftGap <= rightGap ? speckIndex : speckIndex + 1)
+            }
+        }
+        func mergeClosestPair() {
+            guard scenes.count > 1 else { return }
+            var best = 1
+            var bestGap = Int.max
+            for j in 1..<scenes.count {
+                let gap = scenes[j].x - (scenes[j - 1].x + scenes[j - 1].w)
+                if gap < bestGap {
+                    bestGap = gap
+                    best = j
+                }
+            }
+            mergePair(at: best)
+        }
+        let cap = forceCount ? hint : maxFrames
+        while scenes.count > cap { mergeClosestPair() }
+        if forceCount && scenes.count != hint {
+            return sliceGrid(image, columns: hint, rows: 1)
+        }
+        guard scenes.count > 1 else {
+            // One island with a multi-frame hint is a tight-packed uniform sheet
+            // (frames touch, no gutters) — the classic strip format. Gutters win
+            // when they exist; the hint wins when they do not.
+            return hint > 1
+                ? sliceGrid(image, columns: hint, rows: 1)
+                : [NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))]
+        }
+        var out: [NSImage] = []
+        out.reserveCapacity(scenes.count)
+        for (idx, island) in scenes.enumerated() {
+            let left = idx == 0 ? 0 : (scenes[idx - 1].x + scenes[idx - 1].w + island.x) / 2
+            let right = idx == scenes.count - 1 ? buffer.width : (island.x + island.w + scenes[idx + 1].x) / 2
+            let rect = CGRect(x: left, y: 0, width: max(1, right - left), height: cg.height)
+            guard let cropped = cg.cropping(to: rect) else { continue }
+            out.append(NSImage(cgImage: cropped, size: NSSize(width: rect.width, height: rect.height)))
+        }
+        return out.count > 1 ? out : sliceGrid(image, columns: hint, rows: 1)
+    }
+
     static func fitHeight(_ image: NSImage, maxHeight: Int = maxHeight) -> NSImage {
         guard let cg = raster(image), cg.height > maxHeight else { return image }
         let scale = CGFloat(maxHeight) / CGFloat(cg.height)
         let width = max(1, Int((CGFloat(cg.width) * scale).rounded()))
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        guard let ctx = CGContext(
-            data: nil,
-            width: width,
-            height: maxHeight,
-            bitsPerComponent: 8,
+        guard let buffer = PetSpriteAlpha.rgbaBuffer(image, width: width, height: maxHeight) else {
+            return image
+        }
+        return PetSpriteAlpha.image(from: buffer)
+    }
+
+    /// Drop the empty board cell around the figure so Large is the character, not padding.
+    static func cropOpaque(_ image: NSImage, paddingRatio: CGFloat = 0.24) -> NSImage {
+        guard let buffer = PetSpriteAlpha.rgbaBuffer(image),
+              let cg = raster(image) else { return image }
+        var minX = buffer.width
+        var minY = buffer.height
+        var maxX = 0
+        var maxY = 0
+        for y in 0..<buffer.height {
+            for x in 0..<buffer.width {
+                if !PetSpriteAlpha.isSpriteInk(buffer.pixels, at: (y * buffer.width + x) * 4) { continue }
+                minX = min(minX, x)
+                minY = min(minY, y)
+                maxX = max(maxX, x)
+                maxY = max(maxY, y)
+            }
+        }
+        guard minX <= maxX, minY <= maxY else { return image }
+        let span = max(maxX - minX + 1, maxY - minY + 1)
+        let pad = max(12, Int((CGFloat(span) * paddingRatio).rounded()))
+        let padX = max(pad, Int((Double(pad) * 1.6).rounded()))
+        let x = max(0, minX - padX)
+        let y = max(0, minY - pad)
+        let maxX2 = min(buffer.width - 1, maxX + padX)
+        let maxY2 = min(buffer.height - 1, maxY + pad)
+        let rect = CGRect(x: x, y: y, width: maxX2 - x + 1, height: maxY2 - y + 1)
+        if rect.width >= CGFloat(cg.width) && rect.height >= CGFloat(cg.height) { return image }
+        guard let cropped = cg.cropping(to: rect) else { return image }
+        return NSImage(cgImage: cropped, size: NSSize(width: rect.width, height: rect.height))
+    }
+
+    /// A strip's manifest declares its frame count — that is artistic intent,
+    /// not a hint. Cuts start at the equal-grid positions and nudge to the
+    /// emptiest nearby column, so a figure is never bisected when a valley
+    /// exists and continuous art degrades to a plain equal slice. Measured on
+    /// the Windu combat board: the fight scenes connect through 2px bolt
+    /// bridges, so zero-gap island logic cannot separate them, but each scene
+    /// boundary is still the local ink minimum.
+    static func sliceStripByValleys(_ image: NSImage, frames: Int) -> [NSImage] {
+        let count = clampFrames(frames)
+        guard count > 1,
+              let buffer = PetSpriteAlpha.rgbaBuffer(image),
+              let cg = raster(image) else {
+            return slice(image, frames: count)
+        }
+        var opaqueCol = [Double](repeating: 0, count: buffer.width)
+        for x in 0..<buffer.width {
+            var hits = 0
+            for y in 0..<buffer.height {
+                let byte = (y * buffer.width + x) * 4
+                if PetSpriteAlpha.isSpriteInk(buffer.pixels, at: byte) { hits += 1 }
+            }
+            opaqueCol[x] = Double(hits) / Double(max(buffer.height, 1))
+        }
+        let cell = Double(buffer.width) / Double(count)
+        let window = max(2, buffer.width / (count * 3))
+        var cuts: [Int] = [0]
+        for k in 1..<count {
+            let center = Int((Double(k) * cell).rounded())
+            let lo = max((cuts.last ?? 0) + 1, center - window)
+            let hi = min(buffer.width - (count - k), center + window)
+            guard lo <= hi else {
+                cuts.append(min(max(center, (cuts.last ?? 0) + 1), buffer.width - 1))
+                continue
+            }
+            var best = center
+            var bestInk = Double.greatestFiniteMagnitude
+            for x in lo...hi {
+                let ink = opaqueCol[x]
+                if ink + 1e-9 < bestInk
+                    || (abs(ink - bestInk) <= 1e-9 && abs(x - center) < abs(best - center)) {
+                    bestInk = ink
+                    best = x
+                }
+            }
+            cuts.append(best)
+        }
+        cuts.append(buffer.width)
+        var out: [NSImage] = []
+        out.reserveCapacity(count)
+        for i in 0..<count {
+            let rect = CGRect(x: cuts[i], y: 0, width: max(1, cuts[i + 1] - cuts[i]), height: cg.height)
+            guard let cropped = cg.cropping(to: rect) else { continue }
+            out.append(NSImage(cgImage: cropped, size: NSSize(width: rect.width, height: rect.height)))
+        }
+        return out.count == count ? out : slice(image, frames: count)
+    }
+
+    /// Returns the prepared image AND the frame count that was stitched, so
+    /// playback slices exactly what exists.
+    static func prepare(_ image: NSImage, frames: Int = 1) -> (image: NSImage, frames: Int) {
+        let count = clampFrames(frames)
+        if count <= 1 {
+            return (fitHeight(cropOpaque(image)), 1)
+        }
+        let parts = sliceStripByValleys(image, frames: count)
+        let prepared = parts.map { fitHeight(cropOpaque($0, paddingRatio: 0.30)) }
+        guard let stitched = stitch(prepared) else { return (image, 1) }
+        return (stitched, clampFrames(prepared.count))
+    }
+
+    static func stitch(_ frames: [NSImage]) -> NSImage? {
+        let reps = frames.compactMap { image -> NSBitmapImageRep? in
+            guard let tiff = image.tiffRepresentation else { return nil }
+            return NSBitmapImageRep(data: tiff)
+        }
+        guard !reps.isEmpty else { return nil }
+        let height = reps.map(\.pixelsHigh).max() ?? 1
+        let cellWidth = max(1, reps.map(\.pixelsWide).max() ?? 1)
+        let width = cellWidth * reps.count
+        guard let dest = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: width,
+            pixelsHigh: height,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
             bytesPerRow: 0,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return image }
-        ctx.interpolationQuality = .medium
-        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: maxHeight))
-        guard let out = ctx.makeImage() else { return image }
-        return NSImage(cgImage: out, size: NSSize(width: width, height: maxHeight))
+            bitsPerPixel: 32
+        ) else { return nil }
+        for y in 0..<height {
+            for x in 0..<width {
+                dest.setColor(NSColor(calibratedRed: 0, green: 0, blue: 0, alpha: 0), atX: x, y: y)
+            }
+        }
+        for (index, rep) in reps.enumerated() {
+            let dx = index * cellWidth + (cellWidth - rep.pixelsWide) / 2
+            let dy = (height - rep.pixelsHigh) / 2
+            for y in 0..<rep.pixelsHigh {
+                for x in 0..<rep.pixelsWide {
+                    let color = rep.colorAt(x: x, y: y) ?? NSColor(calibratedRed: 0, green: 0, blue: 0, alpha: 0)
+                    dest.setColor(color, atX: dx + x, y: dy + y)
+                }
+            }
+        }
+        let image = NSImage(size: NSSize(width: width, height: height))
+        image.addRepresentation(dest)
+        return image
     }
 }
 
@@ -2993,13 +3264,25 @@ enum PetSpriteAlpha {
             enqueue(x, y - 1)
             enqueue(x, y + 1)
         }
-        return makeImage(from: buffer)
+        return PetSpriteAlpha.image(from: buffer)
     }
 
-    private struct RGBABuffer {
+    fileprivate struct RGBABuffer {
         var pixels: [UInt8]
         var width: Int
         var height: Int
+    }
+
+    fileprivate static func isSpriteInk(_ pixels: [UInt8], at byte: Int) -> Bool {
+        guard byte + 3 < pixels.count else { return false }
+        let r = pixels[byte]
+        let g = pixels[byte + 1]
+        let b = pixels[byte + 2]
+        let a = pixels[byte + 3]
+        if a < 24 { return false }
+        if isPaper(pixels, at: byte) { return false }
+        if r < 14 && g < 14 && b < 14 && a < 48 { return false }
+        return true
     }
 
     private static func isPaper(_ pixels: [UInt8], at byte: Int) -> Bool {
@@ -3011,13 +3294,18 @@ enum PetSpriteAlpha {
         if a < 16 { return true }
         let maxc = max(r, g, b)
         let minc = min(r, g, b)
-        return maxc >= 220 && (maxc - minc) <= 18
+        if (maxc - minc) > 22 { return false }
+        return maxc >= 160
     }
 
-    private static func rgbaBuffer(_ image: NSImage) -> RGBABuffer? {
+    fileprivate static func rgbaBuffer(
+        _ image: NSImage,
+        width targetWidth: Int? = nil,
+        height targetHeight: Int? = nil
+    ) -> RGBABuffer? {
         guard let cg = PetSpriteStrip.raster(image) else { return nil }
-        let width = cg.width
-        let height = cg.height
+        let width = targetWidth ?? cg.width
+        let height = targetHeight ?? cg.height
         var pixels = [UInt8](repeating: 0, count: width * height * 4)
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let drawn = pixels.withUnsafeMutableBytes { raw -> Bool in
@@ -3030,21 +3318,21 @@ enum PetSpriteAlpha {
                 space: colorSpace,
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
             ) else { return false }
+            ctx.interpolationQuality = .medium
+            // A bitmap-context draw plus a CGImage built from the same buffer is
+            // orientation-TRUE: memory row 0 is the top scanline on both sides.
+            // The old flip transform here inverted every round trip, so whether a
+            // sprite rendered upright depended on how many buffer passes its path
+            // made (and cropOpaque measured a mirrored bbox). Never re-add a flip
+            // without an executable orientation probe proving it is needed.
             ctx.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
             return true
         }
         guard drawn else { return nil }
-        let stride = width * 4
-        var topLeft = [UInt8](repeating: 0, count: pixels.count)
-        for y in 0..<height {
-            let source = (height - 1 - y) * stride
-            let dest = y * stride
-            topLeft.replaceSubrange(dest..<(dest + stride), with: pixels[source..<(source + stride)])
-        }
-        return RGBABuffer(pixels: topLeft, width: width, height: height)
+        return RGBABuffer(pixels: pixels, width: width, height: height)
     }
 
-    private static func makeImage(from buffer: RGBABuffer) -> NSImage {
+    fileprivate static func image(from buffer: RGBABuffer) -> NSImage {
         let data = Data(buffer.pixels) as CFData
         guard let provider = CGDataProvider(data: data),
               let cg = CGImage(
@@ -3216,6 +3504,7 @@ enum PetSpritePack {
 enum PetSpriteStore {
     static let fileStem = "session-pet-sprite"
     static let stateFileName = "session-pet-states.json"
+    static let cinematicFileName = "session-pet-cinematic.png"
     static let maxBytes = 8 * 1024 * 1024
     static let allowedExtensions: Set<String> = ["png", "gif", "jpg", "jpeg", "tiff", "tif", "webp"]
 
@@ -3291,14 +3580,15 @@ enum PetSpriteStore {
         if PetSpriteAlpha.needsPaperKnockout(image) {
             image = PetSpriteAlpha.knockOutEdgePaper(image)
         }
-        image = PetSpriteStrip.fitHeight(image)
+        let prepared = PetSpriteStrip.prepare(image, frames: frames)
+        image = prepared.image
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let dest = directory.appendingPathComponent(poseFileName(pose))
         try? fileManager.removeItem(at: dest)
         guard let data = pngData(image) else { throw InstallError.notAnImage }
         try data.write(to: dest, options: .atomic)
         var map = loadStateMap(in: directory, fileManager: fileManager)
-        map[pose] = (poseFileName(pose), PetSpriteStrip.clampFrames(frames))
+        map[pose] = (poseFileName(pose), prepared.frames)
         try saveStateMap(map, in: directory, fileManager: fileManager)
         return dest
     }
@@ -3320,17 +3610,32 @@ enum PetSpriteStore {
         if PetSpriteAlpha.needsPaperKnockout(image) {
             image = PetSpriteAlpha.knockOutEdgePaper(image)
         }
-        let sliced = PetSpriteStrip.sliceGrid(image, columns: columns, rows: rows)
+        let sliced = rows == 1 && columns > 1
+            ? PetSpriteStrip.sliceRowByIslands(image, count: columns, forceCount: true)
+            : PetSpriteStrip.sliceGrid(image, columns: columns, rows: rows)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         var map = loadStateMap(in: directory, fileManager: fileManager)
+        var preparedPoses: [PetSpritePose: NSImage] = [:]
         for cell in cells {
             guard cell.index >= 0, cell.index < sliced.count else { continue }
-            let prepared = PetSpriteStrip.fitHeight(sliced[cell.index])
+            let prepared = rows == 1
+                ? PetSpriteStrip.fitHeight(PetSpriteStrip.cropOpaque(sliced[cell.index], paddingRatio: 0.30))
+                : PetSpriteStrip.prepare(sliced[cell.index]).image
             let dest = directory.appendingPathComponent(poseFileName(cell.pose))
             try? fileManager.removeItem(at: dest)
             guard let data = pngData(prepared) else { continue }
             try data.write(to: dest, options: .atomic)
             map[cell.pose] = (poseFileName(cell.pose), 1)
+            preparedPoses[cell.pose] = prepared
+        }
+        let sequence: [PetSpritePose] = [.patrol, .duel, .trio, .swarm]
+        if sequence.allSatisfy({ preparedPoses[$0] != nil }),
+           let strip = PetSpriteStrip.stitch(sequence.compactMap { preparedPoses[$0] }) {
+            let dest = directory.appendingPathComponent(cinematicFileName)
+            try? fileManager.removeItem(at: dest)
+            if let data = pngData(strip) {
+                try data.write(to: dest, options: .atomic)
+            }
         }
         try saveStateMap(map, in: directory, fileManager: fileManager)
     }
@@ -3387,6 +3692,7 @@ enum PetSpriteStore {
         for pose in PetSpritePose.allCases {
             try? fileManager.removeItem(at: directory.appendingPathComponent(poseFileName(pose)))
         }
+        try? fileManager.removeItem(at: directory.appendingPathComponent(cinematicFileName))
         try? fileManager.removeItem(at: directory.appendingPathComponent(stateFileName))
     }
 
@@ -3405,8 +3711,8 @@ enum PetSpriteStore {
     }
 
     private static func pngData(_ image: NSImage) -> Data? {
-        guard let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        guard let cg = PetSpriteStrip.raster(image) else { return nil }
+        let rep = NSBitmapImageRep(cgImage: cg)
         return rep.representation(using: .png, properties: [:])
     }
 }

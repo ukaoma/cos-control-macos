@@ -806,6 +806,59 @@ struct ModelsContract {
         precondition(center.3 > 200, "interior ink must stay, got alpha \(center.3)")
         precondition(center.0 < 40, "interior ink must stay dark, got \(center.0)")
 
+        let checker = rgbImage(width: 5, height: 5) { x, y in
+            if x == 2 && y == 2 { return (10, 10, 10, 255) }
+            return (200, 200, 200, 255)
+        }
+        precondition(PetSpriteAlpha.needsPaperKnockout(checker), "checkerboard gray is paper")
+
+        let pole = rgbImage(width: 2, height: 300) { _, y in
+            if y < 40 { return (220, 20, 20, 255) }
+            if y > 259 { return (20, 20, 220, 255) }
+            return (20, 180, 20, 255)
+        }
+        let scaled = PetSpriteStrip.fitHeight(pole, maxHeight: 256)
+        let top = rgbaPixel(scaled, x: 0, y: 0)
+        let bottom = rgbaPixel(scaled, x: 0, y: 255)
+        precondition(top.0 > 150 && top.2 < 80, "fitHeight must keep the top red, got \(top)")
+        precondition(bottom.2 > 150 && bottom.0 < 80, "fitHeight must keep the bottom blue, got \(bottom)")
+
+        let padded = rgbImage(width: 80, height: 80) { x, y in
+            if (37...42).contains(x) && (37...42).contains(y) { return (10, 10, 10, 255) }
+            return (254, 254, 254, 255)
+        }
+        let cropped = PetSpriteStrip.cropOpaque(PetSpriteAlpha.knockOutEdgePaper(padded))
+        guard let cropCG = PetSpriteStrip.raster(cropped) else {
+            preconditionFailure("cropped sprite must rasterize")
+        }
+        precondition(cropCG.height < 60, "crop must drop the empty cell, got \(cropCG.height)")
+        precondition(cropCG.width < 60, "crop must drop the empty cell, got \(cropCG.width)")
+
+        let islandBoard = rgbImage(width: 40, height: 8) { x, _ in
+            let inBlob = (2..<8).contains(x) || (12..<18).contains(x)
+                || (22..<28).contains(x) || (32..<38).contains(x)
+            return inBlob ? (10, 10, 10, 255) : (0, 0, 0, 0)
+        }
+        let islands = PetSpriteStrip.sliceRowByIslands(islandBoard, count: 4)
+        precondition(islands.count == 4, "uneven scenes must split on gutters, got \(islands.count)")
+
+        var cineKit = PetSpriteKit()
+        cineKit.poses[.trio] = [rgbImage(width: 2, height: 2) { _, _ in (10, 10, 10, 255) }]
+        cineKit.cinematic = (0..<4).map { i in
+            rgbImage(width: 2, height: 2) { _, _ in (UInt8(40 + i * 40), 10, 10, 255) }
+        }
+        precondition(cineKit.frames(for: .trio).count == 4,
+                     "three-session fight must play the cinematic loop, not the still")
+
+        let colored = rgbImage(width: 4, height: 4) { x, y in
+            let col = x / 2
+            let row = y / 2
+            if row == 0 && col == 0 { return (220, 20, 20, 255) }
+            if row == 0 && col == 1 { return (20, 220, 20, 255) }
+            if row == 1 && col == 0 { return (20, 20, 220, 255) }
+            return (220, 220, 20, 255)
+        }
+
         let fm = FileManager.default
         let tmp = fm.temporaryDirectory.appendingPathComponent("pet-pack-\(UUID().uuidString)", isDirectory: true)
         try! fm.createDirectory(at: tmp, withIntermediateDirectories: true)
@@ -814,7 +867,13 @@ struct ModelsContract {
         let searchAlpha = tmp.appendingPathComponent("02-search-strip-alpha.png")
         let combat = tmp.appendingPathComponent("04-combat-strip-alpha.png")
         try! pngData(strip).write(to: search)
-        try! pngData(strip).write(to: searchAlpha)
+        // Spaced 8-scene strip: installPose must record the natural island
+        // count, and here nature and the manifest agree at 8.
+        let spacedStrip = rgbImage(width: 160, height: 8) { x, _ in
+            let inBlob = (x % 20) < 8 && x / 20 < 8
+            return inBlob ? (10, 10, 10, 255) : (0, 0, 0, 0)
+        }
+        try! pngData(spacedStrip).write(to: searchAlpha)
         try! pngData(strip).write(to: combat)
         let scanned = PetSpritePack.scanFiles(in: tmp)
         let waiting = scanned.first { $0.pose == .waiting }
@@ -840,6 +899,24 @@ struct ModelsContract {
         precondition(PetSpriteStore.existingPoseURL(.idle, in: gridSupport) != nil)
         precondition(PetSpriteStore.existingPoseURL(.error, in: gridSupport) != nil)
         precondition(PetSpriteStore.loadStateMap(in: gridSupport)[.error]?.frames == 1)
+
+        let colorFile = tmp.appendingPathComponent("color-grid.png")
+        try! pngData(colored).write(to: colorFile)
+        let colorSupport = tmp.appendingPathComponent("color-support", isDirectory: true)
+        try! PetSpriteStore.installGrid(
+            from: colorFile,
+            columns: 2,
+            rows: 2,
+            cells: [(.idle, 0), (.error, 3)],
+            into: colorSupport
+        )
+        let idleInstalled = NSImage(contentsOf: PetSpriteStore.existingPoseURL(.idle, in: colorSupport)!)!
+        guard let idleCG = PetSpriteStrip.raster(idleInstalled) else {
+            preconditionFailure("installed idle cell must rasterize")
+        }
+        let idlePix = rgbaPixel(idleInstalled, x: idleCG.width / 2, y: idleCG.height / 2)
+        precondition(idlePix.0 > 150 && idlePix.2 < 80,
+                     "top-left cell must stay red and upright after install, got \(idlePix)")
 
         let manifest = """
         {"poses":{"idle":{"file":"02-search-strip.png","frames":4}}}
@@ -915,8 +992,11 @@ struct ModelsContract {
             ) else { return }
             ctx.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
         }
-        let row = cg.height - 1 - y
-        let index = (row * cg.width + x) * 4
+        // A bitmap-context draw is orientation-true: buffer row 0 IS the top
+        // scanline. This reader used to invert the row (height-1-y), which
+        // cancelled the pipeline's own spurious flip — green tests, upside-down
+        // production. Read raster order; never re-add the inversion.
+        let index = (y * cg.width + x) * 4
         return (pixels[index], pixels[index + 1], pixels[index + 2], pixels[index + 3])
     }
 
@@ -953,6 +1033,96 @@ struct ModelsContract {
 
     /// Agents list rows, not Cursor window titles. Contains matching against
     /// windows raises the IDE because the workspace name sits in both.
+    // MARK: - Pet sprite pipeline (executable, not source-grep)
+
+    /// Opaque violet ink block: passes isSpriteInk (alpha high, saturated, not paper).
+    private static func spriteProbe(width: Int, height: Int, blobs: [(x: Int, w: Int, y: Int, h: Int)]) -> NSImage {
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 32
+        ) else { preconditionFailure("probe rep") }
+        let clear = NSColor(calibratedRed: 0, green: 0, blue: 0, alpha: 0)
+        let ink = NSColor(calibratedRed: 0.25, green: 0.16, blue: 0.55, alpha: 1)
+        for y in 0..<height {
+            for x in 0..<width { rep.setColor(clear, atX: x, y: y) }
+        }
+        for blob in blobs {
+            for y in blob.y..<min(height, blob.y + blob.h) {
+                for x in blob.x..<min(width, blob.x + blob.w) { rep.setColor(ink, atX: x, y: y) }
+            }
+        }
+        let image = NSImage(size: NSSize(width: width, height: height))
+        image.addRepresentation(rep)
+        return image
+    }
+
+    private static func inkFraction(_ image: NSImage, topHalf: Bool) -> Double {
+        guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { return -1 }
+        let h = rep.pixelsHigh
+        let w = rep.pixelsWide
+        let rows = topHalf ? 0..<(h / 2) : (h / 2)..<h
+        var hits = 0
+        var total = 0
+        for y in rows {
+            for x in 0..<w {
+                total += 1
+                if (rep.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.2 { hits += 1 }
+            }
+        }
+        return total == 0 ? -1 : Double(hits) / Double(total)
+    }
+
+    private static func checkPetSpritePipeline() {
+        // ORIENTATION: ink lives ONLY in the top rows. Every public transform
+        // must keep it there — one spurious flip in a buffer round trip shipped
+        // upside-down duel scenes on 0.5.111.
+        let topHeavy = spriteProbe(width: 64, height: 48, blobs: [(x: 4, w: 56, y: 4, h: 16)])
+        let scaled = PetSpriteStrip.fitHeight(topHeavy, maxHeight: 24)
+        precondition(inkFraction(scaled, topHalf: true) > 0.4,
+                     "fitHeight lost the top-heavy ink: vertical flip in the buffer round trip")
+        precondition(inkFraction(scaled, topHalf: false) < 0.05,
+                     "fitHeight moved ink to the bottom: vertical flip in the buffer round trip")
+        let cropped = PetSpriteStrip.cropOpaque(topHeavy, paddingRatio: 0.1)
+        precondition(cropped.size.height < topHeavy.size.height,
+                     "cropOpaque did not trim the empty bottom")
+        precondition(inkFraction(cropped, topHalf: true) > 0.2,
+                     "cropOpaque cropped the mirrored region: bbox measured on a flipped buffer")
+        let prepared = PetSpriteStrip.prepare(topHeavy, frames: 1)
+        precondition(inkFraction(prepared.image, topHalf: true) > inkFraction(prepared.image, topHalf: false),
+                     "prepare flipped a top-heavy sprite")
+
+        // CELL BOARDS: islands + gap merge, forced to the manifest cell count.
+        // The narrow 'bolt' 20px from scene one must ride with it.
+        let strip = spriteProbe(width: 1600, height: 100, blobs: [
+            (x: 80, w: 240, y: 20, h: 60),
+            (x: 340, w: 40, y: 30, h: 20),
+            (x: 700, w: 240, y: 20, h: 60),
+            (x: 1200, w: 240, y: 20, h: 60),
+        ])
+        let forced = PetSpriteStrip.sliceRowByIslands(strip, count: 3, forceCount: true)
+        precondition(forced.count == 3, "forceCount 3 failed on a 3-scene board")
+        let forcedPair = PetSpriteStrip.sliceRowByIslands(strip, count: 2, forceCount: true)
+        precondition(forcedPair.count == 2, "forceCount must merge closest scenes down to the cell count")
+
+        // STRIPS: the declared frame count is intent. Cuts nudge to empty
+        // valleys, so the bolt stays with scene one and no figure is bisected.
+        let valley = PetSpriteStrip.sliceStripByValleys(strip, frames: 3)
+        precondition(valley.count == 3, "valley slice must honor the declared frame count")
+        precondition(valley[0].size.width > 380 && valley[0].size.width < 700,
+                     "first cut must land in the empty span past the bolt, got width \(valley[0].size.width)")
+        for frame in valley {
+            precondition(inkFraction(frame, topHalf: true) + inkFraction(frame, topHalf: false) > 0,
+                         "every valley frame keeps its scene")
+        }
+        let solid = spriteProbe(width: 160, height: 8, blobs: [(x: 0, w: 160, y: 0, h: 8)])
+        precondition(PetSpriteStrip.sliceStripByValleys(solid, frames: 8).count == 8,
+                     "continuous art must degrade to the equal slice")
+        let prep = PetSpriteStrip.prepare(strip, frames: 3)
+        precondition(prep.frames == 3,
+                     "prepare must report the stitched frame count, got \(prep.frames)")
+    }
+
     private static func checkCursorAgentTabMatch() {
         precondition(CursorAgentTabMatch.matches("Hello there world", want: "Hello there world"))
         precondition(CursorAgentTabMatch.matches("HELLO THERE WORLD", want: "Hello there world"))
@@ -966,6 +1136,14 @@ struct ModelsContract {
                      "an IDE window title must not match a session name")
         precondition(!CursorAgentTabMatch.matches("something else entirely here",
                                                   want: "Hello there world extra"))
+        precondition(CursorAgentTabMatch.matches("Chat title. Voice profile creation bug",
+                                                 want: "Voice profile creation bug"),
+                     "Cursor's accessible row prefix must be stripped before matching")
+        precondition(CursorAgentTabMatch.matches("chat title. HELLO THERE WORLD", want: "Hello there world"))
+        precondition(!CursorAgentTabMatch.matches("Chat title. short", want: "short"),
+                     "the minimum-length gate applies to the stripped label")
+        precondition(CursorAgentTabMatch.matches("Chat title. Hello there…", want: "Hello there world extra"),
+                     "prefix strip must compose with the truncation branch")
         precondition(
             ClaudeSessionRowMatch.matches(
                 "Idle Reddit Posts GOTCOS.com(fork)",
@@ -1504,6 +1682,7 @@ struct ModelsContract {
         checkPetSpritePoses()
         checkPetSize()
         checkCursorAgentTabMatch()
+        checkPetSpritePipeline()
         checkAppUpdateMerging()
         checkMenuBarIcon()
         checkOpenPetsCatalogRow()
