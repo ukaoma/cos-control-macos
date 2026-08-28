@@ -88,11 +88,12 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         }
         let panel = existingPanel()
         if let host = panel.contentViewController as? NSHostingController<SessionPetRoot> {
-            host.rootView = SessionPetRoot(model: model, presenter: self)
+            let characterScale = fittedCharacterScale(for: panel, model: model)
+            host.rootView = SessionPetRoot(model: model, presenter: self, characterScale: characterScale)
             let spriteWidth = max(
                 model.petSpritePose.renderSize(
                     model.petSize.pixels,
-                    scale: model.petCharacterFactor,
+                    scale: characterScale,
                     aspect: model.petSpriteKit.aspect(for: model.petSpritePose)
                 ).width,
                 CGFloat(model.petSize.pixels)
@@ -110,12 +111,30 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         panel.orderFrontRegardless()
     }
 
+    private func fittedCharacterScale(for panel: NSPanel, model: ControllerModel) -> CGFloat {
+        let screens = NSScreen.screens
+        let visible = screens.first(where: { $0.visibleFrame.intersects(panel.frame) })?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
+            ?? screens.first?.visibleFrame
+            ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+        return model.petSpritePose.fittedCharacterScale(
+            model.petCharacterFactor,
+            pixels: model.petSize.pixels,
+            aspect: model.petSpriteKit.aspect(for: model.petSpritePose),
+            available: visible.size,
+            reservedChrome: CGSize(
+                width: model.petSize.length(36),
+                height: model.petSize.length(180)
+            )
+        )
+    }
+
     private func existingPanel() -> NSPanel {
         if let panel { return panel }
         guard let model else {
             return NSPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
         }
-        let root = SessionPetRoot(model: model, presenter: self)
+        let root = SessionPetRoot(model: model, presenter: self, characterScale: model.petCharacterFactor)
         let host = NSHostingController(rootView: root)
         host.view.wantsLayer = true
         host.view.layer?.backgroundColor = NSColor.clear.cgColor
@@ -164,6 +183,7 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
 private struct SessionPetRoot: View {
     @ObservedObject var model: ControllerModel
     var presenter: SessionPetPresenter
+    var characterScale: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var sessions: [ClaudeSession] { model.petSessions }
@@ -185,7 +205,7 @@ private struct SessionPetRoot: View {
                             frames: model.petSpriteKit.frames(for: pose),
                             pose: pose,
                             size: CGFloat(size.pixels),
-                            characterScale: model.petCharacterFactor,
+                            characterScale: characterScale,
                             restClips: model.petRestClips(for: pose)
                         )
                         if let focus {
@@ -245,7 +265,7 @@ private struct SessionPetRoot: View {
             size.length(248),
             pose.renderSize(
                 size.pixels,
-                scale: model.petCharacterFactor,
+                scale: characterScale,
                 aspect: model.petSpriteKit.aspect(for: pose)
             ).width + size.length(36)
         ))
@@ -333,7 +353,7 @@ private struct SessionPetRoot: View {
             }
             .padding(.horizontal, size.length(12))
             .padding(.vertical, size.length(8))
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(width: size.length(248), alignment: .leading)
             .background(
                 Capsule().fill(COSPalette.card)
             )

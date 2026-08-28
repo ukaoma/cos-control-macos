@@ -10805,13 +10805,13 @@ final class COSControlHelper {
             "ollama_models": ["ready": false, "model": ""],
             "ollama": "fetch failed",
         ]
-        try expect(providerCapabilityFailure(ollamaDownHealth) == nil,
+        try expect(providerCapabilityFailure(ollamaDownHealth, expectedProviders: ["claude"]) == nil,
                    "features.ollama == false must not register as a provider capability failure")
         let legacyHealth: [String: Any] = [
             "status": "ok", "server": "ok",
             "features": ["claude": true],
         ]
-        try expect(providerCapabilityFailure(legacyHealth) == nil,
+        try expect(providerCapabilityFailure(legacyHealth, expectedProviders: ["claude"]) == nil,
                    "a pre-6.39.0 health body without ollama keys must stay clean")
         try expect(versionToken("qwen2.5-coder") != "qwen2.5-coder",
                    "guard premise: versionToken mangles model tags, so the tag must never route through it")

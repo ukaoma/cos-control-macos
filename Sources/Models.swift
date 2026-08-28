@@ -2669,11 +2669,9 @@ enum PetPlaylist {
         return !(rawPick(segment - 1) && rawPick(segment - 2))
     }
 
-    /// Which REST clip a settled beat draws from. Independent of the action
-    /// hash so the two choices do not move together. Rotating across several
-    /// solo clips is the point: the character has a meditation, a flourish and
-    /// a guard sequence that otherwise only appear on rare states, and one
-    /// rest clip on repeat wastes them.
+    /// Which calm REST clip a settled beat draws from. Independent of the
+    /// action hash so idle and meditation do not move with the burst cadence.
+    /// Signal poses such as flourish and guard stay out of this rotation.
     static func restClip(_ segment: Int, count: Int) -> Int {
         guard count > 1 else { return 0 }
         var x = UInt64(bitPattern: Int64(segment)) &* 0xD6E8_FEB8_6659_FD93
@@ -2707,9 +2705,12 @@ enum PetPlaylist {
 /// text, bubbles, list); this scales only the figure inside it, so the art can
 /// be read at detail without inflating the chrome around it.
 enum PetCharacterScale {
-    static let defaultPercent = 150
+    static let legacyDefaultPercent = 150
+    static let legacyMinPercent = 100
+    static let legacyMaxPercent = 300
+    static let defaultPercent = 300
     static let minPercent = 100
-    static let maxPercent = 300
+    static let maxPercent = 600
 
     static func clamp(_ value: Int) -> Int {
         min(max(value, minPercent), maxPercent)
@@ -2717,6 +2718,36 @@ enum PetCharacterScale {
 
     static func factor(_ percent: Int) -> CGFloat {
         CGFloat(clamp(percent)) / 100
+    }
+
+    /// Version 2 doubles the whole character dial, including an existing saved
+    /// preference. Merely raising the slider ceiling would leave someone who
+    /// was already at the old 300% maximum looking at the same tiny figure.
+    static func migratedLegacyPercent(_ stored: Int?) -> Int {
+        let legacy = min(
+            max(stored ?? legacyDefaultPercent, legacyMinPercent),
+            legacyMaxPercent
+        )
+        return clamp(legacy * 2)
+    }
+
+    /// Load the dial and perform a named, one-time preference migration. The
+    /// keys stay caller-owned so this logic is executable without constructing
+    /// the full ControllerModel or touching the user's standard defaults.
+    static func loadPersistedPercent(
+        defaults: UserDefaults,
+        percentKey: String,
+        generationKey: String,
+        generation: Int
+    ) -> Int {
+        let stored = defaults.object(forKey: percentKey) as? Int
+        guard defaults.integer(forKey: generationKey) < generation else {
+            return clamp(stored ?? defaultPercent)
+        }
+        let migrated = migratedLegacyPercent(stored)
+        defaults.set(migrated, forKey: percentKey)
+        defaults.set(generation, forKey: generationKey)
+        return migrated
     }
 }
 
@@ -2895,6 +2926,29 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
         let lo: CGFloat = cinematic ? 0.75 : 0.6
         let hi: CGFloat = cinematic ? 3.6 : 1.4
         return CGSize(width: (height * min(max(aspect, lo), hi)).rounded(), height: height)
+    }
+
+    /// Preserve the requested character scale until it would exceed the active
+    /// display. At that point only the figure is reduced; the user's saved dial
+    /// remains unchanged and returns at full size on a roomier display.
+    func fittedCharacterScale(
+        _ requested: CGFloat,
+        pixels: Int,
+        aspect: CGFloat?,
+        available: CGSize,
+        reservedChrome: CGSize
+    ) -> CGFloat {
+        let baseHeight = CGFloat(pixels) * (cinematic ? 1.55 : 1)
+        let lo: CGFloat = cinematic ? 0.75 : 0.6
+        let hi: CGFloat = cinematic ? 3.6 : 1.4
+        let resolvedAspect = aspect.map { min(max($0, lo), hi) } ?? (cinematic ? 2.6 : 1)
+        let baseWidth = baseHeight * resolvedAspect
+        let usableWidth = max(CGFloat(pixels), available.width - reservedChrome.width)
+        let usableHeight = max(CGFloat(pixels), available.height - reservedChrome.height)
+        let widthFit = usableWidth / max(baseWidth, 1)
+        let heightFit = usableHeight / max(baseHeight, 1)
+        return max(PetCharacterScale.factor(PetCharacterScale.minPercent),
+                   min(requested, widthFit, heightFit))
     }
 
     var fallbackPoses: [PetSpritePose] {
@@ -3866,6 +3920,14 @@ enum PetSpritePack {
     }
 }
 
+struct BundledPetCharacter: Identifiable, Hashable, Sendable {
+    let id: String
+    let displayName: String
+    let summary: String
+    let searchTerms: String
+    let folderName: String
+}
+
 /// Custom session-pet figure. Identity PNGs stay byte-for-byte so a 32x32
 /// sprite stays blocky. Pose strips may be cleaned and scaled on install.
 enum PetSpriteStore {
@@ -4092,16 +4154,44 @@ enum PetSpriteStore {
         return map
     }
 
-    /// The shipped character. Bundled already PROCESSED (sliced, cleaned,
-    /// stitched, with its state map), so a fresh install
-    /// shows it without running the pipeline or asking for a pack.
-    static let defaultCharacterName = "Jedi Miles Windu"
-    static let bundledDefaultFolder = "DefaultPet"
+    /// Shipped characters are already PROCESSED (sliced, cleaned, stitched,
+    /// with state maps). Keep the registry separate from OpenPets: these packs
+    /// are animated COS characters, while that attribution covers community
+    /// stills. Adding the next character is one asset folder plus one record.
+    static let bundledCharacters = [
+        BundledPetCharacter(
+            id: "jedi-miles-windu",
+            displayName: "Jedi Miles Windu",
+            summary: "Ten animated states. Purple saber and escalating droid fights.",
+            searchTerms: "Miles Windu Black male Jedi purple lightsaber action RPG droids",
+            folderName: "DefaultPet"
+        ),
+    ]
+    static let defaultCharacterID = "jedi-miles-windu"
+    static var defaultCharacterName: String {
+        bundledCharacters.first(where: { $0.id == defaultCharacterID })?.displayName
+            ?? "Jedi Miles Windu"
+    }
+
+    static func bundledCharacter(id: String) -> BundledPetCharacter? {
+        bundledCharacters.first { $0.id == id }
+    }
+
+    static func bundledCharacterURL(
+        _ character: BundledPetCharacter,
+        bundle: Bundle = .main,
+        fileManager: FileManager = .default
+    ) -> URL? {
+        guard let resources = bundle.resourceURL else { return nil }
+        let folder = character.folderName.split(separator: "/").reduce(resources) {
+            $0.appendingPathComponent(String($1), isDirectory: true)
+        }
+        return fileManager.fileExists(atPath: folder.path) ? folder : nil
+    }
 
     static func bundledDefaultURL(bundle: Bundle = .main) -> URL? {
-        guard let resources = bundle.resourceURL else { return nil }
-        let folder = resources.appendingPathComponent(bundledDefaultFolder, isDirectory: true)
-        return FileManager.default.fileExists(atPath: folder.path) ? folder : nil
+        guard let character = bundledCharacter(id: defaultCharacterID) else { return nil }
+        return bundledCharacterURL(character, bundle: bundle)
     }
 
     /// Copies the bundled character in only when the user has none of their
@@ -4114,6 +4204,21 @@ enum PetSpriteStore {
         fileManager: FileManager = .default
     ) -> Bool {
         installDefault(into: directory, from: bundledDefaultURL(bundle: bundle), fileManager: fileManager)
+    }
+
+    @discardableResult
+    static func installBundledCharacter(
+        id: String,
+        into directory: URL,
+        bundle: Bundle = .main,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        guard let character = bundledCharacter(id: id) else { return false }
+        return installDefault(
+            into: directory,
+            from: bundledCharacterURL(character, bundle: bundle, fileManager: fileManager),
+            fileManager: fileManager
+        )
     }
 
     @discardableResult

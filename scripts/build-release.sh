@@ -49,6 +49,13 @@ cp "$ROOT/Resources/Fonts/"*.ttf "$APP/Contents/Resources/Fonts/"
 # The shipped character, already processed. A fresh install seeds it once.
 mkdir -p "$APP/Contents/Resources/DefaultPet"
 cp "$ROOT/Resources/DefaultPet/"*.png "$ROOT/Resources/DefaultPet/"*.json "$APP/Contents/Resources/DefaultPet/"
+# Additional processed characters live under one copied resource root. The
+# Swift registry chooses them by stable ID; adding one never needs another
+# packaging branch.
+if [ -d "$ROOT/Resources/BundledCharacters" ]; then
+  mkdir -p "$APP/Contents/Resources/BundledCharacters"
+  cp -R "$ROOT/Resources/BundledCharacters/." "$APP/Contents/Resources/BundledCharacters/"
+fi
 chmod 700 "$APP/Contents/MacOS/COS Control" "$APP/Contents/Resources/cos-control-helper"
 /usr/bin/xattr -cr "$APP"
 # Public releases fail closed unless both Developer ID signing and notarization

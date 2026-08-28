@@ -663,7 +663,7 @@ echo "    manual update check: button, method, and all three outcomes"
 /usr/bin/grep -q 'Pet gallery' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'Pet gallery unavailable right now.' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q '.frame(height: OpenPetsGallery.height)' "$ROOT/Sources/Views.swift"
-/usr/bin/grep -q 'TextField("Search pets"' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'TextField("Search characters"' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'await model.loadOpenPetsCatalog()' "$ROOT/Sources/Views.swift"
 ! /usr/bin/grep -q 'DisclosureGroup("Pet gallery"' "$ROOT/Sources/Views.swift"
 /usr/bin/python3 - "$ROOT" <<'PY'
@@ -1725,11 +1725,17 @@ need(models_src.count('dropSubjectlessFrames(') >= 2,
 need('enum PetCharacterScale' in models_src,
      "the character dial is gone; pet size would grow the card and the figure together")
 pet_src = (root / "Sources/SessionPet.swift").read_text()
-need(pet_src.count('scale: model.petCharacterFactor') >= 2,
-     "the character dial must size BOTH the panel envelope and the sprite frame")
-need('characterScale: model.petCharacterFactor' in pet_src,
+need(pet_src.count('scale: characterScale') >= 2,
+     "the fitted character dial must size BOTH the panel envelope and the sprite frame")
+need('characterScale: characterScale' in pet_src,
      "the sprite view never receives the character dial")
 need('Character size' in views, "Settings has no character-size control")
+need('petCharacterScaleGenerationKey' in model and
+     'PetCharacterScale.loadPersistedPercent(' in model,
+     "the doubled character range does not migrate an existing saved preference")
+character_initializer = model.split('@Published var petCharacterPercent', 1)[1].split('\n', 1)[0]
+need('ControllerModel.loadPetCharacterPercent()' in character_initializer,
+     "the published character dial bypasses the one-time migration loader")
 need('enum PetPlaylist' in models_src and 'usesActivityPlaylist' in models_src,
      "running and patrol loop forever again instead of playing as bursts")
 cosmotion_src = (root / "Sources/COSMotion.swift").read_text()
@@ -1738,10 +1744,19 @@ need('PetPlaylist.plan(' in cosmotion_src and 'restClips' in cosmotion_src,
      "the sprite view does not run the activity playlist")
 need('restClips: model.petRestClips(for: pose)' in sessionpet_src,
      "the playlist has no rest clips to settle into")
-need('func petRestClips(' in model and '.idle, .waiting, .done, .attention' in model,
-     "the rest rotation stopped using the solo clips it exists to surface")
+need('func petRestClips(' in model,
+     "the activity playlist has no settled clips")
+rest_body = model.split('func petRestClips(', 1)[1].split('func setPetCharacterPercent', 1)[0]
+need('[PetSpritePose.idle, .waiting]' in rest_body,
+     "ambient rests must use the calm idle and meditation clips")
+need('.done' not in rest_body and '.attention' not in rest_body,
+     "success/attention draw the saber and must remain signal states, not ambient rests")
 need('func restClip(' in models_src,
      "settled beats no longer rotate across rest clips")
+sprite_struct = cosmotion_src.split('struct SessionPetSprite', 1)[1]
+sprite_body = sprite_struct.split('var body: some View', 1)[1].split('private var measuredAspect', 1)[0]
+need('let dissolves' not in sprite_body and '.opacity(' not in sprite_body,
+     "combat playback cross-dissolves adjacent animation frames into ghost scenes")
 need(models_src.count('normalizeStrip(') >= 2,
      "strip frames are normalised individually again, so the character resizes mid-animation")
 need('installBundledDefault(into: directory)' in model,
@@ -1749,21 +1764,36 @@ need('installBundledDefault(into: directory)' in model,
 need('petDefaultSeededKey' in model,
      "default seeding is not gated by a flag, so Use COS figure would be undone on relaunch")
 need('Jedi Miles Windu' in models_src, "the shipped character lost its name")
+need('static let bundledCharacters' in models_src,
+     "shipped characters fell back to a one-off default instead of a selectable catalog")
+need('id: "jedi-miles-windu"' in models_src,
+     "Miles Windu is no longer registered as a bundled character")
+need('func installBundledCharacter(' in models_src,
+     "bundled characters cannot be selected through the sprite store")
 # Scope to the gallery card's BODY: str.index finds the `private var`
 # declaration first, so an ordering check against the whole file passed even
 # after the row was moved below the attribution.
 need('private var petGalleryCard' in views, "the pet gallery card is gone")
 gallery_body = views.split('private var petGalleryCard')[1]
 need('openpets.dev' in gallery_body, "the OpenPets attribution is gone")
-need('defaultCharacterRow' in gallery_body,
-     "the shipped-character row is declared but never mounted in the gallery card")
-need(gallery_body.index('defaultCharacterRow') < gallery_body.index('openpets.dev'),
-     "the shipped character must render ABOVE the OpenPets attribution, not inside that gallery")
-need('restoreDefaultCharacter' in views, "the gallery has no way back to the shipped character")
-need('Button("Restore") { confirmRestoreDefaultCharacter = true }' in views,
-     "Restore deletes the installed pack with no confirmation, while installing one has a dialog")
+need('ForEach(visibleBundledCharacters)' in gallery_body,
+     "the bundled-character catalog is declared but never mounted in the gallery card")
+need(gallery_body.index('ForEach(visibleBundledCharacters)') < gallery_body.index('openpets.dev'),
+     "bundled characters must render ABOVE the OpenPets attribution, not inside that gallery")
+need('PetSpriteStore.bundledCharacters.count + model.openPetsRows.count' in views,
+     "the Characters count excludes bundled characters, so Miles never becomes character 301")
+need('Text("Characters \\(availableCharacterCount).")' in views,
+     "the combined character count is not visible")
+need('TextField("Search characters"' in views and 'visibleBundledCharacters' in views,
+     "search does not cover the shipped character catalog")
+need('pendingBundledCharacter = character' in views and 'confirmBundledCharacter = true' in views,
+     "selecting a shipped character bypasses the destructive replacement confirmation")
+need('model.useBundledCharacter(character)' in views,
+     "the bundled-character confirmation has no install action")
 need('DefaultPet' in (root / "scripts/build-release.sh").read_text(),
      "the release does not bundle the shipped character")
+need('Resources/BundledCharacters' in (root / "scripts/build-release.sh").read_text(),
+     "future registered characters are not copied into the release")
 need('retireCinematic: false' in model,
      "a pack install retires its own board's cinematic strip mid-install")
 need('schedulePetNoticeExpiry' in model,

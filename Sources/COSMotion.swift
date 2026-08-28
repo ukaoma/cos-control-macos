@@ -234,28 +234,15 @@ struct SessionPetSprite: View {
 
     var body: some View {
         let interval = reduceMotion ? 3600.0 : pose.frameInterval
-        // Cinematic scenes are distinct paintings, not run-cycle cells; a hard
-        // cut between them reads as a slideshow. Cross-dissolve the last third
-        // of each interval so the fight flows. Needs sub-interval ticks.
-        let dissolves = pose.cinematic && frames.count > 1 && !reduceMotion && !playlists
-        let tick = dissolves ? interval / 8 : interval
-        TimelineView(.animation(minimumInterval: tick, paused: reduceMotion && frames.count <= 1)) { timeline in
+        // V4's duel, trio and swarm strips are continuous animations. Blending
+        // adjacent cells double-exposes two different fight poses and reads as
+        // a washed-out ghost, so every authored animation advances frame-clean.
+        TimelineView(.animation(minimumInterval: interval, paused: reduceMotion && frames.count <= 1)) { timeline in
             let phase = reduceMotion ? 0.0 : sin(timeline.date.timeIntervalSinceReferenceDate * (working ? 6.2 : 2.4))
             let bounce = working && !reduceMotion ? CGFloat(phase) * max(1, size * 0.022) : 0
             Group {
                 if playlists, let frame = playlistFrame(at: timeline.date) {
                     frameImage(frame)
-                } else if dissolves {
-                    let t = timeline.date.timeIntervalSinceReferenceDate / pose.frameInterval
-                    let index = Int(t) % frames.count
-                    let next = (index + 1) % frames.count
-                    let frac = t - t.rounded(.down)
-                    let raw = max(0.0, (frac - 0.62) / 0.38)
-                    let fade = raw * raw * (3 - 2 * raw)
-                    ZStack {
-                        frameImage(frames[index]).opacity(1 - fade)
-                        frameImage(frames[next]).opacity(fade)
-                    }
                 } else if let frame = playbackFrame(at: timeline.date) {
                     frameImage(frame)
                 } else if let customImage {
@@ -323,8 +310,8 @@ struct SessionPetSprite: View {
 
     private func frameImage(_ frame: NSImage) -> some View {
         // Compare against the size it is DRAWN at, not the configured pixel
-        // size: with the character dial the render is 1x-4.65x that, so a fixed
-        // 2x threshold blurred upscaled pixel art and aliased downscaled art.
+        // size: the character dial and cinematic envelope can enlarge that
+        // substantially, so a fixed threshold blurs upscaled pixel art.
         let pixelated = max(frame.size.width, frame.size.height) <= displayHeight
         return Image(nsImage: frame)
             .interpolation(pixelated ? .none : .medium)

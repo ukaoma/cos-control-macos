@@ -109,7 +109,18 @@ final class ControllerModel: ObservableObject {
     private static let petSizeKey = "cos.sessionPetSize"
     private static let petSizePixelsKey = "cos.sessionPetSizePixels"
     private static let petCharacterPercentKey = "cos.sessionPetCharacterPercent"
+    private static let petCharacterScaleGenerationKey = "cos.sessionPetCharacterScaleGeneration"
+    private static let petCharacterScaleGeneration = 2
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
+
+    private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
+        PetCharacterScale.loadPersistedPercent(
+            defaults: defaults,
+            percentKey: petCharacterPercentKey,
+            generationKey: petCharacterScaleGenerationKey,
+            generation: petCharacterScaleGeneration
+        )
+    }
     @Published var openReview: SpeakerReview?
     /// The readable meeting beside the speaker rows. nil when the server is
     /// older than 6.21.28 or the fetch failed — the review still renders.
@@ -1221,10 +1232,7 @@ final class ControllerModel: ObservableObject {
     @Published var petEnabled = UserDefaults.standard.object(forKey: ControllerModel.petEnabledKey) as? Bool ?? true
     /// Character dial, independent of petSize: pet size is the card, this is
     /// the figure inside it.
-    @Published var petCharacterPercent = PetCharacterScale.clamp(
-        UserDefaults.standard.object(forKey: ControllerModel.petCharacterPercentKey) as? Int
-            ?? PetCharacterScale.defaultPercent
-    )
+    @Published var petCharacterPercent = ControllerModel.loadPetCharacterPercent()
     @Published var petSize = PetSize.load(
         preset: UserDefaults.standard.string(forKey: ControllerModel.petSizeKey),
         pixels: UserDefaults.standard.object(forKey: ControllerModel.petSizePixelsKey) as? Int
@@ -1487,24 +1495,32 @@ final class ControllerModel: ObservableObject {
 
     var petCharacterFactor: CGFloat { PetCharacterScale.factor(petCharacterPercent) }
 
-    /// Put the shipped character back. Kept separate from the OpenPets gallery
-    /// because that gallery's attribution and licence note cover its own art,
-    /// not this one.
-    func restoreDefaultCharacter() {
+    /// Select a shipped animated character. Kept separate from the OpenPets
+    /// install path because that gallery's attribution and licence note cover
+    /// its own still art, not COS's bundled packs.
+    func useBundledCharacter(_ character: BundledPetCharacter) {
         let directory = PetSpriteStore.supportDirectory()
-        guard PetSpriteStore.bundledDefaultURL() != nil else {
-            petNotice = "This build does not carry the default character."
-            NSLog("COSControl pet-default restore failed: no bundled DefaultPet folder")
+        guard PetSpriteStore.bundledCharacterURL(character) != nil else {
+            petNotice = "This build does not carry \(character.displayName)."
+            NSLog("COSControl bundled-character install failed: missing %@", character.folderName)
             return
         }
         PetSpriteStore.removeAll(from: directory)
-        if PetSpriteStore.installBundledDefault(into: directory) {
+        if PetSpriteStore.installBundledCharacter(id: character.id, into: directory) {
             petNotice = nil
         } else {
-            petNotice = "Could not restore the default character."
-            NSLog("COSControl pet-default restore failed after clearing %@", directory.path)
+            petNotice = "Could not use \(character.displayName)."
+            NSLog("COSControl bundled-character install failed after clearing %@", directory.path)
         }
         loadPetSprite()
+    }
+
+    func restoreDefaultCharacter() {
+        guard let character = PetSpriteStore.bundledCharacter(id: PetSpriteStore.defaultCharacterID) else {
+            petNotice = "This build does not carry the default character."
+            return
+        }
+        useBundledCharacter(character)
     }
 
     /// Always the BUNDLED art, and one FRAME of it. Reading the installed idle
@@ -1512,26 +1528,26 @@ final class ControllerModel: ObservableObject {
     /// "Jedi Miles Windu" displayed a different character; reading the bundled
     /// file raw showed the whole 8-frame strip squeezed into 44pt. Cached: this
     /// is a 259 KB decode and the panel re-renders on every published change.
-    private var defaultCharacterThumbCache: NSImage??
-    var defaultCharacterThumb: NSImage? {
-        if let cached = defaultCharacterThumbCache { return cached }
+    private var bundledCharacterThumbCache: [String: NSImage] = [:]
+    func bundledCharacterThumb(for character: BundledPetCharacter) -> NSImage? {
+        if let cached = bundledCharacterThumbCache[character.id] { return cached }
         let made: NSImage? = {
-            guard let folder = PetSpriteStore.bundledDefaultURL() else { return nil }
+            guard let folder = PetSpriteStore.bundledCharacterURL(character) else { return nil }
             let url = folder.appendingPathComponent(PetSpriteStore.poseFileName(.idle))
             guard let strip = NSImage(contentsOf: url) else { return nil }
             let frames = PetSpriteStore.loadStateMap(in: folder)[.idle]?.frames ?? 1
             return PetSpriteStrip.slice(strip, frames: frames).first ?? strip
         }()
-        defaultCharacterThumbCache = .some(made)
+        if let made { bundledCharacterThumbCache[character.id] = made }
         return made
     }
 
-    /// Solo clips an action pose settles into between bursts. The character has
-    /// a breathing idle, a meditation, a draw-and-flourish and a guard sequence;
-    /// rotating all of them is what keeps a long "working" stretch alive, and
-    /// they would otherwise only appear on states that are rarely on screen.
+    /// Solo clips an action pose settles into between bursts. Success and
+    /// attention stay signal states: both open by drawing the saber, so using
+    /// them as ambient rests produced draw -> draw -> draw sequences and diluted
+    /// the moments they are meant to communicate.
     func petRestClips(for pose: PetSpritePose) -> [[NSImage]] {
-        [PetSpritePose.idle, .waiting, .done, .attention]
+        [PetSpritePose.idle, .waiting]
             .filter { $0 != pose }
             .map { petSpriteKit.frames(for: $0) }
             .filter { $0.count > 1 }

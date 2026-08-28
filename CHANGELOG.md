@@ -1,3 +1,50 @@
+## 0.5.127 (build 165)
+
+Miles is a character you can choose, not only the default you can restore.
+
+The gallery now counts bundled animated characters and OpenPets community
+stills together. With the current 300-item community catalog it reads
+"Characters 301." Search covers both sources, including Miles, Black Jedi,
+purple saber and droid terms. The Miles row says Use and retains the existing
+replacement confirmation before it changes an installed pack.
+
+Bundled characters now use a small registry with stable IDs, descriptions,
+search terms and asset folders. Miles is the first entry. The next female and
+male Jedi packs can join by adding their processed asset folder and one catalog
+record without another gallery rewrite. COS-owned characters remain above the
+OpenPets attribution so community licensing language stays correctly scoped.
+
+The bundled Miles artwork also receives its final alpha polish. All eight
+sprint frames have true transparency between the rear arm and coat, detached
+paper specks are gone, and the patrol cycle no longer contains a split figure
+or displaced fragment. The real importer and contrasting-background audit pass
+all 74 frames with transparent cell edges.
+
+## 0.5.126 (build 164)
+
+Miles Windu is twice as readable without sacrificing the animation frame.
+
+The character dial now defaults to 300% and reaches 600%. Existing preferences
+migrate once, so a pet already maxed at 300% opens at 600% after the update and
+stays there after restart. Oversized pet-size and character-scale combinations
+fit the active display before rendering, while the saved preference remains
+unchanged and returns at full scale on a roomier screen. The status card keeps
+its own width as the transparent sprite envelope grows around the figure.
+
+V4 duel, trio and swarm strips advance frame by frame instead of cross-fading
+distinct combat poses into ghost overlays. Running and patrol settle only into
+idle or meditation; success and attention keep their saber draws for the real
+signal instead of repeating them during ambient playback.
+
+The duel strip is rebuilt from the original artwork after importer validation:
+the neighboring-frame droid no longer spills behind Miles, the opponent remains
+fully inside its frame, and the white checkerboard regions between the fighters
+are transparent without erasing the purple saber effects.
+
+QA added executable coverage for first-load migration, restart idempotence and
+maximum-size display fitting. The release gate's provider fixture is now
+independent of whichever agent CLIs happen to be on the caller's PATH.
+
 ## 0.5.125 (build 163)
 
 The default character is polished art, and the pet gallery can restore it.

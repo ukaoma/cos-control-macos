@@ -1451,6 +1451,13 @@ struct ModelsContract {
 
         // SHIPPED DEFAULT: seeds an empty install, and never overwrites the
         // user's own sprites (which would undo Choose sprite or Use COS figure).
+        precondition(PetSpriteStore.bundledCharacters.count == 1,
+                     "this release must expose Miles as its first bundled character")
+        precondition(PetSpriteStore.bundledCharacter(id: "jedi-miles-windu")?.displayName
+                        == "Jedi Miles Windu",
+                     "the bundled character registry must resolve Miles by stable id")
+        precondition(PetSpriteStore.defaultCharacterName == "Jedi Miles Windu",
+                     "the seeded default and selectable catalog entry must share one identity")
         let seedRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("cos-seed-\(ProcessInfo.processInfo.processIdentifier)")
         let seedSource = seedRoot.appendingPathComponent("DefaultPet", isDirectory: true)
@@ -1477,6 +1484,33 @@ struct ModelsContract {
         // CHARACTER DIAL: scales the figure, never the card.
         precondition(PetCharacterScale.clamp(40) == PetCharacterScale.minPercent)
         precondition(PetCharacterScale.clamp(9000) == PetCharacterScale.maxPercent)
+        precondition(PetCharacterScale.defaultPercent == 300)
+        precondition(PetCharacterScale.maxPercent == 600)
+        precondition(PetCharacterScale.migratedLegacyPercent(nil) == 300,
+                     "a fresh install doubles the legacy 150% default")
+        precondition(PetCharacterScale.migratedLegacyPercent(300) == 600,
+                     "someone already at the old maximum must visibly grow after updating")
+        precondition(PetCharacterScale.migratedLegacyPercent(40) == 200,
+                     "migration clamps to the old range before doubling")
+        let scaleSuite = "com.gotcos.control.tests.character-scale.\(UUID().uuidString)"
+        let scaleDefaults = UserDefaults(suiteName: scaleSuite)!
+        defer { scaleDefaults.removePersistentDomain(forName: scaleSuite) }
+        scaleDefaults.set(300, forKey: "percent")
+        precondition(PetCharacterScale.loadPersistedPercent(
+            defaults: scaleDefaults,
+            percentKey: "percent",
+            generationKey: "generation",
+            generation: 2
+        ) == 600)
+        precondition(scaleDefaults.integer(forKey: "percent") == 600
+                     && scaleDefaults.integer(forKey: "generation") == 2,
+                     "first load must persist both the doubled value and its generation")
+        precondition(PetCharacterScale.loadPersistedPercent(
+            defaults: scaleDefaults,
+            percentKey: "percent",
+            generationKey: "generation",
+            generation: 2
+        ) == 600, "restart must not double a migrated preference twice")
         precondition(PetCharacterScale.factor(200) == 2.0)
         precondition(PetSpritePose.idle.spriteHeight(64, scale: 2) == 128,
                      "the character dial must scale the sprite frame")
@@ -1484,6 +1518,23 @@ struct ModelsContract {
                      "an unscaled call must stay at the configured pixel size")
         precondition(PetSize(preset: .medium, customPixels: 64).length(22) == 22,
                      "card metrics must not read the character dial")
+        let fitted = PetSpritePose.swarm.fittedCharacterScale(
+            6,
+            pixels: 128,
+            aspect: 0.9,
+            available: CGSize(width: 1440, height: 900),
+            reservedChrome: CGSize(width: 72, height: 360)
+        )
+        let fittedSize = PetSpritePose.swarm.renderSize(128, scale: fitted, aspect: 0.9)
+        precondition(fittedSize.height <= 540.5,
+                     "maximum cinematic art must fit above the reserved chrome")
+        precondition(PetSpritePose.swarm.fittedCharacterScale(
+            6,
+            pixels: 80,
+            aspect: 0.9,
+            available: CGSize(width: 2880, height: 1590),
+            reservedChrome: CGSize(width: 45, height: 225)
+        ) == 6, "Miles's saved 80px setting must receive the full doubled scale")
 
         // CINEMATIC COUNT PERSISTENCE: playback must slice the stitched strip
         // by its true cell count, not an aspect guess (996/256 -> 3 over a

@@ -114,8 +114,9 @@ struct ControlPanel: View {
     @State private var selectedOllamaModel = ""
     @State private var openPetsQuery = ""
     @State private var confirmOpenPetsSprite = false
-    @State private var confirmRestoreDefaultCharacter = false
+    @State private var confirmBundledCharacter = false
     @State private var pendingOpenPetsRow: OpenPetsCatalogRow?
+    @State private var pendingBundledCharacter: BundledPetCharacter?
 
     /// The menu-bar panel stays the server console. Browsing activity lives in a
     /// real, persistent AppKit window: unlike a sheet, that
@@ -351,7 +352,7 @@ struct ControlPanel: View {
             pendingOpenPetsRow.map { "Use \($0.displayName) as the session pet figure?" }
                 ?? "Use this figure as the session pet figure?",
             isPresented: $confirmOpenPetsSprite,
-            message: "Replaces the current session pet sprite with this gallery thumbnail. Restore puts \(PetSpriteStore.defaultCharacterName) back; Use COS figure switches to the drawn figure.",
+            message: "Replaces the current session pet sprite with this gallery thumbnail. Choose \(PetSpriteStore.defaultCharacterName) under Characters to put the animated Jedi back; Use COS figure switches to the drawn figure.",
             actions: [
                 .normal("Use") {
                     if let row = pendingOpenPetsRow {
@@ -363,16 +364,33 @@ struct ControlPanel: View {
             ]
         )
         .cosConfirm(
-            "Restore \(PetSpriteStore.defaultCharacterName)?",
-            isPresented: $confirmRestoreDefaultCharacter,
-            message: "Deletes the sprites currently installed — every pose, the "
-                + "stitched strip and the state map — and puts the shipped character back. "
+            pendingBundledCharacter.map { "Use \($0.displayName)?" }
+                ?? "Use this shipped character?",
+            isPresented: $confirmBundledCharacter,
+            message: "Replaces the sprites currently installed — every pose, the "
+                + "stitched strip and the state map — with this animated character. "
                 + "A pack you installed yourself would have to be installed again.",
             actions: [
-                .normal("Restore") { model.restoreDefaultCharacter() },
-                .cancel(),
+                .normal("Use") {
+                    if let character = pendingBundledCharacter {
+                        model.useBundledCharacter(character)
+                    }
+                    pendingBundledCharacter = nil
+                },
+                .cancel() { pendingBundledCharacter = nil },
             ]
         )
+    }
+
+    private var visibleBundledCharacters: [BundledPetCharacter] {
+        let q = openPetsQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        if q.isEmpty { return PetSpriteStore.bundledCharacters }
+        return PetSpriteStore.bundledCharacters.filter {
+            $0.displayName.localizedCaseInsensitiveContains(q)
+                || $0.id.localizedCaseInsensitiveContains(q)
+                || $0.summary.localizedCaseInsensitiveContains(q)
+                || $0.searchTerms.localizedCaseInsensitiveContains(q)
+        }
     }
 
     private var visibleOpenPetsRows: [OpenPetsCatalogRow] {
@@ -385,11 +403,15 @@ struct ControlPanel: View {
         }
     }
 
-    /// The shipped character sits above the community gallery, not inside it:
-    /// the OpenPets attribution below covers that gallery's art only.
-    private var defaultCharacterRow: some View {
+    private var availableCharacterCount: Int {
+        PetSpriteStore.bundledCharacters.count + model.openPetsRows.count
+    }
+
+    /// Shipped characters sit above the community gallery, not inside it: the
+    /// OpenPets attribution below covers that gallery's art only.
+    private func bundledCharacterRow(_ character: BundledPetCharacter) -> some View {
         HStack(spacing: 8) {
-            if let thumb = model.defaultCharacterThumb {
+            if let thumb = model.bundledCharacterThumb(for: character) {
                 Image(nsImage: thumb)
                     .resizable()
                     .interpolation(.none)
@@ -397,15 +419,18 @@ struct ControlPanel: View {
                     .frame(width: 44, height: 44)
             }
             VStack(alignment: .leading, spacing: 1) {
-                Text(PetSpriteStore.defaultCharacterName)
+                Text(character.displayName)
                     .font(.caption.weight(.medium))
-                Text("Ships with COS Control. Ten animated states.")
+                Text(character.summary)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
-            Button("Restore") { confirmRestoreDefaultCharacter = true }
+            Button("Use") {
+                pendingBundledCharacter = character
+                confirmBundledCharacter = true
+            }
                 .controlSize(.small)
         }
         .padding(.bottom, 2)
@@ -413,7 +438,19 @@ struct ControlPanel: View {
 
     private var petGalleryCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            defaultCharacterRow
+            Text("Characters \(availableCharacterCount).")
+                .foregroundStyle(.secondary)
+            TextField("Search characters", text: $openPetsQuery)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+            if !visibleBundledCharacters.isEmpty {
+                Text("Ships with COS Control")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                ForEach(visibleBundledCharacters) { character in
+                    bundledCharacterRow(character)
+                }
+            }
             Divider()
             if model.openPetsLoading && model.openPetsRows.isEmpty {
                 HStack {
@@ -432,20 +469,17 @@ struct ControlPanel: View {
                 }
             } else {
                 Text(model.openPetsStale
-                     ? "Curated set. \(model.openPetsRows.count) pets. Showing saved list."
-                     : "Curated set. \(model.openPetsRows.count) pets.")
+                     ? "OpenPets community. \(model.openPetsRows.count) still pets. Showing saved list."
+                     : "OpenPets community. \(model.openPetsRows.count) still pets.")
                     .foregroundStyle(.secondary)
                 Text("Art from the OpenPets community gallery (openpets.dev). No license metadata is published. Personal use.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
-                TextField("Search pets", text: $openPetsQuery)
-                    .textFieldStyle(.roundedBorder)
-                    .controlSize(.small)
-                if visibleOpenPetsRows.isEmpty {
-                    Text("No pets match.")
+                if visibleOpenPetsRows.isEmpty && visibleBundledCharacters.isEmpty {
+                    Text("No characters match.")
                         .foregroundStyle(.secondary)
-                } else {
+                } else if !visibleOpenPetsRows.isEmpty {
                     ScrollView {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 72), spacing: 8)], spacing: 8) {
                             ForEach(visibleOpenPetsRows) { row in
