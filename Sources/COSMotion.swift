@@ -220,17 +220,28 @@ struct SessionPetSprite: View {
 
     var body: some View {
         let interval = reduceMotion ? 3600.0 : pose.frameInterval
-        TimelineView(.animation(minimumInterval: interval, paused: reduceMotion && frames.count <= 1)) { timeline in
+        // Cinematic scenes are distinct paintings, not run-cycle cells; a hard
+        // cut between them reads as a slideshow. Cross-dissolve the last third
+        // of each interval so the fight flows. Needs sub-interval ticks.
+        let dissolves = pose.cinematic && frames.count > 1 && !reduceMotion
+        let tick = dissolves ? interval / 8 : interval
+        TimelineView(.animation(minimumInterval: tick, paused: reduceMotion && frames.count <= 1)) { timeline in
             let phase = reduceMotion ? 0.0 : sin(timeline.date.timeIntervalSinceReferenceDate * (working ? 6.2 : 2.4))
             let bounce = working && !reduceMotion ? CGFloat(phase) * max(1, size * 0.022) : 0
             Group {
-                if let frame = playbackFrame(at: timeline.date) {
-                    let pixelated = max(frame.size.width, frame.size.height) <= size * 2
-                    Image(nsImage: frame)
-                        .interpolation(pixelated ? .none : .medium)
-                        .antialiased(false)
-                        .resizable()
-                        .scaledToFit()
+                if dissolves {
+                    let t = timeline.date.timeIntervalSinceReferenceDate / pose.frameInterval
+                    let index = Int(t) % frames.count
+                    let next = (index + 1) % frames.count
+                    let frac = t - t.rounded(.down)
+                    let raw = max(0.0, (frac - 0.62) / 0.38)
+                    let fade = raw * raw * (3 - 2 * raw)
+                    ZStack {
+                        frameImage(frames[index]).opacity(1 - fade)
+                        frameImage(frames[next]).opacity(fade)
+                    }
+                } else if let frame = playbackFrame(at: timeline.date) {
+                    frameImage(frame)
                 } else if let customImage {
                     Image(nsImage: customImage)
                         .interpolation(.none)
@@ -293,6 +304,15 @@ struct SessionPetSprite: View {
             return (height * min(max(aspect, lo), hi)).rounded()
         }
         return pose.spriteWidth(Int(size.rounded()))
+    }
+
+    private func frameImage(_ frame: NSImage) -> some View {
+        let pixelated = max(frame.size.width, frame.size.height) <= size * 2
+        return Image(nsImage: frame)
+            .interpolation(pixelated ? .none : .medium)
+            .antialiased(false)
+            .resizable()
+            .scaledToFit()
     }
 
     private func playbackFrame(at date: Date) -> NSImage? {

@@ -1,3 +1,25 @@
+## 0.5.115 (build 153)
+
+The character stands 35% taller; the chrome does not move.
+
+The figure read small against its own buttons and bubbles. The sprite now
+renders 1.35x the configured pixel size — applied only to the character
+frame, so buttons, text, and the session list keep their sizes and the panel
+grows just enough to hold the figure. Build 152 was cut but never installed
+or published; its changes ship here.
+
+## 0.5.114 (build 152)
+
+Cinematic frames align to their cells, and the fight dissolves between scenes.
+
+Playback guessed the cinematic strip's frame count from its aspect ratio —
+996/256 rounds to 3 across a 4-cell strip, so every frame was cut mid-cell and
+a half-droid bled in from the neighbor. installGrid now persists the true cell
+count and playback slices by it (contract-tested; reinstalling a pack writes
+the meta). Cinematic poses cross-dissolve over the last third of each frame
+interval instead of hard-cutting, so patrol, duel, trio, and swarm play as a
+flowing sequence.
+
 ## 0.5.113 (build 151)
 
 The sprite pipeline is orientation-true, and the pet reads in dark mode.

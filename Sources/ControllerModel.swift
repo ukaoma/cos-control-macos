@@ -1474,8 +1474,11 @@ final class ControllerModel: ObservableObject {
         let cinematicURL = directory.appendingPathComponent(PetSpriteStore.cinematicFileName)
         if let image = NSImage(contentsOf: cinematicURL),
            let cg = PetSpriteStrip.raster(image) {
-            let guessed = PetSpriteStrip.clampFrames(max(2, cg.width / max(cg.height, 1)))
-            cinematic = PetSpriteStrip.slice(image, frames: guessed)
+            // The stored count is truth; the aspect guess (996/256 -> 3 over a
+            // 4-cell strip) sliced every frame mid-cell and bled half-droids.
+            let frames = PetSpriteStore.cinematicFrameCount(in: directory)
+                ?? PetSpriteStrip.clampFrames(max(2, cg.width / max(cg.height, 1)))
+            cinematic = PetSpriteStrip.slice(image, frames: frames)
         }
         petSpriteKit = PetSpriteKit(fallback: petCustomSprite, poses: poses, cinematic: cinematic)
     }

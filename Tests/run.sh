@@ -1715,6 +1715,8 @@ need('forceCount: true' in (root / "Sources/Models.swift").read_text(),
      "cell boards no longer force the manifest scene count in the island split")
 need('sliceStripByValleys' in (root / "Sources/Models.swift").read_text(),
      "strips no longer valley-align their declared frame cuts")
+need('cinematicFrameCount(in: directory)' in model,
+     "cinematic playback regressed to the aspect guess that bled half-droids across frame edges")
 need('COSPalette.plateInk' in (root / "Sources/SessionPet.swift").read_text(),
      "pet controls regressed to fixed ink: black-on-black in dark mode")
 need('foregroundStyle(COSPalette.ink)' not in (root / "Sources/SessionPet.swift").read_text(),

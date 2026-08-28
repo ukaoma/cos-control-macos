@@ -2769,13 +2769,20 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
         }
     }
 
+    /// The figure reads small against the pet chrome, so the CHARACTER renders
+    /// 1.35x the configured pixel size while buttons, bubbles, and the list
+    /// keep their sizes (those scale off PetSize, not off these).
+    static let characterScale: CGFloat = 1.35
+
     func spriteHeight(_ pixels: Int) -> CGFloat {
-        let size = CGFloat(pixels)
-        return cinematic ? (size * 1.55).rounded() : size
+        let size = CGFloat(pixels) * Self.characterScale
+        return cinematic ? (size * 1.55).rounded() : size.rounded()
     }
 
     func spriteWidth(_ pixels: Int) -> CGFloat {
-        cinematic ? (spriteHeight(pixels) * 2.6).rounded() : CGFloat(pixels)
+        cinematic
+            ? (spriteHeight(pixels) * 2.6).rounded()
+            : (CGFloat(pixels) * Self.characterScale).rounded()
     }
 
     var fallbackPoses: [PetSpritePose] {
@@ -3505,6 +3512,19 @@ enum PetSpriteStore {
     static let fileStem = "session-pet-sprite"
     static let stateFileName = "session-pet-states.json"
     static let cinematicFileName = "session-pet-cinematic.png"
+    static let cinematicMetaFileName = "session-pet-cinematic.json"
+
+    /// The stitched cinematic strip's true frame count. Nil when the meta file
+    /// is absent (a pre-0.5.114 install) — callers fall back to the aspect
+    /// guess, which is wrong for non-square cells; reinstalling the pack fixes it.
+    static func cinematicFrameCount(in directory: URL, fileManager: FileManager = .default) -> Int? {
+        let url = directory.appendingPathComponent(cinematicMetaFileName)
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let frames = json["frames"] as? Int, frames >= 1
+        else { return nil }
+        return PetSpriteStrip.clampFrames(frames)
+    }
     static let maxBytes = 8 * 1024 * 1024
     static let allowedExtensions: Set<String> = ["png", "gif", "jpg", "jpeg", "tiff", "tif", "webp"]
 
@@ -3635,6 +3655,11 @@ enum PetSpriteStore {
             try? fileManager.removeItem(at: dest)
             if let data = pngData(strip) {
                 try data.write(to: dest, options: .atomic)
+                // Playback must slice by the count that was stitched. Guessing
+                // it back from the aspect ratio landed on 3 for a 4-cell strip
+                // and cut every frame mid-cell — the half-droid bleed.
+                let meta = try JSONSerialization.data(withJSONObject: ["frames": sequence.count])
+                try meta.write(to: directory.appendingPathComponent(cinematicMetaFileName), options: .atomic)
             }
         }
         try saveStateMap(map, in: directory, fileManager: fileManager)
@@ -3693,6 +3718,7 @@ enum PetSpriteStore {
             try? fileManager.removeItem(at: directory.appendingPathComponent(poseFileName(pose)))
         }
         try? fileManager.removeItem(at: directory.appendingPathComponent(cinematicFileName))
+        try? fileManager.removeItem(at: directory.appendingPathComponent(cinematicMetaFileName))
         try? fileManager.removeItem(at: directory.appendingPathComponent(stateFileName))
     }
 

@@ -1121,6 +1121,30 @@ struct ModelsContract {
         let prep = PetSpriteStrip.prepare(strip, frames: 3)
         precondition(prep.frames == 3,
                      "prepare must report the stitched frame count, got \(prep.frames)")
+
+        // CINEMATIC COUNT PERSISTENCE: playback must slice the stitched strip
+        // by its true cell count, not an aspect guess (996/256 -> 3 over a
+        // 4-cell strip bled half-droids across every frame edge).
+        let cineTmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cos-cine-\(ProcessInfo.processInfo.processIdentifier)")
+        try? FileManager.default.removeItem(at: cineTmp)
+        try! FileManager.default.createDirectory(at: cineTmp, withIntermediateDirectories: true)
+        let board = spriteProbe(width: 1600, height: 100, blobs: [
+            (x: 60, w: 240, y: 20, h: 60),
+            (x: 460, w: 240, y: 20, h: 60),
+            (x: 860, w: 240, y: 20, h: 60),
+            (x: 1260, w: 240, y: 20, h: 60),
+        ])
+        let boardURL = cineTmp.appendingPathComponent("04-escalation.png")
+        try! NSBitmapImageRep(data: board.tiffRepresentation!)!.representation(using: .png, properties: [:])!.write(to: boardURL)
+        try! PetSpriteStore.installGrid(from: boardURL, columns: 4, rows: 1,
+                                        cells: PetSpritePose.escalationCells, into: cineTmp)
+        precondition(PetSpriteStore.cinematicFrameCount(in: cineTmp) == 4,
+                     "installGrid must persist the cinematic strip's true frame count")
+        PetSpriteStore.removeAll(from: cineTmp)
+        precondition(PetSpriteStore.cinematicFrameCount(in: cineTmp) == nil,
+                     "removeAll must clear the cinematic frame-count meta")
+        try? FileManager.default.removeItem(at: cineTmp)
     }
 
     private static func checkCursorAgentTabMatch() {
