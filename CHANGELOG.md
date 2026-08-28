@@ -1,3 +1,22 @@
+## 0.5.121 (build 159)
+
+The default character animates in every state.
+
+Jedi Miles Windu V3 replaces the bundled default: 10 animated states, 74
+frames, 6-8 per state — idle, patrol, waiting, running, success, error,
+attention, duel, trio, and swarm. Every frame ran through the real install
+pipeline (paper knockout, valley slicing, boundary-spillover suppression,
+crop, 256px fit, equal-cell stitch) and all 74 survived it, with declared and
+actual frame counts matching for all ten poses.
+
+A pack's own animated duel, trio, or swarm strip now takes precedence over the
+stitched cinematic ladder, so three and five sessions play their own
+choreography instead of replaying the escalation sequence. A single-frame pose
+still climbs the ladder, so V2-style packs are unchanged.
+
+Thinking, reading, writing, searching, grepping, and stopped are not in the V3
+live-state manifest and fall back to their related poses, as before.
+
 ## 0.5.120 (build 158)
 
 Jedi Miles Windu ships as the default character, and the corner flash is gone.

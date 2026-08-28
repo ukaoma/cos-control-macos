@@ -855,6 +855,20 @@ struct ModelsContract {
         precondition(cineKit.frames(for: .swarm).count == 4,
                      "swarm plays the full ladder")
 
+        // A direct multi-frame combat strip is more specific than the ladder.
+        // V3 packs install animated trio/swarm poses beside the bundled
+        // cinematic, so the direct strips must not be shadowed forever.
+        cineKit.poses[.trio] = (0..<6).map { i in
+            rgbImage(width: 2, height: 2) { _, _ in (10, UInt8(40 + i * 20), 10, 255) }
+        }
+        cineKit.poses[.swarm] = (0..<6).map { i in
+            rgbImage(width: 2, height: 2) { _, _ in (10, 10, UInt8(40 + i * 20), 255) }
+        }
+        precondition(cineKit.frames(for: .trio).count == 6,
+                     "direct animated trio must beat the cinematic ladder")
+        precondition(cineKit.frames(for: .swarm).count == 6,
+                     "direct animated swarm must beat the cinematic ladder")
+
         let colored = rgbImage(width: 4, height: 4) { x, y in
             let col = x / 2
             let row = y / 2

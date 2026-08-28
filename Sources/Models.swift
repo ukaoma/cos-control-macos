@@ -2895,7 +2895,14 @@ struct PetSpriteKit {
     /// Each level plays the ladder up to its own rung, so the pet never depicts
     /// more sessions than are live.
     func frames(for pose: PetSpritePose) -> [NSImage] {
-        if pose == .duel, let fight = poses[.duel], fight.count > 1 { return fight }
+        // A direct animated fight strip is more specific than the four-rung
+        // cinematic fallback. This lets an installed V3 pack animate trio and
+        // swarm without a stale bundled ladder shadowing those strips, while a
+        // one-frame pose still climbs the cinematic sequence as before.
+        if [.duel, .trio, .swarm].contains(pose),
+           let fight = poses[pose], fight.count > 1 {
+            return fight
+        }
         if pose == .trio, cinematic.count >= 3 { return Array(cinematic.prefix(3)) }
         if pose == .swarm, cinematic.count > 1 { return cinematic }
         if let frames = poses[pose], !frames.isEmpty { return frames }
