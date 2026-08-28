@@ -1470,7 +1470,14 @@ final class ControllerModel: ObservableObject {
             guard let image = NSImage(contentsOf: url) else { continue }
             poses[pose] = PetSpriteStrip.slice(image, frames: record.frames)
         }
-        petSpriteKit = PetSpriteKit(fallback: petCustomSprite, poses: poses)
+        var cinematic: [NSImage] = []
+        let cinematicURL = directory.appendingPathComponent(PetSpriteStore.cinematicFileName)
+        if let image = NSImage(contentsOf: cinematicURL),
+           let cg = PetSpriteStrip.raster(image) {
+            let guessed = PetSpriteStrip.clampFrames(max(2, cg.width / max(cg.height, 1)))
+            cinematic = PetSpriteStrip.slice(image, frames: guessed)
+        }
+        petSpriteKit = PetSpriteKit(fallback: petCustomSprite, poses: poses, cinematic: cinematic)
     }
 
     var petSpritePose: PetSpritePose {
@@ -2071,25 +2078,32 @@ final class ControllerModel: ObservableObject {
         }
         if let running = runningCursor() {
             guard ensureAccessibilityTrust() else { return }
-            if !raiseCursorAgentsWindow(of: running) {
-                let menuNames = [
-                    "Switch to Agents Window",
-                    "Open or Focus Agents Window",
-                    "Open Agents Window",
-                    "New Agents Window",
-                ]
-                if pressCursorMenuItems(menuNames, of: running) {
-                    try? await Task.sleep(for: .milliseconds(600))
-                    _ = raiseCursorAgentsWindow(of: running)
+            var raised = raiseCursorAgentsWindow(of: running)
+            if !raised {
+                // Current Cursor (menu bar probed 2026-08-27) has no persistent
+                // open-Agents-window command: "Window > Cursor Agents" is only the
+                // open-window list entry. "File > New Agent" is the one command that
+                // opens the Agents window; an unsent composer creates no thread.
+                if pressCursorMenuItems(["New Agent", "Cursor Agents"], of: running) {
+                    try? await Task.sleep(for: .milliseconds(700))
+                    raised = raiseCursorAgentsWindow(of: running)
                 }
             }
             _ = activateCursorAgentsApp(running)
+            let fronted = await cursorFrontmostVerified(running)
+            logCursorJump("running-branch", raised: raised, fronted: fronted, want: agentTab, of: running)
+            guard raised || fronted else {
+                petNotice = "Could not bring the Agents window forward."
+                return
+            }
             try? await Task.sleep(for: .milliseconds(350))
-            if !pressCursorAgentTab(named: agentTab, of: running) {
-                let want = agentTab.trimmingCharacters(in: .whitespacesAndNewlines)
-                if want.count >= CursorAgentTabMatch.minimumCount {
-                    petNotice = "Opened Agents. Could not select that tab."
-                }
+            if pressCursorAgentTab(named: agentTab, of: running) { return }
+            if await searchAndPressCursorAgentTab(named: agentTab, of: running) { return }
+            let want = agentTab.trimmingCharacters(in: .whitespacesAndNewlines)
+            if want.count >= CursorAgentTabMatch.minimumCount {
+                petNotice = fronted
+                    ? "Opened Agents. Could not select that tab."
+                    : "Could not bring the Agents window forward."
             }
             return
         }
@@ -2274,6 +2288,91 @@ final class ControllerModel: ObservableObject {
     private func activateCursorAgentsApp(_ app: NSRunningApplication) -> Bool {
         app.unhide()
         return app.activate(from: NSRunningApplication.current)
+    }
+
+    /// Cooperative activation can be refused; only the frontmost check proves
+    /// the window actually came forward. Retry briefly before reporting.
+    private func cursorFrontmostVerified(_ app: NSRunningApplication) async -> Bool {
+        for _ in 0..<8 {
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
+                return true
+            }
+            app.unhide()
+            _ = app.activate(from: NSRunningApplication.current)
+            try? await Task.sleep(for: .milliseconds(120))
+        }
+        return NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier
+    }
+
+    /// The Agents list is Electron-virtualized: rows scrolled out of view are
+    /// ABSENT from the AX tree, so a missing row is driven through the window's
+    /// own Search affordance instead of a walk that cannot see it.
+    private func searchAndPressCursorAgentTab(named rawWant: String, of app: NSRunningApplication) async -> Bool {
+        let want = rawWant.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard want.count >= CursorAgentTabMatch.minimumCount else { return false }
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        guard let window = cursorAgentsWindow(from: element),
+              let search = findCursorSearchButton(from: window, depth: 0),
+              AXUIElementPerformAction(search, kAXPressAction as CFString) == .success else {
+            return false
+        }
+        try? await Task.sleep(for: .milliseconds(400))
+        postKeyboardText(want, to: app.processIdentifier)
+        try? await Task.sleep(for: .milliseconds(600))
+        if let refreshed = cursorAgentsWindow(from: element),
+           pressCursorAgentTab(named: want, from: refreshed, depth: 0) {
+            return true
+        }
+        postEscape(to: app.processIdentifier)
+        return false
+    }
+
+    private func findCursorSearchButton(from element: AXUIElement, depth: Int) -> AXUIElement? {
+        guard depth < 14 else { return nil }
+        var roleRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success,
+           let role = roleRef as? String, role == kAXButtonRole as String {
+            var titleRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &titleRef) == .success,
+               let title = titleRef as? String,
+               title.hasPrefix("Search") {
+                return element
+            }
+        }
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+              let children = childrenRef as? [AXUIElement] else { return nil }
+        for child in children {
+            if let hit = findCursorSearchButton(from: child, depth: depth + 1) { return hit }
+        }
+        return nil
+    }
+
+    private func postKeyboardText(_ text: String, to pid: pid_t) {
+        for scalar in text.unicodeScalars {
+            var chars = [UniChar(truncatingIfNeeded: scalar.value)]
+            guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else { continue }
+            down.keyboardSetUnicodeString(stringLength: 1, unicodeString: &chars)
+            up.keyboardSetUnicodeString(stringLength: 1, unicodeString: &chars)
+            down.postToPid(pid)
+            up.postToPid(pid)
+        }
+    }
+
+    private func postEscape(to pid: pid_t) {
+        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: true),
+              let up = CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: false) else { return }
+        down.postToPid(pid)
+        up.postToPid(pid)
+    }
+
+    /// Console breadcrumb so a field miss names its own cause
+    /// (`log show --process "COS Control"`).
+    private func logCursorJump(_ branch: String, raised: Bool, fronted: Bool, want: String, of app: NSRunningApplication) {
+        let titles = cursorWindowTitles(of: app)
+        NSLog("COSControl cursor-jump %@ raised=%d fronted=%d want=%@ windows=%@",
+              branch, raised ? 1 : 0, fronted ? 1 : 0, want, titles.joined(separator: " | "))
     }
 
     @discardableResult

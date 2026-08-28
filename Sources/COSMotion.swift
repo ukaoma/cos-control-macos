@@ -273,8 +273,26 @@ struct SessionPetSprite: View {
             }
             .offset(y: bounce)
         }
-        .frame(width: pose.spriteWidth(Int(size.rounded())), height: size)
+        .frame(width: displayWidth, height: displayHeight)
         .accessibilityHidden(true)
+    }
+
+    private var displayHeight: CGFloat {
+        pose.spriteHeight(Int(size.rounded()))
+    }
+
+    private var displayWidth: CGFloat {
+        let height = displayHeight
+        let sample = frames.max(by: {
+            $0.size.width / max($0.size.height, 1) < $1.size.width / max($1.size.height, 1)
+        }) ?? frames.first
+        if let sample, sample.size.height > 1 {
+            let aspect = sample.size.width / sample.size.height
+            let lo: CGFloat = pose.cinematic ? 1.7 : 1
+            let hi: CGFloat = pose.cinematic ? 3.6 : 1.4
+            return (height * min(max(aspect, lo), hi)).rounded()
+        }
+        return pose.spriteWidth(Int(size.rounded()))
     }
 
     private func playbackFrame(at date: Date) -> NSImage? {
