@@ -2649,9 +2649,573 @@ enum PetPanelFrame {
     }
 }
 
-/// Custom session-pet figure. Copied byte-for-byte so a 32x32 PNG stays blocky.
+private func petSpriteJSONInt(_ value: Any?, fallback: Int) -> Int {
+    if let number = value as? Int { return number }
+    if let number = value as? NSNumber { return number.intValue }
+    return fallback
+}
+
+/// Live pose the desktop pet plays. One identity PNG still covers any pose
+/// that has no strip of its own.
+enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
+    case idle
+    case thinking
+    case reading
+    case writing
+    case searching
+    case grepping
+    case waiting
+    case working
+    case patrol
+    case duel
+    case trio
+    case swarm
+    case done
+    case error
+    case attention
+    case stopped
+
+    static let liveCases: [PetSpritePose] = [
+        .idle, .patrol, .waiting, .working, .done, .error, .attention, .duel, .trio, .swarm,
+    ]
+
+    static var catalogCases: [PetSpritePose] {
+        allCases.filter { !liveCases.contains($0) }
+    }
+
+    var title: String {
+        switch self {
+        case .idle: "Idle"
+        case .thinking: "Thinking"
+        case .reading: "Reading"
+        case .writing: "Writing"
+        case .searching: "Searching"
+        case .grepping: "Grepping"
+        case .waiting: "Waiting"
+        case .working: "Running"
+        case .patrol: "Patrol"
+        case .duel: "Duel"
+        case .trio: "Three"
+        case .swarm: "Swarm"
+        case .done: "Success"
+        case .error: "Error"
+        case .attention: "Attention"
+        case .stopped: "Stopped"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .idle: "Blade off. One quiet session."
+        case .thinking: "Thought orb."
+        case .reading: "Violet hologram."
+        case .writing: "Glowing glyph."
+        case .searching: "Scan rings."
+        case .grepping: "Matching fragments."
+        case .waiting: "Meditation. Waiting on you."
+        case .working: "Sprint with the blade ignited."
+        case .patrol: "One session. Walking the beat."
+        case .duel: "Two sessions. One droid."
+        case .trio: "Three sessions. Three droids."
+        case .swarm: "Four or more. Five-droid swarm."
+        case .done: "Restrained blade flourish."
+        case .error: "Deflect a red error bolt."
+        case .attention: "Alert, blade ignited."
+        case .stopped: "Composed, blade off."
+        }
+    }
+
+    var defaultFrameCount: Int {
+        switch self {
+        case .idle, .done: 6
+        case .waiting, .working: 8
+        case .duel, .swarm: 10
+        default: 1
+        }
+    }
+
+    var frameInterval: Double {
+        switch self {
+        case .idle, .patrol, .stopped: 0.28
+        case .waiting, .thinking, .reading, .writing: 0.18
+        case .searching, .grepping: 0.14
+        case .working: 0.10
+        case .duel: 0.11
+        case .trio: 0.10
+        case .swarm: 0.08
+        case .done: 0.16
+        case .error, .attention: 0.14
+        }
+    }
+
+    var animates: Bool {
+        switch self {
+        case .working, .duel, .trio, .swarm, .error, .attention: true
+        default: false
+        }
+    }
+
+    var cinematic: Bool {
+        switch self {
+        case .patrol, .duel, .trio, .swarm: true
+        default: false
+        }
+    }
+
+    func spriteWidth(_ pixels: Int) -> CGFloat {
+        let size = CGFloat(pixels)
+        return cinematic ? (size * 1.85).rounded() : size
+    }
+
+    var fallbackPoses: [PetSpritePose] {
+        switch self {
+        case .patrol: [.idle]
+        case .duel: [.swarm, .working]
+        case .trio: [.swarm, .duel]
+        case .swarm: [.duel, .trio]
+        case .error: [.attention]
+        case .attention: [.error]
+        case .thinking, .reading, .writing: [.waiting, .idle]
+        case .searching, .grepping: [.working, .waiting]
+        case .stopped: [.idle, .done]
+        default: []
+        }
+    }
+
+    /// Error and attention beat the swarm so a jump miss still reads. Completing
+    /// still flashes success. Session count then escalates patrol → duel →
+    /// three droids → five-droid swarm.
+    static func resolve(
+        sessionCount: Int,
+        focusState: String?,
+        completing: Bool,
+        attention: Bool = false,
+        errored: Bool = false
+    ) -> PetSpritePose {
+        if errored || focusState == "error" { return .error }
+        if attention { return .attention }
+        if completing { return .done }
+        if sessionCount >= 4 { return .swarm }
+        if sessionCount == 3 { return .trio }
+        if sessionCount == 2 { return .duel }
+        switch focusState {
+        case "running": return .working
+        case "waiting": return .waiting
+        default: return sessionCount >= 1 ? .patrol : .idle
+        }
+    }
+
+    static func matching(fileName: String) -> PetSpritePose? {
+        let name = fileName.lowercased()
+        if name.contains("core-agent-states") || name.contains("multi-session-escalation") {
+            return nil
+        }
+        let checks: [(PetSpritePose, [String])] = [
+            (.working, ["lightsaber-run", "02-lightsaber"]),
+            (.duel, ["droid-combat", "03-droid"]),
+            (.idle, ["01-idle", "idle-strip", "-idle-"]),
+            (.waiting, ["02-search", "search-strip", "-search-"]),
+            (.working, ["03-grep", "grep-strip", "inspect-strip", "-grep-"]),
+            (.swarm, ["04-combat", "combat-strip", "fight-strip", "-combat-"]),
+            (.done, ["05-success", "success-strip", "complete-strip", "-success-", "-done-"]),
+        ]
+        for (pose, keys) in checks {
+            if keys.contains(where: { name.contains($0) }) { return pose }
+        }
+        return nil
+    }
+
+    static let coreStateCells: [(pose: PetSpritePose, index: Int)] = [
+        (.idle, 0), (.thinking, 1), (.reading, 2), (.writing, 3),
+        (.searching, 4), (.grepping, 5), (.working, 6), (.waiting, 7),
+        (.done, 8), (.error, 9), (.attention, 10), (.stopped, 11),
+    ]
+
+    static let escalationCells: [(pose: PetSpritePose, index: Int)] = [
+        (.patrol, 0), (.duel, 1), (.trio, 2), (.swarm, 3),
+    ]
+}
+
+struct PetSpriteKit {
+    var fallback: NSImage?
+    var poses: [PetSpritePose: [NSImage]] = [:]
+
+    func frames(for pose: PetSpritePose) -> [NSImage] {
+        if let frames = poses[pose], !frames.isEmpty { return frames }
+        for fallback in pose.fallbackPoses {
+            if let frames = poses[fallback], !frames.isEmpty { return frames }
+        }
+        if let fallback { return [fallback] }
+        return []
+    }
+
+    var hasAnyCustom: Bool {
+        fallback != nil || poses.contains { !$0.value.isEmpty }
+    }
+
+    func preview(for pose: PetSpritePose) -> NSImage? {
+        poses[pose]?.first
+    }
+}
+
+enum PetSpriteStrip {
+    static let maxHeight = 256
+    static let minFrames = 1
+    static let maxFrames = 16
+
+    static func clampFrames(_ value: Int) -> Int {
+        min(max(value, minFrames), maxFrames)
+    }
+
+    static func raster(_ image: NSImage) -> CGImage? {
+        if let tiff = image.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiff),
+           let cg = rep.cgImage {
+            return cg
+        }
+        var rect = CGRect(origin: .zero, size: image.size)
+        return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+    }
+
+    static func slice(_ image: NSImage, frames: Int) -> [NSImage] {
+        let count = clampFrames(frames)
+        guard let cg = raster(image) else { return [image] }
+        if count <= 1 {
+            return [NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))]
+        }
+        let frameWidth = max(1, cg.width / count)
+        var out: [NSImage] = []
+        out.reserveCapacity(count)
+        for index in 0..<count {
+            let rect = CGRect(x: index * frameWidth, y: 0, width: frameWidth, height: cg.height)
+            guard let cropped = cg.cropping(to: rect) else { continue }
+            out.append(NSImage(cgImage: cropped, size: NSSize(width: frameWidth, height: cg.height)))
+        }
+        return out.isEmpty ? [image] : out
+    }
+
+    static func sliceGrid(_ image: NSImage, columns: Int, rows: Int) -> [NSImage] {
+        let cols = max(1, columns)
+        let rowCount = max(1, rows)
+        guard let cg = raster(image) else { return [image] }
+        let cellWidth = max(1, cg.width / cols)
+        let cellHeight = max(1, cg.height / rowCount)
+        var out: [NSImage] = []
+        out.reserveCapacity(cols * rowCount)
+        for row in 0..<rowCount {
+            for col in 0..<cols {
+                let rect = CGRect(x: col * cellWidth, y: row * cellHeight, width: cellWidth, height: cellHeight)
+                guard let cropped = cg.cropping(to: rect) else { continue }
+                out.append(NSImage(cgImage: cropped, size: NSSize(width: cellWidth, height: cellHeight)))
+            }
+        }
+        return out.isEmpty ? [image] : out
+    }
+
+    static func fitHeight(_ image: NSImage, maxHeight: Int = maxHeight) -> NSImage {
+        guard let cg = raster(image), cg.height > maxHeight else { return image }
+        let scale = CGFloat(maxHeight) / CGFloat(cg.height)
+        let width = max(1, Int((CGFloat(cg.width) * scale).rounded()))
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil,
+            width: width,
+            height: maxHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return image }
+        ctx.interpolationQuality = .medium
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: maxHeight))
+        guard let out = ctx.makeImage() else { return image }
+        return NSImage(cgImage: out, size: NSSize(width: width, height: maxHeight))
+    }
+}
+
+enum PetSpriteAlpha {
+    static func needsPaperKnockout(_ image: NSImage) -> Bool {
+        guard let buffer = rgbaBuffer(image) else { return false }
+        let width = buffer.width
+        let height = buffer.height
+        let sample = min(16, width, height)
+        guard sample > 0 else { return false }
+        var transparent = 0
+        var total = 0
+        for origin in [(0, 0), (width - sample, 0), (0, height - sample), (width - sample, height - sample)] {
+            for y in origin.1..<(origin.1 + sample) {
+                for x in origin.0..<(origin.0 + sample) {
+                    total += 1
+                    if buffer.pixels[(y * width + x) * 4 + 3] < 16 { transparent += 1 }
+                }
+            }
+        }
+        if total == 0 { return false }
+        if Double(transparent) / Double(total) >= 0.45 { return false }
+        return isPaper(buffer.pixels, at: 0)
+    }
+
+    static func knockOutEdgePaper(_ image: NSImage) -> NSImage {
+        guard var buffer = rgbaBuffer(image) else { return image }
+        let width = buffer.width
+        let height = buffer.height
+        var seen = [UInt8](repeating: 0, count: width * height)
+        var queue: [Int] = []
+        func enqueue(_ x: Int, _ y: Int) {
+            guard x >= 0, y >= 0, x < width, y < height else { return }
+            let index = y * width + x
+            if seen[index] == 1 { return }
+            if !isPaper(buffer.pixels, at: index * 4) { return }
+            seen[index] = 1
+            queue.append(index)
+        }
+        for x in 0..<width {
+            enqueue(x, 0)
+            enqueue(x, height - 1)
+        }
+        for y in 0..<height {
+            enqueue(0, y)
+            enqueue(width - 1, y)
+        }
+        var head = 0
+        while head < queue.count {
+            let index = queue[head]
+            head += 1
+            let x = index % width
+            let y = index / width
+            let byte = index * 4
+            buffer.pixels[byte] = 0
+            buffer.pixels[byte + 1] = 0
+            buffer.pixels[byte + 2] = 0
+            buffer.pixels[byte + 3] = 0
+            enqueue(x - 1, y)
+            enqueue(x + 1, y)
+            enqueue(x, y - 1)
+            enqueue(x, y + 1)
+        }
+        return makeImage(from: buffer)
+    }
+
+    private struct RGBABuffer {
+        var pixels: [UInt8]
+        var width: Int
+        var height: Int
+    }
+
+    private static func isPaper(_ pixels: [UInt8], at byte: Int) -> Bool {
+        guard byte + 3 < pixels.count else { return false }
+        let r = pixels[byte]
+        let g = pixels[byte + 1]
+        let b = pixels[byte + 2]
+        let a = pixels[byte + 3]
+        if a < 16 { return true }
+        let maxc = max(r, g, b)
+        let minc = min(r, g, b)
+        return maxc >= 220 && (maxc - minc) <= 18
+    }
+
+    private static func rgbaBuffer(_ image: NSImage) -> RGBABuffer? {
+        guard let cg = PetSpriteStrip.raster(image) else { return nil }
+        let width = cg.width
+        let height = cg.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let drawn = pixels.withUnsafeMutableBytes { raw -> Bool in
+            guard let ctx = CGContext(
+                data: raw.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return nil }
+        let stride = width * 4
+        var topLeft = [UInt8](repeating: 0, count: pixels.count)
+        for y in 0..<height {
+            let source = (height - 1 - y) * stride
+            let dest = y * stride
+            topLeft.replaceSubrange(dest..<(dest + stride), with: pixels[source..<(source + stride)])
+        }
+        return RGBABuffer(pixels: topLeft, width: width, height: height)
+    }
+
+    private static func makeImage(from buffer: RGBABuffer) -> NSImage {
+        let data = Data(buffer.pixels) as CFData
+        guard let provider = CGDataProvider(data: data),
+              let cg = CGImage(
+                width: buffer.width,
+                height: buffer.height,
+                bitsPerComponent: 8,
+                bitsPerPixel: 32,
+                bytesPerRow: buffer.width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                provider: provider,
+                decode: nil,
+                shouldInterpolate: false,
+                intent: .defaultIntent
+              )
+        else {
+            return NSImage(size: NSSize(width: buffer.width, height: buffer.height))
+        }
+        return NSImage(cgImage: cg, size: NSSize(width: buffer.width, height: buffer.height))
+    }
+}
+
+enum PetSpritePack {
+    struct Item {
+        var pose: PetSpritePose?
+        var url: URL
+        var frames: Int
+        var columns: Int = 0
+        var rows: Int = 0
+        var cells: [(pose: PetSpritePose, index: Int)] = []
+
+        var isGrid: Bool { !cells.isEmpty }
+    }
+
+    enum LoadError: LocalizedError {
+        case empty
+
+        var errorDescription: String? {
+            switch self {
+            case .empty:
+                return "That folder has no sprite strips or state boards."
+            }
+        }
+    }
+
+    static func load(from root: URL, fileManager: FileManager = .default) throws -> [Item] {
+        let directory = resolvedDirectory(root)
+        if let manifest = loadManifest(in: directory, fileManager: fileManager), !manifest.isEmpty {
+            return manifest
+        }
+        let scanned = scanFiles(in: directory, fileManager: fileManager)
+        if scanned.isEmpty { throw LoadError.empty }
+        return scanned
+    }
+
+    static func resolvedDirectory(_ root: URL) -> URL {
+        if root.lastPathComponent.lowercased() == "manifest.json" {
+            return root.deletingLastPathComponent()
+        }
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), !isDirectory.boolValue {
+            return root.deletingLastPathComponent()
+        }
+        return root
+    }
+
+    static func scanFiles(in directory: URL, fileManager: FileManager = .default) -> [Item] {
+        let urls = (try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        var boards: [Item] = []
+        var best: [PetSpritePose: (url: URL, score: Int)] = [:]
+        for url in urls where PetSpriteStore.isAllowedImage(url) {
+            if let board = recognizedBoard(url) {
+                boards.append(board)
+                continue
+            }
+            guard let pose = PetSpritePose.matching(fileName: url.lastPathComponent) else { continue }
+            let name = url.lastPathComponent.lowercased()
+            let score = name.contains("alpha") ? 2 : 1
+            if let current = best[pose], current.score >= score { continue }
+            best[pose] = (url, score)
+        }
+        let strips = PetSpritePose.allCases.compactMap { pose -> Item? in
+            guard let hit = best[pose] else { return nil }
+            return Item(pose: pose, url: hit.url, frames: pose.defaultFrameCount)
+        }
+        return boards + strips
+    }
+
+    static func recognizedBoard(_ url: URL) -> Item? {
+        let name = url.lastPathComponent.lowercased()
+        if name.contains("core-agent-states") {
+            return Item(
+                pose: nil,
+                url: url,
+                frames: 1,
+                columns: 6,
+                rows: 2,
+                cells: PetSpritePose.coreStateCells
+            )
+        }
+        if name.contains("multi-session-escalation") {
+            return Item(
+                pose: nil,
+                url: url,
+                frames: 1,
+                columns: 4,
+                rows: 1,
+                cells: PetSpritePose.escalationCells
+            )
+        }
+        return nil
+    }
+
+    private static func loadManifest(in directory: URL, fileManager: FileManager) -> [Item]? {
+        let url = directory.appendingPathComponent("manifest.json")
+        guard fileManager.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        if let boards = json["boards"] as? [[String: Any]], !boards.isEmpty {
+            let items = boards.compactMap { board -> Item? in
+                let file = (board["file"] as? String) ?? ""
+                guard !file.isEmpty else { return nil }
+                let candidate = directory.appendingPathComponent(file)
+                guard fileManager.fileExists(atPath: candidate.path) else { return nil }
+                if let cellList = board["cells"] as? [[String: Any]] {
+                    let cells: [(pose: PetSpritePose, index: Int)] = cellList.compactMap { cell in
+                        guard let name = cell["pose"] as? String,
+                              let pose = PetSpritePose(rawValue: name) else { return nil }
+                        return (pose, petSpriteJSONInt(cell["index"], fallback: 0))
+                    }
+                    guard !cells.isEmpty else { return nil }
+                    return Item(
+                        pose: nil,
+                        url: candidate,
+                        frames: 1,
+                        columns: petSpriteJSONInt(board["columns"], fallback: 1),
+                        rows: petSpriteJSONInt(board["rows"], fallback: 1),
+                        cells: cells
+                    )
+                }
+                guard let poseName = board["pose"] as? String,
+                      let pose = PetSpritePose(rawValue: poseName) else { return nil }
+                return Item(
+                    pose: pose,
+                    url: candidate,
+                    frames: petSpriteJSONInt(board["frames"], fallback: pose.defaultFrameCount)
+                )
+            }
+            return items.isEmpty ? nil : items
+        }
+        let poses = (json["poses"] as? [String: Any]) ?? json
+        var items: [Item] = []
+        for pose in PetSpritePose.allCases {
+            guard let entry = poses[pose.rawValue] as? [String: Any] else { continue }
+            let file = (entry["file"] as? String) ?? ""
+            guard !file.isEmpty else { continue }
+            let candidate = directory.appendingPathComponent(file)
+            guard fileManager.fileExists(atPath: candidate.path) else { continue }
+            let frames = PetSpriteStrip.clampFrames(petSpriteJSONInt(entry["frames"], fallback: pose.defaultFrameCount))
+            items.append(Item(pose: pose, url: candidate, frames: frames))
+        }
+        return items
+    }
+}
+
+/// Custom session-pet figure. Identity PNGs stay byte-for-byte so a 32x32
+/// sprite stays blocky. Pose strips may be cleaned and scaled on install.
 enum PetSpriteStore {
     static let fileStem = "session-pet-sprite"
+    static let stateFileName = "session-pet-states.json"
     static let maxBytes = 8 * 1024 * 1024
     static let allowedExtensions: Set<String> = ["png", "gif", "jpg", "jpeg", "tiff", "tif", "webp"]
 
@@ -2678,12 +3242,21 @@ enum PetSpriteStore {
         allowedExtensions.contains(url.pathExtension.lowercased())
     }
 
+    static func poseFileName(_ pose: PetSpritePose) -> String {
+        "session-pet-\(pose.rawValue).png"
+    }
+
     static func existingSpriteURL(in directory: URL, fileManager: FileManager = .default) -> URL? {
         for ext in ["png", "gif", "webp", "jpg", "jpeg", "tiff", "tif"] {
             let candidate = directory.appendingPathComponent("\(fileStem).\(ext)")
             if fileManager.fileExists(atPath: candidate.path) { return candidate }
         }
         return nil
+    }
+
+    static func existingPoseURL(_ pose: PetSpritePose, in directory: URL, fileManager: FileManager = .default) -> URL? {
+        let candidate = directory.appendingPathComponent(poseFileName(pose))
+        return fileManager.fileExists(atPath: candidate.path) ? candidate : nil
     }
 
     static func install(from source: URL, into directory: URL, fileManager: FileManager = .default) throws -> URL {
@@ -2702,11 +3275,139 @@ enum PetSpriteStore {
         return dest
     }
 
+    static func installPose(
+        _ pose: PetSpritePose,
+        from source: URL,
+        frames: Int,
+        into directory: URL,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        guard isAllowedImage(source) else { throw InstallError.notAnImage }
+        let size = (try fileManager.attributesOfItem(atPath: source.path)[.size] as? Int) ?? 0
+        if size <= 0 { throw InstallError.empty }
+        if size > maxBytes { throw InstallError.tooLarge }
+        guard let loaded = NSImage(contentsOf: source) else { throw InstallError.notAnImage }
+        var image = loaded
+        if PetSpriteAlpha.needsPaperKnockout(image) {
+            image = PetSpriteAlpha.knockOutEdgePaper(image)
+        }
+        image = PetSpriteStrip.fitHeight(image)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let dest = directory.appendingPathComponent(poseFileName(pose))
+        try? fileManager.removeItem(at: dest)
+        guard let data = pngData(image) else { throw InstallError.notAnImage }
+        try data.write(to: dest, options: .atomic)
+        var map = loadStateMap(in: directory, fileManager: fileManager)
+        map[pose] = (poseFileName(pose), PetSpriteStrip.clampFrames(frames))
+        try saveStateMap(map, in: directory, fileManager: fileManager)
+        return dest
+    }
+
+    static func installGrid(
+        from source: URL,
+        columns: Int,
+        rows: Int,
+        cells: [(pose: PetSpritePose, index: Int)],
+        into directory: URL,
+        fileManager: FileManager = .default
+    ) throws {
+        guard isAllowedImage(source) else { throw InstallError.notAnImage }
+        let size = (try fileManager.attributesOfItem(atPath: source.path)[.size] as? Int) ?? 0
+        if size <= 0 { throw InstallError.empty }
+        if size > maxBytes { throw InstallError.tooLarge }
+        guard let loaded = NSImage(contentsOf: source) else { throw InstallError.notAnImage }
+        var image = loaded
+        if PetSpriteAlpha.needsPaperKnockout(image) {
+            image = PetSpriteAlpha.knockOutEdgePaper(image)
+        }
+        let sliced = PetSpriteStrip.sliceGrid(image, columns: columns, rows: rows)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        var map = loadStateMap(in: directory, fileManager: fileManager)
+        for cell in cells {
+            guard cell.index >= 0, cell.index < sliced.count else { continue }
+            let prepared = PetSpriteStrip.fitHeight(sliced[cell.index])
+            let dest = directory.appendingPathComponent(poseFileName(cell.pose))
+            try? fileManager.removeItem(at: dest)
+            guard let data = pngData(prepared) else { continue }
+            try data.write(to: dest, options: .atomic)
+            map[cell.pose] = (poseFileName(cell.pose), 1)
+        }
+        try saveStateMap(map, in: directory, fileManager: fileManager)
+    }
+
+    static func setFrames(
+        _ pose: PetSpritePose,
+        frames: Int,
+        in directory: URL,
+        fileManager: FileManager = .default
+    ) {
+        var map = loadStateMap(in: directory, fileManager: fileManager)
+        let file = map[pose]?.file ?? poseFileName(pose)
+        guard fileManager.fileExists(atPath: directory.appendingPathComponent(file).path) else { return }
+        map[pose] = (file, PetSpriteStrip.clampFrames(frames))
+        try? saveStateMap(map, in: directory, fileManager: fileManager)
+    }
+
+    static func loadStateMap(
+        in directory: URL,
+        fileManager: FileManager = .default
+    ) -> [PetSpritePose: (file: String, frames: Int)] {
+        let url = directory.appendingPathComponent(stateFileName)
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let poses = json["poses"] as? [String: Any]
+        else {
+            var inferred: [PetSpritePose: (file: String, frames: Int)] = [:]
+            for pose in PetSpritePose.allCases {
+                if existingPoseURL(pose, in: directory, fileManager: fileManager) != nil {
+                    inferred[pose] = (poseFileName(pose), pose.defaultFrameCount)
+                }
+            }
+            return inferred
+        }
+        var map: [PetSpritePose: (file: String, frames: Int)] = [:]
+        for pose in PetSpritePose.allCases {
+            guard let entry = poses[pose.rawValue] as? [String: Any] else { continue }
+            let file = (entry["file"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? poseFileName(pose)
+            let frames = PetSpriteStrip.clampFrames(petSpriteJSONInt(entry["frames"], fallback: pose.defaultFrameCount))
+            map[pose] = (file, frames)
+        }
+        return map
+    }
+
     static func remove(from directory: URL, fileManager: FileManager = .default) {
         for ext in allowedExtensions {
             let url = directory.appendingPathComponent("\(fileStem).\(ext)")
             try? fileManager.removeItem(at: url)
         }
+    }
+
+    static func removeAll(from directory: URL, fileManager: FileManager = .default) {
+        remove(from: directory, fileManager: fileManager)
+        for pose in PetSpritePose.allCases {
+            try? fileManager.removeItem(at: directory.appendingPathComponent(poseFileName(pose)))
+        }
+        try? fileManager.removeItem(at: directory.appendingPathComponent(stateFileName))
+    }
+
+    private static func saveStateMap(
+        _ map: [PetSpritePose: (file: String, frames: Int)],
+        in directory: URL,
+        fileManager: FileManager
+    ) throws {
+        var poses: [String: [String: Any]] = [:]
+        for pose in PetSpritePose.allCases {
+            guard let row = map[pose] else { continue }
+            poses[pose.rawValue] = ["file": row.file, "frames": row.frames]
+        }
+        let data = try JSONSerialization.data(withJSONObject: ["poses": poses], options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: directory.appendingPathComponent(stateFileName), options: .atomic)
+    }
+
+    private static func pngData(_ image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
     }
 }
 

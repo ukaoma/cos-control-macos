@@ -31,6 +31,12 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         observers.append(model.$petCustomSprite.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
+        observers.append(model.$petSpriteKit.sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
+        observers.append(model.$petCompleting.sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
         observers.append(model.$petSize.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
@@ -80,7 +86,8 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         let panel = existingPanel()
         if let host = panel.contentViewController as? NSHostingController<SessionPetRoot> {
             host.rootView = SessionPetRoot(model: model, presenter: self)
-            let width = max(model.petSize.length(260), CGFloat(model.petSize.pixels) + model.petSize.length(24))
+            let spriteWidth = model.petSpritePose.spriteWidth(model.petSize.pixels)
+            let width = max(model.petSize.length(260), spriteWidth + model.petSize.length(24))
             let fitting = host.sizeThatFits(in: NSSize(width: width, height: 900))
             var frame = panel.frame
             frame.size = NSSize(width: width, height: max(fitting.height, model.petSize.length(120)))
@@ -149,6 +156,7 @@ private struct SessionPetRoot: View {
     private var sessions: [ClaudeSession] { model.petSessions }
     private var focus: ClaudeSession? { model.petFocusSession }
     private var size: PetSize { model.petSize }
+    private var pose: PetSpritePose { model.petSpritePose }
 
     var body: some View {
         VStack(spacing: size.length(8)) {
@@ -158,9 +166,11 @@ private struct SessionPetRoot: View {
                 } label: {
                     ZStack(alignment: .bottomLeading) {
                         SessionPetSprite(
-                            working: focus?.isPetWorking == true,
+                            working: pose.animates,
                             reduceMotion: reduceMotion,
                             customImage: model.petCustomSprite,
+                            frames: model.petSpriteKit.frames(for: pose),
+                            pose: pose,
                             size: CGFloat(size.pixels)
                         )
                         if let focus {
@@ -172,7 +182,7 @@ private struct SessionPetRoot: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .help(focus.map { "\($0.petStateCaption) · \($0.providerLabel)" } ?? "Live session")
+                .help(focus.map { "\(pose.title) · \($0.petStateCaption) · \($0.providerLabel)" } ?? pose.title)
                 if sessions.count > 1 {
                     Text("\(sessions.count)")
                         .font(COSType.mono(size.typeSize(9), weight: .bold))
@@ -216,7 +226,7 @@ private struct SessionPetRoot: View {
             }
         }
         .padding(size.length(10))
-        .frame(width: max(size.length(248), CGFloat(size.pixels) + size.length(20)))
+        .frame(width: max(size.length(248), pose.spriteWidth(size.pixels) + size.length(20)))
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleSpriteDrop(providers)
         }

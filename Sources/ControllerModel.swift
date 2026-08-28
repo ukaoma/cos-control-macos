@@ -1222,6 +1222,9 @@ final class ControllerModel: ObservableObject {
         pixels: UserDefaults.standard.object(forKey: ControllerModel.petSizePixelsKey) as? Int
     )
     @Published var petCustomSprite: NSImage?
+    @Published var petSpriteKit = PetSpriteKit()
+    @Published var petCompleting = false
+    private var petCompletionTask: Task<Void, Never>?
     @Published var petSessions: [ClaudeSession] = []
     @Published var petExpanded = false
     @Published var petFocusID: String?
@@ -1425,6 +1428,9 @@ final class ControllerModel: ObservableObject {
             petExpanded = false
             petFocusID = nil
             petNotice = nil
+            petCompleting = false
+            petCompletionTask?.cancel()
+            petCompletionTask = nil
             cancelOpenPetsThumbs()
         }
     }
@@ -1452,17 +1458,40 @@ final class ControllerModel: ObservableObject {
     }
 
     func loadPetSprite() {
-        if let url = PetSpriteStore.existingSpriteURL(in: PetSpriteStore.supportDirectory()) {
+        let directory = PetSpriteStore.supportDirectory()
+        if let url = PetSpriteStore.existingSpriteURL(in: directory) {
             petCustomSprite = NSImage(contentsOf: url)
         } else {
             petCustomSprite = nil
         }
+        var poses: [PetSpritePose: [NSImage]] = [:]
+        for (pose, record) in PetSpriteStore.loadStateMap(in: directory) {
+            let url = directory.appendingPathComponent(record.file)
+            guard let image = NSImage(contentsOf: url) else { continue }
+            poses[pose] = PetSpriteStrip.slice(image, frames: record.frames)
+        }
+        petSpriteKit = PetSpriteKit(fallback: petCustomSprite, poses: poses)
+    }
+
+    var petSpritePose: PetSpritePose {
+        PetSpritePose.resolve(
+            sessionCount: petSessions.count,
+            focusState: petFocusSession?.state,
+            completing: petCompleting,
+            attention: !(petNotice ?? "").isEmpty,
+            errored: petFocusSession?.state == "error"
+        )
+    }
+
+    func petSpriteFrameCount(_ pose: PetSpritePose) -> Int {
+        PetSpriteStore.loadStateMap(in: PetSpriteStore.supportDirectory())[pose]?.frames
+            ?? pose.defaultFrameCount
     }
 
     func choosePetSprite() {
         let panel = NSOpenPanel()
         panel.title = "Session pet sprite"
-        panel.message = "Choose a small PNG of the figure. Pixel art stays sharp."
+        panel.message = "One PNG for every state that has no strip. Pixel art stays sharp."
         panel.prompt = "Use sprite"
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
@@ -1472,21 +1501,98 @@ final class ControllerModel: ObservableObject {
         installPetSprite(from: url)
     }
 
-    func installPetSprite(from url: URL) {
+    func choosePetSprite(for pose: PetSpritePose) {
+        let panel = NSOpenPanel()
+        panel.title = "\(pose.title) sprite"
+        panel.message = "PNG strip for \(pose.title.lowercased()). Horizontal frames play as a loop."
+        panel.prompt = "Use sprite"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.png, .gif, .jpeg, .tiff, .webP]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        installPetSprite(from: url, pose: pose)
+    }
+
+    func choosePetSpritePack() {
+        let panel = NSOpenPanel()
+        panel.title = "Sprite pack"
+        panel.message = "Folder with a manifest, V2 Windu boards, or idle/search/combat strips."
+        panel.prompt = "Install pack"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.folder, .directory, .json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        installPetSpritePack(from: url)
+    }
+
+    func installPetSprite(from url: URL, pose: PetSpritePose? = nil) {
         let accessed = url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
         do {
-            let dest = try PetSpriteStore.install(from: url, into: PetSpriteStore.supportDirectory())
-            petCustomSprite = NSImage(contentsOf: dest)
+            let directory = PetSpriteStore.supportDirectory()
+            if let pose {
+                _ = try PetSpriteStore.installPose(
+                    pose,
+                    from: url,
+                    frames: pose.defaultFrameCount,
+                    into: directory
+                )
+            } else {
+                let dest = try PetSpriteStore.install(from: url, into: directory)
+                petCustomSprite = NSImage(contentsOf: dest)
+            }
+            loadPetSprite()
         } catch {
             self.error = error.localizedDescription
             petNotice = error.localizedDescription
         }
     }
 
+    func installPetSpritePack(from url: URL) {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let items = try PetSpritePack.load(from: url)
+            let directory = PetSpriteStore.supportDirectory()
+            for item in items {
+                if item.isGrid {
+                    try PetSpriteStore.installGrid(
+                        from: item.url,
+                        columns: item.columns,
+                        rows: item.rows,
+                        cells: item.cells,
+                        into: directory
+                    )
+                } else if let pose = item.pose {
+                    _ = try PetSpriteStore.installPose(
+                        pose,
+                        from: item.url,
+                        frames: item.frames,
+                        into: directory
+                    )
+                }
+            }
+            loadPetSprite()
+        } catch {
+            self.error = error.localizedDescription
+            petNotice = error.localizedDescription
+        }
+    }
+
+    func setPetSpriteFrames(_ pose: PetSpritePose, frames: Int) {
+        PetSpriteStore.setFrames(pose, frames: frames, in: PetSpriteStore.supportDirectory())
+        loadPetSprite()
+    }
+
     func resetPetSprite() {
-        PetSpriteStore.remove(from: PetSpriteStore.supportDirectory())
+        PetSpriteStore.removeAll(from: PetSpriteStore.supportDirectory())
         petCustomSprite = nil
+        petSpriteKit = PetSpriteKit()
+        petCompleting = false
+        petCompletionTask?.cancel()
+        petCompletionTask = nil
     }
 
     private static let openPetsHelperTimeout: TimeInterval = 12
@@ -1591,7 +1697,16 @@ final class ControllerModel: ObservableObject {
 
     private func applyPetSessions(_ sessions: [ClaudeSession]) {
         let previousCount = petSessions.count
+        let wasWorking = petSessions.contains(where: \.isPetWorking)
         petSessions = sessions
+        let isWorking = sessions.contains(where: \.isPetWorking)
+        if wasWorking && !isWorking {
+            beginPetCompletion()
+        } else if isWorking {
+            petCompleting = false
+            petCompletionTask?.cancel()
+            petCompletionTask = nil
+        }
         if petSessions.count < 2 {
             petExpanded = false
         } else if previousCount < 2 {
@@ -1599,6 +1714,16 @@ final class ControllerModel: ObservableObject {
         }
         if let petFocusID, !petSessions.contains(where: { $0.id == petFocusID }) {
             self.petFocusID = nil
+        }
+    }
+
+    private func beginPetCompletion() {
+        petCompleting = true
+        petCompletionTask?.cancel()
+        petCompletionTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(2000))
+            guard !Task.isCancelled else { return }
+            self?.petCompleting = false
         }
     }
 

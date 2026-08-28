@@ -208,20 +208,30 @@ extension COSPalette {
 
 /// Pixel COS figure for the desktop session pet. Working opens the visor dots;
 /// waiting keeps them as dashes. Drawn on a 16-unit grid so nearest-neighbor
-/// scale stays blocky. Medium is 64 pt. A custom PNG skips the canvas
-/// and scales with interpolation off so pixel art stays blocky.
+/// scale stays blocky. Medium is 64 pt. A custom PNG or pose strip skips the
+/// canvas and scales with interpolation off so pixel art stays blocky.
 struct SessionPetSprite: View {
     var working: Bool
     var reduceMotion: Bool
     var customImage: NSImage? = nil
+    var frames: [NSImage] = []
+    var pose: PetSpritePose = .idle
     var size: CGFloat = 64
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: reduceMotion ? 3600 : 0.42, paused: reduceMotion)) { timeline in
+        let interval = reduceMotion ? 3600.0 : pose.frameInterval
+        TimelineView(.animation(minimumInterval: interval, paused: reduceMotion && frames.count <= 1)) { timeline in
             let phase = reduceMotion ? 0.0 : sin(timeline.date.timeIntervalSinceReferenceDate * (working ? 6.2 : 2.4))
             let bounce = working && !reduceMotion ? CGFloat(phase) * max(1, size * 0.022) : 0
             Group {
-                if let customImage {
+                if let frame = playbackFrame(at: timeline.date) {
+                    let pixelated = max(frame.size.width, frame.size.height) <= size * 2
+                    Image(nsImage: frame)
+                        .interpolation(pixelated ? .none : .medium)
+                        .antialiased(false)
+                        .resizable()
+                        .scaledToFit()
+                } else if let customImage {
                     Image(nsImage: customImage)
                         .interpolation(.none)
                         .antialiased(false)
@@ -263,7 +273,17 @@ struct SessionPetSprite: View {
             }
             .offset(y: bounce)
         }
-        .frame(width: size, height: size)
+        .frame(width: pose.spriteWidth(Int(size.rounded())), height: size)
         .accessibilityHidden(true)
+    }
+
+    private func playbackFrame(at date: Date) -> NSImage? {
+        guard !frames.isEmpty else { return nil }
+        if reduceMotion || frames.count == 1 {
+            let index = pose.cinematic ? min(frames.count - 1, max(0, frames.count / 2)) : 0
+            return frames[index]
+        }
+        let index = Int(date.timeIntervalSinceReferenceDate / pose.frameInterval) % frames.count
+        return frames[index]
     }
 }

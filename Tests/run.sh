@@ -1686,6 +1686,24 @@ need('setPetCustomPixels' in model, "custom pet pixels are not wired")
 need('petSizeKey' in model, "pet size is not persisted")
 need('petSizePixelsKey' in model, "custom pet pixels are not persisted")
 need('Choose sprite' in views, "Session pet has no Choose sprite control")
+need('Install sprite pack' in views, "Session pet has no sprite pack install")
+need('State sprites' in views, "Session pet has no per-state sprite controls")
+need('choosePetSpritePack' in model, "sprite pack install is not wired")
+need('installPetSpritePack' in model, "sprite pack install has no install path")
+need('enum PetSpritePose' in (root / "Sources/Models.swift").read_text(),
+     "per-state pet sprites are not modeled")
+need('sessionCount >= 4' in (root / "Sources/Models.swift").read_text(),
+     "four or more live sessions must play the swarm pose")
+need('return .duel' in (root / "Sources/Models.swift").read_text(),
+     "two live sessions must play the duel pose")
+need('return .trio' in (root / "Sources/Models.swift").read_text(),
+     "three live sessions must play the three-droid pose")
+need('sliceGrid' in (root / "Sources/Models.swift").read_text(),
+     "V2 state boards cannot be sliced as a grid")
+need('installGrid' in (root / "Sources/Models.swift").read_text(),
+     "V2 state boards have no install path")
+need('frames: [NSImage]' in (root / "Sources/COSMotion.swift").read_text(),
+     "the pet sprite cannot play a pose strip")
 need('Open in platform' in activity, "session detail has no Open in platform button")
 need('openSessionInPlatform' in model, "Open in platform is not wired")
 need('choosePetSprite' in model, "Choose sprite is not wired")

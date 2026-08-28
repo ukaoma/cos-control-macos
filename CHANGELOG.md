@@ -1,3 +1,22 @@
+## 0.5.109 (build 147)
+
+The pet escalates from patrol to a five-droid swarm.
+
+One quiet session patrols. A running turn sprints with the saber. Two sessions
+duel a droid. Three fight a cluster. Four or more go full swarm. Error deflects
+a red bolt. Attention ignites the blade. A V2 pack (core states, saber run,
+droid combat, escalation) installs as a folder. A V1 combat strip still covers
+a two-session duel.
+
+## 0.5.108 (build 146)
+
+The session pet can use a different sprite for each live state.
+
+Idle, waiting, working, several sessions, and done each take their own PNG or
+horizontal strip. A folder install maps a pack (idle, search, grep, combat,
+done). Two or more live sessions play combat. One identity PNG still covers
+every state that has no strip of its own.
+
 ## 0.5.107 (build 145)
 
 The Accessibility grant survives updates, and the repair notice tells the truth.

@@ -742,6 +742,184 @@ struct ModelsContract {
         precondition(!PetSpriteStore.isAllowedImage(URL(fileURLWithPath: "/tmp/face.zip")))
     }
 
+    private static func checkPetSpritePoses() {
+        precondition(PetSpritePose.resolve(sessionCount: 1, focusState: "running", completing: false) == .working)
+        precondition(PetSpritePose.resolve(sessionCount: 1, focusState: "waiting", completing: false) == .waiting)
+        precondition(PetSpritePose.resolve(sessionCount: 1, focusState: "idle", completing: false) == .patrol)
+        precondition(PetSpritePose.resolve(sessionCount: 2, focusState: "idle", completing: false) == .duel)
+        precondition(PetSpritePose.resolve(sessionCount: 3, focusState: "running", completing: false) == .trio)
+        precondition(PetSpritePose.resolve(sessionCount: 4, focusState: "running", completing: false) == .swarm)
+        precondition(PetSpritePose.resolve(sessionCount: 5, focusState: "idle", completing: false) == .swarm)
+        precondition(PetSpritePose.resolve(sessionCount: 1, focusState: "running", completing: true) == .done)
+        precondition(PetSpritePose.resolve(sessionCount: 3, focusState: "running", completing: false, attention: true) == .attention)
+        precondition(PetSpritePose.resolve(sessionCount: 1, focusState: "error", completing: false) == .error)
+        precondition(PetSpritePose.matching(fileName: "01-idle-strip.png") == .idle)
+        precondition(PetSpritePose.matching(fileName: "02-search-strip-alpha.png") == .waiting)
+        precondition(PetSpritePose.matching(fileName: "03-grep-strip-alpha.png") == .working)
+        precondition(PetSpritePose.matching(fileName: "04-combat-strip-alpha.png") == .swarm)
+        precondition(PetSpritePose.matching(fileName: "05-success-strip.png") == .done)
+        precondition(PetSpritePose.matching(fileName: "02-lightsaber-run-v2.png") == .working)
+        precondition(PetSpritePose.matching(fileName: "03-droid-combat-v2.png") == .duel)
+        precondition(PetSpritePose.matching(fileName: "01-core-agent-states-v2.png") == nil)
+        precondition(PetSpritePose.matching(fileName: "00-master-turnaround.png") == nil)
+
+        var kit = PetSpriteKit()
+        kit.poses[.swarm] = [rgbImage(width: 2, height: 2) { _, _ in (10, 10, 10, 255) }]
+        precondition(kit.frames(for: .duel).count == 1, "a V1 combat strip must cover a two-session duel")
+        precondition(kit.frames(for: .patrol).isEmpty, "patrol must not invent frames")
+
+        let board = rgbImage(width: 4, height: 2) { x, y in
+            (UInt8(x * 60 + 20), UInt8(y * 80 + 40), 200, 255)
+        }
+        let cells = PetSpriteStrip.sliceGrid(board, columns: 2, rows: 2)
+        precondition(cells.count == 4, "a 2x2 board must yield 4 cells")
+        for cell in cells {
+            guard let cg = PetSpriteStrip.raster(cell) else {
+                preconditionFailure("grid cell must rasterize")
+            }
+            precondition(cg.width == 2)
+            precondition(cg.height == 1)
+        }
+
+        let strip = rgbImage(width: 6, height: 1) { x, _ in
+            (UInt8(x * 40), 0, 255, 255)
+        }
+        let frames = PetSpriteStrip.slice(strip, frames: 6)
+        precondition(frames.count == 6, "a 6-wide strip must yield 6 frames")
+        for frame in frames {
+            guard let cg = PetSpriteStrip.raster(frame) else {
+                preconditionFailure("sliced frame must rasterize")
+            }
+            precondition(cg.width == 1, "each frame of a 6x1 strip is 1px wide, got \(cg.width)")
+            precondition(cg.height == 1)
+        }
+
+        let paper = rgbImage(width: 5, height: 5) { x, y in
+            if x == 2 && y == 2 { return (10, 10, 10, 255) }
+            return (254, 254, 254, 255)
+        }
+        precondition(PetSpriteAlpha.needsPaperKnockout(paper))
+        let cleaned = PetSpriteAlpha.knockOutEdgePaper(paper)
+        let corner = rgbaPixel(cleaned, x: 0, y: 0)
+        precondition(corner.3 < 16, "edge paper must become transparent, got alpha \(corner.3)")
+        let center = rgbaPixel(cleaned, x: 2, y: 2)
+        precondition(center.3 > 200, "interior ink must stay, got alpha \(center.3)")
+        precondition(center.0 < 40, "interior ink must stay dark, got \(center.0)")
+
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.appendingPathComponent("pet-pack-\(UUID().uuidString)", isDirectory: true)
+        try! fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tmp) }
+        let search = tmp.appendingPathComponent("02-search-strip.png")
+        let searchAlpha = tmp.appendingPathComponent("02-search-strip-alpha.png")
+        let combat = tmp.appendingPathComponent("04-combat-strip-alpha.png")
+        try! pngData(strip).write(to: search)
+        try! pngData(strip).write(to: searchAlpha)
+        try! pngData(strip).write(to: combat)
+        let scanned = PetSpritePack.scanFiles(in: tmp)
+        let waiting = scanned.first { $0.pose == .waiting }
+        let swarm = scanned.first { $0.pose == .swarm }
+        precondition(waiting?.url.lastPathComponent == "02-search-strip-alpha.png",
+                     "an alpha strip wins over the baked original")
+        precondition(swarm?.frames == 10, "combat defaults to 10 frames")
+
+        let boardFile = tmp.appendingPathComponent("01-core-agent-states-v2.png")
+        try! pngData(board).write(to: boardFile)
+        let recognized = PetSpritePack.recognizedBoard(boardFile)
+        precondition(recognized?.columns == 6 && recognized?.rows == 2)
+        precondition(recognized?.cells.count == 12)
+
+        let gridSupport = tmp.appendingPathComponent("grid-support", isDirectory: true)
+        try! PetSpriteStore.installGrid(
+            from: boardFile,
+            columns: 2,
+            rows: 2,
+            cells: [(.idle, 0), (.error, 3)],
+            into: gridSupport
+        )
+        precondition(PetSpriteStore.existingPoseURL(.idle, in: gridSupport) != nil)
+        precondition(PetSpriteStore.existingPoseURL(.error, in: gridSupport) != nil)
+        precondition(PetSpriteStore.loadStateMap(in: gridSupport)[.error]?.frames == 1)
+
+        let manifest = """
+        {"poses":{"idle":{"file":"02-search-strip.png","frames":4}}}
+        """.data(using: .utf8)!
+        try! manifest.write(to: tmp.appendingPathComponent("manifest.json"))
+        let loaded = try! PetSpritePack.load(from: tmp)
+        precondition(loaded.contains { $0.pose == .idle && $0.frames == 4 },
+                     "manifest frames win over filename defaults")
+
+        let support = tmp.appendingPathComponent("support", isDirectory: true)
+        let dest = try! PetSpriteStore.installPose(.waiting, from: searchAlpha, frames: 8, into: support)
+        precondition(dest.lastPathComponent == "session-pet-waiting.png")
+        let map = PetSpriteStore.loadStateMap(in: support)
+        precondition(map[.waiting]?.frames == 8)
+        PetSpriteStore.setFrames(.waiting, frames: 5, in: support)
+        precondition(PetSpriteStore.loadStateMap(in: support)[.waiting]?.frames == 5)
+        print("COS Control: pet sprite poses passed")
+    }
+
+    private static func rgbImage(
+        width: Int,
+        height: Int,
+        pixel: (Int, Int) -> (UInt8, UInt8, UInt8, UInt8)
+    ) -> NSImage {
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let (r, g, b, a) = pixel(x, y)
+                let index = (y * width + x) * 4
+                pixels[index] = r
+                pixels[index + 1] = g
+                pixels[index + 2] = b
+                pixels[index + 3] = a
+            }
+        }
+        let data = Data(pixels) as CFData
+        let provider = CGDataProvider(data: data)!
+        let cg = CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )!
+        return NSImage(cgImage: cg, size: NSSize(width: width, height: height))
+    }
+
+    private static func pngData(_ image: NSImage) -> Data {
+        let tiff = image.tiffRepresentation!
+        let rep = NSBitmapImageRep(data: tiff)!
+        return rep.representation(using: .png, properties: [:])!
+    }
+
+    private static func rgbaPixel(_ image: NSImage, x: Int, y: Int) -> (UInt8, UInt8, UInt8, UInt8) {
+        guard let cg = PetSpriteStrip.raster(image) else { return (0, 0, 0, 0) }
+        var pixels = [UInt8](repeating: 0, count: cg.width * cg.height * 4)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        pixels.withUnsafeMutableBytes { raw in
+            guard let ctx = CGContext(
+                data: raw.baseAddress,
+                width: cg.width,
+                height: cg.height,
+                bitsPerComponent: 8,
+                bytesPerRow: cg.width * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return }
+            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        }
+        let row = cg.height - 1 - y
+        let index = (row * cg.width + x) * 4
+        return (pixels[index], pixels[index + 1], pixels[index + 2], pixels[index + 3])
+    }
+
     private static func checkPetSize() {
         let medium = PetSize.load(preset: nil, pixels: nil)
         precondition(medium.preset == .medium)
@@ -1323,6 +1501,7 @@ struct ModelsContract {
         checkOrphanCapture()
         checkClaudeSession()
         checkPetSpriteStore()
+        checkPetSpritePoses()
         checkPetSize()
         checkCursorAgentTabMatch()
         checkAppUpdateMerging()

@@ -1608,16 +1608,21 @@ struct ControlPanel: View {
             Toggle("Session pet", isOn: Binding(get: { model.petEnabled }, set: { model.setPetEnabled($0) }))
             if model.petEnabled {
                 PetSizeControls(model: model)
+                PetSpriteStateControls(model: model)
                 Text("Pet gallery")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 petGalleryCard
                 HStack {
+                    Button("Install sprite pack") {
+                        model.choosePetSpritePack()
+                    }
+                    .help("V2 Windu boards or a folder of per-state strips.")
                     Button(model.petCustomSprite == nil ? "Choose sprite" : "Replace sprite") {
                         model.choosePetSprite()
                     }
-                    .help("Your own PNG, GIF, or JPEG. A small square pixel figure stays sharp.")
-                    if model.petCustomSprite != nil {
+                    .help("One PNG for every state that has no strip. A small square pixel figure stays sharp.")
+                    if model.petSpriteKit.hasAnyCustom {
                         Button("Use COS figure") { model.resetPetSprite() }
                     }
                 }
@@ -2847,6 +2852,76 @@ struct ContextDetailPane: View {
             Spacer(minLength: 0)
         }
         .padding(16)
+    }
+}
+
+private struct PetSpriteStateControls: View {
+    @ObservedObject var model: ControllerModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("State sprites")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("Patrol to five-droid swarm. Saber on running, success, error, and attention.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(PetSpritePose.liveCases, id: \.self) { pose in
+                poseRow(pose)
+            }
+            DisclosureGroup("More states") {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(PetSpritePose.catalogCases, id: \.self) { pose in
+                        poseRow(pose)
+                    }
+                }
+            }
+            .font(.caption)
+        }
+    }
+
+    private func poseRow(_ pose: PetSpritePose) -> some View {
+        HStack(spacing: 8) {
+            poseThumb(pose)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(pose.title)
+                    .font(.caption)
+                Text(pose.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            if (model.petSpriteKit.preview(for: pose) != nil) && model.petSpriteFrameCount(pose) > 1 {
+                Stepper(
+                    "\(model.petSpriteFrameCount(pose))",
+                    value: Binding(
+                        get: { model.petSpriteFrameCount(pose) },
+                        set: { model.setPetSpriteFrames(pose, frames: $0) }
+                    ),
+                    in: PetSpriteStrip.minFrames...PetSpriteStrip.maxFrames
+                )
+                .font(.caption2)
+                .frame(width: 72)
+            }
+            Button("Choose") { model.choosePetSprite(for: pose) }
+        }
+    }
+
+    @ViewBuilder
+    private func poseThumb(_ pose: PetSpritePose) -> some View {
+        if let image = model.petSpriteKit.preview(for: pose) {
+            Image(nsImage: image)
+                .interpolation(.medium)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 28, height: 28)
+        } else {
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .stroke(COSPalette.line, lineWidth: 1)
+                .frame(width: 28, height: 28)
+        }
     }
 }
 
