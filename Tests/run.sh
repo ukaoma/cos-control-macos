@@ -1717,6 +1717,36 @@ need('sliceStripByValleys' in (root / "Sources/Models.swift").read_text(),
      "strips no longer valley-align their declared frame cuts")
 need('cinematicFrameCount(in: directory)' in model,
      "cinematic playback regressed to the aspect guess that bled half-droids across frame edges")
+models_src = (root / "Sources/Models.swift").read_text()
+need(models_src.count('suppressTruncatedEdgeSlivers(') >= 3,
+     "edge-sliver suppression is not wired into BOTH the strip and board install paths")
+need(models_src.count('dropSubjectlessFrames(') >= 2,
+     "story strips no longer drop the scenes their subject is absent from (definition alone is not a call site)")
+need('enum PetCharacterScale' in models_src,
+     "the character dial is gone; pet size would grow the card and the figure together")
+pet_src = (root / "Sources/SessionPet.swift").read_text()
+need(pet_src.count('scale: model.petCharacterFactor') >= 2,
+     "the character dial must size BOTH the panel envelope and the sprite frame")
+need('characterScale: model.petCharacterFactor' in pet_src,
+     "the sprite view never receives the character dial")
+need('Character size' in views, "Settings has no character-size control")
+need('retireCinematic: false' in model,
+     "a pack install retires its own board's cinematic strip mid-install")
+need('schedulePetNoticeExpiry' in model,
+     "a pet notice never expires, pinning the pet in the attention pose")
+need(model.count('cursorTextFocusReady') >= 2 and 'guard await cursorTextFocusReady(app)' in model,
+     "the search fallback types without proving a text field has focus (definition alone is not a guard)")
+need('agentsWindowExists' in model,
+     "the New Agent fallback keys off activate() again and fires on an open window")
+motion_src = (root / "Sources/COSMotion.swift").read_text()
+need('func renderSize(' in models_src,
+     "the shared sprite-size function is gone")
+need(motion_src.count('pose.renderSize(') >= 2 and pet_src.count('renderSize(') >= 2,
+     "panel width and rendered sprite width are two formulas again")
+need('spriteWidth(' not in motion_src and 'spriteWidth(' not in pet_src,
+     "a view sizes off the fixed-aspect spriteWidth instead of the measured art")
+need('model.petSpriteFrameCount(pose) > 1' not in views,
+     "the frame-count stepper is hidden by the value it exists to raise")
 need('COSPalette.plateInk' in (root / "Sources/SessionPet.swift").read_text(),
      "pet controls regressed to fixed ink: black-on-black in dark mode")
 need('foregroundStyle(COSPalette.ink)' not in (root / "Sources/SessionPet.swift").read_text(),

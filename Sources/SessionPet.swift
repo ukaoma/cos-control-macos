@@ -40,6 +40,9 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         observers.append(model.$petSize.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
+        observers.append(model.$petCharacterPercent.sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
         observers.append(model.$petExpanded.sink { [weak self] expanded in
             Task { @MainActor in
                 self?.syncOutsideClickMonitor(expanded)
@@ -87,7 +90,11 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         if let host = panel.contentViewController as? NSHostingController<SessionPetRoot> {
             host.rootView = SessionPetRoot(model: model, presenter: self)
             let spriteWidth = max(
-                model.petSpritePose.spriteWidth(model.petSize.pixels),
+                model.petSpritePose.renderSize(
+                    model.petSize.pixels,
+                    scale: model.petCharacterFactor,
+                    aspect: model.petSpriteKit.aspect(for: model.petSpritePose)
+                ).width,
                 CGFloat(model.petSize.pixels)
             )
             let width = max(
@@ -177,7 +184,8 @@ private struct SessionPetRoot: View {
                             customImage: model.petCustomSprite,
                             frames: model.petSpriteKit.frames(for: pose),
                             pose: pose,
-                            size: CGFloat(size.pixels)
+                            size: CGFloat(size.pixels),
+                            characterScale: model.petCharacterFactor
                         )
                         if let focus {
                             Circle()
@@ -232,7 +240,14 @@ private struct SessionPetRoot: View {
             }
         }
         .padding(size.length(10))
-        .frame(width: max(size.length(248), pose.spriteWidth(size.pixels) + size.length(36)))
+        .frame(width: max(
+            size.length(248),
+            pose.renderSize(
+                size.pixels,
+                scale: model.petCharacterFactor,
+                aspect: model.petSpriteKit.aspect(for: pose)
+            ).width + size.length(36)
+        ))
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleSpriteDrop(providers)
         }

@@ -108,6 +108,7 @@ final class ControllerModel: ObservableObject {
     private static let petEnabledKey = "cos.sessionPetEnabled"
     private static let petSizeKey = "cos.sessionPetSize"
     private static let petSizePixelsKey = "cos.sessionPetSizePixels"
+    private static let petCharacterPercentKey = "cos.sessionPetCharacterPercent"
     @Published var openReview: SpeakerReview?
     /// The readable meeting beside the speaker rows. nil when the server is
     /// older than 6.21.28 or the fetch failed — the review still renders.
@@ -1217,6 +1218,12 @@ final class ControllerModel: ObservableObject {
     @Published var claudeSessionsLoading = false
     @Published var claudeSessionsError: String?
     @Published var petEnabled = UserDefaults.standard.object(forKey: ControllerModel.petEnabledKey) as? Bool ?? true
+    /// Character dial, independent of petSize: pet size is the card, this is
+    /// the figure inside it.
+    @Published var petCharacterPercent = PetCharacterScale.clamp(
+        UserDefaults.standard.object(forKey: ControllerModel.petCharacterPercentKey) as? Int
+            ?? PetCharacterScale.defaultPercent
+    )
     @Published var petSize = PetSize.load(
         preset: UserDefaults.standard.string(forKey: ControllerModel.petSizeKey),
         pixels: UserDefaults.standard.object(forKey: ControllerModel.petSizePixelsKey) as? Int
@@ -1229,7 +1236,13 @@ final class ControllerModel: ObservableObject {
     @Published var petExpanded = false
     @Published var petFocusID: String?
     /// Reveal/jump copy when Activity and the menu extra are both closed.
-    @Published var petNotice: String?
+    ///
+    /// Expires on its own. `petSpritePose` treats a non-empty notice as the
+    /// attention state, and attention outranks every escalation pose, so a
+    /// notice that never cleared pinned the pet in "alert, blade ignited"
+    /// after a single failed jump — and the bubble carries no dismiss control.
+    @Published var petNotice: String? { didSet { schedulePetNoticeExpiry() } }
+    private var petNoticeTask: Task<Void, Never>?
     @Published var openPetsRows: [OpenPetsCatalogRow] = []
     @Published var openPetsLoading = false
     @Published var openPetsUnavailable = false
@@ -1457,6 +1470,29 @@ final class ControllerModel: ObservableObject {
         UserDefaults.standard.set(size.customPixels, forKey: Self.petSizePixelsKey)
     }
 
+    private func schedulePetNoticeExpiry() {
+        petNoticeTask?.cancel()
+        petNoticeTask = nil
+        guard let notice = petNotice, !notice.isEmpty else { return }
+        petNoticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, self.petNotice == notice else { return }
+                self.petNotice = nil
+            }
+        }
+    }
+
+    var petCharacterFactor: CGFloat { PetCharacterScale.factor(petCharacterPercent) }
+
+    func setPetCharacterPercent(_ value: Int) {
+        let clamped = PetCharacterScale.clamp(value)
+        guard clamped != petCharacterPercent else { return }
+        petCharacterPercent = clamped
+        UserDefaults.standard.set(clamped, forKey: Self.petCharacterPercentKey)
+    }
+
     func loadPetSprite() {
         let directory = PetSpriteStore.supportDirectory()
         if let url = PetSpriteStore.existingSpriteURL(in: directory) {
@@ -1580,7 +1616,8 @@ final class ControllerModel: ObservableObject {
                         pose,
                         from: item.url,
                         frames: item.frames,
-                        into: directory
+                        into: directory,
+                        retireCinematic: false
                     )
                 }
             }
@@ -2081,12 +2118,20 @@ final class ControllerModel: ObservableObject {
         }
         if let running = runningCursor() {
             guard ensureAccessibilityTrust() else { return }
+            // Window EXISTENCE and activation success are different facts.
+            // raiseCursorAgentsWindow returns activate()'s result, and
+            // cooperative activation can be refused (see cursorFrontmostVerified),
+            // so keying the New Agent press off it opened a composer against an
+            // Agents window that was already on screen.
+            let agentsWindowExists = cursorAgentsWindow(
+                from: AXUIElementCreateApplication(running.processIdentifier)
+            ) != nil
             var raised = raiseCursorAgentsWindow(of: running)
-            if !raised {
+            if !agentsWindowExists {
                 // Current Cursor (menu bar probed 2026-08-27) has no persistent
                 // open-Agents-window command: "Window > Cursor Agents" is only the
-                // open-window list entry. "File > New Agent" is the one command that
-                // opens the Agents window; an unsent composer creates no thread.
+                // open-window list entry. "File > New Agent" is the one command
+                // that opens the Agents window.
                 if pressCursorMenuItems(["New Agent", "Cursor Agents"], of: running) {
                     try? await Task.sleep(for: .milliseconds(700))
                     raised = raiseCursorAgentsWindow(of: running)
@@ -2104,9 +2149,10 @@ final class ControllerModel: ObservableObject {
             if await searchAndPressCursorAgentTab(named: agentTab, of: running) { return }
             let want = agentTab.trimmingCharacters(in: .whitespacesAndNewlines)
             if want.count >= CursorAgentTabMatch.minimumCount {
-                petNotice = fronted
-                    ? "Opened Agents. Could not select that tab."
-                    : "Could not bring the Agents window forward."
+                // The guard above already proved raised || fronted, so the
+                // window IS up: the tab press is what failed. Saying otherwise
+                // sends the user to fix a window that is on screen.
+                petNotice = "Opened Agents. Could not select that tab."
             }
             return
         }
@@ -2319,19 +2365,55 @@ final class ControllerModel: ObservableObject {
               AXUIElementPerformAction(search, kAXPressAction as CFString) == .success else {
             return false
         }
-        try? await Task.sleep(for: .milliseconds(400))
+        // NEVER type on a timer alone. postToPid addresses the PROCESS, so if
+        // the palette has not taken focus the session name lands wherever
+        // Cursor is focused — including the user's open source file, which no
+        // Escape undoes. Require a text-entry element first, and give up
+        // silently rather than type into a document.
+        guard await cursorTextFocusReady(app) else {
+            postEscape(to: app.processIdentifier)
+            return false
+        }
         postKeyboardText(want, to: app.processIdentifier)
         try? await Task.sleep(for: .milliseconds(600))
         if let refreshed = cursorAgentsWindow(from: element),
            pressCursorAgentTab(named: want, from: refreshed, depth: 0) {
+            // Leave Cursor's own Agents search as we found it; the query was
+            // ours, and the user should not inherit a filtered list.
+            try? await Task.sleep(for: .milliseconds(250))
+            postEscape(to: app.processIdentifier)
             return true
         }
         postEscape(to: app.processIdentifier)
         return false
     }
 
+    /// True only once Cursor's focused element is somewhere text can be typed.
+    private func cursorTextFocusReady(_ app: NSRunningApplication) async -> Bool {
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        let entryRoles: Set<String> = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"]
+        for _ in 0..<12 {
+            var focusedRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
+               let focused = focusedRef, CFGetTypeID(focused) == AXUIElementGetTypeID() {
+                let focusedElement = focused as! AXUIElement
+                var roleRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(focusedElement, kAXRoleAttribute as CFString, &roleRef) == .success,
+                   let role = roleRef as? String, entryRoles.contains(role) {
+                    return true
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        NSLog("COSControl cursor-jump search-focus-timeout")
+        return false
+    }
+
+    /// Depth matches pressCursorAgentTab's walker, which is the one probed to
+    /// reach rows in this window; a shallower cap fails indistinguishably from
+    /// "no search button".
     private func findCursorSearchButton(from element: AXUIElement, depth: Int) -> AXUIElement? {
-        guard depth < 14 else { return nil }
+        guard depth < 24 else { return nil }
         var roleRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success,
            let role = roleRef as? String, role == kAXButtonRole as String {
@@ -2351,9 +2433,12 @@ final class ControllerModel: ObservableObject {
         return nil
     }
 
+    /// Post UTF-16 units, not scalars: truncating a scalar to one UniChar
+    /// corrupts every non-BMP character, so an emoji in a session title used
+    /// to send garbage into Cursor's search box and match nothing.
     private func postKeyboardText(_ text: String, to pid: pid_t) {
-        for scalar in text.unicodeScalars {
-            var chars = [UniChar(truncatingIfNeeded: scalar.value)]
+        for unit in Array(text.utf16) {
+            var chars = [unit]
             guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
                   let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else { continue }
             down.keyboardSetUnicodeString(stringLength: 1, unicodeString: &chars)

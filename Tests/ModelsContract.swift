@@ -847,8 +847,13 @@ struct ModelsContract {
         cineKit.cinematic = (0..<4).map { i in
             rgbImage(width: 2, height: 2) { _, _ in (UInt8(40 + i * 40), 10, 10, 255) }
         }
-        precondition(cineKit.frames(for: .trio).count == 4,
-                     "three-session fight must play the cinematic loop, not the still")
+        // Trio animates rather than showing the still, but climbs the ladder
+        // only to its own rung — playing all four made three sessions and five
+        // identical and showed the lone patrol scene during a three-way.
+        precondition(cineKit.frames(for: .trio).count == 3,
+                     "three-session fight must animate the ladder up to trio")
+        precondition(cineKit.frames(for: .swarm).count == 4,
+                     "swarm plays the full ladder")
 
         let colored = rgbImage(width: 4, height: 4) { x, y in
             let col = x / 2
@@ -1036,14 +1041,21 @@ struct ModelsContract {
     // MARK: - Pet sprite pipeline (executable, not source-grep)
 
     /// Opaque violet ink block: passes isSpriteInk (alpha high, saturated, not paper).
-    private static func spriteProbe(width: Int, height: Int, blobs: [(x: Int, w: Int, y: Int, h: Int)]) -> NSImage {
+    private static func spriteProbe(
+        width: Int,
+        height: Int,
+        blobs: [(x: Int, w: Int, y: Int, h: Int)],
+        gray: Bool = false
+    ) -> NSImage {
         guard let rep = NSBitmapImageRep(
             bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 32
         ) else { preconditionFailure("probe rep") }
         let clear = NSColor(calibratedRed: 0, green: 0, blue: 0, alpha: 0)
-        let ink = NSColor(calibratedRed: 0.25, green: 0.16, blue: 0.55, alpha: 1)
+        let ink = gray
+            ? NSColor(calibratedRed: 0.42, green: 0.43, blue: 0.44, alpha: 1)
+            : NSColor(calibratedRed: 0.25, green: 0.16, blue: 0.55, alpha: 1)
         for y in 0..<height {
             for x in 0..<width { rep.setColor(clear, atX: x, y: y) }
         }
@@ -1122,6 +1134,169 @@ struct ModelsContract {
         precondition(prep.frames == 3,
                      "prepare must report the stitched frame count, got \(prep.frames)")
 
+        // EDGE-SLIVER SUPPRESSION: a cut through a figure leaves truncated
+        // neighbor content at the frame edge; it must be erased, while the
+        // primary figure survives even when it reaches the edge itself.
+        let bled = spriteProbe(width: 200, height: 40, blobs: [
+            (x: 0, w: 10, y: 8, h: 24),
+            (x: 60, w: 80, y: 8, h: 24),
+            (x: 192, w: 8, y: 8, h: 24),
+        ])
+        let clean = PetSpriteStrip.suppressTruncatedEdgeSlivers(bled)
+        do {
+            guard let tiff = clean.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else {
+                preconditionFailure("suppressed frame must rasterize")
+            }
+            precondition((rep.colorAt(x: 4, y: 20)?.alphaComponent ?? 1) < 0.1,
+                         "left edge sliver must be erased")
+            precondition((rep.colorAt(x: 196, y: 20)?.alphaComponent ?? 1) < 0.1,
+                         "right edge sliver must be erased")
+            precondition((rep.colorAt(x: 100, y: 20)?.alphaComponent ?? 0) > 0.5,
+                         "the primary figure must survive sliver suppression")
+        }
+        // The hero touches the edge AND a second component exists, so the
+        // filter is genuinely exercised (a one-blob frame returns early and
+        // asserts nothing).
+        let edgeHero = spriteProbe(width: 200, height: 40, blobs: [
+            (x: 0, w: 120, y: 8, h: 24),
+            (x: 150, w: 10, y: 18, h: 6),
+        ])
+        do {
+            guard let tiff = PetSpriteStrip.suppressTruncatedEdgeSlivers(edgeHero).tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff) else {
+                preconditionFailure("edge-hero frame must rasterize")
+            }
+            precondition((rep.colorAt(x: 4, y: 20)?.alphaComponent ?? 0) > 0.5,
+                         "a primary figure touching the edge is the subject, not a sliver")
+        }
+        // A bisected neighbour at 42% of the primary's AREA survived the old
+        // area rule; its cut face spans the full frame height, so the row-span
+        // rule catches it.
+        let bigSliver = spriteProbe(width: 200, height: 40, blobs: [
+            (x: 40, w: 100, y: 4, h: 32),
+            (x: 168, w: 32, y: 4, h: 32),
+        ])
+        do {
+            guard let tiff = PetSpriteStrip.suppressTruncatedEdgeSlivers(bigSliver).tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff) else {
+                preconditionFailure("big-sliver frame must rasterize")
+            }
+            precondition((rep.colorAt(x: 190, y: 20)?.alphaComponent ?? 1) < 0.1,
+                         "a bisected neighbour must be erased whatever its area")
+            precondition((rep.colorAt(x: 90, y: 20)?.alphaComponent ?? 0) > 0.5,
+                         "the primary must survive")
+        }
+        // A deliberate bolt at the edge is small in BOTH dimensions; the old
+        // area rule erased it, contradicting the island splitter that keeps it.
+        let bolt = spriteProbe(width: 200, height: 40, blobs: [
+            (x: 40, w: 100, y: 4, h: 32),
+            (x: 194, w: 6, y: 18, h: 4),
+        ])
+        do {
+            guard let tiff = PetSpriteStrip.suppressTruncatedEdgeSlivers(bolt).tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff) else {
+                preconditionFailure("bolt frame must rasterize")
+            }
+            precondition((rep.colorAt(x: 196, y: 19)?.alphaComponent ?? 0) > 0.5,
+                         "a blaster bolt at the edge belongs to its scene and stays")
+        }
+        // A sliver whose COLUMNS overlap the figure is invisible to a column
+        // projection; only 2D components catch it (three run-cycle slivers hid
+        // this way on 0.5.115).
+        let overlapped = spriteProbe(width: 200, height: 40, blobs: [
+            (x: 40, w: 120, y: 4, h: 20),
+            (x: 150, w: 50, y: 30, h: 8),
+        ])
+        do {
+            guard let tiff = PetSpriteStrip.suppressTruncatedEdgeSlivers(overlapped).tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff) else {
+                preconditionFailure("overlap frame must rasterize")
+            }
+            precondition((rep.colorAt(x: 190, y: 34)?.alphaComponent ?? 1) < 0.1,
+                         "a column-overlapping edge sliver must still be erased")
+            precondition((rep.colorAt(x: 100, y: 14)?.alphaComponent ?? 0) > 0.5,
+                         "the figure must survive overlap-sliver suppression")
+        }
+
+        // SUBJECTLESS FRAMES: a story strip's droid-only scenes read as the
+        // character blinking out. Colour content separates them (measured on
+        // the combat board: hero 0.21-0.43, droid-only 0.012-0.10).
+        let heroFrame = spriteProbe(width: 100, height: 40, blobs: [(x: 20, w: 60, y: 8, h: 24)])
+        let droidFrame = spriteProbe(width: 100, height: 40, blobs: [(x: 20, w: 60, y: 8, h: 24)], gray: true)
+        precondition(PetSpriteStrip.chromaFraction(heroFrame) > 0.9,
+                     "a saturated frame must score near 1, got \(PetSpriteStrip.chromaFraction(heroFrame))")
+        precondition(PetSpriteStrip.chromaFraction(droidFrame) < 0.1,
+                     "a neutral frame must score near 0, got \(PetSpriteStrip.chromaFraction(droidFrame))")
+        let story = [heroFrame, heroFrame, droidFrame, heroFrame, heroFrame]
+        precondition(PetSpriteStrip.dropSubjectlessFrames(story).count == 4,
+                     "the subjectless scene must be dropped from a story strip")
+        let allGray = [droidFrame, droidFrame, droidFrame, droidFrame]
+        precondition(PetSpriteStrip.dropSubjectlessFrames(allGray).count == 4,
+                     "a uniformly monochrome pack is not a story strip; keep every frame")
+        let mostlyGray = [droidFrame, droidFrame, droidFrame, heroFrame]
+        precondition(PetSpriteStrip.dropSubjectlessFrames(mostlyGray).count == 4,
+                     "never drop more than half a strip")
+        precondition(PetSpriteStrip.dropSubjectlessFrames([heroFrame, droidFrame]).count == 2,
+                     "a two-frame loop is left alone")
+
+        // Realistic margins, not a 1.0/0.0 fixture: the combat board measures
+        // heroes 0.21-0.43 and droid-only scenes 0.012-0.10, so the cut must
+        // separate at THOSE values, not at a convenient extreme.
+        // Three groups, as measured: bare droid 0.012, droid holding the blade
+        // 0.10, heroes 0.21+. Both subjectless scenes must fall, and the
+        // dimmest hero must survive.
+        func cutFor(_ values: [Double]) -> Double {
+            let s = values.sorted()
+            let mid = s.count / 2
+            let median = s.count % 2 == 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2
+            var cut = 0.0
+            for j in 1..<s.count where s[j] <= median {
+                if s[j] / max(s[j - 1], 0.0001) >= 1.7 { cut = (s[j - 1] + s[j]) / 2 }
+            }
+            return cut
+        }
+        let realCut = cutFor([0.21, 0.43, 0.012, 0.25, 0.10, 0.38])
+        precondition(0.012 < realCut && 0.10 < realCut,
+                     "both measured subjectless scenes must fall below the cut, got \(realCut)")
+        precondition(0.21 > realCut,
+                     "the dimmest measured hero frame must survive, cut \(realCut)")
+        // A real run cycle has no decisive gap and must keep every frame.
+        precondition(cutFor([0.29, 0.31, 0.31, 0.33, 0.35, 0.36, 0.37, 0.48]) == 0,
+                     "a uniform run cycle must produce no cut")
+
+        // ONE WIDTH: the panel and the rendered frame must agree, or the card
+        // reserves space the art does not fill (or clips art it does).
+        let cinematicAspect: CGFloat = 0.97
+        let panel = PetSpritePose.swarm.renderSize(64, scale: 1.5, aspect: cinematicAspect)
+        precondition(abs(panel.width - (panel.height * cinematicAspect).rounded()) < 1.5,
+                     "renderSize must follow the measured aspect, got \(panel)")
+        precondition(panel.width < PetSpritePose.swarm.spriteWidth(64, scale: 1.5),
+                     "narrow art must claim less width than the fixed 2.6 default")
+        let wide = PetSpritePose.swarm.renderSize(64, scale: 1.5, aspect: 9)
+        precondition(wide.width <= (wide.height * 3.6).rounded() + 1,
+                     "an absurd aspect must still be clamped so the frame cannot exceed the panel")
+
+        // ESCALATION LADDER: three sessions must not look like five.
+        var ladder = PetSpriteKit()
+        ladder.cinematic = (0..<4).map { i in
+            spriteProbe(width: 40, height: 40, blobs: [(x: 4 + i, w: 8, y: 4, h: 8)])
+        }
+        precondition(ladder.frames(for: .trio).count == 3,
+                     "trio must climb the ladder only to its own rung")
+        precondition(ladder.frames(for: .swarm).count == 4,
+                     "swarm plays the full ladder")
+
+        // CHARACTER DIAL: scales the figure, never the card.
+        precondition(PetCharacterScale.clamp(40) == PetCharacterScale.minPercent)
+        precondition(PetCharacterScale.clamp(9000) == PetCharacterScale.maxPercent)
+        precondition(PetCharacterScale.factor(200) == 2.0)
+        precondition(PetSpritePose.idle.spriteHeight(64, scale: 2) == 128,
+                     "the character dial must scale the sprite frame")
+        precondition(PetSpritePose.idle.spriteHeight(64) == 64,
+                     "an unscaled call must stay at the configured pixel size")
+        precondition(PetSize(preset: .medium, customPixels: 64).length(22) == 22,
+                     "card metrics must not read the character dial")
+
         // CINEMATIC COUNT PERSISTENCE: playback must slice the stitched strip
         // by its true cell count, not an aspect guess (996/256 -> 3 over a
         // 4-cell strip bled half-droids across every frame edge).
@@ -1141,6 +1316,23 @@ struct ModelsContract {
                                         cells: PetSpritePose.escalationCells, into: cineTmp)
         precondition(PetSpriteStore.cinematicFrameCount(in: cineTmp) == 4,
                      "installGrid must persist the cinematic strip's true frame count")
+        // A newly chosen sprite for a cinematic pose must retire the stitched
+        // strip; frames(for:) prefers it, so a stale strip would render the old
+        // pack's art forever.
+        let singleURL = cineTmp.appendingPathComponent("one-scene.png")
+        let single = spriteProbe(width: 120, height: 100, blobs: [(x: 20, w: 80, y: 20, h: 60)])
+        try! NSBitmapImageRep(data: single.tiffRepresentation!)!
+            .representation(using: .png, properties: [:])!.write(to: singleURL)
+        // A PACK install runs boards and pose strips in one manifest loop, and
+        // the combat strip (.duel) comes after the escalation board. Retiring
+        // the cinematic there would delete the strip the board just wrote.
+        _ = try! PetSpriteStore.installPose(.duel, from: singleURL, frames: 1,
+                                            into: cineTmp, retireCinematic: false)
+        precondition(PetSpriteStore.cinematicFrameCount(in: cineTmp) == 4,
+                     "a pack's own pose strip must not delete the board's cinematic")
+        _ = try! PetSpriteStore.installPose(.trio, from: singleURL, frames: 1, into: cineTmp)
+        precondition(PetSpriteStore.cinematicFrameCount(in: cineTmp) == nil,
+                     "choosing a cinematic pose sprite must retire the stale stitched strip")
         PetSpriteStore.removeAll(from: cineTmp)
         precondition(PetSpriteStore.cinematicFrameCount(in: cineTmp) == nil,
                      "removeAll must clear the cinematic frame-count meta")

@@ -2893,7 +2893,10 @@ private struct PetSpriteStateControls: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
-            if (model.petSpriteKit.preview(for: pose) != nil) && model.petSpriteFrameCount(pose) > 1 {
+            // Gating on frames > 1 hid the only control that can RAISE the
+            // count, so a board-installed cell recorded at 1 could never be
+            // told it is a strip.
+            if model.petSpriteKit.preview(for: pose) != nil {
                 Stepper(
                     "\(model.petSpriteFrameCount(pose))",
                     value: Binding(
@@ -2964,10 +2967,32 @@ private struct PetSizeControls: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             } else {
-                Text("\(model.petSize.pixels) px. Custom sets the sprite in pixels.")
+                Text("\(model.petSize.pixels) px. Custom sets the card and the base sprite.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+            Divider()
+                .padding(.vertical, 2)
+            Text("Character size")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Slider(
+                    value: Binding(
+                        get: { Double(model.petCharacterPercent) },
+                        set: { model.setPetCharacterPercent(Int($0.rounded())) }
+                    ),
+                    in: Double(PetCharacterScale.minPercent)...Double(PetCharacterScale.maxPercent),
+                    step: 10
+                )
+                .controlSize(.small)
+                Text("\(model.petCharacterPercent)%")
+                    .font(.caption.monospacedDigit())
+                    .frame(width: 44, alignment: .trailing)
+            }
+            Text("Scales the figure only. Buttons, text, and the card keep their size.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
         .onAppear { pixelDraft = "\(model.petSize.pixels)" }
         .onChange(of: model.petSize.pixels) { _, value in

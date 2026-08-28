@@ -1,3 +1,69 @@
+## 0.5.119 (build 157)
+
+Character size is its own dial, and the fight stops blinking out.
+
+**Character size** joins Pet size in Settings: Pet size is the card (buttons,
+text, bubbles, list) and Character size scales only the figure, 100% to 300%,
+default 150%. Growing the art no longer inflates the chrome around it.
+
+Build 156 was cut but never published: retiring the cinematic strip on any
+cinematic-pose install also deleted the strip a pack's own board had just
+written, because a pack installs boards and pose strips in one pass. A pack
+install no longer retires its own strip; choosing a single sprite still does.
+
+The two-session duel played the combat board's droid-only scenes, so the
+character vanished mid-loop. A story strip now drops the frames its subject is
+absent from, measured by the strip's own colour content against its median
+(hero scenes 0.21-0.43, droid-only 0.012-0.10) — relative, so a monochrome
+pack keeps every frame, and never more than half a strip.
+
+The panel and the sprite now compute their width from the SAME measured art.
+The card reserved a fixed 2.6:1 cinematic aspect while the view measured the
+real frames (0.97:1 as installed), so it claimed up to 2.7x the width the
+figure needed — the card looked inflated around a small character, and at the
+other extreme a wide scene rendered past the panel and clipped. Pixel art also
+compares against the size it is drawn at now, so scaled-up art stays blocky.
+
+Three sessions no longer look like five: the escalation strip is a ladder, and
+each level plays it only up to its own rung instead of both trio and swarm
+replaying the whole thing, patrol scene included.
+
+From a four-agent QA pass on 0.5.110-0.5.116, in order of what could bite:
+
+- The Cursor search fallback typed the session name after a fixed delay
+  without proving a text field had focus. Keystrokes go to the process, so on
+  a slow palette they could land in an open source file, which no Escape
+  undoes. It now waits for a text-entry element and gives up silently instead.
+- "File > New Agent" fired whenever activation was refused, not when the
+  window was missing, so a jump to an already-open Agents window could spawn
+  an empty composer. Window existence and activation are now separate facts.
+- A pet notice never expired, and any notice reads as the attention state,
+  which outranks every escalation pose — one failed jump pinned the pet in
+  "alert, blade ignited" indefinitely. Notices now clear after 12 seconds.
+- Edge-sliver suppression ran only on strips, never on the BOARD cells that
+  showed the bleed, and judged by area: a bisected neighbour at 42% survived
+  while a deliberate 1.6% blaster bolt was erased. It now runs on both paths
+  and keys on the cut face (edge contact across 30% of the figure's rows).
+- Choosing a sprite for patrol, duel, trio, or swarm retires the stale
+  stitched strip that would otherwise keep rendering in its place.
+- A lost state file no longer shreds a single-cell PNG into ten slivers, and
+  the frame-count stepper is no longer hidden by the value it exists to raise.
+- Cursor search text posts UTF-16, so an emoji in a session title cannot
+  corrupt the query; the search walker reaches the same depth as the row
+  walker; the search box is cleared after a successful jump; and a tab miss no
+  longer claims the window failed to open when it is on screen.
+
+## 0.5.116 (build 154)
+
+Frame edges are clean, and the character stands at 1.5x.
+
+A strip cut that lands inside a figure leaves a truncated sliver of the
+neighbor frame's content at the edge — it flickered during playback and broke
+the animation. An ink island touching the frame's first or last column that
+is not the frame's primary island is now erased at install time
+(contract-tested; the primary figure survives even when it reaches the edge).
+Character scale rises from 1.35x to 1.5x; the chrome still does not move.
+
 ## 0.5.115 (build 153)
 
 The character stands 35% taller; the chrome does not move.

@@ -2634,6 +2634,23 @@ struct PetSize: Equatable {
     }
 }
 
+/// The character dial, independent of PetSize. Pet size sets the CARD (buttons,
+/// text, bubbles, list); this scales only the figure inside it, so the art can
+/// be read at detail without inflating the chrome around it.
+enum PetCharacterScale {
+    static let defaultPercent = 150
+    static let minPercent = 100
+    static let maxPercent = 300
+
+    static func clamp(_ value: Int) -> Int {
+        min(max(value, minPercent), maxPercent)
+    }
+
+    static func factor(_ percent: Int) -> CGFloat {
+        CGFloat(clamp(percent)) / 100
+    }
+}
+
 /// Keep the floating pet on a visible display. 0.5.97 grew Large downward from
 /// the bottom corner and autosave parked the panel under the screen.
 enum PetPanelFrame {
@@ -2769,20 +2786,33 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
         }
     }
 
-    /// The figure reads small against the pet chrome, so the CHARACTER renders
-    /// 1.35x the configured pixel size while buttons, bubbles, and the list
-    /// keep their sizes (those scale off PetSize, not off these).
-    static let characterScale: CGFloat = 1.35
-
-    func spriteHeight(_ pixels: Int) -> CGFloat {
-        let size = CGFloat(pixels) * Self.characterScale
+    /// `scale` is the CHARACTER dial only (PetCharacterScale). Buttons, text,
+    /// bubbles, and the session list size off PetSize and never read this, so
+    /// the figure can grow without the card growing with it.
+    func spriteHeight(_ pixels: Int, scale: CGFloat = 1) -> CGFloat {
+        let size = CGFloat(pixels) * scale
         return cinematic ? (size * 1.55).rounded() : size.rounded()
     }
 
-    func spriteWidth(_ pixels: Int) -> CGFloat {
+    func spriteWidth(_ pixels: Int, scale: CGFloat = 1) -> CGFloat {
         cinematic
-            ? (spriteHeight(pixels) * 2.6).rounded()
-            : (CGFloat(pixels) * Self.characterScale).rounded()
+            ? (spriteHeight(pixels, scale: scale) * 2.6).rounded()
+            : (CGFloat(pixels) * scale).rounded()
+    }
+
+    /// ONE width for the panel and the rendered frame. The panel reserved a
+    /// fixed 2.6 cinematic aspect while the view measured the real art, so the
+    /// card claimed up to 2.7x the width the figure needed (installed cinematic
+    /// cells measure 0.97:1) — which read as the card growing with the
+    /// character — and a wider scene rendered past the panel and clipped.
+    func renderSize(_ pixels: Int, scale: CGFloat = 1, aspect: CGFloat? = nil) -> CGSize {
+        let height = spriteHeight(pixels, scale: scale)
+        guard let aspect, aspect > 0 else {
+            return CGSize(width: spriteWidth(pixels, scale: scale), height: height)
+        }
+        let lo: CGFloat = cinematic ? 0.75 : 0.6
+        let hi: CGFloat = cinematic ? 3.6 : 1.4
+        return CGSize(width: (height * min(max(aspect, lo), hi)).rounded(), height: height)
     }
 
     var fallbackPoses: [PetSpritePose] {
@@ -2859,16 +2889,29 @@ struct PetSpriteKit {
     var poses: [PetSpritePose: [NSImage]] = [:]
     var cinematic: [NSImage] = []
 
+    /// The escalation strip is a ladder: patrol, duel, trio, swarm. Playing all
+    /// of it for BOTH trio and swarm made three sessions and five look
+    /// identical and showed the lone patrol scene while three were running.
+    /// Each level plays the ladder up to its own rung, so the pet never depicts
+    /// more sessions than are live.
     func frames(for pose: PetSpritePose) -> [NSImage] {
         if pose == .duel, let fight = poses[.duel], fight.count > 1 { return fight }
-        if (pose == .trio || pose == .swarm), cinematic.count > 1 { return cinematic }
+        if pose == .trio, cinematic.count >= 3 { return Array(cinematic.prefix(3)) }
+        if pose == .swarm, cinematic.count > 1 { return cinematic }
         if let frames = poses[pose], !frames.isEmpty { return frames }
         for fallback in pose.fallbackPoses {
             if let frames = poses[fallback], !frames.isEmpty { return frames }
         }
-        if (pose == .trio || pose == .swarm), cinematic.count > 1 { return cinematic }
         if let fallback { return [fallback] }
         return []
+    }
+
+    /// Widest aspect among the frames this pose actually plays, so layout and
+    /// rendering size off the same art rather than two formulas.
+    func aspect(for pose: PetSpritePose) -> CGFloat? {
+        let playing = frames(for: pose).filter { $0.size.height > 1 }
+        guard !playing.isEmpty else { return nil }
+        return playing.map { $0.size.width / $0.size.height }.max()
     }
 
     var hasAnyCustom: Bool {
@@ -3156,6 +3199,142 @@ enum PetSpriteStrip {
         return out.count == count ? out : slice(image, frames: count)
     }
 
+    /// A cut that lands inside a figure leaves a truncated sliver of the
+    /// NEIGHBOUR frame at this frame's edge; it flickers during playback and
+    /// breaks the animation. Signature: a connected component, not the frame's
+    /// largest, that meets the edge band (first or last two columns) across at
+    /// least 30% of the primary figure's row span — a cut face. The primary
+    /// stays even when it reaches the edge, and a bolt or debris speck touching
+    /// the edge over a few rows stays, because sliceRowByIslands deliberately
+    /// keeps those with their scene.
+    static func suppressTruncatedEdgeSlivers(_ image: NSImage) -> NSImage {
+        guard var buffer = PetSpriteAlpha.rgbaBuffer(image) else { return image }
+        let width = buffer.width
+        let height = buffer.height
+        // 2D connected components (4-neighbor, same pattern as the paper
+        // knockout): a fragment can overlap the figure's column span, which a
+        // column projection cannot see — it hid three run-cycle slivers.
+        var label = [Int](repeating: 0, count: width * height)
+        var areas: [Int] = [0]
+        var touchesEdge: [Bool] = [false]
+        var rowSpans: [Set<Int>] = [[]]
+        var edgeRows: [Set<Int>] = [[]]
+        var next = 1
+        var queue: [Int] = []
+        for start in 0..<(width * height) {
+            guard label[start] == 0, PetSpriteAlpha.isSpriteInk(buffer.pixels, at: start * 4) else { continue }
+            label[start] = next
+            areas.append(0)
+            touchesEdge.append(false)
+            rowSpans.append([])
+            edgeRows.append([])
+            queue.removeAll(keepingCapacity: true)
+            queue.append(start)
+            var head = 0
+            while head < queue.count {
+                let index = queue[head]
+                head += 1
+                areas[next] += 1
+                let x = index % width
+                let row = index / width
+                rowSpans[next].insert(row)
+                if x <= 1 || x >= width - 2 {
+                    touchesEdge[next] = true
+                    edgeRows[next].insert(row)
+                }
+                let y = index / width
+                for (nx, ny) in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)] {
+                    guard nx >= 0, ny >= 0, nx < width, ny < height else { continue }
+                    let nIndex = ny * width + nx
+                    guard label[nIndex] == 0, PetSpriteAlpha.isSpriteInk(buffer.pixels, at: nIndex * 4) else { continue }
+                    label[nIndex] = next
+                    queue.append(nIndex)
+                }
+            }
+            next += 1
+        }
+        guard next > 2, let largest = areas.max(), largest > 0,
+              let primary = (1..<next).max(by: { areas[$0] < areas[$1] }) else { return image }
+        // Area is the wrong discriminator: a bisected neighbour can be 42% of
+        // the figure (survived) while a deliberate blaster bolt is 1.6%
+        // (erased) — wrong in both directions. A CUT face is the signature:
+        // a truncated figure meets the frame edge across much of its height,
+        // where a bolt or debris speck touches it over a few rows.
+        let primaryRows = max(1, rowSpans[primary].count)
+        var erase = [Bool](repeating: false, count: next)
+        var cleared = false
+        for id in 1..<next where id != primary && touchesEdge[id] {
+            guard Double(edgeRows[id].count) >= Double(primaryRows) * 0.30 else { continue }
+            erase[id] = true
+            cleared = true
+        }
+        guard cleared else { return image }
+        for index in 0..<(width * height) where label[index] > 0 && erase[label[index]] {
+            let byte = index * 4
+            buffer.pixels[byte] = 0
+            buffer.pixels[byte + 1] = 0
+            buffer.pixels[byte + 2] = 0
+            buffer.pixels[byte + 3] = 0
+        }
+        return PetSpriteAlpha.image(from: buffer)
+    }
+
+    /// Share of a frame's ink that carries saturated colour. Measured on the
+    /// Windu combat strip: the hero's violet tunic, gold armour, and blade run
+    /// 0.21-0.43; the droid-only scenes, which are grey metal with red eyes,
+    /// run 0.012-0.10. The metric is the strip's own palette, not a named hue,
+    /// so a monochrome pack scores uniformly and nothing is dropped.
+    static func chromaFraction(_ image: NSImage) -> Double {
+        guard let buffer = PetSpriteAlpha.rgbaBuffer(image) else { return 0 }
+        var ink = 0
+        var chroma = 0
+        for index in 0..<(buffer.width * buffer.height) {
+            let byte = index * 4
+            guard buffer.pixels[byte + 3] > 89 else { continue }
+            ink += 1
+            let r = Int(buffer.pixels[byte])
+            let g = Int(buffer.pixels[byte + 1])
+            let b = Int(buffer.pixels[byte + 2])
+            let maxc = max(r, g, b)
+            let minc = min(r, g, b)
+            guard maxc > 38 else { continue }
+            if Double(maxc - minc) / Double(maxc) > 0.25 { chroma += 1 }
+        }
+        return ink > 0 ? Double(chroma) / Double(ink) : 0
+    }
+
+    /// A story strip contains scenes the pet's subject is absent from — in the
+    /// combat board, three of ten are the droid alone. Looped at 0.11s they
+    /// read as the character blinking out of existence. Drop frames whose
+    /// colour content falls far below the strip's median (a relative test, so
+    /// a uniformly monochrome pack keeps every frame). Never drops more than
+    /// half, and never below two frames.
+    static func dropSubjectlessFrames(_ frames: [NSImage]) -> [NSImage] {
+        guard frames.count >= 3 else { return frames }
+        let scores = frames.map { chromaFraction($0) }
+        let sorted = scores.sorted()
+        let mid = sorted.count / 2
+        let median = sorted.count % 2 == 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+        guard median > 0 else { return frames }
+        // Take the cut from the data, not a fixed fraction: the combat strip
+        // separates into three groups (bare droid 0.012-0.016, droid holding
+        // the blade 0.10, hero 0.21+), and a fraction-of-median cut lands in
+        // whichever gap it happens to hit. Use the HIGHEST decisive gap below
+        // the median, so every subjectless scene falls below it. A strip with
+        // no decisive gap — a real run cycle, whose frames vary by at most
+        // 1.07x — keeps every frame. Measured boundary here: 1.79x.
+        var cut = 0.0
+        for j in 1..<sorted.count where sorted[j] <= median {
+            if sorted[j] / max(sorted[j - 1], 0.0001) >= 1.7 {
+                cut = (sorted[j - 1] + sorted[j]) / 2
+            }
+        }
+        guard cut > 0 else { return frames }
+        let kept = zip(frames, scores).filter { $0.1 >= cut }.map(\.0)
+        guard kept.count >= 2, kept.count >= frames.count - frames.count / 2 else { return frames }
+        return kept
+    }
+
     /// Returns the prepared image AND the frame count that was stitched, so
     /// playback slices exactly what exists.
     static func prepare(_ image: NSImage, frames: Int = 1) -> (image: NSImage, frames: Int) {
@@ -3163,8 +3342,8 @@ enum PetSpriteStrip {
         if count <= 1 {
             return (fitHeight(cropOpaque(image)), 1)
         }
-        let parts = sliceStripByValleys(image, frames: count)
-        let prepared = parts.map { fitHeight(cropOpaque($0, paddingRatio: 0.30)) }
+        let parts = dropSubjectlessFrames(sliceStripByValleys(image, frames: count))
+        let prepared = parts.map { fitHeight(cropOpaque(suppressTruncatedEdgeSlivers($0), paddingRatio: 0.30)) }
         guard let stitched = stitch(prepared) else { return (image, 1) }
         return (stitched, clampFrames(prepared.count))
     }
@@ -3584,11 +3763,15 @@ enum PetSpriteStore {
         return dest
     }
 
+    /// `retireCinematic` is false during a PACK install: the pack's own board
+    /// writes the stitched strip, and a pose strip later in the same manifest
+    /// (the combat board is exactly that) would otherwise delete it.
     static func installPose(
         _ pose: PetSpritePose,
         from source: URL,
         frames: Int,
         into directory: URL,
+        retireCinematic: Bool = true,
         fileManager: FileManager = .default
     ) throws -> URL {
         guard isAllowedImage(source) else { throw InstallError.notAnImage }
@@ -3607,6 +3790,13 @@ enum PetSpriteStore {
         try? fileManager.removeItem(at: dest)
         guard let data = pngData(image) else { throw InstallError.notAnImage }
         try data.write(to: dest, options: .atomic)
+        // frames(for:) prefers the stitched cinematic for trio and swarm (and
+        // duel), so a newly chosen sprite for one of those would render behind
+        // the old strip forever unless the strip is retired with it.
+        if retireCinematic, [.patrol, .duel, .trio, .swarm].contains(pose) {
+            try? fileManager.removeItem(at: directory.appendingPathComponent(cinematicFileName))
+            try? fileManager.removeItem(at: directory.appendingPathComponent(cinematicMetaFileName))
+        }
         var map = loadStateMap(in: directory, fileManager: fileManager)
         map[pose] = (poseFileName(pose), prepared.frames)
         try saveStateMap(map, in: directory, fileManager: fileManager)
@@ -3638,9 +3828,13 @@ enum PetSpriteStore {
         var preparedPoses: [PetSpritePose: NSImage] = [:]
         for cell in cells {
             guard cell.index >= 0, cell.index < sliced.count else { continue }
+            // Board cells need the same edge-sliver pass as strip frames: a
+            // cell cut leaves the neighbour scene's truncated content at the
+            // border, which is where the bleed was first seen.
+            let cleaned = PetSpriteStrip.suppressTruncatedEdgeSlivers(sliced[cell.index])
             let prepared = rows == 1
-                ? PetSpriteStrip.fitHeight(PetSpriteStrip.cropOpaque(sliced[cell.index], paddingRatio: 0.30))
-                : PetSpriteStrip.prepare(sliced[cell.index]).image
+                ? PetSpriteStrip.fitHeight(PetSpriteStrip.cropOpaque(cleaned, paddingRatio: 0.30))
+                : PetSpriteStrip.prepare(cleaned).image
             let dest = directory.appendingPathComponent(poseFileName(cell.pose))
             try? fileManager.removeItem(at: dest)
             guard let data = pngData(prepared) else { continue }
@@ -3649,10 +3843,14 @@ enum PetSpriteStore {
             preparedPoses[cell.pose] = prepared
         }
         let sequence: [PetSpritePose] = [.patrol, .duel, .trio, .swarm]
+        // Clear unconditionally: a board that cannot rebuild the strip must not
+        // leave the PREVIOUS pack's cinematic in place, or trio and swarm play
+        // one pack's art while every other pose comes from another.
+        let dest = directory.appendingPathComponent(cinematicFileName)
+        try? fileManager.removeItem(at: dest)
+        try? fileManager.removeItem(at: directory.appendingPathComponent(cinematicMetaFileName))
         if sequence.allSatisfy({ preparedPoses[$0] != nil }),
            let strip = PetSpriteStrip.stitch(sequence.compactMap { preparedPoses[$0] }) {
-            let dest = directory.appendingPathComponent(cinematicFileName)
-            try? fileManager.removeItem(at: dest)
             if let data = pngData(strip) {
                 try data.write(to: dest, options: .atomic)
                 // Playback must slice by the count that was stitched. Guessing
@@ -3689,9 +3887,17 @@ enum PetSpriteStore {
         else {
             var inferred: [PetSpritePose: (file: String, frames: Int)] = [:]
             for pose in PetSpritePose.allCases {
-                if existingPoseURL(pose, in: directory, fileManager: fileManager) != nil {
-                    inferred[pose] = (poseFileName(pose), pose.defaultFrameCount)
+                guard let url = existingPoseURL(pose, in: directory, fileManager: fileManager) else { continue }
+                // Without the state file the pose's DEFAULT count is a guess,
+                // and guessing high shreds a single-cell PNG into that many
+                // vertical slivers. A still is a survivable wrong answer;
+                // confetti is not. Only claim a strip when the file looks wide.
+                var frames = 1
+                if let image = NSImage(contentsOf: url), let cg = PetSpriteStrip.raster(image),
+                   CGFloat(cg.width) >= CGFloat(cg.height) * 1.6 {
+                    frames = pose.defaultFrameCount
                 }
+                inferred[pose] = (poseFileName(pose), frames)
             }
             return inferred
         }

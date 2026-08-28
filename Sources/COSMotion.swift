@@ -217,6 +217,8 @@ struct SessionPetSprite: View {
     var frames: [NSImage] = []
     var pose: PetSpritePose = .idle
     var size: CGFloat = 64
+    /// The character dial only; the card around this view sizes off PetSize.
+    var characterScale: CGFloat = 1
 
     var body: some View {
         let interval = reduceMotion ? 3600.0 : pose.frameInterval
@@ -288,26 +290,28 @@ struct SessionPetSprite: View {
         .accessibilityHidden(true)
     }
 
+    /// Measured aspect of the art actually playing; nil falls back to the pose
+    /// default. The panel sizes off this same number.
+    private var measuredAspect: CGFloat? {
+        let widest = frames.filter { $0.size.height > 1 }
+            .map { $0.size.width / $0.size.height }
+            .max()
+        return widest
+    }
+
     private var displayHeight: CGFloat {
-        pose.spriteHeight(Int(size.rounded()))
+        pose.renderSize(Int(size.rounded()), scale: characterScale, aspect: measuredAspect).height
     }
 
     private var displayWidth: CGFloat {
-        let height = displayHeight
-        let sample = frames.max(by: {
-            $0.size.width / max($0.size.height, 1) < $1.size.width / max($1.size.height, 1)
-        }) ?? frames.first
-        if let sample, sample.size.height > 1 {
-            let aspect = sample.size.width / sample.size.height
-            let lo: CGFloat = pose.cinematic ? 1.7 : 1
-            let hi: CGFloat = pose.cinematic ? 3.6 : 1.4
-            return (height * min(max(aspect, lo), hi)).rounded()
-        }
-        return pose.spriteWidth(Int(size.rounded()))
+        pose.renderSize(Int(size.rounded()), scale: characterScale, aspect: measuredAspect).width
     }
 
     private func frameImage(_ frame: NSImage) -> some View {
-        let pixelated = max(frame.size.width, frame.size.height) <= size * 2
+        // Compare against the size it is DRAWN at, not the configured pixel
+        // size: with the character dial the render is 1x-4.65x that, so a fixed
+        // 2x threshold blurred upscaled pixel art and aliased downscaled art.
+        let pixelated = max(frame.size.width, frame.size.height) <= displayHeight
         return Image(nsImage: frame)
             .interpolation(pixelated ? .none : .medium)
             .antialiased(false)
