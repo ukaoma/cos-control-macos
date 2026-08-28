@@ -1,3 +1,24 @@
+## 0.5.123 (build 161)
+
+Running is a burst, not a treadmill — and the character holds its size.
+
+A session is "working" almost all the time, so a sprint on a permanent loop
+was what the pet did roughly 90% of the time. Running and patrol now play as
+periodic bursts against the idle clip: settled most beats, breaking into the
+action about 30% of the time, at most two beats in a row (a third would be a
+loop again). The cadence is a pure function of the clock, so it never jumps
+when the panel redraws, and it is irregular enough not to read as a pattern.
+Fight poses are untouched — a duel should look like a duel for as long as it
+lasts.
+
+Each frame was cropped to its own ink and scaled to fill the same box, so a
+crouched running frame was ENLARGED to match a standing one — the figure
+appeared to grow and shrink mid-stride, and its feet drifted. A strip is now
+normalised as a whole: one canvas, one scale, ink bottoms on a shared baseline.
+Authored pose differences survive (a crouch stays shorter than a stand) while
+the character itself holds its size. Measured on the V3 running strip: baseline
+spread 0 px across all eight frames, down from per-frame drift.
+
 ## 0.5.121 (build 159)
 
 The default character animates in every state.

@@ -1730,6 +1730,16 @@ need(pet_src.count('scale: model.petCharacterFactor') >= 2,
 need('characterScale: model.petCharacterFactor' in pet_src,
      "the sprite view never receives the character dial")
 need('Character size' in views, "Settings has no character-size control")
+need('enum PetPlaylist' in models_src and 'usesActivityPlaylist' in models_src,
+     "running and patrol loop forever again instead of playing as bursts")
+cosmotion_src = (root / "Sources/COSMotion.swift").read_text()
+sessionpet_src = (root / "Sources/SessionPet.swift").read_text()
+need('PetPlaylist.plan(' in cosmotion_src and 'restFrames' in cosmotion_src,
+     "the sprite view does not run the activity playlist")
+need('restFrames: model.petSpriteKit.frames(for: .idle)' in sessionpet_src,
+     "the playlist has no rest clip to settle into")
+need(models_src.count('normalizeStrip(') >= 2,
+     "strip frames are normalised individually again, so the character resizes mid-animation")
 need('installBundledDefault(into: directory)' in model,
      "a fresh install no longer seeds the shipped character")
 need('petDefaultSeededKey' in model,

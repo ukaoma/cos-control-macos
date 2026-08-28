@@ -1315,6 +1315,65 @@ struct ModelsContract {
         precondition(ladder.frames(for: .swarm).count == 4,
                      "swarm plays the full ladder")
 
+        // ACTIVITY PLAYLIST: running and patrol are actions, not states. They
+        // must spend MOST beats settled, break into the action sometimes, and
+        // be fully determined by the clock so a re-render never jumps.
+        precondition(PetSpritePose.working.usesActivityPlaylist)
+        precondition(PetSpritePose.patrol.usesActivityPlaylist)
+        precondition(!PetSpritePose.duel.usesActivityPlaylist,
+                     "a duel must look like a duel for as long as it lasts")
+        precondition(!PetSpritePose.idle.usesActivityPlaylist)
+        var actionBeats = 0
+        for segment in 0..<600 where PetPlaylist.isActionSegment(segment) { actionBeats += 1 }
+        precondition(actionBeats > 120 && actionBeats < 280,
+                     "action should be a minority of beats, got \(actionBeats)/600")
+        precondition(PetPlaylist.isActionSegment(7) == PetPlaylist.isActionSegment(7),
+                     "the schedule must be deterministic")
+        var runs = 0, longest = 0, current = 0
+        for segment in 0..<600 {
+            if PetPlaylist.isActionSegment(segment) { current += 1; longest = max(longest, current) }
+            else { if current > 0 { runs += 1 }; current = 0 }
+        }
+        precondition(runs > 40, "action beats must recur, not clump into one stretch")
+        precondition(longest <= 2,
+                     "a burst is at most two beats; a third is a loop, longest was \(longest)")
+        let restPlan = PetPlaylist.plan(elapsed: 0.0, actionCount: 8, restCount: 8, interval: 0.1)
+        precondition(restPlan.index == 0, "a beat starts at its first frame")
+        let midPlan = PetPlaylist.plan(elapsed: 0.35, actionCount: 8, restCount: 8, interval: 0.1)
+        precondition(midPlan.index == 3, "frames step at the pose interval, got \(midPlan.index)")
+        let wrapPlan = PetPlaylist.plan(elapsed: 1.25, actionCount: 4, restCount: 4, interval: 0.1)
+        precondition(wrapPlan.index < 4, "the index must stay inside the clip")
+        precondition(PetPlaylist.plan(elapsed: -5, actionCount: 8, restCount: 8, interval: 0.1).index == 0,
+                     "a negative clock must not index out of the clip")
+        precondition(PetPlaylist.plan(elapsed: 3, actionCount: 0, restCount: 0, interval: 0).index == 0,
+                     "an empty clip must degrade safely")
+
+        // STRIP NORMALISATION: authored size differences must SURVIVE, and ink
+        // must share a baseline. Per-frame fitHeight rendered a short pose and
+        // a tall pose at the same height — the character resizing mid-animation.
+        let shortPose = spriteProbe(width: 120, height: 120, blobs: [(x: 40, w: 30, y: 70, h: 30)])
+        let tallPose = spriteProbe(width: 120, height: 120, blobs: [(x: 40, w: 30, y: 40, h: 60)])
+        let normalized = PetSpriteStrip.normalizeStrip([shortPose, tallPose])
+        precondition(normalized.count == 2, "normalisation must not change the frame count")
+        guard let nShort = PetSpriteStrip.inkBounds(normalized[0]),
+              let nTall = PetSpriteStrip.inkBounds(normalized[1]) else {
+            preconditionFailure("normalised frames must hold ink")
+        }
+        precondition(normalized[0].size == normalized[1].size,
+                     "every frame shares one canvas, so one scale applies to all")
+        let sizeRatio = Double(nTall.h) / Double(nShort.h)
+        precondition(sizeRatio > 1.8 && sizeRatio < 2.2,
+                     "the 2:1 authored height ratio must survive, got \(String(format: "%.2f", sizeRatio))")
+        precondition(abs((nShort.y + nShort.h) - (nTall.y + nTall.h)) <= 1,
+                     "ink bottoms must land on a shared baseline")
+        // Frames must also reach the SAME canvas independently of their own ink
+        // box; that is what guarantees one scale downstream, since fitHeight
+        // applies the same factor to identically sized inputs.
+        let wideEffect = spriteProbe(width: 120, height: 120, blobs: [(x: 10, w: 100, y: 80, h: 20)])
+        let three = PetSpriteStrip.normalizeStrip([shortPose, tallPose, wideEffect])
+        precondition(Set(three.map(\.size.width)).count == 1 && Set(three.map(\.size.height)).count == 1,
+                     "a frame with a wide effect must share the strip's canvas, not get its own")
+
         // SHIPPED DEFAULT: seeds an empty install, and never overwrites the
         // user's own sprites (which would undo Choose sprite or Use COS figure).
         let seedRoot = FileManager.default.temporaryDirectory

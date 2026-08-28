@@ -219,19 +219,29 @@ struct SessionPetSprite: View {
     var size: CGFloat = 64
     /// The character dial only; the card around this view sizes off PetSize.
     var characterScale: CGFloat = 1
+    /// The settled clip an action pose returns to between bursts.
+    var restFrames: [NSImage] = []
+
+    /// Running and patrol are actions, not states: play them as periodic
+    /// bursts against the rest clip instead of one loop forever.
+    private var playlists: Bool {
+        pose.usesActivityPlaylist && frames.count > 1 && restFrames.count > 1 && !reduceMotion
+    }
 
     var body: some View {
         let interval = reduceMotion ? 3600.0 : pose.frameInterval
         // Cinematic scenes are distinct paintings, not run-cycle cells; a hard
         // cut between them reads as a slideshow. Cross-dissolve the last third
         // of each interval so the fight flows. Needs sub-interval ticks.
-        let dissolves = pose.cinematic && frames.count > 1 && !reduceMotion
+        let dissolves = pose.cinematic && frames.count > 1 && !reduceMotion && !playlists
         let tick = dissolves ? interval / 8 : interval
         TimelineView(.animation(minimumInterval: tick, paused: reduceMotion && frames.count <= 1)) { timeline in
             let phase = reduceMotion ? 0.0 : sin(timeline.date.timeIntervalSinceReferenceDate * (working ? 6.2 : 2.4))
             let bounce = working && !reduceMotion ? CGFloat(phase) * max(1, size * 0.022) : 0
             Group {
-                if dissolves {
+                if playlists, let frame = playlistFrame(at: timeline.date) {
+                    frameImage(frame)
+                } else if dissolves {
                     let t = timeline.date.timeIntervalSinceReferenceDate / pose.frameInterval
                     let index = Int(t) % frames.count
                     let next = (index + 1) % frames.count
@@ -317,6 +327,20 @@ struct SessionPetSprite: View {
             .antialiased(false)
             .resizable()
             .scaledToFit()
+    }
+
+    /// Absolute-time schedule, so no per-instance state has to survive the
+    /// panel rebuilding its root view on every poll.
+    private func playlistFrame(at date: Date) -> NSImage? {
+        let plan = PetPlaylist.plan(
+            elapsed: date.timeIntervalSinceReferenceDate,
+            actionCount: frames.count,
+            restCount: restFrames.count,
+            interval: pose.frameInterval
+        )
+        let clip = plan.useAction ? frames : restFrames
+        guard !clip.isEmpty else { return nil }
+        return clip[min(plan.index, clip.count - 1)]
     }
 
     private func playbackFrame(at date: Date) -> NSImage? {

@@ -2634,6 +2634,58 @@ struct PetSize: Equatable {
     }
 }
 
+/// Running and patrol are TRANSITIONS, not resting states. A session spends
+/// most of its life "working", so one sprint loop repeating forever is what the
+/// pet does ~90% of the time and it reads as mechanical. These poses play as
+/// periodic bursts against a calmer clip instead: mostly at rest, breaking into
+/// the action every few segments, with the cadence varied so it never lands on
+/// an obvious repeat.
+///
+/// Seeded by segment index and nothing else — no stored state, so a re-render
+/// of the same instant always paints the same frame.
+enum PetPlaylist {
+    /// One beat. Long enough to read as a deliberate change, short enough that
+    /// the pet still feels responsive.
+    static let segmentSeconds: Double = 2.4
+    /// Roughly one beat in three is action; the rest settle.
+    static let actionInterval: UInt64 = 3
+
+    private static func rawPick(_ segment: Int) -> Bool {
+        var x = UInt64(bitPattern: Int64(segment)) &* 0x9E37_79B9_7F4A_7C15
+        x ^= x >> 30
+        x = x &* 0xBF58_476D_1CE4_E5B9
+        x ^= x >> 27
+        x = x &* 0x94D0_49BB_1331_11EB
+        x ^= x >> 31
+        return x % actionInterval == 0
+    }
+
+    /// The raw hash alone produced runs of eight consecutive action beats —
+    /// nineteen seconds of unbroken sprinting, which is the problem this
+    /// exists to solve. Two beats is a burst; a third would be a loop, so the
+    /// third is always a rest. Still a pure function of the segment index.
+    static func isActionSegment(_ segment: Int) -> Bool {
+        guard rawPick(segment) else { return false }
+        return !(rawPick(segment - 1) && rawPick(segment - 2))
+    }
+
+    /// Which clip to draw from, and which frame of it, at `elapsed` seconds.
+    static func plan(
+        elapsed: Double,
+        actionCount: Int,
+        restCount: Int,
+        interval: Double
+    ) -> (useAction: Bool, index: Int) {
+        guard actionCount > 0, restCount > 0, interval > 0 else { return (true, 0) }
+        let segment = Int((max(0, elapsed) / segmentSeconds).rounded(.down))
+        let useAction = isActionSegment(segment)
+        let within = max(0, elapsed) - Double(segment) * segmentSeconds
+        let count = useAction ? actionCount : restCount
+        let index = Int(within / interval) % count
+        return (useAction, index)
+    }
+}
+
 /// The character dial, independent of PetSize. Pet size sets the CARD (buttons,
 /// text, bubbles, list); this scales only the figure inside it, so the art can
 /// be read at detail without inflating the chrome around it.
@@ -2782,6 +2834,19 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
     var cinematic: Bool {
         switch self {
         case .patrol, .duel, .trio, .swarm: true
+        default: false
+        }
+    }
+
+    /// Poses that read as an ACTION rather than a state. A session is
+    /// "working" almost all the time, so a sprint on a permanent loop is what
+    /// the pet does ~90% of the time; the same goes for patrol on one idle
+    /// session. These play through PetPlaylist: mostly settled, breaking into
+    /// the action every few beats. Fight poses are excluded — a duel should
+    /// look like a duel for as long as it lasts.
+    var usesActivityPlaylist: Bool {
+        switch self {
+        case .working, .patrol: true
         default: false
         }
     }
@@ -3335,6 +3400,64 @@ enum PetSpriteStrip {
         return kept
     }
 
+    /// Ink bounds of a frame, or nil when it holds no ink.
+    static func inkBounds(_ image: NSImage) -> (x: Int, y: Int, w: Int, h: Int)? {
+        guard let buffer = PetSpriteAlpha.rgbaBuffer(image) else { return nil }
+        var minX = buffer.width, minY = buffer.height, maxX = -1, maxY = -1
+        for y in 0..<buffer.height {
+            for x in 0..<buffer.width {
+                guard PetSpriteAlpha.isSpriteInk(buffer.pixels, at: (y * buffer.width + x) * 4) else { continue }
+                minX = min(minX, x); minY = min(minY, y)
+                maxX = max(maxX, x); maxY = max(maxY, y)
+            }
+        }
+        guard maxX >= minX, maxY >= minY else { return nil }
+        return (minX, minY, maxX - minX + 1, maxY - minY + 1)
+    }
+
+    /// Cropping and height-fitting each frame INDEPENDENTLY re-scales every
+    /// pose to fill the same box, so the character changes size between frames
+    /// of one animation. Measured on the V3 running strip: the figure rendered
+    /// at 54% of frame height in one frame and 62% in another — a 15% jump,
+    /// which reads as the character growing and shrinking as it runs.
+    ///
+    /// Normalise the STRIP instead: one canvas, one scale, ink bottoms on a
+    /// shared baseline. Authored size differences survive (a crouch stays
+    /// shorter than a stand) and the figure does not bob.
+    static func normalizeStrip(_ frames: [NSImage], paddingRatio: CGFloat = 0.12) -> [NSImage] {
+        guard frames.count > 1 else { return frames }
+        var boxes: [(x: Int, y: Int, w: Int, h: Int)] = []
+        var rasters: [CGImage] = []
+        for frame in frames {
+            guard let box = inkBounds(frame), let cg = raster(frame) else { return frames }
+            boxes.append(box)
+            rasters.append(cg)
+        }
+        let unionW = boxes.map(\.w).max() ?? 1
+        let unionH = boxes.map(\.h).max() ?? 1
+        let pad = max(8, Int((CGFloat(max(unionW, unionH)) * paddingRatio).rounded()))
+        let canvasW = unionW + pad * 2
+        let canvasH = unionH + pad * 2
+        var out: [NSImage] = []
+        out.reserveCapacity(frames.count)
+        for (index, cg) in rasters.enumerated() {
+            let box = boxes[index]
+            guard let ink = cg.cropping(to: CGRect(x: box.x, y: box.y, width: box.w, height: box.h)),
+                  let ctx = CGContext(
+                    data: nil, width: canvasW, height: canvasH, bitsPerComponent: 8,
+                    bytesPerRow: canvasW * 4, space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return frames }
+            ctx.clear(CGRect(x: 0, y: 0, width: canvasW, height: canvasH))
+            // Horizontally centred; ink BOTTOM on a shared baseline. A CGContext
+            // is bottom-up, so the baseline sits `pad` above its origin.
+            ctx.draw(ink, in: CGRect(x: (canvasW - box.w) / 2, y: pad, width: box.w, height: box.h))
+            guard let made = ctx.makeImage() else { return frames }
+            out.append(NSImage(cgImage: made, size: NSSize(width: canvasW, height: canvasH)))
+        }
+        return out
+    }
+
     /// Returns the prepared image AND the frame count that was stitched, so
     /// playback slices exactly what exists.
     static func prepare(_ image: NSImage, frames: Int = 1) -> (image: NSImage, frames: Int) {
@@ -3343,7 +3466,11 @@ enum PetSpriteStrip {
             return (fitHeight(cropOpaque(image)), 1)
         }
         let parts = dropSubjectlessFrames(sliceStripByValleys(image, frames: count))
-        let prepared = parts.map { fitHeight(cropOpaque(suppressTruncatedEdgeSlivers($0), paddingRatio: 0.30)) }
+        let cleaned = parts.map { suppressTruncatedEdgeSlivers($0) }
+        // One scale and one baseline for the whole strip. Per-frame
+        // cropOpaque + fitHeight here is what changed the character's size
+        // between frames of the same animation.
+        let prepared = normalizeStrip(cleaned).map { fitHeight($0) }
         guard let stitched = stitch(prepared) else { return (image, 1) }
         return (stitched, clampFrames(prepared.count))
     }
