@@ -517,6 +517,7 @@ final class COSControlHelper {
         case "archive-dates": try emitArchiveDates()
         case "archive-search": try emitArchiveSearch(args: args)
         case "archive-day": try emitArchiveDay(args: args)
+        case "archive-chat": try emitArchiveChat(args: args)
         case "voice-enroll-ext": try emitVoiceEnrollExt(args: args)
         case "meeting-relabel": try emitMeetingRelabel(args: args)
         case "meeting-deattribute": try emitMeetingDeattribute(args: args)
@@ -10016,6 +10017,40 @@ final class COSControlHelper {
         }
         emit(ok: true, message: "Archive for \(date)", details: [
             "state": "ready", "date": date, "chats": (body["chats"] as? [[String: Any]]) ?? [],
+        ])
+    }
+
+    /// GET /api/archive/:date/chats/:index/messages — the paired Q&A inside ONE
+    /// archived chat. This is the leaf of the archive drill-through: the day list
+    /// gives dates, `archive-day` gives that day's chats, and this gives the turns
+    /// a person actually wants to read. Without it the Archive tab could count
+    /// history it could never open.
+    private func emitArchiveChat(args: [String]) throws {
+        guard let date = option("--date", in: args), isArchiveDateString(date) else {
+            throw HelperError.message("Pass --date as YYYY-MM-DD.")
+        }
+        // The index reaches a path segment on the other side, so it is validated
+        // here as a non-negative integer rather than forwarded as free text.
+        guard let raw = option("--index", in: args), let index = Int(raw), index >= 0 else {
+            throw HelperError.message("Pass --index as a non-negative integer.")
+        }
+        let token = try speakerReviewToken()
+        guard let response = request("/api/archive/\(date)/chats/\(index)/messages", token: token, timeout: 60) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if response.status == 404 {
+            emit(ok: true, message: "That chat is no longer in the archive.", details: [
+                "state": "absent", "messages": [],
+            ])
+            return
+        }
+        guard response.status == 200, let body = response.body else {
+            throw HelperError.message("Request failed (\(response.status))")
+        }
+        emit(ok: true, message: "Chat \(index) for \(date)", details: [
+            "state": "ready", "date": date, "index": index,
+            "messages": (body["messages"] as? [[String: Any]]) ?? [],
         ])
     }
 

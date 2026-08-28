@@ -2502,6 +2502,77 @@ struct ArchiveHit: Identifiable, Sendable, Hashable {
     }
 }
 
+/// One archived conversation inside a day. The archive stores a day as a list of
+/// chats, so this is the middle rung of the drill-through: Archive lists dates,
+/// a date lists these, and opening one loads its `ArchiveMessage` turns.
+struct ArchiveChat: Identifiable, Sendable, Hashable {
+    let index: Int
+    let summary: String?
+    let exchangeCount: Int
+    let startedAt: TimeInterval?
+
+    var id: Int { index }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let index = o["index"]?.int else { return nil }
+        self.index = index
+        summary = o["summary"]?.string
+        exchangeCount = o["exchangeCount"]?.int ?? 0
+        // Same millisecond heuristic the live turns use: the archive writes epoch
+        // milliseconds, and reading those as seconds would date every chat to 1970.
+        if let number = o["startedAt"]?.int {
+            startedAt = TimeInterval(number) / (number > 10_000_000_000 ? 1000 : 1)
+        } else {
+            startedAt = nil
+        }
+    }
+
+    var countLabel: String { "\(exchangeCount) message\(exchangeCount == 1 ? "" : "s")" }
+
+    var timeLabel: String { GlassesTurn.dayAnchoredTime(startedAt) }
+}
+
+/// One paired question and answer inside an archived chat. Deliberately separate
+/// from `GlassesTurn`: an archived turn carries no session id, no source, and no
+/// attachment refs, and inventing empty ones would let the detail view render
+/// affordances (Copy + images, attachment strips) that can never resolve.
+struct ArchiveMessage: Identifiable, Sendable, Hashable {
+    let ordinal: Int
+    let no: Int?
+    let query: String
+    let text: String
+    let timestamp: TimeInterval?
+
+    /// Keyed by POSITION, never by `no`. The archive spans era resets, so message
+    /// numbers can repeat within a day, and a duplicate id silently drops rows
+    /// from a ForEach.
+    var id: Int { ordinal }
+
+    init?(_ value: JSONValue?, ordinal: Int) {
+        guard let o = value?.object else { return nil }
+        self.ordinal = ordinal
+        no = o["no"]?.int
+        query = o["query"]?.string ?? ""
+        text = o["text"]?.string ?? ""
+        if let number = o["timestamp"]?.int {
+            timestamp = TimeInterval(number) / (number > 10_000_000_000 ? 1000 : 1)
+        } else {
+            timestamp = nil
+        }
+    }
+
+    var title: String { no.map { "Message #\($0)" } ?? "Message" }
+
+    var timeLabel: String { GlassesTurn.dayAnchoredTime(timestamp) }
+
+    /// Byte-for-byte the live turn's format. Text pasted out of the archive should
+    /// not be distinguishable from text pasted out of Recent.
+    var clipboardText: String {
+        let label = no.map { "Msg \($0)" } ?? "Msg"
+        return "[\(label)] User: \(query)\n[\(label)] COS: \(text)"
+    }
+}
+
 enum CorrectionScope: String, Sendable, CaseIterable, Identifiable {
     case thisMeeting
     case everywhere
@@ -4156,8 +4227,8 @@ enum PetSpriteStore {
 
     /// Shipped characters are already PROCESSED (sliced, cleaned, stitched,
     /// with state maps). Keep the registry separate from OpenPets: these packs
-    /// are animated COS characters, while that attribution covers community
-    /// stills. Adding the next character is one asset folder plus one record.
+    /// are COS characters, while that attribution covers community stills.
+    /// Adding the next character is one asset folder plus one record.
     static let bundledCharacters = [
         BundledPetCharacter(
             id: "jedi-miles-windu",
@@ -4165,6 +4236,27 @@ enum PetSpriteStore {
             summary: "Ten animated states. Purple saber and escalating droid fights.",
             searchTerms: "Miles Windu Black male Jedi purple lightsaber action RPG droids",
             folderName: "DefaultPet"
+        ),
+        BundledPetCharacter(
+            id: "jedi-nia-solari",
+            displayName: "Jedi Nia Solari",
+            summary: "Ten deployable states. Purple saber, braided silhouette, and black/bronze/plum kit.",
+            searchTerms: "Nia Solari Black African American female woman Jedi purple lightsaber action RPG braids",
+            folderName: "BundledCharacters/jedi-nia-solari"
+        ),
+        BundledPetCharacter(
+            id: "jedi-elara-vale",
+            displayName: "Jedi Elara Vale",
+            summary: "Ten deployable states. Green saber, auburn braid, and teal/copper kit.",
+            searchTerms: "Elara Vale white female woman Jedi green lightsaber action RPG auburn braid",
+            folderName: "BundledCharacters/jedi-elara-vale"
+        ),
+        BundledPetCharacter(
+            id: "jedi-rowan-vale",
+            displayName: "Jedi Rowan Vale",
+            summary: "Ten deployable states. Blue saber with a navy/copper combat kit.",
+            searchTerms: "Rowan Vale white male man Jedi blue lightsaber action RPG",
+            folderName: "BundledCharacters/jedi-rowan-vale"
         ),
     ]
     static let defaultCharacterID = "jedi-miles-windu"

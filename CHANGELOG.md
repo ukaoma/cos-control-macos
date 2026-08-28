@@ -1,3 +1,31 @@
+## 0.5.128 (build 166)
+
+The archive opens.
+
+Messages archived a day at a time and then counted history it could not show.
+A date row said "24 chats, 256 messages" and did nothing when clicked, so
+everything older than today was a number rather than something you could read.
+
+Archive now drills through the way Recent already does. A date opens that day's
+chats, and a chat opens its full transcript, paired question and answer, with
+Copy turn on each one in the same clipboard format Recent uses. Back unwinds a
+rung at a time: a chat returns to its day, the day returns to the list.
+
+Search hits open too. A hit is a day, so finding a conversation by searching and
+then not being able to open it was the same dead end reached a second way.
+
+The server already served all three levels. Only Control was missing the last
+two, so no server update is needed.
+
+The character gallery now ships four COS characters. Jedi Miles Windu remains
+the animated default; Jedi Nia Solari, Jedi Elara Vale, and Jedi Rowan Vale add
+purple, green, and blue-saber still packs, each normalized to the same canvas,
+scale, baseline, and transparent-alpha contract.
+
+An enabled session pet now stays visible when no sessions are running. The
+zero-session state resolves to idle so the character waits for the next prompt
+instead of disappearing.
+
 ## 0.5.127 (build 165)
 
 Miles is a character you can choose, not only the default you can restore.

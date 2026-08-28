@@ -151,6 +151,11 @@ struct ActivityWindow: View {
     @ObservedObject var model: ControllerModel
     @State private var section: ActivitySection?
     @State private var selectedTurnID: String?
+    /// The archive drill-through: a date, then a chat index inside that date.
+    /// Two flags rather than one enum because they nest — the chat pane needs its
+    /// parent date to load, and Back has to land on the day, not the day list.
+    @State private var selectedArchiveDate: String?
+    @State private var selectedArchiveChat: Int?
     @State private var selectedSpeakerSessionID: String?
     @State private var selectedVoiceName: String?
     @State private var voiceParentName: String?
@@ -209,7 +214,9 @@ struct ActivityWindow: View {
 
     private var hasDetail: Bool {
         switch section {
-        case .messages: model.selectedMediaPreview != nil || selectedTurnID != nil
+        case .messages:
+            model.selectedMediaPreview != nil || selectedTurnID != nil
+                || selectedArchiveDate != nil || selectedArchiveChat != nil
         case .speakers: selectedVoiceName != nil || selectedSpeakerSessionID != nil
         case .meetings: selectedLibraryRecordID != nil
         case .memories, .threads: selectedContextID != nil
@@ -230,6 +237,11 @@ struct ActivityWindow: View {
                     mediaDetail(preview)
                 } else if section == .messages, let selectedTurn {
                     messageDetail(selectedTurn)
+                } else if section == .messages,
+                          let date = selectedArchiveDate, let chat = selectedArchiveChat {
+                    archiveChatDetail(date: date, index: chat)
+                } else if section == .messages, let date = selectedArchiveDate {
+                    archiveDayDetail(date: date)
                 } else if section == .speakers, let selectedVoice {
                     voiceDirectoryDetail(selectedVoice)
                 } else if section == .speakers, selectedSpeakerSessionID != nil {
@@ -372,6 +384,10 @@ struct ActivityWindow: View {
         if section == .messages, let turn = selectedTurn {
             return turn.no.map { "Message #\($0)" } ?? "Message"
         }
+        if section == .messages, let date = selectedArchiveDate {
+            guard let chat = selectedArchiveChat else { return date }
+            return "\(date) · chat \(chat + 1)"
+        }
         if section == .speakers, selectedVoiceName != nil { return selectedVoiceName }
         if section == .speakers, selectedSpeakerSessionID != nil {
             if let review = model.openReview, review.sessionId == selectedSpeakerSessionID { return review.title }
@@ -461,6 +477,13 @@ struct ActivityWindow: View {
             model.closeMediaPreview()
         } else if section == .messages, selectedTurnID != nil {
             selectedTurnID = nil
+        } else if section == .messages, selectedArchiveChat != nil {
+            // One rung only: a chat's Back lands on its day, not the day list.
+            selectedArchiveChat = nil
+            model.closeArchiveChat()
+        } else if section == .messages, selectedArchiveDate != nil {
+            selectedArchiveDate = nil
+            model.closeArchiveDay()
         } else if section == .speakers, selectedVoiceName != nil {
             selectedVoiceName = nil
         } else if section == .speakers, selectedSpeakerSessionID != nil {
@@ -485,9 +508,27 @@ struct ActivityWindow: View {
         }
     }
 
+    /// Open one archived day. The load is fired here, at the opener, so the pane
+    /// never has to guess whether its data was requested.
+    private func openArchiveDay(_ date: String) {
+        selectedArchiveChat = nil
+        model.closeArchiveChat()
+        withOptionalAnimation { selectedArchiveDate = date }
+        Task { await model.loadArchiveChats(date: date) }
+    }
+
+    private func openArchiveChat(date: String, index: Int) {
+        withOptionalAnimation { selectedArchiveChat = index }
+        Task { await model.loadArchiveMessages(date: date, index: index) }
+    }
+
     private func clearDetail() {
         model.closeMediaPreview()
         selectedTurnID = nil
+        selectedArchiveDate = nil
+        selectedArchiveChat = nil
+        model.closeArchiveDay()
+        model.closeArchiveChat()
         selectedVoiceName = nil
         voiceParentName = nil
         selectedSpeakerSessionID = nil
@@ -1120,22 +1161,35 @@ struct ActivityWindow: View {
                             .padding(.horizontal, 14).padding(.bottom, 6)
                     }
                     ForEach(model.archiveHits) { hit in
-                        VStack(alignment: .leading, spacing: 4) {
+                        // A hit IS a day, so it opens the same day route as the
+                        // date list. Finding a conversation by search and then
+                        // being unable to open it is the same dead end twice.
+                        Button { openArchiveDay(hit.date) } label: {
                             HStack(spacing: 8) {
-                                Text(hit.date).font(.system(size: 12, weight: .semibold))
-                                Text("\(hit.matches) match\(hit.matches == 1 ? "" : "es")")
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.secondary)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(spacing: 8) {
+                                        Text(hit.date).font(.system(size: 12, weight: .semibold))
+                                        Text("\(hit.matches) match\(hit.matches == 1 ? "" : "es")")
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    ForEach(Array(hit.snippets.enumerated()), id: \.offset) { _, snippet in
+                                        Text(snippet)
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(3)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                                Spacer(minLength: 8)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(.tertiary)
                             }
-                            ForEach(Array(hit.snippets.enumerated()), id: \.offset) { _, snippet in
-                                Text(snippet)
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(3)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
+                            .padding(.horizontal, 14).padding(.vertical, 8)
+                            .contentShape(Rectangle())
                         }
-                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .buttonStyle(.plain)
                         Divider().opacity(0.4)
                     }
                 }
@@ -1155,24 +1209,37 @@ struct ActivityWindow: View {
                             .padding(.horizontal, 14).padding(.bottom, 6)
                     }
                     ForEach(model.archiveDays) { day in
-                        VStack(alignment: .leading, spacing: 3) {
+                        Button { openArchiveDay(day.date) } label: {
                             HStack(spacing: 8) {
-                                Text(day.date).font(.system(size: 12, weight: .semibold))
-                                // Volume at a glance. A date list showing only the
-                                // latest line cannot tell a busy day from an idle one.
-                                Text(day.countsSummary)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.secondary)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HStack(spacing: 8) {
+                                        Text(day.date).font(.system(size: 12, weight: .semibold))
+                                        // Volume at a glance. A date list showing only the
+                                        // latest line cannot tell a busy day from an idle one.
+                                        Text(day.countsSummary)
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    if let summary = day.summary, !summary.isEmpty {
+                                        Text(summary)
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                                Spacer(minLength: 8)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(.tertiary)
                             }
-                            if let summary = day.summary, !summary.isEmpty {
-                                Text(summary)
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
+                            .padding(.horizontal, 14).padding(.vertical, 8)
+                            // The row is mostly empty space, and a plain button style
+                            // hit-tests only rendered content, so without this the
+                            // target is the date text rather than the whole row.
+                            .contentShape(Rectangle())
                         }
-                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .buttonStyle(.plain)
                         Divider().opacity(0.4)
                     }
                 }
@@ -1203,6 +1270,13 @@ struct ActivityWindow: View {
                 .frame(maxWidth: 260)
                 .onChange(of: messagesSubview) { _, next in
                     selectedTurnID = nil
+                    // Switching Recent/Archive must also unwind the archive drill-
+                    // through, or an open day would survive the switch and render
+                    // under the Recent tab.
+                    selectedArchiveDate = nil
+                    selectedArchiveChat = nil
+                    model.closeArchiveDay()
+                    model.closeArchiveChat()
                     if next == .archive, model.archiveDays.isEmpty {
                         Task { await model.loadArchiveDays() }
                     }
@@ -2174,6 +2248,131 @@ struct ActivityWindow: View {
         if milliseconds <= 0 { return "0m" }
         let minutes = max(1, Int((Double(milliseconds) / 60_000).rounded()))
         return minutes < 60 ? "\(minutes)m" : "\(minutes / 60)h \(minutes % 60)m"
+    }
+
+    /// One archived DAY: the chats it holds, each opening its own transcript.
+    @ViewBuilder private func archiveDayDetail(date: String) -> some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                sectionGlyph(.messages, large: true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(date).font(.system(size: 19, weight: .semibold))
+                    Text(archiveDaySubtitle(date: date))
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 12)
+
+            Divider().opacity(0.5)
+
+            if model.archiveChatsLoading {
+                centeredProgress("Reading \(date)…")
+            } else if let notice = model.archiveChatsNotice {
+                emptyState(.messages, text: notice)
+            } else if model.archiveChats.isEmpty {
+                emptyState(.messages, text: "No conversations were archived on \(date).")
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(model.archiveChats) { chat in
+                            Button { openArchiveChat(date: date, index: chat.index) } label: {
+                                HStack(spacing: 8) {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        HStack(spacing: 8) {
+                                            // 1-based for display only. The index is
+                                            // the server's array position and stays
+                                            // 0-based everywhere it is sent.
+                                            Text("Chat \(chat.index + 1)")
+                                                .font(.system(size: 12, weight: .semibold))
+                                            Text("\(chat.timeLabel) · \(chat.countLabel)")
+                                                .font(.system(size: 10, design: .monospaced))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        if let summary = chat.summary, !summary.isEmpty {
+                                            Text(summary)
+                                                .font(.system(size: 11))
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(2)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
+                                    }
+                                    Spacer(minLength: 8)
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .padding(.horizontal, 14).padding(.vertical, 8)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            Divider().opacity(0.4)
+                        }
+                    }
+                    .padding(.top, 4)
+                }
+            }
+        }
+    }
+
+    /// Counts come from the day list rather than being recomputed, so the header
+    /// stays honest while the chats are still loading.
+    private func archiveDaySubtitle(date: String) -> String {
+        if let day = model.archiveDays.first(where: { $0.date == date }) {
+            return day.countsSummary
+        }
+        let count = model.archiveChats.count
+        return "\(count) chat\(count == 1 ? "" : "s")"
+    }
+
+    /// One archived CHAT, rendered as the full conversation. The chat is the unit
+    /// a person remembers, so its turns read as a transcript here rather than
+    /// making them tap once more per exchange.
+    @ViewBuilder private func archiveChatDetail(date: String, index: Int) -> some View {
+        if model.archiveMessagesLoading {
+            centeredProgress("Reading chat \(index + 1)…")
+        } else if let notice = model.archiveMessagesNotice {
+            emptyState(.messages, text: notice)
+        } else if model.archiveMessages.isEmpty {
+            emptyState(.messages, text: "That chat holds no messages.")
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(alignment: .top) {
+                        sectionGlyph(.messages, large: true)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Chat \(index + 1)")
+                                .font(.system(size: 19, weight: .semibold))
+                            Text("\(date) · \(model.archiveMessages.count) message\(model.archiveMessages.count == 1 ? "" : "s")")
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+
+                    ForEach(model.archiveMessages) { message in
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 8) {
+                                Text(message.title)
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text(message.timeLabel)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Button("Copy turn") { model.copyArchiveMessage(message) }
+                                    .controlSize(.small)
+                            }
+                            messageBlock(label: "You", text: message.query, tint: ActivitySection.messages.tint)
+                            messageBlock(label: "COS", text: message.text, tint: COSPalette.green)
+                        }
+                    }
+                }
+                .padding(28)
+                .frame(maxWidth: 820, alignment: .leading)
+                .frame(maxWidth: .infinity)
+            }
+        }
     }
 
     private func messageDetail(_ turn: GlassesTurn) -> some View {

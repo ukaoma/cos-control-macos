@@ -166,6 +166,20 @@ final class ControllerModel: ObservableObject {
     /// as an error: COS Control updates independently of the npm server.
     @Published var archiveRouteAbsent = false
     @Published var archiveSearchMeta: String?
+
+    // MARK: Archive drill-through (0.5.128)
+    // The day list could count months of history it could never open. These hold
+    // the two rungs below it: a day's chats, and one chat's paired Q&A.
+    @Published var archiveChats: [ArchiveChat] = []
+    @Published var archiveChatsLoading = false
+    @Published var archiveChatsNotice: String?
+    /// Set once a day's chats have actually been requested, so the day pane can
+    /// tell "still loading" from "this day really is empty".
+    @Published var archiveDayRouteActive = false
+    @Published var archiveMessages: [ArchiveMessage] = []
+    @Published var archiveMessagesLoading = false
+    @Published var archiveMessagesNotice: String?
+    @Published var archiveChatRouteActive = false
     @Published var addVoiceResult: String?
     @Published var pendingCorrection: PendingCorrection?
     /// Scope the reviewer has chosen for the next rename. Defaults to this
@@ -3970,6 +3984,77 @@ final class ControllerModel: ObservableObject {
         archiveHits = []
         archiveSearchMeta = nil
         archiveNotice = nil
+    }
+
+    /// Open one archived DAY: load the chats it holds.
+    ///
+    /// State is cleared before the await, not after: the previous day's chats
+    /// would otherwise stay on screen under the new day's title for the length of
+    /// the request, which reads as the wrong day having loaded.
+    func loadArchiveChats(date: String) async {
+        archiveChats = []
+        archiveChatsNotice = nil
+        archiveChatsLoading = true
+        archiveDayRouteActive = false
+        defer { archiveChatsLoading = false }
+        do {
+            let response = try await helper.run(["archive-day", "--date", date])
+            archiveChats = (response.details["chats"]?.array ?? []).compactMap(ArchiveChat.init)
+            // "absent" is the server saying the day file is gone, which is a real
+            // answer and not a failure. An empty ready list is also a real answer.
+            if response.details["state"]?.string == "absent" {
+                archiveChatsNotice = response.message
+            }
+            archiveDayRouteActive = true
+        } catch {
+            archiveChats = []
+            archiveChatsNotice = error.localizedDescription
+            archiveDayRouteActive = true
+        }
+    }
+
+    /// Open one archived CHAT: load its paired Q&A.
+    func loadArchiveMessages(date: String, index: Int) async {
+        archiveMessages = []
+        archiveMessagesNotice = nil
+        archiveMessagesLoading = true
+        archiveChatRouteActive = false
+        defer { archiveMessagesLoading = false }
+        do {
+            let response = try await helper.run(["archive-chat", "--date", date, "--index", String(index)])
+            archiveMessages = (response.details["messages"]?.array ?? [])
+                .enumerated()
+                .compactMap { ArchiveMessage($0.element, ordinal: $0.offset) }
+            if response.details["state"]?.string == "absent" {
+                archiveMessagesNotice = response.message
+            }
+            archiveChatRouteActive = true
+        } catch {
+            archiveMessages = []
+            archiveMessagesNotice = error.localizedDescription
+            archiveChatRouteActive = true
+        }
+    }
+
+    func closeArchiveDay() {
+        archiveChats = []
+        archiveChatsNotice = nil
+        archiveDayRouteActive = false
+    }
+
+    func closeArchiveChat() {
+        archiveMessages = []
+        archiveMessagesNotice = nil
+        archiveChatRouteActive = false
+    }
+
+    /// Copy one archived turn. Mirrors `copyTurn` for live messages, format and
+    /// confirmation included, so the archive is not a read-only dead end beside a
+    /// section that can hand its text onward.
+    func copyArchiveMessage(_ message: ArchiveMessage) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(message.clipboardText, forType: .string)
+        notice = "Copied"
     }
 
     func addVoice(named name: String, from sessionId: String) async {
