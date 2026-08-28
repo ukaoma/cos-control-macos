@@ -88,7 +88,7 @@ enum COSPalette {
     static let green = Color(red: 0.20, green: 0.58, blue: 0.34)
 }
 
-private enum OpenPetsGallery {
+private enum CharacterGallery {
     static let height: CGFloat = 220
 }
 
@@ -113,6 +113,9 @@ struct ControlPanel: View {
     @State private var selectedThreadAttach = false
     @State private var selectedOllamaModel = ""
     @State private var openPetsQuery = ""
+    @State private var petSettingsExpanded = false
+    @State private var petStateSpritesExpanded = false
+    @State private var petCharactersExpanded = false
     @State private var confirmOpenPetsSprite = false
     @State private var confirmBundledCharacter = false
     @State private var pendingOpenPetsRow: OpenPetsCatalogRow?
@@ -368,7 +371,7 @@ struct ControlPanel: View {
                 ?? "Use this shipped character?",
             isPresented: $confirmBundledCharacter,
             message: "Replaces the sprites currently installed — every pose, the "
-                + "stitched strip and the state map — with this animated character. "
+                + "stitched strip and the state map — with this character pack. "
                 + "A pack you installed yourself would have to be installed again.",
             actions: [
                 .normal("Use") {
@@ -407,115 +410,228 @@ struct ControlPanel: View {
         PetSpriteStore.bundledCharacters.count + model.openPetsRows.count
     }
 
-    /// Shipped characters sit above the community gallery, not inside it: the
-    /// OpenPets attribution below covers that gallery's art only.
-    private func bundledCharacterRow(_ character: BundledPetCharacter) -> some View {
-        HStack(spacing: 8) {
-            if let thumb = model.bundledCharacterThumb(for: character) {
-                Image(nsImage: thumb)
-                    .resizable()
-                    .interpolation(.none)
-                    .scaledToFit()
-                    .frame(width: 44, height: 44)
-            }
-            VStack(alignment: .leading, spacing: 1) {
+    private var advancedCharacterCount: Int {
+        PetSpriteStore.bundledCharacters.filter(\.isAdvanced).count
+    }
+
+    /// COS packs and community stills deliberately share one visual catalog.
+    /// Capability, not provenance, is the distinction a person needs while
+    /// choosing: Advanced packs carry states; a community figure is one still.
+    private func bundledCharacterTile(_ character: BundledPetCharacter) -> some View {
+        Button {
+            pendingBundledCharacter = character
+            confirmBundledCharacter = true
+        } label: {
+            VStack(spacing: 4) {
+                if let thumb = model.bundledCharacterThumb(for: character) {
+                    Image(nsImage: thumb)
+                        .resizable()
+                        .interpolation(.none)
+                        .scaledToFit()
+                        .frame(width: 44, height: 44)
+                } else {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(COSPalette.line.opacity(0.35))
+                        .frame(width: 44, height: 44)
+                }
                 Text(character.displayName)
-                    .font(.caption.weight(.medium))
-                Text(character.summary)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(1)
+                    .foregroundStyle(.primary)
+                if character.isAdvanced {
+                    Text("ADVANCED")
+                        .font(.system(size: 8, weight: .bold))
+                        .tracking(0.4)
+                        .foregroundStyle(COSPalette.gold)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(COSPalette.gold.opacity(0.16)))
+                        .accessibilityLabel("Advanced character")
+                }
             }
-            Spacer(minLength: 0)
-            Button("Use") {
-                pendingBundledCharacter = character
-                confirmBundledCharacter = true
+            .frame(maxWidth: .infinity, minHeight: 82, alignment: .top)
+            .padding(5)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(COSPalette.gold.opacity(0.07))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(COSPalette.gold.opacity(0.28), lineWidth: 1)
             }
-                .controlSize(.small)
         }
-        .padding(.bottom, 2)
+        .buttonStyle(.plain)
+        .help(character.summary)
+    }
+
+    private func openPetsCharacterTile(_ row: OpenPetsCatalogRow) -> some View {
+        Button {
+            pendingOpenPetsRow = row
+            confirmOpenPetsSprite = true
+        } label: {
+            VStack(spacing: 4) {
+                if let image = model.openPetsThumbs[row.preview] {
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(.none)
+                        .scaledToFit()
+                        .frame(width: 44, height: 44)
+                } else {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(COSPalette.line.opacity(0.35))
+                        .frame(width: 44, height: 44)
+                        .onAppear {
+                            model.prefetchOpenPetsThumb(id: row.id, preview: row.preview)
+                        }
+                }
+                Text(row.displayName)
+                    .font(.caption2)
+                    .lineLimit(1)
+                    .foregroundStyle(.primary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 82, alignment: .top)
+            .padding(5)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(COSPalette.line.opacity(0.10))
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private var petGalleryCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Characters \(availableCharacterCount).")
+            HStack(spacing: 8) {
+                Label("\(advancedCharacterCount) advanced", systemImage: "sparkles")
+                    .foregroundStyle(COSPalette.gold)
+                Spacer(minLength: 0)
+                Text("\(model.openPetsRows.count) community")
+            }
+            .font(.caption2.weight(.medium))
+            Text("Advanced characters include state-aware packs; some add multi-frame animations. Community characters use one still across states.")
+                .font(.caption2)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             TextField("Search characters", text: $openPetsQuery)
                 .textFieldStyle(.roundedBorder)
                 .controlSize(.small)
-            if !visibleBundledCharacters.isEmpty {
-                Text("Ships with COS Control")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                ForEach(visibleBundledCharacters) { character in
-                    bundledCharacterRow(character)
-                }
-            }
-            Divider()
             if model.openPetsLoading && model.openPetsRows.isEmpty {
                 HStack {
                     ProgressView().controlSize(.small)
-                    Text("Loading gallery")
+                    Text("Loading community characters")
                 }
                 .foregroundStyle(.secondary)
             } else if model.openPetsUnavailable {
                 HStack {
-                    Text("Pet gallery unavailable right now.")
+                    Text("Community characters unavailable right now.")
                         .foregroundStyle(.secondary)
                     Button("Try again") {
                         Task { await model.loadOpenPetsCatalog() }
                     }
                     .buttonStyle(.borderless)
                 }
-            } else {
-                Text(model.openPetsStale
-                     ? "OpenPets community. \(model.openPetsRows.count) still pets. Showing saved list."
-                     : "OpenPets community. \(model.openPetsRows.count) still pets.")
+            } else if model.openPetsStale {
+                Text("Showing the saved OpenPets list.")
                     .foregroundStyle(.secondary)
-                Text("Art from the OpenPets community gallery (openpets.dev). No license metadata is published. Personal use.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if visibleOpenPetsRows.isEmpty && visibleBundledCharacters.isEmpty {
-                    Text("No characters match.")
-                        .foregroundStyle(.secondary)
-                } else if !visibleOpenPetsRows.isEmpty {
-                    ScrollView {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 72), spacing: 8)], spacing: 8) {
-                            ForEach(visibleOpenPetsRows) { row in
-                                Button {
-                                    pendingOpenPetsRow = row
-                                    confirmOpenPetsSprite = true
-                                } label: {
-                                    VStack(spacing: 4) {
-                                        if let image = model.openPetsThumbs[row.preview] {
-                                            Image(nsImage: image)
-                                                .resizable()
-                                                .interpolation(.none)
-                                                .scaledToFit()
-                                                .frame(width: 44, height: 44)
-                                        } else {
-                                            RoundedRectangle(cornerRadius: 6)
-                                                .fill(COSPalette.line.opacity(0.35))
-                                                .frame(width: 44, height: 44)
-                                                .onAppear {
-                                                    model.prefetchOpenPetsThumb(id: row.id, preview: row.preview)
-                                                }
-                                        }
-                                        Text(row.displayName)
-                                            .font(.caption2)
-                                            .lineLimit(1)
-                                            .foregroundStyle(.primary)
-                                    }
-                                    .frame(maxWidth: .infinity)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                            }
+            }
+            if visibleOpenPetsRows.isEmpty && visibleBundledCharacters.isEmpty && !model.openPetsLoading {
+                Text("No characters match.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 72), spacing: 8)], spacing: 8) {
+                        ForEach(visibleBundledCharacters) { character in
+                            bundledCharacterTile(character)
+                        }
+                        ForEach(visibleOpenPetsRows) { row in
+                            openPetsCharacterTile(row)
                         }
                     }
-                    .frame(height: OpenPetsGallery.height)
                 }
+                .frame(height: CharacterGallery.height)
+            }
+            Text("Community art from openpets.dev. No license metadata is published. Personal use.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .onAppear {
+            Task { await model.loadOpenPetsCatalog() }
+        }
+    }
+
+    private var sessionPetSettings: some View {
+        DisclosureGroup(isExpanded: $petSettingsExpanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("Session pet", isOn: Binding(
+                    get: { model.petEnabled },
+                    set: { model.setPetEnabled($0) }
+                ))
+                if model.petEnabled {
+                    PetSizeControls(model: model)
+                    Divider()
+                    DisclosureGroup(isExpanded: $petStateSpritesExpanded) {
+                        PetSpriteStateControls(model: model)
+                            .padding(.top, 6)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Label("State sprites", systemImage: "film.stack")
+                            Spacer(minLength: 0)
+                            Text("\(PetSpritePose.allCases.count) states")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .font(.caption)
+                    DisclosureGroup(isExpanded: $petCharactersExpanded) {
+                        petGalleryCard
+                            .padding(.top, 6)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Label("Characters", systemImage: "person.3")
+                            Spacer(minLength: 0)
+                            Text("\(availableCharacterCount)")
+                                .foregroundStyle(.secondary)
+                            Text("\(advancedCharacterCount) ADVANCED")
+                                .font(.system(size: 8, weight: .bold))
+                                .tracking(0.35)
+                                .foregroundStyle(COSPalette.gold)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(COSPalette.gold.opacity(0.16)))
+                        }
+                    }
+                    .font(.caption)
+                    Divider()
+                    HStack {
+                        Button("Install sprite pack") {
+                            model.choosePetSpritePack()
+                        }
+                        .help("V2 Windu boards or a folder of per-state strips.")
+                        Button(model.petCustomSprite == nil ? "Choose sprite" : "Replace sprite") {
+                            model.choosePetSprite()
+                        }
+                        .help("One PNG for every state that has no strip. A small square pixel figure stays sharp.")
+                        if model.petSpriteKit.hasAnyCustom {
+                            Button("Use COS figure") { model.resetPetSprite() }
+                        }
+                    }
+                }
+            }
+            .padding(.top, 8)
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "pawprint.fill")
+                    .foregroundStyle(COSPalette.gold)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Session pet")
+                        .font(.body.weight(.medium))
+                    Text(model.petEnabled
+                         ? "On · \(model.petSize.preset.title) · \(model.petCharacterPercent)% character"
+                         : "Off")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
             }
         }
         .onAppear {
@@ -1679,28 +1795,7 @@ struct ControlPanel: View {
             }
             Divider()
             Toggle("Launch COS Control at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
-            Toggle("Session pet", isOn: Binding(get: { model.petEnabled }, set: { model.setPetEnabled($0) }))
-            if model.petEnabled {
-                PetSizeControls(model: model)
-                PetSpriteStateControls(model: model)
-                Text("Pet gallery")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                petGalleryCard
-                HStack {
-                    Button("Install sprite pack") {
-                        model.choosePetSpritePack()
-                    }
-                    .help("V2 Windu boards or a folder of per-state strips.")
-                    Button(model.petCustomSprite == nil ? "Choose sprite" : "Replace sprite") {
-                        model.choosePetSprite()
-                    }
-                    .help("One PNG for every state that has no strip. A small square pixel figure stays sharp.")
-                    if model.petSpriteKit.hasAnyCustom {
-                        Button("Use COS figure") { model.resetPetSprite() }
-                    }
-                }
-            }
+            sessionPetSettings
             DisclosureGroup("Advanced") {
                 HStack {
                     Button("Rollback Server") { model.perform("rollback") }
@@ -2934,9 +3029,6 @@ private struct PetSpriteStateControls: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("State sprites")
-                .font(.caption)
-                .foregroundStyle(.secondary)
             Text("\(PetSpriteStore.defaultCharacterName) ships as the default. Patrol to five-droid swarm. Saber on running, success, error, and attention.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)

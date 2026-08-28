@@ -9,8 +9,8 @@
       "frames" : 8
     },
     "duel" : {
-      "file" : "session-pet-duel.png",
-      "frames" : 8
+      "file" : "session-pet-duel-story-v7.png",
+      "frames" : 16
     },
     "error" : {
       "file" : "session-pet-error.png",
@@ -25,20 +25,20 @@
       "frames" : 8
     },
     "swarm" : {
-      "file" : "session-pet-swarm.png",
-      "frames" : 6
+      "file" : "session-pet-swarm-story-v7.png",
+      "frames" : 16
     },
     "trio" : {
-      "file" : "session-pet-trio.png",
-      "frames" : 6
+      "file" : "session-pet-trio-story-v7.png",
+      "frames" : 12
     },
     "waiting" : {
       "file" : "session-pet-waiting.png",
       "frames" : 8
     },
     "working" : {
-      "file" : "session-pet-working.png",
-      "frames" : 8
+      "file" : "session-pet-working-story-v7.png",
+      "frames" : 16
     }
   }
 }

@@ -2705,12 +2705,10 @@ struct PetSize: Equatable {
     }
 }
 
-/// Running and patrol are TRANSITIONS, not resting states. A session spends
-/// most of its life "working", so one sprint loop repeating forever is what the
-/// pet does ~90% of the time and it reads as mechanical. These poses play as
-/// periodic bursts against a calmer clip instead: mostly at rest, breaking into
-/// the action every few segments, with the cadence varied so it never lands on
-/// an obvious repeat.
+/// Patrol is a transition, not a resting state. It plays as periodic bursts
+/// against the exact idle/meditation clips instead of walking forever. Running
+/// and combat stories are authored directly into their own strips, so their
+/// causal frame order never depends on the ambient scheduler.
 ///
 /// Seeded by segment index and nothing else — no stored state, so a re-render
 /// of the same instant always paints the same frame.
@@ -2740,7 +2738,7 @@ enum PetPlaylist {
         return !(rawPick(segment - 1) && rawPick(segment - 2))
     }
 
-    /// Which calm REST clip a settled beat draws from. Independent of the
+    /// Which calm secondary clip a settled beat draws from. Independent of the
     /// action hash so idle and meditation do not move with the burst cadence.
     /// Signal poses such as flourish and guard stay out of this rotation.
     static func restClip(_ segment: Int, count: Int) -> Int {
@@ -2758,16 +2756,22 @@ enum PetPlaylist {
         elapsed: Double,
         actionCount: Int,
         restCounts: [Int],
-        interval: Double
+        interval: Double,
+        restIntervals: [Double] = []
     ) -> (useAction: Bool, restClip: Int, index: Int) {
-        let rests = restCounts.filter { $0 > 0 }
+        let rests = restCounts.enumerated().compactMap { index, count -> (count: Int, interval: Double)? in
+            guard count > 0 else { return nil }
+            let restInterval = index < restIntervals.count ? restIntervals[index] : interval
+            return (count, restInterval > 0 ? restInterval : interval)
+        }
         guard actionCount > 0, interval > 0 else { return (true, 0, 0) }
         let segment = Int((max(0, elapsed) / segmentSeconds).rounded(.down))
         let useAction = rests.isEmpty || isActionSegment(segment)
         let within = max(0, elapsed) - Double(segment) * segmentSeconds
         let clip = useAction ? 0 : restClip(segment, count: rests.count)
-        let count = useAction ? actionCount : rests[clip]
-        let index = count > 0 ? Int(within / interval) % count : 0
+        let count = useAction ? actionCount : rests[clip].count
+        let frameInterval = useAction ? interval : rests[clip].interval
+        let index = count > 0 ? Int(within / frameInterval) % count : 0
         return (useAction, clip, index)
     }
 }
@@ -2908,9 +2912,9 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
         case .searching: "Scan rings."
         case .grepping: "Matching fragments."
         case .waiting: "Meditation. Waiting on you."
-        case .working: "Sprint with the blade ignited."
+        case .working: "Sprint, then slash an incoming error."
         case .patrol: "One session. Walking the beat."
-        case .duel: "Two sessions. One droid."
+        case .duel: "Two sessions. Two-droid counterattack."
         case .trio: "Three sessions. Three droids."
         case .swarm: "Four or more. Five-droid swarm."
         case .done: "Restrained blade flourish."
@@ -2957,15 +2961,12 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
         }
     }
 
-    /// Poses that read as an ACTION rather than a state. A session is
-    /// "working" almost all the time, so a sprint on a permanent loop is what
-    /// the pet does ~90% of the time; the same goes for patrol on one idle
-    /// session. These play through PetPlaylist: mostly settled, breaking into
-    /// the action every few beats. Fight poses are excluded — a duel should
-    /// look like a duel for as long as it lasts.
+    /// Patrol reads as an action rather than a state, so it periodically breaks
+    /// out of calm idle/meditation beats. Running and duel each carry one
+    /// authored story strip and must play continuously in their declared order.
     var usesActivityPlaylist: Bool {
         switch self {
-        case .working, .patrol: true
+        case .patrol: true
         default: false
         }
     }
@@ -2974,8 +2975,10 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
     /// bubbles, and the session list size off PetSize and never read this, so
     /// the figure can grow without the card growing with it.
     func spriteHeight(_ pixels: Int, scale: CGFloat = 1) -> CGFloat {
-        let size = CGFloat(pixels) * scale
-        return cinematic ? (size * 1.55).rounded() : size.rounded()
+        // One authored character height across every lifecycle state. The old
+        // cinematic 1.55x multiplier made a swarm visibly jump larger than a
+        // solo run and forced the floating panel to resize with session count.
+        (CGFloat(pixels) * scale).rounded()
     }
 
     func spriteWidth(_ pixels: Int, scale: CGFloat = 1) -> CGFloat {
@@ -3009,7 +3012,7 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
         available: CGSize,
         reservedChrome: CGSize
     ) -> CGFloat {
-        let baseHeight = CGFloat(pixels) * (cinematic ? 1.55 : 1)
+        let baseHeight = CGFloat(pixels)
         let lo: CGFloat = cinematic ? 0.75 : 0.6
         let hi: CGFloat = cinematic ? 3.6 : 1.4
         let resolvedAspect = aspect.map { min(max($0, lo), hi) } ?? (cinematic ? 2.6 : 1)
@@ -3120,12 +3123,61 @@ struct PetSpriteKit {
         return []
     }
 
-    /// Widest aspect among the frames this pose actually plays, so layout and
-    /// rendering size off the same art rather than two formulas.
+    /// Story/ambient composition may only borrow art that the pack explicitly
+    /// declares for that pose. Falling through the live-state fallback chain can
+    /// turn a missing meditation into a signal animation or a two-session scene
+    /// into three/four-session art.
+    func exactFrames(for pose: PetSpritePose) -> [NSImage] {
+        poses[pose] ?? []
+    }
+
+    /// Widest aspect among the supplied frames. A missing pose resolves to the
+    /// square COS-figure fallback, so the child renderer and its parent reserve
+    /// the same envelope even while a pack is incomplete or being replaced.
+    static func resolvedAspect(frames: [NSImage]) -> CGFloat {
+        let playing = frames.filter { $0.size.height > 1 }
+        guard !playing.isEmpty else { return 1 }
+        return playing.map { $0.size.width / $0.size.height }.max() ?? 1
+    }
+
+    func resolvedAspect(for pose: PetSpritePose) -> CGFloat {
+        Self.resolvedAspect(frames: frames(for: pose))
+    }
+
     func aspect(for pose: PetSpritePose) -> CGFloat? {
-        let playing = frames(for: pose).filter { $0.size.height > 1 }
-        guard !playing.isEmpty else { return nil }
-        return playing.map { $0.size.width / $0.size.height }.max()
+        let playing = frames(for: pose)
+        return playing.isEmpty ? nil : resolvedAspect(for: pose)
+    }
+
+    /// Reserve one collapsed viewport for every live state. A poll may change
+    /// idle -> running -> swarm, but it must not resize or recenter the pet.
+    func viewportSize(pixels: Int, scale: CGFloat) -> CGSize {
+        let sizes = PetSpritePose.liveCases.map {
+            $0.renderSize(pixels, scale: scale, aspect: resolvedAspect(for: $0))
+        }
+        return CGSize(
+            width: sizes.map(\.width).max() ?? CGFloat(pixels),
+            height: sizes.map(\.height).max() ?? CGFloat(pixels)
+        )
+    }
+
+    /// Fit the whole lifecycle envelope, not only the pose visible during this
+    /// poll. Otherwise the scale changes at the same moment as the artwork.
+    func fittedViewportScale(
+        _ requested: CGFloat,
+        pixels: Int,
+        available: CGSize,
+        reservedChrome: CGSize
+    ) -> CGFloat {
+        PetSpritePose.liveCases.map {
+            $0.fittedCharacterScale(
+                requested,
+                pixels: pixels,
+                aspect: resolvedAspect(for: $0),
+                available: available,
+                reservedChrome: reservedChrome
+            )
+        }.min() ?? requested
     }
 
     var hasAnyCustom: Bool {
@@ -3997,6 +4049,7 @@ struct BundledPetCharacter: Identifiable, Hashable, Sendable {
     let summary: String
     let searchTerms: String
     let folderName: String
+    let isAdvanced: Bool
 }
 
 /// Custom session-pet figure. Identity PNGs stay byte-for-byte so a 32x32
@@ -4033,6 +4086,12 @@ enum PetSpriteStore {
             case .tooLarge: return "Sprite must be 8 MB or smaller."
             }
         }
+    }
+
+    enum BundledDefaultRefreshResult: Equatable {
+        case notApplicable
+        case refreshed
+        case failed
     }
 
     static func supportDirectory(fileManager: FileManager = .default, home: URL? = nil) -> URL {
@@ -4226,37 +4285,42 @@ enum PetSpriteStore {
     }
 
     /// Shipped characters are already PROCESSED (sliced, cleaned, stitched,
-    /// with state maps). Keep the registry separate from OpenPets: these packs
-    /// are COS characters, while that attribution covers community stills.
-    /// Adding the next character is one asset folder plus one record.
+    /// with state maps). Keep their data registry separate from OpenPets even
+    /// though Settings presents both sources in one catalog; attribution still
+    /// applies only to community stills. Adding the next character is one asset
+    /// folder plus one record.
     static let bundledCharacters = [
         BundledPetCharacter(
             id: "jedi-miles-windu",
             displayName: "Jedi Miles Windu",
             summary: "Ten animated states. Purple saber and escalating droid fights.",
             searchTerms: "Miles Windu Black male Jedi purple lightsaber action RPG droids",
-            folderName: "DefaultPet"
+            folderName: "DefaultPet",
+            isAdvanced: true
         ),
         BundledPetCharacter(
             id: "jedi-nia-solari",
             displayName: "Jedi Nia Solari",
             summary: "Ten deployable states. Purple saber, braided silhouette, and black/bronze/plum kit.",
             searchTerms: "Nia Solari Black African American female woman Jedi purple lightsaber action RPG braids",
-            folderName: "BundledCharacters/jedi-nia-solari"
+            folderName: "BundledCharacters/jedi-nia-solari",
+            isAdvanced: true
         ),
         BundledPetCharacter(
             id: "jedi-elara-vale",
             displayName: "Jedi Elara Vale",
             summary: "Ten deployable states. Green saber, auburn braid, and teal/copper kit.",
             searchTerms: "Elara Vale white female woman Jedi green lightsaber action RPG auburn braid",
-            folderName: "BundledCharacters/jedi-elara-vale"
+            folderName: "BundledCharacters/jedi-elara-vale",
+            isAdvanced: true
         ),
         BundledPetCharacter(
             id: "jedi-rowan-vale",
             displayName: "Jedi Rowan Vale",
             summary: "Ten deployable states. Blue saber with a navy/copper combat kit.",
             searchTerms: "Rowan Vale white male man Jedi blue lightsaber action RPG",
-            folderName: "BundledCharacters/jedi-rowan-vale"
+            folderName: "BundledCharacters/jedi-rowan-vale",
+            isAdvanced: true
         ),
     ]
     static let defaultCharacterID = "jedi-miles-windu"
@@ -4354,6 +4418,90 @@ enum PetSpriteStore {
         return wanted > 0 && copied == wanted && stateLanded
     }
 
+    /// Upgrade a retained stock Miles pack without touching a chosen OpenPets
+    /// still, COS figure, custom animation, or another bundled Jedi. Every
+    /// recognized mapping and asset must be byte-identical to the retained stock
+    /// files. The four new strips land first and the state map changes last, so
+    /// an interrupted write leaves the old pack readable and retryable.
+    @discardableResult
+    static func refreshRecognizedBundledDefault(
+        into directory: URL,
+        from sourceOverride: URL? = nil,
+        bundle: Bundle = .main,
+        fileManager: FileManager = .default
+    ) -> BundledDefaultRefreshResult {
+        guard let source = sourceOverride ?? bundledDefaultURL(bundle: bundle) else { return .failed }
+        let installed = loadStateMap(in: directory, fileManager: fileManager)
+        let retainedStock: [PetSpritePose: [(file: String, frames: Int)]] = [
+            .idle: [(poseFileName(.idle), 8)],
+            .patrol: [(poseFileName(.patrol), 8)],
+            .waiting: [(poseFileName(.waiting), 8)],
+            .working: [
+                (poseFileName(.working), 8),
+                ("session-pet-working-error-story.png", 16),
+            ],
+            .done: [(poseFileName(.done), 8)],
+            .error: [(poseFileName(.error), 8)],
+            .attention: [(poseFileName(.attention), 6)],
+            .duel: [
+                (poseFileName(.duel), 8),
+                ("session-pet-duel-two-droid-v5.png", 13),
+            ],
+            .trio: [(poseFileName(.trio), 6)],
+            .swarm: [(poseFileName(.swarm), 6)],
+        ]
+        guard installed.count == retainedStock.count,
+              retainedStock.allSatisfy({ pose, accepted in
+                  guard let row = installed[pose] else { return false }
+                  return accepted.contains(where: {
+                      $0.file == row.file && $0.frames == row.frames
+                  })
+              })
+        else { return .notApplicable }
+        guard retainedStock.keys.allSatisfy({ pose in
+            guard let row = installed[pose] else { return false }
+            guard let installedData = try? Data(
+                contentsOf: directory.appendingPathComponent(row.file)
+            ), let bundledData = try? Data(
+                contentsOf: source.appendingPathComponent(row.file)
+            ) else { return false }
+            return installedData == bundledData
+        }) else { return .notApplicable }
+
+        let bundled = loadStateMap(in: source, fileManager: fileManager)
+        let storyPoses: [PetSpritePose] = [.working, .duel, .trio, .swarm]
+        var stories: [(pose: PetSpritePose, file: String, frames: Int, data: Data)] = []
+        for pose in storyPoses {
+            guard let row = bundled[pose], row.file != poseFileName(pose),
+                  let data = try? Data(contentsOf: source.appendingPathComponent(row.file)),
+                  NSImage(data: data) != nil
+            else { return .failed }
+            stories.append((pose, row.file, row.frames, data))
+        }
+
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            for story in stories {
+                try story.data.write(
+                    to: directory.appendingPathComponent(story.file), options: .atomic
+                )
+            }
+            guard stories.allSatisfy({ story in
+                (try? Data(contentsOf: directory.appendingPathComponent(story.file))) == story.data
+            })
+            else { return .failed }
+            var updated = installed
+            for story in stories {
+                updated[story.pose] = (story.file, story.frames)
+            }
+            try saveStateMap(updated, in: directory, fileManager: fileManager)
+            return .refreshed
+        } catch {
+            NSLog("COSControl pet-default refresh failed: %@", error.localizedDescription)
+            return .failed
+        }
+    }
+
     static func remove(from directory: URL, fileManager: FileManager = .default) {
         for ext in allowedExtensions {
             let url = directory.appendingPathComponent("\(fileStem).\(ext)")
@@ -4363,6 +4511,10 @@ enum PetSpriteStore {
 
     static func removeAll(from directory: URL, fileManager: FileManager = .default) {
         remove(from: directory, fileManager: fileManager)
+        let referenced = Set(loadStateMap(in: directory, fileManager: fileManager).values.map(\.file))
+        for file in referenced {
+            try? fileManager.removeItem(at: directory.appendingPathComponent(file))
+        }
         for pose in PetSpritePose.allCases {
             try? fileManager.removeItem(at: directory.appendingPathComponent(poseFileName(pose)))
         }

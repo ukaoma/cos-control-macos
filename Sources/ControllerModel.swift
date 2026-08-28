@@ -112,6 +112,8 @@ final class ControllerModel: ObservableObject {
     private static let petCharacterScaleGenerationKey = "cos.sessionPetCharacterScaleGeneration"
     private static let petCharacterScaleGeneration = 2
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
+    private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
+    private static let petDefaultArtGeneration = 3
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -1521,6 +1523,10 @@ final class ControllerModel: ObservableObject {
         }
         PetSpriteStore.removeAll(from: directory)
         if PetSpriteStore.installBundledCharacter(id: character.id, into: directory) {
+            UserDefaults.standard.set(
+                Self.petDefaultArtGeneration,
+                forKey: Self.petDefaultArtGenerationKey
+            )
             petNotice = nil
         } else {
             petNotice = "Could not use \(character.displayName)."
@@ -1556,15 +1562,19 @@ final class ControllerModel: ObservableObject {
         return made
     }
 
-    /// Solo clips an action pose settles into between bursts. Success and
-    /// attention stay signal states: both open by drawing the saber, so using
-    /// them as ambient rests produced draw -> draw -> draw sequences and diluted
-    /// the moments they are meant to communicate.
-    func petRestClips(for pose: PetSpritePose) -> [[NSImage]] {
-        [PetSpritePose.idle, .waiting]
+    /// Exact secondary clips for the one ambient playlist pose. Running and
+    /// duel carry their complete causal stories in their own strips. Using an
+    /// exact lookup prevents a missing calm clip from resolving through a
+    /// live-state fallback into signal or higher-session artwork.
+    func petRestClips(for pose: PetSpritePose) -> [PetSpriteClip] {
+        let secondaryPoses: [PetSpritePose] = switch pose {
+        case .patrol: [.idle, .waiting]
+        default: []
+        }
+        return secondaryPoses
             .filter { $0 != pose }
-            .map { petSpriteKit.frames(for: $0) }
-            .filter { $0.count > 1 }
+            .map { PetSpriteClip(frames: petSpriteKit.exactFrames(for: $0), frameInterval: $0.frameInterval) }
+            .filter { $0.frames.count > 1 }
     }
 
     func setPetCharacterPercent(_ value: Int) {
@@ -1581,6 +1591,16 @@ final class ControllerModel: ObservableObject {
         if !UserDefaults.standard.bool(forKey: Self.petDefaultSeededKey) {
             UserDefaults.standard.set(true, forKey: Self.petDefaultSeededKey)
             PetSpriteStore.installBundledDefault(into: directory)
+        }
+        if UserDefaults.standard.integer(forKey: Self.petDefaultArtGenerationKey)
+            < Self.petDefaultArtGeneration {
+            let refresh = PetSpriteStore.refreshRecognizedBundledDefault(into: directory)
+            if refresh != .failed {
+                UserDefaults.standard.set(
+                    Self.petDefaultArtGeneration,
+                    forKey: Self.petDefaultArtGenerationKey
+                )
+            }
         }
         if let url = PetSpriteStore.existingSpriteURL(in: directory) {
             petCustomSprite = NSImage(contentsOf: url)
@@ -1830,7 +1850,6 @@ final class ControllerModel: ObservableObject {
     }
 
     private func applyPetSessions(_ sessions: [ClaudeSession]) {
-        let previousCount = petSessions.count
         let wasWorking = petSessions.contains(where: \.isPetWorking)
         petSessions = sessions
         let isWorking = sessions.contains(where: \.isPetWorking)
@@ -1843,8 +1862,6 @@ final class ControllerModel: ObservableObject {
         }
         if petSessions.count < 2 {
             petExpanded = false
-        } else if previousCount < 2 {
-            petExpanded = true
         }
         if let petFocusID, !petSessions.contains(where: { $0.id == petFocusID }) {
             self.petFocusID = nil

@@ -1361,6 +1361,34 @@ struct ModelsContract {
         let wide = PetSpritePose.swarm.renderSize(64, scale: 1.5, aspect: 9)
         precondition(wide.width <= (wide.height * 3.6).rounded() + 1,
                      "an absurd aspect must still be clamped so the frame cannot exceed the panel")
+        precondition(PetSpritePose.swarm.spriteHeight(64, scale: 1.5)
+                        == PetSpritePose.working.spriteHeight(64, scale: 1.5),
+                     "cinematic and solo poses must share one authored height")
+        var viewportKit = PetSpriteKit()
+        viewportKit.poses[.idle] = [spriteProbe(
+            width: 80, height: 100, blobs: [(x: 20, w: 40, y: 10, h: 80)]
+        )]
+        viewportKit.poses[.swarm] = [spriteProbe(
+            width: 180, height: 100, blobs: [(x: 10, w: 160, y: 10, h: 80)]
+        )]
+        let viewport = viewportKit.viewportSize(pixels: 64, scale: 2)
+        precondition(viewport.height == 128,
+                     "the collapsed stage height must not change with session count")
+        for pose in PetSpritePose.liveCases {
+            let resolvedAspect = viewportKit.resolvedAspect(for: pose)
+            let poseSize = pose.renderSize(64, scale: 2, aspect: resolvedAspect)
+            precondition(poseSize.width <= viewport.width && poseSize.height <= viewport.height,
+                         "the stable viewport must cover \(pose.rawValue)")
+        }
+        let emptyViewport = PetSpriteKit().viewportSize(pixels: 64, scale: 2)
+        precondition(emptyViewport.width == emptyViewport.height,
+                     "the square COS figure must not reserve a 2.6x cinematic viewport")
+        for pose in PetSpritePose.liveCases {
+            let emptyAspect = PetSpriteKit.resolvedAspect(frames: [])
+            let rendered = pose.renderSize(64, scale: 2, aspect: emptyAspect)
+            precondition(rendered == emptyViewport,
+                         "empty \(pose.rawValue) rendering and its reserved viewport must agree")
+        }
 
         // ESCALATION LADDER: three sessions must not look like five.
         var ladder = PetSpriteKit()
@@ -1372,13 +1400,12 @@ struct ModelsContract {
         precondition(ladder.frames(for: .swarm).count == 4,
                      "swarm plays the full ladder")
 
-        // ACTIVITY PLAYLIST: running and patrol are actions, not states. They
-        // must spend MOST beats settled, break into the action sometimes, and
-        // be fully determined by the clock so a re-render never jumps.
-        precondition(PetSpritePose.working.usesActivityPlaylist)
+        // ACTIVITY PLAYLIST: patrol is the one ambient transition. Running and
+        // combat use authored story strips so their causal frame order cannot
+        // be interrupted or replaced by a higher-session fallback.
+        precondition(!PetSpritePose.working.usesActivityPlaylist)
         precondition(PetSpritePose.patrol.usesActivityPlaylist)
-        precondition(!PetSpritePose.duel.usesActivityPlaylist,
-                     "a duel must look like a duel for as long as it lasts")
+        precondition(!PetSpritePose.duel.usesActivityPlaylist)
         precondition(!PetSpritePose.idle.usesActivityPlaylist)
         var actionBeats = 0
         for segment in 0..<600 where PetPlaylist.isActionSegment(segment) { actionBeats += 1 }
@@ -1406,20 +1433,39 @@ struct ModelsContract {
                      "an empty clip must degrade safely")
         precondition(PetPlaylist.plan(elapsed: 3, actionCount: 6, restCounts: [], interval: 0.1).useAction,
                      "with no rest clips the action must still play")
+        guard let restSegment = (0..<100).first(where: { !PetPlaylist.isActionSegment($0) }) else {
+            preconditionFailure("the deterministic playlist must contain a rest beat")
+        }
+        let slowerRest = PetPlaylist.plan(
+            elapsed: Double(restSegment) * PetPlaylist.segmentSeconds + 0.35,
+            actionCount: 8,
+            restCounts: [8],
+            interval: 0.1,
+            restIntervals: [0.2]
+        )
+        precondition(!slowerRest.useAction && slowerRest.index == 1,
+                     "secondary strips must retain their authored interval, got \(slowerRest)")
+        var exactKit = PetSpriteKit()
+        exactKit.poses[.duel] = [
+            spriteProbe(width: 40, height: 40, blobs: [(x: 8, w: 24, y: 8, h: 24)]),
+            spriteProbe(width: 40, height: 40, blobs: [(x: 9, w: 22, y: 8, h: 24)]),
+        ]
+        precondition(exactKit.exactFrames(for: .trio).isEmpty,
+                     "secondary clips must not resolve through a higher-session fallback")
 
-        // REST ROTATION: settled beats must spread across EVERY solo clip, or
-        // the meditation, flourish and guard sequences go unused.
+        // REST ROTATION: patrol's settled beats must spread across its two calm
+        // exact clips (idle and waiting) without starving either one.
         var restUse = [Int: Int]()
         var restBeats = 0
         for segment in 0..<600 where !PetPlaylist.isActionSegment(segment) {
             restBeats += 1
-            restUse[PetPlaylist.restClip(segment, count: 4), default: 0] += 1
+            restUse[PetPlaylist.restClip(segment, count: 2), default: 0] += 1
         }
-        precondition(restUse.count == 4, "all four rest clips must appear, saw \(restUse.count)")
+        precondition(restUse.count == 2, "both calm patrol clips must appear, saw \(restUse.count)")
         let leanest = restUse.values.min() ?? 0
-        precondition(Double(leanest) > Double(restBeats) / 4.0 * 0.5,
+        precondition(Double(leanest) > Double(restBeats) / 2.0 * 0.5,
                      "no rest clip may be starved, leanest got \(leanest) of \(restBeats)")
-        precondition(PetPlaylist.restClip(9, count: 4) == PetPlaylist.restClip(9, count: 4),
+        precondition(PetPlaylist.restClip(9, count: 2) == PetPlaylist.restClip(9, count: 2),
                      "rest selection must be deterministic")
         precondition(PetPlaylist.restClip(9, count: 1) == 0, "a single rest clip is always index 0")
 
@@ -1449,13 +1495,121 @@ struct ModelsContract {
         precondition(Set(three.map(\.size.width)).count == 1 && Set(three.map(\.size.height)).count == 1,
                      "a frame with a wide effect must share the strip's canvas, not get its own")
 
+        // AUTHORED MILES STORIES: every session-count state owns one directed,
+        // physically continuous strip. Running bookends one and two sessions;
+        // trio and swarm keep Miles plus their droids present until contact.
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let defaultPet = repositoryRoot.appendingPathComponent("Resources/DefaultPet")
+        let shippedMap = PetSpriteStore.loadStateMap(in: defaultPet)
+        let authoredStories: [(pose: PetSpritePose, file: String, frames: Int)] = [
+            (.working, "session-pet-working-story-v7.png", 16),
+            (.duel, "session-pet-duel-story-v7.png", 16),
+            (.trio, "session-pet-trio-story-v7.png", 12),
+            (.swarm, "session-pet-swarm-story-v7.png", 16),
+        ]
+        var storyFrames: [PetSpritePose: [NSImage]] = [:]
+        for story in authoredStories {
+            precondition(shippedMap[story.pose]?.file == story.file
+                            && shippedMap[story.pose]?.frames == story.frames,
+                         "\(story.pose.rawValue) must map to its V7 story and declared count")
+            guard let image = NSImage(contentsOf: defaultPet.appendingPathComponent(story.file))
+            else { preconditionFailure("Miles \(story.pose.rawValue) story must be readable") }
+            let frames = PetSpriteStrip.slice(image, frames: story.frames)
+            precondition(frames.count == story.frames,
+                         "\(story.pose.rawValue) must slice to its authored count")
+            storyFrames[story.pose] = frames
+        }
+        func subjectColorCounts(_ frame: NSImage) -> (hero: Int, droidEye: Int) {
+            guard let cg = PetSpriteStrip.raster(frame) else { return (0, 0) }
+            var pixels = [UInt8](repeating: 0, count: cg.width * cg.height * 4)
+            pixels.withUnsafeMutableBytes { raw in
+                guard let context = CGContext(
+                    data: raw.baseAddress,
+                    width: cg.width,
+                    height: cg.height,
+                    bitsPerComponent: 8,
+                    bytesPerRow: cg.width * 4,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                ) else { return }
+                context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+            }
+            var hero = 0
+            var droidEye = 0
+            for y in 0..<cg.height {
+                for x in 0..<cg.width {
+                    let index = (y * cg.width + x) * 4
+                    let r = Int(pixels[index])
+                    let g = Int(pixels[index + 1])
+                    let b = Int(pixels[index + 2])
+                    let a = Int(pixels[index + 3])
+                    guard a > 32 else { continue }
+                    if r > 75 && g > 30 && g < 155 && b < 75 { hero += 1 }
+                    if r > 125 && g < 70 && b < 70 {
+                        droidEye += 1
+                    }
+                }
+            }
+            return (hero, droidEye)
+        }
+        for story in authoredStories {
+            let frames = storyFrames[story.pose]!
+            for (index, frame) in frames.enumerated() {
+                guard let raster = PetSpriteStrip.raster(frame),
+                      let box = PetSpriteStrip.inkBounds(frame) else {
+                    preconditionFailure("\(story.pose.rawValue) frame \(index) must contain art")
+                }
+                precondition(box.x >= 3 && box.x + box.w <= raster.width - 3,
+                             "\(story.pose.rawValue) frame \(index) touches a cut boundary")
+                precondition(box.y >= 3 && box.y + box.h <= raster.height - 3,
+                             "\(story.pose.rawValue) frame \(index) crops authored art")
+                precondition(box.h >= 100,
+                             "\(story.pose.rawValue) frame \(index) is undersized (\(box.h)px ink)")
+                let subjects = subjectColorCounts(frame)
+                precondition(subjects.hero >= 20,
+                             "\(story.pose.rawValue) frame \(index) drops Miles")
+                if story.pose == .duel || story.pose == .trio || story.pose == .swarm {
+                    precondition(subjects.droidEye >= 1,
+                                 "\(story.pose.rawValue) frame \(index) drops every droid")
+                }
+                if index > 0 {
+                    let intentionalSwarmHold = story.pose == .swarm && (index == 4 || index == 7)
+                    if intentionalSwarmHold {
+                        precondition(pngData(frames[index - 1]) == pngData(frame),
+                                     "swarm impact hold \(index) must remain one exact frame")
+                    } else {
+                        precondition(pngData(frames[index - 1]) != pngData(frame),
+                                     "\(story.pose.rawValue) frame \(index) stalls unexpectedly")
+                    }
+                }
+            }
+            precondition(pngData(frames.first!) == pngData(frames.last!),
+                         "\(story.pose.rawValue) must close on its exact opening composition")
+        }
+
         // SHIPPED DEFAULT: seeds an empty install, and never overwrites the
         // user's own sprites (which would undo Choose sprite or Use COS figure).
-        precondition(PetSpriteStore.bundledCharacters.count == 1,
-                     "this release must expose Miles as its first bundled character")
+        precondition(PetSpriteStore.bundledCharacters.count == 4,
+                     "this release must expose Miles plus the three Jedi character additions")
         precondition(PetSpriteStore.bundledCharacter(id: "jedi-miles-windu")?.displayName
                         == "Jedi Miles Windu",
                      "the bundled character registry must resolve Miles by stable id")
+        let addedCharacters = [
+            ("jedi-nia-solari", "Jedi Nia Solari", "BundledCharacters/jedi-nia-solari"),
+            ("jedi-elara-vale", "Jedi Elara Vale", "BundledCharacters/jedi-elara-vale"),
+            ("jedi-rowan-vale", "Jedi Rowan Vale", "BundledCharacters/jedi-rowan-vale"),
+        ]
+        for (id, name, folder) in addedCharacters {
+            guard let character = PetSpriteStore.bundledCharacter(id: id) else {
+                preconditionFailure("the bundled character registry must resolve \(id)")
+            }
+            precondition(character.displayName == name,
+                         "\(id) must keep the name shown in the character gallery")
+            precondition(character.folderName == folder,
+                         "\(id) must resolve its packaged resource folder")
+        }
         precondition(PetSpriteStore.defaultCharacterName == "Jedi Miles Windu",
                      "the seeded default and selectable catalog entry must share one identity")
         let seedRoot = FileManager.default.temporaryDirectory
@@ -1479,6 +1633,85 @@ struct ModelsContract {
                      "seeding must never overwrite sprites that are already installed")
         precondition(!PetSpriteStore.installDefault(into: seedDest, from: nil),
                      "a build without the bundled character must degrade quietly")
+
+        let legacyTemplate = seedRoot.appendingPathComponent("legacy-template", isDirectory: true)
+        try! FileManager.default.createDirectory(at: legacyTemplate, withIntermediateDirectories: true)
+        for file in try! FileManager.default.contentsOfDirectory(
+            at: defaultPet, includingPropertiesForKeys: nil
+        ) where ["png", "json"].contains(file.pathExtension.lowercased()) {
+            try! FileManager.default.copyItem(
+                at: file, to: legacyTemplate.appendingPathComponent(file.lastPathComponent)
+            )
+        }
+        let legacyMilesMap = #"{"poses":{"idle":{"file":"session-pet-idle.png","frames":8},"patrol":{"file":"session-pet-patrol.png","frames":8},"waiting":{"file":"session-pet-waiting.png","frames":8},"working":{"file":"session-pet-working.png","frames":8},"done":{"file":"session-pet-done.png","frames":8},"error":{"file":"session-pet-error.png","frames":8},"attention":{"file":"session-pet-attention.png","frames":6},"duel":{"file":"session-pet-duel.png","frames":8},"trio":{"file":"session-pet-trio.png","frames":6},"swarm":{"file":"session-pet-swarm.png","frames":6}}}"#
+        try! Data(legacyMilesMap.utf8).write(
+            to: legacyTemplate.appendingPathComponent("session-pet-states.json"), options: .atomic
+        )
+        let refreshDest = seedRoot.appendingPathComponent("legacy-miles", isDirectory: true)
+        try! FileManager.default.copyItem(at: legacyTemplate, to: refreshDest)
+        precondition(PetSpriteStore.refreshRecognizedBundledDefault(
+            into: refreshDest, from: defaultPet
+        ) == .refreshed, "the recognized pre-story Miles pack must refresh once")
+        let refreshedMap = PetSpriteStore.loadStateMap(in: refreshDest)
+        precondition(refreshedMap[.working]?.frames == 16
+                        && refreshedMap[.duel]?.frames == 16
+                        && refreshedMap[.trio]?.frames == 12
+                        && refreshedMap[.swarm]?.frames == 16,
+                     "the refresh must install all four authored story strips")
+        precondition(refreshedMap[.patrol]?.file == "session-pet-patrol.png",
+                     "the targeted refresh must preserve every unrelated pose mapping")
+
+        let priorStoryTemplate = seedRoot.appendingPathComponent(
+            "prior-story-template", isDirectory: true
+        )
+        try! FileManager.default.copyItem(at: legacyTemplate, to: priorStoryTemplate)
+        let priorStoryMap = #"{"poses":{"idle":{"file":"session-pet-idle.png","frames":8},"patrol":{"file":"session-pet-patrol.png","frames":8},"waiting":{"file":"session-pet-waiting.png","frames":8},"working":{"file":"session-pet-working-error-story.png","frames":16},"done":{"file":"session-pet-done.png","frames":8},"error":{"file":"session-pet-error.png","frames":8},"attention":{"file":"session-pet-attention.png","frames":6},"duel":{"file":"session-pet-duel-two-droid-v5.png","frames":13},"trio":{"file":"session-pet-trio.png","frames":6},"swarm":{"file":"session-pet-swarm.png","frames":6}}}"#
+        try! Data(priorStoryMap.utf8).write(
+            to: priorStoryTemplate.appendingPathComponent("session-pet-states.json"),
+            options: .atomic
+        )
+        precondition(PetSpriteStore.refreshRecognizedBundledDefault(
+            into: priorStoryTemplate, from: defaultPet
+        ) == .refreshed, "the retained prior story pack must upgrade to V7")
+        let priorRefreshedMap = PetSpriteStore.loadStateMap(in: priorStoryTemplate)
+        for story in authoredStories {
+            precondition(priorRefreshedMap[story.pose]?.file == story.file
+                            && priorRefreshedMap[story.pose]?.frames == story.frames,
+                         "prior story refresh must promote \(story.pose.rawValue) to V7")
+        }
+
+        for pose in [PetSpritePose.working, .duel, .trio, .swarm, .patrol] {
+            let customDest = seedRoot.appendingPathComponent(
+                "custom-\(pose.rawValue)", isDirectory: true
+            )
+            try! FileManager.default.copyItem(at: legacyTemplate, to: customDest)
+            let customData = Data("custom \(pose.rawValue) art".utf8)
+            try! customData.write(
+                to: customDest.appendingPathComponent(PetSpriteStore.poseFileName(pose)),
+                options: .atomic
+            )
+            precondition(PetSpriteStore.refreshRecognizedBundledDefault(
+                into: customDest, from: defaultPet
+            ) == .notApplicable, "a customized \(pose.rawValue) pose must never be overwritten")
+            precondition((try! Data(contentsOf: customDest.appendingPathComponent(
+                PetSpriteStore.poseFileName(pose)
+            ))) == customData, "migration changed customized \(pose.rawValue) bytes")
+        }
+
+        let brokenSource = seedRoot.appendingPathComponent("broken-source", isDirectory: true)
+        try! FileManager.default.copyItem(at: defaultPet, to: brokenSource)
+        try! FileManager.default.removeItem(
+            at: brokenSource.appendingPathComponent("session-pet-swarm-story-v7.png")
+        )
+        let retryDest = seedRoot.appendingPathComponent("retryable-legacy", isDirectory: true)
+        try! FileManager.default.copyItem(at: legacyTemplate, to: retryDest)
+        let oldMapData = try! Data(contentsOf: retryDest.appendingPathComponent("session-pet-states.json"))
+        precondition(PetSpriteStore.refreshRecognizedBundledDefault(
+            into: retryDest, from: brokenSource
+        ) == .failed, "a missing story asset must report a retryable migration failure")
+        precondition(try! Data(contentsOf: retryDest.appendingPathComponent(
+            "session-pet-states.json"
+        )) == oldMapData, "failed refresh must leave the old state map active")
         try? FileManager.default.removeItem(at: seedRoot)
 
         // CHARACTER DIAL: scales the figure, never the card.
@@ -1514,6 +1747,8 @@ struct ModelsContract {
         precondition(PetCharacterScale.factor(200) == 2.0)
         precondition(PetSpritePose.idle.spriteHeight(64, scale: 2) == 128,
                      "the character dial must scale the sprite frame")
+        precondition(PetSpritePose.swarm.spriteHeight(64, scale: 2) == 128,
+                     "multi-session art must not grow 1.55x above the solo character")
         precondition(PetSpritePose.idle.spriteHeight(64) == 64,
                      "an unscaled call must stay at the configured pixel size")
         precondition(PetSize(preset: .medium, customPixels: 64).length(22) == 22,

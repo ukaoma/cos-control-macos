@@ -77,8 +77,9 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
 
     private func syncPanel() {
         guard let model else { return }
-        let sessions = model.petSessions
-        let show = model.petEnabled && !sessions.isEmpty
+        // An enabled pet is a persistent companion, not only a live-session
+        // indicator. With no sessions, PetSpritePose.resolve selects `.idle`.
+        let show = model.petEnabled
         if !show {
             panel?.orderOut(nil)
             // Assigning false when it is already false still fires @Published
@@ -89,18 +90,19 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         let panel = existingPanel()
         if let host = panel.contentViewController as? NSHostingController<SessionPetRoot> {
             let characterScale = fittedCharacterScale(for: panel, model: model)
-            host.rootView = SessionPetRoot(model: model, presenter: self, characterScale: characterScale)
-            let spriteWidth = max(
-                model.petSpritePose.renderSize(
-                    model.petSize.pixels,
-                    scale: characterScale,
-                    aspect: model.petSpriteKit.aspect(for: model.petSpritePose)
-                ).width,
-                CGFloat(model.petSize.pixels)
+            let viewportSize = model.petSpriteKit.viewportSize(
+                pixels: model.petSize.pixels,
+                scale: characterScale
+            )
+            host.rootView = SessionPetRoot(
+                model: model,
+                presenter: self,
+                characterScale: characterScale,
+                viewportSize: viewportSize
             )
             let width = max(
                 model.petSize.length(260),
-                spriteWidth + model.petSize.length(36)
+                viewportSize.width + model.petSize.length(36)
             )
             let fitting = host.sizeThatFits(in: NSSize(width: width, height: 900))
             var frame = panel.frame
@@ -117,10 +119,9 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
             ?? NSScreen.main?.visibleFrame
             ?? screens.first?.visibleFrame
             ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
-        return model.petSpritePose.fittedCharacterScale(
+        return model.petSpriteKit.fittedViewportScale(
             model.petCharacterFactor,
             pixels: model.petSize.pixels,
-            aspect: model.petSpriteKit.aspect(for: model.petSpritePose),
             available: visible.size,
             reservedChrome: CGSize(
                 width: model.petSize.length(36),
@@ -134,7 +135,16 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         guard let model else {
             return NSPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
         }
-        let root = SessionPetRoot(model: model, presenter: self, characterScale: model.petCharacterFactor)
+        let viewportSize = model.petSpriteKit.viewportSize(
+            pixels: model.petSize.pixels,
+            scale: model.petCharacterFactor
+        )
+        let root = SessionPetRoot(
+            model: model,
+            presenter: self,
+            characterScale: model.petCharacterFactor,
+            viewportSize: viewportSize
+        )
         let host = NSHostingController(rootView: root)
         host.view.wantsLayer = true
         host.view.layer?.backgroundColor = NSColor.clear.cgColor
@@ -184,6 +194,7 @@ private struct SessionPetRoot: View {
     @ObservedObject var model: ControllerModel
     var presenter: SessionPetPresenter
     var characterScale: CGFloat
+    var viewportSize: CGSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var sessions: [ClaudeSession] { model.petSessions }
@@ -229,6 +240,7 @@ private struct SessionPetRoot: View {
                         .allowsHitTesting(false)
                 }
             }
+            .frame(width: viewportSize.width, height: viewportSize.height, alignment: .bottom)
             HStack(spacing: size.length(8)) {
                 petButton("scope", help: targetHelp) {
                     if let focus { presenter.openTarget(focus) }
@@ -240,10 +252,14 @@ private struct SessionPetRoot: View {
                     petButton(model.petExpanded ? "chevron.down" : "chevron.up", help: "Live sessions") {
                         model.petExpanded.toggle()
                     }
+                } else {
+                    petButtonPlaceholder
                 }
             }
             if let focus {
                 statusBubble(focus)
+            } else {
+                idleBubble
             }
             if let notice = model.petNotice, !notice.isEmpty {
                 Text(notice)
@@ -263,11 +279,7 @@ private struct SessionPetRoot: View {
         .padding(size.length(10))
         .frame(width: max(
             size.length(248),
-            pose.renderSize(
-                size.pixels,
-                scale: characterScale,
-                aspect: model.petSpriteKit.aspect(for: pose)
-            ).width + size.length(36)
+            viewportSize.width + size.length(36)
         ))
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleSpriteDrop(providers)
@@ -368,6 +380,34 @@ private struct SessionPetRoot: View {
         focus?.petTargetOpensAgentWindow == true ? "Open Agents Window" : "Open in Activity"
     }
 
+    private var idleBubble: some View {
+        VStack(alignment: .leading, spacing: size.length(2)) {
+            Text("Session pet")
+                .font(COSType.body(size.typeSize(11), weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Text("Idle")
+                .font(COSType.mono(size.typeSize(9), weight: .bold))
+                .foregroundStyle(COSPalette.green)
+            Text("Waiting for the next prompt or session.")
+                .font(COSType.body(size.typeSize(10)))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, size.length(12))
+        .padding(.vertical, size.length(8))
+        .frame(width: size.length(248), alignment: .leading)
+        .background(Capsule().fill(COSPalette.card))
+        .overlay(Capsule().stroke(COSPalette.line, lineWidth: 1))
+    }
+
+    private var petButtonPlaceholder: some View {
+        Color.clear
+            .frame(width: size.length(22), height: size.length(22))
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+
     private func petButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
@@ -384,10 +424,6 @@ private struct SessionPetRoot: View {
     }
 
     private func handleSpriteClick() {
-        if sessions.count > 1 {
-            model.petExpanded.toggle()
-            return
-        }
         if let focus { model.openSessionInPlatform(focus) }
     }
 

@@ -1,3 +1,33 @@
+## 0.5.129 (build 167)
+
+Session Pet settings now open as one compact section. State sprites and the
+unified 304-character gallery each live behind their own disclosure, and the
+four state-aware Jedi carry an Advanced badge inside the same grid as OpenPets.
+
+Jedi Nia Solari, Jedi Elara Vale, and Jedi Rowan Vale join Jedi Miles Windu as
+bundled choices. An enabled pet remains visible in idle when no session is
+running. The collapsed pet reserves one lifecycle-wide viewport, and only its
+chevron opens the active-session list, so poll-driven session-count changes no
+longer move the character or expand the list under the pointer.
+
+Miles's one-session work strip now tells one ordered story: sprint, brake, see
+the incoming error, slash it with the purple saber, and return to the run. The
+two-session strip uses the same running bridge around a two-droid counterattack:
+brake, strike right, turn before the rear bolt arrives, deflect it, counter the
+left droid, and sprint away. The three-session and four-plus strips were rebuilt
+to keep Miles and every surviving droid present, use exactly one saber, show a
+real block before contact, and remove enemies only after a visible hit/recoil.
+All four loops close on a pixel-identical opening composition. Every internal
+beat shares one measured camera scale, keeps 3px-or-greater cell gutters and true
+alpha, and uses artwork-local scale, so arbitrary character packs are never
+enlarged by a global combat transform.
+
+Recognized older Miles installs refresh to the four new story assets once. The
+check accepts the original stock pack or the retained prior one-/two-session
+story pack only when all ten mapped assets remain byte-identical, then lands all
+four strips before atomically updating their map records. A custom pose is
+preserved, and an interrupted refresh retries on the next launch.
+
 ## 0.5.128 (build 166)
 
 The archive opens.
@@ -16,15 +46,6 @@ then not being able to open it was the same dead end reached a second way.
 
 The server already served all three levels. Only Control was missing the last
 two, so no server update is needed.
-
-The character gallery now ships four COS characters. Jedi Miles Windu remains
-the animated default; Jedi Nia Solari, Jedi Elara Vale, and Jedi Rowan Vale add
-purple, green, and blue-saber still packs, each normalized to the same canvas,
-scale, baseline, and transparent-alpha contract.
-
-An enabled session pet now stays visible when no sessions are running. The
-zero-session state resolves to idle so the character waits for the next prompt
-instead of disappearing.
 
 ## 0.5.127 (build 165)
 

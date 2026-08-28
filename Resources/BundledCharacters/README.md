@@ -1,4 +1,4 @@
-# Bundled animated characters
+# Bundled COS characters
 
 Each child folder is a processed sprite pack ready for `PetSpriteStore` to copy.
 It must include `session-pet-states.json` plus every PNG named by that state map.
@@ -9,3 +9,7 @@ a resource-relative `folderName`, for example
 character-specific branch.
 
 Miles remains in `Resources/DefaultPet` for compatibility with existing builds.
+
+Bundled still characters may intentionally map every deployable pose to one
+canonical image. Their summaries must call these "deployable states," not
+animations. Animated packs should provide distinct strips and frame counts.

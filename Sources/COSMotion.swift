@@ -210,6 +210,11 @@ extension COSPalette {
 /// waiting keeps them as dashes. Drawn on a 16-unit grid so nearest-neighbor
 /// scale stays blocky. Medium is 64 pt. A custom PNG or pose strip skips the
 /// canvas and scales with interpolation off so pixel art stays blocky.
+struct PetSpriteClip {
+    var frames: [NSImage]
+    var frameInterval: Double
+}
+
 struct SessionPetSprite: View {
     var working: Bool
     var reduceMotion: Bool
@@ -219,21 +224,27 @@ struct SessionPetSprite: View {
     var size: CGFloat = 64
     /// The character dial only; the card around this view sizes off PetSize.
     var characterScale: CGFloat = 1
-    /// The settled clips an action pose rotates through between bursts.
-    var restClips: [[NSImage]] = []
+    /// Exact secondary clips an ambient action rotates through between bursts.
+    var restClips: [PetSpriteClip] = []
 
-    /// Running and patrol are actions, not states: play them as periodic
-    /// bursts against the rest clips instead of one loop forever.
+    /// Patrol is an ambient action rather than a state. Authored running and
+    /// duel story strips bypass this scheduler and play in order.
     private var playlists: Bool {
         pose.usesActivityPlaylist && frames.count > 1 && !usableRestClips.isEmpty && !reduceMotion
     }
 
-    private var usableRestClips: [[NSImage]] {
-        restClips.filter { $0.count > 1 }
+    private var usableRestClips: [PetSpriteClip] {
+        restClips.filter { $0.frames.count > 1 }
+    }
+
+    private var timelineInterval: Double {
+        guard !reduceMotion else { return 3600 }
+        let candidates = [pose.frameInterval] + (playlists ? usableRestClips.map(\.frameInterval) : [])
+        return candidates.filter { $0 > 0 }.min() ?? pose.frameInterval
     }
 
     var body: some View {
-        let interval = reduceMotion ? 3600.0 : pose.frameInterval
+        let interval = timelineInterval
         // V4's duel, trio and swarm strips are continuous animations. Blending
         // adjacent cells double-exposes two different fight poses and reads as
         // a washed-out ghost, so every authored animation advances frame-clean.
@@ -293,11 +304,8 @@ struct SessionPetSprite: View {
 
     /// Measured aspect of the art actually playing; nil falls back to the pose
     /// default. The panel sizes off this same number.
-    private var measuredAspect: CGFloat? {
-        let widest = frames.filter { $0.size.height > 1 }
-            .map { $0.size.width / $0.size.height }
-            .max()
-        return widest
+    private var measuredAspect: CGFloat {
+        PetSpriteKit.resolvedAspect(frames: frames)
     }
 
     private var displayHeight: CGFloat {
@@ -327,10 +335,11 @@ struct SessionPetSprite: View {
         let plan = PetPlaylist.plan(
             elapsed: date.timeIntervalSinceReferenceDate,
             actionCount: frames.count,
-            restCounts: rests.map(\.count),
-            interval: pose.frameInterval
+            restCounts: rests.map { $0.frames.count },
+            interval: pose.frameInterval,
+            restIntervals: rests.map(\.frameInterval)
         )
-        let clip = plan.useAction ? frames : rests[min(plan.restClip, rests.count - 1)]
+        let clip = plan.useAction ? frames : rests[min(plan.restClip, rests.count - 1)].frames
         guard !clip.isEmpty else { return nil }
         return clip[min(plan.index, clip.count - 1)]
     }

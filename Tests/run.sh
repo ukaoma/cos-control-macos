@@ -233,7 +233,7 @@ fi
 /usr/bin/grep -q 'stoppedCompatibleManagedServer' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'configuredRequestedTier' "$ROOT/HelperSources/main.swift"
 /usr/bin/python3 - "$ROOT" <<'PY'
-import pathlib, re, sys
+import json, pathlib, re, sys
 source = (pathlib.Path(sys.argv[1]) / "HelperSources/main.swift").read_text()
 invalid = re.findall(r'operationKind:\s*"(provider_env_update|workdir_update)"', source)
 if invalid:
@@ -536,6 +536,39 @@ assert '.onSubmit { Task { await model.runArchiveSearch() } }' in view, \
 # archive row and watching the suite stay green.
 assert 'Text(day.countsSummary)' in view, 'the ARCHIVE day list must show chat/message VOLUME, not just a date'
 assert 'chat\\(chatCount == 1 ? "" : "s")' in models, 'countsSummary must report chat count'
+
+# --- 0.5.128 archive drill-through ---------------------------------------------
+# The day list counted months of history it could never open. Pin every rung:
+# helper command, model loaders, the openers, and the render conditions they
+# write -- an opener that sets no flag the body reads is an unreachable pane.
+assert '"archive-chat": try emitArchiveChat' in helper, 'the leaf command must be dispatched'
+assert 'chats/\\(index)/messages' in helper, 'archive-chat must call the per-chat messages route'
+assert 'Int(raw), index >= 0' in helper, 'an index reaching a path segment must be validated'
+
+assert 'func loadArchiveChats(date: String)' in model, 'the day rung needs a loader'
+assert 'func loadArchiveMessages(date: String, index: Int)' in model, 'the chat rung needs a loader'
+# Cleared BEFORE the await, not after: otherwise the previous day's chats sit on
+# screen under the new day's title for the length of the request.
+day_fn = model.index('func loadArchiveChats(date: String)')
+day_body = model[day_fn:day_fn+420]
+assert day_body.index('archiveChats = []') < day_body.index('await helper.run'), \
+    'stale chats must be cleared before the request, not after it returns'
+
+# Opener -> render condition. Both panes mount on flags the openers write.
+assert 'func openArchiveDay(' in view and 'func openArchiveChat(' in view
+assert 'let date = selectedArchiveDate, let chat = selectedArchiveChat' in view, \
+    'the chat pane must mount on BOTH flags, so Back can land on the day'
+assert 'archiveDayDetail(date: date)' in view and 'archiveChatDetail(date: date, index: chat)' in view
+assert 'Button { openArchiveDay(day.date) }' in view, 'an archive DAY row must open its day'
+assert 'Button { openArchiveDay(hit.date) }' in view, 'a SEARCH HIT is a day and must open too'
+assert 'Button { openArchiveChat(date: date, index: chat.index) }' in view, \
+    'a CHAT row must open its transcript'
+# Back unwinds one rung at a time. Chat must be tested BEFORE date, or a chat's
+# Back would drop straight past its day to the day list.
+chat_at = view.index('section == .messages, selectedArchiveChat != nil')
+date_at = view.index('section == .messages, selectedArchiveDate != nil')
+assert chat_at < date_at, 'goBack must unwind chat before date, one rung per press'
+print('    archive drill-through: day -> chats -> transcript, openers bound to panes')
 print('    archive browser: helper, model, view, and route_absent discriminator wired')
 PYEOF
 
@@ -660,12 +693,12 @@ echo "    manual update check: button, method, and all three outcomes"
 /usr/bin/grep -F -q 'COSControl/\(label) (macOS; +https://www.gotcos.com)' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'func loadOpenPetsCatalog' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'func installOpenPetsThumb' "$ROOT/Sources/ControllerModel.swift"
-/usr/bin/grep -q 'Pet gallery' "$ROOT/Sources/Views.swift"
-/usr/bin/grep -q 'Pet gallery unavailable right now.' "$ROOT/Sources/Views.swift"
-/usr/bin/grep -q '.frame(height: OpenPetsGallery.height)' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Label("Characters", systemImage: "person.3")' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Community characters unavailable right now.' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q '.frame(height: CharacterGallery.height)' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'TextField("Search characters"' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'await model.loadOpenPetsCatalog()' "$ROOT/Sources/Views.swift"
-! /usr/bin/grep -q 'DisclosureGroup("Pet gallery"' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'DisclosureGroup(isExpanded: \$petCharactersExpanded)' "$ROOT/Sources/Views.swift"
 /usr/bin/python3 - "$ROOT" <<'PY'
 import io, pathlib, sys
 root = pathlib.Path(sys.argv[1])
@@ -1567,6 +1600,20 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
 /usr/bin/vtool -show-build "$TMP/cos-control-helper" | /usr/bin/grep -q 'minos 14.0'
 /usr/bin/vtool -show-build "$TMP/COS Control" | /usr/bin/grep -q 'minos 14.0'
 
+# Bundled still characters share the importer contract: exact canvas, real alpha,
+# and one state map. This catches the painted-checkerboard and cross-pose sizing
+# regressions before a release can package them.
+for bundled_id in jedi-nia-solari jedi-elara-vale jedi-rowan-vale; do
+  bundled_png="$ROOT/Resources/BundledCharacters/$bundled_id/session-pet-idle.png"
+  bundled_meta="$(/usr/bin/sips -g pixelWidth -g pixelHeight -g hasAlpha "$bundled_png")"
+  /usr/bin/grep -q 'pixelWidth: 960' <<<"$bundled_meta"
+  /usr/bin/grep -q 'pixelHeight: 900' <<<"$bundled_meta"
+  /usr/bin/grep -q 'hasAlpha: yes' <<<"$bundled_meta"
+done
+/usr/bin/python3 "$ROOT/Tests/pet-layout-source-contract.py" "$ROOT"
+/usr/bin/python3 "$ROOT/Tests/pet-settings-source-contract.py" "$ROOT"
+/usr/bin/python3 "$ROOT/Tests/pet-animation-source-contract.py" "$ROOT"
+
 # --- Every route a click can enter must actually render -----------------------
 # The 0.5.17 Review Memories / Review Threads buttons did NOTHING when clicked. The
 # opener set `contextBrowseKind`, but the pane was mounted inside
@@ -1574,7 +1621,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
 # changed and no view was watching. It compiled, the helper worked, and 110 self-test
 # assertions passed, because nothing tied the OPENER to the RENDER CONDITION.
 /usr/bin/python3 - "$ROOT" <<'ROUTECHK'
-import pathlib, re, sys
+import json, pathlib, re, sys
 root = pathlib.Path(sys.argv[1])
 views = (root / "Sources/Views.swift").read_text()
 activity = (root / "Sources/ActivityWindow.swift").read_text()
@@ -1725,8 +1772,25 @@ need(models_src.count('dropSubjectlessFrames(') >= 2,
 need('enum PetCharacterScale' in models_src,
      "the character dial is gone; pet size would grow the card and the figure together")
 pet_src = (root / "Sources/SessionPet.swift").read_text()
-need(pet_src.count('scale: characterScale') >= 2,
-     "the fitted character dial must size BOTH the panel envelope and the sprite frame")
+need('let show = model.petEnabled\n' in pet_src,
+     "an enabled pet must stay visible and resolve to idle when there are zero sessions")
+need('model.petEnabled && !sessions.isEmpty' not in pet_src,
+     "the zero-session hide guard returned; enabled pets must remain visible")
+need('viewportSize: CGSize' in pet_src and
+     '.frame(width: viewportSize.width, height: viewportSize.height, alignment: .bottom)' in pet_src,
+     "the current pose is not mounted inside one stable collapsed viewport")
+need(pet_src.count('petSpriteKit.viewportSize(') >= 2 and
+     'petSpriteKit.fittedViewportScale(' in pet_src,
+     "the presenter sizes or fits against only the current lifecycle pose")
+need('private var idleBubble' in pet_src and 'private var petButtonPlaceholder' in pet_src,
+     "zero/one-session chrome no longer reserves the same collapsed layout slots")
+handle_sprite = pet_src.split('private func handleSpriteClick()', 1)[1].split('private func handleSpriteDrop', 1)[0]
+need('petExpanded' not in handle_sprite,
+     "clicking the character must open its focus, never expand the session list")
+need(pet_src.count('model.petExpanded.toggle()') == 1,
+     "only the dropdown control may toggle the session list")
+need('scale: characterScale' in pet_src and 'characterScale: characterScale' in pet_src,
+     "the fitted character dial must size BOTH the stable panel envelope and the sprite frame")
 need('characterScale: characterScale' in pet_src,
      "the sprite view never receives the character dial")
 need('Character size' in views, "Settings has no character-size control")
@@ -1737,7 +1801,7 @@ character_initializer = model.split('@Published var petCharacterPercent', 1)[1].
 need('ControllerModel.loadPetCharacterPercent()' in character_initializer,
      "the published character dial bypasses the one-time migration loader")
 need('enum PetPlaylist' in models_src and 'usesActivityPlaylist' in models_src,
-     "running and patrol loop forever again instead of playing as bursts")
+     "patrol no longer uses its calm ambient playlist")
 cosmotion_src = (root / "Sources/COSMotion.swift").read_text()
 sessionpet_src = (root / "Sources/SessionPet.swift").read_text()
 need('PetPlaylist.plan(' in cosmotion_src and 'restClips' in cosmotion_src,
@@ -1747,8 +1811,10 @@ need('restClips: model.petRestClips(for: pose)' in sessionpet_src,
 need('func petRestClips(' in model,
      "the activity playlist has no settled clips")
 rest_body = model.split('func petRestClips(', 1)[1].split('func setPetCharacterPercent', 1)[0]
-need('[PetSpritePose.idle, .waiting]' in rest_body,
-     "ambient rests must use the calm idle and meditation clips")
+need('case .patrol: [.idle, .waiting]' in rest_body,
+     "solo patrol lost its calm idle/meditation rests")
+need('exactFrames(for:' in rest_body and 'case .working' not in rest_body and 'case .duel' not in rest_body,
+     "authored story strips must not borrow fallback-resolved or higher-session art")
 need('.done' not in rest_body and '.attention' not in rest_body,
      "success/attention draw the saber and must remain signal states, not ambient rests")
 need('func restClip(' in models_src,
@@ -1759,15 +1825,46 @@ need('let dissolves' not in sprite_body and '.opacity(' not in sprite_body,
      "combat playback cross-dissolves adjacent animation frames into ghost scenes")
 need(models_src.count('normalizeStrip(') >= 2,
      "strip frames are normalised individually again, so the character resizes mid-animation")
+sprite_height_body = models_src.split('func spriteHeight(', 1)[1].split('func spriteWidth(', 1)[0]
+need('cinematic ?' not in sprite_height_body,
+     "multi-session poses regained the 1.55x height multiplier")
+need('func viewportSize(' in models_src and 'func fittedViewportScale(' in models_src,
+     "the shared lifecycle viewport contract is gone")
+need('visualScale' not in models_src and '.scaleEffect(pose.visualScale' not in cosmotion_src,
+     "a global duel transform can crop or resize arbitrary character packs")
+need('private var timelineInterval' in cosmotion_src and
+     'usableRestClips.map(\.frameInterval)' in cosmotion_src,
+     "ambient secondary clips are not scheduled at their authored cadence")
+apply_pet_body = model.split('private func applyPetSessions(', 1)[1].split('private func beginPetCompletion', 1)[0]
+need('petExpanded = true' not in apply_pet_body and 'previousCount < 2' not in apply_pet_body,
+     "session-count transitions must not open the list without a dropdown click")
+need('if petSessions.count < 2' in apply_pet_body and 'petExpanded = false' in apply_pet_body,
+     "the list must close when fewer than two sessions remain")
 need('installBundledDefault(into: directory)' in model,
      "a fresh install no longer seeds the shipped character")
 need('petDefaultSeededKey' in model,
      "default seeding is not gated by a flag, so Use COS figure would be undone on relaunch")
+need('petDefaultArtGenerationKey' in model and 'refreshRecognizedBundledDefault' in model,
+     "existing Miles installs will not receive the new authored story assets")
 need('Jedi Miles Windu' in models_src, "the shipped character lost its name")
 need('static let bundledCharacters' in models_src,
      "shipped characters fell back to a one-off default instead of a selectable catalog")
 need('id: "jedi-miles-windu"' in models_src,
      "Miles Windu is no longer registered as a bundled character")
+bundled_ids = ["jedi-nia-solari", "jedi-elara-vale", "jedi-rowan-vale"]
+for bundled_id in bundled_ids:
+    need(f'id: "{bundled_id}"' in models_src,
+         f"{bundled_id} is missing from the bundled-character registry")
+    pack = root / "Resources/BundledCharacters" / bundled_id
+    states = pack / "session-pet-states.json"
+    art = pack / "session-pet-idle.png"
+    need(states.is_file() and art.is_file(),
+         f"{bundled_id} must ship both its state map and canonical sprite")
+    poses = json.loads(states.read_text()).get("poses", {})
+    need(set(poses) == {"idle", "patrol", "waiting", "working", "done", "error", "attention", "duel", "trio", "swarm"},
+         f"{bundled_id} must map all ten deployable pet states")
+    need(all(v.get("file") == "session-pet-idle.png" and v.get("frames") == 1 for v in poses.values()),
+         f"{bundled_id} is a still pack; every state must honestly map to its one canonical frame")
 need('func installBundledCharacter(' in models_src,
      "bundled characters cannot be selected through the sprite store")
 # Scope to the gallery card's BODY: str.index finds the `private var`
@@ -1782,10 +1879,28 @@ need(gallery_body.index('ForEach(visibleBundledCharacters)') < gallery_body.inde
      "bundled characters must render ABOVE the OpenPets attribution, not inside that gallery")
 need('PetSpriteStore.bundledCharacters.count + model.openPetsRows.count' in views,
      "the Characters count excludes bundled characters, so Miles never becomes character 301")
-need('Text("Characters \\(availableCharacterCount).")' in views,
-     "the combined character count is not visible")
+need('Label("Characters", systemImage: "person.3")' in views and
+     'Text("\\(availableCharacterCount)")' in views,
+     "the combined character count is not visible in the nested gallery label")
 need('TextField("Search characters"' in views and 'visibleBundledCharacters' in views,
      "search does not cover the shipped character catalog")
+need('@State private var petSettingsExpanded = false' in views and
+     'DisclosureGroup(isExpanded: $petSettingsExpanded)' in views,
+     "Session pet settings must default to one collapsed disclosure")
+need('@State private var petStateSpritesExpanded = false' in views and
+     'DisclosureGroup(isExpanded: $petStateSpritesExpanded)' in views,
+     "the ten state-sprite rows must be nested instead of permanently expanding the panel")
+need('@State private var petCharactersExpanded = false' in views and
+     'DisclosureGroup(isExpanded: $petCharactersExpanded)' in views,
+     "the 304-character gallery must be nested instead of permanently expanding the panel")
+need('Text("ADVANCED")' in views and 'character.isAdvanced' in views,
+     "advanced characters have no capability badge in the unified gallery")
+need('Ships with COS Control' not in gallery_body,
+     "bundled Jedi still render as a separate catalog instead of sharing the character grid")
+grid_body = gallery_body.split('LazyVGrid(', 1)[1].split('\n                    }', 1)[0]
+need('ForEach(visibleBundledCharacters)' in grid_body and
+     'ForEach(visibleOpenPetsRows)' in grid_body,
+     "bundled Jedi and OpenPets stills must render inside the same character grid")
 need('pendingBundledCharacter = character' in views and 'confirmBundledCharacter = true' in views,
      "selecting a shipped character bypasses the destructive replacement confirmation")
 need('model.useBundledCharacter(character)' in views,
@@ -1805,8 +1920,12 @@ need('agentsWindowExists' in model,
 motion_src = (root / "Sources/COSMotion.swift").read_text()
 need('func renderSize(' in models_src,
      "the shared sprite-size function is gone")
-need(motion_src.count('pose.renderSize(') >= 2 and pet_src.count('renderSize(') >= 2,
-     "panel width and rendered sprite width are two formulas again")
+need(motion_src.count('pose.renderSize(') >= 2 and
+     'static func resolvedAspect(frames:' in models_src and
+     'aspect: resolvedAspect(for: $0)' in models_src and
+     'PetSpriteKit.resolvedAspect(frames: frames)' in motion_src and
+     'petSpriteKit.viewportSize(' in pet_src,
+     "panel viewport and rendered sprite returned to unrelated size formulas")
 need('spriteWidth(' not in motion_src and 'spriteWidth(' not in pet_src,
      "a view sizes off the fixed-aspect spriteWidth instead of the measured art")
 need('model.petSpriteFrameCount(pose) > 1' not in views,
