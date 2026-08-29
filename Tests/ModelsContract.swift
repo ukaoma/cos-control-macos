@@ -2410,6 +2410,65 @@ struct ModelsContract {
         print("COS Control: idle pet rows drop from the list without touching the session")
     }
 
+    /// A one-frame character has no droids to count, so the CADENCE has to
+    /// carry the session-load reading instead.
+    private static func checkPetStillMotion() {
+        func peak(_ pose: PetSpritePose, frames: Int = 1, reduce: Bool = false)
+            -> (bob: Double, lean: Double, step: Double) {
+            var b = 0.0, l = 0.0, st = 0.0
+            for i in 0..<4000 {
+                let o = PetStillMotion.offset(
+                    pose: pose, frameCount: frames, reduceMotion: reduce,
+                    size: 64, characterScale: 3, time: Double(i) * 0.004
+                )
+                b = max(b, abs(Double(o.bob))); l = max(l, abs(o.lean)); st = max(st, abs(Double(o.step)))
+            }
+            return (b, l, st)
+        }
+
+        let duel = peak(.duel), trio = peak(.trio), swarm = peak(.swarm)
+        precondition(duel.bob < trio.bob && trio.bob < swarm.bob,
+                     "bob must escalate with session load")
+        precondition(duel.lean < trio.lean && trio.lean < swarm.lean,
+                     "lean must escalate with session load")
+        precondition(duel.bob > 0 && duel.lean > 0,
+                     "two sessions must actually move a still character")
+
+        // Calm states stay calm; a resting figure that fidgets reads as broken.
+        for pose in [PetSpritePose.idle, .waiting, .stopped, .thinking, .reading, .writing] {
+            precondition(pose.stillCadence == nil, "\(pose.rawValue) must not fidget at rest")
+            let rest = peak(pose)
+            precondition(rest.bob == 0 && rest.lean == 0 && rest.step == 0,
+                         "\(pose.rawValue) produced motion anyway")
+        }
+
+        // An authored strip is a real animation. Shaking it reads as a fault.
+        let authored = peak(.swarm, frames: 16)
+        precondition(authored.bob == 0 && authored.lean == 0 && authored.step == 0,
+                     "an authored strip must never get procedural motion")
+        precondition(peak(.swarm, frames: 2).bob == 0,
+                     "two frames already counts as authored")
+
+        let reduced = peak(.swarm, reduce: true)
+        precondition(reduced.bob == 0 && reduced.lean == 0 && reduced.step == 0,
+                     "reduce motion must silence the cadence entirely")
+
+        // The pet card reserves a FIXED viewport, so the figure has to move
+        // inside the art's own margins rather than growing the frame.
+        let figure = 64.0 * 3.0
+        precondition(swarm.bob / figure < 0.10 && swarm.step / figure < 0.05,
+                     "peak travel must stay inside the collapsed viewport")
+        precondition(swarm.lean < 8,
+                     "lean past a few degrees tips the figure over at pet scale")
+
+        // Lean carries the read; a large slide is what makes a still figure
+        // look like a sticker being dragged sideways.
+        precondition(swarm.step < swarm.bob,
+                     "horizontal slide must stay under the vertical bob")
+
+        print("COS Control: still characters carry session load through an escalating cadence")
+    }
+
     static func main() throws {
         checkRenameEligibility()
         checkAmbiguousTitles()
@@ -2425,6 +2484,7 @@ struct ModelsContract {
         checkClaudeSession()
         checkPetSpriteStore()
         checkPetDismissals()
+        checkPetStillMotion()
         checkPetSpritePoses()
         checkPetSize()
         checkCursorAgentTabMatch()

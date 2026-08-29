@@ -1,3 +1,17 @@
+## 0.5.131 (build 169)
+
+The three bundled Jedi besides Miles Windu carried an Advanced badge while
+standing perfectly still, because each maps one image onto all ten poses. A
+character with no authored strip for a pose now gets a weight-shift cadence:
+bob on the feet, lean out of phase with it, and a small step. Intensity
+escalates with session load, so two, three, and four-plus sessions still read
+off the figure itself now that there are no droids to count.
+
+The same cadence covers every OpenPets still and any single PNG dropped on the
+pet. Miles Windu is untouched: an authored strip is a real animation, and
+shaking one reads as a rendering fault rather than motion. Resting states stay
+still, and Reduce Motion silences the cadence entirely.
+
 ## 0.5.130 (build 168)
 
 Switching characters now actually switches. Installing a sprite pack, or picking

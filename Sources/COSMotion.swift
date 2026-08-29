@@ -250,7 +250,8 @@ struct SessionPetSprite: View {
         // a washed-out ghost, so every authored animation advances frame-clean.
         TimelineView(.animation(minimumInterval: interval, paused: reduceMotion && frames.count <= 1)) { timeline in
             let phase = reduceMotion ? 0.0 : sin(timeline.date.timeIntervalSinceReferenceDate * (working ? 6.2 : 2.4))
-            let bounce = working && !reduceMotion ? CGFloat(phase) * max(1, size * 0.022) : 0
+            let bounce = working && !reduceMotion && !isStill ? CGFloat(phase) * max(1, size * 0.022) : 0
+            let cadence = stillMotion(at: timeline.date)
             Group {
                 if playlists, let frame = playlistFrame(at: timeline.date) {
                     frameImage(frame)
@@ -297,9 +298,31 @@ struct SessionPetSprite: View {
                 }
             }
             .offset(y: bounce)
+            // Applied to the figure, not the frame: displayWidth/displayHeight
+            // stay fixed, so the card around the pet never resizes and the
+            // collapsed viewport contract holds.
+            .offset(x: cadence.step, y: cadence.bob)
+            .rotationEffect(.degrees(cadence.lean), anchor: .bottom)
         }
         .frame(width: displayWidth, height: displayHeight)
         .accessibilityHidden(true)
+    }
+
+    /// True when the character has no authored animation to play for this pose.
+    private var isStill: Bool {
+        frames.count <= 1
+    }
+
+    /// The math lives in PetStillMotion so it can be tested without a view.
+    private func stillMotion(at date: Date) -> PetStillMotion.Offset {
+        PetStillMotion.offset(
+            pose: pose,
+            frameCount: frames.count,
+            reduceMotion: reduceMotion,
+            size: size,
+            characterScale: characterScale,
+            time: date.timeIntervalSinceReferenceDate
+        )
     }
 
     /// Measured aspect of the art actually playing; nil falls back to the pose
