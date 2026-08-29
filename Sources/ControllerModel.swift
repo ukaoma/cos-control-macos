@@ -114,7 +114,7 @@ final class ControllerModel: ObservableObject {
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 3
+    private static let petDefaultArtGeneration = 4
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -1602,6 +1602,13 @@ final class ControllerModel: ObservableObject {
         if UserDefaults.standard.integer(forKey: Self.petDefaultArtGenerationKey)
             < Self.petDefaultArtGeneration {
             let refresh = PetSpriteStore.refreshRecognizedBundledDefault(into: directory)
+            // Generation 4 lands combat strips on the three bundled Jedi. They
+            // never match Miles's retained stock above, so they need their own
+            // recognizer; without it a user who picked one of them keeps the
+            // all-still map forever.
+            if let upgraded = PetSpriteStore.refreshStillBundledCharacter(into: directory) {
+                NSLog("COSControl landed combat art on %@", upgraded)
+            }
             if refresh != .failed {
                 UserDefaults.standard.set(
                     Self.petDefaultArtGeneration,
@@ -1706,6 +1713,10 @@ final class ControllerModel: ObservableObject {
                 // only the last-resort fallback in PetSpriteKit.frames(for:),
                 // so any pose an earlier pack owns would keep rendering and the
                 // pick would silently do nothing. Clear first, then install.
+                // Validate the SOURCE before clearing. install() ran its own
+                // size/type guards after the copy, so rejecting an oversized
+                // PNG deleted the user's character and gave them nothing back.
+                try PetSpriteStore.assertInstallable(url)
                 PetSpriteStore.removeAll(from: directory)
                 let dest = try PetSpriteStore.install(from: url, into: directory)
                 petCustomSprite = NSImage(contentsOf: dest)
@@ -1768,6 +1779,10 @@ final class ControllerModel: ObservableObject {
 
     func resetPetSprite() {
         PetSpriteStore.removeAll(from: PetSpriteStore.supportDirectory())
+        // Dismissals persist across relaunch, so a reset that left them in
+        // place would hide rows on a pet the user just reset.
+        petDismissals = PetDismissals()
+        savePetDismissals()
         petCustomSprite = nil
         petSpriteKit = PetSpriteKit()
         petCompleting = false
@@ -1865,9 +1880,14 @@ final class ControllerModel: ObservableObject {
         if claudeSessionsLoading, !petSessions.isEmpty { return }
         do {
             let response = try await helper.run(["session-pet-live"], timeout: Self.petLiveHelperTimeout)
-            applyPetSessions(ClaudeSession.petVisibleSessions(
-                in: (response.details["sessions"]?.array ?? []).compactMap(ClaudeSession.init)
-            ))
+            // The helper answered, so this list is current and may retire
+            // stamps for sessions that are genuinely gone.
+            applyPetSessions(
+                ClaudeSession.petVisibleSessions(
+                    in: (response.details["sessions"]?.array ?? []).compactMap(ClaudeSession.init)
+                ),
+                authoritative: true
+            )
         } catch is CancellationError {
             return
         } catch {
@@ -1875,9 +1895,16 @@ final class ControllerModel: ObservableObject {
         }
     }
 
-    private func applyPetSessions(_ sessions: [ClaudeSession]) {
+    /// `authoritative` gates the prune. `loadPetSessions` applies TWICE per
+    /// poll: once from `claudeSessions`, which only ActivityWindow refreshes and
+    /// which goes stale the moment Activity closes, and once from the live
+    /// helper. Pruning on the stale pass deleted a dismissal because the row was
+    /// merely absent from an old snapshot, and the live pass then handed the row
+    /// straight back -- so a drop silently undid itself within one poll. Only a
+    /// list we know is current may retire a stamp.
+    private func applyPetSessions(_ sessions: [ClaudeSession], authoritative: Bool = false) {
         petSessionsRaw = sessions
-        petDismissals.prune(against: sessions)
+        if authoritative { petDismissals.prune(against: sessions) }
         let sessions = petDismissals.filter(sessions)
         let wasWorking = petSessions.contains(where: \.isPetWorking)
         petSessions = sessions

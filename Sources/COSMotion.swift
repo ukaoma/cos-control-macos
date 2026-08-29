@@ -239,8 +239,9 @@ struct SessionPetSprite: View {
 
     private var timelineInterval: Double {
         guard !reduceMotion else { return 3600 }
-        let candidates = [pose.frameInterval] + (playlists ? usableRestClips.map(\.frameInterval) : [])
-        return candidates.filter { $0 > 0 }.min() ?? pose.frameInterval
+        let candidates = [pose.frameInterval(forFrames: frames.count)]
+            + (playlists ? usableRestClips.map(\.frameInterval) : [])
+        return candidates.filter { $0 > 0 }.min() ?? pose.frameInterval(forFrames: frames.count)
     }
 
     var body: some View {
@@ -336,7 +337,7 @@ struct SessionPetSprite: View {
             elapsed: date.timeIntervalSinceReferenceDate,
             actionCount: frames.count,
             restCounts: rests.map { $0.frames.count },
-            interval: pose.frameInterval,
+            interval: pose.frameInterval(forFrames: frames.count),
             restIntervals: rests.map(\.frameInterval)
         )
         let clip = plan.useAction ? frames : rests[min(plan.restClip, rests.count - 1)].frames
@@ -350,7 +351,7 @@ struct SessionPetSprite: View {
             let index = pose.cinematic ? min(frames.count - 1, max(0, frames.count / 2)) : 0
             return frames[index]
         }
-        let index = Int(date.timeIntervalSinceReferenceDate / pose.frameInterval) % frames.count
+        let index = Int(date.timeIntervalSinceReferenceDate / pose.frameInterval(forFrames: frames.count)) % frames.count
         return frames[index]
     }
 }

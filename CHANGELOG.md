@@ -1,8 +1,53 @@
+## 0.5.134 (build 172)
+
+Jedi Nia Solari, Jedi Elara Vale, and Jedi Rowan Vale now fight. Each carries authored
+four-frame strips for the two, three, and four-plus session states: guard, the droids
+fire, the blade lands on one of them, and that droid is knocked back with a cut scar and
+its blaster down while the rest stay upright. Escalation reads from droid count, one then
+three then five, the same way Miles Windu's loops do.
+
+The other seven states keep the single portrait, which reads fine standing still. This is
+the authored-frames answer to the motion 0.5.131 tried to fake and 0.5.132 reverted.
+
+A shorter strip no longer plays faster. Frame rate was authored per pose against Miles
+Windu's sixteen-cell strips, so a four-cell duel ran its whole loop in 0.44s instead of
+1.76s. The loop duration is now what's held constant, and Miles Windu's own playback is
+bit-for-bit unchanged.
+
+Dropping an idle row is undoable again. `restorePetDismissals` had no caller, so a row
+dropped by mistake was gone for good — the dismissal persists across relaunch. The list now
+carries a "Show N dropped" control whenever anything is hidden, and Reset clears dismissals.
+
+A dropped row also used to come back on its own within one poll. The pet applies sessions
+twice per cycle, once from a snapshot only the Activity window refreshes, and pruning on
+that stale pass retired the dismissal because the row was merely absent from an old list.
+Only a list we know is current can retire a stamp now.
+
+Two paths could destroy an installed character. Choosing a sprite over 8 MB cleared the pet
+and then refused the replacement, leaving nothing; the file is validated before anything is
+cleared. And a sprite pack that failed partway through the swap left a half-erased folder
+whose state map pointed at files that never arrived; the outgoing character is now held
+aside and restored if the copy fails.
+
+Legacy packs draw at every session count. duel, trio and swarm fell back only to each
+other, so a pack carrying none of the three resolved to nothing and painted the stock
+figure once 0.5.130 stopped leaving the previous pack's art behind to cover for it.
+
+Known and not fixed: the three Jedi are not scale-normalized against their own portrait,
+so the character changes apparent size when combat starts. That needs a re-render.
+
 ## 0.5.132 (build 170)
 
 Reverts the 0.5.131 procedural cadence. Translating and rotating a whole still
 figure read as a sticker being wiggled, not as a character moving. The three
 bundled Jedi go back to standing still until they have real sprite frames.
+
+## 0.5.131 (build 169)
+
+Gave characters that ship one image per state a procedural weight-shift cadence that
+escalated with session load. Reverted in 0.5.132: sliding and rotating a whole static
+figure read as a sticker being wiggled rather than a character moving. Recorded here
+because it was published, and because 0.5.132 and 0.5.133 both refer to it.
 
 ## 0.5.130 (build 168)
 

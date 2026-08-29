@@ -1,14 +1,44 @@
 {
   "poses": {
-    "attention": { "file": "session-pet-idle.png", "frames": 1 },
-    "done": { "file": "session-pet-idle.png", "frames": 1 },
-    "duel": { "file": "session-pet-idle.png", "frames": 1 },
-    "error": { "file": "session-pet-idle.png", "frames": 1 },
-    "idle": { "file": "session-pet-idle.png", "frames": 1 },
-    "patrol": { "file": "session-pet-idle.png", "frames": 1 },
-    "swarm": { "file": "session-pet-idle.png", "frames": 1 },
-    "trio": { "file": "session-pet-idle.png", "frames": 1 },
-    "waiting": { "file": "session-pet-idle.png", "frames": 1 },
-    "working": { "file": "session-pet-idle.png", "frames": 1 }
+    "attention": {
+      "file": "session-pet-idle.png",
+      "frames": 1
+    },
+    "done": {
+      "file": "session-pet-idle.png",
+      "frames": 1
+    },
+    "duel": {
+      "file": "session-pet-duel.png",
+      "frames": 4
+    },
+    "error": {
+      "file": "session-pet-idle.png",
+      "frames": 1
+    },
+    "idle": {
+      "file": "session-pet-idle.png",
+      "frames": 1
+    },
+    "patrol": {
+      "file": "session-pet-idle.png",
+      "frames": 1
+    },
+    "swarm": {
+      "file": "session-pet-swarm.png",
+      "frames": 4
+    },
+    "trio": {
+      "file": "session-pet-trio.png",
+      "frames": 4
+    },
+    "waiting": {
+      "file": "session-pet-idle.png",
+      "frames": 1
+    },
+    "working": {
+      "file": "session-pet-idle.png",
+      "frames": 1
+    }
   }
 }

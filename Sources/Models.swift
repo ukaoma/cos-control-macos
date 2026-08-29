@@ -2974,6 +2974,30 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
         }
     }
 
+    /// Frames the shipped Miles Windu strip carries for this pose. `frameInterval`
+    /// is the per-frame rate authored against exactly these counts.
+    var authoredFrameCount: Int {
+        switch self {
+        case .working, .duel, .swarm: 16
+        case .trio: 12
+        case .attention: 6
+        default: 8
+        }
+    }
+
+    /// Per-frame rate for a strip of `count` frames, holding the LOOP duration
+    /// constant rather than the frame rate.
+    ///
+    /// `frameInterval` alone is the rate authored for Miles Windu's 16/12/16
+    /// strips. Applied to a shorter strip it runs the whole loop proportionally
+    /// faster: the three bundled Jedi ship four cells, so a duel authored to
+    /// take 1.76s played in 0.44s — a 2.3 Hz strobe, not a fight. A strip at or
+    /// above the authored count keeps its own rate, so Miles is untouched.
+    func frameInterval(forFrames count: Int) -> Double {
+        guard count > 0, count < authoredFrameCount else { return frameInterval }
+        return frameInterval * Double(authoredFrameCount) / Double(count)
+    }
+
     var frameInterval: Double {
         switch self {
         case .idle, .patrol, .stopped: 0.28
@@ -3069,9 +3093,13 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
     var fallbackPoses: [PetSpritePose] {
         switch self {
         case .patrol: [.idle]
-        case .duel: [.swarm, .working]
-        case .trio: [.swarm, .duel]
-        case .swarm: [.duel, .trio]
+        // These three used to cycle only among themselves, so a pack declaring
+        // core states and no escalation art resolved trio and swarm to nothing
+        // and painted the stock drawn figure. 0.5.130 made that reachable by
+        // removing the previous pack's leftovers that had been covering for it.
+        case .duel: [.swarm, .working, .idle]
+        case .trio: [.swarm, .duel, .working, .idle]
+        case .swarm: [.duel, .trio, .working, .idle]
         // Every chain has to terminate somewhere a MINIMAL pack actually
         // declares. error and attention used to point only at each other, so a
         // legacy pack carrying neither rendered nothing at all for both states
@@ -4167,6 +4195,18 @@ enum PetSpriteStore {
         return fileManager.fileExists(atPath: candidate.path) ? candidate : nil
     }
 
+    /// Every reason `install` can reject a file, checked against the SOURCE and
+    /// writing nothing. Callers that clear the installed character first must
+    /// run this BEFORE clearing: `install` did its own guards after the copy,
+    /// so picking a 9 MB PNG deleted the pet and then refused the replacement.
+    static func assertInstallable(_ source: URL, fileManager: FileManager = .default) throws {
+        guard isAllowedImage(source) else { throw InstallError.notAnImage }
+        let size = (try fileManager.attributesOfItem(atPath: source.path)[.size] as? Int) ?? 0
+        if size <= 0 { throw InstallError.empty }
+        if size > maxBytes { throw InstallError.tooLarge }
+        guard NSImage(contentsOf: source) != nil else { throw InstallError.notAnImage }
+    }
+
     static func install(from source: URL, into directory: URL, fileManager: FileManager = .default) throws -> URL {
         guard isAllowedImage(source) else { throw InstallError.notAnImage }
         let size = (try fileManager.attributesOfItem(atPath: source.path)[.size] as? Int) ?? 0
@@ -4425,6 +4465,69 @@ enum PetSpriteStore {
     }
 
     @discardableResult
+    /// One-shot upgrade for anyone who chose Nia Solari, Elara Vale, or Rowan
+    /// Vale while those characters were still-only.
+    ///
+    /// `refreshRecognizedBundledDefault` above cannot serve them: its retained
+    /// stock table is Miles Windu's, and it reads `bundledDefaultURL`. Worse,
+    /// `useBundledCharacter` stamps the art generation the moment a character
+    /// is picked, so these users are already at the current generation and the
+    /// launch refresh skips them entirely. Without this they keep the all-still
+    /// map until they happen to re-pick the character from the gallery.
+    ///
+    /// An install counts as untouched stock only when every pose points at the
+    /// one portrait at a single frame AND that portrait is byte-identical to
+    /// the one we ship for that character. Anything the user customized fails
+    /// the byte match and is left exactly as it is.
+    ///
+    /// Returns the id that was re-landed, or nil when nothing matched.
+    static func refreshStillBundledCharacter(
+        into directory: URL,
+        bundle: Bundle = .main,
+        fileManager: FileManager = .default
+    ) -> String? {
+        let portrait = poseFileName(.idle)
+        let installed = loadStateMap(in: directory, fileManager: fileManager)
+        guard !installed.isEmpty,
+              installed.values.allSatisfy({ $0.file == portrait && $0.frames == 1 }),
+              let installedPortrait = try? Data(
+                  contentsOf: directory.appendingPathComponent(portrait)
+              )
+        else { return nil }
+
+        for character in bundledCharacters where character.id != defaultCharacterID {
+            guard let source = bundledCharacterURL(character, bundle: bundle, fileManager: fileManager),
+                  let shipped = try? Data(contentsOf: source.appendingPathComponent(portrait)),
+                  shipped == installedPortrait
+            else { continue }
+
+            // Prove the replacement is complete and readable BEFORE clearing
+            // anything. Clearing first and discovering a missing strip would
+            // leave the user with no character at all.
+            let shippedState = loadStateMap(in: source, fileManager: fileManager)
+            let combat: [PetSpritePose] = [.duel, .trio, .swarm]
+            let ready = combat.allSatisfy { pose in
+                guard let row = shippedState[pose], row.frames > 1,
+                      let data = try? Data(contentsOf: source.appendingPathComponent(row.file)),
+                      NSImage(data: data) != nil
+                else { return false }
+                return true
+            }
+            guard ready else {
+                NSLog("COSControl still-character refresh skipped: %@ ships no combat art", character.id)
+                return nil
+            }
+
+            removeAll(from: directory, fileManager: fileManager)
+            guard installDefault(into: directory, from: source, fileManager: fileManager) else {
+                NSLog("COSControl still-character refresh FAILED after clearing: %@", character.id)
+                return nil
+            }
+            return character.id
+        }
+        return nil
+    }
+
     static func installDefault(
         into directory: URL,
         from source: URL?,
@@ -4588,11 +4691,35 @@ enum PetSpriteStore {
         )
         guard !staged.isEmpty else { throw InstallError.empty }
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        removeAll(from: directory, fileManager: fileManager)
-        for file in staged {
-            let dest = directory.appendingPathComponent(file.lastPathComponent)
-            try? fileManager.removeItem(at: dest)
-            try fileManager.copyItem(at: file, to: dest)
+
+        // Hold the outgoing character aside rather than deleting it. Clearing
+        // first and then throwing mid-copy -- disk full, sandbox denial -- left
+        // a half-erased directory whose state map could reference PNGs that
+        // never arrived, which is exactly what the staging design claims to
+        // prevent. Staging only ever protected the BUILD; this protects the swap.
+        let backup = staging.appendingPathComponent("__outgoing", isDirectory: true)
+        try fileManager.createDirectory(at: backup, withIntermediateDirectories: true)
+        var held: [(live: URL, saved: URL)] = []
+        for file in (try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [] {
+            let saved = backup.appendingPathComponent(file.lastPathComponent)
+            if (try? fileManager.moveItem(at: file, to: saved)) != nil {
+                held.append((file, saved))
+            }
+        }
+        do {
+            for file in staged where file.lastPathComponent != "__outgoing" {
+                let dest = directory.appendingPathComponent(file.lastPathComponent)
+                try? fileManager.removeItem(at: dest)
+                try fileManager.copyItem(at: file, to: dest)
+            }
+        } catch {
+            NSLog("COSControl pack swap failed, restoring previous character: %@",
+                  error.localizedDescription)
+            for file in (try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [] {
+                try? fileManager.removeItem(at: file)
+            }
+            for row in held { try? fileManager.moveItem(at: row.saved, to: row.live) }
+            throw error
         }
     }
 

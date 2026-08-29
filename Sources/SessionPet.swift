@@ -345,6 +345,29 @@ private struct SessionPetRoot: View {
                     Divider()
                 }
             }
+            // Dropping a row must be undoable from the app itself. Without this
+            // the only way back was `defaults delete`, and the dismissal
+            // survives relaunch, so a mis-click was permanent.
+            if !model.petDismissals.stamps.isEmpty {
+                Divider()
+                Button {
+                    model.restorePetDismissals()
+                } label: {
+                    HStack(spacing: size.length(6)) {
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(.system(size: size.typeSize(9), weight: .bold))
+                        Text("Show \(model.petDismissals.stamps.count) dropped")
+                            .font(COSType.body(size.typeSize(10)))
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, size.length(6))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Put dropped sessions back in the list. Nothing was ever stopped.")
+            }
         }
         return Group {
             if sessions.count > 5 {

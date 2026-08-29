@@ -7,6 +7,7 @@ import json
 import hashlib
 import pathlib
 import struct
+import re
 import sys
 
 
@@ -98,7 +99,7 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         and "installed.count == retainedStock.count" in models
         and "let storyPoses: [PetSpritePose] = [.working, .duel, .trio, .swarm]" in models
         and "updated[story.pose] = (story.file, story.frames)" in models
-        and "private static let petDefaultArtGeneration = 3" in controller
+        and int(re.search(r"petDefaultArtGeneration = (\d+)", controller).group(1)) >= 3
         and "if refresh != .failed" in controller,
         "installed Miles packs will not receive all four new story assets",
     )

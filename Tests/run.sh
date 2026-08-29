@@ -1621,7 +1621,7 @@ done
 # changed and no view was watching. It compiled, the helper worked, and 110 self-test
 # assertions passed, because nothing tied the OPENER to the RENDER CONDITION.
 /usr/bin/python3 - "$ROOT" <<'ROUTECHK'
-import json, pathlib, re, sys
+import json, pathlib, re, subprocess, sys
 root = pathlib.Path(sys.argv[1])
 views = (root / "Sources/Views.swift").read_text()
 activity = (root / "Sources/ActivityWindow.swift").read_text()
@@ -1856,6 +1856,15 @@ need('static let bundledCharacters' in models_src,
 need('id: "jedi-miles-windu"' in models_src,
      "Miles Windu is no longer registered as a bundled character")
 bundled_ids = ["jedi-nia-solari", "jedi-elara-vale", "jedi-rowan-vale"]
+# The list lives in Models.swift, on disk, and twice in this file. Pin disk
+# against the registry so a fifth character cannot ship untested and a deleted
+# folder cannot surface only at runtime as "This build does not carry X".
+on_disk = {d.name for d in (root / "Resources/BundledCharacters").iterdir() if d.is_dir()}
+need(on_disk == set(bundled_ids),
+     f"BundledCharacters/ holds {sorted(on_disk)} but the suite tests {sorted(bundled_ids)}")
+for bundled_id in sorted(on_disk):
+    need(f'id: "{bundled_id}"' in models_src,
+         f"{bundled_id} ships on disk but is not in the bundledCharacters registry")
 for bundled_id in bundled_ids:
     need(f'id: "{bundled_id}"' in models_src,
          f"{bundled_id} is missing from the bundled-character registry")
@@ -1867,8 +1876,56 @@ for bundled_id in bundled_ids:
     poses = json.loads(states.read_text()).get("poses", {})
     need(set(poses) == {"idle", "patrol", "waiting", "working", "done", "error", "attention", "duel", "trio", "swarm"},
          f"{bundled_id} must map all ten deployable pet states")
-    need(all(v.get("file") == "session-pet-idle.png" and v.get("frames") == 1 for v in poses.values()),
-         f"{bundled_id} is a still pack; every state must honestly map to its one canonical frame")
+    # 0.5.133: the three carry authored four-frame combat strips for the
+    # multi-session states. The other seven stay on the one portrait, which
+    # reads fine standing still. Every state must still map HONESTLY: a still
+    # state points at the portrait at one frame, a combat state points at its
+    # OWN strip at four.
+    combat = {"duel", "trio", "swarm"}
+    for pose, row in poses.items():
+        if pose in combat:
+            need(row.get("file") == f"session-pet-{pose}.png" and row.get("frames") == 4,
+                 f"{bundled_id}/{pose} must map to its own four-frame strip, got {row}")
+            strip = pack / f"session-pet-{pose}.png"
+            need(strip.is_file(), f"{bundled_id} declares {pose} but ships no {strip.name}")
+        else:
+            need(row.get("file") == "session-pet-idle.png" and row.get("frames") == 1,
+                 f"{bundled_id}/{pose} is a still state and must map to the one canonical frame")
+    # Geometry is asserted, not assumed. `frames: 4` in the JSON checking
+    # itself would pass a 3- or 5-cell strip, and PetSpriteStrip.slice would
+    # then cut every frame mid-cell.
+    for pose in sorted(combat):
+        strip = pack / f"session-pet-{pose}.png"
+        dims = subprocess.run(["sips", "-g", "pixelWidth", "-g", "pixelHeight", str(strip)],
+                              capture_output=True, text=True).stdout
+        w = re.search(r"pixelWidth: (\d+)", dims)
+        h = re.search(r"pixelHeight: (\d+)", dims)
+        need(w is not None and h is not None, f"{bundled_id}/{pose}: sips could not read {strip.name}")
+        need(int(w.group(1)) == 1024 and int(h.group(1)) == 256,
+             f"{bundled_id}/{pose} is {w.group(1)}x{h.group(1)}, must be 1024x256 (four 256px cells)")
+        need(int(w.group(1)) % 4 == 0,
+             f"{bundled_id}/{pose} width does not divide into 4 cells")
+
+# Shipping new bundled art without advancing the generation constant means the
+# refresh never fires, so anyone who ALREADY picked that character keeps the old
+# assets forever. useBundledCharacter stamps the generation the moment a
+# character is chosen, so those users are already at the current value.
+gen = re.search(r"petDefaultArtGeneration = (\d+)", model)
+need(gen is not None, "the art-generation constant is gone")
+need(int(gen.group(1)) >= 4,
+     "bundled Jedi gained combat strips in 0.5.133; the art generation must advance past 3 "
+     "or existing users never receive them")
+need("refreshStillBundledCharacter(into: directory)" in model,
+     "the launch refresh never calls the still-character recognizer, so a user who picked "
+     "a Jedi while it was still-only keeps the all-still map")
+still_fn = models_src[models_src.index("static func refreshStillBundledCharacter("):]
+still_fn = still_fn[:still_fn.index("\n    static func installDefault(")]
+need("shipped == installedPortrait" in still_fn,
+     "the recognizer must byte-match the portrait, or it would overwrite a customized install")
+need(still_fn.index("guard ready else") < still_fn.index("removeAll(from: directory"),
+     "the replacement must be proven readable BEFORE the destination is cleared")
+need("character.id != defaultCharacterID" in still_fn,
+     "the still recognizer must never target Miles Windu, who has his own refresh path")
 need('func installBundledCharacter(' in models_src,
      "bundled characters cannot be selected through the sprite store")
 # Scope to the gallery card's BODY: str.index finds the `private var`
@@ -2339,24 +2396,44 @@ need(pack.index("try PetSpriteStore.replaceContents") > pack.rindex("into: stagi
 #    single-frame trio/swarm, so the OLD character keeps fighting.
 swap = models[models.index("static func replaceContents("):]
 swap = swap[:swap.index("\n    private static func saveStateMap")]
-need("removeAll(from: directory, fileManager: fileManager)" in swap,
-     "replaceContents must clear the destination before copying the staged pack")
-need(swap.index("removeAll(from: directory") < swap.index("for file in staged"),
-     "the clear has to precede the copy")
+# The swap must never leave the user with NEITHER character. Clearing first and
+# then throwing mid-copy (disk full, sandbox denial) left a half-erased folder
+# whose state map could reference PNGs that never arrived.
+need("removeAll(from: directory" not in swap,
+     "replaceContents must not delete the outgoing character outright; hold it aside so a "
+     "failed copy can be rolled back")
+need("moveItem(at: file, to: saved)" in swap and "held.append" in swap,
+     "the outgoing character is not held aside before the copy")
+need("catch {" in swap and "moveItem(at: row.saved, to: row.live)" in swap,
+     "a failed copy must restore the character that was held aside")
+need(swap.index("held.append") < swap.index("for file in staged"),
+     "the outgoing files must be held aside before the staged copy begins")
 need("guard !staged.isEmpty" in swap,
      "an empty staging folder must not be allowed to erase the installed character")
+
+# The single-sprite path must validate the SOURCE before it clears anything.
+need("try PetSpriteStore.assertInstallable(url)" in branches[1],
+     "adopting a new sprite must validate the file before wiping the old character")
+need(branches[1].index("assertInstallable") < branches[1].index("PetSpriteStore.removeAll"),
+     "validation has to run BEFORE the clear, or a rejected file costs the user their pet")
 
 # -- every fallback chain terminates somewhere a MINIMAL pack declares. error
 #    and attention pointed only at each other, so a legacy pack carrying
 #    neither rendered nothing at all for both once leftovers stopped covering.
 chain = models[models.index("var fallbackPoses: [PetSpritePose] {"):]
 chain = chain[:chain.index("\n    }")]
-for pose in ["error", "attention", "done", "working, .waiting", "thinking, .reading, .writing",
-             "searching, .grepping", "stopped"]:
-    row = re.search(rf"case \.{re.escape(pose)}: \[(.*?)\]", chain)
-    need(row is not None, f"fallbackPoses lost its .{pose} row")
-    need(".idle" in row.group(1) or ".done" in row.group(1),
-         f".{pose} must terminate at a pose a minimal pack actually declares")
+# Drive this off the SOURCE, not a hand-written list. The previous version
+# enumerated only the rows that already passed, so duel/trio/swarm -- the three
+# that actually cycled among themselves -- were never checked. A full revert of
+# the .swarm arm passed it.
+rows = re.findall(r"case ((?:\.\w+(?:, )?)+): \[(.*?)\]", chain)
+need(len(rows) >= 7, f"fallbackPoses parsed only {len(rows)} rows; the regex lost the switch")
+for poses_txt, targets in rows:
+    if not targets.strip():
+        continue
+    need(".idle" in targets or ".done" in targets,
+         f"fallbackPoses `case {poses_txt}` -> [{targets}] never terminates at a pose a "
+         "minimal pack declares, so it can resolve to nothing")
 
 # -- idle rows can be dropped from the pet list without touching the session.
 need("func dismissPetSession(" in model and "func canDismissPetSession(" in model,
@@ -2369,15 +2446,23 @@ need("applyPetSessions(petSessionsRaw)" in dismiss,
 apply = model[model.index("private func applyPetSessions("):model.index("/// Offered only once")]
 need(apply.index("petDismissals.prune(against: sessions)") < apply.index("petDismissals.filter(sessions)"),
      "prune must run against the unfiltered list, before the filter")
-need("kill" not in dismiss.lower() and "delete" not in dismiss.lower() and "stop" not in dismiss.lower(),
-     "dropping a row from the list must not touch the underlying session")
+# Assert the CALL SET, not the absence of three words. Inserting
+# closeClaudeSession(session) into this body passed the old substring check.
+# "dismissPetSession" is the declaration itself, not a call.
+calls = set(re.findall(r"\b(\w+)\(", dismiss)) - {"guard", "if", "return", "dismissPetSession"}
+need(calls <= {"canDismissPetSession", "dismiss", "savePetDismissals", "applyPetSessions"},
+     f"dropping a row must only touch list state; it also calls {sorted(calls)}")
 
 # -- the X is a SIBLING of the row button. Nested inside, it never gets clicked.
 rows = pet[pet.index("private var sessionList:"):pet.index("private func statusBubble(")]
 need("model.canDismissPetSession(session)" in rows, "the drop control is not gated on idle time")
 need("HStack(spacing: 0)" in rows and "model.petFocusID = session.id" in rows,
      "the session row lost either its wrapper or its open action")
-need(rows.index("HStack(spacing: 0)") < rows.index("model.petFocusID = session.id"),
+# The drop control must appear AFTER the row button has been closed and
+# styled. Merely being later than the opener is satisfied by nesting it inside
+# the label, which is the bug this guards (a Button inside another Button's
+# label never receives the click on macOS).
+need(rows.index("model.canDismissPetSession(session)") > rows.index('.buttonStyle(.plain)'),
      "the drop control must sit beside the row button, not inside its label")
 
 # -- double-click the figure opens the session list; the chevron was the only way in.
