@@ -1,3 +1,20 @@
+## 0.5.135 (build 173)
+
+Miles Windu's four active-session stories now use the reviewed V15 artwork rendered from
+the 2x masters. One session deflects the off-screen bolt, closes the distance and cuts
+down the revealed droid. Two sessions restore the approved single-strike and backswing
+deflection fight. Three sessions carry the rebuilt thirteen-frame three-droid sequence,
+including the corrected final recovery with one attached purple saber instead of two.
+Four or more sessions keep the full sixteen-frame swarm escalation.
+
+Every strip keeps one authored scale for its whole loop, a transparent RGBA canvas,
+cleared frame gutters and an exact opening composition at the seam. Runtime art is the
+single final downsample from the reviewed 2x master.
+
+Existing stock Miles V7 installs advance automatically to V15 on launch. The migration
+recognizes only byte-identical bundled Miles artwork; custom sprites, OpenPets characters
+and the three other bundled Jedi remain untouched.
+
 ## 0.5.134 (build 172)
 
 Jedi Nia Solari, Jedi Elara Vale, and Jedi Rowan Vale now fight. Each carries authored

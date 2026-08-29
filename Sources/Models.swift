@@ -4571,7 +4571,8 @@ enum PetSpriteStore {
     /// Upgrade a retained stock Miles pack without touching a chosen OpenPets
     /// still, COS figure, custom animation, or another bundled Jedi. Every
     /// recognized mapping and asset must be byte-identical to the retained stock
-    /// files. The four new strips land first and the state map changes last, so
+    /// files. The four replacement strips land first and the state map changes
+    /// last, so
     /// an interrupted write leaves the old pack readable and retryable.
     @discardableResult
     static func refreshRecognizedBundledDefault(
@@ -4589,6 +4590,7 @@ enum PetSpriteStore {
             .working: [
                 (poseFileName(.working), 8),
                 ("session-pet-working-error-story.png", 16),
+                ("session-pet-working-story-v7.png", 16),
             ],
             .done: [(poseFileName(.done), 8)],
             .error: [(poseFileName(.error), 8)],
@@ -4596,9 +4598,16 @@ enum PetSpriteStore {
             .duel: [
                 (poseFileName(.duel), 8),
                 ("session-pet-duel-two-droid-v5.png", 13),
+                ("session-pet-duel-story-v7.png", 16),
             ],
-            .trio: [(poseFileName(.trio), 6)],
-            .swarm: [(poseFileName(.swarm), 6)],
+            .trio: [
+                (poseFileName(.trio), 6),
+                ("session-pet-trio-story-v7.png", 12),
+            ],
+            .swarm: [
+                (poseFileName(.swarm), 6),
+                ("session-pet-swarm-story-v7.png", 16),
+            ],
         ]
         guard installed.count == retainedStock.count,
               retainedStock.allSatisfy({ pose, accepted in

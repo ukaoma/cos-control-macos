@@ -30,22 +30,22 @@ def png_header(path: pathlib.Path) -> tuple[int, int, int]:
 def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet: str) -> None:
     state = json.loads((root / "Resources/DefaultPet/session-pet-states.json").read_text())["poses"]
     need(
-        state["working"] == {"file": "session-pet-working-story-v7.png", "frames": 16},
+        state["working"] == {"file": "session-pet-working-one-droid-v15.png", "frames": 16},
         "one session does not point at the run/brake/error/run story",
     )
     need(
-        state["duel"] == {"file": "session-pet-duel-story-v7.png", "frames": 16},
+        state["duel"] == {"file": "session-pet-duel-two-droid-v15.png", "frames": 13},
         "two sessions do not point at the run/brake/two-droid/run story",
     )
     need(
-        state["trio"] == {"file": "session-pet-trio-story-v7.png", "frames": 12},
+        state["trio"] == {"file": "session-pet-trio-story-v15.png", "frames": 13},
         "three sessions do not point at the rebuilt three-droid story",
     )
     need(
-        state["swarm"] == {"file": "session-pet-swarm-story-v7.png", "frames": 16},
+        state["swarm"] == {"file": "session-pet-swarm-story-v15.png", "frames": 16},
         "four-plus sessions do not point at the rebuilt five-droid story",
     )
-    cell_widths = {"working": 256, "duel": 319, "trio": 286, "swarm": 311}
+    cell_widths = {"working": 304, "duel": 304, "trio": 286, "swarm": 311}
     for pose, cell_width in cell_widths.items():
         row = state[pose]
         width, height, color_type = png_header(root / "Resources/DefaultPet" / row["file"])
@@ -53,14 +53,14 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
              f"{pose} story canvas/frame declaration drifted")
         need(color_type == 6, f"{pose} story must be a true RGBA PNG")
     approved_hashes = {
-        "session-pet-working-story-v7.png": "8b77f4c080320f003b83042e0125321beae78ba16c7b667c8a2765d93c4aa8d7",
-        "session-pet-duel-story-v7.png": "bab3193304e29c3cfc02625eff2478a6a6bc0462ee171c253c37f1506d3954e3",
-        "session-pet-trio-story-v7.png": "d7efacf5b5e15425bbaf6b1c4d69c746dd1fd93a0ac3a8828bca6d713bbb8963",
-        "session-pet-swarm-story-v7.png": "6e65f389cc0b7657ae92debe0cedf183e8cc5203bed98504fa60106dedf86bf8",
+        "session-pet-working-one-droid-v15.png": "c6f5f82d9147bf5ef66e88d9ffc0897cc06334c8f8378cc02edaac2d4796d97a",
+        "session-pet-duel-two-droid-v15.png": "b83b1310878075e00f77062b0852a477461fc9d966d30aa104434f89e6b8bf3f",
+        "session-pet-trio-story-v15.png": "0cf66752e7c282cbfb09cb8a96a9b3ef2d5f1029e0ce4f70076983f76ffc5682",
+        "session-pet-swarm-story-v15.png": "d08b524f8e2997f8be4228a5dd15bb9ef3c5efee75a7963b3ffa9e2ac6128876",
     }
     for file, expected_hash in approved_hashes.items():
         actual_hash = hashlib.sha256((root / "Resources/DefaultPet" / file).read_bytes()).hexdigest()
-        need(actual_hash == expected_hash, f"approved V7 story drifted: {file}")
+        need(actual_hash == expected_hash, f"approved V15 story drifted: {file}")
 
     playlist = models.split("var usesActivityPlaylist", 1)[1].split(
         "func spriteHeight", 1
@@ -99,7 +99,7 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         and "installed.count == retainedStock.count" in models
         and "let storyPoses: [PetSpritePose] = [.working, .duel, .trio, .swarm]" in models
         and "updated[story.pose] = (story.file, story.frames)" in models
-        and int(re.search(r"petDefaultArtGeneration = (\d+)", controller).group(1)) >= 3
+        and int(re.search(r"petDefaultArtGeneration = (\d+)", controller).group(1)) >= 5
         and "if refresh != .failed" in controller,
         "installed Miles packs will not receive all four new story assets",
     )

@@ -114,7 +114,7 @@ final class ControllerModel: ObservableObject {
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 4
+    private static let petDefaultArtGeneration = 5
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -1602,10 +1602,10 @@ final class ControllerModel: ObservableObject {
         if UserDefaults.standard.integer(forKey: Self.petDefaultArtGenerationKey)
             < Self.petDefaultArtGeneration {
             let refresh = PetSpriteStore.refreshRecognizedBundledDefault(into: directory)
-            // Generation 4 lands combat strips on the three bundled Jedi. They
-            // never match Miles's retained stock above, so they need their own
-            // recognizer; without it a user who picked one of them keeps the
-            // all-still map forever.
+            // Generation 4 landed combat strips on the three bundled Jedi;
+            // generation 5 upgrades recognized Miles V7 installs to V15. The
+            // other Jedi never match Miles's retained stock, so they keep their
+            // own recognizer.
             if let upgraded = PetSpriteStore.refreshStillBundledCharacter(into: directory) {
                 NSLog("COSControl landed combat art on %@", upgraded)
             }

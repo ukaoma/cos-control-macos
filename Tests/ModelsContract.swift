@@ -1504,16 +1504,16 @@ struct ModelsContract {
         let defaultPet = repositoryRoot.appendingPathComponent("Resources/DefaultPet")
         let shippedMap = PetSpriteStore.loadStateMap(in: defaultPet)
         let authoredStories: [(pose: PetSpritePose, file: String, frames: Int)] = [
-            (.working, "session-pet-working-story-v7.png", 16),
-            (.duel, "session-pet-duel-story-v7.png", 16),
-            (.trio, "session-pet-trio-story-v7.png", 12),
-            (.swarm, "session-pet-swarm-story-v7.png", 16),
+            (.working, "session-pet-working-one-droid-v15.png", 16),
+            (.duel, "session-pet-duel-two-droid-v15.png", 13),
+            (.trio, "session-pet-trio-story-v15.png", 13),
+            (.swarm, "session-pet-swarm-story-v15.png", 16),
         ]
         var storyFrames: [PetSpritePose: [NSImage]] = [:]
         for story in authoredStories {
             precondition(shippedMap[story.pose]?.file == story.file
                             && shippedMap[story.pose]?.frames == story.frames,
-                         "\(story.pose.rawValue) must map to its V7 story and declared count")
+                         "\(story.pose.rawValue) must map to its V15 story and declared count")
             guard let image = NSImage(contentsOf: defaultPet.appendingPathComponent(story.file))
             else { preconditionFailure("Miles \(story.pose.rawValue) story must be readable") }
             let frames = PetSpriteStrip.slice(image, frames: story.frames)
@@ -1575,14 +1575,8 @@ struct ModelsContract {
                                  "\(story.pose.rawValue) frame \(index) drops every droid")
                 }
                 if index > 0 {
-                    let intentionalSwarmHold = story.pose == .swarm && (index == 4 || index == 7)
-                    if intentionalSwarmHold {
-                        precondition(pngData(frames[index - 1]) == pngData(frame),
-                                     "swarm impact hold \(index) must remain one exact frame")
-                    } else {
-                        precondition(pngData(frames[index - 1]) != pngData(frame),
-                                     "\(story.pose.rawValue) frame \(index) stalls unexpectedly")
-                    }
+                    precondition(pngData(frames[index - 1]) != pngData(frame),
+                                 "\(story.pose.rawValue) frame \(index) stalls unexpectedly")
                 }
             }
             precondition(pngData(frames.first!) == pngData(frames.last!),
@@ -1654,8 +1648,8 @@ struct ModelsContract {
         ) == .refreshed, "the recognized pre-story Miles pack must refresh once")
         let refreshedMap = PetSpriteStore.loadStateMap(in: refreshDest)
         precondition(refreshedMap[.working]?.frames == 16
-                        && refreshedMap[.duel]?.frames == 16
-                        && refreshedMap[.trio]?.frames == 12
+                        && refreshedMap[.duel]?.frames == 13
+                        && refreshedMap[.trio]?.frames == 13
                         && refreshedMap[.swarm]?.frames == 16,
                      "the refresh must install all four authored story strips")
         precondition(refreshedMap[.patrol]?.file == "session-pet-patrol.png",
@@ -1672,12 +1666,31 @@ struct ModelsContract {
         )
         precondition(PetSpriteStore.refreshRecognizedBundledDefault(
             into: priorStoryTemplate, from: defaultPet
-        ) == .refreshed, "the retained prior story pack must upgrade to V7")
+        ) == .refreshed, "the retained prior story pack must upgrade to V15")
         let priorRefreshedMap = PetSpriteStore.loadStateMap(in: priorStoryTemplate)
         for story in authoredStories {
             precondition(priorRefreshedMap[story.pose]?.file == story.file
                             && priorRefreshedMap[story.pose]?.frames == story.frames,
-                         "prior story refresh must promote \(story.pose.rawValue) to V7")
+                         "prior story refresh must promote \(story.pose.rawValue) to V15")
+        }
+
+        // 0.5.134 already stamped the previous art generation after installing
+        // V7. Generation 5 must recognize that exact retained pack and advance
+        // it to V15 instead of leaving existing Miles users behind.
+        let v7Template = seedRoot.appendingPathComponent("v7-template", isDirectory: true)
+        try! FileManager.default.copyItem(at: legacyTemplate, to: v7Template)
+        let v7Map = #"{"poses":{"idle":{"file":"session-pet-idle.png","frames":8},"patrol":{"file":"session-pet-patrol.png","frames":8},"waiting":{"file":"session-pet-waiting.png","frames":8},"working":{"file":"session-pet-working-story-v7.png","frames":16},"done":{"file":"session-pet-done.png","frames":8},"error":{"file":"session-pet-error.png","frames":8},"attention":{"file":"session-pet-attention.png","frames":6},"duel":{"file":"session-pet-duel-story-v7.png","frames":16},"trio":{"file":"session-pet-trio-story-v7.png","frames":12},"swarm":{"file":"session-pet-swarm-story-v7.png","frames":16}}}"#
+        try! Data(v7Map.utf8).write(
+            to: v7Template.appendingPathComponent("session-pet-states.json"), options: .atomic
+        )
+        precondition(PetSpriteStore.refreshRecognizedBundledDefault(
+            into: v7Template, from: defaultPet
+        ) == .refreshed, "the retained V7 Miles pack must upgrade to V15")
+        let v7RefreshedMap = PetSpriteStore.loadStateMap(in: v7Template)
+        for story in authoredStories {
+            precondition(v7RefreshedMap[story.pose]?.file == story.file
+                            && v7RefreshedMap[story.pose]?.frames == story.frames,
+                         "V7 refresh must promote \(story.pose.rawValue) to V15")
         }
 
         for pose in [PetSpritePose.working, .duel, .trio, .swarm, .patrol] {
@@ -1701,7 +1714,7 @@ struct ModelsContract {
         let brokenSource = seedRoot.appendingPathComponent("broken-source", isDirectory: true)
         try! FileManager.default.copyItem(at: defaultPet, to: brokenSource)
         try! FileManager.default.removeItem(
-            at: brokenSource.appendingPathComponent("session-pet-swarm-story-v7.png")
+            at: brokenSource.appendingPathComponent("session-pet-swarm-story-v15.png")
         )
         let retryDest = seedRoot.appendingPathComponent("retryable-legacy", isDirectory: true)
         try! FileManager.default.copyItem(at: legacyTemplate, to: retryDest)

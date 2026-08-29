@@ -1912,9 +1912,9 @@ for bundled_id in bundled_ids:
 # character is chosen, so those users are already at the current value.
 gen = re.search(r"petDefaultArtGeneration = (\d+)", model)
 need(gen is not None, "the art-generation constant is gone")
-need(int(gen.group(1)) >= 4,
-     "bundled Jedi gained combat strips in 0.5.133; the art generation must advance past 3 "
-     "or existing users never receive them")
+need(int(gen.group(1)) >= 5,
+     "Miles gained V15 combat strips in 0.5.135; the art generation must advance past 4 "
+     "or existing V7 users never receive them")
 need("refreshStillBundledCharacter(into: directory)" in model,
      "the launch refresh never calls the still-character recognizer, so a user who picked "
      "a Jedi while it was still-only keeps the all-still map")
