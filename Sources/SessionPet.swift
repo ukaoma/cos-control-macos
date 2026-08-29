@@ -205,9 +205,7 @@ private struct SessionPetRoot: View {
     var body: some View {
         VStack(spacing: size.length(8)) {
             ZStack(alignment: .topTrailing) {
-                Button {
-                    handleSpriteClick()
-                } label: {
+                Group {
                     ZStack(alignment: .bottomLeading) {
                         SessionPetSprite(
                             working: pose.animates,
@@ -227,8 +225,14 @@ private struct SessionPetRoot: View {
                         }
                     }
                 }
-                .buttonStyle(.plain)
-                .help(focus.map { "\(pose.title) · \($0.petStateCaption) · \($0.providerLabel)" } ?? pose.title)
+                .contentShape(Rectangle())
+                // Declared before the single tap so SwiftUI resolves the double
+                // FIRST — otherwise the opening click of a double-tap would jump
+                // to the platform and the menu would open behind the raised app.
+                .onTapGesture(count: 2) { toggleSessionMenu() }
+                .onTapGesture { handleSpriteClick() }
+                .accessibilityAddTraits(.isButton)
+                .help(spriteHelp)
                 if sessions.count > 1 {
                     Text("\(sessions.count)")
                         .font(COSType.mono(size.typeSize(9), weight: .bold))
@@ -289,6 +293,10 @@ private struct SessionPetRoot: View {
     private var sessionList: some View {
         let content = VStack(alignment: .leading, spacing: 0) {
             ForEach(sessions) { session in
+                // The drop control is a SIBLING of the row button, not a child:
+                // a Button nested inside another Button's label never receives
+                // the click on macOS.
+                HStack(spacing: 0) {
                 Button {
                     model.petFocusID = session.id
                     model.openSessionInPlatform(session)
@@ -319,6 +327,20 @@ private struct SessionPetRoot: View {
                 }
                 .buttonStyle(.plain)
                 .help("Open in platform")
+                if model.canDismissPetSession(session) {
+                    Button {
+                        model.dismissPetSession(session)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: size.typeSize(9), weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .padding(size.length(5))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Drop from the pet list. The session keeps running.")
+                }
+                }
                 if session.id != sessions.last?.id {
                     Divider()
                 }
@@ -423,8 +445,20 @@ private struct SessionPetRoot: View {
         .help(help)
     }
 
+    private var spriteHelp: String {
+        let base = focus.map { "\(pose.title) · \($0.petStateCaption) · \($0.providerLabel)" } ?? pose.title
+        return sessions.count > 1 ? base + " · double-click for the session list" : base
+    }
+
     private func handleSpriteClick() {
         if let focus { model.openSessionInPlatform(focus) }
+    }
+
+    /// The chevron was the only way in. A double-click on the figure itself is
+    /// the same toggle, and stays a no-op at one session where there is no list.
+    private func toggleSessionMenu() {
+        guard sessions.count > 1 else { return }
+        model.petExpanded.toggle()
     }
 
     private func handleSpriteDrop(_ providers: [NSItemProvider]) -> Bool {

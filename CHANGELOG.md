@@ -1,3 +1,30 @@
+## 0.5.130 (build 168)
+
+Switching characters now actually switches. Installing a sprite pack, or picking
+a single sprite from the gallery, used to layer on top of whatever was already
+installed: every pose the incoming character did not declare stayed owned by the
+outgoing one, and because a plain sprite is only the last-resort rung of the
+pose lookup, choosing a legacy pet while one of the advanced Jedi packs was
+installed could not change anything on screen. A pack is now built in a scratch
+folder and swapped in whole, so a pack that fails halfway leaves the existing
+character untouched instead of half-erased, and a stale combat strip can no
+longer outlive the pack that wrote it and keep fighting under new artwork.
+
+Legacy packs render every state again. The error and attention poses used to
+fall back only to each other, so a pack carrying neither drew nothing at all for
+both once the previous pack's leftovers stopped covering for it. Every fallback
+chain now terminates at a pose a minimal pack actually declares.
+
+Idle sessions can be dropped from the pet list. After ten minutes without
+activity a row shows an x; clicking it removes the row from the list only. The
+session keeps running, nothing is deleted, and the row returns on its own the
+moment it does something. Four parked sessions no longer pin the pet in the
+five-droid swarm while the one session actually working goes unseen.
+
+Double-clicking the character opens the active-session list, so the chevron is
+no longer the only way in. A single click still opens the focused session and
+still never expands the list.
+
 ## 0.5.129 (build 167)
 
 Session Pet settings now open as one compact section. State sprites and the

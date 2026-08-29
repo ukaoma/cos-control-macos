@@ -102,12 +102,18 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         and "if refresh != .failed" in controller,
         "installed Miles packs will not receive all four new story assets",
     )
-    handle = pet.split("private func handleSpriteClick()", 1)[1].split(
-        "private func handleSpriteDrop", 1
-    )[0]
+    # The BODY of handleSpriteClick: toggleSessionMenu now sits between it and
+    # handleSpriteDrop and legitimately names petExpanded. Two toggle sites are
+    # expected as of 0.5.130 -- the chevron, and the double-click Miles asked
+    # for. A SINGLE click still may not expand; that is the layout-shift rule.
+    handle = pet.split("private func handleSpriteClick()", 1)[1].split("\n    }", 1)[0]
     need(
-        "petExpanded" not in handle and pet.count("model.petExpanded.toggle()") == 1,
-        "character click can still expand sessions; only the dropdown may toggle",
+        "petExpanded" not in handle and pet.count("model.petExpanded.toggle()") == 2,
+        "a single character click can still expand sessions",
+    )
+    need(
+        ".onTapGesture(count: 2) { toggleSessionMenu() }" in pet,
+        "the double-click route into the session list is gone",
     )
 
 

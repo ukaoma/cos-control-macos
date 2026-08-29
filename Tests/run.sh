@@ -1784,11 +1784,15 @@ need(pet_src.count('petSpriteKit.viewportSize(') >= 2 and
      "the presenter sizes or fits against only the current lifecycle pose")
 need('private var idleBubble' in pet_src and 'private var petButtonPlaceholder' in pet_src,
      "zero/one-session chrome no longer reserves the same collapsed layout slots")
-handle_sprite = pet_src.split('private func handleSpriteClick()', 1)[1].split('private func handleSpriteDrop', 1)[0]
+# Body only: toggleSessionMenu sits between handleSpriteClick and
+# handleSpriteDrop as of 0.5.130 and legitimately names petExpanded.
+handle_sprite = pet_src.split('private func handleSpriteClick()', 1)[1].split('\n    }', 1)[0]
 need('petExpanded' not in handle_sprite,
-     "clicking the character must open its focus, never expand the session list")
-need(pet_src.count('model.petExpanded.toggle()') == 1,
-     "only the dropdown control may toggle the session list")
+     "a SINGLE click on the character must open its focus, never expand the session list")
+need(pet_src.count('model.petExpanded.toggle()') == 2,
+     "only the dropdown control and the double-click handler may toggle the session list")
+need('.onTapGesture(count: 2) { toggleSessionMenu() }' in pet_src,
+     "the double-click route into the session list is gone")
 need('scale: characterScale' in pet_src and 'characterScale: characterScale' in pet_src,
      "the fitted character dial must size BOTH the stable panel envelope and the sprite frame")
 need('characterScale: characterScale' in pet_src,
@@ -2287,5 +2291,103 @@ close_fn = re.search(r"func closeClaudeSession\(\).*?\n    \}", model, re.S)
 need(close_fn is not None and "resetSessionChat()" in close_fn.group(0),
      "closeClaudeSession does not reset chat state")
 CHATCHK
+
+# Pet character switching (0.5.130). Installing a pack or a single sprite used
+# to layer ON TOP of whatever was already installed, so every pose the incoming
+# character did not declare stayed owned by the outgoing one -- and because the
+# plain custom sprite is only the LAST-RESORT rung of PetSpriteKit.frames(for:),
+# picking a legacy pet after an advanced pack was structurally unable to change
+# anything on screen. Checks below read the exact call sites, not definitions.
+/usr/bin/python3 - "$ROOT" <<'PETCHK'
+import re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+model = (root / "Sources/ControllerModel.swift").read_text()
+models = (root / "Sources/Models.swift").read_text()
+pet = (root / "Sources/SessionPet.swift").read_text()
+
+def need(cond, msg):
+    if not cond: sys.exit(f"pet-character: {msg}")
+
+# -- whole-character single sprite clears first; a NAMED pose must not.
+install = model[model.index("func installPetSprite(from url: URL"):
+                model.index("func installPetSpritePack(")]
+branches = install.split("} else {")
+need(len(branches) == 2, "installPetSprite no longer has the pose/no-pose split")
+need("PetSpriteStore.removeAll(" not in branches[0],
+     "a single-pose override must NOT wipe the rest of the installed character")
+need("PetSpriteStore.removeAll(from: directory)" in branches[1],
+     "adopting a whole new sprite must clear the previous character's poses first")
+need(branches[1].index("PetSpriteStore.removeAll(from: directory)")
+     < branches[1].index("PetSpriteStore.install(from: url"),
+     "the clear has to happen BEFORE the new sprite is written")
+
+# -- pack install stages, then swaps whole. Nothing may write into the live
+#    support directory while the pack is being assembled.
+pack = model[model.index("func installPetSpritePack("):
+             model.index("func setPetSpriteFrames(")]
+need(pack.count("into: staging") == 2,
+     "both the grid and the pose install must target the staging folder")
+need("into: directory" not in pack,
+     "a pack must never install straight into the live support directory")
+need("PetSpriteStore.replaceContents(of: directory, with: staging)" in pack,
+     "the staged pack is never swapped in")
+need(pack.index("try PetSpriteStore.replaceContents") > pack.rindex("into: staging"),
+     "the swap must come after every item is staged")
+
+# -- the swap clears. Dropping this line lets a stale cinematic.png outlive the
+#    pack that wrote it, and frames(for:) prefers the cinematic over a
+#    single-frame trio/swarm, so the OLD character keeps fighting.
+swap = models[models.index("static func replaceContents("):]
+swap = swap[:swap.index("\n    private static func saveStateMap")]
+need("removeAll(from: directory, fileManager: fileManager)" in swap,
+     "replaceContents must clear the destination before copying the staged pack")
+need(swap.index("removeAll(from: directory") < swap.index("for file in staged"),
+     "the clear has to precede the copy")
+need("guard !staged.isEmpty" in swap,
+     "an empty staging folder must not be allowed to erase the installed character")
+
+# -- every fallback chain terminates somewhere a MINIMAL pack declares. error
+#    and attention pointed only at each other, so a legacy pack carrying
+#    neither rendered nothing at all for both once leftovers stopped covering.
+chain = models[models.index("var fallbackPoses: [PetSpritePose] {"):]
+chain = chain[:chain.index("\n    }")]
+for pose in ["error", "attention", "done", "working, .waiting", "thinking, .reading, .writing",
+             "searching, .grepping", "stopped"]:
+    row = re.search(rf"case \.{re.escape(pose)}: \[(.*?)\]", chain)
+    need(row is not None, f"fallbackPoses lost its .{pose} row")
+    need(".idle" in row.group(1) or ".done" in row.group(1),
+         f".{pose} must terminate at a pose a minimal pack actually declares")
+
+# -- idle rows can be dropped from the pet list without touching the session.
+need("func dismissPetSession(" in model and "func canDismissPetSession(" in model,
+     "the pet list has no drop control")
+dismiss = model[model.index("func dismissPetSession("):model.index("func restorePetDismissals(")]
+need("guard canDismissPetSession(session) else { return }" in dismiss,
+     "a running session must not be droppable")
+need("applyPetSessions(petSessionsRaw)" in dismiss,
+     "re-applying from the FILTERED list prunes the dismissal and hands the row back")
+apply = model[model.index("private func applyPetSessions("):model.index("/// Offered only once")]
+need(apply.index("petDismissals.prune(against: sessions)") < apply.index("petDismissals.filter(sessions)"),
+     "prune must run against the unfiltered list, before the filter")
+need("kill" not in dismiss.lower() and "delete" not in dismiss.lower() and "stop" not in dismiss.lower(),
+     "dropping a row from the list must not touch the underlying session")
+
+# -- the X is a SIBLING of the row button. Nested inside, it never gets clicked.
+rows = pet[pet.index("private var sessionList:"):pet.index("private func statusBubble(")]
+need("model.canDismissPetSession(session)" in rows, "the drop control is not gated on idle time")
+need("HStack(spacing: 0)" in rows and "model.petFocusID = session.id" in rows,
+     "the session row lost either its wrapper or its open action")
+need(rows.index("HStack(spacing: 0)") < rows.index("model.petFocusID = session.id"),
+     "the drop control must sit beside the row button, not inside its label")
+
+# -- double-click the figure opens the session list; the chevron was the only way in.
+need(".onTapGesture(count: 2) { toggleSessionMenu() }" in pet, "no double-click handler on the pet")
+need(pet.index(".onTapGesture(count: 2)") < pet.index(".onTapGesture { handleSpriteClick() }"),
+     "the double-click must be declared first or the single tap wins the race")
+menu = pet[pet.index("private func toggleSessionMenu()"):]
+menu = menu[:menu.index("\n    }") + 6]
+need("guard sessions.count > 1 else { return }" in menu,
+     "double-click must be inert when there is no list to show")
+PETCHK
 
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"

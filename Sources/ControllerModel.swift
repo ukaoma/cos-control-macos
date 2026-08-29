@@ -112,6 +112,7 @@ final class ControllerModel: ObservableObject {
     private static let petCharacterScaleGenerationKey = "cos.sessionPetCharacterScaleGeneration"
     private static let petCharacterScaleGeneration = 2
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
+    private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
     private static let petDefaultArtGeneration = 3
 
@@ -263,6 +264,7 @@ final class ControllerModel: ObservableObject {
                 await self?.checkForAppUpdate()
             }
         }
+        loadPetDismissals()
         loadPetSprite()
     }
 
@@ -1258,6 +1260,11 @@ final class ControllerModel: ObservableObject {
     @Published var petCompleting = false
     private var petCompletionTask: Task<Void, Never>?
     @Published var petSessions: [ClaudeSession] = []
+    /// Unfiltered snapshot. `dismissPetSession` re-applies from THIS, because
+    /// re-applying from `petSessions` would prune against a list the dismissed
+    /// row is already missing from and hand it straight back.
+    private var petSessionsRaw: [ClaudeSession] = []
+    @Published var petDismissals = PetDismissals()
     @Published var petExpanded = false
     @Published var petFocusID: String?
     /// Reveal/jump copy when Activity and the menu extra are both closed.
@@ -1686,6 +1693,8 @@ final class ControllerModel: ObservableObject {
         do {
             let directory = PetSpriteStore.supportDirectory()
             if let pose {
+                // A named pose is a deliberate single-pose override. Everything
+                // else the user installed stays.
                 _ = try PetSpriteStore.installPose(
                     pose,
                     from: url,
@@ -1693,6 +1702,11 @@ final class ControllerModel: ObservableObject {
                     into: directory
                 )
             } else {
+                // No pose means "this image IS my pet now". The plain sprite is
+                // only the last-resort fallback in PetSpriteKit.frames(for:),
+                // so any pose an earlier pack owns would keep rendering and the
+                // pick would silently do nothing. Clear first, then install.
+                PetSpriteStore.removeAll(from: directory)
                 let dest = try PetSpriteStore.install(from: url, into: directory)
                 petCustomSprite = NSImage(contentsOf: dest)
             }
@@ -1709,6 +1723,17 @@ final class ControllerModel: ObservableObject {
         do {
             let items = try PetSpritePack.load(from: url)
             let directory = PetSpriteStore.supportDirectory()
+            // Build the pack in a scratch folder and swap it in whole. Installing
+            // straight into the support directory left every pose the incoming
+            // pack does not declare owned by the outgoing one, so a legacy pack
+            // chosen after an advanced pack kept rendering the advanced art.
+            let staging = FileManager.default.temporaryDirectory
+                .appendingPathComponent("cos-pet-pack-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(
+                at: staging,
+                withIntermediateDirectories: true
+            )
+            defer { try? FileManager.default.removeItem(at: staging) }
             for item in items {
                 if item.isGrid {
                     try PetSpriteStore.installGrid(
@@ -1716,18 +1741,19 @@ final class ControllerModel: ObservableObject {
                         columns: item.columns,
                         rows: item.rows,
                         cells: item.cells,
-                        into: directory
+                        into: staging
                     )
                 } else if let pose = item.pose {
                     _ = try PetSpriteStore.installPose(
                         pose,
                         from: item.url,
                         frames: item.frames,
-                        into: directory,
+                        into: staging,
                         retireCinematic: false
                     )
                 }
             }
+            try PetSpriteStore.replaceContents(of: directory, with: staging)
             loadPetSprite()
         } catch {
             self.error = error.localizedDescription
@@ -1850,6 +1876,9 @@ final class ControllerModel: ObservableObject {
     }
 
     private func applyPetSessions(_ sessions: [ClaudeSession]) {
+        petSessionsRaw = sessions
+        petDismissals.prune(against: sessions)
+        let sessions = petDismissals.filter(sessions)
         let wasWorking = petSessions.contains(where: \.isPetWorking)
         petSessions = sessions
         let isWorking = sessions.contains(where: \.isPetWorking)
@@ -1866,6 +1895,35 @@ final class ControllerModel: ObservableObject {
         if let petFocusID, !petSessions.contains(where: { $0.id == petFocusID }) {
             self.petFocusID = nil
         }
+    }
+
+    /// Offered only once a row has been still for ten minutes, so the control
+    /// never appears on a session mid-turn.
+    func canDismissPetSession(_ session: ClaudeSession) -> Bool {
+        PetDismissals.isDismissable(session)
+    }
+
+    func dismissPetSession(_ session: ClaudeSession) {
+        guard canDismissPetSession(session) else { return }
+        petDismissals.dismiss(session)
+        savePetDismissals()
+        applyPetSessions(petSessionsRaw)
+    }
+
+    func restorePetDismissals() {
+        guard !petDismissals.stamps.isEmpty else { return }
+        petDismissals = PetDismissals()
+        savePetDismissals()
+        applyPetSessions(petSessionsRaw)
+    }
+
+    private func savePetDismissals() {
+        UserDefaults.standard.set(petDismissals.stamps, forKey: Self.petDismissedKey)
+    }
+
+    private func loadPetDismissals() {
+        let stored = UserDefaults.standard.dictionary(forKey: Self.petDismissedKey) as? [String: String]
+        petDismissals = PetDismissals(stamps: stored ?? [:])
     }
 
     private func beginPetCompletion() {

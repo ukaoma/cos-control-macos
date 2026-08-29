@@ -2355,6 +2355,61 @@ struct ModelsContract {
         print("COS Control: fork/duplicate title disambiguation passed")
     }
 
+    /// Dropping an idle row is a VIEW decision: nothing about the session
+    /// changes, and any new activity supersedes the drop on its own.
+    private static func checkPetDismissals() {
+        func session(_ id: String, state: String, ageMinutes: Double) -> ClaudeSession {
+            let stamp = ISO8601DateFormatter().string(
+                from: Date().addingTimeInterval(-ageMinutes * 60)
+            )
+            return ClaudeSession(.object([
+                "id": .string(id),
+                "name": .string(id),
+                "workspace": .string("MU-Chief-Staff"),
+                "state": .string(state),
+                "alive": .bool(true),
+                "updatedAt": .string(stamp),
+            ]))!
+        }
+
+        let parked = session("a", state: "waiting", ageMinutes: 30)
+        let fresh = session("b", state: "waiting", ageMinutes: 2)
+        let busy = session("c", state: "running", ageMinutes: 90)
+
+        precondition(PetDismissals.isDismissable(parked), "a 30-minute-idle row must be droppable")
+        precondition(!PetDismissals.isDismissable(fresh), "a 2-minute-idle row must not be droppable")
+        precondition(!PetDismissals.isDismissable(busy),
+                     "a RUNNING row is never droppable however old its stamp")
+        precondition(PetDismissals.idleGrace == 600, "the idle grace is meant to be ten minutes")
+
+        var drops = PetDismissals()
+        drops.dismiss(parked)
+        precondition(drops.hides(parked), "the dismissed row is still listed")
+        // Ids carry the provider prefix ("claude:a"), which is also what the
+        // dismissal map keys on -- so the two must agree.
+        precondition(drops.filter([parked, fresh, busy]).map(\.id) == ["claude:b", "claude:c"],
+                     "only the dismissed row may disappear")
+        precondition(drops.stamps.keys.first == parked.id,
+                     "the map must key on the same id the filter compares")
+
+        // Same id, new stamp: the session started moving again, so the drop
+        // no longer applies. This is what keeps a drop from being a delete.
+        let revived = session("a", state: "running", ageMinutes: 0)
+        precondition(!drops.hides(revived), "activity must supersede a dismissal")
+
+        // Pruning is against the UNFILTERED list. Pruning against the filtered
+        // one would forget the drop on the very next poll and walk it back in.
+        var kept = drops
+        kept.prune(against: [parked, fresh, busy])
+        precondition(kept.hides(parked), "pruning against the full list must keep a live dismissal")
+        var forgotten = drops
+        forgotten.prune(against: [fresh, busy])
+        precondition(!forgotten.hides(parked), "a row that is gone must not be remembered forever")
+        precondition(forgotten.stamps.isEmpty, "the dismissal map must not grow without bound")
+
+        print("COS Control: idle pet rows drop from the list without touching the session")
+    }
+
     static func main() throws {
         checkRenameEligibility()
         checkAmbiguousTitles()
@@ -2369,6 +2424,7 @@ struct ModelsContract {
         checkOrphanCapture()
         checkClaudeSession()
         checkPetSpriteStore()
+        checkPetDismissals()
         checkPetSpritePoses()
         checkPetSize()
         checkCursorAgentTabMatch()

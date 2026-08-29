@@ -865,6 +865,47 @@ struct SessionSearchHit: Identifiable, Sendable {
 }
 
 /// LIST caps that hid rows. Sibling of the session array, not a 13th row key.
+/// Dropping an idle row from the pet list is a VIEW decision, never a session
+/// lifecycle change: nothing is stopped, killed, or deleted. What gets stored
+/// is the row's `updatedAt` AT THE MOMENT it was dismissed, so a session that
+/// starts moving again re-appears on its own rather than staying hidden behind
+/// a stale decision. The point is the escalation pose — four parked sessions
+/// pin the pet in the five-droid swarm and hide the one that is actually live.
+struct PetDismissals: Sendable, Equatable {
+    /// How long a row must sit still before the drop control is offered.
+    static let idleGrace: TimeInterval = 600
+
+    private(set) var stamps: [String: String]
+
+    init(stamps: [String: String] = [:]) { self.stamps = stamps }
+
+    /// A running row is never dismissable, however old its stamp looks.
+    static func isDismissable(_ session: ClaudeSession, now: Date = Date()) -> Bool {
+        guard !session.isPetWorking else { return false }
+        guard let updated = session.updatedDate else { return false }
+        return now.timeIntervalSince(updated) >= idleGrace
+    }
+
+    mutating func dismiss(_ session: ClaudeSession) { stamps[session.id] = session.updatedAt }
+
+    func hides(_ session: ClaudeSession) -> Bool {
+        guard let stamp = stamps[session.id] else { return false }
+        return stamp == session.updatedAt
+    }
+
+    func filter(_ sessions: [ClaudeSession]) -> [ClaudeSession] {
+        sessions.filter { !hides($0) }
+    }
+
+    /// Forget rows that are gone. Must be handed the UNFILTERED list — pruning
+    /// against the filtered one would drop every dismissal on the next poll and
+    /// walk the row straight back in.
+    mutating func prune(against sessions: [ClaudeSession]) {
+        let live = Set(sessions.map(\.id))
+        stamps = stamps.filter { live.contains($0.key) }
+    }
+}
+
 struct SessionListDropped: Sendable, Equatable {
     var age: Int
     var limit: Int
@@ -3031,10 +3072,16 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
         case .duel: [.swarm, .working]
         case .trio: [.swarm, .duel]
         case .swarm: [.duel, .trio]
-        case .error: [.attention]
-        case .attention: [.error]
+        // Every chain has to terminate somewhere a MINIMAL pack actually
+        // declares. error and attention used to point only at each other, so a
+        // legacy pack carrying neither rendered nothing at all for both states
+        // once the previous pack's leftovers stopped covering for it.
+        case .error: [.attention, .working, .idle]
+        case .attention: [.error, .waiting, .idle]
+        case .done: [.idle]
+        case .working, .waiting: [.idle]
         case .thinking, .reading, .writing: [.waiting, .idle]
-        case .searching, .grepping: [.working, .waiting]
+        case .searching, .grepping: [.working, .waiting, .idle]
         case .stopped: [.idle, .done]
         default: []
         }
@@ -4521,6 +4568,32 @@ enum PetSpriteStore {
         try? fileManager.removeItem(at: directory.appendingPathComponent(cinematicFileName))
         try? fileManager.removeItem(at: directory.appendingPathComponent(cinematicMetaFileName))
         try? fileManager.removeItem(at: directory.appendingPathComponent(stateFileName))
+    }
+
+    /// Swap a fully-staged pack in as the WHOLE installed character. Clearing
+    /// first is the point: installing a pack in place left every pose the new
+    /// pack does not declare owned by the previous one, and because the plain
+    /// custom sprite is only the last-resort fallback in `frames(for:)`, a
+    /// legacy pack layered under an advanced one was structurally unreachable.
+    /// Staging then swapping means a pack that fails halfway leaves the
+    /// existing character untouched instead of half-erased.
+    static func replaceContents(
+        of directory: URL,
+        with staging: URL,
+        fileManager: FileManager = .default
+    ) throws {
+        let staged = try fileManager.contentsOfDirectory(
+            at: staging,
+            includingPropertiesForKeys: nil
+        )
+        guard !staged.isEmpty else { throw InstallError.empty }
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        removeAll(from: directory, fileManager: fileManager)
+        for file in staged {
+            let dest = directory.appendingPathComponent(file.lastPathComponent)
+            try? fileManager.removeItem(at: dest)
+            try fileManager.copyItem(at: file, to: dest)
+        }
     }
 
     private static func saveStateMap(
