@@ -1559,17 +1559,23 @@ struct ModelsContract {
             .deletingLastPathComponent()
         let defaultPet = repositoryRoot.appendingPathComponent("Resources/DefaultPet")
         let shippedMap = PetSpriteStore.loadStateMap(in: defaultPet)
+        precondition(PetSpriteStrip.clampFrames(-1) == 1
+                        && PetSpriteStrip.clampFrames(17) == 17
+                        && PetSpriteStrip.clampFrames(23) == 23
+                        && PetSpriteStrip.clampFrames(32) == 32
+                        && PetSpriteStrip.clampFrames(99) == 32,
+                     "authored counts above 16 must survive the bounded frame contract")
         let authoredStories: [(pose: PetSpritePose, file: String, frames: Int)] = [
-            (.working, "session-pet-working-one-droid-v15-1.png", 16),
-            (.duel, "session-pet-duel-two-droid-v15-1.png", 12),
-            (.trio, "session-pet-trio-story-v15-1.png", 13),
-            (.swarm, "session-pet-swarm-story-v15-1.png", 16),
+            (.working, "session-pet-working-one-droid-v15-2.png", 16),
+            (.duel, "session-pet-duel-two-droid-v15-2.png", 17),
+            (.trio, "session-pet-trio-story-v15-2.png", 13),
+            (.swarm, "session-pet-swarm-story-v15-2.png", 23),
         ]
         var storyFrames: [PetSpritePose: [NSImage]] = [:]
         for story in authoredStories {
             precondition(shippedMap[story.pose]?.file == story.file
                             && shippedMap[story.pose]?.frames == story.frames,
-                         "\(story.pose.rawValue) must map to its V15.1 story and declared count")
+                         "\(story.pose.rawValue) must map to its V15.2 story and declared count")
             guard let image = NSImage(contentsOf: defaultPet.appendingPathComponent(story.file))
             else { preconditionFailure("Miles \(story.pose.rawValue) story must be readable") }
             let frames = PetSpriteStrip.slice(image, frames: story.frames)
@@ -1629,7 +1635,10 @@ struct ModelsContract {
                 let subjects = subjectColorCounts(frame)
                 precondition(subjects.hero >= 20,
                              "\(story.pose.rawValue) frame \(index) drops Miles")
-                if story.pose == .duel || story.pose == .trio || story.pose == .swarm {
+                let authoredDroidFreeBeat = (story.pose == .duel && [12, 13, 14].contains(index + 1))
+                    || (story.pose == .swarm && index + 1 == 22)
+                if (story.pose == .duel || story.pose == .trio || story.pose == .swarm)
+                    && !authoredDroidFreeBeat {
                     precondition(subjects.droidEye >= 1,
                                  "\(story.pose.rawValue) frame \(index) drops every droid")
                 }
@@ -1840,11 +1849,11 @@ struct ModelsContract {
         let refreshedMap = PetSpriteStore.loadStateMap(in: refreshDest)
         let refreshedScales = PetSpriteStore.loadRenderScales(in: refreshDest)
         precondition(refreshedMap[.working]?.frames == 16
-                        && refreshedMap[.duel]?.frames == 12
+                        && refreshedMap[.duel]?.frames == 17
                         && refreshedMap[.trio]?.frames == 13
-                        && refreshedMap[.swarm]?.frames == 16,
+                        && refreshedMap[.swarm]?.frames == 23,
                      "the refresh must install all four authored story strips")
-        precondition(refreshedScales[.idle] == 2,
+        precondition(refreshedScales[.idle] == 3,
                      "the refresh must land the pack-owned Miles idle scale")
         precondition(refreshedMap[.patrol]?.file == "session-pet-patrol.png",
                      "the targeted refresh must preserve every unrelated pose mapping")
@@ -1905,8 +1914,71 @@ struct ModelsContract {
                             && v15RefreshedMap[story.pose]?.frames == story.frames,
                          "V15 refresh must promote \(story.pose.rawValue) to V15.1")
         }
-        precondition(PetSpriteStore.loadRenderScales(in: v15Template)[.idle] == 2,
-                     "V15 refresh must land the 2x idle scale")
+        precondition(PetSpriteStore.loadRenderScales(in: v15Template)[.idle] == 3,
+                     "V15 refresh must land the 3x idle scale")
+
+        // 0.5.139 already carries the V15.1 story bytes and a stock 2x idle
+        // scale. Generation 11 must recognize that exact install, upgrade the
+        // stories and stock scale, and preserve a manually-authored scale.
+        let stockV151 = seedRoot.appendingPathComponent("stock-v15-1", isDirectory: true)
+        try! FileManager.default.copyItem(at: defaultPet, to: stockV151)
+        let stockMapURL = stockV151.appendingPathComponent("session-pet-states.json")
+        var stockPayload = try! JSONSerialization.jsonObject(
+            with: Data(contentsOf: stockMapURL)
+        ) as! [String: Any]
+        var stockPoses = stockPayload["poses"] as! [String: [String: Any]]
+        // Exercise the actual published V15.1 source map, not a clone of the
+        // new map. Retained old bytes are required for the recognition gate.
+        for (pose, file, count) in [
+            ("working", "session-pet-working-one-droid-v15-1.png", 16),
+            ("duel", "session-pet-duel-two-droid-v15-1.png", 12),
+            ("trio", "session-pet-trio-story-v15-1.png", 13),
+            ("swarm", "session-pet-swarm-story-v15-1.png", 16),
+        ] {
+            stockPoses[pose]?["file"] = file
+            stockPoses[pose]?["frames"] = count
+        }
+        stockPoses[PetSpritePose.idle.rawValue]?["renderScale"] = 2
+        stockPayload["poses"] = stockPoses
+        try! JSONSerialization.data(
+            withJSONObject: stockPayload, options: [.prettyPrinted, .sortedKeys]
+        ).write(to: stockMapURL, options: .atomic)
+        precondition(PetSpriteStore.refreshRecognizedBundledDefault(
+            into: stockV151, from: defaultPet
+        ) == .refreshed, "the retained V15.1 Miles pack must accept the 3x idle upgrade")
+        precondition(PetSpriteStore.loadRenderScales(in: stockV151)[.idle] == 3,
+                     "the retained stock 2x Miles idle must upgrade to 3x")
+        let migratedV152 = PetSpriteStore.loadStateMap(in: stockV151)
+        for story in authoredStories {
+            precondition(migratedV152[story.pose]?.file == story.file
+                            && migratedV152[story.pose]?.frames == story.frames,
+                         "published V15.1 must migrate every story to V15.2")
+        }
+        let migratedIntervals = PetSpriteStore.loadFrameIntervals(in: stockV151)
+        precondition(abs((migratedIntervals[.duel] ?? 0) - 0.11) < 0.000001,
+                     "V15.2 duel migration must preserve all 17 frames at 0.11s")
+
+        let customScaleV151 = seedRoot.appendingPathComponent(
+            "custom-scale-v15-1", isDirectory: true
+        )
+        try! FileManager.default.copyItem(at: defaultPet, to: customScaleV151)
+        let customScaleMapURL = customScaleV151.appendingPathComponent(
+            "session-pet-states.json"
+        )
+        var customScalePayload = try! JSONSerialization.jsonObject(
+            with: Data(contentsOf: customScaleMapURL)
+        ) as! [String: Any]
+        var customScalePoses = customScalePayload["poses"] as! [String: [String: Any]]
+        customScalePoses[PetSpritePose.idle.rawValue]?["renderScale"] = 1.5
+        customScalePayload["poses"] = customScalePoses
+        try! JSONSerialization.data(
+            withJSONObject: customScalePayload, options: [.prettyPrinted, .sortedKeys]
+        ).write(to: customScaleMapURL, options: .atomic)
+        precondition(PetSpriteStore.refreshRecognizedBundledDefault(
+            into: customScaleV151, from: defaultPet
+        ) == .refreshed, "custom-scale stock art must remain eligible for story refresh")
+        precondition(PetSpriteStore.loadRenderScales(in: customScaleV151)[.idle] == 1.5,
+                     "a manually-authored Miles idle scale must remain untouched")
 
         for pose in [PetSpritePose.working, .duel, .trio, .swarm, .patrol] {
             let customDest = seedRoot.appendingPathComponent(
@@ -1929,7 +2001,7 @@ struct ModelsContract {
         let brokenSource = seedRoot.appendingPathComponent("broken-source", isDirectory: true)
         try! FileManager.default.copyItem(at: defaultPet, to: brokenSource)
         try! FileManager.default.removeItem(
-            at: brokenSource.appendingPathComponent("session-pet-swarm-story-v15-1.png")
+            at: brokenSource.appendingPathComponent("session-pet-swarm-story-v15-2.png")
         )
         let retryDest = seedRoot.appendingPathComponent("retryable-legacy", isDirectory: true)
         try! FileManager.default.copyItem(at: legacyTemplate, to: retryDest)
@@ -1973,6 +2045,26 @@ struct ModelsContract {
             generation: 2
         ) == 600, "restart must not double a migrated preference twice")
         precondition(PetCharacterScale.factor(200) == 2.0)
+
+        // CHARACTER SPEED: scales the playback clock, never sprite or card geometry.
+        precondition(PetAnimationSpeed.defaultPercent == 100)
+        precondition(PetAnimationSpeed.clamp(1) == 25)
+        precondition(PetAnimationSpeed.clamp(900) == 200)
+        precondition(PetAnimationSpeed.factor(25) == 0.25)
+        precondition(PetAnimationSpeed.factor(200) == 2.0)
+        let speedSuite = "com.gotcos.control.tests.animation-speed.\(UUID().uuidString)"
+        let speedDefaults = UserDefaults(suiteName: speedSuite)!
+        defer { speedDefaults.removePersistentDomain(forName: speedSuite) }
+        precondition(PetAnimationSpeed.loadPersistedPercent(
+            defaults: speedDefaults,
+            percentKey: "speed"
+        ) == 100, "a fresh install must play authored speed")
+        speedDefaults.set(10, forKey: "speed")
+        precondition(PetAnimationSpeed.loadPersistedPercent(
+            defaults: speedDefaults,
+            percentKey: "speed"
+        ) == 25, "a stored speed must clamp before playback")
+
         precondition(PetSpritePose.idle.spriteHeight(64, scale: 2) == 128,
                      "the character dial must scale the sprite frame")
         precondition(PetSpritePose.swarm.spriteHeight(64, scale: 2) == 128,

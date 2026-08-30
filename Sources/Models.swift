@@ -2935,6 +2935,27 @@ enum PetCharacterScale {
     }
 }
 
+/// Playback rate for every authored pet animation, independent of PetSize and
+/// PetCharacterScale. Scaling the animation CLOCK rather than rewriting each
+/// pose interval keeps complete stories and ambient playlist beats intact.
+enum PetAnimationSpeed {
+    static let defaultPercent = 100
+    static let minPercent = 25
+    static let maxPercent = 200
+
+    static func clamp(_ value: Int) -> Int {
+        min(max(value, minPercent), maxPercent)
+    }
+
+    static func factor(_ percent: Int) -> Double {
+        Double(clamp(percent)) / 100
+    }
+
+    static func loadPersistedPercent(defaults: UserDefaults, percentKey: String) -> Int {
+        clamp(defaults.object(forKey: percentKey) as? Int ?? defaultPercent)
+    }
+}
+
 /// Keep the floating pet on a visible display. 0.5.97 grew Large downward from
 /// the bottom corner and autosave parked the panel under the screen.
 enum PetPanelFrame {
@@ -3345,7 +3366,9 @@ struct PetSpriteKit {
 enum PetSpriteStrip {
     static let maxHeight = 256
     static let minFrames = 1
-    static let maxFrames = 16
+    // Longer authored stories need their exact count for cell slicing. Keep a
+    // bounded import limit without silently truncating the 17/23-frame stories.
+    static let maxFrames = 32
 
     static func clampFrames(_ value: Int) -> Int {
         min(max(value, minFrames), maxFrames)
@@ -4496,7 +4519,7 @@ enum PetSpriteStore {
             guard let entry = poses[pose.rawValue] as? [String: Any],
                   let value = entry["renderScale"] as? NSNumber
             else { continue }
-            scales[pose] = CGFloat(min(max(value.doubleValue, 0.5), 2.0))
+            scales[pose] = CGFloat(min(max(value.doubleValue, 0.5), 3.0))
         }
         return scales
     }
@@ -4905,6 +4928,8 @@ enum PetSpriteStore {
                 ("session-pet-working-error-story.png", 16),
                 ("session-pet-working-story-v7.png", 16),
                 ("session-pet-working-one-droid-v15.png", 16),
+                ("session-pet-working-one-droid-v15-1.png", 16),
+                ("session-pet-working-one-droid-v15-2.png", 16),
             ],
             .done: [(poseFileName(.done), 8)],
             .error: [(poseFileName(.error), 8)],
@@ -4914,16 +4939,22 @@ enum PetSpriteStore {
                 ("session-pet-duel-two-droid-v5.png", 13),
                 ("session-pet-duel-story-v7.png", 16),
                 ("session-pet-duel-two-droid-v15.png", 13),
+                ("session-pet-duel-two-droid-v15-1.png", 12),
+                ("session-pet-duel-two-droid-v15-2.png", 17),
             ],
             .trio: [
                 (poseFileName(.trio), 6),
                 ("session-pet-trio-story-v7.png", 12),
                 ("session-pet-trio-story-v15.png", 13),
+                ("session-pet-trio-story-v15-1.png", 13),
+                ("session-pet-trio-story-v15-2.png", 13),
             ],
             .swarm: [
                 (poseFileName(.swarm), 6),
                 ("session-pet-swarm-story-v7.png", 16),
                 ("session-pet-swarm-story-v15.png", 16),
+                ("session-pet-swarm-story-v15-1.png", 16),
+                ("session-pet-swarm-story-v15-2.png", 23),
             ],
         ]
         guard installed.count == retainedStock.count,
@@ -4970,10 +5001,18 @@ enum PetSpriteStore {
             for story in stories {
                 updated[story.pose] = (story.file, story.frames)
             }
+            let installedScales = loadRenderScales(in: directory, fileManager: fileManager)
+            let bundledScales = loadRenderScales(in: source, fileManager: fileManager)
+            let idleScaleWasStock = installedScales[.idle] == nil
+                || abs((installedScales[.idle] ?? 0) - 2) < 0.001
+            let scaleOverrides: [PetSpritePose: CGFloat] = idleScaleWasStock
+                ? bundledScales.filter { $0.key == .idle }
+                : [:]
             try saveStateMap(
                 updated,
                 frameIntervalDefaults: loadFrameIntervals(in: source, fileManager: fileManager),
                 renderScaleDefaults: loadRenderScales(in: source, fileManager: fileManager),
+                renderScaleOverrides: scaleOverrides,
                 in: directory,
                 fileManager: fileManager
             )
@@ -5059,6 +5098,7 @@ enum PetSpriteStore {
         _ map: [PetSpritePose: (file: String, frames: Int)],
         frameIntervalDefaults: [PetSpritePose: Double] = [:],
         renderScaleDefaults: [PetSpritePose: CGFloat] = [:],
+        renderScaleOverrides: [PetSpritePose: CGFloat] = [:],
         in directory: URL,
         fileManager: FileManager
     ) throws {
@@ -5068,6 +5108,9 @@ enum PetSpriteStore {
         }
         var retainedScales = renderScaleDefaults
         for (pose, scale) in loadRenderScales(in: directory, fileManager: fileManager) {
+            retainedScales[pose] = scale
+        }
+        for (pose, scale) in renderScaleOverrides {
             retainedScales[pose] = scale
         }
         var poses: [String: [String: Any]] = [:]

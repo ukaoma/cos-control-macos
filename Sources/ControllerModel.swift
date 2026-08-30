@@ -117,12 +117,13 @@ final class ControllerModel: ObservableObject {
     private static let petSizeKey = "cos.sessionPetSize"
     private static let petSizePixelsKey = "cos.sessionPetSizePixels"
     private static let petCharacterPercentKey = "cos.sessionPetCharacterPercent"
+    private static let petAnimationSpeedPercentKey = "cos.sessionPetAnimationSpeedPercent"
     private static let petCharacterScaleGenerationKey = "cos.sessionPetCharacterScaleGeneration"
     private static let petCharacterScaleGeneration = 2
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 9
+    private static let petDefaultArtGeneration = 11
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -130,6 +131,13 @@ final class ControllerModel: ObservableObject {
             percentKey: petCharacterPercentKey,
             generationKey: petCharacterScaleGenerationKey,
             generation: petCharacterScaleGeneration
+        )
+    }
+
+    private static func loadPetAnimationSpeedPercent(defaults: UserDefaults = .standard) -> Int {
+        PetAnimationSpeed.loadPersistedPercent(
+            defaults: defaults,
+            percentKey: petAnimationSpeedPercentKey
         )
     }
     @Published var openReview: SpeakerReview?
@@ -1271,6 +1279,9 @@ final class ControllerModel: ObservableObject {
     /// Character dial, independent of petSize: pet size is the card, this is
     /// the figure inside it.
     @Published var petCharacterPercent = ControllerModel.loadPetCharacterPercent()
+    /// Playback rate only. Sprite size, panel geometry, and authored frame
+    /// intervals remain independent so this preference cannot distort a pack.
+    @Published var petAnimationSpeedPercent = ControllerModel.loadPetAnimationSpeedPercent()
     @Published var petSize = PetSize.load(
         preset: UserDefaults.standard.string(forKey: ControllerModel.petSizeKey),
         pixels: UserDefaults.standard.object(forKey: ControllerModel.petSizePixelsKey) as? Int
@@ -1563,6 +1574,7 @@ final class ControllerModel: ObservableObject {
     }
 
     var petCharacterFactor: CGFloat { PetCharacterScale.factor(petCharacterPercent) }
+    var petAnimationSpeedFactor: Double { PetAnimationSpeed.factor(petAnimationSpeedPercent) }
 
     /// Select a shipped animated character. Kept separate from the OpenPets
     /// install path because that gallery's attribution and licence note cover
@@ -1646,6 +1658,13 @@ final class ControllerModel: ObservableObject {
         UserDefaults.standard.set(clamped, forKey: Self.petCharacterPercentKey)
     }
 
+    func setPetAnimationSpeedPercent(_ value: Int) {
+        let clamped = PetAnimationSpeed.clamp(value)
+        guard clamped != petAnimationSpeedPercent else { return }
+        petAnimationSpeedPercent = clamped
+        UserDefaults.standard.set(clamped, forKey: Self.petAnimationSpeedPercentKey)
+    }
+
     func loadPetSprite() {
         let directory = PetSpriteStore.supportDirectory()
         // Seed the shipped character once, ever. Gated on a flag rather than on
@@ -1663,6 +1682,10 @@ final class ControllerModel: ObservableObject {
             // to their complete stories. Generation 8 promotes recognized Miles
             // V15 installs to V15.1 and lands its pack-owned idle scale.
             // Generation 9 removes Elara V1's oversized white saber matte.
+            // Generation 10 raises the stock Miles idle presentation from 2x
+            // to 3x while leaving a manually-authored scale untouched.
+            // Generation 11 installs the approved V15.2 combat stories,
+            // including the complete 23-frame counterclockwise swarm sequence.
             if let upgraded = PetSpriteStore.refreshStillBundledCharacter(into: directory) {
                 NSLog("COSControl landed combat art on %@", upgraded)
             }

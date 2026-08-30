@@ -46,6 +46,9 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         observers.append(model.$petCharacterPercent.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
+        observers.append(model.$petAnimationSpeedPercent.sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
         observers.append(model.$petExpanded.sink { [weak self] expanded in
             Task { @MainActor in
                 self?.syncOutsideClickMonitor(expanded)
@@ -222,6 +225,7 @@ private struct SessionPetRoot: View {
                             frameInterval: model.petFrameInterval(for: pose),
                             size: CGFloat(size.pixels),
                             characterScale: characterScale * model.petRenderScale(for: pose),
+                            animationSpeed: model.petAnimationSpeedFactor,
                             restClips: model.petRestClips(for: pose)
                         )
                         if let focus {

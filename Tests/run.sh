@@ -1798,6 +1798,19 @@ need('scale: characterScale' in pet_src and 'characterScale: characterScale' in 
 need('characterScale: characterScale' in pet_src,
      "the sprite view never receives the character dial")
 need('Character size' in views, "Settings has no character-size control")
+need('Character speed' in views and 'petAnimationSpeedPercent' in views,
+     "Settings has no independent character-speed control")
+motion_for_speed = (root / "Sources/COSMotion.swift").read_text()
+need('enum PetAnimationSpeed' in models_src and
+     'petAnimationSpeedPercentKey' in model and
+     'PetAnimationSpeed.loadPersistedPercent(' in model,
+     "the character-speed preference is not modeled and persisted")
+need('animationSpeed: model.petAnimationSpeedFactor' in pet_src,
+     "the saved character speed never reaches the live sprite")
+need('resolvedAnimationSpeed' in motion_for_speed and
+     'timeIntervalSinceReferenceDate * resolvedAnimationSpeed' in motion_for_speed and
+     'authored / resolvedAnimationSpeed' in motion_for_speed,
+     "character speed must scale the full animation clock and timeline cadence")
 need('petCharacterScaleGenerationKey' in model and
      'PetCharacterScale.loadPersistedPercent(' in model,
      "the doubled character range does not migrate an existing saved preference")
@@ -1935,8 +1948,8 @@ for bundled_id in bundled_ids:
 # character is chosen, so those users are already at the current value.
 gen = re.search(r"petDefaultArtGeneration = (\d+)", model)
 need(gen is not None, "the art-generation constant is gone")
-need(int(gen.group(1)) >= 9,
-     "Miles V15.1 and Elara V1.1 landed after 0.5.138; the art generation must advance "
+need(int(gen.group(1)) >= 11,
+     "Miles V15.2 landed after 0.5.139; the art generation must advance "
      "or existing installs never receive the corrected stories")
 need("refreshStillBundledCharacter(into: directory)" in model,
      "the launch refresh never calls the still-character recognizer, so a user who picked "

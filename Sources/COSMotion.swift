@@ -225,6 +225,8 @@ struct SessionPetSprite: View {
     var size: CGFloat = 64
     /// The character dial only; the card around this view sizes off PetSize.
     var characterScale: CGFloat = 1
+    /// Multiplies the animation clock only. 0.25 is quarter speed, 2 is double.
+    var animationSpeed: Double = 1
     /// Exact secondary clips an ambient action rotates through between bursts.
     var restClips: [PetSpriteClip] = []
 
@@ -242,11 +244,16 @@ struct SessionPetSprite: View {
         guard !reduceMotion else { return 3600 }
         let candidates = [primaryFrameInterval]
             + (playlists ? usableRestClips.map(\.frameInterval) : [])
-        return candidates.filter { $0 > 0 }.min() ?? primaryFrameInterval
+        let authored = candidates.filter { $0 > 0 }.min() ?? primaryFrameInterval
+        return authored / resolvedAnimationSpeed
     }
 
     private var primaryFrameInterval: Double {
         frameInterval ?? pose.frameInterval(forFrames: frames.count)
+    }
+
+    private var resolvedAnimationSpeed: Double {
+        min(max(animationSpeed, 0.25), 2)
     }
 
     var body: some View {
@@ -255,12 +262,13 @@ struct SessionPetSprite: View {
         // adjacent cells double-exposes two different fight poses and reads as
         // a washed-out ghost, so every authored animation advances frame-clean.
         TimelineView(.animation(minimumInterval: interval, paused: reduceMotion && frames.count <= 1)) { timeline in
-            let phase = reduceMotion ? 0.0 : sin(timeline.date.timeIntervalSinceReferenceDate * (working ? 6.2 : 2.4))
+            let elapsed = timeline.date.timeIntervalSinceReferenceDate * resolvedAnimationSpeed
+            let phase = reduceMotion ? 0.0 : sin(elapsed * (working ? 6.2 : 2.4))
             let bounce = working && !reduceMotion ? CGFloat(phase) * max(1, size * 0.022) : 0
             Group {
-                if playlists, let frame = playlistFrame(at: timeline.date) {
+                if playlists, let frame = playlistFrame(elapsed: elapsed) {
                     frameImage(frame)
-                } else if let frame = playbackFrame(at: timeline.date) {
+                } else if let frame = playbackFrame(elapsed: elapsed) {
                     frameImage(frame)
                 } else if let customImage {
                     Image(nsImage: customImage)
@@ -336,10 +344,10 @@ struct SessionPetSprite: View {
 
     /// Absolute-time schedule, so no per-instance state has to survive the
     /// panel rebuilding its root view on every poll.
-    private func playlistFrame(at date: Date) -> NSImage? {
+    private func playlistFrame(elapsed: Double) -> NSImage? {
         let rests = usableRestClips
         let plan = PetPlaylist.plan(
-            elapsed: date.timeIntervalSinceReferenceDate,
+            elapsed: elapsed,
             actionCount: frames.count,
             restCounts: rests.map { $0.frames.count },
             interval: primaryFrameInterval,
@@ -350,13 +358,13 @@ struct SessionPetSprite: View {
         return clip[min(plan.index, clip.count - 1)]
     }
 
-    private func playbackFrame(at date: Date) -> NSImage? {
+    private func playbackFrame(elapsed: Double) -> NSImage? {
         guard !frames.isEmpty else { return nil }
         if reduceMotion || frames.count == 1 {
             let index = pose.cinematic ? min(frames.count - 1, max(0, frames.count / 2)) : 0
             return frames[index]
         }
-        let index = Int(date.timeIntervalSinceReferenceDate / primaryFrameInterval) % frames.count
+        let index = Int(elapsed / primaryFrameInterval) % frames.count
         return frames[index]
     }
 }

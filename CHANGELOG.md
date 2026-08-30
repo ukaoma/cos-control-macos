@@ -1,3 +1,33 @@
+## 0.5.140 (build 178)
+
+Character speed now sits directly below Character size in Session Pet settings. The
+saved 25% to 200% control slows or accelerates the animation without changing the
+figure, card, buttons, or text; 100% remains each sprite pack's authored cadence.
+
+Speed scales the animation clock rather than rewriting individual frame intervals.
+That keeps complete combat stories and patrol rest beats intact at every setting, so
+slow motion actually reveals every frame instead of cutting a sequence short. macOS
+Reduced Motion still freezes the sprite regardless of the saved speed.
+
+Miles Windu's bundled idle presentation is now 3× instead of 2×—an additional
+1.5×—so idle, meditation, and patrol read at the same visual weight as the
+multi-agent stories. Recognized stock installs migrate automatically while a
+manually-authored pose scale remains untouched.
+
+Miles's V15.2 active-session stories now contain 16, 17, 13, and 23 frames.
+The two-session fight adds a rightward jump-roll, a clean landing beat, and a
+visible replacement-droid entry. The three-session opening blocks three shots;
+its ground and airborne attackers now aim at Miles rather than his blade.
+The swarm mixes the cleaned single-blade backstab and visible rotating handoff
+with Force control, a pull into a chest thrust, and complete droid dissolves.
+Four counterclockwise turn beats lead into the visible behind-the-back chest
+thrust; its compact pivot footwork keeps the final strike deliberate and readable.
+
+The sprite pipeline now supports up to 32 frames so the longer stories retain
+their exact cell boundaries instead of being silently sliced as 16. Versioned
+assets and art generation 11 migrate byte-identical stock Miles packs to V15.2;
+old assets remain available for recognition and custom art stays untouched.
+
 ## 0.5.139 (build 177)
 
 Miles Windu now ships the approved V15.1 one-, two-, three-, and four-plus-session

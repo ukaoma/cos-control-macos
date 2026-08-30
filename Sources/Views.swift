@@ -656,7 +656,7 @@ struct ControlPanel: View {
                     Text("Session pet")
                         .font(.body.weight(.medium))
                     Text(model.petEnabled
-                         ? "On · \(model.petSize.preset.title) · \(model.petCharacterPercent)% character"
+                         ? "On · \(model.petSize.preset.title) · \(model.petCharacterPercent)% size · \(model.petAnimationSpeedPercent)% speed"
                          : "Off")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -3187,6 +3187,28 @@ private struct PetSizeControls: View {
                     .frame(width: 44, alignment: .trailing)
             }
             Text("Scales the figure only. Buttons, text, and the card keep their size.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Divider()
+                .padding(.vertical, 2)
+            Text("Character speed")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Slider(
+                    value: Binding(
+                        get: { Double(model.petAnimationSpeedPercent) },
+                        set: { model.setPetAnimationSpeedPercent(Int($0.rounded())) }
+                    ),
+                    in: Double(PetAnimationSpeed.minPercent)...Double(PetAnimationSpeed.maxPercent),
+                    step: 5
+                )
+                .controlSize(.small)
+                Text("\(model.petAnimationSpeedPercent)%")
+                    .font(.caption.monospacedDigit())
+                    .frame(width: 44, alignment: .trailing)
+            }
+            Text("Controls animation playback only. 25% is slow motion; 100% matches the pack.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }

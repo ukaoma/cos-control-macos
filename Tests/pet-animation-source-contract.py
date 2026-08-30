@@ -31,30 +31,32 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
     state = json.loads((root / "Resources/DefaultPet/session-pet-states.json").read_text())["poses"]
     need(
         state["working"] == {
-            "file": "session-pet-working-one-droid-v15-1.png", "frames": 16, "interval": 0.1
+            "file": "session-pet-working-one-droid-v15-2.png", "frames": 16, "interval": 0.1
         },
         "one session does not point at the run/brake/error/run story",
     )
     need(
         state["duel"] == {
-            "file": "session-pet-duel-two-droid-v15-1.png", "frames": 12,
-            "interval": 0.14666666666666667,
+            "file": "session-pet-duel-two-droid-v15-2.png", "frames": 17,
+            "interval": 0.11,
         },
         "two sessions do not point at the run/brake/two-droid/run story",
     )
     need(
         state["trio"] == {
-            "file": "session-pet-trio-story-v15-1.png", "frames": 13, "interval": 0.22
+            "file": "session-pet-trio-story-v15-2.png", "frames": 13, "interval": 0.22
         },
         "three sessions do not point at the rebuilt three-droid story",
     )
     need(
         state["swarm"] == {
-            "file": "session-pet-swarm-story-v15-1.png", "frames": 16, "interval": 0.22
+            "file": "session-pet-swarm-story-v15-2.png", "frames": 23, "interval": 0.22
         },
         "four-plus sessions do not point at the rebuilt five-droid story",
     )
-    need(state["idle"].get("renderScale") == 2, "Miles idle is not authored at 2x scale")
+    need(state["idle"].get("renderScale") == 3, "Miles idle is not authored at 3x scale")
+    frame_cap = int(re.search(r"static let maxFrames = (\d+)", models).group(1))
+    need(frame_cap == 32, "runtime frame limit must preserve longer authored stories")
     cell_widths = {"working": 304, "duel": 304, "trio": 286, "swarm": 311}
     for pose, cell_width in cell_widths.items():
         row = state[pose]
@@ -63,14 +65,14 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
              f"{pose} story canvas/frame declaration drifted")
         need(color_type == 6, f"{pose} story must be a true RGBA PNG")
     approved_hashes = {
-        "session-pet-working-one-droid-v15-1.png": "222d651fbef45d0832c2bbdeefb9865600227bd181c214dd2f9aa20e22c74c47",
-        "session-pet-duel-two-droid-v15-1.png": "22846064208a120ec24f65ab8ac6c92b7fa2c154eb1d9adb250e6da259b49c12",
-        "session-pet-trio-story-v15-1.png": "eea6f9a6c5163f6dc598b7bf30a8262c2a48520d645b8983ff4e04adca0c9692",
-        "session-pet-swarm-story-v15-1.png": "f4e4626335e4b7d99c06bc0760dc0116ee087f702088ca298a4250be5f0d76a1",
+        "session-pet-working-one-droid-v15-2.png": "222d651fbef45d0832c2bbdeefb9865600227bd181c214dd2f9aa20e22c74c47",
+        "session-pet-duel-two-droid-v15-2.png": "0ff6cf4aacee3b116d7effe40e632c55dcb824e92fd78160e0482bd08ba5fc80",
+        "session-pet-trio-story-v15-2.png": "605e89b4b7400743e82c5b0f5f8eac8408b7ab596f19c49ff54990157eef5be7",
+        "session-pet-swarm-story-v15-2.png": "ae2ae5e9f196e4d2b9892e3c076f361ac20aa8e33374486445c1ade0f83377ac",
     }
     for file, expected_hash in approved_hashes.items():
         actual_hash = hashlib.sha256((root / "Resources/DefaultPet" / file).read_bytes()).hexdigest()
-        need(actual_hash == expected_hash, f"approved V15.1 story drifted: {file}")
+        need(actual_hash == expected_hash, f"approved V15.2 story drifted: {file}")
 
     playlist = models.split("var usesActivityPlaylist", 1)[1].split(
         "func spriteHeight", 1
@@ -121,7 +123,7 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         and "installed.count == retainedStock.count" in models
         and "let storyPoses: [PetSpritePose] = [.working, .duel, .trio, .swarm]" in models
         and "updated[story.pose] = (story.file, story.frames)" in models
-        and int(re.search(r"petDefaultArtGeneration = (\d+)", controller).group(1)) >= 8
+        and int(re.search(r"petDefaultArtGeneration = (\d+)", controller).group(1)) >= 11
         and "if refresh != .failed" in controller,
         "installed Miles packs will not receive all four new story assets",
     )
@@ -162,6 +164,19 @@ def main() -> None:
     motion = (root / "Sources/COSMotion.swift").read_text()
     pet = (root / "Sources/SessionPet.swift").read_text()
     validate(root, models, controller, motion, pet)
+
+    must_fail(
+        "sixteen-frame cap truncates longer stories",
+        root, models.replace("static let maxFrames = 32", "static let maxFrames = 16"),
+        controller, motion, pet,
+    )
+
+    must_fail(
+        "old art generation strands installed V15.1 packs",
+        root, models,
+        re.sub(r"petDefaultArtGeneration = \d+", "petDefaultArtGeneration = 10", controller),
+        motion, pet,
+    )
 
     must_fail(
         "fallback-resolved ambient art",
