@@ -1514,6 +1514,12 @@ struct ReviewableMeeting: Identifiable, Sendable, Hashable {
     let sessionId: String
     let title: String
     let date: String
+    /// Zero-padded "HH:MM" from the server. `date` is day-granularity, so
+    /// without this a newest-first sort ties every meeting captured on the same
+    /// day — and a heavy G2 day is a dozen of them. Empty when a server does not
+    /// send it; those rows sort to the end of their day rather than being
+    /// silently treated as midnight.
+    let time: String
     let domain: String
     let duration: String
     /// Join keys for the meeting-detail route. Present on every row the server
@@ -1538,6 +1544,16 @@ struct ReviewableMeeting: Identifiable, Sendable, Hashable {
 
     var id: String { sessionId }
 
+    /// "2026-08-28 · 11:51 · 52 minutes". The clock time earns its place once
+    /// the list can be sorted chronologically: a dozen rows all reading
+    /// "2026-08-28" give the reader no way to see that the order is real.
+    var dateLine: String {
+        var parts = [date]
+        if !time.isEmpty { parts.append(time) }
+        parts.append(duration)
+        return parts.joined(separator: " · ")
+    }
+
     /// "4 topics · 2 decisions · 1 action · 3 attendees", zero counts omitted.
     ///
     /// Falls back to the capture source when everything is zero, because an
@@ -1559,6 +1575,7 @@ struct ReviewableMeeting: Identifiable, Sendable, Hashable {
         self.sessionId = sessionId
         title = o["title"]?.string ?? "Untitled meeting"
         date = o["date"]?.string ?? ""
+        time = o["time"]?.string ?? ""
         domain = o["domain"]?.string ?? ""
         duration = o["duration"]?.string ?? ""
         month = o["month"]?.string ?? ""
@@ -1673,8 +1690,37 @@ struct SpeakerListMemory: Codable, Equatable, Sendable {
         }
     }
 
-    func visible(_ meetings: [ReviewableMeeting], hideReviewed: Bool) -> [ReviewableMeeting] {
-        let ordered = ranked(meetings)
+    /// Chronological ordering, newest or oldest first.
+    ///
+    /// Ignores review rank entirely — that is the point. `ranked` answers "what
+    /// should I work on next", this answers "what happened when", and blending
+    /// them would produce a list that is neither.
+    func chronological(_ meetings: [ReviewableMeeting], newestFirst: Bool) -> [ReviewableMeeting] {
+        meetings.sorted { a, b in
+            if a.date != b.date { return newestFirst ? a.date > b.date : a.date < b.date }
+            // Same day: fall to clock time. An empty time sorts LAST within its
+            // day in both directions, because "unknown" is not "00:00" — a
+            // missing time must never claim to be the earliest meeting.
+            if a.time != b.time {
+                if a.time.isEmpty { return false }
+                if b.time.isEmpty { return true }
+                return newestFirst ? a.time > b.time : a.time < b.time
+            }
+            return a.title.localizedStandardCompare(b.title) == .orderedAscending
+        }
+    }
+
+    func visible(
+        _ meetings: [ReviewableMeeting],
+        hideReviewed: Bool,
+        sort: MeetingReviewSort = .reviewPriority
+    ) -> [ReviewableMeeting] {
+        let ordered: [ReviewableMeeting]
+        switch sort {
+        case .reviewPriority: ordered = ranked(meetings)
+        case .newest: ordered = chronological(meetings, newestFirst: true)
+        case .oldest: ordered = chronological(meetings, newestFirst: false)
+        }
         return hideReviewed ? ordered.filter { voiceTag(for: $0) != .reviewed } : ordered
     }
 
@@ -1685,6 +1731,28 @@ struct SpeakerListMemory: Codable, Equatable, Sendable {
         }
         if index + 1 < queue.count { return queue[index + 1] }
         return queue.first { $0.sessionId != sessionId }
+    }
+}
+
+/// How the "Meetings to review" list is ordered.
+///
+/// Default stays `reviewPriority` — the list is a work queue first, and the
+/// unnamed-speaker rows are why the surface exists. Chronological is opt-in for
+/// "what did I record on Thursday", which the priority order actively hides by
+/// interleaving old unnamed meetings above today's captures.
+enum MeetingReviewSort: String, CaseIterable, Identifiable, Sendable {
+    case reviewPriority
+    case newest
+    case oldest
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .reviewPriority: "Needs review first"
+        case .newest: "Newest first"
+        case .oldest: "Oldest first"
+        }
     }
 }
 

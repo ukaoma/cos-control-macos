@@ -1383,6 +1383,18 @@ struct ActivityWindow: View {
                     .toggleStyle(.checkbox)
                     .font(.system(size: 11))
                     .help("Keep finished meetings off the list while you work through names.")
+                    Menu {
+                        Picker("Sort meetings", selection: Binding(
+                            get: { model.meetingReviewSort },
+                            set: { model.setMeetingReviewSort($0) }
+                        )) {
+                            ForEach(MeetingReviewSort.allCases) { sort in Text(sort.title).tag(sort) }
+                        }
+                    } label: {
+                        Label(model.meetingReviewSort.title, systemImage: "arrow.up.arrow.down")
+                    }
+                    .fixedSize()
+                    .help("Needs review first is the naming queue. Newest or oldest reads the list by capture time instead.")
                 }
                 Spacer()
             }
@@ -1684,7 +1696,7 @@ struct ActivityWindow: View {
                                     sectionGlyph(.speakers)
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(meeting.title).font(.system(size: 12.5, weight: .medium)).lineLimit(1)
-                                        Text("\(meeting.date) · \(meeting.duration)")
+                                        Text(meeting.dateLine)
                                             .font(.system(size: 10.5, design: .monospaced))
                                             .foregroundStyle(.secondary)
                                         Text(meeting.countsSummary).font(.system(size: 10.5)).foregroundStyle(.tertiary)

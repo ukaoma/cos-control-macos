@@ -115,6 +115,57 @@ struct ModelsContract {
         precondition(row.humanTouched == nil)
     }
 
+    /// Chronological sort for the Meetings-to-review list (Miles, 2026-08-29).
+    ///
+    /// The list is priority-ordered by default, which lifts an old unnamed
+    /// meeting above today's captures. These pins cover the three things that
+    /// make a date sort trustworthy: it ignores review rank, it breaks same-day
+    /// ties on clock time, and a missing time never masquerades as midnight.
+    private static func checkMeetingReviewSort() {
+        func row(_ id: String, _ date: String, _ time: String) -> ReviewableMeeting {
+            guard let m = ReviewableMeeting(.object([
+                "sessionId": .string(id), "title": .string("Row \(id)"),
+                "date": .string(date), "time": .string(time),
+                "duration": .string("5 minutes"), "month": .string(String(date.prefix(7))),
+            ])) else { preconditionFailure("fixture failed to parse") }
+            return m
+        }
+
+        let memory = SpeakerListMemory()
+        let rows = [
+            row("a", "2026-08-26", "09:00"),
+            row("b", "2026-08-28", "07:47"),
+            row("c", "2026-08-28", "15:08"),
+            row("d", "2026-08-28", ""),
+        ]
+
+        let newest = memory.chronological(rows, newestFirst: true).map(\.sessionId)
+        precondition(newest == ["c", "b", "d", "a"],
+                     "newest-first orders by day then clock time, unknown time last within its day")
+
+        let oldest = memory.chronological(rows, newestFirst: false).map(\.sessionId)
+        precondition(oldest == ["a", "b", "c", "d"],
+                     "oldest-first starts at the earliest DAY, then ascends by clock time")
+        precondition(oldest.last == "d",
+                     "an empty time sorts LAST inside its day in BOTH directions, never as 00:00")
+
+        // The point of the feature: date order must survive to the visible list.
+        precondition(memory.visible(rows, hideReviewed: false, sort: .newest).map(\.sessionId) == newest,
+                     "the newest sort must reach the visible list unchanged by review rank")
+        precondition(memory.visible(rows, hideReviewed: false, sort: .reviewPriority).map(\.sessionId)
+                     == memory.ranked(rows).map(\.sessionId),
+                     "the default must remain the review-priority queue")
+
+        // Sorting the DISPLAY must never reshuffle the naming queue.
+        precondition(memory.nextUnnamed(after: "c", in: rows)?.sessionId
+                     == memory.nextUnnamed(after: "c", in: rows.reversed())?.sessionId,
+                     "nextUnnamed is rank-ordered and must not depend on display order")
+
+        precondition(row("x", "2026-08-28", "11:51").dateLine == "2026-08-28 · 11:51 · 5 minutes")
+        precondition(row("y", "2026-08-28", "").dateLine == "2026-08-28 · 5 minutes",
+                     "a missing time must not render an empty separator segment")
+    }
+
     /// The subtitle, including the case that would otherwise render blank.
     private static func checkCountsSummary() {
         precondition(meetingRow()?.countsSummary == "4 topics · 2 decisions · 1 action · 3 attendees")
@@ -2428,6 +2479,7 @@ struct ModelsContract {
         checkAmbiguousTitles()
         checkConfirmEligibility()
         checkMeetingRowFields()
+        checkMeetingReviewSort()
         checkCountsSummary()
         checkSpeakerListMemory()
         checkReviewVoiceQueue()

@@ -105,6 +105,14 @@ final class ControllerModel: ObservableObject {
     @Published var speakerListMemory = SpeakerListMemory.load()
     @Published var hideReviewedMeetings = UserDefaults.standard.bool(forKey: ControllerModel.hideReviewedKey)
     private static let hideReviewedKey = "cos.speakerHideReviewed"
+    /// Persisted beside hideReviewed, the control it sits next to in the same
+    /// toolbar. A sort choice that resets every launch is worse than not
+    /// offering one. An absent or unrecognised stored value falls back to
+    /// review priority rather than silently reordering the work queue.
+    @Published var meetingReviewSort = MeetingReviewSort(
+        rawValue: UserDefaults.standard.string(forKey: ControllerModel.meetingSortKey) ?? ""
+    ) ?? .reviewPriority
+    private static let meetingSortKey = "cos.speakerMeetingSort"
     private static let petEnabledKey = "cos.sessionPetEnabled"
     private static let petSizeKey = "cos.sessionPetSize"
     private static let petSizePixelsKey = "cos.sessionPetSizePixels"
@@ -1198,7 +1206,11 @@ final class ControllerModel: ObservableObject {
     }
 
     var visibleReviewableMeetings: [ReviewableMeeting] {
-        speakerListMemory.visible(reviewableMeetings, hideReviewed: hideReviewedMeetings)
+        speakerListMemory.visible(
+            reviewableMeetings,
+            hideReviewed: hideReviewedMeetings,
+            sort: meetingReviewSort
+        )
     }
 
     func nextUnnamedMeeting(after sessionId: String) -> ReviewableMeeting? {
@@ -1208,6 +1220,14 @@ final class ControllerModel: ObservableObject {
     func setHideReviewed(_ hide: Bool) {
         hideReviewedMeetings = hide
         UserDefaults.standard.set(hide, forKey: Self.hideReviewedKey)
+    }
+
+    /// Display order only. `nextUnnamed` deliberately keeps using `ranked`, so
+    /// re-sorting the list to browse by date never reshuffles the naming queue
+    /// that Next unnamed walks.
+    func setMeetingReviewSort(_ sort: MeetingReviewSort) {
+        meetingReviewSort = sort
+        UserDefaults.standard.set(sort.rawValue, forKey: Self.meetingSortKey)
     }
 
     private func persistSpeakerList(_ mutate: (inout SpeakerListMemory) -> Void) {

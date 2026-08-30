@@ -1,3 +1,22 @@
+## 0.5.137 (build 175)
+
+Meetings to review can be read by date.
+
+The list is a work queue: it puts meetings that still need speaker names on
+top, so an unnamed meeting from Wednesday sits above everything captured
+today. That is right when you are working through names and wrong when you
+are looking for what you recorded this morning.
+
+A sort control now sits next to Hide reviewed. Needs review first stays the
+default. Newest first and Oldest first order purely by capture time and
+ignore review state.
+
+Rows now show the capture time alongside the date, because a dozen rows all
+reading 2026-08-28 gave no way to see that a date sort had done anything.
+
+Next unnamed is untouched. It still walks the review-priority queue, so
+re-sorting the list to browse never reshuffles the naming order.
+
 ## 0.5.136 (build 174)
 
 Turning the session pet on now asks for Accessibility, instead of waiting for a jump to
