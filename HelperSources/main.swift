@@ -6693,21 +6693,43 @@ final class COSControlHelper {
         return a == b || a.hasPrefix(b) || b.hasPrefix(a)
     }
 
-    static func liveClaudePid(sessionId: String, sessionsRoot: URL) -> Int? {
+    /// The routing decision now rides on this lookup, so it collects ALL
+    /// matches, prefers exact sessionId equality over the prefix match, then
+    /// the highest pid — the old first-file-wins directory order was inert
+    /// while the pid was cosmetic and is nondeterministic across a resume that
+    /// leaves a stale <oldpid>.json behind.
+    static func liveClaudeSession(
+        sessionId: String, sessionsRoot: URL
+    ) -> (pid: Int, entrypoint: String?, procStart: String?)? {
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: sessionsRoot,
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         ) else { return nil }
+        var matches: [(pid: Int, exact: Bool, entrypoint: String?, procStart: String?)] = []
+        let want = sessionId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         for file in entries where file.pathExtension == "json" {
             guard let data = try? Data(contentsOf: file),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
             let rawId = obj["sessionId"] as? String ?? ""
             guard sessionIdsMatch(sessionId, rawId) else { continue }
             let pid = jsonInt(obj["pid"]) ?? 0
-            if pid > 0 { return pid }
+            guard pid > 0 else { continue }
+            matches.append((
+                pid: pid,
+                exact: rawId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == want,
+                entrypoint: obj["entrypoint"] as? String,
+                procStart: obj["procStart"] as? String
+            ))
         }
-        return nil
+        let best = matches.first(where: \.exact)
+            ?? matches.max(by: { $0.pid < $1.pid })
+        guard let best else { return nil }
+        return (best.pid, best.entrypoint, best.procStart)
+    }
+
+    static func liveClaudePid(sessionId: String, sessionsRoot: URL) -> Int? {
+        liveClaudeSession(sessionId: sessionId, sessionsRoot: sessionsRoot)?.pid
     }
 
     static func desktopApp(for provider: String) -> (path: String, bundleId: String)? {
@@ -8176,6 +8198,8 @@ final class COSControlHelper {
         let app = Self.desktopApp(for: provider)
         var path: String?
         var pid: Int?
+        var entrypoint: String?
+        var procStart: String?
         switch provider {
         case "cursor":
             path = Self.resolvedWorkspacePath(
@@ -8209,10 +8233,13 @@ final class COSControlHelper {
                 )
             }
         default:
-            pid = Self.liveClaudePid(
+            let live = Self.liveClaudeSession(
                 sessionId: sessionId,
                 sessionsRoot: home.appendingPathComponent(".claude/sessions", isDirectory: true)
             )
+            pid = live?.pid
+            entrypoint = live?.entrypoint
+            procStart = live?.procStart
             path = Self.resolvedWorkspacePath(
                 label: option("--workspace", in: args) ?? "",
                 workDirectory: loadManifest()?.workDirectory
@@ -8225,6 +8252,8 @@ final class COSControlHelper {
             "bundleId": app?.bundleId ?? NSNull(),
             "path": path ?? NSNull(),
             "pid": pid ?? NSNull(),
+            "entrypoint": entrypoint ?? NSNull(),
+            "procStart": procStart ?? NSNull(),
             "openMode": Self.sessionRevealOpenMode(provider: provider),
             "deepLink": Self.sessionRevealDeepLink(provider: provider, sessionId: sessionId) ?? NSNull(),
         ])

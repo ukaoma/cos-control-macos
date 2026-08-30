@@ -794,16 +794,24 @@ struct ModelsContract {
     }
 
     private static func checkPetSpritePoses() {
-        precondition(PetSpritePose.resolve(sessionCount: 1, focusState: "running", completing: false) == .working)
-        precondition(PetSpritePose.resolve(sessionCount: 1, focusState: "waiting", completing: false) == .waiting)
-        precondition(PetSpritePose.resolve(sessionCount: 1, focusState: "idle", completing: false) == .patrol)
-        precondition(PetSpritePose.resolve(sessionCount: 2, focusState: "idle", completing: false) == .duel)
-        precondition(PetSpritePose.resolve(sessionCount: 3, focusState: "running", completing: false) == .trio)
-        precondition(PetSpritePose.resolve(sessionCount: 4, focusState: "running", completing: false) == .swarm)
-        precondition(PetSpritePose.resolve(sessionCount: 5, focusState: "idle", completing: false) == .swarm)
-        precondition(PetSpritePose.resolve(sessionCount: 1, focusState: "running", completing: true) == .done)
-        precondition(PetSpritePose.resolve(sessionCount: 3, focusState: "running", completing: false, attention: true) == .attention)
-        precondition(PetSpritePose.resolve(sessionCount: 1, focusState: "error", completing: false) == .error)
+        // D4: completing only shows .done when NOTHING is still working or
+        // waiting, and waiting-with-no-running beats the fight ladder.
+        precondition(PetSpritePose.resolve(sessionCount: 1, workingCount: 1, waitingCount: 0, focusState: "running", completing: false) == .working)
+        precondition(PetSpritePose.resolve(sessionCount: 1, workingCount: 0, waitingCount: 1, focusState: "waiting", completing: false) == .waiting)
+        precondition(PetSpritePose.resolve(sessionCount: 1, workingCount: 0, waitingCount: 0, focusState: "idle", completing: false) == .patrol)
+        precondition(PetSpritePose.resolve(sessionCount: 2, workingCount: 0, waitingCount: 0, focusState: "idle", completing: false) == .duel)
+        precondition(PetSpritePose.resolve(sessionCount: 3, workingCount: 3, waitingCount: 0, focusState: "running", completing: false) == .trio)
+        precondition(PetSpritePose.resolve(sessionCount: 4, workingCount: 4, waitingCount: 0, focusState: "running", completing: false) == .swarm)
+        precondition(PetSpritePose.resolve(sessionCount: 5, workingCount: 0, waitingCount: 0, focusState: "idle", completing: false) == .swarm)
+        precondition(PetSpritePose.resolve(sessionCount: 1, workingCount: 0, waitingCount: 0, focusState: "running", completing: true) == .done)
+        precondition(PetSpritePose.resolve(sessionCount: 3, workingCount: 3, waitingCount: 0, focusState: "running", completing: false, attention: true) == .attention)
+        precondition(PetSpritePose.resolve(sessionCount: 1, workingCount: 0, waitingCount: 0, focusState: "error", completing: false) == .error)
+        precondition(PetSpritePose.resolve(sessionCount: 4, workingCount: 3, waitingCount: 0, focusState: "running", completing: true) == .swarm,
+                     "one of four finishing must not flash .done over a live fight")
+        precondition(PetSpritePose.resolve(sessionCount: 4, workingCount: 0, waitingCount: 0, focusState: "idle", completing: true) == .done)
+        precondition(PetSpritePose.resolve(sessionCount: 2, workingCount: 0, waitingCount: 1, focusState: "waiting", completing: true) == .waiting)
+        precondition(PetSpritePose.resolve(sessionCount: 4, workingCount: 0, waitingCount: 1, focusState: "waiting", completing: false) == .waiting,
+                     "one waiting + three idle-alive is amber, not a swarm")
         precondition(PetSpritePose.matching(fileName: "01-idle-strip.png") == .idle)
         precondition(PetSpritePose.matching(fileName: "02-search-strip-alpha.png") == .waiting)
         precondition(PetSpritePose.matching(fileName: "03-grep-strip-alpha.png") == .working)
@@ -2638,6 +2646,216 @@ struct ModelsContract {
         print("COS Control: idle pet rows drop from the list without touching the session")
     }
 
+    /// D1: the per-id detector, execution-tested without ControllerModel.
+    private static func checkPetCompletionDetector() {
+        func sess(_ native: String, _ state: String, keepWarm: Bool = false) -> ClaudeSession {
+            ClaudeSession(.object([
+                "id": .string(native),
+                "name": .string(keepWarm ? "ready" : "task \(native)"),
+                "workspace": .string("MU-Chief-Staff"),
+                "state": .string(state),
+                "alive": .bool(true),
+                "updatedAt": .string("2026-08-30T18:00:00Z"),
+            ]))!
+        }
+        let now = Date()
+        func diff(_ prev: [ClaudeSession], _ cur: [ClaudeSession],
+                  suppressed: Set<String> = []) -> [PetCompletion] {
+            PetCompletionDetector.diff(previous: prev, current: cur,
+                                       suppressedIDs: suppressed, now: now)
+        }
+
+        // 1. two running -> one idle-alive: exactly one completion
+        var out = diff([sess("a", "running"), sess("b", "running")],
+                       [sess("a", "running"), sess("b", "recent")])
+        precondition(out.count == 1 && out[0].id == "claude:b",
+                     "one of two finishing must emit exactly that one")
+        precondition(out[0].seen == false && out[0].sessionId == "b")
+
+        // 2. four running -> one idle-alive: one completion
+        out = diff((0..<4).map { sess("s\($0)", "running") },
+                   [sess("s0", "running"), sess("s1", "running"),
+                    sess("s2", "running"), sess("s3", "recent")])
+        precondition(out.count == 1 && out[0].id == "claude:s3",
+                     "D1: one of FOUR finishing is the fleet-boolean miss")
+
+        // 3. four running -> all vanish: four completions
+        out = diff((0..<4).map { sess("v\($0)", "running") }, [])
+        precondition(out.count == 4, "vanished running rows all emit")
+
+        // 4. running -> waiting: zero (a handoff, not a finish)
+        out = diff([sess("w", "running")], [sess("w", "waiting")])
+        precondition(out.isEmpty, "running->waiting must not emit")
+
+        // 5. waiting vanishes: zero
+        out = diff([sess("x", "waiting")], [])
+        precondition(out.isEmpty, "a never-running prior must not emit")
+
+        // 6. keep-warm suppressed
+        out = diff([sess("k", "running")], [sess("k", "recent")], suppressed: ["claude:k"])
+        precondition(out.isEmpty, "keep-warm reclassification is not a finish")
+
+        // 7. hides()-suppressed disappearance is silent; the SAME id running
+        //    again later (hides false, unsuppressed) then finishing emits.
+        out = diff([sess("h", "running")], [], suppressed: ["claude:h"])
+        precondition(out.isEmpty)
+        out = diff([sess("h", "running")], [sess("h", "recent")])
+        precondition(out.count == 1, "a re-run after a dismissal must emit")
+
+        // 8. finish -> running again -> finish: one upserted row, seen false
+        let first = diff([sess("u", "running")], [sess("u", "recent")])
+        var ring = PetCompletionDetector.apply(
+            existing: [], fresh: first,
+            previous: [sess("u", "running")], current: [sess("u", "recent")], now: now)
+        precondition(ring.count == 1)
+        ring[0].seen = true
+        // runs again -> chip drops while active
+        ring = PetCompletionDetector.apply(
+            existing: ring, fresh: [],
+            previous: [sess("u", "recent")], current: [sess("u", "running")], now: now)
+        precondition(ring.isEmpty, "a chip whose session is running again must drop")
+        // finishes again -> fresh row, seen reset to false
+        let second = diff([sess("u", "running")], [sess("u", "recent")])
+        ring = PetCompletionDetector.apply(
+            existing: [], fresh: second,
+            previous: [sess("u", "running")], current: [sess("u", "recent")], now: now)
+        precondition(ring.count == 1 && ring[0].seen == false,
+                     "a re-finish is news again")
+
+        // 8b. The upsert path itself: one poll captures run+finish, so the OLD
+        //     seen chip is still in the ring when the fresh emit lands. The
+        //     seen reset must happen through the upsert, not only via drop.
+        var held = PetCompletionDetector.apply(
+            existing: [], fresh: diff([sess("u", "running")], [sess("u", "recent")]),
+            previous: [sess("u", "running")], current: [sess("u", "recent")], now: now)
+        held[0].seen = true
+        held = PetCompletionDetector.apply(
+            existing: held,
+            fresh: diff([sess("u", "running")], [sess("u", "recent")]),
+            previous: [sess("u", "running")], current: [sess("u", "recent")], now: now)
+        precondition(held.count == 1 && held[0].seen == false,
+                     "an UPSERTED re-finish must reset seen — the drop path alone cannot")
+
+        // 9. cap and age via apply
+        let many = (0..<12).map { i in
+            PetCompletion(id: "claude:m\(i)", sessionId: "m\(i)", name: "m\(i)",
+                          provider: "claude", workspace: "", 
+                          finishedAt: now.addingTimeInterval(Double(-i * 60)), seen: false)
+        }
+        ring = PetCompletionDetector.apply(existing: many, fresh: [], previous: [], current: [], now: now)
+        precondition(ring.count == PetCompletionDetector.ringCap, "ring caps at \(PetCompletionDetector.ringCap)")
+        let stale = [PetCompletion(id: "claude:old", sessionId: "old", name: "old",
+                                   provider: "claude", workspace: "",
+                                   finishedAt: now.addingTimeInterval(-5 * 3600), seen: false)]
+        ring = PetCompletionDetector.apply(existing: stale, fresh: [], previous: [], current: [], now: now)
+        precondition(ring.isEmpty, "a 5h-old chip ages out at 4h")
+
+        // fromCompletion round-trips into a routable session
+        let chip = PetCompletion(id: "claude:r", sessionId: "r", name: "R",
+                                 provider: "claude", workspace: "W",
+                                 finishedAt: now, seen: false)
+        let revived = ClaudeSession.fromCompletion(chip)
+        precondition(revived?.id == "claude:r" && revived?.isPetVisible == true,
+                     "a chip must revive isPetVisible-shaped")
+
+        print("COS Control: per-id completion detector emits once per finish")
+    }
+
+    /// Persistence: injected suite ONLY, live-fixture scrub, age-out, cap.
+    private static func checkPetCompletionsPersist() {
+        let suiteName = "com.gotcos.control.tests.pet-completions.\(UUID().uuidString)"
+        guard let suite = UserDefaults(suiteName: suiteName) else {
+            preconditionFailure("suite")
+        }
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let standardBefore = UserDefaults.standard.data(forKey: "cos.sessionPetCompletions")
+
+        let now = Date()
+        let rows = [
+            PetCompletion(id: "claude:keep", sessionId: "keep", name: "K",
+                          provider: "claude", workspace: "", finishedAt: now, seen: true),
+            PetCompletion(id: "claude:a", sessionId: "a", name: "leaked fixture",
+                          provider: "claude", workspace: "", finishedAt: now, seen: false),
+            PetCompletion(id: "claude:old", sessionId: "old", name: "stale",
+                          provider: "claude", workspace: "",
+                          finishedAt: now.addingTimeInterval(-5 * 3600), seen: false),
+        ]
+        let data = try! JSONEncoder().encode(rows)
+        // default Date strategy IS timeIntervalSinceReferenceDate — pin it,
+        // because the live blob under this key stores exactly that number.
+        let decoded = try! JSONSerialization.jsonObject(with: data) as! [[String: Any]]
+        let raw = decoded.first { ($0["id"] as? String) == "claude:keep" }!["finishedAt"] as! Double
+        precondition(abs(raw - now.timeIntervalSinceReferenceDate) < 1,
+                     "Date must round-trip as timeIntervalSinceReferenceDate")
+        suite.set(data, forKey: "cos.sessionPetCompletions")
+
+        // partial blob (missing provider/workspace/seen) still decodes
+        let partial = "[{\"id\":\"claude:p\",\"sessionId\":\"p\",\"finishedAt\":809798109.23}]"
+        let partialRows = try! JSONDecoder().decode([PetCompletion].self, from: partial.data(using: .utf8)!)
+        precondition(partialRows[0].provider == "" && partialRows[0].seen == false
+                     && partialRows[0].name == "",
+                     "custom decode must default missing fields")
+
+        // load-order contract, replicated from loadPetCompletions
+        var kept = (try! JSONDecoder().decode([PetCompletion].self,
+                    from: suite.data(forKey: "cos.sessionPetCompletions")!))
+            .filter { !$0.id.isEmpty && !$0.sessionId.isEmpty }
+        kept.removeAll { $0.id == "claude:a" }
+        kept.removeAll { now.timeIntervalSince($0.finishedAt) > PetCompletionDetector.maxAge }
+        precondition(kept.count == 1 && kept[0].id == "claude:keep" && kept[0].seen == true,
+                     "fixture scrubbed, stale aged out, seen survives")
+
+        precondition(UserDefaults.standard.data(forKey: "cos.sessionPetCompletions") == standardBefore,
+                     "tests must NEVER write UserDefaults.standard")
+        print("COS Control: completion chips persist in an injected suite only")
+    }
+
+    /// Terminal-jump routing: the executable matrix that pins the tty
+    /// falsification (Claude Desktop owned ttys006).
+    private static func checkPetJumpRoute() {
+        typealias R = PetJumpRoute
+        precondition(R.route(entrypoint: "cli", hostBundleId: "com.googlecode.iterm2") == .terminal)
+        precondition(R.route(entrypoint: "cli", hostBundleId: "com.apple.Terminal") == .terminal)
+        precondition(R.route(entrypoint: " CLI ", hostBundleId: "com.googlecode.iterm2") == .terminal,
+                     "entrypoint compares after trim + lowercase")
+        precondition(R.route(entrypoint: "cli", hostBundleId: "com.todesktop.230313mzl4w4u92.helper") == .desktopSidebar)
+        precondition(R.route(entrypoint: "cli", hostBundleId: nil) == .desktopSidebar, "tmux/no-app chain")
+        precondition(R.route(entrypoint: "claude-desktop", hostBundleId: "com.googlecode.iterm2") == .desktopSidebar,
+                     "a Desktop session in a tty-owning host must keep its sidebar jump")
+        precondition(R.route(entrypoint: nil, hostBundleId: "com.googlecode.iterm2") == .desktopSidebar)
+        precondition(R.route(entrypoint: "", hostBundleId: "com.googlecode.iterm2") == .desktopSidebar)
+        precondition(R.route(entrypoint: "vscode", hostBundleId: "com.googlecode.iterm2") == .desktopSidebar,
+                     "unknown future entrypoints fail closed to the sidebar")
+        precondition(R.route(entrypoint: "cli", hostBundleId: "") == .desktopSidebar)
+
+        // Negative membership for ALL THREE non-terminal tty owners the
+        // 2026-08-30 census found. This is the falsification, pinned.
+        for id in ["com.anthropic.claudefordesktop",
+                   "com.todesktop.230313mzl4w4u92",
+                   "com.openai.codex"] {
+            precondition(!ClaudeSession.terminalHostBundleIds.contains(id),
+                         "\(id) owns a tty on this machine and is NOT a terminal")
+        }
+
+        // procStart comparator: the 5h UTC regression arm is the trap.
+        let utc = "Sun Aug 30 12:34:55 2026"       // what the JSON stores
+        let epoch = 1788093295                      // == that instant
+        precondition(R.procStartMatches(recorded: utc, kernelSeconds: epoch) == true)
+        precondition(R.procStartMatches(recorded: utc, kernelSeconds: epoch + 1) == true, "±1s tolerance")
+        precondition(R.procStartMatches(recorded: utc, kernelSeconds: epoch + 3) == false)
+        precondition(R.procStartMatches(recorded: utc, kernelSeconds: epoch - 5 * 3600) == false,
+                     "the local-time rendering of the same instant MUST fail — "
+                     + "a naive comparison failed closed by exactly this offset")
+        precondition(R.procStartMatches(recorded: "not a date", kernelSeconds: epoch) == nil,
+                     "unparseable fails OPEN")
+        precondition(R.procStartMatches(recorded: nil, kernelSeconds: epoch) == nil)
+        precondition(R.procStartMatches(recorded: utc, kernelSeconds: nil) == nil)
+        precondition(R.procStartMatches(recorded: "Sun Aug  3 07:34:55 2026",
+                                        kernelSeconds: 1785742495) != nil,
+                     "ctime double-space day padding must parse")
+        print("COS Control: terminal routing is allowlist-gated and the UTC trap is pinned")
+    }
+
     static func main() throws {
         checkRenameEligibility()
         checkAmbiguousTitles()
@@ -2654,6 +2872,9 @@ struct ModelsContract {
         checkClaudeSession()
         checkPetSpriteStore()
         checkPetDismissals()
+        checkPetCompletionDetector()
+        checkPetCompletionsPersist()
+        checkPetJumpRoute()
         checkPetSpritePoses()
         checkPetSize()
         checkCursorAgentTabMatch()

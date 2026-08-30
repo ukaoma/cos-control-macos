@@ -2609,4 +2609,124 @@ need("guard sessions.count > 1 else { return }" in menu,
      "double-click must be inert when there is no list to show")
 PETCHK
 
+# Completion signal + terminal jump (0.5.141). Source-shape guards IN ADDITION
+# to the executable ModelsContract suites, never instead of them.
+/usr/bin/python3 - "$ROOT" <<'SIGCHK'
+import re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+model = (root / "Sources/ControllerModel.swift").read_text()
+pet = (root / "Sources/SessionPet.swift").read_text()
+def need(c, m):
+    if not c: sys.exit(f"completion-signal: {m}")
+
+# The fleet boolean is DEAD. wasWorking && !isWorking could not say WHICH of N
+# sessions finished, which is defect D1 this release exists to fix.
+apply_body = model[model.index("private func applyPetSessions("):]
+apply_body = apply_body[:apply_body.index("\n    private func mergeCompletions")]
+need("wasWorking" not in apply_body and "isWorking =" not in apply_body,
+     "the fleet wasWorking/isWorking boolean is back; per-id detection is D1")
+need("PetCompletionDetector.diff" in apply_body,
+     "applyPetSessions no longer runs the per-id detector")
+need(apply_body.count("lastAuthoritativeRaw = sessions") == 1,
+     "the diff baseline must advance exactly once, inside the authoritative arm")
+need("petNotice" not in apply_body, "completions never assign petNotice")
+
+for fn in ["dismissPetSession", "restorePetDismissals"]:
+    body = model[model.index(f"func {fn}(")-1:]
+    body = body[:body.index("\n    }")]
+    need("PetCompletionDetector" not in body,
+         f"{fn} must replay without diffing — a dismissal is not a finish")
+
+# Call sites only — the definition line also contains the substring.
+calls = len(re.findall(r"^\s+beginPetCompletion\(\)\s*$", model, re.M))
+need(calls == 1, f"beginPetCompletion has {calls} call sites; only the authoritative merge may fire it")
+need("loadPetCompletions()" in model[model.index("loadPetDismissals()"):
+                                     model.index("loadPetSprite()")],
+     "persisted chips are not loaded at init")
+for fn in ["setPetEnabled", "resetPetSprite"]:
+    body = model[model.index(f"func {fn}("):]
+    body = body[:body.index("\n    }")]
+    need("lastAuthoritativeRaw = nil" in body,
+         f"{fn} must drop the diff baseline or the next enable diffs a stale snapshot")
+
+# The load-time scrub lives in ControllerModel (not constructible from
+# ModelsContract), so pin its two guards by shape.
+load = model[model.index("func loadPetCompletions("):]
+load = load[:load.index("\n    }")]
+need('$0.id == "claude:a"' in load, "the leaked live fixture must be scrubbed on load")
+need("PetCompletionDetector.maxAge" in load and "PetCompletionDetector.ringCap" in load,
+     "load must age out and cap through the detector's own constants")
+
+merge = model[model.index("private func mergeCompletions("):]
+merge = merge[:merge.index("\n    }")]
+need("petNotice" not in merge, "mergeCompletions must not assign petNotice")
+
+# Chip + finished list shape
+need("petCompletionsExpanded" in pet, "the chip never toggles the finished list")
+chip = pet[pet.index('petButton("checkmark.circle"'):]
+chip = chip[:chip.index("if sessions.count > 1")]
+need("petExpanded.toggle" not in chip, "the chip must not toggle the LIVE list")
+comp = pet[pet.index("private var completionsList"):]
+comp = comp[:comp.index("private func statusBubble")]
+need("ScrollView" in comp and "maxHeight" in comp,
+     "the finished list must scroll in a fixed frame (Add-a-voice, 34 rows)")
+mon = pet[pet.index("private func syncOutsideClickMonitor"):]
+mon = mon[:mon.index("\n    }")]
+need("petCompletionsExpanded = false" in mon,
+     "outside click must clear the finished list too")
+sync = pet[pet.index("func syncLists()"):pet.index("func syncLists()") + 300]
+need("petExpanded" in sync and "petCompletionsExpanded" in sync
+     and "syncOutsideClickMonitor(" in sync,
+     "the monitor must key on BOTH lists or the chip tears it down")
+SIGCHK
+
+# Terminal jump routing (0.5.141)
+/usr/bin/python3 - "$ROOT" <<'JUMPRT'
+import re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+model = (root / "Sources/ControllerModel.swift").read_text()
+models = (root / "Sources/Models.swift").read_text()
+def need(c, m):
+    if not c: sys.exit(f"terminal-jump: {m}")
+
+jump = model[model.index("private func jumpFromReveal("):]
+jump = jump[:jump.index("private func revealClaudeSession")]
+# The terminal branch decides BEFORE the Desktop sidebar branch, and it
+# TERMINATES: the one legal open([folder] is the generic tail, after it.
+need(jump.index("PetJumpRoute.route(") < jump.index('openMode == "session"'),
+     "the terminal route must be consulted before the Desktop sidebar branch")
+need(jump.count("open([folder]") == 1,
+     "exactly one folder-open belongs in jumpFromReveal (the generic app tail)")
+need(jump.index("activateHostAppQuietly(") < jump.index("open([folder]"),
+     "the terminal branch must terminate before the folder-open tail")
+need("procStartMatches" in jump, "the recycled-pid gate is not consulted")
+need("postPetTerminalHint(" in jump,
+     "terminal success must use the non-attention hint channel")
+branch = jump[jump.index("PetJumpRoute.route("):jump.index('openMode == "session"')]
+need('petNotice = "Opened' not in branch,
+     "a SUCCESS through petNotice ignites the attention blade for 12s")
+need(branch.count("return") >= 2,
+     "the terminal branch and the no-host branch must both TERMINATE; a "
+     "fall-through reaches the folder-open tail")
+
+# The walk moved out of activateProcess so routing can classify before acting.
+act = model[model.index("func activateProcess("):]
+act = act[:act.index("\n    }")]
+need("for _ in 0..<12" not in act, "activateProcess should delegate to resolveHostApp")
+resolve = model[model.index("func resolveHostApp("):]
+resolve = resolve[:resolve.index("\n    }")]
+need("for _ in 0..<12" in resolve and "NSRunningApplication(processIdentifier: pid)" in resolve,
+     "resolveHostApp must keep BOTH success paths of the original walk")
+quiet = model[model.index("private func activateHostAppQuietly("):]
+quiet = quiet[:quiet.index("\n    }")]
+need("sendReopenEvent" not in quiet and "activateAllWindows" not in quiet,
+     "the quiet activator must send no Apple Event and raise no extra windows")
+
+# The falsification, pinned in source as well as in the executable matrix.
+need('"com.googlecode.iterm2"' in models and '"com.apple.Terminal"' in models,
+     "the terminal allowlist lost a member")
+need("terminalHostBundleIds" in models, "the allowlist constant was renamed")
+JUMPRT
+
+
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"

@@ -46,13 +46,21 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         observers.append(model.$petCharacterPercent.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
-        observers.append(model.$petExpanded.sink { [weak self] expanded in
-            Task { @MainActor in
-                self?.syncOutsideClickMonitor(expanded)
-                self?.syncPanel()
-            }
+        // The $petExpanded sink used to pass only its own value, which tore the
+        // monitor down when the finished-chip opened (it sets petExpanded false).
+        observers.append(model.$petExpanded.sink { [weak self] _ in
+            Task { @MainActor in self?.syncLists() }
+        })
+        observers.append(model.$petCompletions.sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
+        observers.append(model.$petCompletionsExpanded.sink { [weak self] _ in
+            Task { @MainActor in self?.syncLists() }
         })
         observers.append(model.$petNotice.sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
+        observers.append(model.$petTerminalHint.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
         pollTask = Task { [weak self] in
@@ -182,6 +190,11 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         return panel
     }
 
+    private func syncLists() {
+        syncOutsideClickMonitor((model?.petExpanded ?? false) || (model?.petCompletionsExpanded ?? false))
+        syncPanel()
+    }
+
     private func syncOutsideClickMonitor(_ expanded: Bool) {
         if let outsideClickMonitor {
             NSEvent.removeMonitor(outsideClickMonitor)
@@ -191,6 +204,7 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             Task { @MainActor in
                 self?.model?.petExpanded = false
+                self?.model?.petCompletionsExpanded = false
             }
         }
     }
@@ -259,9 +273,26 @@ private struct SessionPetRoot: View {
                 petButton("arrow.up.forward.app", help: "Open in platform") {
                     if let focus { model.openSessionInPlatform(focus) }
                 }
+                if model.petCompletions.contains(where: { !$0.seen }) {
+                    ZStack(alignment: .topTrailing) {
+                        petButton("checkmark.circle", help: "Finished sessions") {
+                            model.petCompletionsExpanded.toggle()
+                            if model.petCompletionsExpanded { model.petExpanded = false }
+                        }
+                        Text("\(model.petCompletions.filter { !$0.seen }.count)")
+                            .font(COSType.mono(size.typeSize(8), weight: .bold))
+                            .foregroundStyle(COSPalette.cream)
+                            .padding(.horizontal, size.length(4))
+                            .padding(.vertical, size.length(1))
+                            .background(Capsule().fill(COSPalette.green))
+                            .offset(x: size.length(6), y: -size.length(5))
+                            .allowsHitTesting(false)
+                    }
+                }
                 if sessions.count > 1 {
                     petButton(model.petExpanded ? "chevron.down" : "chevron.up", help: "Live sessions") {
                         model.petExpanded.toggle()
+                        if model.petExpanded { model.petCompletionsExpanded = false }
                     }
                 } else {
                     petButtonPlaceholder
@@ -271,6 +302,17 @@ private struct SessionPetRoot: View {
                 statusBubble(focus)
             } else {
                 idleBubble
+            }
+            if let hint = model.petTerminalHint, !hint.isEmpty {
+                Text(hint)
+                    .font(COSType.body(size.typeSize(10)))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .padding(.horizontal, size.length(12))
+                    .padding(.vertical, size.length(6))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Capsule().fill(COSPalette.card))
+                    .overlay(Capsule().stroke(COSPalette.line, lineWidth: 1))
             }
             if let notice = model.petNotice, !notice.isEmpty {
                 Text(notice)
@@ -285,6 +327,9 @@ private struct SessionPetRoot: View {
             }
             if model.petExpanded, sessions.count > 1 {
                 sessionList
+            }
+            if model.petCompletionsExpanded, !model.petCompletions.isEmpty {
+                completionsList
             }
         }
         .padding(size.length(10))
@@ -398,6 +443,61 @@ private struct SessionPetRoot: View {
         )
     }
 
+    /// Finished sessions. Lives on the ~310pt pet, so the list is capped and
+    /// scrolls in a fixed frame — an unbounded ForEach outside a scroll frame
+    /// is the Add-a-voice 34-row failure again.
+    private var completionsList: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(model.petCompletions) { row in
+                    Button {
+                        if let session = ClaudeSession.fromCompletion(row) {
+                            presenter.openInControl(session)
+                        }
+                    } label: {
+                        HStack(alignment: .top, spacing: size.length(8)) {
+                            Text(row.provider.uppercased())
+                                .font(COSType.mono(size.typeSize(8), weight: .bold))
+                                .foregroundStyle(providerTint(row.provider))
+                                .frame(width: size.length(44), alignment: .leading)
+                            VStack(alignment: .leading, spacing: size.length(2)) {
+                                Text(row.name)
+                                    .font(COSType.body(size.typeSize(11), weight: row.seen ? .regular : .medium))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Text("Finished")
+                                    .font(COSType.body(size.typeSize(10)))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.vertical, size.length(7))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open in COS Control")
+                    // Sibling, never nested in the row button's label — a Button
+                    // inside another Button's label never receives the click.
+                    if row.id != model.petCompletions.last?.id {
+                        Divider()
+                    }
+                }
+            }
+        }
+        .frame(maxHeight: size.length(160))
+        .padding(.horizontal, size.length(10))
+        .padding(.vertical, size.length(4))
+        .background(
+            RoundedRectangle(cornerRadius: size.length(12), style: .continuous)
+                .fill(COSPalette.card)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: size.length(12), style: .continuous)
+                .stroke(COSPalette.line, lineWidth: 1)
+        )
+    }
+
     private func statusBubble(_ session: ClaudeSession) -> some View {
         Button {
             model.openSessionInPlatform(session)
@@ -489,6 +589,7 @@ private struct SessionPetRoot: View {
     private func toggleSessionMenu() {
         guard sessions.count > 1 else { return }
         model.petExpanded.toggle()
+        if model.petExpanded { model.petCompletionsExpanded = false }
     }
 
     private func handleSpriteDrop(_ providers: [NSItemProvider]) -> Bool {

@@ -39,6 +39,14 @@ need(pet.index(".onTapGesture(count: 2)") < pet.index(".onTapGesture { handleSpr
      "the double-click must be declared before the single tap or the single tap wins")
 need("private var idleBubble" in pet and "private var petButtonPlaceholder" in pet,
      "zero/one-session chrome must reserve the collapsed layout slots")
+# Completion chip (0.5.141): the finished list has its own expansion flag and
+# never rides the live list's toggle count.
+need(pet.count("model.petExpanded.toggle()") == 2,
+     "still exactly two live-list toggle sites: chevron and double-click")
+need("petCompletionsExpanded" in pet, "the finished-list flag is gone")
+comp = pet[pet.index("private var completionsList"):pet.index("private func statusBubble")]
+need("ScrollView" in comp and "maxHeight" in comp and "petExpanded.toggle" not in comp,
+     "the finished list must scroll in a fixed frame and not toggle the live list")
 
 apply_sessions = controller.split("private func applyPetSessions(", 1)[1]
 apply_sessions = re.split(r"\n    (?:private )?func ", apply_sessions, maxsplit=1)[0]

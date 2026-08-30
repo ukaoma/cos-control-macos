@@ -871,6 +871,182 @@ struct SessionSearchHit: Identifiable, Sendable {
 /// starts moving again re-appears on its own rather than staying hidden behind
 /// a stale decision. The point is the escalation pose — four parked sessions
 /// pin the pet in the five-droid swarm and hide the one that is actually live.
+/// One finished session, kept so a completion outlives its 2-second flash.
+/// D2: the pet used to flash .done and keep no record of WHICH session finished.
+struct PetCompletion: Identifiable, Sendable, Equatable {
+    let id: String          // ClaudeSession.id == "provider:sessionId"
+    let sessionId: String   // native id, what session-reveal --session takes
+    let name: String
+    let provider: String
+    let workspace: String
+    let finishedAt: Date
+    var seen: Bool
+}
+
+// Codable by hand in BOTH directions: decode defaults provider/workspace to ""
+// and seen to false so a partial live blob still decodes, and a type with only
+// init(from:) does not compile.
+extension PetCompletion: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case id, sessionId, name, provider, workspace, finishedAt, seen
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        sessionId = try c.decode(String.self, forKey: .sessionId)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        provider = try c.decodeIfPresent(String.self, forKey: .provider) ?? ""
+        workspace = try c.decodeIfPresent(String.self, forKey: .workspace) ?? ""
+        finishedAt = try c.decode(Date.self, forKey: .finishedAt)
+        seen = try c.decodeIfPresent(Bool.self, forKey: .seen) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(sessionId, forKey: .sessionId)
+        try c.encode(name, forKey: .name)
+        try c.encode(provider, forKey: .provider)
+        try c.encode(workspace, forKey: .workspace)
+        try c.encode(finishedAt, forKey: .finishedAt)
+        try c.encode(seen, forKey: .seen)
+    }
+}
+
+extension ClaudeSession {
+    /// A finished chip re-hydrated into a routable session. `state: "recent"`
+    /// + `alive: true` keeps it isPetVisible-shaped for the reveal path.
+    static func fromCompletion(_ row: PetCompletion) -> ClaudeSession? {
+        ClaudeSession(.object([
+            "id": .string(row.sessionId),
+            "provider": .string(row.provider),
+            "name": .string(row.name),
+            "workspace": .string(row.workspace),
+            "state": .string("recent"),
+            "alive": .bool(true),
+            "waitingFor": .string(""),
+        ]))
+    }
+
+    /// The ONLY terminals the jump may target — pinned by ModelsContract with
+    /// negative-membership asserts for all three non-terminal tty owners the
+    /// 2026-08-30 census found (Claude Desktop itself owned ttys006). tty
+    /// presence is NEVER the classifier; this list is.
+    static let terminalHostBundleIds: Set<String> = [
+        "com.googlecode.iterm2",
+        "com.apple.Terminal",
+    ]
+}
+
+/// Where a claude session's jump should land. Pure and payload-free so
+/// ModelsContract can execute the whole matrix; the caller holds the resolved
+/// NSRunningApplication and acts on it when the route says .terminal.
+enum PetJumpRoute: Equatable {
+    case terminal
+    case desktopSidebar
+
+    /// Default-deny: anything that is not exactly a cli entrypoint plus an
+    /// allowlisted host falls through to the Desktop sidebar path unchanged.
+    static func route(entrypoint: String?, hostBundleId: String?) -> PetJumpRoute {
+        let ep = entrypoint?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        guard ep == "cli", let host = hostBundleId, !host.isEmpty,
+              ClaudeSession.terminalHostBundleIds.contains(host) else {
+            return .desktopSidebar
+        }
+        return .terminal
+    }
+
+    /// The procStart liveness comparator, executable and mutation-testable.
+    /// `recorded` is the session JSON's `procStart` — a ctime-style string
+    /// rendered in UTC with NO timezone token ("Sun Aug 30 12:34:55 2026").
+    /// `kernelSeconds` is kinfo_proc.kp_proc.p_un.__p_starttime.tv_sec.
+    /// Returns nil (fail OPEN — keep 0.5.139 routing) when either side is
+    /// unavailable or unparseable; a naive local-time comparison here failed
+    /// closed by exactly the machine's UTC offset and would have killed every
+    /// jump. Tolerance ±1s, measured Δ=0 on live pids; startedAt (JS clock,
+    /// +1.4/+2.9s off) must never be substituted.
+    static func procStartMatches(
+        recorded: String?, kernelSeconds: Int?, tolerance: TimeInterval = 1
+    ) -> Bool? {
+        guard let recorded, let kernelSeconds else { return nil }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "EEE MMM d HH:mm:ss yyyy"
+        guard let parsed = f.date(from: recorded.trimmingCharacters(in: .whitespacesAndNewlines))
+        else { return nil }
+        return abs(parsed.timeIntervalSince1970 - Double(kernelSeconds)) <= tolerance
+    }
+}
+
+/// D1: the fleet wasWorking && !isWorking Bool could only say "someone
+/// finished" — one of N finishing while others still ran never fired. The
+/// detector diffs per id, so every finish emits exactly once.
+enum PetCompletionDetector {
+    static let ringCap = 8
+    static let maxAge: TimeInterval = 4 * 60 * 60
+
+    /// `previous`/`current` are pet-visible, dismissals-unfiltered snapshots.
+    /// `suppressedIDs` = keep-warm ids ∪ ids currently hidden by
+    /// `petDismissals.hides()`. Never union raw stamp keys: a dismissed row
+    /// that later runs again has a leftover stamp but hides() is false, and
+    /// that finish must still emit.
+    static func diff(
+        previous: [ClaudeSession],
+        current: [ClaudeSession],
+        suppressedIDs: Set<String>,
+        now: Date = Date()
+    ) -> [PetCompletion] {
+        let currentByID = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
+        var out: [PetCompletion] = []
+        for prior in previous where prior.isPetWorking {
+            guard !suppressedIDs.contains(prior.id) else { continue }
+            if let now_ = currentByID[prior.id] {
+                // running -> waiting is a handoff to Miles, not a finish.
+                guard !now_.isPetWorking, now_.state != "waiting" else { continue }
+            }
+            out.append(PetCompletion(
+                id: prior.id, sessionId: prior.sessionId, name: prior.name,
+                provider: prior.provider, workspace: prior.workspace,
+                finishedAt: now, seen: false
+            ))
+        }
+        return out
+    }
+
+    /// Merge, pruned and capped — extracted so it is execution-testable
+    /// without ControllerModel. Drops chips whose id is running or waiting in
+    /// `current`, upserts `fresh` (seen resets to false when the prior row was
+    /// working), ages out past `maxAge`, caps at `ringCap` by oldest.
+    static func apply(
+        existing: [PetCompletion],
+        fresh: [PetCompletion],
+        previous: [ClaudeSession],
+        current: [ClaudeSession],
+        now: Date = Date()
+    ) -> [PetCompletion] {
+        let active = Set(current.filter { $0.isPetWorking || $0.state == "waiting" }.map(\.id))
+        let workingBefore = Set(previous.filter(\.isPetWorking).map(\.id))
+        var rows = existing.filter { !active.contains($0.id) }
+        for row in fresh {
+            var next = row
+            if let i = rows.firstIndex(where: { $0.id == row.id }) {
+                next.seen = workingBefore.contains(row.id) ? false : rows[i].seen
+                rows[i] = next
+            } else {
+                rows.append(next)
+            }
+        }
+        rows.removeAll { now.timeIntervalSince($0.finishedAt) > maxAge }
+        if rows.count > ringCap {
+            rows.sort { $0.finishedAt > $1.finishedAt }
+            rows = Array(rows.prefix(ringCap))
+        }
+        return rows
+    }
+}
+
 struct PetDismissals: Sendable, Equatable {
     /// How long a row must sit still before the drop control is offered.
     static let idleGrace: TimeInterval = 600
@@ -3186,8 +3362,14 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
     /// Error and attention beat the swarm so a jump miss still reads. Completing
     /// still flashes success. Session count then escalates patrol → duel →
     /// three droids → five-droid swarm.
+    /// `workingCount`/`waitingCount` have NO defaults on purpose: the fleet
+    /// Bool this replaces flashed .done while three other sessions still ran,
+    /// and a defaulted 0 would silently reproduce that at any call site that
+    /// forgot to pass them.
     static func resolve(
         sessionCount: Int,
+        workingCount: Int,
+        waitingCount: Int,
         focusState: String?,
         completing: Bool,
         attention: Bool = false,
@@ -3195,7 +3377,11 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
     ) -> PetSpritePose {
         if errored || focusState == "error" { return .error }
         if attention { return .attention }
-        if completing { return .done }
+        if completing && workingCount == 0 && waitingCount == 0 { return .done }
+        // Waiting with NOTHING running is amber, not a fight. One waiting plus
+        // three idle-alive must not render a swarm; one running + one waiting
+        // still escalates through the count ladder below.
+        if waitingCount > 0 && workingCount == 0 { return .waiting }
         if sessionCount >= 4 { return .swarm }
         if sessionCount == 3 { return .trio }
         if sessionCount == 2 { return .duel }
