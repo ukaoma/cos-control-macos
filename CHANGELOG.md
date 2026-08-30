@@ -1,3 +1,26 @@
+## 0.5.141 (build 179)
+
+The pet now tells you WHICH session finished, and takes you there. One of four
+sessions finishing used to be invisible: the completion check was a fleet-wide
+boolean, so any finish while others still ran never fired, and the 2-second
+flash kept no record. Finishes are now detected per session, held as chips
+behind a checkmark on the pet (unseen count in green), and survive a relaunch
+for four hours, capped at eight. Clicking a chip opens that session in Control;
+opening it anywhere marks it seen. A session that runs again drops its chip and
+a re-finish is news again. Dropped rows and keep-warm sessions never emit.
+
+Completing only flashes success when nothing else is still running or waiting,
+and a session waiting on you now outranks the fight ladder: one waiting plus
+three idle reads amber, not a five-droid swarm.
+
+Clicking a Claude Code session that runs in a TERMINAL now raises that terminal
+instead of Claude Desktop. Routing keys on the session's own recorded
+entrypoint plus a two-terminal allowlist (iTerm2, Terminal) — never on tty
+presence, which the 2026-08-30 census falsified when Claude Desktop itself
+owned a tty. The activation sends no Apple Event and raises no extra windows;
+a recycled pid is caught by a UTC-safe process-start comparison that fails
+open. Desktop sessions keep their sidebar jump unchanged. Tab-level selection
+inside the terminal is a later release.
 ## 0.5.140 (build 178)
 
 Character speed now sits directly below Character size in Session Pet settings. The

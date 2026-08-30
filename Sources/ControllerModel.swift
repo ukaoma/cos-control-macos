@@ -281,6 +281,7 @@ final class ControllerModel: ObservableObject {
             }
         }
         loadPetDismissals()
+        loadPetCompletions()
         loadPetSprite()
     }
 
@@ -1298,6 +1299,13 @@ final class ControllerModel: ObservableObject {
     /// row is already missing from and hand it straight back.
     private var petSessionsRaw: [ClaudeSession] = []
     @Published var petDismissals = PetDismissals()
+    /// Finished sessions, D2: a completion now outlives its 2-second flash.
+    @Published var petCompletions: [PetCompletion] = []
+    @Published var petCompletionsExpanded = false
+    /// Baseline for the per-id completion diff. ONLY the authoritative poll
+    /// writes it; dismiss/restore replays must not shift the baseline or a
+    /// finish landing between replays would emit twice or never.
+    private var lastAuthoritativeRaw: [ClaudeSession]?
     @Published var petExpanded = false
     @Published var petFocusID: String?
     /// Reveal/jump copy when Activity and the menu extra are both closed.
@@ -1308,6 +1316,22 @@ final class ControllerModel: ObservableObject {
     /// after a single failed jump — and the bubble carries no dismiss control.
     @Published var petNotice: String? { didSet { schedulePetNoticeExpiry() } }
     private var petNoticeTask: Task<Void, Never>?
+    /// Success/partial-success line for the terminal jump. Rendered in the same
+    /// bubble slot as petNotice but NEVER feeds the attention pose — a success
+    /// message through petNotice would ignite the blade for 12s and suppress a
+    /// concurrent completion .done.
+    @Published var petTerminalHint: String?
+    private var petTerminalHintTask: Task<Void, Never>?
+
+    private func postPetTerminalHint(_ text: String) {
+        petTerminalHint = text
+        petTerminalHintTask?.cancel()
+        petTerminalHintTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(6))
+            guard !Task.isCancelled else { return }
+            self?.petTerminalHint = nil
+        }
+    }
     @Published var openPetsRows: [OpenPetsCatalogRow] = []
     @Published var openPetsLoading = false
     @Published var openPetsUnavailable = false
@@ -1528,6 +1552,10 @@ final class ControllerModel: ObservableObject {
         } else {
             petSessions = []
             petExpanded = false
+            petCompletionsExpanded = false
+            // Baseline dies with the poll: the next enable must seed, not diff
+            // against a snapshot from before the gap. Persisted chips stay.
+            lastAuthoritativeRaw = nil
             petFocusID = nil
             petNotice = nil
             petCompleting = false
@@ -1737,6 +1765,8 @@ final class ControllerModel: ObservableObject {
     var petSpritePose: PetSpritePose {
         PetSpritePose.resolve(
             sessionCount: petSessions.count,
+            workingCount: petSessions.filter(\.isPetWorking).count,
+            waitingCount: petSessions.filter { $0.state == "waiting" }.count,
             focusState: petFocusSession?.state,
             completing: petCompleting,
             attention: !(petNotice ?? "").isEmpty,
@@ -1877,6 +1907,8 @@ final class ControllerModel: ObservableObject {
         // place would hide rows on a pet the user just reset.
         petDismissals = PetDismissals()
         savePetDismissals()
+        lastAuthoritativeRaw = nil
+        petCompletionsExpanded = false
         petCustomSprite = nil
         petSpriteKit = PetSpriteKit()
         petCompleting = false
@@ -1975,12 +2007,15 @@ final class ControllerModel: ObservableObject {
         do {
             let response = try await helper.run(["session-pet-live"], timeout: Self.petLiveHelperTimeout)
             // The helper answered, so this list is current and may retire
-            // stamps for sessions that are genuinely gone.
+            // stamps for sessions that are genuinely gone. Keep-warm ids are
+            // computed BEFORE petVisibleSessions filters them out, so a
+            // keep-warm reclassification never reads as a finish.
+            let decoded = (response.details["sessions"]?.array ?? []).compactMap(ClaudeSession.init)
+            let keepWarmIDs = Set(decoded.filter(\.isKeepWarm).map(\.id))
             applyPetSessions(
-                ClaudeSession.petVisibleSessions(
-                    in: (response.details["sessions"]?.array ?? []).compactMap(ClaudeSession.init)
-                ),
-                authoritative: true
+                ClaudeSession.petVisibleSessions(in: decoded),
+                authoritative: true,
+                suppressedIDs: keepWarmIDs
             )
         } catch is CancellationError {
             return
@@ -1996,26 +2031,74 @@ final class ControllerModel: ObservableObject {
     /// merely absent from an old snapshot, and the live pass then handed the row
     /// straight back -- so a drop silently undid itself within one poll. Only a
     /// list we know is current may retire a stamp.
-    private func applyPetSessions(_ sessions: [ClaudeSession], authoritative: Bool = false) {
+    private func applyPetSessions(
+        _ sessions: [ClaudeSession],
+        authoritative: Bool = false,
+        suppressedIDs: Set<String> = []
+    ) {
         petSessionsRaw = sessions
         if authoritative { petDismissals.prune(against: sessions) }
-        let sessions = petDismissals.filter(sessions)
-        let wasWorking = petSessions.contains(where: \.isPetWorking)
-        petSessions = sessions
-        let isWorking = sessions.contains(where: \.isPetWorking)
-        if wasWorking && !isWorking {
-            beginPetCompletion()
-        } else if isWorking {
-            petCompleting = false
-            petCompletionTask?.cancel()
-            petCompletionTask = nil
+        if authoritative {
+            // Suppress ids HIDDEN by hides() on either snapshot — never raw
+            // stamp keys: a dismissed row that ran again has a leftover stamp
+            // but hides() false, and that finish must still emit.
+            let hidden = Set(((lastAuthoritativeRaw ?? []) + sessions)
+                .filter { petDismissals.hides($0) }.map(\.id))
+            let blocked = hidden.union(suppressedIDs)
+            if let previous = lastAuthoritativeRaw {
+                let fresh = PetCompletionDetector.diff(
+                    previous: previous, current: sessions, suppressedIDs: blocked
+                )
+                mergeCompletions(fresh, previous: previous, current: sessions)
+                let working = sessions.filter(\.isPetWorking).count
+                let waiting = sessions.filter { $0.state == "waiting" }.count
+                if !fresh.isEmpty && working == 0 && waiting == 0 {
+                    beginPetCompletion()
+                } else if working > 0 {
+                    petCompleting = false
+                    petCompletionTask?.cancel()
+                    petCompletionTask = nil
+                }
+            } else {
+                // First authoritative poll after launch/enable: seed only.
+                reconcilePersistedChips(with: sessions)
+            }
+            lastAuthoritativeRaw = sessions
         }
+        petSessions = petDismissals.filter(sessions)
         if petSessions.count < 2 {
             petExpanded = false
         }
-        if let petFocusID, !petSessions.contains(where: { $0.id == petFocusID }) {
+        if let petFocusID,
+           !petSessions.contains(where: { $0.id == petFocusID }),
+           !petCompletions.contains(where: { $0.id == petFocusID }) {
             self.petFocusID = nil
         }
+    }
+
+    private func mergeCompletions(
+        _ fresh: [PetCompletion], previous: [ClaudeSession], current: [ClaudeSession]
+    ) {
+        petCompletions = PetCompletionDetector.apply(
+            existing: petCompletions, fresh: fresh, previous: previous, current: current
+        )
+        savePetCompletions()
+    }
+
+    /// Launch-time seed: chips whose session is running or waiting again are
+    /// stale — drop them. No new emits from a seed.
+    private func reconcilePersistedChips(with sessions: [ClaudeSession]) {
+        let active = Set(sessions.filter { $0.isPetWorking || $0.state == "waiting" }.map(\.id))
+        let before = petCompletions.count
+        petCompletions.removeAll { active.contains($0.id) }
+        if petCompletions.count != before { savePetCompletions() }
+    }
+
+    func markPetCompletionSeen(id: String) {
+        guard let i = petCompletions.firstIndex(where: { $0.id == id }),
+              !petCompletions[i].seen else { return }
+        petCompletions[i].seen = true
+        savePetCompletions()
     }
 
     /// Offered only once a row has been still for ten minutes, so the control
@@ -2047,6 +2130,33 @@ final class ControllerModel: ObservableObject {
         petDismissals = PetDismissals(stamps: stored ?? [:])
     }
 
+    private static let petCompletionsKey = "cos.sessionPetCompletions"
+
+    /// Default Date strategy on purpose (timeIntervalSinceReferenceDate) — it
+    /// matches the number already live under this key on Miles's machine.
+    func savePetCompletions(defaults: UserDefaults = .standard) {
+        guard let data = try? JSONEncoder().encode(petCompletions) else { return }
+        defaults.set(data, forKey: Self.petCompletionsKey)
+    }
+
+    func loadPetCompletions(defaults: UserDefaults = .standard) {
+        let now = Date()
+        guard let data = defaults.data(forKey: Self.petCompletionsKey),
+              let rows = try? JSONDecoder().decode([PetCompletion].self, from: data) else {
+            petCompletions = []
+            return
+        }
+        var kept = rows.filter { !$0.id.isEmpty && !$0.sessionId.isEmpty }
+        // The leaked test fixture predates the injected-suite rule; scrub it.
+        kept.removeAll { $0.id == "claude:a" }
+        kept.removeAll { now.timeIntervalSince($0.finishedAt) > PetCompletionDetector.maxAge }
+        if kept.count > PetCompletionDetector.ringCap {
+            kept.sort { $0.finishedAt > $1.finishedAt }
+            kept = Array(kept.prefix(PetCompletionDetector.ringCap))
+        }
+        petCompletions = kept
+    }
+
     private func beginPetCompletion() {
         petCompleting = true
         petCompletionTask?.cancel()
@@ -2061,23 +2171,23 @@ final class ControllerModel: ObservableObject {
         ClaudeSession.petPreferredFocus(in: petSessions, focusedID: petFocusID)
     }
 
-    func focusPetSession(_ session: ClaudeSession) {
-        openSessionInPlatform(session)
-    }
-
     func openSessionInPlatform(_ session: ClaudeSession) {
         petFocusID = session.id
+        markPetCompletionSeen(id: session.id)
         Task { await revealPetSession(session) }
     }
 
     func openPetSessionInControl(_ session: ClaudeSession) {
         petFocusID = session.id
+        markPetCompletionSeen(id: session.id)
         activityOpenSessionID = session.id
         activityOpenSection = .sessions
     }
 
     func petSession(id: String) -> ClaudeSession? {
-        petSessions.first { $0.id == id } ?? claudeSessions.first { $0.id == id }
+        petSessions.first { $0.id == id }
+            ?? claudeSessions.first { $0.id == id }
+            ?? petCompletions.first { $0.id == id }.flatMap(ClaudeSession.fromCompletion)
     }
 
     private func revealPetSession(_ session: ClaudeSession) async {
@@ -2137,6 +2247,47 @@ final class ControllerModel: ObservableObject {
         if openMode == "thread" {
             await revealCodexThread(deepLink: response.details["deepLink"]?.string, appURL: appURL)
             return
+        }
+        // Terminal-hosted claude sessions jump to their TERMINAL, not Claude
+        // Desktop. Classified on entrypoint + a terminal allowlist — NEVER on
+        // tty presence (Claude Desktop itself owned ttys006 in the 2026-08-30
+        // census). This branch TERMINATES: falling through past it would reach
+        // the folder-open tail, the exact anti-pattern the claude reveal bans.
+        let entrypoint = response.details["entrypoint"]?.string
+        let procStart = response.details["procStart"]?.string
+        if session.provider == "claude", let pid {
+            let host = resolveHostApp(pid)
+            let route = PetJumpRoute.route(
+                entrypoint: entrypoint, hostBundleId: host?.bundleIdentifier
+            )
+            if route == .terminal, let host {
+                // Recycled-pid gate: a stale session file whose pid now belongs
+                // to something else must not raise it. nil = unknown = proceed.
+                if PetJumpRoute.procStartMatches(
+                    recorded: procStart, kernelSeconds: processStartSeconds(of: pid)
+                ) == false {
+                    NSLog("COSControl terminal-jump: pid %d failed the procStart gate; falling to sidebar", pid)
+                } else {
+                    let hostName = host.localizedName ?? "the terminal"
+                    NSLog("COSControl terminal-jump: pid=%d entrypoint=%@ host=%@",
+                          pid, entrypoint ?? "nil", host.bundleIdentifier ?? "nil")
+                    if activateHostAppQuietly(host) {
+                        postPetTerminalHint("Opened \(hostName). That session is in one of its tabs.")
+                    } else {
+                        petNotice = "Could not bring \(hostName) forward."
+                    }
+                    return
+                }
+            } else if entrypoint?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "cli",
+                      host == nil {
+                // A live CLI pid whose chain resolves NO app: iTerm quit and
+                // orphaned iTermServer, tmux, or sshd. Name the ancestor so
+                // this never reads as a Desktop-sidebar miss.
+                let comm = lastAncestorName(of: pid) ?? "its host"
+                NSLog("COSControl terminal-jump: pid %d resolves no app; last ancestor %@", pid, comm)
+                petNotice = "That session runs under \(comm), which Control cannot raise."
+                return
+            }
         }
         if openMode == "session" {
             await revealClaudeSession(appURL: appURL, bundleId: bundleId, sessionName: session.name)
@@ -2826,21 +2977,49 @@ final class ControllerModel: ObservableObject {
 
     @discardableResult
     func activateProcess(_ pid: pid_t) -> Bool {
+        resolveHostApp(pid).map(activateRunningApp) ?? false
+    }
+
+    /// The ppid walk extracted from activateProcess so routing can CLASSIFY
+    /// before anything activates. Preserves BOTH of the original success
+    /// paths: the first `.regular` ancestor, else the pid's own app regardless
+    /// of policy, else nil — behaviour-identical to the pre-split function.
+    func resolveHostApp(_ pid: pid_t) -> NSRunningApplication? {
         var current = pid
         var seen = Set<pid_t>()
         for _ in 0..<12 {
             if !seen.insert(current).inserted { break }
             if let app = NSRunningApplication(processIdentifier: current),
                app.activationPolicy == .regular {
-                return activateRunningApp(app)
+                return app
             }
             guard let parent = parentProcessID(of: current), parent > 1 else { break }
             current = parent
         }
-        if let app = NSRunningApplication(processIdentifier: pid) {
-            return activateRunningApp(app)
-        }
-        return false
+        return NSRunningApplication(processIdentifier: pid)
+    }
+
+    /// Terminal-branch activation, deliberately WITHOUT sendReopenEvent (an
+    /// NSAppleScript Apple Event at a never-granted target, synchronous on the
+    /// main actor) and WITHOUT .activateAllWindows (raising every iTerm window
+    /// is hostile in a 20-process setup, and two test slices already treat it
+    /// as a smell).
+    private func activateHostAppQuietly(_ app: NSRunningApplication) -> Bool {
+        app.unhide()
+        deminiaturizeWindows(of: app)
+        return app.activate(from: NSRunningApplication.current, options: [])
+    }
+
+    /// kinfo_proc start time for the procStart liveness gate. Same sysctl
+    /// idiom as parentProcessID below. nil = unknown = fail OPEN.
+    private func processStartSeconds(of pid: pid_t) -> Int? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        let tv = info.kp_proc.p_un.__p_starttime
+        guard tv.tv_sec > 0 else { return nil }
+        return Int(tv.tv_sec)
     }
 
     @discardableResult
@@ -2876,6 +3055,24 @@ final class ControllerModel: ObservableObject {
         for window in windows {
             AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
         }
+    }
+
+    /// Name of the last non-app ancestor, for the no-host diagnostic
+    /// (iTermServer / tmux / sshd). Best-effort.
+    private func lastAncestorName(of pid: pid_t) -> String? {
+        var current = pid
+        var seen = Set<pid_t>()
+        var lastName: String?
+        for _ in 0..<12 {
+            if !seen.insert(current).inserted { break }
+            var name = [CChar](repeating: 0, count: 1024)
+            if proc_name(current, &name, UInt32(name.count)) > 0 {
+                lastName = String(cString: name)
+            }
+            guard let parent = parentProcessID(of: current), parent > 1 else { break }
+            current = parent
+        }
+        return lastName
     }
 
     private func parentProcessID(of pid: pid_t) -> pid_t? {
