@@ -10,6 +10,11 @@ Combat scenes and the user's global character-size setting stay unchanged, while
 shared viewport reserves enough room for the larger idle figure instead of clipping or
 recentering it when session state changes.
 
+Elara Vale's four active-session stories now use corrected V1.1 transparency. The
+extractor preserves only the white blade core bracketed by both green saber rails, so
+the broad white background matte no longer makes the saber look oversized. Existing
+byte-identical Elara V1 installs upgrade automatically; customized packs remain intact.
+
 ## 0.5.138 (build 176)
 
 Nia Solari, Elara Vale, and Rowan Vale now carry complete active-session stories at the

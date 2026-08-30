@@ -4718,7 +4718,8 @@ enum PetSpriteStore {
             var stories: [(pose: PetSpritePose, file: String, frames: Int, data: Data)] = []
             for pose in storyPoses {
                 guard let row = bundled[pose], row.frames > 4,
-                      row.file == "session-pet-\(pose.rawValue)-story-v1.png",
+                      row.file.hasPrefix("session-pet-\(pose.rawValue)-story-"),
+                      row.file.hasSuffix(".png"),
                       let data = try? Data(contentsOf: source.appendingPathComponent(row.file)),
                       NSImage(data: data) != nil
                 else {
@@ -4748,6 +4749,96 @@ enum PetSpriteStore {
             }
         }
         return .notApplicable
+    }
+
+    /// Upgrade the byte-identical Elara V1 story pack to the V1.1 strips whose
+    /// extraction no longer leaves a broad white board matte around the green
+    /// saber. The retained V1 assets prove stock identity; custom art or even a
+    /// custom playback interval makes the migration inapplicable.
+    @discardableResult
+    static func refreshRecognizedBundledElaraV1(
+        into directory: URL,
+        sourceOverride: URL? = nil,
+        bundle: Bundle = .main,
+        fileManager: FileManager = .default
+    ) -> BundledCharacterRefreshResult {
+        guard let character = bundledCharacter(id: "jedi-elara-vale") else {
+            return .notApplicable
+        }
+        let source = sourceOverride
+            ?? bundledCharacterURL(character, bundle: bundle, fileManager: fileManager)
+        guard let source else { return .notApplicable }
+
+        let portrait = poseFileName(.idle)
+        let storyPoses: [PetSpritePose] = [.working, .duel, .trio, .swarm]
+        let expectedFrames: [PetSpritePose: Int] = [
+            .working: 16, .duel: 12, .trio: 13, .swarm: 16,
+        ]
+        let expectedIntervals: [PetSpritePose: Double] = [
+            .working: 0.10, .duel: 0.14, .trio: 0.18, .swarm: 0.20,
+        ]
+        let installed = loadStateMap(in: directory, fileManager: fileManager)
+        let installedIntervals = loadFrameIntervals(in: directory, fileManager: fileManager)
+        guard installed.count == PetSpritePose.liveCases.count,
+              PetSpritePose.liveCases.allSatisfy({ pose in
+                  guard let row = installed[pose] else { return false }
+                  if let frames = expectedFrames[pose] {
+                      return row.file == "session-pet-\(pose.rawValue)-story-v1.png"
+                          && row.frames == frames
+                          && abs((installedIntervals[pose] ?? 0) - (expectedIntervals[pose] ?? 0))
+                              < 0.000001
+                  }
+                  return row.file == portrait && row.frames == 1
+              })
+        else { return .notApplicable }
+
+        let retainedFiles = Set([portrait] + storyPoses.map {
+            "session-pet-\($0.rawValue)-story-v1.png"
+        })
+        guard retainedFiles.allSatisfy({ file in
+            guard let installedData = try? Data(
+                contentsOf: directory.appendingPathComponent(file)
+            ), let retainedData = try? Data(
+                contentsOf: source.appendingPathComponent(file)
+            ) else { return false }
+            return installedData == retainedData
+        }) else { return .notApplicable }
+
+        let bundled = loadStateMap(in: source, fileManager: fileManager)
+        guard let sourceStateData = try? Data(
+            contentsOf: source.appendingPathComponent(stateFileName)
+        ) else { return .failed }
+        var replacements: [(file: String, data: Data)] = []
+        for pose in storyPoses {
+            guard let row = bundled[pose], row.frames == expectedFrames[pose],
+                  row.file == "session-pet-\(pose.rawValue)-story-v1-1.png",
+                  let data = try? Data(contentsOf: source.appendingPathComponent(row.file)),
+                  NSImage(data: data) != nil
+            else {
+                NSLog("COSControl Elara V1.1 refresh skipped: incomplete %@ story", pose.rawValue)
+                return .failed
+            }
+            replacements.append((row.file, data))
+        }
+
+        do {
+            for replacement in replacements {
+                try replacement.data.write(
+                    to: directory.appendingPathComponent(replacement.file), options: .atomic
+                )
+            }
+            guard replacements.allSatisfy({ replacement in
+                (try? Data(contentsOf: directory.appendingPathComponent(replacement.file)))
+                    == replacement.data
+            }) else { return .failed }
+            try sourceStateData.write(
+                to: directory.appendingPathComponent(stateFileName), options: .atomic
+            )
+            return .refreshed(character.id)
+        } catch {
+            NSLog("COSControl Elara V1.1 refresh failed: %@", error.localizedDescription)
+            return .failed
+        }
     }
 
     static func installDefault(

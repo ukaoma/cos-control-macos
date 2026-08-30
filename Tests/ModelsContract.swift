@@ -1757,6 +1757,68 @@ struct ModelsContract {
             )) == customData, "\(id) migration changed customized bytes")
         }
 
+        // 0.5.138 shipped Elara's complete V1 stories with an oversized white
+        // extraction matte around the green saber. Generation 9 recognizes
+        // only those exact retained bytes and atomically promotes them to V1.1.
+        let elaraSource = bundledRoot.appendingPathComponent(
+            "jedi-elara-vale", isDirectory: true
+        )
+        let elaraV1Template = seedRoot.appendingPathComponent(
+            "elara-v1-template", isDirectory: true
+        )
+        try! FileManager.default.createDirectory(
+            at: elaraV1Template, withIntermediateDirectories: true
+        )
+        for file in [
+            "session-pet-idle.png",
+            "session-pet-working-story-v1.png",
+            "session-pet-duel-story-v1.png",
+            "session-pet-trio-story-v1.png",
+            "session-pet-swarm-story-v1.png",
+        ] {
+            try! FileManager.default.copyItem(
+                at: elaraSource.appendingPathComponent(file),
+                to: elaraV1Template.appendingPathComponent(file)
+            )
+        }
+        let elaraV1Map = #"{"poses":{"attention":{"file":"session-pet-idle.png","frames":1},"done":{"file":"session-pet-idle.png","frames":1},"duel":{"file":"session-pet-duel-story-v1.png","frames":12,"interval":0.14},"error":{"file":"session-pet-idle.png","frames":1},"idle":{"file":"session-pet-idle.png","frames":1},"patrol":{"file":"session-pet-idle.png","frames":1},"swarm":{"file":"session-pet-swarm-story-v1.png","frames":16,"interval":0.2},"trio":{"file":"session-pet-trio-story-v1.png","frames":13,"interval":0.18},"waiting":{"file":"session-pet-idle.png","frames":1},"working":{"file":"session-pet-working-story-v1.png","frames":16,"interval":0.1}}}"#
+        try! Data(elaraV1Map.utf8).write(
+            to: elaraV1Template.appendingPathComponent("session-pet-states.json"),
+            options: .atomic
+        )
+        let elaraV1Dest = seedRoot.appendingPathComponent(
+            "elara-v1-stock", isDirectory: true
+        )
+        try! FileManager.default.copyItem(at: elaraV1Template, to: elaraV1Dest)
+        let elaraV1Result = PetSpriteStore.refreshRecognizedBundledElaraV1(
+            into: elaraV1Dest, sourceOverride: elaraSource
+        )
+        precondition(elaraV1Result == .refreshed("jedi-elara-vale"),
+        "the retained Elara V1 story pack must upgrade to corrected V1.1 art")
+        let elaraV1Refreshed = PetSpriteStore.loadStateMap(in: elaraV1Dest)
+        for pose in [PetSpritePose.working, .duel, .trio, .swarm] {
+            precondition(elaraV1Refreshed[pose]?.file
+                            == "session-pet-\(pose.rawValue)-story-v1-1.png",
+                         "Elara V1.1 migration did not replace \(pose.rawValue)")
+        }
+
+        let customElaraV1 = seedRoot.appendingPathComponent(
+            "elara-v1-custom", isDirectory: true
+        )
+        try! FileManager.default.copyItem(at: elaraV1Template, to: customElaraV1)
+        let customElaraBytes = Data("custom Elara story art".utf8)
+        try! customElaraBytes.write(
+            to: customElaraV1.appendingPathComponent("session-pet-working-story-v1.png"),
+            options: .atomic
+        )
+        precondition(PetSpriteStore.refreshRecognizedBundledElaraV1(
+            into: customElaraV1, sourceOverride: elaraSource
+        ) == .notApplicable,
+        "Elara V1.1 migration must not overwrite customized story art")
+        precondition(try! Data(contentsOf: customElaraV1.appendingPathComponent(
+            "session-pet-working-story-v1.png"
+        )) == customElaraBytes, "Elara V1.1 migration changed customized bytes")
+
         let legacyTemplate = seedRoot.appendingPathComponent("legacy-template", isDirectory: true)
         try! FileManager.default.createDirectory(at: legacyTemplate, withIntermediateDirectories: true)
         for file in try! FileManager.default.contentsOfDirectory(

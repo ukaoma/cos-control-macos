@@ -1621,7 +1621,7 @@ done
 # changed and no view was watching. It compiled, the helper worked, and 110 self-test
 # assertions passed, because nothing tied the OPENER to the RENDER CONDITION.
 /usr/bin/python3 - "$ROOT" <<'ROUTECHK'
-import json, pathlib, re, subprocess, sys
+import hashlib, json, pathlib, re, subprocess, sys
 root = pathlib.Path(sys.argv[1])
 views = (root / "Sources/Views.swift").read_text()
 activity = (root / "Sources/ActivityWindow.swift").read_text()
@@ -1892,7 +1892,8 @@ for bundled_id in bundled_ids:
     for pose, row in poses.items():
         if pose in stories:
             expected_frames, _, expected_interval = stories[pose]
-            expected_file = f"session-pet-{pose}-story-v1.png"
+            story_version = "v1-1" if bundled_id == "jedi-elara-vale" else "v1"
+            expected_file = f"session-pet-{pose}-story-{story_version}.png"
             need(row.get("file") == expected_file and row.get("frames") == expected_frames
                  and abs(row.get("interval", 0) - expected_interval) < 0.000001,
                  f"{bundled_id}/{pose} must map to its complete story, got {row}")
@@ -1904,7 +1905,8 @@ for bundled_id in bundled_ids:
     # Geometry is asserted, not assumed. A correct frame count against the
     # wrong width still slices every pose mid-cell.
     for pose, (frames, cell_width, _) in sorted(stories.items()):
-        strip = pack / f"session-pet-{pose}-story-v1.png"
+        story_version = "v1-1" if bundled_id == "jedi-elara-vale" else "v1"
+        strip = pack / f"session-pet-{pose}-story-{story_version}.png"
         dims = subprocess.run(["sips", "-g", "pixelWidth", "-g", "pixelHeight", str(strip)],
                               capture_output=True, text=True).stdout
         w = re.search(r"pixelWidth: (\d+)", dims)
@@ -1915,6 +1917,17 @@ for bundled_id in bundled_ids:
              f"{frames * cell_width}x256 ({frames} {cell_width}px cells)")
         need(int(w.group(1)) % frames == 0,
              f"{bundled_id}/{pose} width does not divide into {frames} cells")
+    if bundled_id == "jedi-elara-vale":
+        approved_elara = {
+            "session-pet-working-story-v1-1.png": "4ab1596d89d4e553ee837cb0f920e9aafc696deca49756796359e28cde190239",
+            "session-pet-duel-story-v1-1.png": "2f0dff811b1d9ad2d6a3f09700c7c225860a9fe85de605766d3406a9bd8d4e48",
+            "session-pet-trio-story-v1-1.png": "cb692d9eaf3287cc5ba357270c2c49b1851b3496a50699160b1791768924d28c",
+            "session-pet-swarm-story-v1-1.png": "e0a24f9c8846c0afbccd56adbc674c0156f8aa961e39590e204ab14d488bd7be",
+        }
+        for file, expected_hash in approved_elara.items():
+            actual_hash = hashlib.sha256((pack / file).read_bytes()).hexdigest()
+            need(actual_hash == expected_hash,
+                 f"Elara V1.1 corrected transparency drifted: {file}")
 
 # Shipping new bundled art without advancing the generation constant means the
 # refresh never fires, so anyone who ALREADY picked that character keeps the old
@@ -1922,9 +1935,9 @@ for bundled_id in bundled_ids:
 # character is chosen, so those users are already at the current value.
 gen = re.search(r"petDefaultArtGeneration = (\d+)", model)
 need(gen is not None, "the art-generation constant is gone")
-need(int(gen.group(1)) >= 8,
-     "Miles V15.1 and its 2x idle landed after 0.5.138; the art generation must advance "
-     "or existing V15 users never receive them")
+need(int(gen.group(1)) >= 9,
+     "Miles V15.1 and Elara V1.1 landed after 0.5.138; the art generation must advance "
+     "or existing installs never receive the corrected stories")
 need("refreshStillBundledCharacter(into: directory)" in model,
      "the launch refresh never calls the still-character recognizer, so a user who picked "
      "a Jedi while it was still-only keeps the all-still map")
@@ -1945,6 +1958,15 @@ need("identityMatches" in retained_fn and "installedData == retainedData" in ret
      "the Jedi story migration must byte-match retained stock before writing")
 need(retained_fn.index("story.data.write") < retained_fn.index("sourceStateData.write"),
      "the Jedi story files must land before the active state map changes")
+need("refreshRecognizedBundledElaraV1" in models_src
+     and "refreshRecognizedBundledElaraV1(" in model,
+     "existing Elara V1 installs have no byte-safe V1.1 transparency migration")
+elara_fn = models_src[models_src.index("static func refreshRecognizedBundledElaraV1("):]
+elara_fn = elara_fn[:elara_fn.index("\n    static func installDefault(")]
+need("installedData == retainedData" in elara_fn,
+     "Elara V1.1 migration must byte-match retained stock art")
+need(elara_fn.index("replacement.data.write") < elara_fn.index("sourceStateData.write"),
+     "Elara V1.1 files must land before the state map changes")
 need("loadFrameIntervals" in models_src and "petFrameIntervals" in model,
      "bundled story cadence is declared but never loaded")
 need("loadRenderScales" in models_src and "petRenderScales" in model,
