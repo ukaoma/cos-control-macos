@@ -1463,10 +1463,34 @@ final class ControllerModel: ObservableObject {
     /// `/api/agent-sessions` (timeout+2). 12+2+15+2 = 31s worst case.
     private static let petLiveHelperTimeout: TimeInterval = 12 + 2 + 15 + 2 + 5
 
+    /// Whether the pet's jump-to-session can work right now. Published so the
+    /// toggle can say so BEFORE a click fails rather than after.
+    @Published var petJumpTrusted = AXIsProcessTrusted()
+
+    func refreshPetJumpTrust() {
+        petJumpTrusted = AXIsProcessTrusted()
+    }
+
+    /// Ask for Accessibility at the moment the pet is switched on.
+    ///
+    /// `ensureAccessibilityTrust` also asks, but it lives inside the jump, so
+    /// the first time anyone hears about this permission is a click that
+    /// already failed with an error. Queen hit exactly that. Anyone enabling
+    /// the pet wants the jump, and they are already in Settings, so ask here.
+    func requestPetJumpAccessibility() {
+        refreshPetJumpTrust()
+        guard !petJumpTrusted else { return }
+        _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+        refreshPetJumpTrust()
+        guard !petJumpTrusted else { return }
+        openAccessibilitySettings()
+    }
+
     func setPetEnabled(_ enabled: Bool) {
         petEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: Self.petEnabledKey)
         if enabled {
+            requestPetJumpAccessibility()
             Task { await loadPetSessions() }
         } else {
             petSessions = []
@@ -2136,22 +2160,32 @@ final class ControllerModel: ObservableObject {
         running.unhide()
         _ = running.activate(from: NSRunningApplication.current)
         try? await Task.sleep(for: .milliseconds(250))
-        _ = pressClaudeCodeTab(of: running)
+        let firstCodeTab = pressClaudeCodeTab(of: running)
         try? await Task.sleep(for: .milliseconds(350))
-        if pressClaudeSessionRow(named: sessionName, of: running) {
+        var scan = pressClaudeSessionRow(named: sessionName, of: running)
+        if scan.pressed {
             running.unhide()
             _ = running.activate(from: NSRunningApplication.current)
             return
         }
         try? await Task.sleep(for: .milliseconds(400))
-        _ = pressClaudeCodeTab(of: running)
+        let secondCodeTab = pressClaudeCodeTab(of: running)
         try? await Task.sleep(for: .milliseconds(250))
-        if pressClaudeSessionRow(named: sessionName, of: running) {
+        scan = pressClaudeSessionRow(named: sessionName, of: running)
+        if scan.pressed {
             running.unhide()
             _ = running.activate(from: NSRunningApplication.current)
             return
         }
-        petNotice = "Opened Claude. Could not select that session."
+        // Say which step failed. The old sentence was the same for a short
+        // name, no AX windows, a too-deep sidebar, and a refused click, so a
+        // report from another machine told us nothing.
+        if !firstCodeTab && !secondCodeTab && scan.windows > 0 && scan.rowsSeen == 0 {
+            NSLog("COSControl claude-jump: no Code radio and no rows; sidebar likely not exposed")
+            petNotice = "Opened Claude but could not read its sidebar. Toggle COS Control off and on under Accessibility, then reopen Claude."
+            return
+        }
+        petNotice = scan.notice(want: sessionName.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     private func enableClaudeSidebarAccess(of app: NSRunningApplication) {
@@ -2169,6 +2203,7 @@ final class ControllerModel: ObservableObject {
             _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
             trusted = AXIsProcessTrusted()
         }
+        petJumpTrusted = trusted
         if !trusted {
             petNotice = "Enable COS Control under Accessibility. Already on? Toggle it off and on, then reopen COS Control."
             openAccessibilitySettings()
@@ -2225,27 +2260,84 @@ final class ControllerModel: ObservableObject {
         return AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
     }
 
+    /// Why a jump did not land. Four different failures used to return the same
+    /// bare `false` and render the same sentence, so a report from another
+    /// machine carried no information about which one happened. Queen hit this
+    /// on 2026-08-29 with Accessibility correctly granted.
+    struct ClaudeRowScan {
+        var pressed = false
+        var nameTooShort = false
+        var windows = 0
+        var rowsSeen = 0
+        var deepestReached = 0
+        var truncatedAtLimit = false
+        var pressRefused = false
+        var samples: [String] = []
+
+        /// One short line for the pet bubble, naming the step that failed.
+        func notice(want: String) -> String {
+            if nameTooShort {
+                return "\"\(want)\" is under the \(CursorAgentTabMatch.minimumCount)-character floor the matcher needs."
+            }
+            if windows == 0 {
+                return "Claude returned no windows. Toggle COS Control off and on under Accessibility, then reopen Claude."
+            }
+            if pressRefused {
+                return "Found that session but Claude refused the click."
+            }
+            if truncatedAtLimit {
+                return "Gave up \(deepestReached) levels into Claude's sidebar before finding \"\(want)\"."
+            }
+            return "Opened Claude. Scanned \(rowsSeen) rows, none matched \"\(want)\"."
+        }
+
+        static let depthLimit = 28
+    }
+
     /// Press the Claude sidebar row for this session. Walk Claude windows
     /// only. Skip the window itself, the menu bar, text fields, and the
     /// row overflow menu. Never match the session name against window titles.
     @discardableResult
-    private func pressClaudeSessionRow(named rawWant: String, of app: NSRunningApplication) -> Bool {
+    private func pressClaudeSessionRow(named rawWant: String, of app: NSRunningApplication) -> ClaudeRowScan {
+        var scan = ClaudeRowScan()
         let want = rawWant.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard want.count >= CursorAgentTabMatch.minimumCount else { return false }
+        guard want.count >= CursorAgentTabMatch.minimumCount else {
+            scan.nameTooShort = true
+            NSLog("COSControl claude-jump: name %@ is under the %d-character match floor",
+                  want, CursorAgentTabMatch.minimumCount)
+            return scan
+        }
         let element = AXUIElementCreateApplication(app.processIdentifier)
         var windowsRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXWindowsAttribute as CFString, &windowsRef) == .success,
-              let windows = windowsRef as? [AXUIElement] else { return false }
+              let windows = windowsRef as? [AXUIElement] else {
+            NSLog("COSControl claude-jump: AX returned no windows for pid %d", app.processIdentifier)
+            return scan
+        }
+        scan.windows = windows.count
         for window in windows {
-            if pressClaudeSessionRow(named: want, from: window, depth: 0) {
-                return true
+            if pressClaudeSessionRow(named: want, from: window, depth: 0, scan: &scan) {
+                scan.pressed = true
+                break
             }
         }
-        return false
+        NSLog("COSControl claude-jump: want=%@ windows=%d rows=%d deepest=%d truncated=%@ pressed=%@ samples=%@",
+              want, scan.windows, scan.rowsSeen, scan.deepestReached,
+              scan.truncatedAtLimit ? "YES" : "no", scan.pressed ? "YES" : "no",
+              scan.samples.prefix(6).joined(separator: " | "))
+        return scan
     }
 
-    private func pressClaudeSessionRow(named want: String, from element: AXUIElement, depth: Int) -> Bool {
-        guard depth < 28 else { return false }
+    private func pressClaudeSessionRow(
+        named want: String, from element: AXUIElement, depth: Int, scan: inout ClaudeRowScan
+    ) -> Bool {
+        if depth > scan.deepestReached { scan.deepestReached = depth }
+        guard depth < ClaudeRowScan.depthLimit else {
+            // The walk stopped here rather than because nothing matched. Without
+            // this flag a too-deep sidebar is indistinguishable from a bad name.
+            scan.truncatedAtLimit = true
+            return false
+        }
         let role = axString(element, kAXRoleAttribute as CFString) ?? ""
         if role == "AXMenuBar" || role == "AXTextField" || role == "AXTextArea"
             || role == "AXSearchField" || role == "AXPopUpButton" {
@@ -2255,7 +2347,7 @@ final class ControllerModel: ObservableObject {
         if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
            let children = childrenRef as? [AXUIElement] {
             for child in children {
-                if pressClaudeSessionRow(named: want, from: child, depth: depth + 1) {
+                if pressClaudeSessionRow(named: want, from: child, depth: depth + 1, scan: &scan) {
                     return true
                 }
             }
@@ -2273,10 +2365,20 @@ final class ControllerModel: ObservableObject {
             || $0.localizedCaseInsensitiveContains("New session in") }) {
             return false
         }
+        // Count what we actually considered, and keep a few labels. "Scanned 0
+        // rows" and "scanned 40 and none matched" are different bugs.
+        if let first = labels.first(where: { !$0.isEmpty }) {
+            scan.rowsSeen += 1
+            if scan.samples.count < 6 {
+                scan.samples.append(ClaudeSessionRowMatch.displayLabel(first))
+            }
+        }
         guard labels.contains(where: { ClaudeSessionRowMatch.matches($0, want: want) }) else {
             return false
         }
-        return AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+        if AXUIElementPerformAction(element, kAXPressAction as CFString) == .success { return true }
+        scan.pressRefused = true
+        return false
     }
 
     private func codexThreadID(from url: URL) -> String? {

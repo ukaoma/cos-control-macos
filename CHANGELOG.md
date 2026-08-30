@@ -1,3 +1,21 @@
+## 0.5.136 (build 174)
+
+Turning the session pet on now asks for Accessibility, instead of waiting for a jump to
+fail. That permission is what lets the pet open the session you clicked in Claude, Codex
+or Cursor, and until now the first anyone heard of it was an error after a click that did
+nothing. Settings also says plainly when the grant is missing, with a Grant button, and
+clears the notice as soon as you allow it.
+
+The permission is scoped and the panel says so: it gates the jump and nothing else.
+Meetings, transcription, the server, Activity and search all work without it, so there is
+no reason to allow it if you do not use the pet.
+
+A failed jump now names the step that failed. Four different failures used to render one
+sentence — a session name too short to match, no windows returned, a sidebar deeper than
+the search limit, and a click the app refused — so a report from another machine said
+nothing about which had happened. Each one now reports itself, with counts, and writes the
+same detail to the log.
+
 ## 0.5.135 (build 173)
 
 Miles Windu's four active-session stories now use the reviewed V15 artwork rendered from

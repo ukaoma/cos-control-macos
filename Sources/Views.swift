@@ -558,6 +558,13 @@ struct ControlPanel: View {
         .onAppear {
             Task { await model.loadOpenPetsCatalog() }
         }
+        // The user grants this in System Settings, so the app is not frontmost
+        // when it changes. Re-read on return or the row would keep nagging
+        // someone who has already granted it.
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.refreshPetJumpTrust()
+        }
     }
 
     private var sessionPetSettings: some View {
@@ -568,6 +575,29 @@ struct ControlPanel: View {
                     set: { model.setPetEnabled($0) }
                 ))
                 if model.petEnabled {
+                    // State the permission BEFORE a jump fails. Without this the
+                    // only way to learn the grant is missing was to click the pet
+                    // and read an error, which is what happened on Queen's Mac.
+                    if !model.petJumpTrusted {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(COSPalette.gold)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Jump to session needs Accessibility")
+                                    .font(.caption.weight(.semibold))
+                                Text("Everything else about the pet works without it.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                            Button("Grant") { model.requestPetJumpAccessibility() }
+                                .buttonStyle(.borderless)
+                                .font(.caption.weight(.semibold))
+                        }
+                        .padding(8)
+                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(COSPalette.card))
+                    }
                     PetSizeControls(model: model)
                     Divider()
                     DisclosureGroup(isExpanded: $petStateSpritesExpanded) {

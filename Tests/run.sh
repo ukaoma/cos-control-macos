@@ -2349,6 +2349,90 @@ need(close_fn is not None and "resetSessionChat()" in close_fn.group(0),
      "closeClaudeSession does not reset chat state")
 CHATCHK
 
+# Enable-time Accessibility ask (0.5.136). The prompt used to live only inside
+# the jump, so the first anyone heard of the permission was a click that had
+# already failed. Queen hit exactly that with the grant visible in her settings.
+/usr/bin/python3 - "$ROOT" <<'AXCHK'
+import re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+model = (root / "Sources/ControllerModel.swift").read_text()
+views = (root / "Sources/Views.swift").read_text()
+def need(c, m):
+    if not c: sys.exit(f"pet-accessibility: {m}")
+
+# Ask when the feature is switched on, not when a jump fails.
+enable = model[model.index("func setPetEnabled("):]
+enable = enable[:enable.index("\n    }")]
+need("requestPetJumpAccessibility()" in enable,
+     "turning the pet on must ask for Accessibility; otherwise the first signal "
+     "a user gets is a failed jump")
+need(enable.index("requestPetJumpAccessibility()") < enable.index("loadPetSessions()"),
+     "ask before the first poll, while the user is still in Settings")
+
+ask = model[model.index("func requestPetJumpAccessibility()"):]
+ask = ask[:ask.index("\n    func setPetEnabled")]
+need("AXTrustedCheckOptionPrompt" in ask, "the ask never raises the system prompt")
+need("openAccessibilitySettings()" in ask, "the ask never opens the pane it is talking about")
+# Positional: a bare substring check passed when the pre-prompt guard was
+# deleted, because an identical guard exists AFTER the prompt.
+need(ask.index("guard !petJumpTrusted else { return }") < ask.index("AXTrustedCheckOptionPrompt"),
+     "an already-granted user must not be prompted again; the guard has to precede the prompt")
+need(ask.count("guard !petJumpTrusted else { return }") == 2,
+     "expected one guard before the prompt and one before opening the pane")
+need("petNotice" not in ask,
+     "enabling a feature is not a failure; the ask must not post an error notice")
+
+# The state has to be visible without failing first, and must stop nagging.
+need("model.petJumpTrusted" in views, "settings never shows whether the jump can work")
+need("model.requestPetJumpAccessibility()" in views, "the Grant button is not wired")
+need("didBecomeActiveNotification" in views and "refreshPetJumpTrust()" in views,
+     "the grant happens in System Settings while the app is inactive; without a "
+     "re-read on activation the warning would persist after it was granted")
+need("Everything else about the pet works without it" in views,
+     "the row must say the permission is scoped to the jump, so nobody grants it needlessly")
+AXCHK
+
+# Claude jump diagnostics (0.5.135). Four failures used to render one sentence,
+# so Queen's report from her own Mac carried no information about which happened.
+/usr/bin/python3 - "$ROOT" <<'JUMPCHK'
+import re, sys, pathlib
+model = (pathlib.Path(sys.argv[1]) / "Sources/ControllerModel.swift").read_text()
+def need(c, m):
+    if not c: sys.exit(f"claude-jump: {m}")
+
+scan = model[model.index("struct ClaudeRowScan {"):model.index("private func codexThreadID")]
+for field in ["nameTooShort", "windows", "rowsSeen", "deepestReached", "truncatedAtLimit", "pressRefused"]:
+    need(field in scan, f"the scan lost its {field} discriminator")
+
+notice = scan[scan.index("func notice(want:"):]
+notice = notice[:notice.index("\n        }")]
+# Every branch must name a DIFFERENT step, or the report is useless again.
+need(notice.count("return ") >= 5,
+     "notice() must distinguish at least five failure modes; it collapses them")
+need("nameTooShort" in notice and "windows == 0" in notice
+     and "pressRefused" in notice and "truncatedAtLimit" in notice,
+     "notice() does not branch on every recorded discriminator")
+
+# The depth cap must SET the flag, not return a bare false -- a truncated walk
+# is otherwise indistinguishable from a genuine no-match.
+walk = model[model.index("named want: String, from element: AXUIElement, depth: Int, scan: inout ClaudeRowScan"):]
+walk = walk[:walk.index("private func codexThreadID")]
+need("scan.truncatedAtLimit = true" in walk,
+     "hitting the depth limit must record that it truncated")
+need("if depth > scan.deepestReached" in walk, "the walk does not record how deep it got")
+need("scan.rowsSeen += 1" in walk, "the walk does not count the rows it considered")
+
+# And it must actually log, or a remote user has nothing to send back.
+reveal = model[model.index("func revealClaudeSession("):model.index("private func enableClaudeSidebarAccess")]
+# The recursive overload's signature wraps across two lines, so slice on the
+# wrapped form rather than a one-line signature that does not exist.
+press = model[model.index("private func pressClaudeSessionRow(named rawWant:"):]
+press = press[:press.index("    private func pressClaudeSessionRow(\n")]
+need(press.count("NSLog(") >= 3,
+     "the jump path must log its discriminating values; it had zero NSLog calls before 0.5.135")
+need("scan.notice(want:" in reveal, "the reveal path does not surface the scan's reason")
+JUMPCHK
+
 # Pet character switching (0.5.130). Installing a pack or a single sprite used
 # to layer ON TOP of whatever was already installed, so every pose the incoming
 # character did not declare stayed owned by the outgoing one -- and because the
