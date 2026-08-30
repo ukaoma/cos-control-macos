@@ -1431,6 +1431,11 @@ struct ModelsContract {
             precondition(poseSize.width <= viewport.width && poseSize.height <= viewport.height,
                          "the stable viewport must cover \(pose.rawValue)")
         }
+        let idleDoubledViewport = viewportKit.viewportSize(
+            pixels: 64, scale: 2, poseScales: [.idle: 2]
+        )
+        precondition(idleDoubledViewport.height == 256,
+                     "a pack-owned 2x idle must reserve its full unclipped height")
         let emptyViewport = PetSpriteKit().viewportSize(pixels: 64, scale: 2)
         precondition(emptyViewport.width == emptyViewport.height,
                      "the square COS figure must not reserve a 2.6x cinematic viewport")
@@ -1555,16 +1560,16 @@ struct ModelsContract {
         let defaultPet = repositoryRoot.appendingPathComponent("Resources/DefaultPet")
         let shippedMap = PetSpriteStore.loadStateMap(in: defaultPet)
         let authoredStories: [(pose: PetSpritePose, file: String, frames: Int)] = [
-            (.working, "session-pet-working-one-droid-v15.png", 16),
-            (.duel, "session-pet-duel-two-droid-v15.png", 13),
-            (.trio, "session-pet-trio-story-v15.png", 13),
-            (.swarm, "session-pet-swarm-story-v15.png", 16),
+            (.working, "session-pet-working-one-droid-v15-1.png", 16),
+            (.duel, "session-pet-duel-two-droid-v15-1.png", 12),
+            (.trio, "session-pet-trio-story-v15-1.png", 13),
+            (.swarm, "session-pet-swarm-story-v15-1.png", 16),
         ]
         var storyFrames: [PetSpritePose: [NSImage]] = [:]
         for story in authoredStories {
             precondition(shippedMap[story.pose]?.file == story.file
                             && shippedMap[story.pose]?.frames == story.frames,
-                         "\(story.pose.rawValue) must map to its V15 story and declared count")
+                         "\(story.pose.rawValue) must map to its V15.1 story and declared count")
             guard let image = NSImage(contentsOf: defaultPet.appendingPathComponent(story.file))
             else { preconditionFailure("Miles \(story.pose.rawValue) story must be readable") }
             let frames = PetSpriteStrip.slice(image, frames: story.frames)
@@ -1616,7 +1621,10 @@ struct ModelsContract {
                              "\(story.pose.rawValue) frame \(index) touches a cut boundary")
                 precondition(box.y >= 3 && box.y + box.h <= raster.height - 3,
                              "\(story.pose.rawValue) frame \(index) crops authored art")
-                precondition(box.h >= 100,
+                // Swarm's late sprint-away beat intentionally pulls Miles back
+                // to sell depth before the next rush; 80px still rejects the
+                // genuinely tiny legacy figures without rejecting that shot.
+                precondition(box.h >= 80,
                              "\(story.pose.rawValue) frame \(index) is undersized (\(box.h)px ink)")
                 let subjects = subjectColorCounts(frame)
                 precondition(subjects.hero >= 20,
@@ -1630,8 +1638,11 @@ struct ModelsContract {
                                  "\(story.pose.rawValue) frame \(index) stalls unexpectedly")
                 }
             }
-            precondition(pngData(frames.first!) == pngData(frames.last!),
-                         "\(story.pose.rawValue) must close on its exact opening composition")
+            // V15.1 uses a continuous seam rather than duplicating F1 at the
+            // end: the final recovery beat leads into the opening beat. Exact
+            // duplicate endpoints would add a visible one-frame stall.
+            precondition(pngData(frames.first!) != pngData(frames.last!),
+                         "\(story.pose.rawValue) must not stall on a duplicated seam frame")
         }
 
         // SHIPPED DEFAULT: seeds an empty install, and never overwrites the
@@ -1765,11 +1776,14 @@ struct ModelsContract {
             into: refreshDest, from: defaultPet
         ) == .refreshed, "the recognized pre-story Miles pack must refresh once")
         let refreshedMap = PetSpriteStore.loadStateMap(in: refreshDest)
+        let refreshedScales = PetSpriteStore.loadRenderScales(in: refreshDest)
         precondition(refreshedMap[.working]?.frames == 16
-                        && refreshedMap[.duel]?.frames == 13
+                        && refreshedMap[.duel]?.frames == 12
                         && refreshedMap[.trio]?.frames == 13
                         && refreshedMap[.swarm]?.frames == 16,
                      "the refresh must install all four authored story strips")
+        precondition(refreshedScales[.idle] == 2,
+                     "the refresh must land the pack-owned Miles idle scale")
         precondition(refreshedMap[.patrol]?.file == "session-pet-patrol.png",
                      "the targeted refresh must preserve every unrelated pose mapping")
 
@@ -1784,17 +1798,17 @@ struct ModelsContract {
         )
         precondition(PetSpriteStore.refreshRecognizedBundledDefault(
             into: priorStoryTemplate, from: defaultPet
-        ) == .refreshed, "the retained prior story pack must upgrade to V15")
+        ) == .refreshed, "the retained prior story pack must upgrade to V15.1")
         let priorRefreshedMap = PetSpriteStore.loadStateMap(in: priorStoryTemplate)
         for story in authoredStories {
             precondition(priorRefreshedMap[story.pose]?.file == story.file
                             && priorRefreshedMap[story.pose]?.frames == story.frames,
-                         "prior story refresh must promote \(story.pose.rawValue) to V15")
+                         "prior story refresh must promote \(story.pose.rawValue) to V15.1")
         }
 
         // 0.5.134 already stamped the previous art generation after installing
         // V7. Generation 5 must recognize that exact retained pack and advance
-        // it to V15 instead of leaving existing Miles users behind.
+        // it to V15.1 instead of leaving existing Miles users behind.
         let v7Template = seedRoot.appendingPathComponent("v7-template", isDirectory: true)
         try! FileManager.default.copyItem(at: legacyTemplate, to: v7Template)
         let v7Map = #"{"poses":{"idle":{"file":"session-pet-idle.png","frames":8},"patrol":{"file":"session-pet-patrol.png","frames":8},"waiting":{"file":"session-pet-waiting.png","frames":8},"working":{"file":"session-pet-working-story-v7.png","frames":16},"done":{"file":"session-pet-done.png","frames":8},"error":{"file":"session-pet-error.png","frames":8},"attention":{"file":"session-pet-attention.png","frames":6},"duel":{"file":"session-pet-duel-story-v7.png","frames":16},"trio":{"file":"session-pet-trio-story-v7.png","frames":12},"swarm":{"file":"session-pet-swarm-story-v7.png","frames":16}}}"#
@@ -1803,13 +1817,34 @@ struct ModelsContract {
         )
         precondition(PetSpriteStore.refreshRecognizedBundledDefault(
             into: v7Template, from: defaultPet
-        ) == .refreshed, "the retained V7 Miles pack must upgrade to V15")
+        ) == .refreshed, "the retained V7 Miles pack must upgrade to V15.1")
         let v7RefreshedMap = PetSpriteStore.loadStateMap(in: v7Template)
         for story in authoredStories {
             precondition(v7RefreshedMap[story.pose]?.file == story.file
                             && v7RefreshedMap[story.pose]?.frames == story.frames,
-                         "V7 refresh must promote \(story.pose.rawValue) to V15")
+                         "V7 refresh must promote \(story.pose.rawValue) to V15.1")
         }
+
+        // 0.5.138 shipped V15 even though V15.1 had been approved in canary.
+        // Generation 8 must recognize those exact retained bytes and replace
+        // them with V15.1 rather than stranding the current installed app.
+        let v15Template = seedRoot.appendingPathComponent("v15-template", isDirectory: true)
+        try! FileManager.default.copyItem(at: legacyTemplate, to: v15Template)
+        let v15Map = #"{"poses":{"idle":{"file":"session-pet-idle.png","frames":8},"patrol":{"file":"session-pet-patrol.png","frames":8},"waiting":{"file":"session-pet-waiting.png","frames":8},"working":{"file":"session-pet-working-one-droid-v15.png","frames":16},"done":{"file":"session-pet-done.png","frames":8},"error":{"file":"session-pet-error.png","frames":8},"attention":{"file":"session-pet-attention.png","frames":6},"duel":{"file":"session-pet-duel-two-droid-v15.png","frames":13},"trio":{"file":"session-pet-trio-story-v15.png","frames":13},"swarm":{"file":"session-pet-swarm-story-v15.png","frames":16}}}"#
+        try! Data(v15Map.utf8).write(
+            to: v15Template.appendingPathComponent("session-pet-states.json"), options: .atomic
+        )
+        precondition(PetSpriteStore.refreshRecognizedBundledDefault(
+            into: v15Template, from: defaultPet
+        ) == .refreshed, "the retained V15 Miles pack must upgrade to V15.1")
+        let v15RefreshedMap = PetSpriteStore.loadStateMap(in: v15Template)
+        for story in authoredStories {
+            precondition(v15RefreshedMap[story.pose]?.file == story.file
+                            && v15RefreshedMap[story.pose]?.frames == story.frames,
+                         "V15 refresh must promote \(story.pose.rawValue) to V15.1")
+        }
+        precondition(PetSpriteStore.loadRenderScales(in: v15Template)[.idle] == 2,
+                     "V15 refresh must land the 2x idle scale")
 
         for pose in [PetSpritePose.working, .duel, .trio, .swarm, .patrol] {
             let customDest = seedRoot.appendingPathComponent(
@@ -1832,7 +1867,7 @@ struct ModelsContract {
         let brokenSource = seedRoot.appendingPathComponent("broken-source", isDirectory: true)
         try! FileManager.default.copyItem(at: defaultPet, to: brokenSource)
         try! FileManager.default.removeItem(
-            at: brokenSource.appendingPathComponent("session-pet-swarm-story-v15.png")
+            at: brokenSource.appendingPathComponent("session-pet-swarm-story-v15-1.png")
         )
         let retryDest = seedRoot.appendingPathComponent("retryable-legacy", isDirectory: true)
         try! FileManager.default.copyItem(at: legacyTemplate, to: retryDest)

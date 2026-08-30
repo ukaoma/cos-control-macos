@@ -3294,9 +3294,17 @@ struct PetSpriteKit {
 
     /// Reserve one collapsed viewport for every live state. A poll may change
     /// idle -> running -> swarm, but it must not resize or recenter the pet.
-    func viewportSize(pixels: Int, scale: CGFloat) -> CGSize {
-        let sizes = PetSpritePose.liveCases.map {
-            $0.renderSize(pixels, scale: scale, aspect: resolvedAspect(for: $0))
+    func viewportSize(
+        pixels: Int,
+        scale: CGFloat,
+        poseScales: [PetSpritePose: CGFloat] = [:]
+    ) -> CGSize {
+        let sizes = PetSpritePose.liveCases.map { pose in
+            pose.renderSize(
+                pixels,
+                scale: scale * max(poseScales[pose] ?? 1, 0.01),
+                aspect: resolvedAspect(for: pose)
+            )
         }
         return CGSize(
             width: sizes.map(\.width).max() ?? CGFloat(pixels),
@@ -3310,16 +3318,18 @@ struct PetSpriteKit {
         _ requested: CGFloat,
         pixels: Int,
         available: CGSize,
-        reservedChrome: CGSize
+        reservedChrome: CGSize,
+        poseScales: [PetSpritePose: CGFloat] = [:]
     ) -> CGFloat {
-        PetSpritePose.liveCases.map {
-            $0.fittedCharacterScale(
-                requested,
+        PetSpritePose.liveCases.map { pose in
+            let poseScale = max(poseScales[pose] ?? 1, 0.01)
+            return pose.fittedCharacterScale(
+                requested * poseScale,
                 pixels: pixels,
-                aspect: resolvedAspect(for: $0),
+                aspect: resolvedAspect(for: pose),
                 available: available,
                 reservedChrome: reservedChrome
-            )
+            ) / poseScale
         }.min() ?? requested
     }
 
@@ -4469,6 +4479,28 @@ enum PetSpriteStore {
         return intervals
     }
 
+    /// Optional figure scale authored by a sprite pack for a specific pose.
+    /// This fixes art whose subject occupies a smaller share of its cell without
+    /// inflating every other state through the user's global character dial.
+    static func loadRenderScales(
+        in directory: URL,
+        fileManager: FileManager = .default
+    ) -> [PetSpritePose: CGFloat] {
+        let url = directory.appendingPathComponent(stateFileName)
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let poses = json["poses"] as? [String: Any]
+        else { return [:] }
+        var scales: [PetSpritePose: CGFloat] = [:]
+        for pose in PetSpritePose.allCases {
+            guard let entry = poses[pose.rawValue] as? [String: Any],
+                  let value = entry["renderScale"] as? NSNumber
+            else { continue }
+            scales[pose] = CGFloat(min(max(value.doubleValue, 0.5), 2.0))
+        }
+        return scales
+    }
+
     /// Shipped characters are already PROCESSED (sliced, cleaned, stitched,
     /// with state maps). Keep their data registry separate from OpenPets even
     /// though Settings presents both sources in one catalog; attribution still
@@ -4781,6 +4813,7 @@ enum PetSpriteStore {
                 (poseFileName(.working), 8),
                 ("session-pet-working-error-story.png", 16),
                 ("session-pet-working-story-v7.png", 16),
+                ("session-pet-working-one-droid-v15.png", 16),
             ],
             .done: [(poseFileName(.done), 8)],
             .error: [(poseFileName(.error), 8)],
@@ -4789,14 +4822,17 @@ enum PetSpriteStore {
                 (poseFileName(.duel), 8),
                 ("session-pet-duel-two-droid-v5.png", 13),
                 ("session-pet-duel-story-v7.png", 16),
+                ("session-pet-duel-two-droid-v15.png", 13),
             ],
             .trio: [
                 (poseFileName(.trio), 6),
                 ("session-pet-trio-story-v7.png", 12),
+                ("session-pet-trio-story-v15.png", 13),
             ],
             .swarm: [
                 (poseFileName(.swarm), 6),
                 ("session-pet-swarm-story-v7.png", 16),
+                ("session-pet-swarm-story-v15.png", 16),
             ],
         ]
         guard installed.count == retainedStock.count,
@@ -4843,7 +4879,13 @@ enum PetSpriteStore {
             for story in stories {
                 updated[story.pose] = (story.file, story.frames)
             }
-            try saveStateMap(updated, in: directory, fileManager: fileManager)
+            try saveStateMap(
+                updated,
+                frameIntervalDefaults: loadFrameIntervals(in: source, fileManager: fileManager),
+                renderScaleDefaults: loadRenderScales(in: source, fileManager: fileManager),
+                in: directory,
+                fileManager: fileManager
+            )
             return .refreshed
         } catch {
             NSLog("COSControl pet-default refresh failed: %@", error.localizedDescription)
@@ -4924,15 +4966,25 @@ enum PetSpriteStore {
 
     private static func saveStateMap(
         _ map: [PetSpritePose: (file: String, frames: Int)],
+        frameIntervalDefaults: [PetSpritePose: Double] = [:],
+        renderScaleDefaults: [PetSpritePose: CGFloat] = [:],
         in directory: URL,
         fileManager: FileManager
     ) throws {
-        let retainedIntervals = loadFrameIntervals(in: directory, fileManager: fileManager)
+        var retainedIntervals = frameIntervalDefaults
+        for (pose, interval) in loadFrameIntervals(in: directory, fileManager: fileManager) {
+            retainedIntervals[pose] = interval
+        }
+        var retainedScales = renderScaleDefaults
+        for (pose, scale) in loadRenderScales(in: directory, fileManager: fileManager) {
+            retainedScales[pose] = scale
+        }
         var poses: [String: [String: Any]] = [:]
         for pose in PetSpritePose.allCases {
             guard let row = map[pose] else { continue }
             var payload: [String: Any] = ["file": row.file, "frames": row.frames]
             if let interval = retainedIntervals[pose] { payload["interval"] = interval }
+            if let scale = retainedScales[pose] { payload["renderScale"] = scale }
             poses[pose.rawValue] = payload
         }
         let data = try JSONSerialization.data(withJSONObject: ["poses": poses], options: [.prettyPrinted, .sortedKeys])

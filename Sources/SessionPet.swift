@@ -34,6 +34,9 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         observers.append(model.$petSpriteKit.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
+        observers.append(model.$petRenderScales.sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
         observers.append(model.$petCompleting.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
@@ -92,7 +95,8 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
             let characterScale = fittedCharacterScale(for: panel, model: model)
             let viewportSize = model.petSpriteKit.viewportSize(
                 pixels: model.petSize.pixels,
-                scale: characterScale
+                scale: characterScale,
+                poseScales: model.petRenderScales
             )
             host.rootView = SessionPetRoot(
                 model: model,
@@ -126,7 +130,8 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
             reservedChrome: CGSize(
                 width: model.petSize.length(36),
                 height: model.petSize.length(180)
-            )
+            ),
+            poseScales: model.petRenderScales
         )
     }
 
@@ -137,7 +142,8 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         }
         let viewportSize = model.petSpriteKit.viewportSize(
             pixels: model.petSize.pixels,
-            scale: model.petCharacterFactor
+            scale: model.petCharacterFactor,
+            poseScales: model.petRenderScales
         )
         let root = SessionPetRoot(
             model: model,
@@ -215,7 +221,7 @@ private struct SessionPetRoot: View {
                             pose: pose,
                             frameInterval: model.petFrameInterval(for: pose),
                             size: CGFloat(size.pixels),
-                            characterScale: characterScale,
+                            characterScale: characterScale * model.petRenderScale(for: pose),
                             restClips: model.petRestClips(for: pose)
                         )
                         if let focus {

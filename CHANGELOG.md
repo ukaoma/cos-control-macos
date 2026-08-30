@@ -1,3 +1,15 @@
+## 0.5.139 (build 177)
+
+Miles Windu now ships the approved V15.1 one-, two-, three-, and four-plus-session
+stories reviewed in canary. Their six-pixel runtime gutter replaces the older V15
+sheets that could crop effects at a frame edge, and existing unmodified Miles installs
+upgrade automatically without touching custom sprite packs.
+
+Miles's idle pose now renders at twice its prior size through pack-owned pose metadata.
+Combat scenes and the user's global character-size setting stay unchanged, while the
+shared viewport reserves enough room for the larger idle figure instead of clipping or
+recentering it when session state changes.
+
 ## 0.5.138 (build 176)
 
 Nia Solari, Elara Vale, and Rowan Vale now carry complete active-session stories at the

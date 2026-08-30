@@ -9,8 +9,9 @@
       "frames" : 8
     },
     "duel" : {
-      "file" : "session-pet-duel-two-droid-v15.png",
-      "frames" : 13
+      "file" : "session-pet-duel-two-droid-v15-1.png",
+      "frames" : 12,
+      "interval" : 0.14666666666666667
     },
     "error" : {
       "file" : "session-pet-error.png",
@@ -18,27 +19,31 @@
     },
     "idle" : {
       "file" : "session-pet-idle.png",
-      "frames" : 8
+      "frames" : 8,
+      "renderScale" : 2
     },
     "patrol" : {
       "file" : "session-pet-patrol.png",
       "frames" : 8
     },
     "swarm" : {
-      "file" : "session-pet-swarm-story-v15.png",
-      "frames" : 16
+      "file" : "session-pet-swarm-story-v15-1.png",
+      "frames" : 16,
+      "interval" : 0.22
     },
     "trio" : {
-      "file" : "session-pet-trio-story-v15.png",
-      "frames" : 13
+      "file" : "session-pet-trio-story-v15-1.png",
+      "frames" : 13,
+      "interval" : 0.22
     },
     "waiting" : {
       "file" : "session-pet-waiting.png",
       "frames" : 8
     },
     "working" : {
-      "file" : "session-pet-working-one-droid-v15.png",
-      "frames" : 16
+      "file" : "session-pet-working-one-droid-v15-1.png",
+      "frames" : 16,
+      "interval" : 0.1
     }
   }
 }

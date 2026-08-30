@@ -1922,9 +1922,9 @@ for bundled_id in bundled_ids:
 # character is chosen, so those users are already at the current value.
 gen = re.search(r"petDefaultArtGeneration = (\d+)", model)
 need(gen is not None, "the art-generation constant is gone")
-need(int(gen.group(1)) >= 7,
-     "the advanced Jedi gained complete stories in 0.5.138; the art generation must advance "
-     "or existing four-frame users never receive them")
+need(int(gen.group(1)) >= 8,
+     "Miles V15.1 and its 2x idle landed after 0.5.138; the art generation must advance "
+     "or existing V15 users never receive them")
 need("refreshStillBundledCharacter(into: directory)" in model,
      "the launch refresh never calls the still-character recognizer, so a user who picked "
      "a Jedi while it was still-only keeps the all-still map")
@@ -1947,6 +1947,8 @@ need(retained_fn.index("story.data.write") < retained_fn.index("sourceStateData.
      "the Jedi story files must land before the active state map changes")
 need("loadFrameIntervals" in models_src and "petFrameIntervals" in model,
      "bundled story cadence is declared but never loaded")
+need("loadRenderScales" in models_src and "petRenderScales" in model,
+     "pack-owned pose scale metadata is declared but never loaded")
 need("frameInterval: model.petFrameInterval(for: pose)" in pet_src,
      "the session pet does not pass the selected character's authored cadence")
 need("primaryFrameInterval" in cosmotion_src
@@ -2009,7 +2011,7 @@ need('func renderSize(' in models_src,
      "the shared sprite-size function is gone")
 need(motion_src.count('pose.renderSize(') >= 2 and
      'static func resolvedAspect(frames:' in models_src and
-     'aspect: resolvedAspect(for: $0)' in models_src and
+     'aspect: resolvedAspect(for: pose)' in models_src and
      'PetSpriteKit.resolvedAspect(frames: frames)' in motion_src and
      'petSpriteKit.viewportSize(' in pet_src,
      "panel viewport and rendered sprite returned to unrelated size formulas")
