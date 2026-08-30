@@ -1679,6 +1679,73 @@ struct ModelsContract {
         precondition(!PetSpriteStore.installDefault(into: seedDest, from: nil),
                      "a build without the bundled character must degrade quietly")
 
+        let bundledRoot = repositoryRoot.appendingPathComponent(
+            "Resources/BundledCharacters", isDirectory: true
+        )
+        let legacyJediMap = #"{"poses":{"attention":{"file":"session-pet-idle.png","frames":1},"done":{"file":"session-pet-idle.png","frames":1},"duel":{"file":"session-pet-duel.png","frames":4},"error":{"file":"session-pet-idle.png","frames":1},"idle":{"file":"session-pet-idle.png","frames":1},"patrol":{"file":"session-pet-idle.png","frames":1},"swarm":{"file":"session-pet-swarm.png","frames":4},"trio":{"file":"session-pet-trio.png","frames":4},"waiting":{"file":"session-pet-idle.png","frames":1},"working":{"file":"session-pet-idle.png","frames":1}}}"#
+        for (id, _, _) in addedCharacters {
+            let source = bundledRoot.appendingPathComponent(id, isDirectory: true)
+            let legacyDest = seedRoot.appendingPathComponent("legacy-\(id)", isDirectory: true)
+            try! FileManager.default.createDirectory(at: legacyDest, withIntermediateDirectories: true)
+            for file in [
+                "session-pet-idle.png", "session-pet-duel.png",
+                "session-pet-trio.png", "session-pet-swarm.png",
+            ] {
+                try! FileManager.default.copyItem(
+                    at: source.appendingPathComponent(file),
+                    to: legacyDest.appendingPathComponent(file)
+                )
+            }
+            try! Data(legacyJediMap.utf8).write(
+                to: legacyDest.appendingPathComponent("session-pet-states.json"),
+                options: .atomic
+            )
+            precondition(PetSpriteStore.refreshRecognizedBundledCharacter(
+                into: legacyDest, sourceRootOverride: bundledRoot
+            ) == .refreshed(id), "\(id) must upgrade from retained four-frame art")
+            let upgraded = PetSpriteStore.loadStateMap(in: legacyDest)
+            let upgradedIntervals = PetSpriteStore.loadFrameIntervals(in: legacyDest)
+            precondition(upgraded[.working]?.frames == 16
+                            && upgraded[.duel]?.frames == 12
+                            && upgraded[.trio]?.frames == 13
+                            && upgraded[.swarm]?.frames == 16,
+                         "\(id) did not receive its complete 16/12/13/16 stories")
+            precondition(upgraded[.idle]?.file == "session-pet-idle.png",
+                         "\(id) migration changed a non-story pose")
+            let expectedWorkingInterval = id == "jedi-nia-solari" ? 0.095 : 0.1
+            let expectedSwarmInterval = id == "jedi-nia-solari" ? 0.085 : 0.2
+            precondition(abs((upgradedIntervals[.working] ?? 0) - expectedWorkingInterval) < 0.000001
+                            && abs((upgradedIntervals[.swarm] ?? 0) - expectedSwarmInterval) < 0.000001,
+                         "\(id) did not preserve its authored story cadence")
+
+            let customDest = seedRoot.appendingPathComponent("custom-\(id)", isDirectory: true)
+            try! FileManager.default.createDirectory(at: customDest, withIntermediateDirectories: true)
+            for file in [
+                "session-pet-idle.png", "session-pet-duel.png",
+                "session-pet-trio.png", "session-pet-swarm.png",
+            ] {
+                try! FileManager.default.copyItem(
+                    at: source.appendingPathComponent(file),
+                    to: customDest.appendingPathComponent(file)
+                )
+            }
+            try! Data(legacyJediMap.utf8).write(
+                to: customDest.appendingPathComponent("session-pet-states.json"),
+                options: .atomic
+            )
+            let customData = Data("custom duel art".utf8)
+            try! customData.write(
+                to: customDest.appendingPathComponent("session-pet-duel.png"),
+                options: .atomic
+            )
+            precondition(PetSpriteStore.refreshRecognizedBundledCharacter(
+                into: customDest, sourceRootOverride: bundledRoot
+            ) == .notApplicable, "a customized \(id) pack must never be overwritten")
+            precondition(try! Data(contentsOf: customDest.appendingPathComponent(
+                "session-pet-duel.png"
+            )) == customData, "\(id) migration changed customized bytes")
+        }
+
         let legacyTemplate = seedRoot.appendingPathComponent("legacy-template", isDirectory: true)
         try! FileManager.default.createDirectory(at: legacyTemplate, withIntermediateDirectories: true)
         for file in try! FileManager.default.contentsOfDirectory(

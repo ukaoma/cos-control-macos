@@ -1876,35 +1876,45 @@ for bundled_id in bundled_ids:
     poses = json.loads(states.read_text()).get("poses", {})
     need(set(poses) == {"idle", "patrol", "waiting", "working", "done", "error", "attention", "duel", "trio", "swarm"},
          f"{bundled_id} must map all ten deployable pet states")
-    # 0.5.133: the three carry authored four-frame combat strips for the
-    # multi-session states. The other seven stay on the one portrait, which
-    # reads fine standing still. Every state must still map HONESTLY: a still
-    # state points at the portrait at one frame, a combat state points at its
-    # OWN strip at four.
-    combat = {"duel", "trio", "swarm"}
+    # 0.5.138: every active-session tier carries its complete authored story.
+    # The six signal/rest states stay on the portrait at one frame. Pin the
+    # per-character geometry: the strips intentionally use different cell
+    # widths to preserve each generated composition without cropping.
+    stories = {
+        "working": (16, 304, 0.095 if bundled_id == "jedi-nia-solari" else 0.1),
+        "duel": (12, 304 if bundled_id == "jedi-nia-solari" else 352,
+                 0.115 if bundled_id == "jedi-nia-solari" else 0.14),
+        "trio": (13, 304 if bundled_id == "jedi-nia-solari" else 352,
+                 0.105 if bundled_id == "jedi-nia-solari" else 0.18),
+        "swarm": (16, 304 if bundled_id == "jedi-nia-solari" else 384,
+                  0.085 if bundled_id == "jedi-nia-solari" else 0.2),
+    }
     for pose, row in poses.items():
-        if pose in combat:
-            need(row.get("file") == f"session-pet-{pose}.png" and row.get("frames") == 4,
-                 f"{bundled_id}/{pose} must map to its own four-frame strip, got {row}")
-            strip = pack / f"session-pet-{pose}.png"
+        if pose in stories:
+            expected_frames, _, expected_interval = stories[pose]
+            expected_file = f"session-pet-{pose}-story-v1.png"
+            need(row.get("file") == expected_file and row.get("frames") == expected_frames
+                 and abs(row.get("interval", 0) - expected_interval) < 0.000001,
+                 f"{bundled_id}/{pose} must map to its complete story, got {row}")
+            strip = pack / expected_file
             need(strip.is_file(), f"{bundled_id} declares {pose} but ships no {strip.name}")
         else:
             need(row.get("file") == "session-pet-idle.png" and row.get("frames") == 1,
                  f"{bundled_id}/{pose} is a still state and must map to the one canonical frame")
-    # Geometry is asserted, not assumed. `frames: 4` in the JSON checking
-    # itself would pass a 3- or 5-cell strip, and PetSpriteStrip.slice would
-    # then cut every frame mid-cell.
-    for pose in sorted(combat):
-        strip = pack / f"session-pet-{pose}.png"
+    # Geometry is asserted, not assumed. A correct frame count against the
+    # wrong width still slices every pose mid-cell.
+    for pose, (frames, cell_width, _) in sorted(stories.items()):
+        strip = pack / f"session-pet-{pose}-story-v1.png"
         dims = subprocess.run(["sips", "-g", "pixelWidth", "-g", "pixelHeight", str(strip)],
                               capture_output=True, text=True).stdout
         w = re.search(r"pixelWidth: (\d+)", dims)
         h = re.search(r"pixelHeight: (\d+)", dims)
         need(w is not None and h is not None, f"{bundled_id}/{pose}: sips could not read {strip.name}")
-        need(int(w.group(1)) == 1024 and int(h.group(1)) == 256,
-             f"{bundled_id}/{pose} is {w.group(1)}x{h.group(1)}, must be 1024x256 (four 256px cells)")
-        need(int(w.group(1)) % 4 == 0,
-             f"{bundled_id}/{pose} width does not divide into 4 cells")
+        need(int(w.group(1)) == frames * cell_width and int(h.group(1)) == 256,
+             f"{bundled_id}/{pose} is {w.group(1)}x{h.group(1)}, must be "
+             f"{frames * cell_width}x256 ({frames} {cell_width}px cells)")
+        need(int(w.group(1)) % frames == 0,
+             f"{bundled_id}/{pose} width does not divide into {frames} cells")
 
 # Shipping new bundled art without advancing the generation constant means the
 # refresh never fires, so anyone who ALREADY picked that character keeps the old
@@ -1912,9 +1922,9 @@ for bundled_id in bundled_ids:
 # character is chosen, so those users are already at the current value.
 gen = re.search(r"petDefaultArtGeneration = (\d+)", model)
 need(gen is not None, "the art-generation constant is gone")
-need(int(gen.group(1)) >= 5,
-     "Miles gained V15 combat strips in 0.5.135; the art generation must advance past 4 "
-     "or existing V7 users never receive them")
+need(int(gen.group(1)) >= 7,
+     "the advanced Jedi gained complete stories in 0.5.138; the art generation must advance "
+     "or existing four-frame users never receive them")
 need("refreshStillBundledCharacter(into: directory)" in model,
      "the launch refresh never calls the still-character recognizer, so a user who picked "
      "a Jedi while it was still-only keeps the all-still map")
@@ -1926,6 +1936,22 @@ need(still_fn.index("guard ready else") < still_fn.index("removeAll(from: direct
      "the replacement must be proven readable BEFORE the destination is cleared")
 need("character.id != defaultCharacterID" in still_fn,
      "the still recognizer must never target Miles Windu, who has his own refresh path")
+need("refreshRecognizedBundledCharacter" in models_src
+     and "refreshRecognizedBundledCharacter(" in model,
+     "the retained four-frame Jedi packs have no complete-story migration")
+retained_fn = models_src[models_src.index("static func refreshRecognizedBundledCharacter("):]
+retained_fn = retained_fn[:retained_fn.index("\n    static func installDefault(")]
+need("identityMatches" in retained_fn and "installedData == retainedData" in retained_fn,
+     "the Jedi story migration must byte-match retained stock before writing")
+need(retained_fn.index("story.data.write") < retained_fn.index("sourceStateData.write"),
+     "the Jedi story files must land before the active state map changes")
+need("loadFrameIntervals" in models_src and "petFrameIntervals" in model,
+     "bundled story cadence is declared but never loaded")
+need("frameInterval: model.petFrameInterval(for: pose)" in pet_src,
+     "the session pet does not pass the selected character's authored cadence")
+need("primaryFrameInterval" in cosmotion_src
+     and "interval: primaryFrameInterval" in cosmotion_src,
+     "authored cadence does not drive both the timeline and frame index")
 need('func installBundledCharacter(' in models_src,
      "bundled characters cannot be selected through the sprite store")
 # Scope to the gallery card's BODY: str.index finds the `private var`

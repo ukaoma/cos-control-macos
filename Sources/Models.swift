@@ -4237,6 +4237,12 @@ enum PetSpriteStore {
         case failed
     }
 
+    enum BundledCharacterRefreshResult: Equatable {
+        case notApplicable
+        case refreshed(String)
+        case failed
+    }
+
     static func supportDirectory(fileManager: FileManager = .default, home: URL? = nil) -> URL {
         let root = home ?? fileManager.homeDirectoryForCurrentUser
         return root.appendingPathComponent("Library/Application Support/COS Control", isDirectory: true)
@@ -4439,6 +4445,30 @@ enum PetSpriteStore {
         return map
     }
 
+    /// Optional per-strip cadence authored by a bundled pack. Legacy and
+    /// custom packs omit it and continue to use the pose's duration-preserving
+    /// fallback. Keeping timing beside the strip prevents a 16-frame swarm
+    /// from silently playing at another character's speed.
+    static func loadFrameIntervals(
+        in directory: URL,
+        fileManager: FileManager = .default
+    ) -> [PetSpritePose: Double] {
+        let url = directory.appendingPathComponent(stateFileName)
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let poses = json["poses"] as? [String: Any]
+        else { return [:] }
+        var intervals: [PetSpritePose: Double] = [:]
+        for pose in PetSpritePose.allCases {
+            guard let entry = poses[pose.rawValue] as? [String: Any],
+                  let value = entry["interval"] as? NSNumber,
+                  value.doubleValue > 0
+            else { continue }
+            intervals[pose] = value.doubleValue
+        }
+        return intervals
+    }
+
     /// Shipped characters are already PROCESSED (sliced, cleaned, stitched,
     /// with state maps). Keep their data registry separate from OpenPets even
     /// though Settings presents both sources in one catalog; attribution still
@@ -4594,6 +4624,98 @@ enum PetSpriteStore {
             return character.id
         }
         return nil
+    }
+
+    /// Upgrade one of the retained four-frame Jedi packs from 0.5.134 without
+    /// touching a customized sprite pack. Identity is proven from BOTH the
+    /// exact legacy state map and byte-identical retained assets. New,
+    /// versioned story files land first; the state map changes atomically last,
+    /// so an interrupted launch leaves the old four-frame pack readable.
+    @discardableResult
+    static func refreshRecognizedBundledCharacter(
+        into directory: URL,
+        sourceRootOverride: URL? = nil,
+        bundle: Bundle = .main,
+        fileManager: FileManager = .default
+    ) -> BundledCharacterRefreshResult {
+        let portrait = poseFileName(.idle)
+        let legacy: [PetSpritePose: (file: String, frames: Int)] = [
+            .attention: (portrait, 1),
+            .done: (portrait, 1),
+            .duel: (poseFileName(.duel), 4),
+            .error: (portrait, 1),
+            .idle: (portrait, 1),
+            .patrol: (portrait, 1),
+            .swarm: (poseFileName(.swarm), 4),
+            .trio: (poseFileName(.trio), 4),
+            .waiting: (portrait, 1),
+            .working: (portrait, 1),
+        ]
+        let installed = loadStateMap(in: directory, fileManager: fileManager)
+        guard installed.count == legacy.count,
+              legacy.allSatisfy({ pose, expected in
+                  guard let row = installed[pose] else { return false }
+                  return row.file == expected.file && row.frames == expected.frames
+              })
+        else { return .notApplicable }
+
+        for character in bundledCharacters where character.id != defaultCharacterID {
+            let source: URL? = if let sourceRootOverride {
+                sourceRootOverride.appendingPathComponent(character.id, isDirectory: true)
+            } else {
+                bundledCharacterURL(character, bundle: bundle, fileManager: fileManager)
+            }
+            guard let source else { continue }
+
+            let legacyFiles = Set(legacy.values.map(\.file))
+            let identityMatches = legacyFiles.allSatisfy { file in
+                guard let installedData = try? Data(
+                    contentsOf: directory.appendingPathComponent(file)
+                ), let retainedData = try? Data(
+                    contentsOf: source.appendingPathComponent(file)
+                ) else { return false }
+                return installedData == retainedData
+            }
+            guard identityMatches else { continue }
+
+            let bundled = loadStateMap(in: source, fileManager: fileManager)
+            guard let sourceStateData = try? Data(
+                contentsOf: source.appendingPathComponent(stateFileName)
+            ) else { return .failed }
+            let storyPoses: [PetSpritePose] = [.working, .duel, .trio, .swarm]
+            var stories: [(pose: PetSpritePose, file: String, frames: Int, data: Data)] = []
+            for pose in storyPoses {
+                guard let row = bundled[pose], row.frames > 4,
+                      row.file == "session-pet-\(pose.rawValue)-story-v1.png",
+                      let data = try? Data(contentsOf: source.appendingPathComponent(row.file)),
+                      NSImage(data: data) != nil
+                else {
+                    NSLog("COSControl bundled-character refresh skipped: %@ has an incomplete %@ story", character.id, pose.rawValue)
+                    return .failed
+                }
+                stories.append((pose, row.file, row.frames, data))
+            }
+
+            do {
+                try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+                for story in stories {
+                    try story.data.write(
+                        to: directory.appendingPathComponent(story.file), options: .atomic
+                    )
+                }
+                guard stories.allSatisfy({ story in
+                    (try? Data(contentsOf: directory.appendingPathComponent(story.file))) == story.data
+                }) else { return .failed }
+                try sourceStateData.write(
+                    to: directory.appendingPathComponent(stateFileName), options: .atomic
+                )
+                return .refreshed(character.id)
+            } catch {
+                NSLog("COSControl bundled-character refresh failed: %@", error.localizedDescription)
+                return .failed
+            }
+        }
+        return .notApplicable
     }
 
     static func installDefault(
@@ -4805,10 +4927,13 @@ enum PetSpriteStore {
         in directory: URL,
         fileManager: FileManager
     ) throws {
+        let retainedIntervals = loadFrameIntervals(in: directory, fileManager: fileManager)
         var poses: [String: [String: Any]] = [:]
         for pose in PetSpritePose.allCases {
             guard let row = map[pose] else { continue }
-            poses[pose.rawValue] = ["file": row.file, "frames": row.frames]
+            var payload: [String: Any] = ["file": row.file, "frames": row.frames]
+            if let interval = retainedIntervals[pose] { payload["interval"] = interval }
+            poses[pose.rawValue] = payload
         }
         let data = try JSONSerialization.data(withJSONObject: ["poses": poses], options: [.prettyPrinted, .sortedKeys])
         try data.write(to: directory.appendingPathComponent(stateFileName), options: .atomic)

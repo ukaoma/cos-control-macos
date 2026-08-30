@@ -1,3 +1,16 @@
+## 0.5.138 (build 176)
+
+Nia Solari, Elara Vale, and Rowan Vale now carry complete active-session stories at the
+same bar as Miles Windu. One, two, three, and four-plus sessions play approved
+16/12/13/16-frame sequences instead of a standing portrait followed by three four-frame
+combat loops. Their attacks now establish each threat, show the block or strike, resolve
+the droid on contact, and return to a readable loop seam.
+
+Existing stock installs upgrade automatically. The app recognizes the exact retained
+four-frame state map and byte-matches all four old assets before it writes anything; a
+customized character is never touched. Versioned story files land and verify before the
+state map switches, so an interrupted launch leaves the old pack readable and retryable.
+
 ## 0.5.137 (build 175)
 
 Meetings to review can be read by date.

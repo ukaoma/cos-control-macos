@@ -90,6 +90,12 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         "the timeline does not tick at the fastest authored active clip",
     )
     need(
+        "primaryFrameInterval" in motion
+        and "interval: primaryFrameInterval" in motion
+        and " / primaryFrameInterval" in motion,
+        "a bundled character's authored cadence does not drive playback",
+    )
+    need(
         "visualScale" not in models and ".scaleEffect(" not in motion,
         "a global paint transform can still crop or resize arbitrary character packs",
     )

@@ -122,7 +122,7 @@ final class ControllerModel: ObservableObject {
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 5
+    private static let petDefaultArtGeneration = 7
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -1277,6 +1277,7 @@ final class ControllerModel: ObservableObject {
     )
     @Published var petCustomSprite: NSImage?
     @Published var petSpriteKit = PetSpriteKit()
+    @Published var petFrameIntervals: [PetSpritePose: Double] = [:]
     @Published var petCompleting = false
     private var petCompletionTask: Task<Void, Never>?
     @Published var petSessions: [ClaudeSession] = []
@@ -1628,6 +1629,11 @@ final class ControllerModel: ObservableObject {
             .filter { $0.frames.count > 1 }
     }
 
+    func petFrameInterval(for pose: PetSpritePose) -> Double {
+        let count = petSpriteKit.frames(for: pose).count
+        return petFrameIntervals[pose] ?? pose.frameInterval(forFrames: count)
+    }
+
     func setPetCharacterPercent(_ value: Int) {
         let clamped = PetCharacterScale.clamp(value)
         guard clamped != petCharacterPercent else { return }
@@ -1646,14 +1652,20 @@ final class ControllerModel: ObservableObject {
         if UserDefaults.standard.integer(forKey: Self.petDefaultArtGenerationKey)
             < Self.petDefaultArtGeneration {
             let refresh = PetSpriteStore.refreshRecognizedBundledDefault(into: directory)
-            // Generation 4 landed combat strips on the three bundled Jedi;
-            // generation 5 upgrades recognized Miles V7 installs to V15. The
-            // other Jedi never match Miles's retained stock, so they keep their
-            // own recognizer.
+            // Generation 4 landed four-frame combat strips on the three
+            // bundled Jedi; generation 5 upgraded recognized Miles V7 installs
+            // to V15. Generation 7 promotes the retained four-frame Jedi packs
+            // to their complete 16/12/13/16 stories.
             if let upgraded = PetSpriteStore.refreshStillBundledCharacter(into: directory) {
                 NSLog("COSControl landed combat art on %@", upgraded)
             }
-            if refresh != .failed {
+            let bundledRefresh = PetSpriteStore.refreshRecognizedBundledCharacter(
+                into: directory
+            )
+            if case let .refreshed(upgraded) = bundledRefresh {
+                NSLog("COSControl landed complete story art on %@", upgraded)
+            }
+            if refresh != .failed && bundledRefresh != .failed {
                 UserDefaults.standard.set(
                     Self.petDefaultArtGeneration,
                     forKey: Self.petDefaultArtGenerationKey
@@ -1671,6 +1683,7 @@ final class ControllerModel: ObservableObject {
             guard let image = NSImage(contentsOf: url) else { continue }
             poses[pose] = PetSpriteStrip.slice(image, frames: record.frames)
         }
+        petFrameIntervals = PetSpriteStore.loadFrameIntervals(in: directory)
         var cinematic: [NSImage] = []
         let cinematicURL = directory.appendingPathComponent(PetSpriteStore.cinematicFileName)
         if let image = NSImage(contentsOf: cinematicURL),

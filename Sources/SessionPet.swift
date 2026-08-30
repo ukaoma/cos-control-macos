@@ -213,6 +213,7 @@ private struct SessionPetRoot: View {
                             customImage: model.petCustomSprite,
                             frames: model.petSpriteKit.frames(for: pose),
                             pose: pose,
+                            frameInterval: model.petFrameInterval(for: pose),
                             size: CGFloat(size.pixels),
                             characterScale: characterScale,
                             restClips: model.petRestClips(for: pose)

@@ -221,6 +221,7 @@ struct SessionPetSprite: View {
     var customImage: NSImage? = nil
     var frames: [NSImage] = []
     var pose: PetSpritePose = .idle
+    var frameInterval: Double? = nil
     var size: CGFloat = 64
     /// The character dial only; the card around this view sizes off PetSize.
     var characterScale: CGFloat = 1
@@ -239,9 +240,13 @@ struct SessionPetSprite: View {
 
     private var timelineInterval: Double {
         guard !reduceMotion else { return 3600 }
-        let candidates = [pose.frameInterval(forFrames: frames.count)]
+        let candidates = [primaryFrameInterval]
             + (playlists ? usableRestClips.map(\.frameInterval) : [])
-        return candidates.filter { $0 > 0 }.min() ?? pose.frameInterval(forFrames: frames.count)
+        return candidates.filter { $0 > 0 }.min() ?? primaryFrameInterval
+    }
+
+    private var primaryFrameInterval: Double {
+        frameInterval ?? pose.frameInterval(forFrames: frames.count)
     }
 
     var body: some View {
@@ -337,7 +342,7 @@ struct SessionPetSprite: View {
             elapsed: date.timeIntervalSinceReferenceDate,
             actionCount: frames.count,
             restCounts: rests.map { $0.frames.count },
-            interval: pose.frameInterval(forFrames: frames.count),
+            interval: primaryFrameInterval,
             restIntervals: rests.map(\.frameInterval)
         )
         let clip = plan.useAction ? frames : rests[min(plan.restClip, rests.count - 1)].frames
@@ -351,7 +356,7 @@ struct SessionPetSprite: View {
             let index = pose.cinematic ? min(frames.count - 1, max(0, frames.count / 2)) : 0
             return frames[index]
         }
-        let index = Int(date.timeIntervalSinceReferenceDate / pose.frameInterval(forFrames: frames.count)) % frames.count
+        let index = Int(date.timeIntervalSinceReferenceDate / primaryFrameInterval) % frames.count
         return frames[index]
     }
 }
