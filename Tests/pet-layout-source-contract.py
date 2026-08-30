@@ -45,8 +45,10 @@ need(pet.count("model.petExpanded.toggle()") == 2,
      "still exactly two live-list toggle sites: chevron and double-click")
 need("petCompletionsExpanded" in pet, "the finished-list flag is gone")
 comp = pet[pet.index("private var completionsList"):pet.index("private func statusBubble")]
-need("ScrollView" in comp and "maxHeight" in comp and "petExpanded.toggle" not in comp,
-     "the finished list must scroll in a fixed frame and not toggle the live list")
+need("ScrollView" in comp and ".frame(height:" in comp and "maxHeight" not in comp
+     and "petExpanded.toggle" not in comp,
+     "the finished list must scroll in a FIXED frame (maxHeight collapses under "
+     "sizeThatFits) and not toggle the live list")
 
 apply_sessions = controller.split("private func applyPetSessions(", 1)[1]
 apply_sessions = re.split(r"\n    (?:private )?func ", apply_sessions, maxsplit=1)[0]

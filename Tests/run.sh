@@ -2681,8 +2681,11 @@ chip = chip[:chip.index("if sessions.count > 1")]
 need("petExpanded.toggle" not in chip, "the chip must not toggle the LIVE list")
 comp = pet[pet.index("private var completionsList"):]
 comp = comp[:comp.index("private func statusBubble")]
-need("ScrollView" in comp and "maxHeight" in comp,
-     "the finished list must scroll in a fixed frame (Add-a-voice, 34 rows)")
+need("ScrollView" in comp and ".frame(height:" in comp and "maxHeight" not in comp,
+     "the finished list must use a FIXED scroll frame — maxHeight collapses under "
+     "the panel's sizeThatFits and rendered six chips as an empty white capsule")
+need("petCompletions.count > 3" in comp,
+     "small chip counts render flat, like sessionList's >5 rule")
 mon = pet[pet.index("private func syncOutsideClickMonitor"):]
 mon = mon[:mon.index("\n    }")]
 need("petCompletionsExpanded = false" in mon,

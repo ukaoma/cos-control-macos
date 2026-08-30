@@ -2149,6 +2149,8 @@ final class ControllerModel: ObservableObject {
         var kept = rows.filter { !$0.id.isEmpty && !$0.sessionId.isEmpty }
         // The leaked test fixture predates the injected-suite rule; scrub it.
         kept.removeAll { $0.id == "claude:a" }
+        // Collapse full/short-id twins persisted before canonicalization.
+        kept = PetCompletionDetector.canonicalized(kept)
         kept.removeAll { now.timeIntervalSince($0.finishedAt) > PetCompletionDetector.maxAge }
         if kept.count > PetCompletionDetector.ringCap {
             kept.sort { $0.finishedAt > $1.finishedAt }

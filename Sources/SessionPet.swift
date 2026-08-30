@@ -451,8 +451,12 @@ private struct SessionPetRoot: View {
     /// scrolls in a fixed frame — an unbounded ForEach outside a scroll frame
     /// is the Add-a-voice 34-row failure again.
     private var completionsList: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+        // FIXED height when overflowing, mirroring sessionList above. The first
+        // build capped the ScrollView with a maximum-height frame — but the
+        // panel sizes itself with sizeThatFits, under which a ScrollView's
+        // ideal height collapses, so six chips rendered as an empty white
+        // capsule with every row unreachable (Miles, 2026-08-30).
+        let content = VStack(alignment: .leading, spacing: 0) {
                 ForEach(model.petCompletions) { row in
                     Button {
                         if let session = ClaudeSession.fromCompletion(row) {
@@ -488,8 +492,16 @@ private struct SessionPetRoot: View {
                     }
                 }
             }
+        return Group {
+            if model.petCompletions.count > 3 {
+                ScrollView {
+                    content
+                }
+                .frame(height: size.length(160))
+            } else {
+                content
+            }
         }
-        .frame(maxHeight: size.length(160))
         .padding(.horizontal, size.length(10))
         .padding(.vertical, size.length(4))
         .background(

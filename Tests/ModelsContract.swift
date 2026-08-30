@@ -2850,6 +2850,43 @@ struct ModelsContract {
         ring = PetCompletionDetector.apply(existing: stale, fresh: [], previous: [], current: [], now: now)
         precondition(ring.isEmpty, "a 5h-old chip ages out at 4h")
 
+        // 10. One session, one chip: the live list carries the same session
+        //     as a full UUID and an 8-char short id at once, and both emitted.
+        let full = PetCompletion(id: "claude:9644b527-da59-46e8-8172-c49f4d236fc4",
+                                 sessionId: "9644b527-da59-46e8-8172-c49f4d236fc4",
+                                 name: "All right can you give me", provider: "claude",
+                                 workspace: "MU-Chief-Staff", finishedAt: now, seen: true)
+        let short = PetCompletion(id: "claude:9644b527", sessionId: "9644b527",
+                                  name: "mu-chief-staff-13", provider: "claude",
+                                  workspace: "", finishedAt: now.addingTimeInterval(10),
+                                  seen: false)
+        let other = PetCompletion(id: "claude:74a39ab4", sessionId: "74a39ab4",
+                                  name: "mu-chief-staff-db", provider: "claude",
+                                  workspace: "", finishedAt: now, seen: false)
+        let merged = PetCompletionDetector.canonicalized([short, full, other])
+        precondition(merged.count == 2, "full+short twins must collapse to one chip")
+        let winner = merged.first { $0.sessionId.count > 8 }!
+        precondition(winner.sessionId == full.sessionId,
+                     "the FULL id must win — it is what the transcript lookup wants")
+        precondition(winner.seen == false, "unseen wins a merge; news must not be hidden")
+        precondition(abs(winner.finishedAt.timeIntervalSince(now) - 10) < 0.01,
+                     "the newest finishedAt survives")
+        precondition(merged.contains { $0.sessionId == "74a39ab4" },
+                     "an unrelated short id must NOT be swallowed")
+        // 10b. THROUGH apply(): a fresh short-id emit must merge into an
+        //      existing full-id chip inside the pipeline itself, not only when
+        //      canonicalized() is called directly.
+        let viaApply = PetCompletionDetector.apply(
+            existing: [full], fresh: [short], previous: [], current: [], now: now)
+        precondition(viaApply.count == 1 && viaApply[0].sessionId == full.sessionId,
+                     "apply() must canonicalize; a short-id twin emitted a second chip live")
+
+        // A codex session sharing a prefix with a claude session stays separate.
+        let cross = PetCompletionDetector.canonicalized([full,
+            PetCompletion(id: "codex:9644b527", sessionId: "9644b527", name: "x",
+                          provider: "codex", workspace: "", finishedAt: now, seen: false)])
+        precondition(cross.count == 2, "provider is part of chip identity")
+
         // fromCompletion round-trips into a routable session
         let chip = PetCompletion(id: "claude:r", sessionId: "r", name: "R",
                                  provider: "claude", workspace: "W",

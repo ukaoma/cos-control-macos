@@ -1038,12 +1038,44 @@ enum PetCompletionDetector {
                 rows.append(next)
             }
         }
+        rows = canonicalized(rows)
         rows.removeAll { now.timeIntervalSince($0.finishedAt) > maxAge }
         if rows.count > ringCap {
             rows.sort { $0.finishedAt > $1.finishedAt }
             rows = Array(rows.prefix(ringCap))
         }
         return rows
+    }
+
+    /// One session, one chip. The live list carries the same session under two
+    /// ids at once — the full UUID from the sessions list and the 8-char short
+    /// form from the helper's live overlay — so a finish emitted TWO chips
+    /// (observed live: claude:9644b527 and claude:9644b527-da59-…). Merge
+    /// prefix-related same-provider rows, keeping the longest sessionId (the
+    /// full id is what the transcript lookup wants), the newest finishedAt,
+    /// and unseen-wins so a merge never hides news.
+    static func canonicalized(_ rows: [PetCompletion]) -> [PetCompletion] {
+        var out: [PetCompletion] = []
+        for row in rows.sorted(by: { $0.sessionId.count > $1.sessionId.count }) {
+            if let i = out.firstIndex(where: {
+                $0.provider == row.provider
+                    && ($0.sessionId.lowercased().hasPrefix(row.sessionId.lowercased())
+                        || row.sessionId.lowercased().hasPrefix($0.sessionId.lowercased()))
+            }) {
+                let keep = out[i]
+                out[i] = PetCompletion(
+                    id: keep.id, sessionId: keep.sessionId,
+                    name: keep.name.count >= row.name.count ? keep.name : row.name,
+                    provider: keep.provider,
+                    workspace: keep.workspace.isEmpty ? row.workspace : keep.workspace,
+                    finishedAt: max(keep.finishedAt, row.finishedAt),
+                    seen: keep.seen && row.seen
+                )
+            } else {
+                out.append(row)
+            }
+        }
+        return out
     }
 }
 
