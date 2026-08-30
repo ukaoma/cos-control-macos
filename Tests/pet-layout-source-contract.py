@@ -22,11 +22,12 @@ need("let show = model.petEnabled\n" in pet,
 need("viewportSize: CGSize" in pet and
      ".frame(width: viewportSize.width, height: viewportSize.height, alignment: .bottom)" in pet,
      "the character is not mounted in a stable collapsed viewport")
-# Two toggle sites only: the chevron, and the double-click on the figure that
-# Miles asked for on 2026-08-28. A SINGLE click still must not expand -- that is
-# the cumulative-layout-shift rule the collapsed viewport exists to hold.
+# Two toggle sites only: the RUNNING pill (0.5.142, replacing the chevron) and
+# the double-click on the figure Miles asked for on 2026-08-28. A SINGLE click
+# still must not expand -- that is the cumulative-layout-shift rule the
+# collapsed viewport exists to hold.
 need(pet.count("model.petExpanded.toggle()") == 2,
-     "expansion may be toggled only by the dropdown control and the double-click handler")
+     "expansion may be toggled only by the RUNNING pill and the double-click handler")
 # The BODY of handleSpriteClick, not everything up to the next named function --
 # toggleSessionMenu now sits between the two and legitimately names petExpanded.
 handle = pet.split("private func handleSpriteClick()", 1)[1].split("\n    }", 1)[0]
@@ -37,12 +38,20 @@ need("guard sessions.count > 1 else { return }" in menu,
      "double-click must be inert when there is no list to show")
 need(pet.index(".onTapGesture(count: 2)") < pet.index(".onTapGesture { handleSpriteClick() }"),
      "the double-click must be declared before the single tap or the single tap wins")
-need("private var idleBubble" in pet and "private var petButtonPlaceholder" in pet,
-     "zero/one-session chrome must reserve the collapsed layout slots")
-# Completion chip (0.5.141): the finished list has its own expansion flag and
+# 0.5.142 ledger design: the reserved-slot rule MOVED, it did not die. Idle
+# chrome is the fixed-height ledger; the pills cross-fade into that SAME slot,
+# so nothing above the sprite ever changes size on hover — the whole reason
+# the prototype's first hover was rejected as jumpy.
+need("private var ledgerSlot" in pet, "the ledger slot is gone")
+ledger_slot = pet[pet.index("private var ledgerSlot"):pet.index("private func ledgerBar")]
+need(".frame(height:" in ledger_slot and "maxHeight" not in ledger_slot,
+     "the ledger slot must be FIXED height — hover must never resize above the sprite")
+need("idleBubble" not in pet and "petButtonPlaceholder" not in pet,
+     "pre-ledger idle chrome must not survive alongside the bar")
+# Completion chips (0.5.141): the finished list has its own expansion flag and
 # never rides the live list's toggle count.
 need(pet.count("model.petExpanded.toggle()") == 2,
-     "still exactly two live-list toggle sites: chevron and double-click")
+     "still exactly two live-list toggle sites: RUNNING pill and double-click")
 need("petCompletionsExpanded" in pet, "the finished-list flag is gone")
 comp = pet[pet.index("private var completionsList"):pet.index("private func statusBubble")]
 need("ScrollView" in comp and ".frame(height:" in comp and "maxHeight" not in comp

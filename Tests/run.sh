@@ -1782,8 +1782,15 @@ need('viewportSize: CGSize' in pet_src and
 need(pet_src.count('petSpriteKit.viewportSize(') >= 2 and
      'petSpriteKit.fittedViewportScale(' in pet_src,
      "the presenter sizes or fits against only the current lifecycle pose")
-need('private var idleBubble' in pet_src and 'private var petButtonPlaceholder' in pet_src,
-     "zero/one-session chrome no longer reserves the same collapsed layout slots")
+# 0.5.142: the reserved-slot rule lives in the LEDGER now — a fixed-height
+# slot the pills cross-fade into, so hover never resizes anything above the
+# sprite. The idleBubble/petButtonPlaceholder chrome it replaced must be gone.
+need('private var ledgerSlot' in pet_src and 'idleBubble' not in pet_src
+     and 'petButtonPlaceholder' not in pet_src,
+     "the ledger slot must replace the pre-0.5.142 idle chrome outright")
+ledger_slot_src = pet_src[pet_src.index('private var ledgerSlot'):pet_src.index('private func ledgerBar')]
+need('.frame(height:' in ledger_slot_src and 'maxHeight' not in ledger_slot_src,
+     "the ledger slot must be FIXED height — hover must never resize above the sprite")
 # Body only: toggleSessionMenu sits between handleSpriteClick and
 # handleSpriteDrop as of 0.5.130 and legitimately names petExpanded.
 handle_sprite = pet_src.split('private func handleSpriteClick()', 1)[1].split('\n    }', 1)[0]
@@ -2674,11 +2681,17 @@ merge = model[model.index("private func mergeCompletions("):]
 merge = merge[:merge.index("\n    }")]
 need("petNotice" not in merge, "mergeCompletions must not assign petNotice")
 
-# Chip + finished list shape
-need("petCompletionsExpanded" in pet, "the chip never toggles the finished list")
-chip = pet[pet.index('petButton("checkmark.circle"'):]
-chip = chip[:chip.index("if sessions.count > 1")]
-need("petExpanded.toggle" not in chip, "the chip must not toggle the LIVE list")
+# Pills (0.5.142) replaced the chip; the mutual-exclusion invariant carries
+# over control-for-control: DONE touches only the finished list, RUNNING
+# clears the finished list when it opens the live one.
+need("petCompletionsExpanded" in pet, "nothing toggles the finished list")
+pills = pet[pet.index("private func pillsRow("):pet.index("private func ledgerPill(")]
+run_pill = pills[pills.index('label: "RUNNING"'):pills.index('label: "DONE"')]
+need("petExpanded.toggle" in run_pill and "petCompletionsExpanded = false" in run_pill,
+     "the RUNNING pill must toggle the live list and clear the finished one")
+done_pill = pills[pills.index('label: "DONE"'):pills.index('label: "WAITING"')]
+need("petCompletionsExpanded.toggle" in done_pill and "petExpanded.toggle" not in done_pill,
+     "the DONE pill must not toggle the LIVE list")
 comp = pet[pet.index("private var completionsList"):]
 comp = comp[:comp.index("private func statusBubble")]
 need("ScrollView" in comp and ".frame(height:" in comp and "maxHeight" not in comp,
@@ -2695,6 +2708,57 @@ need("petExpanded" in sync and "petCompletionsExpanded" in sync
      and "syncOutsideClickMonitor(" in sync,
      "the monitor must key on BOTH lists or the chip tears it down")
 SIGCHK
+
+# Ledger hover motion (0.5.142). The vocabulary is EXECUTED by
+# ModelsContract.checkPetLedger; these pin the motion wiring it cannot see.
+/usr/bin/python3 - "$ROOT" <<'LEDGCHK'
+import re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+model = (root / "Sources/ControllerModel.swift").read_text()
+pet = (root / "Sources/SessionPet.swift").read_text()
+def need(c, m):
+    if not c: sys.exit(f"ledger-hover: {m}")
+
+# Asymmetric intent: a shorter beat in, a longer grace out. Equal or inverted
+# delays reintroduce the skim-trigger and edge-flicker the prototype was
+# rebuilt to kill (verified by measurement in the browser, 2026-08-30).
+exp = float(re.search(r"petHoverExpandDelay: TimeInterval = ([0-9.]+)", model).group(1))
+col = float(re.search(r"petHoverCollapseDelay: TimeInterval = ([0-9.]+)", model).group(1))
+need(exp < col, f"expand delay {exp} must be shorter than the collapse grace {col}")
+
+# petHoverRevealed is written ONLY by setPetHover (expand true, collapse
+# false) and the pet-disable reset. The declaration's default is excluded.
+writers = re.findall(r"(?<!@Published var )petHoverRevealed = (?:true|false)", model)
+need(len(writers) == 3, f"petHoverRevealed has {len(writers)} writers; setPetHover owns this flag")
+need(re.search(r"petHoverRevealed\s*=", pet) is None
+     and re.search(r"petHoverRevealed\.toggle", pet) is None,
+     "the view must never write petHoverRevealed; setPetHover owns it")
+
+# Two-phase collapse: settle (content fades in place) strictly BEFORE the
+# frame shrink, or the bubble clips mid-fade.
+hover_fn = model[model.index("func setPetHover("):]
+hover_fn = hover_fn[:hover_fn.index("\n    @Published var petFocusID")]
+need("petHoverSettling = true" in hover_fn
+     and hover_fn.index("petHoverSettling = true") < hover_fn.rindex("petHoverRevealed = false"),
+     "collapse must settle (fade) before it shrinks the frame")
+
+# The sensor is an .activeAlways AppKit tracking area. SwiftUI's .onHover is
+# tied to app activation and the pet is a nonactivating panel of a menu-bar
+# app that is almost never active — its hover would effectively never fire.
+need(re.search(r"\.onHover\s*[({]", pet) is None,
+     "SwiftUI .onHover is activation-tied; use HoverSensor")
+sensor = pet[pet.index("final class HoverSensorView"):]
+need(".activeAlways" in sensor, "the tracking area must arm while the app is inactive")
+need("override func hitTest(_ point: NSPoint) -> NSView? { nil }" in sensor,
+     "the sensor must never swallow a click meant for the sprite or a pill")
+
+# The reveal changes the fitted height, so the presenter must resize on it.
+need("model.$petHoverRevealed.sink" in pet,
+     "the panel never refits when the hover reveal opens")
+# Settling never fades a click-pinned list.
+need("model.petHoverSettling && !pinnedList ? 0 : 1" in pet,
+     "the settle fade must exempt pinned lists")
+LEDGCHK
 
 # Terminal jump routing (0.5.141)
 /usr/bin/python3 - "$ROOT" <<'JUMPRT'

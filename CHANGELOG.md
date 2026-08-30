@@ -1,3 +1,26 @@
+## 0.5.142 (build 180)
+
+The pet's chrome is now a ledger bar: a slim segmented health bar riding above
+the sprite with a counted caption beneath it — amber for sessions waiting on
+you (always at the front), green for running (with a slow breathe), gold for
+finished. That is the whole idle footprint; the buttons, chips, chevron, count
+badge, and status card are gone from the resting state.
+
+Hovering the pet brings everything back: the bar cross-fades into three state
+pills in its own slot, the focused session's title card and the two action
+buttons unfold above. Click RUNNING to pin the live-session list, DONE to pin
+the finished list, WAITING to jump straight to the session that needs you.
+Zero-count pills sit dimmed. Click anywhere else to close a pinned list.
+
+The motion is built not to jump: nothing above the sprite ever changes size
+(the pills occupy the bar's exact slot), reveals grow upward from the pinned
+bottom edge so the character never moves on screen, expansion waits a beat so
+a cursor passing through triggers nothing, and collapse waits longer and fades
+before it shrinks so leaving the pet never flickers. Hover arms even though the
+app is not active — the sensor registers its own always-on tracking area, which
+SwiftUI's own hover would not on a menu-bar app's nonactivating panel. macOS
+Reduced Motion drops every slide and the bar's breathing, keeping plain fades.
+
 ## 0.5.141 (build 179)
 
 The pet now tells you WHICH session finished, and takes you there. One of four

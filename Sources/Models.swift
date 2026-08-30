@@ -980,6 +980,60 @@ enum PetJumpRoute: Equatable {
     }
 }
 
+/// The idle-state health bar riding above the sprite (0.5.142 ledger design,
+/// Miles 2026-08-30). Pure so ModelsContract executes the whole vocabulary.
+///
+/// Counts use the SAME predicates as PetSpritePose.resolve (`isPetWorking`,
+/// state == "waiting") — a bar that disagrees with the fight ladder would read
+/// as a bug. `done`/`unseen` come from the completion chips, so the bar and
+/// the DONE pill can never diverge either.
+struct PetLedger: Equatable {
+    var running: Int
+    var waiting: Int
+    var done: Int
+    var unseen: Int
+
+    enum SegmentKind: Equatable { case waiting, running, done }
+    struct Segment: Equatable {
+        var kind: SegmentKind
+        var count: Int
+    }
+
+    static func resolve(sessions: [ClaudeSession], completions: [PetCompletion]) -> PetLedger {
+        PetLedger(
+            running: sessions.filter(\.isPetWorking).count,
+            waiting: sessions.filter { $0.state == "waiting" }.count,
+            done: completions.count,
+            unseen: completions.filter { !$0.seen }.count
+        )
+    }
+
+    var isQuiet: Bool { running + waiting + done == 0 }
+
+    /// Waiting takes the FRONT of the bar in amber — it is the state allowed
+    /// to interrupt the visual order. Zero-count segments never render.
+    var segments: [Segment] {
+        var out: [Segment] = []
+        if waiting > 0 { out.append(Segment(kind: .waiting, count: waiting)) }
+        if running > 0 { out.append(Segment(kind: .running, count: running)) }
+        if done > 0 { out.append(Segment(kind: .done, count: done)) }
+        return out
+    }
+
+    /// The words under the bar. Waiting leads when present; an all-done day
+    /// reads "N DONE · M NEW" so fresh finishes are legible at a glance; a
+    /// quiet pet says IDLE rather than rendering an empty row of zeros.
+    var caption: String {
+        if isQuiet { return "IDLE" }
+        var parts: [String] = []
+        if waiting > 0 { parts.append("\(waiting) WAITING") }
+        if running > 0 { parts.append("\(running) RUNNING") }
+        if done > 0 { parts.append("\(done) DONE") }
+        if unseen > 0, running == 0, waiting == 0 { parts.append("\(unseen) NEW") }
+        return parts.joined(separator: " · ")
+    }
+}
+
 /// D1: the fleet wasWorking && !isWorking Bool could only say "someone
 /// finished" — one of N finishing while others still ran never fired. The
 /// detector diffs per id, so every finish emits exactly once.

@@ -2993,6 +2993,73 @@ struct ModelsContract {
         print("COS Control: terminal routing is allowlist-gated and the UTC trap is pinned")
     }
 
+    /// The ledger bar vocabulary (0.5.142). Every state Miles approved on the
+    /// design canvas, asserted as EXACT strings so a mutation to caption
+    /// ordering, the separator, or the NEW clause fails loudly.
+    private static func checkPetLedger() {
+        func live(_ id: String, _ state: String) -> ClaudeSession {
+            ClaudeSession(.object([
+                "id": .string(id),
+                "name": .string(id),
+                "workspace": .string("MU-Chief-Staff"),
+                "state": .string(state),
+                "alive": .bool(true),
+            ]))!
+        }
+        func chip(_ id: String, seen: Bool) -> PetCompletion {
+            PetCompletion(id: "claude:\(id)", sessionId: id, name: id, provider: "claude",
+                          workspace: "w", finishedAt: Date(), seen: seen)
+        }
+
+        // Working day: green then gold, running leads the caption. The
+        // idle-alive third session must not paint the bar.
+        let working = PetLedger.resolve(
+            sessions: [live("a", "running"), live("b", "running"), live("i", "recent")],
+            completions: [chip("d1", seen: true), chip("d2", seen: false), chip("d3", seen: false)]
+        )
+        precondition(working.running == 2 && working.waiting == 0
+                     && working.done == 3 && working.unseen == 2)
+        precondition(working.caption == "2 RUNNING · 3 DONE")
+        precondition(working.segments.map(\.kind) == [.running, .done],
+                     "zero-count segments never render")
+        precondition(!working.isQuiet)
+
+        // Waiting takes the FRONT — bar order and caption order both.
+        let waiting = PetLedger.resolve(
+            sessions: [live("a", "waiting"), live("b", "running")],
+            completions: [chip("d", seen: true)]
+        )
+        precondition(waiting.caption == "1 WAITING · 1 RUNNING · 1 DONE")
+        precondition(waiting.segments.map(\.kind) == [.waiting, .running, .done])
+        precondition(waiting.segments[0].count == 1)
+
+        // All done: a gold day, fresh finishes called out as NEW.
+        let allDone = PetLedger.resolve(
+            sessions: [live("i", "recent")],
+            completions: (0..<5).map { chip("d\($0)", seen: $0 >= 3) }
+        )
+        precondition(allDone.running == 0 && allDone.done == 5 && allDone.unseen == 3)
+        precondition(allDone.caption == "5 DONE · 3 NEW")
+        precondition(allDone.segments.map(\.kind) == [.done])
+
+        // NEW is the all-done state's word, never a live-day ticker.
+        let mixed = PetLedger.resolve(
+            sessions: [live("a", "running")],
+            completions: [chip("d", seen: false)]
+        )
+        precondition(mixed.caption == "1 RUNNING · 1 DONE")
+
+        // Quiet pet: IDLE, no segments, nothing invented.
+        let quiet = PetLedger.resolve(sessions: [live("i", "recent")], completions: [])
+        precondition(quiet.isQuiet && quiet.caption == "IDLE" && quiet.segments.isEmpty)
+
+        // Same predicates as the pose ladder: "error" is neither running nor
+        // waiting, so the bar and the fight ladder can never disagree.
+        let err = PetLedger.resolve(sessions: [live("e", "error")], completions: [])
+        precondition(err.running == 0 && err.waiting == 0)
+        print("COS Control: the ledger vocabulary matches the approved canvas")
+    }
+
     static func main() throws {
         checkRenameEligibility()
         checkAmbiguousTitles()
@@ -3012,6 +3079,7 @@ struct ModelsContract {
         checkPetCompletionDetector()
         checkPetCompletionsPersist()
         checkPetJumpRoute()
+        checkPetLedger()
         checkPetSpritePoses()
         checkPetSize()
         checkCursorAgentTabMatch()

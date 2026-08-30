@@ -63,6 +63,12 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         observers.append(model.$petNotice.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
+        // petHoverRevealed changes the fitted height (bubble + actions appear
+        // above the ledger); petHoverSettling only fades opacity in place, and
+        // @ObservedObject re-renders that without a panel resize.
+        observers.append(model.$petHoverRevealed.sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
         observers.append(model.$petTerminalHint.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
@@ -225,87 +231,38 @@ private struct SessionPetRoot: View {
     private var size: PetSize { model.petSize }
     private var pose: PetSpritePose { model.petSpritePose }
 
+    /// Reveal = hover intent OR a pinned list. A pin survives mouse-out, so a
+    /// click-opened list never collapses under the cursor.
+    private var pinnedList: Bool { model.petExpanded || model.petCompletionsExpanded }
+    private var revealActive: Bool { model.petHoverRevealed || pinnedList }
+
     var body: some View {
+        // Row order is load-bearing (0.5.142 ledger design): the panel keeps
+        // its BOTTOM-LEFT origin on every resize, so content unfolds UPWARD.
+        // Sprite and ledger sit at the bottom and never move on screen; hover
+        // reveals (bubble, actions, pinned lists) grow above the ledger. The
+        // character holding still is the entire point — the prototype's hover
+        // was rebuilt once already because the pills pushed the sprite.
         VStack(spacing: size.length(8)) {
-            ZStack(alignment: .topTrailing) {
-                Group {
-                    ZStack(alignment: .bottomLeading) {
-                        SessionPetSprite(
-                            working: pose.animates,
-                            reduceMotion: reduceMotion,
-                            customImage: model.petCustomSprite,
-                            frames: model.petSpriteKit.frames(for: pose),
-                            pose: pose,
-                            frameInterval: model.petFrameInterval(for: pose),
-                            size: CGFloat(size.pixels),
-                            characterScale: characterScale * model.petRenderScale(for: pose),
-                            animationSpeed: model.petAnimationSpeedFactor,
-                            restClips: model.petRestClips(for: pose)
-                        )
-                        if let focus {
-                            Circle()
-                                .fill(petStateColor(focus))
-                                .frame(width: size.length(8), height: size.length(8))
-                                .offset(x: size.length(4), y: -size.length(2))
-                        }
-                    }
-                }
-                .contentShape(Rectangle())
-                // Declared before the single tap so SwiftUI resolves the double
-                // FIRST — otherwise the opening click of a double-tap would jump
-                // to the platform and the menu would open behind the raised app.
-                .onTapGesture(count: 2) { toggleSessionMenu() }
-                .onTapGesture { handleSpriteClick() }
-                .accessibilityAddTraits(.isButton)
-                .help(spriteHelp)
-                if sessions.count > 1 {
-                    Text("\(sessions.count)")
-                        .font(COSType.mono(size.typeSize(9), weight: .bold))
-                        .foregroundStyle(COSPalette.cream)
-                        .padding(.horizontal, size.length(5))
-                        .padding(.vertical, size.length(2))
-                        .background(Capsule().fill(COSPalette.gold))
-                        .offset(x: size.length(6), y: -size.length(4))
-                        .allowsHitTesting(false)
-                }
+            if model.petExpanded, !sessions.isEmpty {
+                sessionList
+                    .modifier(PetReveal(reduceMotion: reduceMotion))
             }
-            .frame(width: viewportSize.width, height: viewportSize.height, alignment: .bottom)
-            HStack(spacing: size.length(8)) {
-                petButton("scope", help: targetHelp) {
-                    if let focus { presenter.openTarget(focus) }
-                }
-                petButton("arrow.up.forward.app", help: "Open in platform") {
-                    if let focus { model.openSessionInPlatform(focus) }
-                }
-                if model.petCompletions.contains(where: { !$0.seen }) {
-                    ZStack(alignment: .topTrailing) {
-                        petButton("checkmark.circle", help: "Finished sessions") {
-                            model.petCompletionsExpanded.toggle()
-                            if model.petCompletionsExpanded { model.petExpanded = false }
-                        }
-                        Text("\(model.petCompletions.filter { !$0.seen }.count)")
-                            .font(COSType.mono(size.typeSize(8), weight: .bold))
-                            .foregroundStyle(COSPalette.cream)
-                            .padding(.horizontal, size.length(4))
-                            .padding(.vertical, size.length(1))
-                            .background(Capsule().fill(COSPalette.green))
-                            .offset(x: size.length(6), y: -size.length(5))
-                            .allowsHitTesting(false)
-                    }
-                }
-                if sessions.count > 1 {
-                    petButton(model.petExpanded ? "chevron.down" : "chevron.up", help: "Live sessions") {
-                        model.petExpanded.toggle()
-                        if model.petExpanded { model.petCompletionsExpanded = false }
-                    }
-                } else {
-                    petButtonPlaceholder
-                }
+            if model.petCompletionsExpanded, !model.petCompletions.isEmpty {
+                completionsList
+                    .modifier(PetReveal(reduceMotion: reduceMotion))
             }
-            if let focus {
-                statusBubble(focus)
-            } else {
-                idleBubble
+            if revealActive {
+                VStack(spacing: size.length(8)) {
+                    if let focus { statusBubble(focus) }
+                    actionsRow
+                }
+                .modifier(PetReveal(reduceMotion: reduceMotion))
+                // Settle phase: content fades IN PLACE before the frame
+                // shrinks — a one-phase collapse clips the bubble mid-fade.
+                // A pinned list ignores settling; it closes only on click.
+                .opacity(model.petHoverSettling && !pinnedList ? 0 : 1)
+                .animation(.easeOut(duration: 0.18), value: model.petHoverSettling)
             }
             if let hint = model.petTerminalHint, !hint.isEmpty {
                 Text(hint)
@@ -329,20 +286,180 @@ private struct SessionPetRoot: View {
                     .background(Capsule().fill(COSPalette.card))
                     .overlay(Capsule().stroke(COSPalette.line, lineWidth: 1))
             }
-            if model.petExpanded, sessions.count > 1 {
-                sessionList
+            ledgerSlot
+            ZStack(alignment: .bottomLeading) {
+                SessionPetSprite(
+                    working: pose.animates,
+                    reduceMotion: reduceMotion,
+                    customImage: model.petCustomSprite,
+                    frames: model.petSpriteKit.frames(for: pose),
+                    pose: pose,
+                    frameInterval: model.petFrameInterval(for: pose),
+                    size: CGFloat(size.pixels),
+                    characterScale: characterScale * model.petRenderScale(for: pose),
+                    animationSpeed: model.petAnimationSpeedFactor,
+                    restClips: model.petRestClips(for: pose)
+                )
+                if let focus {
+                    Circle()
+                        .fill(petStateColor(focus))
+                        .frame(width: size.length(8), height: size.length(8))
+                        .offset(x: size.length(4), y: -size.length(2))
+                }
             }
-            if model.petCompletionsExpanded, !model.petCompletions.isEmpty {
-                completionsList
-            }
+            .contentShape(Rectangle())
+            // Declared before the single tap so SwiftUI resolves the double
+            // FIRST — otherwise the opening click of a double-tap would jump
+            // to the platform and the menu would open behind the raised app.
+            .onTapGesture(count: 2) { toggleSessionMenu() }
+            .onTapGesture { handleSpriteClick() }
+            .accessibilityAddTraits(.isButton)
+            .help(spriteHelp)
+            .frame(width: viewportSize.width, height: viewportSize.height, alignment: .bottom)
         }
         .padding(size.length(10))
         .frame(width: max(
             size.length(248),
             viewportSize.width + size.length(36)
         ))
+        // NOT .onHover: SwiftUI's tracking area is tied to app activation, and
+        // the pet lives on a nonactivating panel of an app that is almost
+        // never active. The sensor registers .activeAlways itself.
+        .background(HoverSensor { model.setPetHover($0) })
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleSpriteDrop(providers)
+        }
+    }
+
+    // MARK: - Ledger (0.5.142)
+
+    /// FIXED-height slot above the sprite. At rest the segmented bar and its
+    /// caption; on hover the state pills CROSS-FADE into the same space.
+    /// Nothing above the sprite may ever change size — that was the jumpy
+    /// hover the prototype was rebuilt to kill.
+    private var ledgerSlot: some View {
+        let ledger = model.petLedger
+        return ZStack {
+            ledgerBar(ledger)
+                .opacity(revealActive ? 0 : 1)
+            pillsRow(ledger)
+                .opacity(revealActive ? 1 : 0)
+                .allowsHitTesting(revealActive)
+        }
+        .frame(height: size.length(34))
+        .frame(maxWidth: .infinity)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.26), value: revealActive)
+    }
+
+    private func ledgerBar(_ ledger: PetLedger) -> some View {
+        let barWidth = size.length(150)
+        let total = max(ledger.running + ledger.waiting + ledger.done, 1)
+        return VStack(spacing: size.length(5)) {
+            HStack(spacing: ledger.segments.count > 1 ? size.length(1) : 0) {
+                ForEach(Array(ledger.segments.enumerated()), id: \.offset) { _, segment in
+                    Rectangle()
+                        .fill(segmentColor(segment.kind))
+                        .frame(width: barWidth * CGFloat(segment.count) / CGFloat(total))
+                        .modifier(LedgerBreathing(
+                            active: segment.kind == .running && !reduceMotion
+                        ))
+                }
+            }
+            .frame(width: barWidth, height: size.length(7), alignment: .leading)
+            .background(Capsule().fill(COSPalette.line.opacity(0.35)))
+            .clipShape(Capsule())
+            .overlay(Capsule().stroke(COSPalette.line, lineWidth: 1))
+            Text(ledger.caption)
+                .font(COSType.mono(size.typeSize(8), weight: .bold))
+                .kerning(0.8)
+                .foregroundStyle(ledger.isQuiet ? Color.secondary : COSPalette.plateInk)
+        }
+    }
+
+    private func pillsRow(_ ledger: PetLedger) -> some View {
+        HStack(spacing: size.length(6)) {
+            ledgerPill(
+                dot: COSPalette.green, label: "RUNNING", count: ledger.running,
+                enabled: !sessions.isEmpty, open: model.petExpanded, index: 0
+            ) {
+                model.petExpanded.toggle()
+                if model.petExpanded { model.petCompletionsExpanded = false }
+            }
+            ledgerPill(
+                dot: COSPalette.gold, label: "DONE", count: ledger.done,
+                enabled: ledger.done > 0, open: model.petCompletionsExpanded, index: 1
+            ) {
+                model.petCompletionsExpanded.toggle()
+                if model.petCompletionsExpanded { model.petExpanded = false }
+            }
+            ledgerPill(
+                dot: COSPalette.amber, label: "WAITING", count: ledger.waiting,
+                enabled: ledger.waiting > 0, open: false, index: 2
+            ) {
+                if let waitingSession = sessions.first(where: { $0.state == "waiting" }) {
+                    model.openSessionInPlatform(waitingSession)
+                }
+            }
+        }
+    }
+
+    private func ledgerPill(
+        dot: Color, label: String, count: Int, enabled: Bool, open: Bool,
+        index: Int, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: size.length(4)) {
+                Circle()
+                    .fill(enabled ? dot : Color.secondary.opacity(0.4))
+                    .frame(width: size.length(6), height: size.length(6))
+                Text("\(label) \(count)")
+                    .font(COSType.mono(size.typeSize(8), weight: .bold))
+                    .kerning(0.5)
+            }
+            .foregroundStyle(open ? COSPalette.cream : COSPalette.plateInk)
+            .padding(.horizontal, size.length(8))
+            .padding(.vertical, size.length(5))
+            .background(Capsule().fill(open ? COSPalette.ink : COSPalette.card))
+            .overlay(Capsule().stroke(open ? Color.clear : COSPalette.line, lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.45)
+        // The prototype's 4px settle with a per-pill stagger — deliberately a
+        // gentle ease-out, not a spring; the overshoot read as jumpy.
+        .offset(y: reduceMotion || revealActive ? 0 : size.length(4))
+        .animation(
+            reduceMotion ? nil : .easeOut(duration: 0.3).delay(Double(index) * 0.04),
+            value: revealActive
+        )
+        .help(pillHelp(label))
+    }
+
+    private func pillHelp(_ label: String) -> String {
+        switch label {
+        case "RUNNING": "Live sessions"
+        case "DONE": "Finished sessions"
+        default: "Jump to the session waiting on you"
+        }
+    }
+
+    private func segmentColor(_ kind: PetLedger.SegmentKind) -> Color {
+        switch kind {
+        case .waiting: COSPalette.amber
+        case .running: COSPalette.green
+        case .done: COSPalette.gold
+        }
+    }
+
+    private var actionsRow: some View {
+        HStack(spacing: size.length(8)) {
+            petButton("scope", help: targetHelp) {
+                if let focus { presenter.openTarget(focus) }
+            }
+            petButton("arrow.up.forward.app", help: "Open in platform") {
+                if let focus { model.openSessionInPlatform(focus) }
+            }
         }
     }
 
@@ -548,34 +665,6 @@ private struct SessionPetRoot: View {
         focus?.petTargetOpensAgentWindow == true ? "Open Agents Window" : "Open in Activity"
     }
 
-    private var idleBubble: some View {
-        VStack(alignment: .leading, spacing: size.length(2)) {
-            Text("Session pet")
-                .font(COSType.body(size.typeSize(11), weight: .semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-            Text("Idle")
-                .font(COSType.mono(size.typeSize(9), weight: .bold))
-                .foregroundStyle(COSPalette.green)
-            Text("Waiting for the next prompt or session.")
-                .font(COSType.body(size.typeSize(10)))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-        .padding(.horizontal, size.length(12))
-        .padding(.vertical, size.length(8))
-        .frame(width: size.length(248), alignment: .leading)
-        .background(Capsule().fill(COSPalette.card))
-        .overlay(Capsule().stroke(COSPalette.line, lineWidth: 1))
-    }
-
-    private var petButtonPlaceholder: some View {
-        Color.clear
-            .frame(width: size.length(22), height: size.length(22))
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-    }
-
     private func petButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
@@ -650,4 +739,86 @@ private struct SessionPetRoot: View {
         default: Color(red: 0.78, green: 0.45, blue: 0.22)
         }
     }
+}
+
+/// Fade-in with a 4pt rise for content that just entered the layout. Appear
+/// only — disappear is handled by the model's settle phase, which fades the
+/// content BEFORE the frame shrinks (a removal transition would be clipped by
+/// the already-shrunk panel).
+private struct PetReveal: ViewModifier {
+    var reduceMotion: Bool
+    @State private var shown = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(shown ? 1 : 0)
+            .offset(y: reduceMotion || shown ? 0 : 4)
+            .onAppear {
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.24)) { shown = true }
+            }
+            .onDisappear { shown = false }
+    }
+}
+
+/// Subtle life on the running segment: a slow opacity breathe, well inside the
+/// "just a little bit" band (the 11px-oscillation correction applies to any
+/// at-rest motion). Never runs under reduced motion or on non-running kinds.
+private struct LedgerBreathing: ViewModifier {
+    var active: Bool
+    @State private var dim = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(active && dim ? 0.62 : 1)
+            .onAppear {
+                guard active else { return }
+                withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true)) {
+                    dim = true
+                }
+            }
+    }
+}
+
+/// AppKit tracking area with `.activeAlways`. SwiftUI's `.onHover` arms only
+/// while the app is active, and the pet is a nonactivating panel of a menu-bar
+/// app — its hover would effectively never fire. `hitTest` returns nil so the
+/// sensor can never swallow a click meant for the sprite or a pill.
+private struct HoverSensor: NSViewRepresentable {
+    var onChange: (Bool) -> Void
+
+    func makeNSView(context: Context) -> HoverSensorView {
+        HoverSensorView(onChange: onChange)
+    }
+
+    func updateNSView(_ view: HoverSensorView, context: Context) {
+        view.onChange = onChange
+    }
+}
+
+final class HoverSensorView: NSView {
+    var onChange: (Bool) -> Void
+
+    init(onChange: @escaping (Bool) -> Void) {
+        self.onChange = onChange
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        ))
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func mouseEntered(with event: NSEvent) { onChange(true) }
+    override func mouseExited(with event: NSEvent) { onChange(false) }
 }

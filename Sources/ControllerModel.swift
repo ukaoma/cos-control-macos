@@ -1307,6 +1307,51 @@ final class ControllerModel: ObservableObject {
     /// finish landing between replays would emit twice or never.
     private var lastAuthoritativeRaw: [ClaudeSession]?
     @Published var petExpanded = false
+    /// Hover reveal for the ledger design (0.5.142). Lives on the MODEL, not
+    /// view @State: the panel sizes itself in syncPanel via sizeThatFits, and
+    /// only a @Published flip re-runs it — view-local hover state would grow
+    /// content the panel never resizes for. Written ONLY by setPetHover (and
+    /// the pet-disable reset).
+    @Published var petHoverRevealed = false
+    /// Collapse is TWO-phase: settle (content fades in place) then shrink
+    /// (frame resizes). A one-phase collapse clips the bubble mid-fade because
+    /// the frame snaps to the small size in the same runloop tick.
+    @Published var petHoverSettling = false
+    private var petHoverTask: Task<Void, Never>?
+
+    /// Asymmetric hover intent, mirroring the approved prototype: a beat
+    /// before expanding so a cursor skimming across the pet triggers nothing,
+    /// and a longer grace before collapsing so wobbling off the edge does not
+    /// flicker. Values are the CSS prototype's, verified by measurement.
+    static let petHoverExpandDelay: TimeInterval = 0.12
+    static let petHoverCollapseDelay: TimeInterval = 0.40
+    static let petHoverSettleDuration: TimeInterval = 0.20
+
+    func setPetHover(_ inside: Bool) {
+        petHoverTask?.cancel()
+        if inside {
+            if petHoverRevealed, !petHoverSettling { return }
+            petHoverTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(Self.petHoverExpandDelay))
+                guard !Task.isCancelled else { return }
+                // Re-entry during a settle rescues the fade: content animates
+                // back to full opacity in its current place, no relayout.
+                self?.petHoverSettling = false
+                self?.petHoverRevealed = true
+            }
+        } else {
+            guard petHoverRevealed else { return }
+            petHoverTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(Self.petHoverCollapseDelay))
+                guard !Task.isCancelled else { return }
+                self?.petHoverSettling = true
+                try? await Task.sleep(for: .seconds(Self.petHoverSettleDuration))
+                guard !Task.isCancelled else { return }
+                self?.petHoverSettling = false
+                self?.petHoverRevealed = false
+            }
+        }
+    }
     @Published var petFocusID: String?
     /// Reveal/jump copy when Activity and the menu extra are both closed.
     ///
@@ -1553,6 +1598,9 @@ final class ControllerModel: ObservableObject {
             petSessions = []
             petExpanded = false
             petCompletionsExpanded = false
+            petHoverTask?.cancel()
+            petHoverRevealed = false
+            petHoverSettling = false
             // Baseline dies with the poll: the next enable must seed, not diff
             // against a snapshot from before the gap. Persisted chips stay.
             lastAuthoritativeRaw = nil
@@ -1760,6 +1808,10 @@ final class ControllerModel: ObservableObject {
             cinematic = PetSpriteStrip.slice(image, frames: frames)
         }
         petSpriteKit = PetSpriteKit(fallback: petCustomSprite, poses: poses, cinematic: cinematic)
+    }
+
+    var petLedger: PetLedger {
+        PetLedger.resolve(sessions: petSessions, completions: petCompletions)
     }
 
     var petSpritePose: PetSpritePose {
