@@ -5194,9 +5194,19 @@ enum PetSpriteStore {
             let scaleOverrides: [PetSpritePose: CGFloat] = idleScaleWasStock
                 ? bundledScales.filter { $0.key == .idle }
                 : [:]
+            // Every pose whose FILE this refresh replaces takes the bundled
+            // interval; untouched poses keep whatever the user has.
+            let bundledIntervals = loadFrameIntervals(in: source, fileManager: fileManager)
+            var intervalOverrides: [PetSpritePose: Double] = [:]
+            for story in stories {
+                if let interval = bundledIntervals[story.pose] {
+                    intervalOverrides[story.pose] = interval
+                }
+            }
             try saveStateMap(
                 updated,
-                frameIntervalDefaults: loadFrameIntervals(in: source, fileManager: fileManager),
+                frameIntervalDefaults: bundledIntervals,
+                frameIntervalOverrides: intervalOverrides,
                 renderScaleDefaults: loadRenderScales(in: source, fileManager: fileManager),
                 renderScaleOverrides: scaleOverrides,
                 in: directory,
@@ -5283,6 +5293,7 @@ enum PetSpriteStore {
     private static func saveStateMap(
         _ map: [PetSpritePose: (file: String, frames: Int)],
         frameIntervalDefaults: [PetSpritePose: Double] = [:],
+        frameIntervalOverrides: [PetSpritePose: Double] = [:],
         renderScaleDefaults: [PetSpritePose: CGFloat] = [:],
         renderScaleOverrides: [PetSpritePose: CGFloat] = [:],
         in directory: URL,
@@ -5290,6 +5301,13 @@ enum PetSpriteStore {
     ) throws {
         var retainedIntervals = frameIntervalDefaults
         for (pose, interval) in loadFrameIntervals(in: directory, fileManager: fileManager) {
+            retainedIntervals[pose] = interval
+        }
+        // A pose getting NEW art has no business keeping the old art's cadence.
+        // Retention alone left Miles's 17-frame V15.2 duel playing at the
+        // 12-frame V15.1 interval — a 33% slowdown the speed slider could not
+        // fix without desyncing every other pose.
+        for (pose, interval) in frameIntervalOverrides {
             retainedIntervals[pose] = interval
         }
         var retainedScales = renderScaleDefaults

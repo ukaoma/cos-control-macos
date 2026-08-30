@@ -21,6 +21,11 @@ owned a tty. The activation sends no Apple Event and raises no extra windows;
 a recycled pid is caught by a UTC-safe process-start comparison that fails
 open. Desktop sessions keep their sidebar jump unchanged. Tab-level selection
 inside the terminal is a later release.
+
+An installed pack whose art is replaced by an update now takes the new art's
+frame timing. Retention kept the previous cadence, which left the 17-frame
+V15.2 duel playing a third slow against its authored 1.87-second loop.
+
 ## 0.5.140 (build 178)
 
 Character speed now sits directly below Character size in Session Pet settings. The

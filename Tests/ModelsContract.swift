@@ -1845,7 +1845,7 @@ struct ModelsContract {
                 at: file, to: legacyTemplate.appendingPathComponent(file.lastPathComponent)
             )
         }
-        let legacyMilesMap = #"{"poses":{"idle":{"file":"session-pet-idle.png","frames":8},"patrol":{"file":"session-pet-patrol.png","frames":8},"waiting":{"file":"session-pet-waiting.png","frames":8},"working":{"file":"session-pet-working.png","frames":8},"done":{"file":"session-pet-done.png","frames":8},"error":{"file":"session-pet-error.png","frames":8},"attention":{"file":"session-pet-attention.png","frames":6},"duel":{"file":"session-pet-duel.png","frames":8},"trio":{"file":"session-pet-trio.png","frames":6},"swarm":{"file":"session-pet-swarm.png","frames":6}}}"#
+        let legacyMilesMap = #"{"poses":{"idle":{"file":"session-pet-idle.png","frames":8},"patrol":{"file":"session-pet-patrol.png","frames":8},"waiting":{"file":"session-pet-waiting.png","frames":8},"working":{"file":"session-pet-working.png","frames":8},"done":{"file":"session-pet-done.png","frames":8},"error":{"file":"session-pet-error.png","frames":8},"attention":{"file":"session-pet-attention.png","frames":6},"duel":{"file":"session-pet-duel.png","frames":8,"interval":0.14666666666666667},"trio":{"file":"session-pet-trio.png","frames":6},"swarm":{"file":"session-pet-swarm.png","frames":6}}}"#
         try! Data(legacyMilesMap.utf8).write(
             to: legacyTemplate.appendingPathComponent("session-pet-states.json"), options: .atomic
         )
@@ -1863,6 +1863,14 @@ struct ModelsContract {
                      "the refresh must install all four authored story strips")
         precondition(refreshedScales[.idle] == 3,
                      "the refresh must land the pack-owned Miles idle scale")
+        // The live 0.5.141 defect: the seed carries the stale V15-1 duel
+        // interval (0.1467), and the refresh replaces the duel FILE — so the
+        // cadence must come from the bundle, not be retained. Retention left
+        // the 17-frame V15.2 duel playing 33% slow on Miles's machine.
+        let refreshedIntervals = PetSpriteStore.loadFrameIntervals(in: refreshDest)
+        precondition(refreshedIntervals[.duel].map { abs($0 - 0.11) < 0.0001 } == true,
+                     "a pose whose art is replaced must take the bundled interval, "
+                     + "got \(String(describing: refreshedIntervals[.duel]))")
         precondition(refreshedMap[.patrol]?.file == "session-pet-patrol.png",
                      "the targeted refresh must preserve every unrelated pose mapping")
 
