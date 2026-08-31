@@ -2844,6 +2844,16 @@ need("session.petLiveLine" in mission_src and "session.compactAgeLabel()" in mis
      and "session.workspace" in mission_src,
      "a mission row lost its LIVE line, age figure, or workspace tag")
 need("lineLimit(2)" in mission_src, "mission titles regressed to a one-line ellipsis")
+# The rail must be an OVERLAY of the row content, never an HStack child: a
+# bare Shape child accepts any offered height, and under the panel's
+# sizeThatFits probe one running row absorbed ~800px of blank card (shipped
+# in 0.5.155, caught by Miles's screenshot within the hour).
+label_src = mission_src[:mission_src.index(".overlay(alignment: .leading)")]
+need("RoundedRectangle" not in label_src.split("} label: {")[1],
+     "a Shape child returned to the mission-row label; the rail rides an overlay")
+rail_src = mission_src[mission_src.index(".overlay(alignment: .leading)"):]
+need("RoundedRectangle" in rail_src and ".frame(width: size.length(3))" in rail_src,
+     "the mission row lost its state rail overlay")
 idle_src = code[code.index("private func idleRow"):code.index("private func dismissControl")]
 need("petLiveLine" not in idle_src and "lineLimit(1)" in idle_src,
      "idle rows must stay dim one-liners — periphery reads as periphery")

@@ -1,3 +1,12 @@
+## 0.5.156 (build 194)
+
+Fixes the giant blank column 0.5.155's mission rows could open inside the
+live list. The state rail was a bare shape sitting in the row, and a shape
+accepts any height it is offered — under the panel's sizing probe one
+running row absorbed hundreds of points of empty card. The rail now rides
+as an overlay on the row content, which by definition takes the row's own
+height and cannot stretch it. Rows are exactly as tall as what they say.
+
 ## 0.5.155 (build 193)
 
 The live-session list is now mission rows, built to orchestrate a fleet at a

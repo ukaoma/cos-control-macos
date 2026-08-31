@@ -547,9 +547,6 @@ private struct SessionPetRoot: View {
             model.openSessionInPlatform(session)
         } label: {
             HStack(alignment: .top, spacing: size.length(8)) {
-                RoundedRectangle(cornerRadius: size.length(2))
-                    .fill(tint)
-                    .frame(width: size.length(3))
                 Text(session.providerLabel.uppercased())
                     .font(COSType.mono(size.typeSize(8), weight: .bold))
                     .foregroundStyle(providerTint(session.provider))
@@ -586,8 +583,20 @@ private struct SessionPetRoot: View {
                 }
             }
             .padding(.vertical, size.length(7))
+            .padding(.leading, size.length(11))
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
+            // The rail is an OVERLAY, never an HStack child: a bare Shape in
+            // the row accepts any offered height, and under the panel's
+            // sizeThatFits probe one running row greedily absorbed ~800px of
+            // blank card (Miles, 2026-08-31, screenshot). An overlay adopts
+            // the row's content height by definition and cannot stretch it.
+            .overlay(alignment: .leading) {
+                RoundedRectangle(cornerRadius: size.length(2))
+                    .fill(tint)
+                    .frame(width: size.length(3))
+                    .padding(.vertical, size.length(6))
+            }
         }
         .buttonStyle(.plain)
         .help("Open in platform")
