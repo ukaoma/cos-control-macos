@@ -430,7 +430,7 @@ struct ControlPanel: View {
                         .scaledToFit()
                         .frame(width: 44, height: 44)
                 } else {
-                    RoundedRectangle(cornerRadius: 6)
+                    RoundedRectangle(cornerRadius: 8)
                         .fill(COSPalette.line.opacity(0.35))
                         .frame(width: 44, height: 44)
                 }
@@ -477,7 +477,7 @@ struct ControlPanel: View {
                         .scaledToFit()
                         .frame(width: 44, height: 44)
                 } else {
-                    RoundedRectangle(cornerRadius: 6)
+                    RoundedRectangle(cornerRadius: 8)
                         .fill(COSPalette.line.opacity(0.35))
                         .frame(width: 44, height: 44)
                         .onAppear {
@@ -1044,8 +1044,8 @@ struct ControlPanel: View {
             }
         }
         .padding(13)
-        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
-        .overlay(RoundedRectangle(cornerRadius: 13).stroke(COSPalette.line, lineWidth: 1))
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
     }
 
     private var contextBrowserLabel: String {
@@ -1245,8 +1245,8 @@ struct ControlPanel: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(13)
-        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
-        .overlay(RoundedRectangle(cornerRadius: 13).stroke(COSPalette.line, lineWidth: 1))
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
     }
 
     private func activityChip(_ item: ActivitySection) -> some View {
@@ -1346,8 +1346,8 @@ struct ControlPanel: View {
             }
         }
         .padding(13)
-        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
-        .overlay(RoundedRectangle(cornerRadius: 13).stroke(COSPalette.line, lineWidth: 1))
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
     }
 
     private var reviewableMeetingsCard: some View {
@@ -1400,7 +1400,7 @@ struct ControlPanel: View {
                 }
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 6))
+                .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 8))
             }
 
             if model.reviewableMeetings.isEmpty {
@@ -1453,8 +1453,8 @@ struct ControlPanel: View {
             }
         }
         .padding(13)
-        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
-        .overlay(RoundedRectangle(cornerRadius: 13).stroke(COSPalette.line, lineWidth: 1))
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
     }
 
     private var recentGlassesCard: some View {
@@ -1559,8 +1559,8 @@ struct ControlPanel: View {
             }
         }
         .padding(13)
-        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
-        .overlay(RoundedRectangle(cornerRadius: 13).stroke(COSPalette.line, lineWidth: 1))
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
         .buttonStyle(.bordered)
     }
 
@@ -1579,7 +1579,7 @@ struct ControlPanel: View {
                                 model.openMediaPreview(attachment)
                             } label: {
                                 ZStack {
-                                    RoundedRectangle(cornerRadius: 7)
+                                    RoundedRectangle(cornerRadius: 8)
                                         .fill(COSPalette.panel)
                                     switch model.mediaPreviewStates[attachment.id] {
                                     case .ready(let image):
@@ -1599,8 +1599,8 @@ struct ControlPanel: View {
                                     }
                                 }
                                 .frame(width: 72, height: 54)
-                                .clipShape(RoundedRectangle(cornerRadius: 7))
-                                .overlay(RoundedRectangle(cornerRadius: 7).stroke(COSPalette.line, lineWidth: 1))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(COSPalette.line, lineWidth: 1))
                             }
                             .buttonStyle(.plain)
                             .disabled(model.previewingMediaID != nil)
@@ -1631,8 +1631,8 @@ struct ControlPanel: View {
             }
         }
         .padding(13)
-        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
-        .overlay(RoundedRectangle(cornerRadius: 13).stroke(COSPalette.line, lineWidth: 1))
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
     }
 
     private var utilities: some View {
@@ -1874,8 +1874,8 @@ struct ControlPanel: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(11)
-            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 11))
-            .overlay(RoundedRectangle(cornerRadius: 11).stroke(COSPalette.gold.opacity(0.45), lineWidth: 1))
+            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.gold.opacity(0.45), lineWidth: 1))
         }
     }
 
@@ -1901,8 +1901,8 @@ struct ControlPanel: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(11)
-            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 11))
-            .overlay(RoundedRectangle(cornerRadius: 11).stroke(COSPalette.amber.opacity(0.45), lineWidth: 1))
+            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.amber.opacity(0.45), lineWidth: 1))
         }
     }
 
@@ -2978,7 +2978,7 @@ extension ControlPanel {
         }
         .padding(12)
         .background(COSPalette.card)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -3117,7 +3117,7 @@ private struct PetSpriteStateControls: View {
                 .scaledToFit()
                 .frame(width: 28, height: 28)
         } else {
-            RoundedRectangle(cornerRadius: 4, style: .continuous)
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .stroke(COSPalette.line, lineWidth: 1)
                 .frame(width: 28, height: 28)
         }
