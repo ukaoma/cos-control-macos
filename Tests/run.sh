@@ -2066,10 +2066,12 @@ need('COSPalette.plateInk' in (root / "Sources/SessionPet.swift").read_text(),
 need('foregroundStyle(COSPalette.ink)' not in (root / "Sources/SessionPet.swift").read_text(),
      "a pet control paints fixed ink on the adaptive card: black-on-black in dark mode")
 need('arrow.up.forward.app' in (root / "Sources/SessionPet.swift").read_text(), "the pet has no Open in platform control")
-need('petButton("scope"' in (root / "Sources/SessionPet.swift").read_text(), "Activity jump must be a target, not a waveform")
-need('Open in Activity' in (root / "Sources/SessionPet.swift").read_text(), "the target control must name Activity")
-need('Open Agents Window' in (root / "Sources/SessionPet.swift").read_text(), "the Cursor target must name the Agents Window")
-need('openTarget' in (root / "Sources/SessionPet.swift").read_text(), "the target control has no Cursor/Activity split")
+# 0.5.147: the scope/target button and openTarget split are REMOVED with the
+# hover bubble (Miles, on-device) — the pills, list rows, and the sprite click
+# are the only openers. Keep the dead chrome out.
+need('petButton("scope"' not in (root / "Sources/SessionPet.swift").read_text()
+     and 'openTarget' not in (root / "Sources/SessionPet.swift").read_text(),
+     "the removed target/scope chrome returned to the pet")
 need('petTargetOpensAgentWindow' in (root / "Sources/Models.swift").read_text(),
      "Cursor target routing is not on the session model")
 need('petButton("waveform"' not in (root / "Sources/SessionPet.swift").read_text(), "waveform on the pet collides with Codex playback")
@@ -2200,18 +2202,18 @@ need('if model.petExpanded { model.petExpanded = false }' in
 pet = (root / "Sources/SessionPet.swift").read_text()
 need('} else if let focus {' not in pet,
      "a Cursor miss notice must not replace the clickable status bubble")
-listed = pet.split("private var sessionList")[1].split("private func statusBubble")[0]
+listed = pet.split("private var sessionList")[1].split("private var spriteHelp")[0]
 need('model.openSessionInPlatform(session)' in listed,
      "a pet list row only changes focus and does not open the session")
 need('.contentShape(Rectangle())' in listed,
      "the pet list row does not hit-test the empty card")
 need('model.petFocusID = session.id' in listed,
      "opening a list row must still focus that session")
-bubble = pet.split("private func statusBubble")[1].split("private var targetHelp")[0]
-need('model.openSessionInPlatform(session)' in bubble,
-     "the focused pet card does not open the session")
-need('.contentShape(Capsule())' in bubble,
-     "the focused pet card does not hit-test the empty capsule")
+# 0.5.147: the focused-session bubble and action buttons are REMOVED on
+# purpose (Miles, on-device) — the pills open whatever is active, so the card
+# and a second set of openers were redundancy. Keep them out.
+need("statusBubble" not in pet and "actionsRow" not in pet and "petButton(" not in pet,
+     "the hover bubble/action chrome returned; the pills are the only openers")
 close = re.search(r"func windowWillClose\([^)]*\)[^{]*\{(.*?)(?:\n    \}|\n\}\n)", activity, re.S)
 need(close is not None, "windowWillClose not found")
 need('SessionPet' not in close.group(0), "closing Activity must not tear down the pet")
@@ -2608,7 +2610,7 @@ need(calls <= {"canDismissPetSession", "dismiss", "savePetDismissals", "applyPet
      f"dropping a row must only touch list state; it also calls {sorted(calls)}")
 
 # -- the X is a SIBLING of the row button. Nested inside, it never gets clicked.
-rows = pet[pet.index("private var sessionList:"):pet.index("private func statusBubble(")]
+rows = pet[pet.index("private var sessionList:"):pet.index("private var spriteHelp")]
 need("model.canDismissPetSession(session)" in rows, "the drop control is not gated on idle time")
 need("HStack(spacing: 0)" in rows and "model.petFocusID = session.id" in rows,
      "the session row lost either its wrapper or its open action")
@@ -2693,7 +2695,7 @@ done_pill = pills[pills.index('label: "DONE"'):pills.index('label: "WAITING"')]
 need("petCompletionsExpanded.toggle" in done_pill and "petExpanded.toggle" not in done_pill,
      "the DONE pill must not toggle the LIVE list")
 comp = pet[pet.index("private var completionsList"):]
-comp = comp[:comp.index("private func statusBubble")]
+comp = comp[:comp.index("private var spriteHelp")]
 need("ScrollView" in comp and ".frame(height:" in comp and "maxHeight" not in comp,
      "the finished list must use a FIXED scroll frame — maxHeight collapses under "
      "the panel's sizeThatFits and rendered six chips as an empty white capsule")
@@ -2758,12 +2760,25 @@ body = pet[pet.index("var body: some View"):pet.index("// MARK: - Ledger")]
 need(body.index("SessionPetSprite(") < body.index("\n            ledgerSlot"),
      "the ledger must render BELOW the sprite, never above it")
 
+# The pet floats over arbitrary wallpaper: the ledger needs its own surface.
+bar_src = pet[pet.index("private func ledgerBar"):pet.index("private func pillsRow")]
+need(".background(.thinMaterial, in: Capsule())" in bar_src,
+     "the ledger lost its blur backing and is unreadable on busy wallpaper")
+
 # The reveal changes the fitted height, so the presenter must resize on it.
 need("model.$petHoverRevealed.sink" in pet,
      "the panel never refits when the hover reveal opens")
-# Settling never fades a click-pinned list.
-need("model.petHoverSettling && !pinnedList ? 0 : 1" in pet,
-     "the settle fade must exempt pinned lists")
+# Finished entries are clearable like live rows (Miles 2026-08-30): a
+# SIBLING x per chip, wired to a model clear that persists and closes an
+# emptied list instead of pinning an empty card over the figure.
+comp2 = pet[pet.index("private var completionsList"):pet.index("private var spriteHelp")]
+need("clearPetCompletion(" in comp2, "finished rows have no clear control")
+clr = model[model.index("func clearPetCompletion("):]
+clr = clr[:clr.index("\n    }")]
+need("removeAll { $0.id == row.id }" in clr and "savePetCompletions()" in clr,
+     "clear must remove exactly one chip and persist")
+need("petCompletionsExpanded = false" in clr,
+     "an emptied finished list must close, not pin an empty card")
 LEDGCHK
 
 # Terminal jump routing (0.5.141)

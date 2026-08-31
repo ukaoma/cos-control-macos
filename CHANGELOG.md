@@ -1,3 +1,23 @@
+## 0.5.147 (build 185)
+
+Hover is pills-only now. The focused-session title card and the two circular
+buttons are gone from the reveal: the RUNNING, DONE, and WAITING pills open
+whatever is active, so a card naming one session and a second set of openers
+were redundancy on screen (a single click on the figure still opens the
+focused session). Hover no longer changes the panel's layout at all — the bar
+cross-fades into the pills in its own slot, and only a pill click adds a list
+above the figure.
+
+Finished entries are now clearable: every row in the DONE list carries the
+same x the live list has. Clearing removes that one entry and persists; it
+returns only if the session runs and finishes again. Clearing the last entry
+closes the list.
+
+The ledger sits on its own blurred surface — a soft material capsule behind
+the bar and caption — so the counts stay readable over busy wallpaper. With
+Reduce Transparency the blur becomes a flat fill and the edge stroke keeps
+the shape.
+
 ## 0.5.146 (build 184)
 
 The ledger now sits UNDER the figure, a nameplate at its feet, instead of

@@ -2155,6 +2155,19 @@ final class ControllerModel: ObservableObject {
         savePetCompletions()
     }
 
+    /// The finished list's x, mirroring the live list's drop control (Miles,
+    /// 2026-08-30). Clears ONE chip and persists; the detector's per-id diff
+    /// only re-emits if that session runs and finishes again, so a cleared
+    /// entry stays cleared. An emptied list closes rather than pinning an
+    /// empty card over the figure.
+    func clearPetCompletion(_ row: PetCompletion) {
+        let before = petCompletions.count
+        petCompletions.removeAll { $0.id == row.id }
+        guard petCompletions.count != before else { return }
+        savePetCompletions()
+        if petCompletions.isEmpty { petCompletionsExpanded = false }
+    }
+
     /// Offered only once a row has been still for ten minutes, so the control
     /// never appears on a session mid-turn.
     func canDismissPetSession(_ session: ClaudeSession) -> Bool {

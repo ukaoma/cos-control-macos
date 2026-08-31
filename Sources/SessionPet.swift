@@ -63,9 +63,9 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         observers.append(model.$petNotice.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
-        // petHoverRevealed changes the fitted height (bubble + actions appear
-        // above the ledger); petHoverSettling only fades opacity in place, and
-        // @ObservedObject re-renders that without a panel resize.
+        // Hover no longer changes the fitted height (the pills cross-fade in
+        // the bar's own slot), but the sink stays: allowsHitTesting and the
+        // crossfade key off the flag, and a future revealed row costs nothing.
         observers.append(model.$petHoverRevealed.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
@@ -85,14 +85,6 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
     func openInControl(_ session: ClaudeSession) {
         model?.openPetSessionInControl(session)
         showActivity?(.sessions)
-    }
-
-    func openTarget(_ session: ClaudeSession) {
-        if session.petTargetOpensAgentWindow {
-            model?.openSessionInPlatform(session)
-            return
-        }
-        openInControl(session)
     }
 
     private func syncPanel() {
@@ -254,18 +246,11 @@ private struct SessionPetRoot: View {
                 completionsList
                     .modifier(PetReveal(reduceMotion: reduceMotion))
             }
-            if revealActive {
-                VStack(spacing: size.length(8)) {
-                    if let focus { statusBubble(focus) }
-                    actionsRow
-                }
-                .modifier(PetReveal(reduceMotion: reduceMotion))
-                // Settle phase: content fades IN PLACE before the frame
-                // shrinks — a one-phase collapse clips the bubble mid-fade.
-                // A pinned list ignores settling; it closes only on click.
-                .opacity(model.petHoverSettling && !pinnedList ? 0 : 1)
-                .animation(.easeOut(duration: 0.18), value: model.petHoverSettling)
-            }
+            // No hover bubble or action buttons (Miles, 2026-08-30, on-device):
+            // the pills open whatever is active, so a title card and a second
+            // set of openers were pure redundancy. Hover changes NOTHING in
+            // layout now — the bar cross-fades into the pills in its own slot,
+            // and only a pill CLICK adds the list above the figure.
             if let hint = model.petTerminalHint, !hint.isEmpty {
                 Text(hint)
                     .font(COSType.body(size.typeSize(10)))
@@ -351,7 +336,7 @@ private struct SessionPetRoot: View {
                 .opacity(revealActive ? 1 : 0)
                 .allowsHitTesting(revealActive)
         }
-        .frame(height: size.length(34))
+        .frame(height: size.length(42))
         .frame(maxWidth: .infinity)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.26), value: revealActive)
     }
@@ -379,6 +364,15 @@ private struct SessionPetRoot: View {
                 .kerning(0.8)
                 .foregroundStyle(ledger.isQuiet ? Color.secondary : COSPalette.plateInk)
         }
+        // The pet floats over ARBITRARY wallpaper, and mono caps on a busy
+        // pattern were unreadable (Miles, on-device, orange checkerboard). A
+        // blur material pulls the ledger onto its own surface; the stroke
+        // keeps an edge when Reduce Transparency turns the blur into a flat
+        // fill. Same treatment as the pills' solid capsules, one layer softer.
+        .padding(.horizontal, size.length(14))
+        .padding(.vertical, size.length(6))
+        .background(.thinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(COSPalette.line.opacity(0.7), lineWidth: 1))
     }
 
     private func pillsRow(_ ledger: PetLedger) -> some View {
@@ -454,17 +448,6 @@ private struct SessionPetRoot: View {
         case .waiting: COSPalette.amber
         case .running: COSPalette.green
         case .done: COSPalette.gold
-        }
-    }
-
-    private var actionsRow: some View {
-        HStack(spacing: size.length(8)) {
-            petButton("scope", help: targetHelp) {
-                if let focus { presenter.openTarget(focus) }
-            }
-            petButton("arrow.up.forward.app", help: "Open in platform") {
-                if let focus { model.openSessionInPlatform(focus) }
-            }
         }
     }
 
@@ -580,6 +563,7 @@ private struct SessionPetRoot: View {
         // capsule with every row unreachable (Miles, 2026-08-30).
         let content = VStack(alignment: .leading, spacing: 0) {
                 ForEach(model.petCompletions) { row in
+                    HStack(spacing: 0) {
                     Button {
                         if let session = ClaudeSession.fromCompletion(row) {
                             presenter.openInControl(session)
@@ -607,8 +591,21 @@ private struct SessionPetRoot: View {
                     }
                     .buttonStyle(.plain)
                     .help("Open in COS Control")
-                    // Sibling, never nested in the row button's label — a Button
-                    // inside another Button's label never receives the click.
+                    // Clear control is a SIBLING of the row button, never nested
+                    // in its label — a Button inside another Button's label
+                    // never receives the click. Mirrors the live list's drop x.
+                    Button {
+                        model.clearPetCompletion(row)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: size.typeSize(9), weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .padding(size.length(5))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Clear this finished entry.")
+                    }
                     if row.id != model.petCompletions.last?.id {
                         Divider()
                     }
@@ -634,55 +631,6 @@ private struct SessionPetRoot: View {
             RoundedRectangle(cornerRadius: size.length(12), style: .continuous)
                 .stroke(COSPalette.line, lineWidth: 1)
         )
-    }
-
-    private func statusBubble(_ session: ClaudeSession) -> some View {
-        Button {
-            model.openSessionInPlatform(session)
-        } label: {
-            VStack(alignment: .leading, spacing: size.length(2)) {
-                Text(session.title)
-                    .font(COSType.body(size.typeSize(11), weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Text(session.petStateCaption)
-                    .font(COSType.mono(size.typeSize(9), weight: .bold))
-                    .foregroundStyle(petStateColor(session))
-                Text(session.petSubtitle)
-                    .font(COSType.body(size.typeSize(10)))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, size.length(12))
-            .padding(.vertical, size.length(8))
-            .frame(width: size.length(248), alignment: .leading)
-            .background(
-                Capsule().fill(COSPalette.card)
-            )
-            .overlay(Capsule().stroke(COSPalette.line, lineWidth: 1))
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .help("Open in platform")
-    }
-
-    private var targetHelp: String {
-        focus?.petTargetOpensAgentWindow == true ? "Open Agents Window" : "Open in Activity"
-    }
-
-    private func petButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: size.typeSize(11), weight: .semibold))
-                // Fixed ink on the adaptive card disc is invisible in dark mode;
-                // plateInk flips to gold there. The documented black-on-black fix.
-                .foregroundStyle(COSPalette.plateInk)
-                .frame(width: size.length(22), height: size.length(22))
-                .background(Circle().fill(COSPalette.card))
-                .overlay(Circle().stroke(COSPalette.line, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .help(help)
     }
 
     private var spriteHelp: String {

@@ -53,7 +53,7 @@ need("idleBubble" not in pet and "petButtonPlaceholder" not in pet,
 need(pet.count("model.petExpanded.toggle()") == 2,
      "still exactly two live-list toggle sites: RUNNING pill and double-click")
 need("petCompletionsExpanded" in pet, "the finished-list flag is gone")
-comp = pet[pet.index("private var completionsList"):pet.index("private func statusBubble")]
+comp = pet[pet.index("private var completionsList"):pet.index("private var spriteHelp")]
 need("ScrollView" in comp and ".frame(height:" in comp and "maxHeight" not in comp
      and "petExpanded.toggle" not in comp,
      "the finished list must scroll in a FIXED frame (maxHeight collapses under "
