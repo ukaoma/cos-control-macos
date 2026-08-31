@@ -5227,6 +5227,7 @@ enum PetSpriteStore {
                 ("session-pet-swarm-story-v15.png", 16),
                 ("session-pet-swarm-story-v15-1.png", 16),
                 ("session-pet-swarm-story-v15-2.png", 23),
+                ("session-pet-swarm-story-v15-3.png", 25),
             ],
         ]
         guard installed.count == retainedStock.count,

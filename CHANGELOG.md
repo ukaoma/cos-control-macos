@@ -1,3 +1,17 @@
+## 0.5.143 (build 181)
+
+Miles Windu's approved V15.3 four-plus-session story now has 25 frames. The
+clockwise spin flows directly into the lower-right droid strike without changing
+the crossed-arm reverse grip. Contact, electrical breakup, wrist load, visible
+saber release, flip, and catch form one continuous sequence. Force control,
+pull-to-strike, defensive blocks, and complete droid dissolves remain intact.
+
+The one-, two-, and three-session stories are byte-identical to V15.2. The swarm
+keeps its authored 0.22-second cadence, with all 25 frames playing in 5.50 seconds
+at 100% speed. Stock V15.2 and earlier packs upgrade automatically through an
+exact-byte match; custom artwork and pose scales remain untouched. The ledger
+bar, completion chips, terminal jump, speed control, and 3x idle are preserved.
+
 ## 0.5.142 (build 180)
 
 The pet's chrome is now a ledger bar: a slim segmented health bar riding above

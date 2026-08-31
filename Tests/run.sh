@@ -1955,8 +1955,8 @@ for bundled_id in bundled_ids:
 # character is chosen, so those users are already at the current value.
 gen = re.search(r"petDefaultArtGeneration = (\d+)", model)
 need(gen is not None, "the art-generation constant is gone")
-need(int(gen.group(1)) >= 11,
-     "Miles V15.2 landed after 0.5.139; the art generation must advance "
+need(int(gen.group(1)) >= 13,
+     "Miles V15.3 landed after 0.5.142; the art generation must advance "
      "or existing installs never receive the corrected stories")
 need("refreshStillBundledCharacter(into: directory)" in model,
      "the launch refresh never calls the still-character recognizer, so a user who picked "
