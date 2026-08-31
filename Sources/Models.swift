@@ -3256,7 +3256,51 @@ enum PetAnimationSpeed {
 
 /// Keep the floating pet on a visible display. 0.5.97 grew Large downward from
 /// the bottom corner and autosave parked the panel under the screen.
+/// The running row's LIVE line as a news ticker: the visible window is fixed
+/// and the text slides through it, so a long activity summary stays readable
+/// without widening the row (Miles, 2026-08-31 — "urgent/breaking news
+/// ticker"). JetBrains Mono is monospaced at a 0.6em advance, so overflow and
+/// loop timing are COMPUTED rather than measured through a layout pass.
+/// Kerning is not applied to this line, so the estimate is exact; the gap
+/// between the two loop copies absorbs any sub-point rounding.
+enum PetTicker {
+    static let advanceRatio: CGFloat = 0.6
+    /// Blank run between the loop's two copies, so the wrap reads as a gap
+    /// rather than the same words colliding with themselves.
+    static let gap: CGFloat = 30
+    /// Points per second. Slow enough to read a path or a file count.
+    static let speed: CGFloat = 26
+    /// A beat at rest before it moves, so a short glance sees the beginning.
+    static let startHold: TimeInterval = 1.4
+
+    static func width(_ text: String, fontSize: CGFloat) -> CGFloat {
+        CGFloat(text.count) * fontSize * advanceRatio
+    }
+
+    /// Only text that genuinely overflows scrolls; anything that fits stays
+    /// still. A ticker that moves when it does not need to is noise.
+    static func scrolls(_ text: String, fontSize: CGFloat, container: CGFloat) -> Bool {
+        container > 0 && width(text, fontSize: fontSize) > container
+    }
+
+    /// One full loop travels the text plus the gap at a constant reading
+    /// speed, so a longer summary scrolls for longer instead of faster.
+    static func loopDuration(_ text: String, fontSize: CGFloat) -> TimeInterval {
+        max(Double((width(text, fontSize: fontSize) + gap) / speed), 1)
+    }
+}
+
 enum PetPanelFrame {
+    /// Build the panel's frame from the anchor the user parked it at, then
+    /// clamp it onto a screen. Rebuilding from the ANCHOR — never from the
+    /// last clamped origin — is the whole fix for the open/close walk: an
+    /// expanded panel that overflows the screen top gets slid down to fit,
+    /// and feeding that slid origin back in made the slide permanent. A
+    /// high-parked pet ratcheted 450pt down in one open (Miles, 2026-08-31).
+    static func positioned(size: CGSize, anchor: CGPoint, screens: [CGRect]) -> CGRect {
+        clamped(CGRect(origin: anchor, size: size), screens: screens)
+    }
+
     static func clamped(_ frame: CGRect, screens: [CGRect]) -> CGRect {
         var frame = frame
         guard let fallback = screens.max(by: { $0.width * $0.height < $1.width * $1.height }) else {

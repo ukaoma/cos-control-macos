@@ -1,3 +1,19 @@
+## 0.5.157 (build 195)
+
+The pet stays where you parked it. Opening a list grows the panel upward,
+and when that would run past the top of the screen macOS slides the whole
+panel down to keep it on screen — the pet then took that slid position as
+its new home, so closing the list left it lower than it started. A pet
+parked high on the screen walked 450 points down in a single open. Every
+frame is now rebuilt from the spot you dragged the pet to, so a slide is
+temporary and closing always returns it exactly. Dragging still re-parks it.
+
+The live activity line is now a news ticker. A long summary scrolls through
+a fixed window at a steady reading pace, so you can see what an agent is
+actually doing instead of a truncated fragment. Text that already fits never
+moves, a new summary restarts from the beginning, and Reduced Motion keeps
+the line still.
+
 ## 0.5.156 (build 194)
 
 Fixes the giant blank column 0.5.155's mission rows could open inside the

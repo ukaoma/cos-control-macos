@@ -16,6 +16,13 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
     private var observers: [AnyCancellable] = []
     private var outsideClickMonitor: Any?
     private var bound = false
+    /// The bottom-left the user parked the pet at. Every frame is rebuilt
+    /// from this, so a clamp that slides an expanded panel down to stay on
+    /// screen can never become the new resting place.
+    private var restingAnchor: CGPoint?
+    /// windowDidMove fires for our own setFrame too; only a real drag may
+    /// move the anchor.
+    private var applyingFrame = false
 
     func bindIfNeeded(model: ControllerModel, showActivity: @escaping (ActivitySection?) -> Void) {
         if bound { return }
@@ -113,10 +120,16 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
                 viewportSize.width + model.petSize.length(36)
             )
             let fitting = host.sizeThatFits(in: NSSize(width: width, height: 900))
-            var frame = panel.frame
-            frame.size = NSSize(width: width, height: max(fitting.height, model.petSize.length(120)))
+            let size = NSSize(width: width, height: max(fitting.height, model.petSize.length(120)))
+            let anchor = restingAnchor ?? CGPoint(x: panel.frame.minX, y: panel.frame.minY)
+            restingAnchor = anchor
             let screens = NSScreen.screens.map(\.visibleFrame)
-            panel.setFrame(PetPanelFrame.clamped(frame, screens: screens), display: true)
+            applyingFrame = true
+            panel.setFrame(
+                PetPanelFrame.positioned(size: size, anchor: anchor, screens: screens),
+                display: true
+            )
+            applyingFrame = false
         }
         panel.orderFrontRegardless()
     }
@@ -182,9 +195,18 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         if frame.origin == .zero, let screen = NSScreen.main?.visibleFrame {
             frame.origin = NSPoint(x: screen.maxX - 280, y: screen.minY + 28)
         }
-        panel.setFrame(PetPanelFrame.clamped(frame, screens: screens), display: false)
+        let placed = PetPanelFrame.clamped(frame, screens: screens)
+        panel.setFrame(placed, display: false)
+        restingAnchor = CGPoint(x: placed.minX, y: placed.minY)
         self.panel = panel
         return panel
+    }
+
+    /// A drag re-parks the pet. Our own setFrame also posts this, so the
+    /// applyingFrame guard is what keeps a clamped slide out of the anchor.
+    func windowDidMove(_ notification: Notification) {
+        guard !applyingFrame, let panel else { return }
+        restingAnchor = CGPoint(x: panel.frame.minX, y: panel.frame.minY)
     }
 
     private func syncLists() {
@@ -564,10 +586,12 @@ private struct SessionPetRoot: View {
                                 .frame(width: size.length(5), height: size.length(5))
                                 .modifier(LedgerBreathing(active: !reduceMotion))
                         }
-                        Text(session.petLiveLine)
-                            .font(COSType.mono(size.typeSize(8), weight: .bold))
-                            .foregroundStyle(tint)
-                            .lineLimit(1)
+                        TickerLine(
+                            text: session.petLiveLine,
+                            fontSize: size.typeSize(8),
+                            tint: tint,
+                            reduceMotion: reduceMotion
+                        )
                     }
                 }
                 Spacer(minLength: 0)
@@ -798,6 +822,58 @@ private struct SessionPetRoot: View {
         case "cursor": Color(red: 0.42, green: 0.38, blue: 0.86)
         default: Color(red: 0.78, green: 0.45, blue: 0.22)
         }
+    }
+}
+
+/// The LIVE line's news ticker. A fixed window, hidden overflow, and the
+/// text sliding through it — only when it actually overflows. Two copies
+/// separated by a gap make the wrap seamless; the width comes from the
+/// monospaced advance in PetTicker, so no layout pass is needed to decide.
+private struct TickerLine: View {
+    let text: String
+    let fontSize: CGFloat
+    let tint: Color
+    var reduceMotion: Bool
+    @State private var rolling = false
+
+    var body: some View {
+        GeometryReader { geo in
+            let travel = PetTicker.width(text, fontSize: fontSize) + PetTicker.gap
+            let scrolls = !reduceMotion
+                && PetTicker.scrolls(text, fontSize: fontSize, container: geo.size.width)
+            HStack(spacing: PetTicker.gap) {
+                tickerText
+                // The second copy exists ONLY to cover the wrap; without it
+                // the line would blank out between loops.
+                if scrolls { tickerText }
+            }
+            .fixedSize()
+            .offset(x: rolling && scrolls ? -travel : 0)
+            .frame(width: geo.size.width, alignment: .leading)
+            .clipped()
+            // Keyed on the text: a new summary restarts the ticker from the
+            // beginning instead of resuming mid-scroll.
+            .task(id: text) {
+                rolling = false
+                guard scrolls else { return }
+                try? await Task.sleep(for: .seconds(PetTicker.startHold))
+                guard !Task.isCancelled else { return }
+                withAnimation(
+                    .linear(duration: PetTicker.loopDuration(text, fontSize: fontSize))
+                        .repeatForever(autoreverses: false)
+                ) {
+                    rolling = true
+                }
+            }
+        }
+        .frame(height: fontSize * 1.5)
+    }
+
+    private var tickerText: some View {
+        Text(text)
+            .font(COSType.mono(fontSize, weight: .bold))
+            .foregroundStyle(tint)
+            .lineLimit(1)
     }
 }
 

@@ -3219,6 +3219,81 @@ struct ModelsContract {
         print("COS Control: the ledger vocabulary matches the approved canvas")
     }
 
+    /// The pet must come back to where it was parked. Measured on 2026-08-31:
+    /// rebuilding each frame from the LAST CLAMPED origin walked a high-parked
+    /// pet 450pt down the screen in a single open/close.
+    private static func checkPetPanelAnchor() {
+        let screen = CGRect(x: 0, y: 0, width: 1512, height: 900)
+        let collapsed = CGSize(width: 260, height: 300)
+        let expanded = CGSize(width: 260, height: 700)
+
+        for anchorY in [CGFloat(28), 400, 650] {
+            let anchor = CGPoint(x: 1200, y: anchorY)
+            var rests: [CGFloat] = []
+            for _ in 0..<3 {
+                let open = PetPanelFrame.positioned(size: expanded, anchor: anchor, screens: [screen])
+                precondition(open.maxY <= screen.maxY && open.minY >= screen.minY,
+                             "an expanded pet must stay on screen (anchor y=\(anchorY))")
+                rests.append(PetPanelFrame.positioned(size: collapsed, anchor: anchor,
+                                                      screens: [screen]).origin.y)
+            }
+            // The invariant the user actually feels: the pet lands in the SAME
+            // place after every close. No drift, cycle after cycle.
+            precondition(Set(rests).count == 1,
+                         "the pet must rest in one place across cycles (anchor y=\(anchorY))")
+            // And where the parked frame genuinely fits, that place is the
+            // anchor itself. A park the screen cannot hold is corrected once,
+            // to the same corrected spot every time — never a little further.
+            if anchorY + collapsed.height <= screen.maxY {
+                precondition(rests[0] == anchorY,
+                             "a pet parked where it fits must return exactly there (y=\(anchorY))")
+            }
+        }
+
+        // The fixture must still exercise the bug: at a high park the naive
+        // read-back path drifts, so positioned() is not merely an alias.
+        // y=400: the closed panel fits there, the expanded one does not —
+        // exactly the case Miles hit.
+        let anchor = CGPoint(x: 1200, y: 400)
+        var walked = CGRect(origin: anchor, size: collapsed)
+        walked = PetPanelFrame.clamped(CGRect(origin: walked.origin, size: expanded), screens: [screen])
+        walked = PetPanelFrame.clamped(CGRect(origin: walked.origin, size: collapsed), screens: [screen])
+        precondition(walked.origin.y < anchor.y,
+                     "the read-back path must still drift here or this fixture proves nothing")
+        precondition(PetPanelFrame.positioned(size: collapsed, anchor: anchor, screens: [screen]).origin
+                     == anchor, "positioned() must not inherit the drift")
+        print("COS Control: a parked pet returns to its anchor after any open/close")
+    }
+
+    /// The LIVE line ticker: computed from the monospaced advance, so the
+    /// decision to move at all is deterministic.
+    private static func checkPetTicker() {
+        let fs: CGFloat = 8
+        precondition(PetTicker.width("abcd", fontSize: fs) == 4 * fs * PetTicker.advanceRatio)
+        precondition(!PetTicker.scrolls("working", fontSize: fs, container: 120),
+                     "text that fits must never move — a ticker that moves for nothing is noise")
+        precondition(PetTicker.scrolls("indexing wk36 meeting backlog into the graph",
+                                       fontSize: fs, container: 120),
+                     "an overflowing summary must scroll")
+        precondition(!PetTicker.scrolls("anything", fontSize: fs, container: 0),
+                     "a zero-width container never scrolls")
+
+        // One reading speed at every length: longer text takes longer, it
+        // does not scroll faster.
+        let short = String(repeating: "x", count: 50)
+        let long = String(repeating: "x", count: 100)
+        let dShort = PetTicker.loopDuration(short, fontSize: fs)
+        let dLong = PetTicker.loopDuration(long, fontSize: fs)
+        precondition(dLong > dShort, "a longer summary must take longer")
+        let speedShort = (PetTicker.width(short, fontSize: fs) + PetTicker.gap) / CGFloat(dShort)
+        let speedLong = (PetTicker.width(long, fontSize: fs) + PetTicker.gap) / CGFloat(dLong)
+        precondition(abs(speedShort - speedLong) < 0.01,
+                     "the ticker must travel at ONE speed regardless of length")
+        precondition(PetTicker.loopDuration("", fontSize: fs) >= 1,
+                     "duration never collapses to zero")
+        print("COS Control: the live-line ticker moves only on overflow, at one speed")
+    }
+
     static func main() throws {
         checkRenameEligibility()
         checkAmbiguousTitles()
@@ -3239,6 +3314,8 @@ struct ModelsContract {
         checkPetCompletionsPersist()
         checkPetJumpRoute()
         checkPetLedger()
+        checkPetPanelAnchor()
+        checkPetTicker()
         checkPetSpritePoses()
         checkPetSize()
         checkCursorAgentTabMatch()

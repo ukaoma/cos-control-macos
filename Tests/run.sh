@@ -2858,6 +2858,36 @@ idle_src = code[code.index("private func idleRow"):code.index("private func dism
 need("petLiveLine" not in idle_src and "lineLimit(1)" in idle_src,
      "idle rows must stay dim one-liners — periphery reads as periphery")
 
+# The pet must return to where it was parked. Every frame is rebuilt from the
+# resting anchor: reading the last CLAMPED origin back walked a high-parked
+# pet 450pt down the screen in one open (measured 2026-08-31).
+sync = code[code.index("private func syncPanel"):code.index("private func fittedCharacterScale")]
+need("PetPanelFrame.positioned(" in sync,
+     "syncPanel no longer rebuilds the frame from the resting anchor")
+# The anchor must come from MEMORY, with the live frame only as the first-run
+# fallback. Calling positioned() with the panel's current (already clamped)
+# origin reintroduces the walk while still looking correct.
+need("restingAnchor ??" in sync,
+     "syncPanel must anchor from the stored rest, not read the live frame back")
+need("frame.size =" not in sync,
+     "syncPanel mutates the live panel frame again; a clamped slide becomes the new rest")
+move = code[code.index("func windowDidMove"):code.index("private func syncLists")]
+need("guard !applyingFrame" in move,
+     "windowDidMove must ignore our own setFrame or a clamped slide re-parks the pet")
+need(code.count("applyingFrame = true") == 1
+     and len(re.findall(r"(?<!var )applyingFrame = false", code)) == 1,
+     "the programmatic-move guard must wrap exactly the one setFrame")
+
+# The LIVE line is a ticker: fixed window, hidden overflow, motion only when
+# the text genuinely overflows.
+need("TickerLine(" in mission_src, "the live line lost its ticker")
+tick = code[code.index("private struct TickerLine"):code.index("private struct PetReveal")]
+need(".clipped()" in tick, "the ticker window must hide its overflow")
+need("PetTicker.scrolls(" in tick and "!reduceMotion" in tick,
+     "the ticker must stay still when the text fits or motion is reduced")
+need(".task(id: text)" in tick,
+     "a new summary must restart the ticker, not resume mid-scroll")
+
 # The pet floats over arbitrary wallpaper: the ledger needs its own surface.
 bar_src = pet[pet.index("private func ledgerBar"):pet.index("private func pillsRow")]
 need(".background(.thinMaterial, in: Capsule())" in bar_src,
