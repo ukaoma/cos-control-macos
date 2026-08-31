@@ -577,42 +577,47 @@ private struct SessionPetRoot: View {
             model.petFocusID = session.id
             model.openSessionInPlatform(session)
         } label: {
-            HStack(alignment: .top, spacing: size.length(8)) {
-                Text(session.providerLabel.uppercased())
-                    .font(COSType.mono(size.typeSize(8), weight: .bold))
-                    .foregroundStyle(providerTint(session.provider))
-                    .frame(width: size.length(40), alignment: .leading)
-                    .padding(.top, size.length(2))
-                VStack(alignment: .leading, spacing: size.length(3)) {
+            // The ticker sits on its OWN full-width line beneath the title
+            // row, not inside the title column: sharing that column with the
+            // meta stack left it about 110pt — too narrow to show one whole
+            // word (Miles, 2026-08-31, screenshot). On its own line it gets
+            // the row's entire width, roughly double.
+            VStack(alignment: .leading, spacing: size.length(4)) {
+                HStack(alignment: .top, spacing: size.length(8)) {
+                    Text(session.providerLabel.uppercased())
+                        .font(COSType.mono(size.typeSize(8), weight: .bold))
+                        .foregroundStyle(providerTint(session.provider))
+                        .frame(width: size.length(40), alignment: .leading)
+                        .padding(.top, size.length(2))
                     Text(session.title)
                         .font(COSType.body(size.typeSize(11), weight: .semibold))
                         .foregroundStyle(.primary)
                         .lineLimit(2)
-                    HStack(spacing: size.length(4)) {
-                        if session.isPetWorking {
-                            Circle()
-                                .fill(tint)
-                                .frame(width: size.length(5), height: size.length(5))
-                                .modifier(LedgerBreathing(active: !reduceMotion))
-                        }
-                        TickerLine(
-                            text: session.petLiveLine,
-                            fontSize: size.typeSize(8),
-                            tint: tint,
-                            reduceMotion: reduceMotion
-                        )
+                    Spacer(minLength: 0)
+                    VStack(alignment: .trailing, spacing: size.length(3)) {
+                        Text(session.compactAgeLabel() ?? "")
+                            .font(COSType.mono(size.typeSize(8), weight: .bold))
+                            .foregroundStyle(tint)
+                        Text(session.workspace.lowercased())
+                            .font(COSType.body(size.typeSize(8)))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .frame(maxWidth: size.length(66), alignment: .trailing)
                     }
                 }
-                Spacer(minLength: 0)
-                VStack(alignment: .trailing, spacing: size.length(3)) {
-                    Text(session.compactAgeLabel() ?? "")
-                        .font(COSType.mono(size.typeSize(8), weight: .bold))
-                        .foregroundStyle(tint)
-                    Text(session.workspace.lowercased())
-                        .font(COSType.body(size.typeSize(8)))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .frame(maxWidth: size.length(70), alignment: .trailing)
+                HStack(spacing: size.length(5)) {
+                    if session.isPetWorking {
+                        Circle()
+                            .fill(tint)
+                            .frame(width: size.length(5), height: size.length(5))
+                            .modifier(LedgerBreathing(active: !reduceMotion))
+                    }
+                    TickerLine(
+                        text: session.petLiveLine,
+                        fontSize: size.typeSize(9),
+                        tint: tint,
+                        reduceMotion: reduceMotion
+                    )
                 }
             }
             .padding(.vertical, size.length(7))
@@ -886,7 +891,7 @@ private struct TickerLine: View {
                 }
             }
         }
-        .frame(height: fontSize * 1.5)
+        .frame(height: fontSize * 1.7)
     }
 
     private var tickerText: some View {

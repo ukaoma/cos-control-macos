@@ -3334,6 +3334,14 @@ struct ModelsContract {
                      "the ticker must travel at ONE speed regardless of length")
         precondition(PetTicker.loopDuration("", fontSize: fs) >= 1,
                      "duration never collapses to zero")
+        // The window has to hold a readable phrase. At PetSize medium the row
+        // measures 209pt (card padding 20, scroll inset 10, row leading 11,
+        // dot 5, gap 5 off a 260pt panel), which is 38 ASCII characters at
+        // 9pt — where the old in-column window held 17 and could not show one
+        // whole word.
+        let window: CGFloat = 209
+        precondition(Int(window / (9 * PetTicker.advanceRatio)) >= 30,
+                     "the ticker window must hold a phrase, not a fragment")
         print("COS Control: the live-line ticker moves only on overflow, at one speed")
     }
 

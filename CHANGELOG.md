@@ -1,3 +1,11 @@
+## 0.5.160 (build 198)
+
+The live activity line is readable now. It was sharing the title column with
+the age and workspace stack, which left it about 84 points — under twenty
+characters, not enough for one whole word of a scrolling sentence. It now has
+its own full-width line beneath the title, 209 points, and a slightly larger
+face: 39 characters visible instead of 18, despite the bigger type.
+
 ## 0.5.159 (build 197)
 
 Fixes found by an adversarial QA pass over everything shipped in the last

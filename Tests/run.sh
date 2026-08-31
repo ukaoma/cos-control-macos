@@ -2886,6 +2886,12 @@ need("session.petLiveLine" in mission_src and "session.compactAgeLabel()" in mis
      and "session.workspace" in mission_src,
      "a mission row lost its LIVE line, age figure, or workspace tag")
 need("lineLimit(2)" in mission_src, "mission titles regressed to a one-line ellipsis")
+# The ticker owns its own full-width line BELOW the title row. Nested back
+# inside the title column it shares ~110pt with the meta stack and cannot
+# show one whole word (Miles, 2026-08-31).
+need(mission_src.index("compactAgeLabel") < mission_src.index("TickerLine("),
+     "the ticker moved back above/inside the title column; it must be the "
+     "full-width line beneath the title row")
 # The rail must be an OVERLAY of the row content, never an HStack child: a
 # bare Shape child accepts any offered height, and under the panel's
 # sizeThatFits probe one running row absorbed ~800px of blank card (shipped
