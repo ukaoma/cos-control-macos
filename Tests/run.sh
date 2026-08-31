@@ -2752,6 +2752,12 @@ need(".activeAlways" in sensor, "the tracking area must arm while the app is ina
 need("override func hitTest(_ point: NSPoint) -> NSView? { nil }" in sensor,
      "the sensor must never swallow a click meant for the sprite or a pill")
 
+# The bar is a nameplate UNDER the figure (Miles 2026-08-30): in the body the
+# sprite mounts before the ledger slot, both riding the stable bottom edge.
+body = pet[pet.index("var body: some View"):pet.index("// MARK: - Ledger")]
+need(body.index("SessionPetSprite(") < body.index("\n            ledgerSlot"),
+     "the ledger must render BELOW the sprite, never above it")
+
 # The reveal changes the fitted height, so the presenter must resize on it.
 need("model.$petHoverRevealed.sink" in pet,
      "the panel never refits when the hover reveal opens")

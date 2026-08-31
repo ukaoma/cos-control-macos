@@ -1,3 +1,11 @@
+## 0.5.146 (build 184)
+
+The ledger now sits UNDER the figure, a nameplate at its feet, instead of
+riding its head. Character on top, bar and caption beneath, hover pills in
+the bar's same slot. Both rows keep riding the panel's fixed bottom edge, so
+nothing moves when the title card, actions, or lists unfold above the figure
+on hover.
+
 ## 0.5.145 (build 183)
 
 The ledger now hugs the character. The panel reserved the height of the

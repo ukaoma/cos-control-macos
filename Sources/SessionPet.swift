@@ -288,7 +288,9 @@ private struct SessionPetRoot: View {
                     .background(Capsule().fill(COSPalette.card))
                     .overlay(Capsule().stroke(COSPalette.line, lineWidth: 1))
             }
-            ledgerSlot
+            // Sprite ABOVE the ledger (Miles, 2026-08-30): the bar reads as a
+            // nameplate under the figure's feet. Both rows sit at the panel's
+            // fixed bottom edge, so neither moves when reveals unfold above.
             ZStack(alignment: .bottomLeading) {
                 SessionPetSprite(
                     working: pose.animates,
@@ -318,6 +320,7 @@ private struct SessionPetRoot: View {
             .accessibilityAddTraits(.isButton)
             .help(spriteHelp)
             .frame(width: viewportSize.width, height: viewportSize.height, alignment: .bottom)
+            ledgerSlot
         }
         .padding(size.length(10))
         .frame(width: max(
