@@ -252,50 +252,28 @@ private struct SessionPetRoot: View {
             // layout now — the bar cross-fades into the pills in its own slot,
             // and only a pill CLICK adds the list above the figure.
             if let hint = model.petTerminalHint, !hint.isEmpty {
-                Text(hint)
-                    .font(COSType.body(size.typeSize(10)))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .padding(.horizontal, size.length(12))
-                    .padding(.vertical, size.length(6))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Capsule().fill(COSPalette.card))
-                    .overlay(Capsule().stroke(COSPalette.line, lineWidth: 1))
+                petFloatingText(hint, style: .secondary, lines: 2)
             }
             if let notice = model.petNotice, !notice.isEmpty {
-                Text(notice)
-                    .font(COSType.body(size.typeSize(10)))
-                    .foregroundStyle(.primary)
-                    .lineLimit(4)
-                    .padding(.horizontal, size.length(12))
-                    .padding(.vertical, size.length(6))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Capsule().fill(COSPalette.card))
-                    .overlay(Capsule().stroke(COSPalette.line, lineWidth: 1))
+                petFloatingText(notice, style: .primary, lines: 4)
             }
             // Sprite ABOVE the ledger (Miles, 2026-08-30): the bar reads as a
             // nameplate under the figure's feet. Both rows sit at the panel's
             // fixed bottom edge, so neither moves when reveals unfold above.
-            ZStack(alignment: .bottomLeading) {
-                SessionPetSprite(
-                    working: pose.animates,
-                    reduceMotion: reduceMotion,
-                    customImage: model.petCustomSprite,
-                    frames: model.petSpriteKit.frames(for: pose),
-                    pose: pose,
-                    frameInterval: model.petFrameInterval(for: pose),
-                    size: CGFloat(size.pixels),
-                    characterScale: characterScale * model.petRenderScale(for: pose),
-                    animationSpeed: model.petAnimationSpeedFactor,
-                    restClips: model.petRestClips(for: pose)
-                )
-                if let focus {
-                    Circle()
-                        .fill(petStateColor(focus))
-                        .frame(width: size.length(8), height: size.length(8))
-                        .offset(x: size.length(4), y: -size.length(2))
-                }
-            }
+            // No focus dot: it floated at the figure's feet repeating what
+            // the ledger's colored segments already say (Miles, 2026-08-30).
+            SessionPetSprite(
+                working: pose.animates,
+                reduceMotion: reduceMotion,
+                customImage: model.petCustomSprite,
+                frames: model.petSpriteKit.frames(for: pose),
+                pose: pose,
+                frameInterval: model.petFrameInterval(for: pose),
+                size: CGFloat(size.pixels),
+                characterScale: characterScale * model.petRenderScale(for: pose),
+                animationSpeed: model.petAnimationSpeedFactor,
+                restClips: model.petRestClips(for: pose)
+            )
             .contentShape(Rectangle())
             // Declared before the single tap so SwiftUI resolves the double
             // FIRST — otherwise the opening click of a double-tap would jump
@@ -329,12 +307,18 @@ private struct SessionPetRoot: View {
     /// hover the prototype was rebuilt to kill.
     private var ledgerSlot: some View {
         let ledger = model.petLedger
+        // A fully quiet pet (no sessions alive, nothing finished) has nothing
+        // a pill could open — hovering would trade the meaningful IDLE capsule
+        // for three dimmed, dead buttons. The reveal only arms when at least
+        // one pill has a job.
+        let revealArmed = !(sessions.isEmpty && model.petCompletions.isEmpty)
+        let showPills = revealActive && revealArmed
         return ZStack {
             ledgerBar(ledger)
-                .opacity(revealActive ? 0 : 1)
+                .opacity(showPills ? 0 : 1)
             pillsRow(ledger)
-                .opacity(revealActive ? 1 : 0)
-                .allowsHitTesting(revealActive)
+                .opacity(showPills ? 1 : 0)
+                .allowsHitTesting(showPills)
         }
         .frame(height: size.length(42))
         .frame(maxWidth: .infinity)
@@ -544,14 +528,14 @@ private struct SessionPetRoot: View {
                 }
                 .frame(height: size.length(200))
             } else {
-                content
+                content.padding(.trailing, size.length(10))
             }
         }
         .padding(.horizontal, size.length(10))
         .padding(.vertical, size.length(4))
         .background(
-            RoundedRectangle(cornerRadius: size.length(12), style: .continuous)
-                .fill(COSPalette.card)
+            .regularMaterial,
+            in: RoundedRectangle(cornerRadius: size.length(12), style: .continuous)
         )
         .overlay(
             RoundedRectangle(cornerRadius: size.length(12), style: .continuous)
@@ -627,19 +611,37 @@ private struct SessionPetRoot: View {
                 }
                 .frame(height: size.length(160))
             } else {
-                content
+                content.padding(.trailing, size.length(10))
             }
         }
         .padding(.horizontal, size.length(10))
         .padding(.vertical, size.length(4))
         .background(
-            RoundedRectangle(cornerRadius: size.length(12), style: .continuous)
-                .fill(COSPalette.card)
+            .regularMaterial,
+            in: RoundedRectangle(cornerRadius: size.length(12), style: .continuous)
         )
         .overlay(
             RoundedRectangle(cornerRadius: size.length(12), style: .continuous)
                 .stroke(COSPalette.line, lineWidth: 1)
         )
+    }
+
+    /// One surface language for text floating over wallpaper: the ledger's
+    /// blur material on the lists' 12pt rounded rect. The old Capsule grew
+    /// fat semicircular flanks around multi-line notices.
+    private func petFloatingText(_ text: String, style: HierarchicalShapeStyle, lines: Int) -> some View {
+        Text(text)
+            .font(COSType.body(size.typeSize(10)))
+            .foregroundStyle(style)
+            .lineLimit(lines)
+            .padding(.horizontal, size.length(12))
+            .padding(.vertical, size.length(6))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: size.length(12), style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: size.length(12), style: .continuous)
+                    .stroke(COSPalette.line, lineWidth: 1)
+            )
     }
 
     private var spriteHelp: String {
@@ -684,14 +686,6 @@ private struct SessionPetRoot: View {
             return "\(session.petStateCaption) · \(age)"
         }
         return session.petStateCaption
-    }
-
-    private func petStateColor(_ session: ClaudeSession) -> Color {
-        switch session.state {
-        case "running": COSPalette.green
-        case "waiting": COSPalette.amber
-        default: Color.secondary
-        }
     }
 
     private func providerTint(_ provider: String) -> Color {

@@ -2760,6 +2760,24 @@ body = pet[pet.index("var body: some View"):pet.index("// MARK: - Ledger")]
 need(body.index("SessionPetSprite(") < body.index("\n            ledgerSlot"),
      "the ledger must render BELOW the sprite, never above it")
 
+# 0.5.150 surface-family pins. A fully quiet pet must never trade the IDLE
+# capsule for three dead pills; the reveal arms only when a pill has a job.
+slot = pet[pet.index("private var ledgerSlot"):pet.index("private func ledgerBar")]
+need("revealArmed" in slot and "sessions.isEmpty && model.petCompletions.isEmpty" in slot,
+     "the quiet-pet guard is gone; hover reveals three dead pills again")
+# The focus dot repeated the ledger's segments; keep it out.
+need("petStateColor" not in pet, "the redundant focus dot (or its color map) returned")
+# Floating text (hint/notice) shares the lists' rounded rect + blur material —
+# a Capsule grows fat semicircular flanks around multi-line notices.
+float_src = pet[pet.index("private func petFloatingText"):pet.index("private var spriteHelp")]
+need(".thinMaterial" in float_src and "RoundedRectangle" in float_src and "Capsule" not in float_src,
+     "hint/notice regressed off the shared floating surface")
+# Lists ride material like the ledger, and their trailing scrollbar inset is
+# UNCONDITIONAL so crossing the scroll threshold never nudges the x controls.
+need(pet.count(".regularMaterial") == 2, "a list left the material surface family")
+need(pet.count('content.padding(.trailing, size.length(10))') == 4,
+     "the trailing inset must apply in scrolling AND flat branches of both lists")
+
 # The pet floats over arbitrary wallpaper: the ledger needs its own surface.
 bar_src = pet[pet.index("private func ledgerBar"):pet.index("private func pillsRow")]
 need(".background(.thinMaterial, in: Capsule())" in bar_src,
