@@ -1,3 +1,15 @@
+## 0.5.145 (build 183)
+
+The ledger now hugs the character. The panel reserved the height of the
+TALLEST pose for every pose — and with the stock idle at 3x, a 1x combat
+figure sat under roughly two figure-heights of invisible headroom, leaving
+the bar floating up to ~700px above the character's head. The panel now keeps
+the stable envelope width (a poll never re-centers the pet) but takes the
+CURRENT pose's height, so the bar, caption, pills, and hover reveals sit
+directly above the figure in every state. The figure itself never moves: it
+is bottom-aligned in a bottom-anchored panel, so a pose change repositions
+only the chrome riding its head.
+
 ## 0.5.144 (build 182)
 
 The consolidated public release: everything since 0.5.139 under one build

@@ -3585,8 +3585,13 @@ struct PetSpriteKit {
         return playing.isEmpty ? nil : resolvedAspect(for: pose)
     }
 
-    /// Reserve one collapsed viewport for every live state. A poll may change
-    /// idle -> running -> swarm, but it must not resize or recenter the pet.
+    /// The full lifecycle ENVELOPE: max render size over every live state.
+    /// This is what scale fitting and width stability are computed against.
+    /// The PANEL mounts the pose-aware `viewportSize(current:...)` overload —
+    /// stable width from this envelope, height tracking the current pose so
+    /// the ledger and reveals hug the figure instead of the tallest pose's
+    /// headroom. The figure itself never moves: bottom-aligned in a
+    /// bottom-anchored panel.
     func viewportSize(
         pixels: Int,
         scale: CGFloat,
@@ -3603,6 +3608,29 @@ struct PetSpriteKit {
             width: sizes.map(\.width).max() ?? CGFloat(pixels),
             height: sizes.map(\.height).max() ?? CGFloat(pixels)
         )
+    }
+
+    /// The panel's viewport for what is on screen RIGHT NOW: the stable
+    /// max-pose WIDTH (a poll must never re-center the pet) with the CURRENT
+    /// pose's height. Height reserved for the tallest pose put ~2 idle-units
+    /// of invisible slack above every 1x combat figure once idle went 3x, and
+    /// the 0.5.142 ledger rendered at the top of that slack — a bar floating
+    /// ~700px above the character (Miles, 2026-08-30). The figure is
+    /// bottom-aligned and the panel bottom-anchored, so tracking the current
+    /// pose height moves only the above-figure chrome, never the figure.
+    func viewportSize(
+        current pose: PetSpritePose,
+        pixels: Int,
+        scale: CGFloat,
+        poseScales: [PetSpritePose: CGFloat] = [:]
+    ) -> CGSize {
+        let envelope = viewportSize(pixels: pixels, scale: scale, poseScales: poseScales)
+        let current = pose.renderSize(
+            pixels,
+            scale: scale * max(poseScales[pose] ?? 1, 0.01),
+            aspect: resolvedAspect(for: pose)
+        )
+        return CGSize(width: envelope.width, height: min(current.height, envelope.height))
     }
 
     /// Fit the whole lifecycle envelope, not only the pose visible during this

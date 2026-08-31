@@ -111,6 +111,7 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         if let host = panel.contentViewController as? NSHostingController<SessionPetRoot> {
             let characterScale = fittedCharacterScale(for: panel, model: model)
             let viewportSize = model.petSpriteKit.viewportSize(
+                current: model.petSpritePose,
                 pixels: model.petSize.pixels,
                 scale: characterScale,
                 poseScales: model.petRenderScales
@@ -158,6 +159,7 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
             return NSPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
         }
         let viewportSize = model.petSpriteKit.viewportSize(
+            current: model.petSpritePose,
             pixels: model.petSize.pixels,
             scale: model.petCharacterFactor,
             poseScales: model.petRenderScales
@@ -354,7 +356,7 @@ private struct SessionPetRoot: View {
     private func ledgerBar(_ ledger: PetLedger) -> some View {
         let barWidth = size.length(150)
         let total = max(ledger.running + ledger.waiting + ledger.done, 1)
-        return VStack(spacing: size.length(5)) {
+        return VStack(spacing: size.length(4)) {
             HStack(spacing: ledger.segments.count > 1 ? size.length(1) : 0) {
                 ForEach(Array(ledger.segments.enumerated()), id: \.offset) { _, segment in
                     Rectangle()

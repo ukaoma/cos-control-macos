@@ -3106,6 +3106,22 @@ struct ModelsContract {
         // waiting, so the bar and the fight ladder can never disagree.
         let err = PetLedger.resolve(sessions: [live("e", "error")], completions: [])
         precondition(err.running == 0 && err.waiting == 0)
+
+        // Pose-aware panel viewport (0.5.145): stable envelope WIDTH so a poll
+        // never re-centers the pet, CURRENT pose height so the ledger hugs the
+        // figure. Height reserved for 3x idle above a 1x combat figure put the
+        // bar ~700px over the character's head (Miles, 2026-08-30).
+        let kit = PetSpriteKit()
+        let scales: [PetSpritePose: CGFloat] = [.idle: 3]
+        let envelope = kit.viewportSize(pixels: 100, scale: 1, poseScales: scales)
+        let workingVp = kit.viewportSize(current: .working, pixels: 100, scale: 1, poseScales: scales)
+        let idleVp = kit.viewportSize(current: .idle, pixels: 100, scale: 1, poseScales: scales)
+        precondition(envelope.height == 300, "3x idle owns the envelope height")
+        precondition(workingVp.width == envelope.width && idleVp.width == envelope.width,
+                     "the panel width is the stable envelope; a pose change never re-centers")
+        precondition(workingVp.height == 100,
+                     "a 1x pose must not carry the 3x idle headroom above the figure")
+        precondition(idleVp.height == 300, "the tallest pose still gets its full height")
         print("COS Control: the ledger vocabulary matches the approved canvas")
     }
 
