@@ -1667,17 +1667,14 @@ final class ControllerModel: ObservableObject {
     /// Always the BUNDLED art, and one FRAME of it. Reading the installed idle
     /// pose showed whichever pack owns idle right now, so the row labelled
     /// "Jedi Miles Windu" displayed a different character; reading the bundled
-    /// file raw showed the whole 8-frame strip squeezed into 44pt. Cached: this
-    /// is a 259 KB decode and the panel re-renders on every published change.
+    /// file raw showed the whole strip squeezed into 44pt. Resolve its filename
+    /// AND frame count from the same state-map entry, then cache the first frame.
     private var bundledCharacterThumbCache: [String: NSImage] = [:]
     func bundledCharacterThumb(for character: BundledPetCharacter) -> NSImage? {
         if let cached = bundledCharacterThumbCache[character.id] { return cached }
         let made: NSImage? = {
             guard let folder = PetSpriteStore.bundledCharacterURL(character) else { return nil }
-            let url = folder.appendingPathComponent(PetSpriteStore.poseFileName(.idle))
-            guard let strip = NSImage(contentsOf: url) else { return nil }
-            let frames = PetSpriteStore.loadStateMap(in: folder)[.idle]?.frames ?? 1
-            return PetSpriteStrip.slice(strip, frames: frames).first ?? strip
+            return PetSpriteStore.galleryThumbnail(in: folder)
         }()
         if let made { bundledCharacterThumbCache[character.id] = made }
         return made

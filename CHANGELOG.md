@@ -1,3 +1,12 @@
+## 0.5.152 (build 190)
+
+Fix the blank Nia Solari, Elara Vale and Rowan Vale previews in the character
+gallery. Thumbnails now read the idle filename and frame count together from
+each pack's state map, instead of slicing the old still using the new loop's
+frame count. All four Jedi have pixel-checked gallery regression coverage.
+Animation artwork, idle scales, selected character and saved settings are
+unchanged.
+
 ## 0.5.151 (build 189)
 
 Nia Solari, Elara Vale and Rowan Vale now have their approved combat stories

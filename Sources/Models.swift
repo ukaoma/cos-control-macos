@@ -4784,6 +4784,15 @@ enum PetSpriteStore {
         return map
     }
 
+    /// Gallery thumbnails use the declared idle strip, not a legacy filename
+    /// paired with a newer strip's frame count (which can crop transparent air).
+    static func galleryThumbnail(in directory: URL) -> NSImage? {
+        guard let idle = loadStateMap(in: directory)[.idle],
+              let data = try? Data(contentsOf: directory.appendingPathComponent(idle.file)),
+              let strip = NSImage(data: data) else { return nil }
+        return PetSpriteStrip.slice(strip, frames: idle.frames).first
+    }
+
     /// Optional per-strip cadence authored by a bundled pack. Legacy and
     /// custom packs omit it and continue to use the pose's duration-preserving
     /// fallback. Keeping timing beside the strip prevents a 16-frame swarm

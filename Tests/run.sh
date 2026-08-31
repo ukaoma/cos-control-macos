@@ -47,6 +47,20 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediUpgradeContract.swift" \
   -framework AppKit -o "$TMP/jedi-upgrade-contract"
 "$TMP/jedi-upgrade-contract" "$ROOT"
+swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+  "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediGalleryContract.swift" \
+  -framework AppKit -o "$TMP/jedi-gallery-contract"
+"$TMP/jedi-gallery-contract" "$ROOT/Resources"
+# The executable pixel test must cover the same loader the gallery calls.
+/usr/bin/python3 - "$ROOT" <<'GALLERY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+source = (root / 'Sources/ControllerModel.swift').read_text()
+method = source.split('func bundledCharacterThumb(for character:', 1)[1].split('\n    }', 1)[0]
+assert 'PetSpriteStore.galleryThumbnail(in: folder)' in method
+assert 'poseFileName' not in method and 'PetSpriteStrip.slice' not in method
+assert 'model.bundledCharacterThumb(for: character)' in (root / 'Sources/Views.swift').read_text()
+GALLERY
 /usr/bin/grep -q 'cursor-probe-cache.json' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'recent-messages' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "fetch-media"' "$ROOT/HelperSources/main.swift"
