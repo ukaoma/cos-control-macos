@@ -358,7 +358,8 @@ struct SessionPetSprite: View {
         return clip[min(plan.index, clip.count - 1)]
     }
 
-    private func playbackFrame(elapsed: Double) -> NSImage? {
+    // Internal so the native runtime canary can exercise the actual selector.
+    func playbackFrame(elapsed: Double) -> NSImage? {
         guard !frames.isEmpty else { return nil }
         if reduceMotion || frames.count == 1 {
             let index = pose.cinematic ? min(frames.count - 1, max(0, frames.count / 2)) : 0

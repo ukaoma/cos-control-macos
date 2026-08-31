@@ -4784,6 +4784,21 @@ enum PetSpriteStore {
         return map
     }
 
+    /// An ambient alias is the same clip, not another rest to reschedule at a
+    /// different cadence. Distinct Miles patrol/idle/meditation clips remain.
+    static func restPoses(
+        for pose: PetSpritePose,
+        stateMap: [PetSpritePose: (file: String, frames: Int)]
+    ) -> [PetSpritePose] {
+        guard pose == .patrol else { return [] }
+        var seen: Set<String> = []
+        if let primary = stateMap[pose] { seen.insert("\(primary.file)#\(primary.frames)") }
+        return [PetSpritePose.idle, .waiting].filter { candidate in
+            guard let row = stateMap[candidate], row.frames > 1 else { return false }
+            return seen.insert("\(row.file)#\(row.frames)").inserted
+        }
+    }
+
     /// Gallery thumbnails use the declared idle strip, not a legacy filename
     /// paired with a newer strip's frame count (which can crop transparent air).
     static func galleryThumbnail(in directory: URL) -> NSImage? {
@@ -4992,7 +5007,7 @@ enum PetSpriteStore {
 
             let bundled = loadStateMap(in: source, fileManager: fileManager)
             let intervals = loadFrameIntervals(in: source, fileManager: fileManager)
-            let animated: [PetSpritePose] = [.idle, .working, .duel, .trio, .swarm]
+            let animated: [PetSpritePose] = [.idle, .patrol, .waiting, .working, .duel, .trio, .swarm]
             guard bundled.count == PetSpritePose.liveCases.count,
                   animated.allSatisfy({ pose in
                       guard let row = bundled[pose] else { return false }

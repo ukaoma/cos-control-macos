@@ -51,6 +51,16 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediGalleryContract.swift" \
   -framework AppKit -o "$TMP/jedi-gallery-contract"
 "$TMP/jedi-gallery-contract" "$ROOT/Resources"
+swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+  "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" \
+  "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
+  "$ROOT/Sources/Views.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
+  "$ROOT/Sources/SessionPet.swift" \
+  "$ROOT/Tests/JediIdleContract.swift" -framework AppKit -framework SwiftUI -o "$TMP/jedi-idle-contract"
+"$TMP/jedi-idle-contract" "$ROOT/Resources"
+if [[ -n "${COS_JEDI_CANARY_OUTPUT:-}" ]]; then
+  "$TMP/jedi-idle-contract" "$ROOT/Resources" "$COS_JEDI_CANARY_OUTPUT"
+fi
 # The executable pixel test must cover the same loader the gallery calls.
 /usr/bin/python3 - "$ROOT" <<'GALLERY'
 import pathlib, sys
@@ -1853,7 +1863,7 @@ need('restClips: model.petRestClips(for: pose)' in sessionpet_src,
 need('func petRestClips(' in model,
      "the activity playlist has no settled clips")
 rest_body = model.split('func petRestClips(', 1)[1].split('func setPetCharacterPercent', 1)[0]
-need('case .patrol: [.idle, .waiting]' in rest_body,
+need('PetSpriteStore.restPoses(for: pose, stateMap: petStateMap)' in rest_body,
      "solo patrol lost its calm idle/meditation rests")
 need('exactFrames(for:' in rest_body and 'case .working' not in rest_body and 'case .duel' not in rest_body,
      "authored story strips must not borrow fallback-resolved or higher-session art")
@@ -1918,15 +1928,17 @@ for bundled_id in bundled_ids:
     poses = json.loads(states.read_text()).get("poses", {})
     need(set(poses) == {"idle", "patrol", "waiting", "working", "done", "error", "attention", "duel", "trio", "swarm"},
          f"{bundled_id} must map all ten deployable pet states")
-    # 0.5.151: four combat stories plus a real eight-frame idle. Five other
-    # signal/rest states retain the portrait. Geometry is character-specific.
+    # 0.5.151 art, with 0.5.153 calm aliases. Only signal states retain the
+    # portrait. Geometry is character-specific; alias art stays byte-identical.
     stories = {
         "jedi-nia-solari": {"idle": (8,348,.24), "working": (12,348,.14), "duel": (16,440,.14), "trio": (14,440,.14), "swarm": (19,440,.14)},
         "jedi-elara-vale": {"idle": (8,256,.24), "working": (16,358,.14), "duel": (16,544,.16), "trio": (16,544,.18), "swarm": (24,704,.18)},
         "jedi-rowan-vale": {"idle": (8,320,.24), "working": (12,340,.16), "duel": (12,372,.17), "trio": (18,372,.17), "swarm": (24,396,.16)},
     }[bundled_id]
     for pose, row in poses.items():
-        if pose in stories:
+        if pose in ("patrol", "waiting"):
+            need(row == poses["idle"], f"{bundled_id}/{pose} must reuse the complete authored idle")
+        elif pose in stories:
             expected_frames, _, expected_interval = stories[pose]
             expected_file = "session-pet-idle-v2.png" if pose == "idle" else f"session-pet-{pose}-story-v2.png"
             need(row.get("file") == expected_file and row.get("frames") == expected_frames
@@ -1969,8 +1981,8 @@ for bundled_id in bundled_ids:
 # character is chosen, so those users are already at the current value.
 gen = re.search(r"petDefaultArtGeneration = (\d+)", model)
 need(gen is not None, "the art-generation constant is gone")
-need(int(gen.group(1)) >= 15,
-     "approved Jedi idle/combat packs require art generation15 for existing users")
+need(int(gen.group(1)) >= 16,
+     "quiet/waiting Jedi loops require art generation16 for existing users")
 need("refreshRecognizedBundledCharacter(" in model,
      "launch must call the retained-stock Jedi migration")
 retained_fn = models_src[models_src.index("static func refreshRecognizedBundledCharacter("):]

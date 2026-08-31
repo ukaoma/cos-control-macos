@@ -123,7 +123,7 @@ final class ControllerModel: ObservableObject {
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 15
+    private static let petDefaultArtGeneration = 16
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -1290,6 +1290,7 @@ final class ControllerModel: ObservableObject {
     @Published var petCustomSprite: NSImage?
     @Published var petSpriteKit = PetSpriteKit()
     @Published var petFrameIntervals: [PetSpritePose: Double] = [:]
+    private var petStateMap: [PetSpritePose: (file: String, frames: Int)] = [:]
     @Published var petRenderScales: [PetSpritePose: CGFloat] = [:]
     @Published var petCompleting = false
     private var petCompletionTask: Task<Void, Never>?
@@ -1685,13 +1686,8 @@ final class ControllerModel: ObservableObject {
     /// exact lookup prevents a missing calm clip from resolving through a
     /// live-state fallback into signal or higher-session artwork.
     func petRestClips(for pose: PetSpritePose) -> [PetSpriteClip] {
-        let secondaryPoses: [PetSpritePose] = switch pose {
-        case .patrol: [.idle, .waiting]
-        default: []
-        }
-        return secondaryPoses
-            .filter { $0 != pose }
-            .map { PetSpriteClip(frames: petSpriteKit.exactFrames(for: $0), frameInterval: $0.frameInterval) }
+        return PetSpriteStore.restPoses(for: pose, stateMap: petStateMap)
+            .map { PetSpriteClip(frames: petSpriteKit.exactFrames(for: $0), frameInterval: petFrameInterval(for: $0)) }
             .filter { $0.frames.count > 1 }
     }
 
@@ -1764,7 +1760,8 @@ final class ControllerModel: ObservableObject {
             petCustomSprite = nil
         }
         var poses: [PetSpritePose: [NSImage]] = [:]
-        for (pose, record) in PetSpriteStore.loadStateMap(in: directory) {
+        petStateMap = PetSpriteStore.loadStateMap(in: directory)
+        for (pose, record) in petStateMap {
             let url = directory.appendingPathComponent(record.file)
             guard let image = NSImage(contentsOf: url) else { continue }
             poses[pose] = PetSpriteStrip.slice(image, frames: record.frames)

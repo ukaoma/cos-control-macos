@@ -89,10 +89,15 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         "func setPetCharacterPercent", 1
     )[0]
     need(
-        "case .patrol: [.idle, .waiting]" in rest_body
+        "PetSpriteStore.restPoses(for: pose, stateMap: petStateMap)" in rest_body
         and "exactFrames(for:" in rest_body,
         "patrol must use exact calm clips, never fallback-resolved art",
     )
+    rest_selection = models.split("static func restPoses(", 1)[1].split("static func galleryThumbnail", 1)[0]
+    need("guard pose == .patrol" in rest_selection
+         and "[PetSpritePose.idle, .waiting]" in rest_selection
+         and "seen.insert" in rest_selection,
+         "ambient selection must deduplicate shared calm assets and preserve distinct rests")
     need(
         "case .working" not in rest_body and "case .duel" not in rest_body,
         "running/duel stories are still being spliced by the ambient scheduler",

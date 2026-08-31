@@ -60,14 +60,17 @@ struct JediUpgradeContract {
                 precondition(try! Data(contentsOf: stateURL) == original)
                 try oldBytes.write(to: oldFile, options: .atomic)
 
-                // A destination failure must leave the old active map intact.
-                let blocked = dest.appendingPathComponent(expected[.idle]!.file)
-                try fm.createDirectory(at: blocked, withIntermediateDirectories: true)
-                let blockedResult = PetSpriteStore.refreshRecognizedBundledCharacter(into: dest, sourceRootOverride: bundles)
-                precondition(blockedResult == .failed, "\(character.id)/\(version) must report the blocked destination")
-                precondition(try! Data(contentsOf: stateURL) == original, "failed write changed active map")
-                precondition(try! Data(contentsOf: oldFile) == oldBytes, "failed write damaged retained art")
-                try fm.removeItem(at: blocked)
+                // New-file failures leave the old map intact. Map-only upgrades
+                // already have this file and do not take the new-file write path.
+                if !Set(poses.values.map { $0["file"] as! String }).contains(expected[.idle]!.file) {
+                    let blocked = dest.appendingPathComponent(expected[.idle]!.file)
+                    try fm.createDirectory(at: blocked, withIntermediateDirectories: true)
+                    let blockedResult = PetSpriteStore.refreshRecognizedBundledCharacter(into: dest, sourceRootOverride: bundles)
+                    precondition(blockedResult == .failed, "\(character.id)/\(version) must report the blocked destination")
+                    precondition(try! Data(contentsOf: stateURL) == original, "failed write changed active map")
+                    precondition(try! Data(contentsOf: oldFile) == oldBytes, "failed write damaged retained art")
+                    try fm.removeItem(at: blocked)
+                }
 
                 precondition(PetSpriteStore.refreshRecognizedBundledCharacter(into: dest, sourceRootOverride: bundles) == .refreshed(character.id))
                 precondition(try! Data(contentsOf: stateURL) == sourceState)
@@ -84,7 +87,7 @@ struct JediUpgradeContract {
             let bad = badRoot.appendingPathComponent(character.id)
             try fm.copyItem(at: source, to: bad)
             try fm.removeItem(at: bad.appendingPathComponent(expected[.swarm]!.file))
-            let oldState = maps.last!["state"] as! [String: Any]
+            let oldState = maps.first!["state"] as! [String: Any]
             let oldRows = oldState["poses"] as! [String: [String: Any]]
             let dest = scratch.appendingPathComponent("missing-\(character.id)")
             try fm.createDirectory(at: dest, withIntermediateDirectories: true)
@@ -97,7 +100,7 @@ struct JediUpgradeContract {
             precondition(PetSpriteStore.refreshRecognizedBundledCharacter(into: dest, sourceRootOverride: badRoot) == .failed)
             precondition(try! Data(contentsOf: stateURL) == original)
         }
-        precondition(migrations == 10 && frames == 223)
-        print("Jedi upgrade contracts PASS: 10 stock histories, 223 native frames, custom preservation, interrupted writes, missing-source failure, retry and idempotence")
+        precondition(migrations == 13 && frames == 223)
+        print("Jedi upgrade contracts PASS: 13 stock histories, 223 native frames, custom preservation, interrupted new-file writes, missing-source failure, retry and idempotence")
     }
 }

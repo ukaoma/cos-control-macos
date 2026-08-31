@@ -13,8 +13,9 @@ Original identity, single-blade ownership and registered character scale are pre
 
 Idle uses a 1.00x pack scale, matched to this character's combat art. Miles
 Windu's separate source pack keeps its approved 1.30x idle multiplier.
-Attention, done, error, patrol and waiting retain their existing single-frame
-fallbacks; this release does not claim new animations for those states.
+Since Control 0.5.153 (build 191), patrol and waiting reuse this eight-frame
+idle at the same cadence and scale. Shared clips are not duplicate playlist
+rests. Attention, done and error retain their single-frame fallbacks.
 
 All 15 replacement strips across the three Jedi packs passed independent
 visual review, native slicing and transparent-gutter checks. Generated art
@@ -23,7 +24,7 @@ uses discrete authored keyframes, not pose interpolation.
 ## Upgrade contract
 
 Retained PNGs and `stock-state-history.json` identify untouched still,
-four-frame and V1/V1.1 stock installs. The entire state dictionary and all
+four-frame, V1/V1.1 and 0.5.151/0.5.152 stock installs. The entire state dictionary and all
 referenced image bytes must match. Custom art, timing, scale or metadata is
 not automatically replaced. Versioned V2 files land before the state map
 changes atomically; interrupted installs remain readable and retryable.

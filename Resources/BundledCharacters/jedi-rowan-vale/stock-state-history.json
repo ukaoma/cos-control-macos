@@ -144,6 +144,59 @@
           }
         }
       }
+    },
+    {
+      "version": "0.5.151-0.5.152",
+      "state": {
+        "poses": {
+          "attention": {
+            "file": "session-pet-idle.png",
+            "frames": 1
+          },
+          "done": {
+            "file": "session-pet-idle.png",
+            "frames": 1
+          },
+          "duel": {
+            "file": "session-pet-duel-story-v2.png",
+            "frames": 12,
+            "interval": 0.17
+          },
+          "error": {
+            "file": "session-pet-idle.png",
+            "frames": 1
+          },
+          "idle": {
+            "file": "session-pet-idle-v2.png",
+            "frames": 8,
+            "interval": 0.24,
+            "renderScale": 1
+          },
+          "patrol": {
+            "file": "session-pet-idle.png",
+            "frames": 1
+          },
+          "swarm": {
+            "file": "session-pet-swarm-story-v2.png",
+            "frames": 24,
+            "interval": 0.16
+          },
+          "trio": {
+            "file": "session-pet-trio-story-v2.png",
+            "frames": 18,
+            "interval": 0.17
+          },
+          "waiting": {
+            "file": "session-pet-idle.png",
+            "frames": 1
+          },
+          "working": {
+            "file": "session-pet-working-story-v2.png",
+            "frames": 12,
+            "interval": 0.16
+          }
+        }
+      }
     }
   ]
 }

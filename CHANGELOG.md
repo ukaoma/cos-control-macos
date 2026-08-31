@@ -1,3 +1,17 @@
+## 0.5.153 (build 191)
+
+Nia Solari, Elara Vale and Rowan Vale now keep their eight-frame breathing,
+glance and cloth-motion idle loops playing with quiet open sessions and while
+waiting. Those real runtime states previously selected a legacy still, even
+though the zero-session idle already animated. Reusing the same calm clip no
+longer restarts it as a second playlist entry or changes its authored cadence.
+
+Exact stock packs from 0.5.151/0.5.152 and earlier upgrade automatically.
+Custom art, timing and scale are preserved. All image bytes, combat sequences,
+Miles Windu's distinct ambient clips and 1.30x idle remain unchanged. Native
+canary coverage exercises state resolution, playback, reduced motion, stock
+migration, and the retained gallery fix before publication.
+
 ## 0.5.152 (build 190)
 
 Fix the blank Nia Solari, Elara Vale and Rowan Vale previews in the character
