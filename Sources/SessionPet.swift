@@ -410,8 +410,14 @@ private struct SessionPetRoot: View {
                 dot: COSPalette.amber, label: "WAITING", count: ledger.waiting,
                 enabled: ledger.waiting > 0, open: false, index: 2
             ) {
-                if let waitingSession = sessions.first(where: { $0.state == "waiting" }) {
-                    model.openSessionInPlatform(waitingSession)
+                // One waiting session jumps; several open the list so the
+                // choice is yours instead of arbitrary.
+                if let only = ClaudeSession.petWaitingJumpTarget(sessions) {
+                    model.petFocusID = only.id
+                    model.openSessionInPlatform(only)
+                } else {
+                    model.petExpanded = true
+                    model.petCompletionsExpanded = false
                 }
             }
         }

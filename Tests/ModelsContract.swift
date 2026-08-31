@@ -3216,6 +3216,23 @@ struct ModelsContract {
         precondition(stamped.compactAgeLabel(now: base.addingTimeInterval(3 * 3600)) == "3h")
         precondition(stamped.compactAgeLabel(now: base.addingTimeInterval(2 * 86400)) == "2d")
 
+        // WAITING pill routing (0.5.158): jump only when there is nothing to
+        // choose. Two waiting sessions and an arbitrary jump silently ignores
+        // the other — the state where choosing matters most.
+        precondition(ClaudeSession.petWaitingJumpTarget([]) == nil)
+        precondition(ClaudeSession.petWaitingJumpTarget(
+            [live("r", "running"), live("i", "recent")]) == nil,
+            "no waiting session means no jump target")
+        let onlyWaiting = ClaudeSession.petWaitingJumpTarget(
+            [live("r", "running"), live("w", "waiting"), live("i", "recent")])
+        precondition(onlyWaiting?.id == "claude:w",
+                     "a single waiting session is jumped into directly")
+        precondition(ClaudeSession.petWaitingJumpTarget(
+            [live("w1", "waiting"), live("w2", "waiting")]) == nil,
+            "two waiting sessions must open the list, never pick one arbitrarily")
+        precondition(ClaudeSession.petWaitingJumpTarget(
+            [live("w1", "waiting"), live("w2", "waiting"), live("w3", "waiting")]) == nil)
+
         print("COS Control: the ledger vocabulary matches the approved canvas")
     }
 

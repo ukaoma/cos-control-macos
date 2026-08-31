@@ -1,3 +1,10 @@
+## 0.5.158 (build 196)
+
+The WAITING pill now respects the choice. With one session waiting on you it
+jumps straight in, as before. With two or more it opens the live list instead
+of picking one arbitrarily and silently ignoring the rest — the state where
+choosing matters most. Waiting sessions have their own amber section there.
+
 ## 0.5.157 (build 195)
 
 The pet stays where you parked it. Opening a list grows the panel upward,

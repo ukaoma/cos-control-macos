@@ -638,6 +638,16 @@ struct ClaudeSession: Identifiable, Sendable {
         }
     }
 
+    /// Where the WAITING pill sends you (0.5.158). One waiting session has
+    /// nothing to choose, so the pill jumps straight into it. Two or more and
+    /// jumping picks an arbitrary session while silently ignoring the rest —
+    /// exactly the state where you most need to choose — so the pill opens
+    /// the live list instead, where WAITING has its own amber section.
+    static func petWaitingJumpTarget(_ sessions: [ClaudeSession]) -> ClaudeSession? {
+        let waiting = sessions.filter { $0.state == "waiting" }
+        return waiting.count == 1 ? waiting[0] : nil
+    }
+
     /// Mission-rows sectioning (0.5.155, design B): the live list groups by
     /// weight — running rich, waiting amber, idle receded. Pure so the
     /// contract executes the grouping; within each section the sorted input

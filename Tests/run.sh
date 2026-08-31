@@ -2711,6 +2711,11 @@ pills = pet[pet.index("private func pillsRow("):pet.index("private func ledgerPi
 run_pill = pills[pills.index('label: "RUNNING"'):pills.index('label: "DONE"')]
 need("petExpanded.toggle" in run_pill and "petCompletionsExpanded = false" in run_pill,
      "the RUNNING pill must toggle the live list and clear the finished one")
+wait_pill = pills[pills.index('label: "WAITING"'):]
+need("ClaudeSession.petWaitingJumpTarget(" in wait_pill,
+     "the WAITING pill must route through the executable jump-target helper")
+need("model.petExpanded = true" in wait_pill,
+     "several waiting sessions must open the list, never jump to an arbitrary one")
 done_pill = pills[pills.index('label: "DONE"'):pills.index('label: "WAITING"')]
 need("petCompletionsExpanded.toggle" in done_pill and "petExpanded.toggle" not in done_pill,
      "the DONE pill must not toggle the LIVE list")
