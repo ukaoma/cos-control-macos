@@ -584,10 +584,8 @@ private struct SessionPetRoot: View {
             // the row's entire width, roughly double.
             VStack(alignment: .leading, spacing: size.length(4)) {
                 HStack(alignment: .top, spacing: size.length(8)) {
-                    Text(session.providerLabel.uppercased())
-                        .font(COSType.mono(size.typeSize(8), weight: .bold))
-                        .foregroundStyle(providerTint(session.provider))
-                        .frame(width: size.length(40), alignment: .leading)
+                    providerMark(session.petProviderGlyph, label: session.providerLabel,
+                                 tint: providerTint(session.provider))
                         .padding(.top, size.length(2))
                     Text(session.title)
                         .font(COSType.body(size.typeSize(11), weight: .semibold))
@@ -653,10 +651,8 @@ private struct SessionPetRoot: View {
             model.openSessionInPlatform(session)
         } label: {
             HStack(spacing: size.length(8)) {
-                Text(session.providerLabel.uppercased())
-                    .font(COSType.mono(size.typeSize(8), weight: .bold))
-                    .foregroundStyle(providerTint(session.provider).opacity(0.75))
-                    .frame(width: size.length(40), alignment: .leading)
+                providerMark(session.petProviderGlyph, label: session.providerLabel,
+                             tint: providerTint(session.provider).opacity(0.75))
                 Text(session.title)
                     .font(COSType.body(size.typeSize(10), weight: .medium))
                     .foregroundStyle(.secondary)
@@ -676,6 +672,20 @@ private struct SessionPetRoot: View {
             dismissControl(session)
         }
         }
+    }
+
+    /// One platform mark for every surface: the SF Symbol beside the
+    /// wordmark, in the provider's tint. Fixed width so titles start on the
+    /// same x down the whole list.
+    private func providerMark(_ glyph: String, label: String, tint: Color) -> some View {
+        HStack(spacing: size.length(3)) {
+            Image(systemName: glyph)
+                .font(.system(size: size.typeSize(8), weight: .bold))
+            Text(label.uppercased())
+                .font(COSType.mono(size.typeSize(8), weight: .bold))
+        }
+        .foregroundStyle(tint)
+        .frame(width: size.length(52), alignment: .leading)
     }
 
     private func dismissControl(_ session: ClaudeSession) -> some View {
@@ -710,10 +720,9 @@ private struct SessionPetRoot: View {
                         }
                     } label: {
                         HStack(alignment: .top, spacing: size.length(8)) {
-                            Text(row.provider.uppercased())
-                                .font(COSType.mono(size.typeSize(8), weight: .bold))
-                                .foregroundStyle(providerTint(row.provider))
-                                .frame(width: size.length(44), alignment: .leading)
+                            providerMark(PetProvider.glyph(row.provider),
+                                         label: row.provider,
+                                         tint: providerTint(row.provider))
                             VStack(alignment: .leading, spacing: size.length(2)) {
                                 Text(row.name)
                                     .font(COSType.body(size.typeSize(11), weight: row.seen ? .regular : .medium))

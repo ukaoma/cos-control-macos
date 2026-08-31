@@ -3282,6 +3282,28 @@ struct ModelsContract {
         print("COS Control: a parked pet returns to its anchor after any open/close")
     }
 
+    /// Platform marks. The load-bearing check is RESOLUTION: an SF Symbol
+    /// name that does not exist on the shipped OS renders as nothing at all,
+    /// so a typo would ship an invisible mark with a green suite.
+    private static func checkPetProviderMarks() {
+        for (provider, expected) in [("claude", "sparkle"), ("codex", "terminal"),
+                                     ("cursor", "cube"), ("local", "cpu"),
+                                     ("ollama", "cpu"), ("", "sparkle"),
+                                     ("  CODEX  ", "terminal"), ("gemini", "sparkle")] {
+            precondition(PetProvider.glyph(provider) == expected,
+                         "\(provider) should wear \(expected), got \(PetProvider.glyph(provider))")
+        }
+        let platforms = ["claude", "codex", "cursor", "local"]
+        for name in Set(platforms.map(PetProvider.glyph)) {
+            precondition(NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil,
+                         "SF Symbol '\(name)' does not resolve on this OS — the row would "
+                         + "render an invisible mark")
+        }
+        precondition(Set(platforms.map(PetProvider.glyph)).count == platforms.count,
+                     "two platforms wear the same mark; the point is telling them apart")
+        print("COS Control: every platform mark resolves and is distinct")
+    }
+
     /// The LIVE line ticker: computed from the monospaced advance, so the
     /// decision to move at all is deterministic.
     private static func checkPetTicker() {
@@ -3367,6 +3389,7 @@ struct ModelsContract {
         checkPetLedger()
         checkPetPanelAnchor()
         checkPetTicker()
+        checkPetProviderMarks()
         checkPetSpritePoses()
         checkPetSize()
         checkCursorAgentTabMatch()

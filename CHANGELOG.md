@@ -1,3 +1,12 @@
+## 0.5.161 (build 199)
+
+Every agent row now carries its platform's mark, so you can tell Claude from
+Codex from Cursor at a glance instead of reading the label: a spark for
+Claude, a terminal prompt for Codex, a cube for Cursor, and a chip for a
+local model, each in that platform's colour. The marks come from one shared
+builder used by live rows, idle rows, and finished entries alike, so a
+platform can never look like one thing in the list and another in the chips.
+
 ## 0.5.160 (build 198)
 
 The live activity line is readable now. It was sharing the title column with

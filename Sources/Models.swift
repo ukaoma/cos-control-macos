@@ -724,6 +724,8 @@ struct ClaudeSession: Identifiable, Sendable {
         return "Updated \(value)"
     }
 
+    var petProviderGlyph: String { PetProvider.glyph(provider) }
+
     var providerLabel: String {
         switch provider {
         case "codex": "Codex"
@@ -3271,6 +3273,23 @@ enum PetAnimationSpeed {
 /// loop timing are COMPUTED rather than measured through a layout pass.
 /// Kerning is not applied to this line, so the estimate is exact; the gap
 /// between the two loop copies absorbs any sub-point rounding.
+/// Platform marks for the agent rows, matching the gotcos "replaceable
+/// engine" card: a spark for Claude, a terminal prompt for Codex, a cube for
+/// Cursor, a chip for a local model. Shared by live rows and finished chips
+/// so one provider can never wear two marks. Every name is asserted to
+/// resolve on the shipped OS by the contract — an SF Symbol that does not
+/// exist renders as nothing at all.
+enum PetProvider {
+    static func glyph(_ provider: String) -> String {
+        switch provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "codex": "terminal"
+        case "cursor": "cube"
+        case "local", "ollama": "cpu"
+        default: "sparkle"
+        }
+    }
+}
+
 enum PetTicker {
     static let advanceRatio: CGFloat = 0.6
     /// Blank run between the loop's two copies, so the wrap reads as a gap

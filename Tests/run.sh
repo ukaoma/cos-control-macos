@@ -2886,6 +2886,18 @@ need("session.petLiveLine" in mission_src and "session.compactAgeLabel()" in mis
      and "session.workspace" in mission_src,
      "a mission row lost its LIVE line, age figure, or workspace tag")
 need("lineLimit(2)" in mission_src, "mission titles regressed to a one-line ellipsis")
+# Every row wears its platform mark through the ONE shared builder, so a
+# provider can never look different in the live list than in the chips.
+need("providerMark(" in mission_src, "the mission row lost its platform mark")
+need("providerMark(" in code[code.index("private func idleRow"):
+                            code.index("private func dismissControl")],
+     "the idle row lost its platform mark")
+need(code.count("providerMark(") == 4,
+     "platform marks must come from the single shared builder used by all "
+     "three row types (3 call sites + 1 definition)")
+need("Image(systemName: glyph)" in code[code.index("private func providerMark"):
+                                        code.index("private func dismissControl")],
+     "the platform mark renders no icon")
 # The ticker owns its own full-width line BELOW the title row. Nested back
 # inside the title column it shares ~110pt with the meta stack and cannot
 # show one whole word (Miles, 2026-08-31).
