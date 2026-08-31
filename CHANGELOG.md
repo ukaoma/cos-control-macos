@@ -1,3 +1,13 @@
+## 0.5.144 (build 182)
+
+The consolidated public release: everything since 0.5.139 under one build
+number. The ledger-bar pet chrome with its non-jumpy hover reveal, per-session
+completion chips, the iTerm2/Terminal session jump, Miles Windu V15.2 stories
+plus the approved 25-frame V15.3 swarm, the 25% to 200% character-speed
+control, and the 3x stock idle. No code or art changes over 0.5.143 — one
+version now names the combined interface and animation for the updater and
+the site.
+
 ## 0.5.143 (build 181)
 
 Miles Windu's approved V15.3 four-plus-session story now has 25 frames. The
