@@ -1893,9 +1893,10 @@ need('petExpanded = true' not in apply_pet_body and 'previousCount < 2' not in a
 # 0.5.150: the RUNNING pill legitimately opens a ONE-row list, so the poll
 # closes it only when it is truly empty (the <2 threshold shut it under the
 # cursor within one 20s poll).
-need('if petSessions.isEmpty' in apply_pet_body and 'petExpanded = false' in apply_pet_body
+need('if petSessions.isEmpty && petDismissals.stamps.isEmpty' in apply_pet_body
      and 'petSessions.count < 2' not in apply_pet_body,
-     "the live list must auto-close only when EMPTY, never at one row")
+     "the live list must auto-close only when nothing is left to show — the "
+     "restore row must survive dropping the last session")
 need('installBundledDefault(into: directory)' in model,
      "a fresh install no longer seeds the shipped character")
 need('petDefaultSeededKey' in model,
@@ -2084,8 +2085,16 @@ need('foregroundStyle(COSPalette.ink)' not in (root / "Sources/SessionPet.swift"
 # 0.5.155 mission rows: the whole row IS the jump; the old trailing glyph is
 # clutter the meta column replaced. The affordance is pinned as the row help
 # plus the openSessionInPlatform call the ROUTECHK slice already asserts.
-need((root / "Sources/SessionPet.swift").read_text().count('.help("Open in platform")') >= 2,
-     "the session rows lost their whole-row Open in platform affordance")
+_pet_code = (root / "Sources/SessionPet.swift").read_text()
+_pet_code = "\n".join(l.split("//")[0] if l.strip().startswith("//") else l
+                      for l in _pet_code.splitlines())
+for _row, _end in [("private func missionRow", "private func idleRow"),
+                   ("private func idleRow", "private func dismissControl")]:
+    _slice = _pet_code[_pet_code.index(_row):_pet_code.index(_end)]
+    need("model.openSessionInPlatform(session)" in _slice
+         and '.help("Open in platform")' in _slice,
+         f"{_row.split()[-1]} lost its whole-row jump; a shared slice let one "
+         "occurrence cover both rows")
 # 0.5.147: the scope/target button and openTarget split are REMOVED with the
 # hover bubble (Miles, on-device) — the pills, list rows, and the sprite click
 # are the only openers. Keep the dead chrome out.
@@ -2707,7 +2716,13 @@ need("petNotice" not in merge, "mergeCompletions must not assign petNotice")
 # over control-for-control: DONE touches only the finished list, RUNNING
 # clears the finished list when it opens the live one.
 need("petCompletionsExpanded" in pet, "nothing toggles the finished list")
-pills = pet[pet.index("private func pillsRow("):pet.index("private func ledgerPill(")]
+# Comment-stripped: a mutant that deleted the WAITING routing and left the
+# symbol names in a comment satisfied these pins (QA, 2026-08-31).
+pet_code = "\n".join(
+    (l.split("//")[0] if "//" in l and l.count('"') % 2 == 0 else l)
+    for l in pet.splitlines()
+)
+pills = pet_code[pet_code.index("private func pillsRow("):pet_code.index("private func ledgerPill(")]
 run_pill = pills[pills.index('label: "RUNNING"'):pills.index('label: "DONE"')]
 need("petExpanded.toggle" in run_pill and "petCompletionsExpanded = false" in run_pill,
      "the RUNNING pill must toggle the live list and clear the finished one")
@@ -2716,6 +2731,10 @@ need("ClaudeSession.petWaitingJumpTarget(" in wait_pill,
      "the WAITING pill must route through the executable jump-target helper")
 need("model.petExpanded = true" in wait_pill,
      "several waiting sessions must open the list, never jump to an arbitrary one")
+need(wait_pill.index("ClaudeSession.petWaitingJumpTarget(") < wait_pill.index("model.petExpanded = true"),
+     "the WAITING pill must consult the jump target BEFORE falling back to the list")
+need('sessions.first(where: { $0.state == "waiting" })' not in wait_pill,
+     "the arbitrary-jump path returned to the WAITING pill")
 done_pill = pills[pills.index('label: "DONE"'):pills.index('label: "WAITING"')]
 need("petCompletionsExpanded.toggle" in done_pill and "petExpanded.toggle" not in done_pill,
      "the DONE pill must not toggle the LIVE list")
@@ -2798,7 +2817,25 @@ need(body.index("SessionPetSprite(") < body.index("\n            ledgerSlot"),
 # 0.5.150 surface-family pins, hardened after the QA mutation pass: every
 # assertion below reads COMMENT-STRIPPED code and pins the WIRING, so a
 # comment naming a symbol can neither satisfy nor trip it.
-code = "\n".join(l for l in pet.splitlines() if not l.strip().startswith("//"))
+# Strips BOTH full-line and trailing comments. Stripping only full lines
+# let `private var showPills: Bool { true } // was: revealActive && revealArmed`
+# satisfy every guard pin while killing the guard (QA mutation, 2026-08-31).
+def strip_comments(src):
+    out = []
+    for line in src.splitlines():
+        cut, quoted, i = None, False, 0
+        while i < len(line) - 1:
+            ch = line[i]
+            if ch == '"' and (i == 0 or line[i - 1] != "\\"):
+                quoted = not quoted
+            elif ch == "/" and line[i + 1] == "/" and not quoted:
+                cut = i
+                break
+            i += 1
+        out.append(line if cut is None else line[:cut])
+    return "\n".join(out)
+code = strip_comments(pet)
+model_code = strip_comments(model)
 # Quiet-pet guard: pin the USE — showPills must gate all three render sites
 # and be composed from revealActive AND revealArmed. (Computing the guard and
 # discarding it compiled green against the old pin.)
@@ -2854,8 +2891,21 @@ need("lineLimit(2)" in mission_src, "mission titles regressed to a one-line elli
 # sizeThatFits probe one running row absorbed ~800px of blank card (shipped
 # in 0.5.155, caught by Miles's screenshot within the hour).
 label_src = mission_src[:mission_src.index(".overlay(alignment: .leading)")]
-need("RoundedRectangle" not in label_src.split("} label: {")[1],
-     "a Shape child returned to the mission-row label; the rail rides an overlay")
+# The defect class is a Shape with NO explicit height: it accepts whatever
+# the row is offered and absorbed ~800px of blank card (0.5.155). Shapes with
+# a fixed height — the running dot — are fine, so pin the height, not the type.
+_label_body = label_src.split("} label: {")[1]
+for _m in re.finditer(r"\b(RoundedRectangle|Rectangle|Capsule|Circle|Ellipse)\s*\(", _label_body):
+    _before = _label_body[max(0, _m.start() - 24):_m.start()]
+    # contentShape/clipShape/background(in:) take a shape as a PARAMETER; only
+    # a shape mounted as a layout child can absorb the row's height.
+    if any(k in _before for k in ("contentShape(", "clipShape(", "in: ", "background(")):
+        continue
+    _tail = _label_body[_m.start():_m.start() + 240]
+    need("height:" in _tail,
+         f"a {_m.group(1)} in the mission-row label declares no height; it will "
+         "stretch to whatever the row is offered — give it a height or make it "
+         "an overlay like the rail")
 rail_src = mission_src[mission_src.index(".overlay(alignment: .leading)"):]
 need("RoundedRectangle" in rail_src and ".frame(width: size.length(3))" in rail_src,
      "the mission row lost its state rail overlay")
@@ -2874,6 +2924,15 @@ need("PetPanelFrame.positioned(" in sync,
 # origin reintroduces the walk while still looking correct.
 need("restingAnchor ??" in sync,
      "syncPanel must anchor from the stored rest, not read the live frame back")
+need("PetPanelFrame.clamped(" not in sync,
+     "syncPanel must place through positioned(); calling clamped() on the live "
+     "frame restores the walk while positioned() sits there looking correct")
+need(sync.index("panel.setFrame(") < sync.index("PetPanelFrame.positioned("),
+     "positioned() must BE the setFrame argument, not a discarded call")
+# P — the guard must BRACKET the setFrame, not merely appear twice.
+need(sync.index("applyingFrame = true") < sync.index("panel.setFrame(")
+     < sync.index("applyingFrame = false"),
+     "the applyingFrame guard must wrap the setFrame, not just exist")
 need("frame.size =" not in sync,
      "syncPanel mutates the live panel frame again; a clamped slide becomes the new rest")
 move = code[code.index("func windowDidMove"):code.index("private func syncLists")]
@@ -2890,8 +2949,12 @@ tick = code[code.index("private struct TickerLine"):code.index("private struct P
 need(".clipped()" in tick, "the ticker window must hide its overflow")
 need("PetTicker.scrolls(" in tick and "!reduceMotion" in tick,
      "the ticker must stay still when the text fits or motion is reduced")
-need(".task(id: text)" in tick,
-     "a new summary must restart the ticker, not resume mid-scroll")
+_task_key = tick[tick.index(".task(id:"):tick.index(".task(id:") + 140]
+need("text" in _task_key and "scrolls" in _task_key,
+     "the ticker task must key on the text AND the geometry that decides whether "
+     "it scrolls — keying on text alone froze the line when the row narrowed")
+need(".truncationMode(.tail)" in tick and tick.count(".fixedSize()") == 1,
+     "a non-scrolling line must ellipsise; fixedSize on that branch hard-cuts it")
 
 # The pet floats over arbitrary wallpaper: the ledger needs its own surface.
 bar_src = pet[pet.index("private func ledgerBar"):pet.index("private func pillsRow")]
@@ -2901,7 +2964,7 @@ need(".background(.thinMaterial, in: Capsule())" in bar_src,
 # Hover changes NO layout (pills cross-fade in the bar's fixed slot), so the
 # presenter must NOT re-measure the panel on every hover flip — that sink was
 # two full sizeThatFits passes per hover for nothing (QA, 2026-08-30).
-need("$petHoverRevealed.sink" not in pet,
+need("$petHoverRevealed.sink" not in code,
      "a hover-driven panel refit returned; hover must stay layout-free")
 # Finished entries are clearable like live rows (Miles 2026-08-30): a
 # SIBLING x per chip, wired to a model clear that persists and closes an

@@ -3264,8 +3264,6 @@ enum PetAnimationSpeed {
     }
 }
 
-/// Keep the floating pet on a visible display. 0.5.97 grew Large downward from
-/// the bottom corner and autosave parked the panel under the screen.
 /// The running row's LIVE line as a news ticker: the visible window is fixed
 /// and the text slides through it, so a long activity summary stays readable
 /// without widening the row (Miles, 2026-08-31 — "urgent/breaking news
@@ -3283,8 +3281,26 @@ enum PetTicker {
     /// A beat at rest before it moves, so a short glance sees the beginning.
     static let startHold: TimeInterval = 1.4
 
+    /// ASCII is EXACTLY 0.6em in JetBrains Mono — measured against the shipped
+    /// face, error 0.00 — so the common case needs no text measurement. Every
+    /// other script does not: the font carries no CJK, kana or emoji, so those
+    /// fall back to full-width faces at 1.67x to 2.29x the monospace advance.
+    /// The estimate then said "it fits" for text that overflowed, and the
+    /// window clipped it with neither motion nor an ellipsis (QA, 2026-08-31).
     static func width(_ text: String, fontSize: CGFloat) -> CGFloat {
-        CGFloat(text.count) * fontSize * advanceRatio
+        if text.allSatisfy(\.isASCII) {
+            return CGFloat(text.count) * fontSize * advanceRatio
+        }
+        return measuredWidth(text, fontSize: fontSize)
+    }
+
+    /// Real typographic width, including whatever fallback face supplies the
+    /// glyphs the mono font lacks.
+    static func measuredWidth(_ text: String, fontSize: CGFloat) -> CGFloat {
+        let font = NSFont(name: "JetBrains Mono", size: fontSize)
+            ?? NSFont.monospacedSystemFont(ofSize: fontSize, weight: .bold)
+        return (NSAttributedString(string: text, attributes: [.font: font])
+            .size().width).rounded(.up)
     }
 
     /// Only text that genuinely overflows scrolls; anything that fits stays
@@ -3300,6 +3316,8 @@ enum PetTicker {
     }
 }
 
+/// Keep the floating pet on a visible display. 0.5.97 grew Large downward
+/// from the bottom corner and autosave parked the panel under the screen.
 enum PetPanelFrame {
     /// Build the panel's frame from the anchor the user parked it at, then
     /// clamp it onto a screen. Rebuilding from the ANCHOR — never from the

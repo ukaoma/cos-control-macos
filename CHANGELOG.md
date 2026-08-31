@@ -1,3 +1,30 @@
+## 0.5.159 (build 197)
+
+Fixes found by an adversarial QA pass over everything shipped in the last
+two days.
+
+A session dropped from the list could become unreachable. The list is the
+only home of the "Show dropped" restore row, but the poll closed it whenever
+no sessions remained — so dropping your last row shut the list under the
+cursor, and re-opening it lasted twenty seconds. It now stays open while
+anything is left to show.
+
+The live-line ticker mismeasured every non-Latin summary. Width was estimated
+from a monospaced advance, which is exact for ASCII but up to 2.3x short for
+CJK and emoji, because those glyphs come from fallback faces the mono font
+does not cover. Overflowing text was judged to fit and silently clipped.
+Non-ASCII text is now really measured. A line that does not scroll also ends
+in an ellipsis instead of a hard cut — which is every running row when
+Reduced Motion is on — and a line whose window narrows under it, as when the
+drop control appears, now re-evaluates instead of staying frozen.
+
+The bar's green segment kept breathing only if it was running when it first
+appeared; a segment that became running while the bar was already on screen
+sat still. The WAITING tooltip now says it opens the session rather than
+promising a jump it no longer performs. The live list starts scrolling at
+four rows rather than six, where the taller mission rows genuinely exceed
+the scrolled height.
+
 ## 0.5.158 (build 196)
 
 The WAITING pill now respects the choice. With one session waiting on you it

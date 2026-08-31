@@ -262,10 +262,13 @@ private struct SessionPetRoot: View {
     var body: some View {
         // Row order is load-bearing (0.5.142 ledger design): the panel keeps
         // its BOTTOM-LEFT origin on every resize, so content unfolds UPWARD.
-        // Sprite and ledger sit at the bottom and never move on screen; a
-        // pill-pinned list grows above the figure. The character holding
-        // still is the entire point — the prototype's hover was rebuilt once
-        // already because the pills pushed the sprite.
+        // Sprite and ledger ride the panel's bottom edge and a pill-pinned
+        // list grows above them, so opening a list never pushes the figure
+        // DOWNWARD. Where the expanded panel would overrun the screen top the
+        // clamp slides the whole panel down to fit — measured at -75pt from a
+        // y=300 park, -375pt from y=600 — and closing puts it back exactly.
+        // That slide is the only thing that moves the figure, and it never
+        // accumulates (see PetPanelFrame.positioned).
         // The live list also opens when only dismissal stamps remain: the
         // restore row inside it is the sole route back for a dropped session.
         VStack(spacing: size.length(8)) {
@@ -355,7 +358,7 @@ private struct SessionPetRoot: View {
         let total = max(ledger.running + ledger.waiting + ledger.done, 1)
         return VStack(spacing: size.length(4)) {
             HStack(spacing: ledger.segments.count > 1 ? size.length(1) : 0) {
-                ForEach(Array(ledger.segments.enumerated()), id: \.offset) { _, segment in
+                ForEach(ledger.segments, id: \.kind) { segment in
                     Rectangle()
                         .fill(segmentColor(segment.kind))
                         .frame(width: barWidth * CGFloat(segment.count) / CGFloat(total))
@@ -460,7 +463,7 @@ private struct SessionPetRoot: View {
         switch label {
         case "RUNNING": "Live sessions"
         case "DONE": "Finished sessions"
-        default: "Jump to the session waiting on you"
+        default: "Open the session waiting on you"
         }
     }
 
@@ -526,7 +529,7 @@ private struct SessionPetRoot: View {
             }
         }
         return Group {
-            if sessions.count > 5 {
+            if sessions.count > 3 {
                 ScrollView {
                     // Inset from the overlay scroll indicator, which paints on
                     // the same right edge the drop x lives on.
@@ -847,19 +850,30 @@ private struct TickerLine: View {
             let travel = PetTicker.width(text, fontSize: fontSize) + PetTicker.gap
             let scrolls = !reduceMotion
                 && PetTicker.scrolls(text, fontSize: fontSize, container: geo.size.width)
-            HStack(spacing: PetTicker.gap) {
-                tickerText
-                // The second copy exists ONLY to cover the wrap; without it
-                // the line would blank out between loops.
-                if scrolls { tickerText }
+            Group {
+                if scrolls {
+                    HStack(spacing: PetTicker.gap) {
+                        tickerText
+                        // The second copy exists ONLY to cover the wrap;
+                        // without it the line blanks out between loops.
+                        tickerText
+                    }
+                    .fixedSize()
+                    .offset(x: rolling ? -travel : 0)
+                } else {
+                    // NOT fixedSize: that forces full width, so lineLimit
+                    // never truncates and a too-long line is cut mid-glyph
+                    // with no ellipsis — the permanent state of every running
+                    // row under Reduce Motion (QA, 2026-08-31).
+                    tickerText.truncationMode(.tail)
+                }
             }
-            .fixedSize()
-            .offset(x: rolling && scrolls ? -travel : 0)
             .frame(width: geo.size.width, alignment: .leading)
             .clipped()
-            // Keyed on the text: a new summary restarts the ticker from the
-            // beginning instead of resuming mid-scroll.
-            .task(id: text) {
+            // Keyed on the text AND the geometry that decides whether it
+            // scrolls: keying on text alone left the ticker frozen when the
+            // row narrowed under it (the drop x appears at ten minutes).
+            .task(id: "\(text)|\(scrolls)|\(fontSize)") {
                 rolling = false
                 guard scrolls else { return }
                 try? await Task.sleep(for: .seconds(PetTicker.startHold))
@@ -912,12 +926,20 @@ private struct LedgerBreathing: ViewModifier {
     func body(content: Content) -> some View {
         content
             .opacity(active && dim ? 0.62 : 1)
-            .onAppear {
-                guard active else { return }
-                withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true)) {
-                    dim = true
-                }
-            }
+            .onAppear { sync() }
+            // Starting only on appear left a recycled segment that BECAME
+            // running permanently still (QA, 2026-08-31).
+            .onChange(of: active) { _, _ in sync() }
+    }
+
+    private func sync() {
+        guard active else {
+            dim = false
+            return
+        }
+        withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true)) {
+            dim = true
+        }
     }
 }
 

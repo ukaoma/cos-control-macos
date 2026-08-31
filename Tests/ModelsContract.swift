@@ -3286,7 +3286,33 @@ struct ModelsContract {
     /// decision to move at all is deterministic.
     private static func checkPetTicker() {
         let fs: CGFloat = 8
+        // Ground the ratio in the SHIPPED face. The old assertion multiplied
+        // by the constant under test, so 0.75, 0.9 and 1.2 all passed it
+        // (QA mutation, 2026-08-31) — the one claim that matters had no
+        // coverage. Resolved from #filePath so CWD cannot make it vacuous.
+        let fontURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Resources/Fonts/JetBrainsMono.ttf")
+        CTFontManagerRegisterFontsForURL(fontURL as CFURL, .process, nil)
+        guard let mono = NSFont(name: "JetBrains Mono", size: 100) else {
+            preconditionFailure("the shipped mono face must load: \(fontURL.path)")
+        }
+        let tenEms = NSAttributedString(string: "MMMMMMMMMM", attributes: [.font: mono])
+            .size().width
+        precondition(abs(tenEms / 1000 - PetTicker.advanceRatio) < 0.01,
+                     "advanceRatio \(PetTicker.advanceRatio) does not match the shipped "
+                     + "JetBrains Mono advance (\(tenEms / 1000))")
+
+        // ASCII is exact against that ratio; everything else must be measured.
         precondition(PetTicker.width("abcd", fontSize: fs) == 4 * fs * PetTicker.advanceRatio)
+        let cjk = "建立索引中"
+        let naive = CGFloat(cjk.count) * fs * PetTicker.advanceRatio
+        precondition(PetTicker.width(cjk, fontSize: fs) > naive,
+                     "CJK falls back to a full-width face; the 0.6em estimate under-reports it")
+        precondition(PetTicker.scrolls(cjk, fontSize: fs, container: naive + 4),
+                     "a CJK summary that overflows its window must scroll — the count "
+                     + "estimate called it a fit and the window clipped it silently")
         precondition(!PetTicker.scrolls("working", fontSize: fs, container: 120),
                      "text that fits must never move — a ticker that moves for nothing is noise")
         precondition(PetTicker.scrolls("indexing wk36 meeting backlog into the graph",

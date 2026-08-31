@@ -2089,7 +2089,11 @@ final class ControllerModel: ObservableObject {
             lastAuthoritativeRaw = sessions
         }
         petSessions = petDismissals.filter(sessions)
-        if petSessions.isEmpty {
+        // Matches the view's own reachability predicate: the list stays open
+        // while dismissal stamps remain, because the restore row inside it is
+        // the ONLY way back to a dropped session. Closing on petSessions
+        // alone slammed it shut under the cursor every 20s (QA, 2026-08-31).
+        if petSessions.isEmpty && petDismissals.stamps.isEmpty {
             petExpanded = false
         }
         if let petFocusID,
