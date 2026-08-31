@@ -2715,6 +2715,18 @@ need("petExpanded" in sync and "petCompletionsExpanded" in sync
      "the monitor must key on BOTH lists or the chip tears it down")
 SIGCHK
 
+# Panel radius scale (0.5.150): cards 12, tiles 8, small controls 5, plus
+# micro radii 1/2/3 on few-pixel geometry. Eight accumulated values were the
+# fingerprint of features added one at a time — keep the scale closed.
+/usr/bin/python3 - "$ROOT" <<'RADCHK'
+import re, sys, pathlib
+views = (pathlib.Path(sys.argv[1]) / "Sources/Views.swift").read_text()
+found = set(int(n) for n in re.findall(r"cornerRadius: (\d+)\b", views))
+allowed = {1, 2, 3, 5, 8, 12}
+if not found <= allowed:
+    sys.exit(f"panel-radius: off-scale corner radii {sorted(found - allowed)} in Views.swift — the 12/8/5 scale is closed")
+RADCHK
+
 # Ledger hover motion (0.5.142). The vocabulary is EXECUTED by
 # ModelsContract.checkPetLedger; these pin the motion wiring it cannot see.
 /usr/bin/python3 - "$ROOT" <<'LEDGCHK'

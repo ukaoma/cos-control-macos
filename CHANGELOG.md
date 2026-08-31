@@ -1,3 +1,23 @@
+## 0.5.150 (build 188)
+
+The pet is one surface family now. Both session lists, the terminal hint,
+and notices ride the same blur material and 12pt rounded rect as the ledger
+(notices are the error channel, so they sit on the heavier material — never
+less legible than before). The floating focus dot is gone; the ledger's
+colored segments already say it. A fully quiet pet keeps its IDLE capsule on
+hover instead of revealing dead pills, while a pet whose only session was
+dropped from the list still reveals the way back in. The RUNNING pill can
+open a one-row list and the poll no longer closes it under the cursor; rows
+keep one width whether or not the list scrolls; a finished list whose
+entries age out or resume releases its pin instead of wedging the pet in
+pills state; and the bar-to-pills crossfade animates on every path that can
+flip it.
+
+COS Control's own panel gets its first pass of the same discipline: eight
+accumulated corner radii collapse to a 12/8/5 scale (cards 12, tiles 8,
+small controls 5), with the few-pixel meter and legend radii kept as
+proportional geometry.
+
 ## 0.5.149 (build 187)
 
 Miles Windu V15.4 publishes the approved 26-frame four-plus-session story.
