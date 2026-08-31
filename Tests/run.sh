@@ -1739,8 +1739,8 @@ need('choosePetSpritePack' in model, "sprite pack install is not wired")
 need('installPetSpritePack' in model, "sprite pack install has no install path")
 need('enum PetSpritePose' in (root / "Sources/Models.swift").read_text(),
      "per-state pet sprites are not modeled")
-need('sessionCount >= 4' in (root / "Sources/Models.swift").read_text(),
-     "four or more live sessions must play the swarm pose")
+need('active >= 4' in (root / "Sources/Models.swift").read_text(),
+     "four or more sessions IN PLAY must play the swarm pose")
 need('return .duel' in (root / "Sources/Models.swift").read_text(),
      "two live sessions must play the duel pose")
 need('return .trio' in (root / "Sources/Models.swift").read_text(),

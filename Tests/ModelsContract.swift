@@ -799,15 +799,21 @@ struct ModelsContract {
         precondition(PetSpritePose.resolve(sessionCount: 1, workingCount: 1, waitingCount: 0, focusState: "running", completing: false) == .working)
         precondition(PetSpritePose.resolve(sessionCount: 1, workingCount: 0, waitingCount: 1, focusState: "waiting", completing: false) == .waiting)
         precondition(PetSpritePose.resolve(sessionCount: 1, workingCount: 0, waitingCount: 0, focusState: "idle", completing: false) == .patrol)
-        precondition(PetSpritePose.resolve(sessionCount: 2, workingCount: 0, waitingCount: 0, focusState: "idle", completing: false) == .duel)
+        precondition(PetSpritePose.resolve(sessionCount: 2, workingCount: 0, waitingCount: 0, focusState: "idle", completing: false) == .patrol,
+                     "two idle-alive sessions are a patrol, not a duel — droids must agree with the ledger")
         precondition(PetSpritePose.resolve(sessionCount: 3, workingCount: 3, waitingCount: 0, focusState: "running", completing: false) == .trio)
         precondition(PetSpritePose.resolve(sessionCount: 4, workingCount: 4, waitingCount: 0, focusState: "running", completing: false) == .swarm)
-        precondition(PetSpritePose.resolve(sessionCount: 5, workingCount: 0, waitingCount: 0, focusState: "idle", completing: false) == .swarm)
+        precondition(PetSpritePose.resolve(sessionCount: 5, workingCount: 0, waitingCount: 0, focusState: "idle", completing: false) == .patrol,
+                     "five idle-alive sessions summon zero droids")
+        precondition(PetSpritePose.resolve(sessionCount: 3, workingCount: 1, waitingCount: 0, focusState: "recent", completing: false) == .working,
+                     "the 2026-08-30 screenshot: 1 RUNNING over three alive is ONE droid, not a trio")
+        precondition(PetSpritePose.resolve(sessionCount: 4, workingCount: 1, waitingCount: 1, focusState: "running", completing: false) == .duel,
+                     "one running + one waiting is a duel — in-play count, not alive count")
         precondition(PetSpritePose.resolve(sessionCount: 1, workingCount: 0, waitingCount: 0, focusState: "running", completing: true) == .done)
         precondition(PetSpritePose.resolve(sessionCount: 3, workingCount: 3, waitingCount: 0, focusState: "running", completing: false, attention: true) == .attention)
         precondition(PetSpritePose.resolve(sessionCount: 1, workingCount: 0, waitingCount: 0, focusState: "error", completing: false) == .error)
-        precondition(PetSpritePose.resolve(sessionCount: 4, workingCount: 3, waitingCount: 0, focusState: "running", completing: true) == .swarm,
-                     "one of four finishing must not flash .done over a live fight")
+        precondition(PetSpritePose.resolve(sessionCount: 4, workingCount: 3, waitingCount: 0, focusState: "running", completing: true) == .trio,
+                     "one of four finishing must not flash .done over a live fight (three still in play)")
         precondition(PetSpritePose.resolve(sessionCount: 4, workingCount: 0, waitingCount: 0, focusState: "idle", completing: true) == .done)
         precondition(PetSpritePose.resolve(sessionCount: 2, workingCount: 0, waitingCount: 1, focusState: "waiting", completing: true) == .waiting)
         precondition(PetSpritePose.resolve(sessionCount: 4, workingCount: 0, waitingCount: 1, focusState: "waiting", completing: false) == .waiting,

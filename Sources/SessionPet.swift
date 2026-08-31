@@ -370,7 +370,12 @@ private struct SessionPetRoot: View {
         // keeps an edge when Reduce Transparency turns the blur into a flat
         // fill. Same treatment as the pills' solid capsules, one layer softer.
         .padding(.horizontal, size.length(14))
-        .padding(.vertical, size.length(6))
+        // Optically balanced, not numerically: with equal 6pt padding the
+        // capsule measured ~20px of air above the bar against ~14px under the
+        // caption on Miles's screenshot (caps have no descenders, so the text
+        // box carries invisible bottom slack). Two points move top to bottom.
+        .padding(.top, size.length(4))
+        .padding(.bottom, size.length(6))
         .background(.thinMaterial, in: Capsule())
         .overlay(Capsule().stroke(COSPalette.line.opacity(0.7), lineWidth: 1))
     }
@@ -533,7 +538,9 @@ private struct SessionPetRoot: View {
         return Group {
             if sessions.count > 5 {
                 ScrollView {
-                    content
+                    // Inset from the overlay scroll indicator, which paints on
+                    // the same right edge the drop x lives on.
+                    content.padding(.trailing, size.length(10))
                 }
                 .frame(height: size.length(200))
             } else {
@@ -614,7 +621,9 @@ private struct SessionPetRoot: View {
         return Group {
             if model.petCompletions.count > 3 {
                 ScrollView {
-                    content
+                    // Inset from the overlay scroll indicator, which paints on
+                    // the same right edge the clear x lives on.
+                    content.padding(.trailing, size.length(10))
                 }
                 .frame(height: size.length(160))
             } else {

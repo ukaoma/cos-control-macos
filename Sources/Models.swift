@@ -3467,8 +3467,8 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
     }
 
     /// Error and attention beat the swarm so a jump miss still reads. Completing
-    /// still flashes success. Session count then escalates patrol → duel →
-    /// three droids → five-droid swarm.
+    /// still flashes success. Sessions IN PLAY then escalate one droid →
+    /// duel → three droids → five-droid swarm.
     /// `workingCount`/`waitingCount` have NO defaults on purpose: the fleet
     /// Bool this replaces flashed .done while three other sessions still ran,
     /// and a defaulted 0 would silently reproduce that at any call site that
@@ -3489,14 +3489,20 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
         // three idle-alive must not render a swarm; one running + one waiting
         // still escalates through the count ladder below.
         if waitingCount > 0 && workingCount == 0 { return .waiting }
-        if sessionCount >= 4 { return .swarm }
-        if sessionCount == 3 { return .trio }
-        if sessionCount == 2 { return .duel }
-        switch focusState {
-        case "running": return .working
-        case "waiting": return .waiting
-        default: return sessionCount >= 1 ? .patrol : .idle
-        }
+        // Escalation reads from sessions IN PLAY (working + waiting) — the
+        // same units the ledger's colored segments count, so the droids on
+        // screen can never disagree with the numbers under the figure. Total
+        // alive count used to summon droids: three alive with ONE running
+        // rendered a trio over a "1 RUNNING" caption (Miles, 2026-08-30).
+        // Idle-alive sessions read as patrol instead.
+        let active = workingCount + waitingCount
+        if active >= 4 { return .swarm }
+        if active == 3 { return .trio }
+        if active == 2 { return .duel }
+        // Exactly one in play here means one RUNNING — a lone waiting
+        // session already returned amber above.
+        if active == 1 { return .working }
+        return sessionCount >= 1 ? .patrol : .idle
     }
 
     static func matching(fileName: String) -> PetSpritePose? {

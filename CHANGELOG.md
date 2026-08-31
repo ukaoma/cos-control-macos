@@ -1,3 +1,18 @@
+## 0.5.148 (build 186)
+
+The droids now agree with the ledger. Escalation used to read TOTAL alive
+sessions, so three sessions with one running rendered a three-droid trio over
+a "1 RUNNING" caption. The fight ladder now counts sessions in play — running
+plus waiting, the same units the bar's colored segments show — so one running
+is one droid, and idle-alive sessions read as patrol instead of summoning
+opponents. Error, attention, amber waiting, and the completing flash keep
+their precedence.
+
+The clear x in an overflowing list no longer sits under the scroll indicator:
+scrolling rows inset from the right edge where the indicator paints, in both
+the live and finished lists. The ledger's blurred capsule is optically
+re-balanced — it carried more air above the bar than below the caption.
+
 ## 0.5.147 (build 185)
 
 Hover is pills-only now. The focused-session title card and the two circular
