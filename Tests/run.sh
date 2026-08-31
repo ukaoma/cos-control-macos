@@ -1862,8 +1862,12 @@ need('private var timelineInterval' in cosmotion_src and
 apply_pet_body = model.split('private func applyPetSessions(', 1)[1].split('private func beginPetCompletion', 1)[0]
 need('petExpanded = true' not in apply_pet_body and 'previousCount < 2' not in apply_pet_body,
      "session-count transitions must not open the list without a dropdown click")
-need('if petSessions.count < 2' in apply_pet_body and 'petExpanded = false' in apply_pet_body,
-     "the list must close when fewer than two sessions remain")
+# 0.5.150: the RUNNING pill legitimately opens a ONE-row list, so the poll
+# closes it only when it is truly empty (the <2 threshold shut it under the
+# cursor within one 20s poll).
+need('if petSessions.isEmpty' in apply_pet_body and 'petExpanded = false' in apply_pet_body
+     and 'petSessions.count < 2' not in apply_pet_body,
+     "the live list must auto-close only when EMPTY, never at one row")
 need('installBundledDefault(into: directory)' in model,
      "a fresh install no longer seeds the shipped character")
 need('petDefaultSeededKey' in model,
@@ -2730,19 +2734,17 @@ need(exp < col, f"expand delay {exp} must be shorter than the collapse grace {co
 
 # petHoverRevealed is written ONLY by setPetHover (expand true, collapse
 # false) and the pet-disable reset. The declaration's default is excluded.
-writers = re.findall(r"(?<!@Published var )petHoverRevealed = (?:true|false)", model)
-need(len(writers) == 3, f"petHoverRevealed has {len(writers)} writers; setPetHover owns this flag")
+writers = re.findall(r"(?<!@Published var )petHoverRevealed = (?:true|false|inside)", model)
+need(len(writers) == 2, f"petHoverRevealed has {len(writers)} writers; setPetHover owns this flag")
 need(re.search(r"petHoverRevealed\s*=", pet) is None
      and re.search(r"petHoverRevealed\.toggle", pet) is None,
      "the view must never write petHoverRevealed; setPetHover owns it")
 
-# Two-phase collapse: settle (content fades in place) strictly BEFORE the
-# frame shrink, or the bubble clips mid-fade.
-hover_fn = model[model.index("func setPetHover("):]
-hover_fn = hover_fn[:hover_fn.index("\n    @Published var petFocusID")]
-need("petHoverSettling = true" in hover_fn
-     and hover_fn.index("petHoverSettling = true") < hover_fn.rindex("petHoverRevealed = false"),
-     "collapse must settle (fade) before it shrinks the frame")
+# Single-phase by design since the hover bubble died (0.5.150): the settle
+# machinery faded content that no longer exists and was deleted as dead
+# wiring (QA Ghost Hunter, 2026-08-30). Keep it dead.
+need("petHoverSettling" not in model and "petHoverSettling" not in pet,
+     "the dead two-phase settle machinery returned")
 
 # The sensor is an .activeAlways AppKit tracking area. SwiftUI's .onHover is
 # tied to app activation and the pet is a nonactivating panel of a menu-bar
@@ -2760,36 +2762,61 @@ body = pet[pet.index("var body: some View"):pet.index("// MARK: - Ledger")]
 need(body.index("SessionPetSprite(") < body.index("\n            ledgerSlot"),
      "the ledger must render BELOW the sprite, never above it")
 
-# 0.5.150 surface-family pins. A fully quiet pet must never trade the IDLE
-# capsule for three dead pills; the reveal arms only when a pill has a job.
-slot = pet[pet.index("private var ledgerSlot"):pet.index("private func ledgerBar")]
-need("revealArmed" in slot and "sessions.isEmpty && model.petCompletions.isEmpty" in slot,
-     "the quiet-pet guard is gone; hover reveals three dead pills again")
-# The focus dot repeated the ledger's segments; keep it out.
-need("petStateColor" not in pet, "the redundant focus dot (or its color map) returned")
-# Floating text (hint/notice) shares the lists' rounded rect + blur material —
-# a Capsule grows fat semicircular flanks around multi-line notices.
-float_src = pet[pet.index("private func petFloatingText"):pet.index("private var spriteHelp")]
-need(".thinMaterial" in float_src and "RoundedRectangle" in float_src and "Capsule" not in float_src,
-     "hint/notice regressed off the shared floating surface")
-# Lists ride material like the ledger, and their trailing scrollbar inset is
-# UNCONDITIONAL so crossing the scroll threshold never nudges the x controls.
-need(pet.count(".regularMaterial") == 2, "a list left the material surface family")
-need(pet.count('content.padding(.trailing, size.length(10))') == 4,
-     "the trailing inset must apply in scrolling AND flat branches of both lists")
+# 0.5.150 surface-family pins, hardened after the QA mutation pass: every
+# assertion below reads COMMENT-STRIPPED code and pins the WIRING, so a
+# comment naming a symbol can neither satisfy nor trip it.
+code = "\n".join(l for l in pet.splitlines() if not l.strip().startswith("//"))
+# Quiet-pet guard: pin the USE — showPills must gate all three render sites
+# and be composed from revealActive AND revealArmed. (Computing the guard and
+# discarding it compiled green against the old pin.)
+need("revealActive && revealArmed" in code,
+     "showPills no longer composes hover intent with the armed guard")
+armed_src = code[code.index("private var revealArmed"):code.index("private var showPills")]
+for term in ["sessions.isEmpty", "model.petCompletions.isEmpty", "model.petDismissals.stamps.isEmpty"]:
+    need(term in armed_src,
+         f"revealArmed lost its {term} term — a constant guard arms dead pills or strands a dismissed session")
+slot = code[code.index("private var ledgerSlot"):code.index("private func ledgerBar")]
+need(slot.count("showPills") >= 3 and "revealActive" not in slot,
+     "the ledger slot must key every opacity and hit test on showPills alone")
+need("value: showPills" in slot,
+     "the crossfade must animate on showPills or an armed-state flip snaps")
+# Focus dot: pin the STRUCTURE, not the deleted symbol name — the dot came
+# back once as an inline Circle in a ZStack without ever naming petStateColor.
+body_code = code[code.index("var body: some View"):code.index("private var ledgerSlot")]
+need("Circle()" not in body_code and "petStateColor" not in code,
+     "a focus-dot shape returned to the sprite body")
+# Floating text: pin the CALL SITES (reverting a caller to a Capsule while
+# the helper stayed intact passed the old pin) and the helper's surface.
+need(body_code.count("petFloatingText(") == 2 and "Capsule" not in body_code,
+     "hint/notice no longer route through the shared floating surface")
+float_src = code[code.index("private func petFloatingText"):code.index("private var spriteHelp")]
+need(".regularMaterial" in float_src and "RoundedRectangle" in float_src and "Capsule" not in float_src,
+     "petFloatingText must use the lists' regularMaterial rounded rect — "
+     "petNotice is the error channel and may never be LESS opaque than 0.5.149")
+# Materials + insets: per-list slices, not file-wide counts (a whole-file
+# count passed with one list off-family and both insets in the other).
+live_src = code[code.index("private var sessionList"):code.index("private var completionsList")]
+done_src = code[code.index("private var completionsList"):code.index("private func petFloatingText")]
+for name, src in (("live", live_src), ("finished", done_src)):
+    need(src.count(".regularMaterial") == 1,
+         f"the {name} list left the material surface family")
+    need(src.count('content.padding(.trailing, size.length(10))') == 2,
+         f"the {name} list must inset its rows in BOTH the scrolling and flat branches")
 
 # The pet floats over arbitrary wallpaper: the ledger needs its own surface.
 bar_src = pet[pet.index("private func ledgerBar"):pet.index("private func pillsRow")]
 need(".background(.thinMaterial, in: Capsule())" in bar_src,
      "the ledger lost its blur backing and is unreadable on busy wallpaper")
 
-# The reveal changes the fitted height, so the presenter must resize on it.
-need("model.$petHoverRevealed.sink" in pet,
-     "the panel never refits when the hover reveal opens")
+# Hover changes NO layout (pills cross-fade in the bar's fixed slot), so the
+# presenter must NOT re-measure the panel on every hover flip — that sink was
+# two full sizeThatFits passes per hover for nothing (QA, 2026-08-30).
+need("$petHoverRevealed.sink" not in pet,
+     "a hover-driven panel refit returned; hover must stay layout-free")
 # Finished entries are clearable like live rows (Miles 2026-08-30): a
 # SIBLING x per chip, wired to a model clear that persists and closes an
 # emptied list instead of pinning an empty card over the figure.
-comp2 = pet[pet.index("private var completionsList"):pet.index("private var spriteHelp")]
+comp2 = pet[pet.index("private var completionsList"):pet.index("private func petFloatingText")]
 need("clearPetCompletion(" in comp2, "finished rows have no clear control")
 clr = model[model.index("func clearPetCompletion("):]
 clr = clr[:clr.index("\n    }")]
@@ -2797,6 +2824,14 @@ need("removeAll { $0.id == row.id }" in clr and "savePetCompletions()" in clr,
      "clear must remove exactly one chip and persist")
 need("petCompletionsExpanded = false" in clr,
      "an emptied finished list must close, not pin an empty card")
+# The pin must die on EVERY path that can empty the chips behind the user's
+# back — a resumed session dropping its chip, and the 4h age-out — or the pet
+# wedges in pills state with no list and no cursor nearby (QA, 2026-08-30).
+for fn in ["private func mergeCompletions(", "private func reconcilePersistedChips("]:
+    fn_src = model[model.index(fn):]
+    fn_src = fn_src[:fn_src.index("\n    }")]
+    need("if petCompletions.isEmpty { petCompletionsExpanded = false }" in fn_src,
+         f"{fn.split('(')[0].split()[-1]} can empty the chips without releasing the finished-list pin")
 LEDGCHK
 
 # Terminal jump routing (0.5.141)

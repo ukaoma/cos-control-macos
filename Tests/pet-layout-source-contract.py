@@ -63,8 +63,12 @@ apply_sessions = controller.split("private func applyPetSessions(", 1)[1]
 apply_sessions = re.split(r"\n    (?:private )?func ", apply_sessions, maxsplit=1)[0]
 need("petExpanded = true" not in apply_sessions and "previousCount < 2" not in apply_sessions,
      "a session-count transition must not auto-open the list")
-need("if petSessions.count < 2" in apply_sessions and "petExpanded = false" in apply_sessions,
-     "the list must close when fewer than two sessions remain")
+# 0.5.150: the RUNNING pill legitimately opens a ONE-row list (dismiss and
+# restore live there), so the poll may close it only when it is truly empty —
+# the old <2 threshold shut the list under the cursor within one 20s poll.
+need("if petSessions.isEmpty" in apply_sessions and "petExpanded = false" in apply_sessions
+     and "petSessions.count < 2" not in apply_sessions,
+     "the live list must auto-close only when EMPTY, never at one row")
 
 sprite_height = models.split("func spriteHeight(", 1)[1].split("func spriteWidth(", 1)[0]
 need("cinematic ?" not in sprite_height,

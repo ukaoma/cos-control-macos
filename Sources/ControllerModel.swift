@@ -1307,16 +1307,13 @@ final class ControllerModel: ObservableObject {
     /// finish landing between replays would emit twice or never.
     private var lastAuthoritativeRaw: [ClaudeSession]?
     @Published var petExpanded = false
-    /// Hover reveal for the ledger design (0.5.142). Lives on the MODEL, not
-    /// view @State: the panel sizes itself in syncPanel via sizeThatFits, and
-    /// only a @Published flip re-runs it — view-local hover state would grow
-    /// content the panel never resizes for. Written ONLY by setPetHover (and
-    /// the pet-disable reset).
+    /// Hover reveal for the ledger design. Lives on the MODEL, not view
+    /// @State, so hit-testing and the crossfade survive the presenter's
+    /// rootView reassignments (view identity churn on every poll). Hover
+    /// changes no layout — the pills cross-fade inside the bar's fixed slot —
+    /// so no panel refit hangs off this flag. Written ONLY by setPetHover
+    /// (and the pet-disable reset).
     @Published var petHoverRevealed = false
-    /// Collapse is TWO-phase: settle (content fades in place) then shrink
-    /// (frame resizes). A one-phase collapse clips the bubble mid-fade because
-    /// the frame snaps to the small size in the same runloop tick.
-    @Published var petHoverSettling = false
     private var petHoverTask: Task<Void, Never>?
 
     /// Asymmetric hover intent, mirroring the approved prototype: a beat
@@ -1325,31 +1322,15 @@ final class ControllerModel: ObservableObject {
     /// flicker. Values are the CSS prototype's, verified by measurement.
     static let petHoverExpandDelay: TimeInterval = 0.12
     static let petHoverCollapseDelay: TimeInterval = 0.40
-    static let petHoverSettleDuration: TimeInterval = 0.20
 
     func setPetHover(_ inside: Bool) {
         petHoverTask?.cancel()
-        if inside {
-            if petHoverRevealed, !petHoverSettling { return }
-            petHoverTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(Self.petHoverExpandDelay))
-                guard !Task.isCancelled else { return }
-                // Re-entry during a settle rescues the fade: content animates
-                // back to full opacity in its current place, no relayout.
-                self?.petHoverSettling = false
-                self?.petHoverRevealed = true
-            }
-        } else {
-            guard petHoverRevealed else { return }
-            petHoverTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(Self.petHoverCollapseDelay))
-                guard !Task.isCancelled else { return }
-                self?.petHoverSettling = true
-                try? await Task.sleep(for: .seconds(Self.petHoverSettleDuration))
-                guard !Task.isCancelled else { return }
-                self?.petHoverSettling = false
-                self?.petHoverRevealed = false
-            }
+        if inside == petHoverRevealed { return }
+        let delay = inside ? Self.petHoverExpandDelay : Self.petHoverCollapseDelay
+        petHoverTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            self?.petHoverRevealed = inside
         }
     }
     @Published var petFocusID: String?
@@ -1600,7 +1581,6 @@ final class ControllerModel: ObservableObject {
             petCompletionsExpanded = false
             petHoverTask?.cancel()
             petHoverRevealed = false
-            petHoverSettling = false
             // Baseline dies with the poll: the next enable must seed, not diff
             // against a snapshot from before the gap. Persisted chips stay.
             lastAuthoritativeRaw = nil
@@ -2122,7 +2102,7 @@ final class ControllerModel: ObservableObject {
             lastAuthoritativeRaw = sessions
         }
         petSessions = petDismissals.filter(sessions)
-        if petSessions.count < 2 {
+        if petSessions.isEmpty {
             petExpanded = false
         }
         if let petFocusID,
@@ -2139,6 +2119,7 @@ final class ControllerModel: ObservableObject {
             existing: petCompletions, fresh: fresh, previous: previous, current: current
         )
         savePetCompletions()
+        if petCompletions.isEmpty { petCompletionsExpanded = false }
     }
 
     /// Launch-time seed: chips whose session is running or waiting again are
@@ -2148,6 +2129,7 @@ final class ControllerModel: ObservableObject {
         let before = petCompletions.count
         petCompletions.removeAll { active.contains($0.id) }
         if petCompletions.count != before { savePetCompletions() }
+        if petCompletions.isEmpty { petCompletionsExpanded = false }
     }
 
     func markPetCompletionSeen(id: String) {

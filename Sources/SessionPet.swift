@@ -63,12 +63,6 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         observers.append(model.$petNotice.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
-        // Hover no longer changes the fitted height (the pills cross-fade in
-        // the bar's own slot), but the sink stays: allowsHitTesting and the
-        // crossfade key off the flag, and a future revealed row costs nothing.
-        observers.append(model.$petHoverRevealed.sink { [weak self] _ in
-            Task { @MainActor in self?.syncPanel() }
-        })
         observers.append(model.$petTerminalHint.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
@@ -229,16 +223,31 @@ private struct SessionPetRoot: View {
     /// click-opened list never collapses under the cursor.
     private var pinnedList: Bool { model.petExpanded || model.petCompletionsExpanded }
     private var revealActive: Bool { model.petHoverRevealed || pinnedList }
+    /// A fully quiet pet — nothing alive, nothing finished, nothing hidden by
+    /// a dismissal — has no pill with a job, so hover would only trade the
+    /// IDLE capsule for dead buttons. Dismissal stamps count as a job: the
+    /// live list is the ONLY home of the restore control, and a pet whose one
+    /// running session was dropped must stay recoverable from its own UI.
+    private var revealArmed: Bool {
+        !(sessions.isEmpty && model.petCompletions.isEmpty
+          && model.petDismissals.stamps.isEmpty)
+    }
+    /// The ONE truth for the ledger crossfade: every pill opacity, hit test,
+    /// and animation keys on this so an armed-state flip mid-hover still
+    /// animates instead of snapping.
+    private var showPills: Bool { revealActive && revealArmed }
 
     var body: some View {
         // Row order is load-bearing (0.5.142 ledger design): the panel keeps
         // its BOTTOM-LEFT origin on every resize, so content unfolds UPWARD.
-        // Sprite and ledger sit at the bottom and never move on screen; hover
-        // reveals (bubble, actions, pinned lists) grow above the ledger. The
-        // character holding still is the entire point — the prototype's hover
-        // was rebuilt once already because the pills pushed the sprite.
+        // Sprite and ledger sit at the bottom and never move on screen; a
+        // pill-pinned list grows above the figure. The character holding
+        // still is the entire point — the prototype's hover was rebuilt once
+        // already because the pills pushed the sprite.
+        // The live list also opens when only dismissal stamps remain: the
+        // restore row inside it is the sole route back for a dropped session.
         VStack(spacing: size.length(8)) {
-            if model.petExpanded, !sessions.isEmpty {
+            if model.petExpanded, !sessions.isEmpty || !model.petDismissals.stamps.isEmpty {
                 sessionList
                     .modifier(PetReveal(reduceMotion: reduceMotion))
             }
@@ -307,12 +316,6 @@ private struct SessionPetRoot: View {
     /// hover the prototype was rebuilt to kill.
     private var ledgerSlot: some View {
         let ledger = model.petLedger
-        // A fully quiet pet (no sessions alive, nothing finished) has nothing
-        // a pill could open — hovering would trade the meaningful IDLE capsule
-        // for three dimmed, dead buttons. The reveal only arms when at least
-        // one pill has a job.
-        let revealArmed = !(sessions.isEmpty && model.petCompletions.isEmpty)
-        let showPills = revealActive && revealArmed
         return ZStack {
             ledgerBar(ledger)
                 .opacity(showPills ? 0 : 1)
@@ -322,7 +325,7 @@ private struct SessionPetRoot: View {
         }
         .frame(height: size.length(42))
         .frame(maxWidth: .infinity)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.26), value: revealActive)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.26), value: showPills)
     }
 
     private func ledgerBar(_ ledger: PetLedger) -> some View {
@@ -361,14 +364,15 @@ private struct SessionPetRoot: View {
         .padding(.top, size.length(4))
         .padding(.bottom, size.length(6))
         .background(.thinMaterial, in: Capsule())
-        .overlay(Capsule().stroke(COSPalette.line.opacity(0.7), lineWidth: 1))
+        .overlay(Capsule().stroke(COSPalette.line, lineWidth: 1))
     }
 
     private func pillsRow(_ ledger: PetLedger) -> some View {
         HStack(spacing: size.length(6)) {
             ledgerPill(
                 dot: COSPalette.green, label: "RUNNING", count: ledger.running,
-                enabled: !sessions.isEmpty, open: model.petExpanded, index: 0
+                enabled: !sessions.isEmpty || !model.petDismissals.stamps.isEmpty,
+                open: model.petExpanded, index: 0
             ) {
                 model.petExpanded.toggle()
                 if model.petExpanded { model.petCompletionsExpanded = false }
@@ -416,10 +420,10 @@ private struct SessionPetRoot: View {
         .opacity(enabled ? 1 : 0.45)
         // The prototype's 4px settle with a per-pill stagger — deliberately a
         // gentle ease-out, not a spring; the overshoot read as jumpy.
-        .offset(y: reduceMotion || revealActive ? 0 : size.length(4))
+        .offset(y: reduceMotion || showPills ? 0 : size.length(4))
         .animation(
             reduceMotion ? nil : .easeOut(duration: 0.3).delay(Double(index) * 0.04),
-            value: revealActive
+            value: showPills
         )
         .help(pillHelp(label))
     }
@@ -637,7 +641,7 @@ private struct SessionPetRoot: View {
             .padding(.horizontal, size.length(12))
             .padding(.vertical, size.length(6))
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: size.length(12), style: .continuous))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: size.length(12), style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: size.length(12), style: .continuous)
                     .stroke(COSPalette.line, lineWidth: 1)
@@ -698,9 +702,9 @@ private struct SessionPetRoot: View {
 }
 
 /// Fade-in with a 4pt rise for content that just entered the layout. Appear
-/// only — disappear is handled by the model's settle phase, which fades the
-/// content BEFORE the frame shrinks (a removal transition would be clipped by
-/// the already-shrunk panel).
+/// only, by design: pinned lists close on a click (pill or outside), and an
+/// instant close under a deliberate click reads as response, not as motion
+/// worth animating.
 private struct PetReveal: ViewModifier {
     var reduceMotion: Bool
     @State private var shown = false
