@@ -44,8 +44,17 @@ struct JediIdleContract {
                 let interval = intervals[pose] ?? pose.frameInterval(forFrames: frames.count)
                 let restPoses = PetSpriteStore.restPoses(for: pose, stateMap: map)
                 if character.id != PetSpriteStore.defaultCharacterID {
-                    precondition(interval == 0.24 && scales[pose] == 1)
-                    precondition(restPoses.isEmpty, "shared calm strip must not restart as a playlist rest")
+                    precondition(interval == (pose == .patrol ? 0.14 : 0.24) && scales[pose] == 1)
+                    if pose == .patrol {
+                        let expectedRests: [PetSpritePose] = character.id == "jedi-nia-solari" ? [.idle, .waiting] : [.idle]
+                        precondition(restPoses == expectedRests, "walking must retain distinct calm rest clips")
+                        precondition(map[.patrol]!.file != map[.idle]!.file)
+                    } else {
+                        precondition(restPoses.isEmpty)
+                    }
+                    if character.id == "jedi-nia-solari" {
+                        precondition(map[.waiting]!.file != map[.idle]!.file, "Nia needs her own meditation loop")
+                    }
                 } else if pose == .patrol {
                     precondition(restPoses == [.idle, .waiting], "Miles retains distinct ambient clips")
                 }
@@ -95,7 +104,7 @@ struct JediIdleContract {
             let hosting = NSHostingView(rootView: view)
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1240, height: 950),
                 styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            window.title = "Jedi idle runtime canary • source renderer • 80% speed"
+            window.title = "Jedi walking + meditation canary • source renderer • 80% speed"
             window.contentView = hosting
             window.center()
             window.makeKeyAndOrderFront(nil)
@@ -120,7 +129,7 @@ struct IdleCanaryView: View {
     let cells: [IdleCanaryCell]
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Idle in every calm state").font(.system(size: 27, weight: .semibold))
+            Text("Jedi idle, walking and meditation").font(.system(size: 27, weight: .semibold))
             Text("Native app renderer • 80 pt pet • 250% character • 80% speed • no live settings changed")
                 .font(.system(size: 13)).foregroundStyle(.secondary)
             LazyVGrid(columns: Array(repeating: GridItem(.fixed(293)), count: 4), spacing: 12) {

@@ -24,9 +24,9 @@
       "renderScale": 1
     },
     "patrol": {
-      "file": "session-pet-idle-v2.png",
+      "file": "session-pet-patrol-v3.png",
       "frames": 8,
-      "interval": 0.24,
+      "interval": 0.14,
       "renderScale": 1
     },
     "swarm": {
@@ -40,7 +40,7 @@
       "interval": 0.14
     },
     "waiting": {
-      "file": "session-pet-idle-v2.png",
+      "file": "session-pet-waiting-v3.png",
       "frames": 8,
       "interval": 0.24,
       "renderScale": 1

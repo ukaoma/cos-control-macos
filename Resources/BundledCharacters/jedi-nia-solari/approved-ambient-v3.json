@@ -1,0 +1,32 @@
+{
+  "version": "0.5.154",
+  "mode": "Built-in image generation; native canary reviewed",
+  "scenes": [
+    {
+      "role": "patrol",
+      "file": "session-pet-patrol-v3.png",
+      "frames": 8,
+      "interval": 0.14,
+      "cell": [
+        348,
+        256
+      ],
+      "sha256": "358dbd330fe9876edcf5cda56538047785490569b3dc79bb4a7ddbcc231813b7",
+      "sourceSha256": "cdefc63e046bc33c127c0b7c247c51512e8ba036482c4754511c62c121633ddc",
+      "renderScale": 1
+    },
+    {
+      "role": "waiting",
+      "file": "session-pet-waiting-v3.png",
+      "frames": 8,
+      "interval": 0.24,
+      "cell": [
+        348,
+        256
+      ],
+      "sha256": "a93c225147e0258d8228147f16d60d1eadc9994ee6eadf1ad17af59c509fc06f",
+      "sourceSha256": "e65ea78faf4e3ef844bdb161d1d1c8da94e5458bc5e8532b58a1efff490b6151",
+      "renderScale": 1
+    }
+  ]
+}

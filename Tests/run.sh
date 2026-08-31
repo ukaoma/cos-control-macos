@@ -1928,16 +1928,24 @@ for bundled_id in bundled_ids:
     poses = json.loads(states.read_text()).get("poses", {})
     need(set(poses) == {"idle", "patrol", "waiting", "working", "done", "error", "attention", "duel", "trio", "swarm"},
          f"{bundled_id} must map all ten deployable pet states")
-    # 0.5.151 art, with 0.5.153 calm aliases. Only signal states retain the
-    # portrait. Geometry is character-specific; alias art stays byte-identical.
+    # 0.5.151 idle/combat retained; 0.5.154 adds three walks and Nia meditation.
     stories = {
         "jedi-nia-solari": {"idle": (8,348,.24), "working": (12,348,.14), "duel": (16,440,.14), "trio": (14,440,.14), "swarm": (19,440,.14)},
         "jedi-elara-vale": {"idle": (8,256,.24), "working": (16,358,.14), "duel": (16,544,.16), "trio": (16,544,.18), "swarm": (24,704,.18)},
         "jedi-rowan-vale": {"idle": (8,320,.24), "working": (12,340,.16), "duel": (12,372,.17), "trio": (18,372,.17), "swarm": (24,396,.16)},
     }[bundled_id]
     for pose, row in poses.items():
-        if pose in ("patrol", "waiting"):
-            need(row == poses["idle"], f"{bundled_id}/{pose} must reuse the complete authored idle")
+        if pose == "patrol" or (pose == "waiting" and bundled_id == "jedi-nia-solari"):
+            expected_interval = .14 if pose == "patrol" else .24
+            need(row == {"file": f"session-pet-{pose}-v3.png", "frames": 8,
+                         "interval": expected_interval, "renderScale": 1},
+                 f"{bundled_id}/{pose} must use its authored ambient strip")
+            manifest = json.loads((pack / "approved-ambient-v3.json").read_text())
+            record = next(r for r in manifest["scenes"] if r["role"] == pose)
+            need(hashlib.sha256((pack / row["file"]).read_bytes()).hexdigest() == record["sha256"],
+                 f"{bundled_id}/{pose} ambient pixels drifted from native canary")
+        elif pose == "waiting":
+            need(row == poses["idle"], f"{bundled_id}/waiting keeps the authored idle")
         elif pose in stories:
             expected_frames, _, expected_interval = stories[pose]
             expected_file = "session-pet-idle-v2.png" if pose == "idle" else f"session-pet-{pose}-story-v2.png"
@@ -1981,8 +1989,8 @@ for bundled_id in bundled_ids:
 # character is chosen, so those users are already at the current value.
 gen = re.search(r"petDefaultArtGeneration = (\d+)", model)
 need(gen is not None, "the art-generation constant is gone")
-need(int(gen.group(1)) >= 16,
-     "quiet/waiting Jedi loops require art generation16 for existing users")
+need(int(gen.group(1)) >= 17,
+     "walking/meditation loops require art generation17 for existing users")
 need("refreshRecognizedBundledCharacter(" in model,
      "launch must call the retained-stock Jedi migration")
 retained_fn = models_src[models_src.index("static func refreshRecognizedBundledCharacter("):]

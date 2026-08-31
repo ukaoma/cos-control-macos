@@ -123,7 +123,7 @@ final class ControllerModel: ObservableObject {
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 16
+    private static let petDefaultArtGeneration = 17
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(

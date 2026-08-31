@@ -20,7 +20,7 @@ struct JediUpgradeContract {
             let maps = history["maps"] as! [[String: Any]]
             let fresh = scratch.appendingPathComponent("fresh-\(character.id)")
             precondition(PetSpriteStore.installDefault(into: fresh, from: source), "fresh stock install must succeed")
-            for pose in [PetSpritePose.idle, .working, .duel, .trio, .swarm] {
+            for pose in [PetSpritePose.idle, .patrol, .waiting, .working, .duel, .trio, .swarm] {
                 let row = expected[pose]!
                 let data = try Data(contentsOf: fresh.appendingPathComponent(row.file))
                 precondition(data == (try! Data(contentsOf: source.appendingPathComponent(row.file))))
@@ -62,8 +62,8 @@ struct JediUpgradeContract {
 
                 // New-file failures leave the old map intact. Map-only upgrades
                 // already have this file and do not take the new-file write path.
-                if !Set(poses.values.map { $0["file"] as! String }).contains(expected[.idle]!.file) {
-                    let blocked = dest.appendingPathComponent(expected[.idle]!.file)
+                if !Set(poses.values.map { $0["file"] as! String }).contains(expected[.patrol]!.file) {
+                    let blocked = dest.appendingPathComponent(expected[.patrol]!.file)
                     try fm.createDirectory(at: blocked, withIntermediateDirectories: true)
                     let blockedResult = PetSpriteStore.refreshRecognizedBundledCharacter(into: dest, sourceRootOverride: bundles)
                     precondition(blockedResult == .failed, "\(character.id)/\(version) must report the blocked destination")
@@ -100,7 +100,7 @@ struct JediUpgradeContract {
             precondition(PetSpriteStore.refreshRecognizedBundledCharacter(into: dest, sourceRootOverride: badRoot) == .failed)
             precondition(try! Data(contentsOf: stateURL) == original)
         }
-        precondition(migrations == 13 && frames == 223)
-        print("Jedi upgrade contracts PASS: 13 stock histories, 223 native frames, custom preservation, interrupted new-file writes, missing-source failure, retry and idempotence")
+        precondition(migrations == 16 && frames == 271)
+        print("Jedi upgrade contracts PASS: 16 stock histories, 271 native frames, custom preservation, interrupted new-file writes, missing-source failure, retry and idempotence")
     }
 }

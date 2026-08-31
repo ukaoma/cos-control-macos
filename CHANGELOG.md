@@ -1,3 +1,19 @@
+## 0.5.154 (build 192)
+
+All four Jedi now have walking animations. Nia Solari, Elara Vale and Rowan
+Vale gain separate eight-frame patrol cycles with alternating steps and coat
+movement; Miles keeps his original walk. Nia also gains an eight-frame seated
+meditation loop while waiting, with breathing and a rising electric aura.
+Elara and Rowan retain their animated idle while waiting. Distinct calm clips
+remain walking rests without duplicate playlist entries.
+
+The 32 new frames are registered to each character's existing scale. All 76
+previous PNGs, combat stories and Miles's 1.30x idle remain unchanged. Native
+canary coverage checks all 12 calm-state paths, frame selection at four speeds,
+Reduced Motion, transparent gutters and all 16 retained stock upgrade histories.
+Art generation 17 upgrades untouched stock packs automatically; custom artwork,
+pose metadata and saved character/size/speed preferences are preserved.
+
 ## 0.5.153 (build 191)
 
 Nia Solari, Elara Vale and Rowan Vale now keep their eight-frame breathing,

@@ -1,0 +1,19 @@
+{
+  "version": "0.5.154",
+  "mode": "Built-in image generation; native canary reviewed",
+  "scenes": [
+    {
+      "role": "patrol",
+      "file": "session-pet-patrol-v3.png",
+      "frames": 8,
+      "interval": 0.14,
+      "cell": [
+        256,
+        256
+      ],
+      "sha256": "5fd93fc5a9ed1618302bdbc31ab8a225def683202eaeb46ee68bb30e00597177",
+      "sourceSha256": "cb89bb30e003e1c51c916ec08bbe8b4e35f80a137797b01290e5dd9cf4e9d5c9",
+      "renderScale": 1
+    }
+  ]
+}
