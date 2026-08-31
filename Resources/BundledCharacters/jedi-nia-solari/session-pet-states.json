@@ -9,40 +9,42 @@
       "frames": 1
     },
     "duel": {
-      "file": "session-pet-duel-story-v1.png",
-      "frames": 12,
-      "interval": 0.115
+      "file": "session-pet-duel-story-v2.png",
+      "frames": 16,
+      "interval": 0.14
     },
     "error": {
       "file": "session-pet-idle.png",
       "frames": 1
     },
     "idle": {
-      "file": "session-pet-idle.png",
-      "frames": 1
+      "file": "session-pet-idle-v2.png",
+      "frames": 8,
+      "interval": 0.24,
+      "renderScale": 1
     },
     "patrol": {
       "file": "session-pet-idle.png",
       "frames": 1
     },
     "swarm": {
-      "file": "session-pet-swarm-story-v1.png",
-      "frames": 16,
-      "interval": 0.085
+      "file": "session-pet-swarm-story-v2.png",
+      "frames": 19,
+      "interval": 0.14
     },
     "trio": {
-      "file": "session-pet-trio-story-v1.png",
-      "frames": 13,
-      "interval": 0.105
+      "file": "session-pet-trio-story-v2.png",
+      "frames": 14,
+      "interval": 0.14
     },
     "waiting": {
       "file": "session-pet-idle.png",
       "frames": 1
     },
     "working": {
-      "file": "session-pet-working-story-v1.png",
-      "frames": 16,
-      "interval": 0.095
+      "file": "session-pet-working-story-v2.png",
+      "frames": 12,
+      "interval": 0.14
     }
   }
 }

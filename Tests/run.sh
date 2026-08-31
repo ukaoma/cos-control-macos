@@ -43,6 +43,10 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   -framework AppKit \
   -o "$TMP/models-contract"
 "$TMP/models-contract"
+swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+  "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediUpgradeContract.swift" \
+  -framework AppKit -o "$TMP/jedi-upgrade-contract"
+"$TMP/jedi-upgrade-contract" "$ROOT"
 /usr/bin/grep -q 'cursor-probe-cache.json' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'recent-messages' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "fetch-media"' "$ROOT/HelperSources/main.swift"
@@ -1900,24 +1904,17 @@ for bundled_id in bundled_ids:
     poses = json.loads(states.read_text()).get("poses", {})
     need(set(poses) == {"idle", "patrol", "waiting", "working", "done", "error", "attention", "duel", "trio", "swarm"},
          f"{bundled_id} must map all ten deployable pet states")
-    # 0.5.138: every active-session tier carries its complete authored story.
-    # The six signal/rest states stay on the portrait at one frame. Pin the
-    # per-character geometry: the strips intentionally use different cell
-    # widths to preserve each generated composition without cropping.
+    # 0.5.151: four combat stories plus a real eight-frame idle. Five other
+    # signal/rest states retain the portrait. Geometry is character-specific.
     stories = {
-        "working": (16, 304, 0.095 if bundled_id == "jedi-nia-solari" else 0.1),
-        "duel": (12, 304 if bundled_id == "jedi-nia-solari" else 352,
-                 0.115 if bundled_id == "jedi-nia-solari" else 0.14),
-        "trio": (13, 304 if bundled_id == "jedi-nia-solari" else 352,
-                 0.105 if bundled_id == "jedi-nia-solari" else 0.18),
-        "swarm": (16, 304 if bundled_id == "jedi-nia-solari" else 384,
-                  0.085 if bundled_id == "jedi-nia-solari" else 0.2),
-    }
+        "jedi-nia-solari": {"idle": (8,348,.24), "working": (12,348,.14), "duel": (16,440,.14), "trio": (14,440,.14), "swarm": (19,440,.14)},
+        "jedi-elara-vale": {"idle": (8,256,.24), "working": (16,358,.14), "duel": (16,544,.16), "trio": (16,544,.18), "swarm": (24,704,.18)},
+        "jedi-rowan-vale": {"idle": (8,320,.24), "working": (12,340,.16), "duel": (12,372,.17), "trio": (18,372,.17), "swarm": (24,396,.16)},
+    }[bundled_id]
     for pose, row in poses.items():
         if pose in stories:
             expected_frames, _, expected_interval = stories[pose]
-            story_version = "v1-1" if bundled_id == "jedi-elara-vale" else "v1"
-            expected_file = f"session-pet-{pose}-story-{story_version}.png"
+            expected_file = "session-pet-idle-v2.png" if pose == "idle" else f"session-pet-{pose}-story-v2.png"
             need(row.get("file") == expected_file and row.get("frames") == expected_frames
                  and abs(row.get("interval", 0) - expected_interval) < 0.000001,
                  f"{bundled_id}/{pose} must map to its complete story, got {row}")
@@ -1929,8 +1926,7 @@ for bundled_id in bundled_ids:
     # Geometry is asserted, not assumed. A correct frame count against the
     # wrong width still slices every pose mid-cell.
     for pose, (frames, cell_width, _) in sorted(stories.items()):
-        story_version = "v1-1" if bundled_id == "jedi-elara-vale" else "v1"
-        strip = pack / f"session-pet-{pose}-story-{story_version}.png"
+        strip = pack / ("session-pet-idle-v2.png" if pose == "idle" else f"session-pet-{pose}-story-v2.png")
         dims = subprocess.run(["sips", "-g", "pixelWidth", "-g", "pixelHeight", str(strip)],
                               capture_output=True, text=True).stdout
         w = re.search(r"pixelWidth: (\d+)", dims)
@@ -1959,40 +1955,22 @@ for bundled_id in bundled_ids:
 # character is chosen, so those users are already at the current value.
 gen = re.search(r"petDefaultArtGeneration = (\d+)", model)
 need(gen is not None, "the art-generation constant is gone")
-need(int(gen.group(1)) >= 14,
-     "Miles V15.4 landed after 0.5.148; the art generation must advance "
-     "or existing installs never receive the corrected stories")
-need("refreshStillBundledCharacter(into: directory)" in model,
-     "the launch refresh never calls the still-character recognizer, so a user who picked "
-     "a Jedi while it was still-only keeps the all-still map")
-still_fn = models_src[models_src.index("static func refreshStillBundledCharacter("):]
-still_fn = still_fn[:still_fn.index("\n    static func installDefault(")]
-need("shipped == installedPortrait" in still_fn,
-     "the recognizer must byte-match the portrait, or it would overwrite a customized install")
-need(still_fn.index("guard ready else") < still_fn.index("removeAll(from: directory"),
-     "the replacement must be proven readable BEFORE the destination is cleared")
-need("character.id != defaultCharacterID" in still_fn,
-     "the still recognizer must never target Miles Windu, who has his own refresh path")
-need("refreshRecognizedBundledCharacter" in models_src
-     and "refreshRecognizedBundledCharacter(" in model,
-     "the retained four-frame Jedi packs have no complete-story migration")
+need(int(gen.group(1)) >= 15,
+     "approved Jedi idle/combat packs require art generation15 for existing users")
+need("refreshRecognizedBundledCharacter(" in model,
+     "launch must call the retained-stock Jedi migration")
 retained_fn = models_src[models_src.index("static func refreshRecognizedBundledCharacter("):]
 retained_fn = retained_fn[:retained_fn.index("\n    static func installDefault(")]
-need("identityMatches" in retained_fn and "installedData == retainedData" in retained_fn,
-     "the Jedi story migration must byte-match retained stock before writing")
-need(retained_fn.index("story.data.write") < retained_fn.index("sourceStateData.write"),
-     "the Jedi story files must land before the active state map changes")
-need("refreshRecognizedBundledElaraV1" in models_src
-     and "refreshRecognizedBundledElaraV1(" in model,
-     "existing Elara V1 installs have no byte-safe V1.1 transparency migration")
-elara_fn = models_src[models_src.index("static func refreshRecognizedBundledElaraV1("):]
-elara_fn = elara_fn[:elara_fn.index("\n    static func installDefault(")]
-need("installedData == retainedData" in elara_fn,
-     "Elara V1.1 migration must byte-match retained stock art")
-need(elara_fn.index("replacement.data.write") < elara_fn.index("sourceStateData.write"),
-     "Elara V1.1 files must land before the state map changes")
-need("loadFrameIntervals" in models_src and "petFrameIntervals" in model,
-     "bundled story cadence is declared but never loaded")
+need("canonicalState(data) == installedState" in retained_fn and "installed == retained" in retained_fn,
+     "Jedi migration must match complete metadata and retained image bytes")
+need("character.id != defaultCharacterID" in retained_fn,
+     "the Jedi migration must not target Miles")
+need("removeAll(" not in retained_fn,
+     "stock upgrade must not clear the active character before landing files")
+need(retained_fn.index("try data.write") < retained_fn.index("try sourceState.write"),
+     "replacement files must land before the active state map changes")
+need("refreshStillBundledCharacter(" not in model and "refreshRecognizedBundledElaraV1(" not in model,
+     "legacy destructive/partial refresh paths must not bypass strict recognition")
 need("loadRenderScales" in models_src and "petRenderScales" in model,
      "pack-owned pose scale metadata is declared but never loaded")
 need("frameInterval: model.petFrameInterval(for: pose)" in pet_src,

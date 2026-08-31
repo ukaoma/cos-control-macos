@@ -123,7 +123,7 @@ final class ControllerModel: ObservableObject {
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 14
+    private static let petDefaultArtGeneration = 15
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -1746,22 +1746,15 @@ final class ControllerModel: ObservableObject {
             // spin into a continuous reverse-grip strike and visible saber flip.
             // Generation 14 lands the 26-frame V15.4 continuity polish and
             // normalizes recognized stock 2x/3x idle to the approved 1.30x.
-            if let upgraded = PetSpriteStore.refreshStillBundledCharacter(into: directory) {
-                NSLog("COSControl landed combat art on %@", upgraded)
-            }
+            // Generation 15 promotes all three exact-stock Jedi to their
+            // approved eight-frame idle and four authored combat stories.
             let bundledRefresh = PetSpriteStore.refreshRecognizedBundledCharacter(
                 into: directory
             )
             if case let .refreshed(upgraded) = bundledRefresh {
                 NSLog("COSControl landed complete story art on %@", upgraded)
             }
-            let elaraRefresh = PetSpriteStore.refreshRecognizedBundledElaraV1(
-                into: directory
-            )
-            if case let .refreshed(upgraded) = elaraRefresh {
-                NSLog("COSControl landed corrected story art on %@", upgraded)
-            }
-            if refresh != .failed && bundledRefresh != .failed && elaraRefresh != .failed {
+            if refresh != .failed && bundledRefresh != .failed {
                 UserDefaults.standard.set(
                     Self.petDefaultArtGeneration,
                     forKey: Self.petDefaultArtGenerationKey

@@ -1740,15 +1740,18 @@ struct ModelsContract {
             ) == .refreshed(id), "\(id) must upgrade from retained four-frame art")
             let upgraded = PetSpriteStore.loadStateMap(in: legacyDest)
             let upgradedIntervals = PetSpriteStore.loadFrameIntervals(in: legacyDest)
-            precondition(upgraded[.working]?.frames == 16
-                            && upgraded[.duel]?.frames == 12
-                            && upgraded[.trio]?.frames == 13
-                            && upgraded[.swarm]?.frames == 16,
-                         "\(id) did not receive its complete 16/12/13/16 stories")
-            precondition(upgraded[.idle]?.file == "session-pet-idle.png",
-                         "\(id) migration changed a non-story pose")
-            let expectedWorkingInterval = id == "jedi-nia-solari" ? 0.095 : 0.1
-            let expectedSwarmInterval = id == "jedi-nia-solari" ? 0.085 : 0.2
+            let approvedCounts = id == "jedi-nia-solari" ? [12, 16, 14, 19]
+                : (id == "jedi-elara-vale" ? [16, 16, 16, 24] : [12, 12, 18, 24])
+            for (pose, count) in zip([PetSpritePose.working, .duel, .trio, .swarm], approvedCounts) {
+                precondition(upgraded[pose]?.frames == count,
+                             "\(id) did not receive its approved story count")
+            }
+            precondition(upgraded[.idle]?.file == "session-pet-idle-v2.png"
+                            && upgraded[.idle]?.frames == 8,
+                         "\(id) migration must land the authored idle")
+            let expectedWorkingInterval = id == "jedi-rowan-vale" ? 0.16 : 0.14
+            let expectedSwarmInterval = id == "jedi-nia-solari" ? 0.14
+                : (id == "jedi-elara-vale" ? 0.18 : 0.16)
             precondition(abs((upgradedIntervals[.working] ?? 0) - expectedWorkingInterval) < 0.000001
                             && abs((upgradedIntervals[.swarm] ?? 0) - expectedSwarmInterval) < 0.000001,
                          "\(id) did not preserve its authored story cadence")
@@ -1783,7 +1786,8 @@ struct ModelsContract {
 
         // 0.5.138 shipped Elara's complete V1 stories with an oversized white
         // extraction matte around the green saber. Generation 9 recognizes
-        // only those exact retained bytes and atomically promotes them to V1.1.
+        // only those exact retained bytes. Generation 15 promotes them directly
+        // to the approved V2 idle and combat strips.
         let elaraSource = bundledRoot.appendingPathComponent(
             "jedi-elara-vale", isDirectory: true
         )
@@ -1814,16 +1818,16 @@ struct ModelsContract {
             "elara-v1-stock", isDirectory: true
         )
         try! FileManager.default.copyItem(at: elaraV1Template, to: elaraV1Dest)
-        let elaraV1Result = PetSpriteStore.refreshRecognizedBundledElaraV1(
-            into: elaraV1Dest, sourceOverride: elaraSource
+        let elaraV1Result = PetSpriteStore.refreshRecognizedBundledCharacter(
+            into: elaraV1Dest, sourceRootOverride: bundledRoot
         )
         precondition(elaraV1Result == .refreshed("jedi-elara-vale"),
-        "the retained Elara V1 story pack must upgrade to corrected V1.1 art")
+        "the retained Elara V1 story pack must upgrade to approved V2 art")
         let elaraV1Refreshed = PetSpriteStore.loadStateMap(in: elaraV1Dest)
         for pose in [PetSpritePose.working, .duel, .trio, .swarm] {
             precondition(elaraV1Refreshed[pose]?.file
-                            == "session-pet-\(pose.rawValue)-story-v1-1.png",
-                         "Elara V1.1 migration did not replace \(pose.rawValue)")
+                            == "session-pet-\(pose.rawValue)-story-v2.png",
+                         "Elara V2 migration did not replace \(pose.rawValue)")
         }
 
         let customElaraV1 = seedRoot.appendingPathComponent(
@@ -1835,8 +1839,8 @@ struct ModelsContract {
             to: customElaraV1.appendingPathComponent("session-pet-working-story-v1.png"),
             options: .atomic
         )
-        precondition(PetSpriteStore.refreshRecognizedBundledElaraV1(
-            into: customElaraV1, sourceOverride: elaraSource
+        precondition(PetSpriteStore.refreshRecognizedBundledCharacter(
+            into: customElaraV1, sourceRootOverride: bundledRoot
         ) == .notApplicable,
         "Elara V1.1 migration must not overwrite customized story art")
         precondition(try! Data(contentsOf: customElaraV1.appendingPathComponent(

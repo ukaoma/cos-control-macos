@@ -1,3 +1,18 @@
+## 0.5.151 (build 189)
+
+Nia Solari, Elara Vale and Rowan Vale now have their approved combat stories
+and eight-frame idle loops. The 223 new frames include connected defensive
+reads, grounded strikes, Force pulls, visible droid defeats and recovery.
+Each character keeps a distinct fighting style and an idle scale matched to
+its own combat art. Miles Windu V15.4 and his 1.30x idle are unchanged.
+
+Untouched bundled Jedi packs upgrade automatically, including the old still,
+four-frame and V1/V1.1 releases. Recognition checks the entire state map and
+retained image bytes. Custom artwork, pose timing or scale, selected character,
+and saved global size/speed stay untouched. Versioned images land before the
+state map changes, allowing safe retry after an interrupted write. Patrol,
+waiting, success, error and attention keep their existing still fallbacks.
+
 ## 0.5.150 (build 188)
 
 The pet is one surface family now. Both session lists, the terminal hint,

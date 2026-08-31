@@ -4847,7 +4847,7 @@ enum PetSpriteStore {
         BundledPetCharacter(
             id: "jedi-nia-solari",
             displayName: "Jedi Nia Solari",
-            summary: "Ten deployable states. Purple saber, braided silhouette, and black/bronze/plum kit.",
+            summary: "Eight-frame idle and four combat loops. Purple saber, braided silhouette, and Force counters.",
             searchTerms: "Nia Solari Black African American female woman Jedi purple lightsaber action RPG braids",
             folderName: "BundledCharacters/jedi-nia-solari",
             isAdvanced: true
@@ -4855,7 +4855,7 @@ enum PetSpriteStore {
         BundledPetCharacter(
             id: "jedi-elara-vale",
             displayName: "Jedi Elara Vale",
-            summary: "Ten deployable states. Green saber, auburn braid, and teal/copper kit.",
+            summary: "Eight-frame idle and four combat loops. Green saber, auburn braid, and agile redirects.",
             searchTerms: "Elara Vale white female woman Jedi green lightsaber action RPG auburn braid",
             folderName: "BundledCharacters/jedi-elara-vale",
             isAdvanced: true
@@ -4863,7 +4863,7 @@ enum PetSpriteStore {
         BundledPetCharacter(
             id: "jedi-rowan-vale",
             displayName: "Jedi Rowan Vale",
-            summary: "Ten deployable states. Blue saber with a navy/copper combat kit.",
+            summary: "Eight-frame idle and four combat loops. Blue saber, two-handed guard, and grounded strikes.",
             searchTerms: "Rowan Vale white male man Jedi blue lightsaber action RPG",
             folderName: "BundledCharacters/jedi-rowan-vale",
             isAdvanced: true
@@ -4923,75 +4923,11 @@ enum PetSpriteStore {
         )
     }
 
-    @discardableResult
-    /// One-shot upgrade for anyone who chose Nia Solari, Elara Vale, or Rowan
-    /// Vale while those characters were still-only.
-    ///
-    /// `refreshRecognizedBundledDefault` above cannot serve them: its retained
-    /// stock table is Miles Windu's, and it reads `bundledDefaultURL`. Worse,
-    /// `useBundledCharacter` stamps the art generation the moment a character
-    /// is picked, so these users are already at the current generation and the
-    /// launch refresh skips them entirely. Without this they keep the all-still
-    /// map until they happen to re-pick the character from the gallery.
-    ///
-    /// An install counts as untouched stock only when every pose points at the
-    /// one portrait at a single frame AND that portrait is byte-identical to
-    /// the one we ship for that character. Anything the user customized fails
-    /// the byte match and is left exactly as it is.
-    ///
-    /// Returns the id that was re-landed, or nil when nothing matched.
-    static func refreshStillBundledCharacter(
-        into directory: URL,
-        bundle: Bundle = .main,
-        fileManager: FileManager = .default
-    ) -> String? {
-        let portrait = poseFileName(.idle)
-        let installed = loadStateMap(in: directory, fileManager: fileManager)
-        guard !installed.isEmpty,
-              installed.values.allSatisfy({ $0.file == portrait && $0.frames == 1 }),
-              let installedPortrait = try? Data(
-                  contentsOf: directory.appendingPathComponent(portrait)
-              )
-        else { return nil }
-
-        for character in bundledCharacters where character.id != defaultCharacterID {
-            guard let source = bundledCharacterURL(character, bundle: bundle, fileManager: fileManager),
-                  let shipped = try? Data(contentsOf: source.appendingPathComponent(portrait)),
-                  shipped == installedPortrait
-            else { continue }
-
-            // Prove the replacement is complete and readable BEFORE clearing
-            // anything. Clearing first and discovering a missing strip would
-            // leave the user with no character at all.
-            let shippedState = loadStateMap(in: source, fileManager: fileManager)
-            let combat: [PetSpritePose] = [.duel, .trio, .swarm]
-            let ready = combat.allSatisfy { pose in
-                guard let row = shippedState[pose], row.frames > 1,
-                      let data = try? Data(contentsOf: source.appendingPathComponent(row.file)),
-                      NSImage(data: data) != nil
-                else { return false }
-                return true
-            }
-            guard ready else {
-                NSLog("COSControl still-character refresh skipped: %@ ships no combat art", character.id)
-                return nil
-            }
-
-            removeAll(from: directory, fileManager: fileManager)
-            guard installDefault(into: directory, from: source, fileManager: fileManager) else {
-                NSLog("COSControl still-character refresh FAILED after clearing: %@", character.id)
-                return nil
-            }
-            return character.id
-        }
-        return nil
-    }
-
-    /// Upgrade one of the retained four-frame Jedi packs from 0.5.134 without
-    /// touching a customized sprite pack. Identity is proven from BOTH the
-    /// exact legacy state map and byte-identical retained assets. New,
-    /// versioned story files land first; the state map changes atomically last,
-    /// so an interrupted launch leaves the old four-frame pack readable.
+    /// Promote only exact retained stock Jedi packs. Comparing the complete
+    /// state dictionary also protects custom timing, scale, and extra fields.
+    /// Every old referenced image must match the retained bundled bytes.
+    /// Replacement files are validated and written first; the active map is
+    /// atomically replaced last so an interrupted upgrade remains retryable.
     @discardableResult
     static func refreshRecognizedBundledCharacter(
         into directory: URL,
@@ -4999,25 +4935,19 @@ enum PetSpriteStore {
         bundle: Bundle = .main,
         fileManager: FileManager = .default
     ) -> BundledCharacterRefreshResult {
-        let portrait = poseFileName(.idle)
-        let legacy: [PetSpritePose: (file: String, frames: Int)] = [
-            .attention: (portrait, 1),
-            .done: (portrait, 1),
-            .duel: (poseFileName(.duel), 4),
-            .error: (portrait, 1),
-            .idle: (portrait, 1),
-            .patrol: (portrait, 1),
-            .swarm: (poseFileName(.swarm), 4),
-            .trio: (poseFileName(.trio), 4),
-            .waiting: (portrait, 1),
-            .working: (portrait, 1),
-        ]
-        let installed = loadStateMap(in: directory, fileManager: fileManager)
-        guard installed.count == legacy.count,
-              legacy.allSatisfy({ pose, expected in
-                  guard let row = installed[pose] else { return false }
-                  return row.file == expected.file && row.frames == expected.frames
-              })
+        // Foundation's untyped NSNumber equality can distinguish 0.085 from
+        // its own reserialization (0.085000000000000006). Decode through the
+        // shared Double-valued JSON model, then compare every key canonically.
+        // No numeric tolerance: an actual changed playback value still differs.
+        func canonicalState(_ data: Data) -> Data? {
+            guard let value = try? JSONDecoder().decode(JSONValue.self, from: data) else { return nil }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            return try? encoder.encode(value)
+        }
+        guard existingSpriteURL(in: directory, fileManager: fileManager) == nil,
+              let installedData = try? Data(contentsOf: directory.appendingPathComponent(stateFileName)),
+              let installedState = canonicalState(installedData)
         else { return .notApplicable }
 
         for character in bundledCharacters where character.id != defaultCharacterID {
@@ -5026,148 +4956,83 @@ enum PetSpriteStore {
             } else {
                 bundledCharacterURL(character, bundle: bundle, fileManager: fileManager)
             }
-            guard let source else { continue }
+            guard let source,
+                  let historyData = try? Data(contentsOf: source.appendingPathComponent("stock-state-history.json")),
+                  let history = try? JSONSerialization.jsonObject(with: historyData) as? [String: Any],
+                  let maps = history["maps"] as? [[String: Any]],
+                  let match = maps.first(where: {
+                      guard let state = $0["state"] as? [String: Any],
+                            let data = try? JSONSerialization.data(withJSONObject: state)
+                      else { return false }
+                      return canonicalState(data) == installedState
+                  }),
+                  let state = match["state"] as? [String: Any],
+                  let oldPoses = state["poses"] as? [String: [String: Any]]
+            else { continue }
 
-            let legacyFiles = Set(legacy.values.map(\.file))
-            let identityMatches = legacyFiles.allSatisfy { file in
-                guard let installedData = try? Data(
-                    contentsOf: directory.appendingPathComponent(file)
-                ), let retainedData = try? Data(
-                    contentsOf: source.appendingPathComponent(file)
-                ) else { return false }
-                return installedData == retainedData
-            }
-            guard identityMatches else { continue }
+            let oldFiles = Set(oldPoses.values.compactMap { $0["file"] as? String })
+            guard oldFiles.count > 0,
+                  oldFiles.allSatisfy({ file in
+                      guard file == URL(fileURLWithPath: file).lastPathComponent,
+                            let installed = try? Data(contentsOf: directory.appendingPathComponent(file)),
+                            let retained = try? Data(contentsOf: source.appendingPathComponent(file))
+                      else { return false }
+                      return installed == retained
+                  })
+            else { continue }
 
             let bundled = loadStateMap(in: source, fileManager: fileManager)
-            guard let sourceStateData = try? Data(
-                contentsOf: source.appendingPathComponent(stateFileName)
-            ) else { return .failed }
-            let storyPoses: [PetSpritePose] = [.working, .duel, .trio, .swarm]
-            var stories: [(pose: PetSpritePose, file: String, frames: Int, data: Data)] = []
-            for pose in storyPoses {
-                guard let row = bundled[pose], row.frames > 4,
-                      row.file.hasPrefix("session-pet-\(pose.rawValue)-story-"),
-                      row.file.hasSuffix(".png"),
+            let intervals = loadFrameIntervals(in: source, fileManager: fileManager)
+            let animated: [PetSpritePose] = [.idle, .working, .duel, .trio, .swarm]
+            guard bundled.count == PetSpritePose.liveCases.count,
+                  animated.allSatisfy({ pose in
+                      guard let row = bundled[pose] else { return false }
+                      return row.frames > 1 && row.frames <= PetSpriteStrip.maxFrames
+                          && (intervals[pose] ?? 0) > 0
+                  }),
+                  let sourceState = try? Data(contentsOf: source.appendingPathComponent(stateFileName))
+            else { return .failed }
+
+            var replacements: [String: Data] = [:]
+            for row in bundled.values {
+                guard row.file == URL(fileURLWithPath: row.file).lastPathComponent,
                       let data = try? Data(contentsOf: source.appendingPathComponent(row.file)),
-                      NSImage(data: data) != nil
+                      let image = NSImage(data: data),
+                      let raster = PetSpriteStrip.raster(image),
+                      (row.frames == 1 || raster.height <= PetSpriteStrip.maxHeight),
+                      raster.width >= row.frames,
+                      raster.width % row.frames == 0,
+                      PetSpriteStrip.slice(image, frames: row.frames).count == row.frames
                 else {
-                    NSLog("COSControl bundled-character refresh skipped: %@ has an incomplete %@ story", character.id, pose.rawValue)
+                    NSLog("COSControl Jedi upgrade rejected incomplete art: %@/%@", character.id, row.file)
                     return .failed
                 }
-                stories.append((pose, row.file, row.frames, data))
+                // Never rewrite an actively referenced old file to new bytes.
+                // Versioned destination names make interruption safe.
+                if oldFiles.contains(row.file),
+                   (try? Data(contentsOf: directory.appendingPathComponent(row.file))) != data {
+                    return .failed
+                }
+                replacements[row.file] = data
             }
 
             do {
-                try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-                for story in stories {
-                    try story.data.write(
-                        to: directory.appendingPathComponent(story.file), options: .atomic
-                    )
+                for (file, data) in replacements where !oldFiles.contains(file) {
+                    try data.write(to: directory.appendingPathComponent(file), options: .atomic)
                 }
-                guard stories.allSatisfy({ story in
-                    (try? Data(contentsOf: directory.appendingPathComponent(story.file))) == story.data
+                guard replacements.allSatisfy({ file, data in
+                    (try? Data(contentsOf: directory.appendingPathComponent(file))) == data
                 }) else { return .failed }
-                try sourceStateData.write(
+                try sourceState.write(
                     to: directory.appendingPathComponent(stateFileName), options: .atomic
                 )
                 return .refreshed(character.id)
             } catch {
-                NSLog("COSControl bundled-character refresh failed: %@", error.localizedDescription)
+                NSLog("COSControl Jedi upgrade failed: %@", error.localizedDescription)
                 return .failed
             }
         }
         return .notApplicable
-    }
-
-    /// Upgrade the byte-identical Elara V1 story pack to the V1.1 strips whose
-    /// extraction no longer leaves a broad white board matte around the green
-    /// saber. The retained V1 assets prove stock identity; custom art or even a
-    /// custom playback interval makes the migration inapplicable.
-    @discardableResult
-    static func refreshRecognizedBundledElaraV1(
-        into directory: URL,
-        sourceOverride: URL? = nil,
-        bundle: Bundle = .main,
-        fileManager: FileManager = .default
-    ) -> BundledCharacterRefreshResult {
-        guard let character = bundledCharacter(id: "jedi-elara-vale") else {
-            return .notApplicable
-        }
-        let source = sourceOverride
-            ?? bundledCharacterURL(character, bundle: bundle, fileManager: fileManager)
-        guard let source else { return .notApplicable }
-
-        let portrait = poseFileName(.idle)
-        let storyPoses: [PetSpritePose] = [.working, .duel, .trio, .swarm]
-        let expectedFrames: [PetSpritePose: Int] = [
-            .working: 16, .duel: 12, .trio: 13, .swarm: 16,
-        ]
-        let expectedIntervals: [PetSpritePose: Double] = [
-            .working: 0.10, .duel: 0.14, .trio: 0.18, .swarm: 0.20,
-        ]
-        let installed = loadStateMap(in: directory, fileManager: fileManager)
-        let installedIntervals = loadFrameIntervals(in: directory, fileManager: fileManager)
-        guard installed.count == PetSpritePose.liveCases.count,
-              PetSpritePose.liveCases.allSatisfy({ pose in
-                  guard let row = installed[pose] else { return false }
-                  if let frames = expectedFrames[pose] {
-                      return row.file == "session-pet-\(pose.rawValue)-story-v1.png"
-                          && row.frames == frames
-                          && abs((installedIntervals[pose] ?? 0) - (expectedIntervals[pose] ?? 0))
-                              < 0.000001
-                  }
-                  return row.file == portrait && row.frames == 1
-              })
-        else { return .notApplicable }
-
-        let retainedFiles = Set([portrait] + storyPoses.map {
-            "session-pet-\($0.rawValue)-story-v1.png"
-        })
-        guard retainedFiles.allSatisfy({ file in
-            guard let installedData = try? Data(
-                contentsOf: directory.appendingPathComponent(file)
-            ), let retainedData = try? Data(
-                contentsOf: source.appendingPathComponent(file)
-            ) else { return false }
-            return installedData == retainedData
-        }) else { return .notApplicable }
-
-        let bundled = loadStateMap(in: source, fileManager: fileManager)
-        guard let sourceStateData = try? Data(
-            contentsOf: source.appendingPathComponent(stateFileName)
-        ) else { return .failed }
-        var replacements: [(file: String, data: Data)] = []
-        for pose in storyPoses {
-            guard let row = bundled[pose], row.frames == expectedFrames[pose],
-                  row.file == "session-pet-\(pose.rawValue)-story-v1-1.png",
-                  let data = try? Data(contentsOf: source.appendingPathComponent(row.file)),
-                  NSImage(data: data) != nil
-            else {
-                NSLog("COSControl Elara V1.1 refresh skipped: incomplete %@ story", pose.rawValue)
-                return .failed
-            }
-            replacements.append((row.file, data))
-        }
-
-        do {
-            for replacement in replacements {
-                try replacement.data.write(
-                    to: directory.appendingPathComponent(replacement.file), options: .atomic
-                )
-            }
-            guard replacements.allSatisfy({ replacement in
-                (try? Data(contentsOf: directory.appendingPathComponent(replacement.file)))
-                    == replacement.data
-            }) else { return .failed }
-            try sourceStateData.write(
-                to: directory.appendingPathComponent(stateFileName), options: .atomic
-            )
-            return .refreshed(character.id)
-        } catch {
-            NSLog("COSControl Elara V1.1 refresh failed: %@", error.localizedDescription)
-            return .failed
-        }
     }
 
     static func installDefault(

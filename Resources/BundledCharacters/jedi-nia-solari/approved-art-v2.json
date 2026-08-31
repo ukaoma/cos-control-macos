@@ -1,0 +1,62 @@
+{
+  "version": "0.5.151",
+  "sourceManifestSha256": "cf3927cd826527840ffcc05bf5a6a96297a44fdde3ce52a542d461951083ea7d",
+  "mode": "Built-in image generation; approved native canary runtime copied byte-for-byte.",
+  "scenes": [
+    {
+      "role": "idle",
+      "file": "session-pet-idle-v2.png",
+      "frames": 8,
+      "interval": 0.24,
+      "cell": [
+        348,
+        256
+      ],
+      "sha256": "819599758d8d8b15e2c348e1440dbecd52561317376b0ed39052ab17497690c1"
+    },
+    {
+      "role": "working",
+      "file": "session-pet-working-story-v2.png",
+      "frames": 12,
+      "interval": 0.14,
+      "cell": [
+        348,
+        256
+      ],
+      "sha256": "9aa5b1024e85ba24ebcc7d4324cca889a83d648fe2523f21b4577de7390752df"
+    },
+    {
+      "role": "duel",
+      "file": "session-pet-duel-story-v2.png",
+      "frames": 16,
+      "interval": 0.14,
+      "cell": [
+        440,
+        256
+      ],
+      "sha256": "447995afd11a3c36b0417d92d43ef685caa3cc2addd6e9d21bd2084b7ec2a171"
+    },
+    {
+      "role": "trio",
+      "file": "session-pet-trio-story-v2.png",
+      "frames": 14,
+      "interval": 0.14,
+      "cell": [
+        440,
+        256
+      ],
+      "sha256": "d456cd413a039c31a54ef9684a20dce2af142a5bb0e8a3a0fe3510f56916821e"
+    },
+    {
+      "role": "swarm",
+      "file": "session-pet-swarm-story-v2.png",
+      "frames": 19,
+      "interval": 0.14,
+      "cell": [
+        440,
+        256
+      ],
+      "sha256": "35ce6799dd8baf2833990c35ffde485a480eff4aff8b200a611067548db1183b"
+    }
+  ]
+}
