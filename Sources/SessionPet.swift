@@ -688,6 +688,22 @@ private struct SessionPetRoot: View {
         .frame(width: size.length(52), alignment: .leading)
     }
 
+    /// One shared control for the finished row's three paths, so they cannot
+    /// drift in size, tint or hit area.
+    private func completionAction(
+        _ symbol: String, help: String, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: size.typeSize(9), weight: .bold))
+                .foregroundStyle(.secondary)
+                .padding(size.length(4))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
     private func dismissControl(_ session: ClaudeSession) -> some View {
         Button {
             model.dismissPetSession(session)
@@ -739,21 +755,23 @@ private struct SessionPetRoot: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Open in COS Control")
-                    // Clear control is a SIBLING of the row button, never nested
-                    // in its label — a Button inside another Button's label
-                    // never receives the click. Mirrors the live list's drop x.
-                    Button {
-                        model.clearPetCompletion(row)
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: size.typeSize(9), weight: .bold))
-                            .foregroundStyle(.secondary)
-                            .padding(size.length(5))
-                            .contentShape(Rectangle())
+                    .help("Open the session in COS Control")
+                    // Three paths off a finished row (Miles, 2026-08-31), each
+                    // a SIBLING of the row button — a Button nested in another
+                    // Button's label never receives the click on macOS.
+                    completionAction("arrow.up.forward.app", help: "Open in platform") {
+                        if let session = ClaudeSession.fromCompletion(row) {
+                            model.openSessionInPlatform(session)
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .help("Clear this finished entry.")
+                    completionAction("text.alignleft", help: "Open the session view in COS Control") {
+                        if let session = ClaudeSession.fromCompletion(row) {
+                            presenter.openInControl(session)
+                        }
+                    }
+                    completionAction("xmark", help: "Clear this finished entry") {
+                        model.clearPetCompletion(row)
+                    }
                     }
                     if row.id != model.petCompletions.last?.id {
                         Divider()

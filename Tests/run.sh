@@ -2989,6 +2989,22 @@ need("$petHoverRevealed.sink" not in code,
 # emptied list instead of pinning an empty card over the figure.
 comp2 = pet[pet.index("private var completionsList"):pet.index("private func petFloatingText")]
 need("clearPetCompletion(" in comp2, "finished rows have no clear control")
+# Three paths off a finished row (Miles, 2026-08-31): open in the platform,
+# open the session view in Control, clear the entry.
+for _sym, _what in [('"arrow.up.forward.app"', "open in platform"),
+                    ('"text.alignleft"', "open the session view"),
+                    ('"xmark"', "clear the entry")]:
+    need(f"completionAction({_sym}" in comp2,
+         f"a finished row lost its {_what} control")
+need("model.openSessionInPlatform(session)" in comp2 and "presenter.openInControl(session)" in comp2,
+     "the finished row's two open paths must reach different destinations")
+# Oversized transcripts are WINDOWED, never refused. The window itself is
+# EXECUTED by the helper self-test; this pins that the refusal stays dead.
+helper = strip_comments((root / "HelperSources/main.swift").read_text())
+need("too large to open in Control" not in helper,
+     "the size refusal returned; oversized transcripts must be windowed")
+need("forEachTranscriptLine(" in helper and "agentSessionTailWindowBytes" in helper,
+     "the windowed transcript reader is gone")
 clr = model[model.index("func clearPetCompletion("):]
 clr = clr[:clr.index("\n    }")]
 need("removeAll { $0.id == row.id }" in clr and "savePetCompletions()" in clr,

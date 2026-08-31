@@ -1382,6 +1382,9 @@ struct ClaudeSessionDetail: Sendable {
     let omittedTools: Int
     let omittedSidechain: Int
     let truncated: Bool
+    /// The transcript was too big to parse whole, so the middle was skipped:
+    /// the newest turns are here, the earliest are not. It is never a refusal.
+    let windowed: Bool
     let copyText: String
 
     var subtitle: String {
@@ -1392,6 +1395,7 @@ struct ClaudeSessionDetail: Sendable {
         if truncated { parts.append("last \(turns.count) of \(totalTurns) turns") }
         else { parts.append("\(totalTurns) turn\(totalTurns == 1 ? "" : "s")") }
         if omittedTools > 0 { parts.append("tools omitted") }
+        if windowed { parts.append("large session · earlier turns skipped") }
         return parts.joined(separator: " · ")
     }
 
@@ -1410,6 +1414,7 @@ struct ClaudeSessionDetail: Sendable {
         omittedTools = o["omittedTools"]?.int ?? 0
         omittedSidechain = o["omittedSidechain"]?.int ?? 0
         truncated = o["truncated"]?.bool ?? false
+        windowed = o["windowed"]?.bool ?? false
         self.copyText = copyText
     }
 }

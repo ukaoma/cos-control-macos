@@ -1,3 +1,17 @@
+## 0.5.162 (build 200)
+
+Large Codex and Cursor sessions open now. A transcript over 32 MB was
+refused outright — "This Codex session is too large to open in Control",
+behind a Retry button that could never succeed. Oversized transcripts are
+windowed instead of refused: the head still supplies the working folder,
+branch and title, and the newest turns come from the end of the file, which
+is what you opened the row for. The middle is skipped and the session
+subtitle says so. Nothing is refused for size any more.
+
+Finished sessions on the pet now carry three paths instead of one: open the
+session in its own platform, open the session view in Control, or clear the
+entry.
+
 ## 0.5.161 (build 199)
 
 Every agent row now carries its platform's mark, so you can tell Claude from

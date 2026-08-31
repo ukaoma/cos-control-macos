@@ -7173,26 +7173,74 @@ final class COSControlHelper {
         return (title, cwd, branch, sessionId, turns, omittedTools, omittedSidechain)
     }
 
-    static func forEachClaudeJsonlLine(in url: URL, body: (String) -> Void) {
+    static func forEachClaudeJsonlLine(
+        in url: URL,
+        byteRange: Range<Int>? = nil,
+        dropPartialFirstLine: Bool = false,
+        body: (String) -> Void
+    ) {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return }
         defer { try? handle.close() }
+        var remaining = Int.max
+        if let byteRange {
+            try? handle.seek(toOffset: UInt64(max(0, byteRange.lowerBound)))
+            remaining = max(0, byteRange.upperBound - byteRange.lowerBound)
+        }
         var buffer = Data()
-        while true {
-            let chunk = handle.readData(ofLength: 256 * 1024)
-            if chunk.isEmpty { break }
+        var skipPartial = dropPartialFirstLine
+        var hitEOF = false
+        while remaining > 0 {
+            let chunk = handle.readData(ofLength: min(256 * 1024, remaining))
+            if chunk.isEmpty { hitEOF = true; break }
+            remaining -= chunk.count
             buffer.append(chunk)
             while let newline = buffer.firstIndex(of: UInt8(0x0a)) {
                 let lineData = buffer.subdata(in: buffer.startIndex..<newline)
                 buffer.removeSubrange(buffer.startIndex...newline)
+                // A window that starts mid-file opens on half a line.
+                if skipPartial { skipPartial = false; continue }
                 if lineData.count > claudeTranscriptMaxLineBytes { continue }
                 if let line = String(data: lineData, encoding: .utf8), !line.isEmpty { body(line) }
             }
             if buffer.count > claudeTranscriptMaxLineBytes * 2 { buffer.removeAll(keepingCapacity: true) }
         }
-        if !buffer.isEmpty, buffer.count <= claudeTranscriptMaxLineBytes,
+        // Only a real end-of-file leaves a COMPLETE trailing line; a window
+        // that stopped at its byte budget leaves half of one.
+        if hitEOF, !buffer.isEmpty, !skipPartial, buffer.count <= claudeTranscriptMaxLineBytes,
            let line = String(data: buffer, encoding: .utf8), !line.isEmpty {
             body(line)
         }
+    }
+
+    /// Read a transcript that may be enormous: the head, so the session_meta
+    /// on the first line still supplies cwd, branch and title, plus the
+    /// newest `tailWindowBytes` — the turns the row was opened for. The
+    /// middle is skipped and reported, never refused. Codex and Cursor
+    /// transcripts over 32 MB used to throw "too large to open in Control"
+    /// behind a Retry that could never succeed (Miles, 2026-08-31).
+    @discardableResult
+    static func forEachTranscriptLine(
+        in url: URL,
+        tailWindowBytes: Int = agentSessionTailWindowBytes,
+        body: (String) -> Void
+    ) -> Bool {
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size > tailWindowBytes else {
+            forEachClaudeJsonlLine(in: url, body: body)
+            return false
+        }
+        // Clamped so the head can never reach into the tail window: an
+        // overlap would deliver the same lines twice and duplicate turns in
+        // the transcript (caught by the self-test, 2026-08-31).
+        let headBytes = min(transcriptHeadBytes, max(0, size - tailWindowBytes))
+        forEachClaudeJsonlLine(in: url, byteRange: 0..<headBytes, body: body)
+        forEachClaudeJsonlLine(
+            in: url,
+            byteRange: (size - tailWindowBytes)..<size,
+            dropPartialFirstLine: true,
+            body: body
+        )
+        return true
     }
 
     static func claudeKickstartCopy(
@@ -7268,6 +7316,14 @@ final class COSControlHelper {
 
     static let agentSessionListLimit = 20
     static let agentSessionMaxFileBytes = 32 * 1024 * 1024
+    /// Newest bytes parsed for an oversized transcript. Turn text is a small
+    /// fraction of a transcript's bytes (tool calls dominate and are dropped),
+    /// so this comfortably covers the claudeHistoryTurnLimit turns the detail
+    /// view actually renders.
+    static let agentSessionTailWindowBytes = 8 * 1024 * 1024
+    /// Enough to carry the session_meta line that opens a transcript, and no
+    /// more — the head exists for metadata, not for history.
+    static let transcriptHeadBytes = 64 * 1024
     static let agentSessionMaxAge: TimeInterval = 7 * 24 * 3600
 
     static func isoString(from date: Date) -> String {
@@ -7681,7 +7737,7 @@ final class COSControlHelper {
         var title = "", cwd = "", branch = "", sessionId = jsonl.deletingPathExtension().lastPathComponent
         var turns: [[String: String]] = []
         var omittedTools = 0
-        forEachClaudeJsonlLine(in: jsonl) { line in
+        forEachTranscriptLine(in: jsonl) { line in
             guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { return }
             if obj["type"] as? String == "session_meta", let payload = obj["payload"] as? [String: Any] {
                 cwd = payload["cwd"] as? String ?? cwd
@@ -8037,7 +8093,7 @@ final class COSControlHelper {
         var turns: [[String: String]] = []
         var omittedTools = 0
         let sessionId = jsonl.deletingPathExtension().lastPathComponent
-        forEachClaudeJsonlLine(in: jsonl) { line in
+        forEachTranscriptLine(in: jsonl) { line in
             guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { return }
             let role = obj["role"] as? String ?? ""
             guard role == "user" || role == "assistant" else { return }
@@ -8267,6 +8323,7 @@ final class COSControlHelper {
         let provider = (option("--provider", in: args) ?? "claude").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let home = FileManager.default.homeDirectoryForCurrentUser
         let file: URL
+        var windowed = false
         let parsed: (title: String, cwd: String, branch: String, sessionId: String, turns: [[String: String]], omittedTools: Int, omittedSidechain: Int)
         switch provider {
         case "codex":
@@ -8274,10 +8331,8 @@ final class COSControlHelper {
                 sessionId: sessionId,
                 sessionsRoot: home.appendingPathComponent(".codex/sessions", isDirectory: true)
             ) else { throw HelperError.message("No local Codex transcript for this session.") }
-            let size = (try? found.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            if size > Self.agentSessionMaxFileBytes {
-                throw HelperError.message("This Codex session is too large to open in Control.")
-            }
+            windowed = ((try? found.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                > Self.agentSessionTailWindowBytes
             file = found
             parsed = Self.parseCodexTranscript(in: found)
         case "cursor":
@@ -8285,10 +8340,8 @@ final class COSControlHelper {
                 sessionId: sessionId,
                 projectsRoot: home.appendingPathComponent(".cursor/projects", isDirectory: true)
             ) else { throw HelperError.message("No local Cursor transcript for this session.") }
-            let size = (try? found.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            if size > Self.agentSessionMaxFileBytes {
-                throw HelperError.message("This Cursor session is too large to open in Control.")
-            }
+            windowed = ((try? found.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                > Self.agentSessionTailWindowBytes
             file = found
             parsed = Self.parseCursorTranscript(in: found)
         default:
@@ -8322,6 +8375,7 @@ final class COSControlHelper {
             "omittedTools": parsed.omittedTools,
             "omittedSidechain": parsed.omittedSidechain,
             "truncated": parsed.turns.count > history.count,
+            "windowed": windowed,
             "copyText": copy,
         ])
     }
@@ -12382,6 +12436,61 @@ final class COSControlHelper {
         webpHeader.append(Data("WEBP".utf8))
         try expect(Self.isOpenPetsWebP(webpHeader), "a RIFF/WEBP header must pass")
         try expect(!Self.isOpenPetsWebP(Data("PNG".utf8)), "a non-webp payload must not pass")
+
+        // Oversized transcripts are WINDOWED, never refused. Executed against
+        // the shipped reader with a deliberately tiny window: a source grep
+        // could not tell a working window from a refusal that was merely
+        // deleted (Miles, 2026-08-31: "too large to open in Control" behind a
+        // Retry that could never succeed).
+        let bigJSONL = home.appendingPathComponent("selftest-transcript.jsonl")
+        var lines = ["{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/head\"}}"]
+        for i in 1...3000 {
+            lines.append("{\"type\":\"response_item\",\"n\":\(i),\"pad\":\"" 
+                         + String(repeating: "x", count: 200) + "\"}")
+        }
+        lines.append("{\"type\":\"response_item\",\"n\":\"newest\"}")
+        try (lines.joined(separator: "\n") + "\n").write(to: bigJSONL, atomically: true, encoding: .utf8)
+        let fileBytes = (try? bigJSONL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+
+        var seen: [String] = []
+        let windowedRead = Self.forEachTranscriptLine(in: bigJSONL, tailWindowBytes: 8192) {
+            seen.append($0)
+        }
+        try expect(windowedRead, "a transcript far past the window must report that it was windowed")
+        try expect(fileBytes > Self.transcriptHeadBytes + 8192,
+                   "the fixture must exceed head + tail or it proves no skipping")
+        try expect(Set(seen).count == seen.count,
+                   "head and tail must not overlap — an overlap delivers the same turns twice")
+        try expect(seen.contains { $0.contains("session_meta") },
+                   "the head must survive windowing or cwd, branch and title are lost")
+        try expect(seen.last?.contains("newest") == true,
+                   "the NEWEST turn must survive — it is what the row was opened for")
+        try expect(seen.count < lines.count,
+                   "a windowed read must skip the middle, not read everything")
+        try expect(seen.allSatisfy { (try? JSONSerialization.jsonObject(with: Data($0.utf8))) != nil },
+                   "a window that opens mid-file must drop its partial first line")
+
+        // A file only a LITTLE past the window is where head and tail would
+        // overlap. Without the clamp the seam is delivered twice and the
+        // transcript shows duplicate turns — invisible on a big fixture,
+        // because there the clamp is a no-op.
+        var seam: [String] = []
+        _ = Self.forEachTranscriptLine(in: bigJSONL, tailWindowBytes: max(1, fileBytes - 32_768)) {
+            seam.append($0)
+        }
+        try expect(Set(seam).count == seam.count,
+                   "head and tail overlapped just past the window; turns delivered twice")
+        try expect(seam.last?.contains("newest") == true,
+                   "the newest turn must survive the near-window case too")
+
+        // Under the window, nothing is skipped and the read reports so.
+        var whole: [String] = []
+        let wholeRead = Self.forEachTranscriptLine(in: bigJSONL, tailWindowBytes: fileBytes + 1) {
+            whole.append($0)
+        }
+        try expect(!wholeRead, "a transcript inside the window is not windowed")
+        try expect(whole.count == lines.count,
+                   "an unwindowed read must deliver every line, including the last")
 
         emit(ok: true, message: "\(passed) deterministic helper tests passed", details: ["tests": passed])
     }
