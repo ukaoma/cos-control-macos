@@ -50,11 +50,11 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
     )
     need(
         state["swarm"] == {
-            "file": "session-pet-swarm-story-v15-3.png", "frames": 25, "interval": 0.22
+            "file": "session-pet-swarm-story-v15-4.png", "frames": 26, "interval": 0.22
         },
         "four-plus sessions do not point at the rebuilt five-droid story",
     )
-    need(state["idle"].get("renderScale") == 3, "Miles idle is not authored at 3x scale")
+    need(state["idle"].get("renderScale") == 1.3, "Miles idle is not authored at 1.30x scale")
     frame_cap = int(re.search(r"static let maxFrames = (\d+)", models).group(1))
     need(frame_cap == 32, "runtime frame limit must preserve longer authored stories")
     cell_widths = {"working": 304, "duel": 304, "trio": 286, "swarm": 311}
@@ -70,6 +70,7 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         "session-pet-trio-story-v15-2.png": "605e89b4b7400743e82c5b0f5f8eac8408b7ab596f19c49ff54990157eef5be7",
         "session-pet-swarm-story-v15-2.png": "ae2ae5e9f196e4d2b9892e3c076f361ac20aa8e33374486445c1ade0f83377ac",
         "session-pet-swarm-story-v15-3.png": "9cf09b01a930d8980eb765825fc2a12e2213289d7792df2249c26fcc8eec8b7e",
+        "session-pet-swarm-story-v15-4.png": "a44550df21b81bd52604d18f5972697bc3e36bbf8823f7a9c34b5f0b1bf7d7ee",
     }
     for file, expected_hash in approved_hashes.items():
         actual_hash = hashlib.sha256((root / "Resources/DefaultPet" / file).read_bytes()).hexdigest()
@@ -124,7 +125,7 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         and "installed.count == retainedStock.count" in models
         and "let storyPoses: [PetSpritePose] = [.working, .duel, .trio, .swarm]" in models
         and "updated[story.pose] = (story.file, story.frames)" in models
-        and int(re.search(r"petDefaultArtGeneration = (\d+)", controller).group(1)) >= 13
+        and int(re.search(r"petDefaultArtGeneration = (\d+)", controller).group(1)) >= 14
         and "if refresh != .failed" in controller,
         "installed Miles packs will not receive all four new story assets",
     )
@@ -173,9 +174,9 @@ def main() -> None:
     )
 
     must_fail(
-        "old art generation strands installed V15.2 packs",
+        "old art generation strands installed V15.3 packs",
         root, models,
-        re.sub(r"petDefaultArtGeneration = \d+", "petDefaultArtGeneration = 12", controller),
+        re.sub(r"petDefaultArtGeneration = \d+", "petDefaultArtGeneration = 13", controller),
         motion, pet,
     )
 

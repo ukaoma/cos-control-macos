@@ -1,3 +1,18 @@
+## 0.5.149 (build 187)
+
+Miles Windu V15.4 publishes the approved 26-frame four-plus-session story.
+The rear-facing block turns through a foot-led underhand preparation into
+the rising cut. An added slash follow-through bridges the upper droid's hit
+and dissolve, the Force catch lifts the lower droid before the pull and
+chest thrust, and the blaster advances with readable reaction time.
+
+The stock idle scale is now 1.30x, bringing its apparent character size in
+line with combat. Exact-stock older packs upgrade automatically; custom
+artwork and non-stock pose scales stay untouched. The one-, two-, and
+three-session strips, other characters, ledger UI and saved global size
+and speed settings are unchanged. The swarm retains 0.22 seconds per
+frame, for a complete 5.72-second loop at 100% speed.
+
 ## 0.5.148 (build 186)
 
 The droids now agree with the ledger. Escalation used to read TOTAL alive

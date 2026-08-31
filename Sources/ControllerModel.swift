@@ -123,7 +123,7 @@ final class ControllerModel: ObservableObject {
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 13
+    private static let petDefaultArtGeneration = 14
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -1764,6 +1764,8 @@ final class ControllerModel: ObservableObject {
             // including the complete 23-frame counterclockwise swarm sequence.
             // Generation 13 promotes the approved 25-frame V15.3 clockwise
             // spin into a continuous reverse-grip strike and visible saber flip.
+            // Generation 14 lands the 26-frame V15.4 continuity polish and
+            // normalizes recognized stock 2x/3x idle to the approved 1.30x.
             if let upgraded = PetSpriteStore.refreshStillBundledCharacter(into: directory) {
                 NSLog("COSControl landed combat art on %@", upgraded)
             }

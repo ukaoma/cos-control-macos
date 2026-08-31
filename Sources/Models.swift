@@ -5262,6 +5262,7 @@ enum PetSpriteStore {
                 ("session-pet-swarm-story-v15-1.png", 16),
                 ("session-pet-swarm-story-v15-2.png", 23),
                 ("session-pet-swarm-story-v15-3.png", 25),
+                ("session-pet-swarm-story-v15-4.png", 26),
             ],
         ]
         guard installed.count == retainedStock.count,
@@ -5312,6 +5313,7 @@ enum PetSpriteStore {
             let bundledScales = loadRenderScales(in: source, fileManager: fileManager)
             let idleScaleWasStock = installedScales[.idle] == nil
                 || abs((installedScales[.idle] ?? 0) - 2) < 0.001
+                || abs((installedScales[.idle] ?? 0) - 3) < 0.001
             let scaleOverrides: [PetSpritePose: CGFloat] = idleScaleWasStock
                 ? bundledScales.filter { $0.key == .idle }
                 : [:]

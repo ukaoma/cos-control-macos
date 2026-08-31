@@ -1584,7 +1584,7 @@ struct ModelsContract {
             (.working, "session-pet-working-one-droid-v15-2.png", 16),
             (.duel, "session-pet-duel-two-droid-v15-2.png", 17),
             (.trio, "session-pet-trio-story-v15-2.png", 13),
-            (.swarm, "session-pet-swarm-story-v15-3.png", 25),
+            (.swarm, "session-pet-swarm-story-v15-4.png", 26),
         ]
         var storyFrames: [PetSpritePose: [NSImage]] = [:]
         for story in authoredStories {
@@ -1866,9 +1866,9 @@ struct ModelsContract {
         precondition(refreshedMap[.working]?.frames == 16
                         && refreshedMap[.duel]?.frames == 17
                         && refreshedMap[.trio]?.frames == 13
-                        && refreshedMap[.swarm]?.frames == 25,
+                        && refreshedMap[.swarm]?.frames == 26,
                      "the refresh must install all four authored story strips")
-        precondition(refreshedScales[.idle] == 3,
+        precondition(refreshedScales[.idle] == 1.3,
                      "the refresh must land the pack-owned Miles idle scale")
         // The live 0.5.141 defect: the seed carries the stale V15-1 duel
         // interval (0.1467), and the refresh replaces the duel FILE — so the
@@ -1937,8 +1937,8 @@ struct ModelsContract {
                             && v15RefreshedMap[story.pose]?.frames == story.frames,
                          "V15 refresh must promote \(story.pose.rawValue) to V15.1")
         }
-        precondition(PetSpriteStore.loadRenderScales(in: v15Template)[.idle] == 3,
-                     "V15 refresh must land the 3x idle scale")
+        precondition(PetSpriteStore.loadRenderScales(in: v15Template)[.idle] == 1.3,
+                     "V15 refresh must land the approved 1.30x idle scale")
 
         // 0.5.139 already carries the V15.1 story bytes and a stock 2x idle
         // scale. Generation 11 must recognize that exact install, upgrade the
@@ -1968,9 +1968,9 @@ struct ModelsContract {
         ).write(to: stockMapURL, options: .atomic)
         precondition(PetSpriteStore.refreshRecognizedBundledDefault(
             into: stockV151, from: defaultPet
-        ) == .refreshed, "the retained V15.1 Miles pack must accept the 3x idle upgrade")
-        precondition(PetSpriteStore.loadRenderScales(in: stockV151)[.idle] == 3,
-                     "the retained stock 2x Miles idle must upgrade to 3x")
+        ) == .refreshed, "the retained V15.1 Miles pack must accept the idle correction")
+        precondition(PetSpriteStore.loadRenderScales(in: stockV151)[.idle] == 1.3,
+                     "the retained stock 2x Miles idle must normalize to 1.30x")
         let migratedV152 = PetSpriteStore.loadStateMap(in: stockV151)
         for story in authoredStories {
             precondition(migratedV152[story.pose]?.file == story.file
@@ -2014,7 +2014,7 @@ struct ModelsContract {
                      "customized V15.2 state map changed")
         precondition(PetSpriteStore.refreshRecognizedBundledDefault(
             into: stockV152, from: defaultPet
-        ) == .refreshed, "published V15.2 must receive the approved V15.3 swarm")
+        ) == .refreshed, "published V15.2 must receive the approved V15.4 swarm")
         let v153Map = PetSpriteStore.loadStateMap(in: stockV152)
         for story in authoredStories {
             precondition(v153Map[story.pose]?.file == story.file
@@ -2022,12 +2022,52 @@ struct ModelsContract {
                          "V15.2 migration must retain every approved story mapping")
         }
         precondition(abs((PetSpriteStore.loadFrameIntervals(in: stockV152)[.swarm] ?? 0) - 0.22) < 0.000001,
-                     "V15.3 migration must preserve the authored 0.22-second cadence")
+                     "V15.4 migration must preserve the authored 0.22-second cadence")
         precondition(PetSpriteStore.loadRenderScales(in: stockV152)[.idle] == 1.75,
                      "V15.2 migration must preserve custom pose scale")
-        precondition(try! Data(contentsOf: stockV152.appendingPathComponent("session-pet-swarm-story-v15-3.png"))
-                     == Data(contentsOf: defaultPet.appendingPathComponent("session-pet-swarm-story-v15-3.png")),
-                     "V15.3 installed bytes must match the approved bundle")
+        precondition(try! Data(contentsOf: stockV152.appendingPathComponent("session-pet-swarm-story-v15-4.png"))
+                     == Data(contentsOf: defaultPet.appendingPathComponent("session-pet-swarm-story-v15-4.png")),
+                     "V15.4 installed bytes must match the approved bundle")
+
+        // Public 0.5.148 has V15.3, 25 swarm frames and a stock 3x idle.
+        // Exercise that exact mapping, not just a copy of the new defaults.
+        for idleScale in [3.0, 1.3, 1.75] {
+            let currentStock = seedRoot.appendingPathComponent(
+                "stock-v15-3-\(idleScale)", isDirectory: true
+            )
+            try! FileManager.default.copyItem(at: defaultPet, to: currentStock)
+            let mapURL = currentStock.appendingPathComponent("session-pet-states.json")
+            var payload = try! JSONSerialization.jsonObject(
+                with: Data(contentsOf: mapURL)
+            ) as! [String: Any]
+            var poses = payload["poses"] as! [String: [String: Any]]
+            poses["swarm"]?["file"] = "session-pet-swarm-story-v15-3.png"
+            poses["swarm"]?["frames"] = 25
+            poses["idle"]?["renderScale"] = idleScale
+            payload["poses"] = poses
+            try! JSONSerialization.data(withJSONObject: payload).write(to: mapURL, options: .atomic)
+            let priorWorking = try! Data(contentsOf: currentStock.appendingPathComponent(
+                "session-pet-working-one-droid-v15-2.png"
+            ))
+            precondition(PetSpriteStore.refreshRecognizedBundledDefault(
+                into: currentStock, from: defaultPet
+            ) == .refreshed, "published V15.3 must upgrade to V15.4")
+            let upgraded = PetSpriteStore.loadStateMap(in: currentStock)
+            precondition(upgraded[.swarm]?.file == "session-pet-swarm-story-v15-4.png"
+                         && upgraded[.swarm]?.frames == 26, "all 26 approved frames must land")
+            let expectedScale = idleScale == 3 ? 1.3 : idleScale
+            precondition(abs((PetSpriteStore.loadRenderScales(in: currentStock)[.idle] ?? 0)
+                             - expectedScale) < 0.000001,
+                         "normalize only stock 3x; retain custom and already-approved scales")
+            precondition(try! Data(contentsOf: currentStock.appendingPathComponent(
+                "session-pet-working-one-droid-v15-2.png"
+            )) == priorWorking, "the one-session strip must remain byte-identical")
+            precondition(PetSpriteStore.refreshRecognizedBundledDefault(
+                into: currentStock, from: defaultPet
+            ) == .refreshed, "repeating the refresh must remain safe")
+            precondition(abs((PetSpriteStore.loadRenderScales(in: currentStock)[.idle] ?? 0)
+                             - expectedScale) < 0.000001, "repeated refresh must preserve scale")
+        }
 
         let customScaleV151 = seedRoot.appendingPathComponent(
             "custom-scale-v15-1", isDirectory: true
@@ -2072,7 +2112,7 @@ struct ModelsContract {
         let brokenSource = seedRoot.appendingPathComponent("broken-source", isDirectory: true)
         try! FileManager.default.copyItem(at: defaultPet, to: brokenSource)
         try! FileManager.default.removeItem(
-            at: brokenSource.appendingPathComponent("session-pet-swarm-story-v15-3.png")
+            at: brokenSource.appendingPathComponent("session-pet-swarm-story-v15-4.png")
         )
         let retryDest = seedRoot.appendingPathComponent("retryable-legacy", isDirectory: true)
         try! FileManager.default.copyItem(at: legacyTemplate, to: retryDest)

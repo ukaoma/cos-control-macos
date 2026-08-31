@@ -20,15 +20,15 @@
     "idle" : {
       "file" : "session-pet-idle.png",
       "frames" : 8,
-      "renderScale" : 3
+      "renderScale" : 1.3
     },
     "patrol" : {
       "file" : "session-pet-patrol.png",
       "frames" : 8
     },
     "swarm" : {
-      "file" : "session-pet-swarm-story-v15-3.png",
-      "frames" : 25,
+      "file" : "session-pet-swarm-story-v15-4.png",
+      "frames" : 26,
       "interval" : 0.22
     },
     "trio" : {
