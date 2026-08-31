@@ -3211,6 +3211,20 @@ private struct PetSizeControls: View {
             Text("Controls animation playback only. 25% is slow motion; 100% matches the pack.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+            Divider()
+                .padding(.vertical, 2)
+            Toggle("Calm motion", isOn: Binding(
+                get: { model.petCalmMotion },
+                set: { model.setPetCalmMotion($0) }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .font(.caption)
+            Text("Rests the character on its idle loop instead of the multi-session "
+                 + "fights. Session counts still show on the bar, and alerts still "
+                 + "break through. For no motion at all, use macOS Reduce Motion.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
         .onAppear { pixelDraft = "\(model.petSize.pixels)" }
         .onChange(of: model.petSize.pixels) { _, value in

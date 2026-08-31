@@ -118,6 +118,7 @@ final class ControllerModel: ObservableObject {
     private static let petSizePixelsKey = "cos.sessionPetSizePixels"
     private static let petCharacterPercentKey = "cos.sessionPetCharacterPercent"
     private static let petAnimationSpeedPercentKey = "cos.sessionPetAnimationSpeedPercent"
+    private static let petCalmMotionKey = "cos.sessionPetCalmMotion"
     private static let petCharacterScaleGenerationKey = "cos.sessionPetCharacterScaleGeneration"
     private static let petCharacterScaleGeneration = 2
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
@@ -1283,6 +1284,9 @@ final class ControllerModel: ObservableObject {
     /// Playback rate only. Sprite size, panel geometry, and authored frame
     /// intervals remain independent so this preference cannot distort a pack.
     @Published var petAnimationSpeedPercent = ControllerModel.loadPetAnimationSpeedPercent()
+    /// Calm motion: the character rests through the escalation ladder while
+    /// the ledger keeps reporting every count.
+    @Published var petCalmMotion = UserDefaults.standard.bool(forKey: ControllerModel.petCalmMotionKey)
     @Published var petSize = PetSize.load(
         preset: UserDefaults.standard.string(forKey: ControllerModel.petSizeKey),
         pixels: UserDefaults.standard.object(forKey: ControllerModel.petSizePixelsKey) as? Int
@@ -1707,6 +1711,12 @@ final class ControllerModel: ObservableObject {
         UserDefaults.standard.set(clamped, forKey: Self.petCharacterPercentKey)
     }
 
+    func setPetCalmMotion(_ enabled: Bool) {
+        guard enabled != petCalmMotion else { return }
+        petCalmMotion = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.petCalmMotionKey)
+    }
+
     func setPetAnimationSpeedPercent(_ value: Int) {
         let clamped = PetAnimationSpeed.clamp(value)
         guard clamped != petAnimationSpeedPercent else { return }
@@ -1793,7 +1803,8 @@ final class ControllerModel: ObservableObject {
             focusState: petFocusSession?.state,
             completing: petCompleting,
             attention: !(petNotice ?? "").isEmpty,
-            errored: petFocusSession?.state == "error"
+            errored: petFocusSession?.state == "error",
+            calm: petCalmMotion
         )
     }
 

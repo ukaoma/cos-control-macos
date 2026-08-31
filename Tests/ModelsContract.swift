@@ -818,6 +818,69 @@ struct ModelsContract {
         precondition(PetSpritePose.resolve(sessionCount: 2, workingCount: 0, waitingCount: 1, focusState: "waiting", completing: true) == .waiting)
         precondition(PetSpritePose.resolve(sessionCount: 4, workingCount: 0, waitingCount: 1, focusState: "waiting", completing: false) == .waiting,
                      "one waiting + three idle-alive is amber, not a swarm")
+        // Calm motion (0.5.165): the fight ladder rests, alerts still break
+        // through, and — the part that matters — the LEDGER is untouched, so
+        // choosing calm never costs a single count.
+        for (label, session, working, waiting, focus) in [
+            ("one running", 1, 1, 0, "running"),
+            ("duel", 2, 2, 0, "running"),
+            ("trio", 3, 3, 0, "running"),
+            ("swarm", 5, 5, 0, "running"),
+            ("waiting", 2, 0, 1, "waiting"),
+            ("idle-alive", 3, 0, 0, "recent"),
+        ] as [(String, Int, Int, Int, String)] {
+            let loud = PetSpritePose.resolve(
+                sessionCount: session, workingCount: working, waitingCount: waiting,
+                focusState: focus, completing: false)
+            let calm = PetSpritePose.resolve(
+                sessionCount: session, workingCount: working, waitingCount: waiting,
+                focusState: focus, completing: false, calm: true)
+            precondition(calm == .idle,
+                         "calm motion must rest on idle for \(label), got \(calm)")
+            if session > 1 {
+                precondition(loud != calm,
+                             "\(label) must actually differ from calm, or the fixture proves nothing")
+            }
+        }
+        // Completing flashes success loudly; calm keeps it quiet.
+        precondition(PetSpritePose.resolve(
+            sessionCount: 1, workingCount: 0, waitingCount: 0, focusState: "running",
+            completing: true, calm: true) == .idle)
+        // Alerts are NOT a motion preference: both still break through.
+        precondition(PetSpritePose.resolve(
+            sessionCount: 3, workingCount: 3, waitingCount: 0, focusState: "error",
+            completing: false, calm: true) == .error,
+            "an error must still reach the figure in calm motion")
+        precondition(PetSpritePose.resolve(
+            sessionCount: 3, workingCount: 3, waitingCount: 0, focusState: "running",
+            completing: false, attention: true, calm: true) == .attention,
+            "attention must still reach the figure in calm motion")
+        // calmed() is total: every pose has a calm answer, and only the two
+        // alert poses survive it.
+        for pose in PetSpritePose.allCases {
+            let calm = PetSpritePose.calmed(pose)
+            precondition(calm == .idle || calm == .error || calm == .attention,
+                         "calmed(\(pose)) escaped the calm set as \(calm)")
+        }
+        // Calm changes the FIGURE only. The ledger is computed from the same
+        // sessions and must be byte-identical either way — the entire promise
+        // is "lower motion, same information".
+        func fleet(_ id: String, _ state: String) -> ClaudeSession {
+            ClaudeSession(.object([
+                "id": .string(id), "name": .string(id), "workspace": .string("w"),
+                "state": .string(state), "alive": .bool(true),
+            ]))!
+        }
+        let sessions = [fleet("a", "running"), fleet("b", "running"),
+                        fleet("c", "waiting"), fleet("d", "recent")]
+        let chips = [PetCompletion(id: "claude:x", sessionId: "x", name: "x", provider: "claude",
+                                   workspace: "w", finishedAt: Date(), seen: false)]
+        let ledger = PetLedger.resolve(sessions: sessions, completions: chips)
+        precondition(ledger.running == 2 && ledger.waiting == 1 && ledger.done == 1,
+                     "the ledger must report the fleet regardless of motion preference")
+        precondition(ledger.caption == "1 WAITING · 2 RUNNING · 1 DONE",
+                     "calm motion must not change one character of the status caption")
+
         precondition(PetSpritePose.matching(fileName: "01-idle-strip.png") == .idle)
         precondition(PetSpritePose.matching(fileName: "02-search-strip-alpha.png") == .waiting)
         precondition(PetSpritePose.matching(fileName: "03-grep-strip-alpha.png") == .working)

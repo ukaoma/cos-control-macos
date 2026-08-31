@@ -2937,6 +2937,22 @@ idle_src = code[code.index("private func idleRow"):code.index("private func dism
 need("petLiveLine" not in idle_src and "lineLimit(1)" in idle_src,
      "idle rows must stay dim one-liners — periphery reads as periphery")
 
+# Calm motion (0.5.165) is a FIGURE preference, never a status one: it feeds
+# the pose resolver and must never touch the ledger, which carries the counts.
+need("calm: petCalmMotion" in model_code,
+     "the calm preference does not reach the pose resolver")
+_ledger_src = model_code[model_code.index("var petLedger"):model_code.index("var petSpritePose")]
+need("petCalmMotion" not in _ledger_src,
+     "calm motion must not touch the ledger; lower motion may not cost status")
+_calm_setter = model_code[model_code.index("func setPetCalmMotion("):]
+_calm_setter = _calm_setter[:_calm_setter.index("\n    }")]
+need("UserDefaults.standard.set(enabled, forKey: Self.petCalmMotionKey)" in _calm_setter,
+     "setPetCalmMotion does not persist the choice; it would reset every launch")
+need("UserDefaults.standard.bool(forKey: ControllerModel.petCalmMotionKey)" in model_code,
+     "the calm preference is never read back at launch")
+need("Calm motion" in (root / "Sources/Views.swift").read_text(),
+     "calm motion has no control in Session Pet settings")
+
 # The pet must return to where it was parked. Every frame is rebuilt from the
 # resting anchor: reading the last CLAMPED origin back walked a high-parked
 # pet 450pt down the screen in one open (measured 2026-08-31).

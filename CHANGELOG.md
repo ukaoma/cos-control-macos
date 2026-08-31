@@ -1,3 +1,19 @@
+## 0.5.165 (build 203)
+
+Calm motion. An advanced character's multi-session fights are the whole
+appeal for most people and motion sickness or plain distraction for others,
+and until now the only alternative was macOS Reduced Motion, which freezes
+the figure entirely. Turn on Calm motion in Session Pet settings and the
+character rests on its gentle idle loop no matter how many sessions are
+running — the same register as the still characters — while the bar below it
+keeps reporting every count: running, waiting, finished. Lower motion costs
+you nothing in status.
+
+Alerts still reach the figure. An error or a jump that needs your attention
+is not a motion preference, it is the app telling you it could not do
+something, and both are brief. For no motion at all, macOS Reduced Motion
+still freezes everything.
+
 ## 0.5.164 (build 202)
 
 A large session now opens with its full history, not a sliver. 0.5.162 fixed

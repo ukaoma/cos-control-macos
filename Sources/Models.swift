@@ -3613,6 +3613,23 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
     /// Bool this replaces flashed .done while three other sessions still ran,
     /// and a defaulted 0 would silently reproduce that at any call site that
     /// forgot to pass them.
+    /// Calm motion (0.5.165): an advanced character rests instead of fighting.
+    /// Combat is the whole appeal for most people and motion sickness or plain
+    /// distraction for others, and until now the only alternative was macOS
+    /// Reduce Motion, which freezes the figure to a single frame. Calm keeps
+    /// the gentle idle loop — the same register as the 300 still characters —
+    /// and lets the LEDGER carry every count, so nothing about status is lost.
+    ///
+    /// Error and attention deliberately still break through: they mean the app
+    /// could not do something and needs you, they are brief, and silencing an
+    /// alert is not a motion preference.
+    static func calmed(_ pose: PetSpritePose) -> PetSpritePose {
+        switch pose {
+        case .error, .attention: pose
+        default: .idle
+        }
+    }
+
     static func resolve(
         sessionCount: Int,
         workingCount: Int,
@@ -3620,8 +3637,16 @@ enum PetSpritePose: String, CaseIterable, Hashable, Sendable {
         focusState: String?,
         completing: Bool,
         attention: Bool = false,
-        errored: Bool = false
+        errored: Bool = false,
+        calm: Bool = false
     ) -> PetSpritePose {
+        if calm {
+            return calmed(resolve(
+                sessionCount: sessionCount, workingCount: workingCount,
+                waitingCount: waitingCount, focusState: focusState,
+                completing: completing, attention: attention, errored: errored
+            ))
+        }
         if errored || focusState == "error" { return .error }
         if attention { return .attention }
         if completing && workingCount == 0 && waitingCount == 0 { return .done }
