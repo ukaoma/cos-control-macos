@@ -3286,22 +3286,70 @@ struct ModelsContract {
     /// name that does not exist on the shipped OS renders as nothing at all,
     /// so a typo would ship an invisible mark with a green suite.
     private static func checkPetProviderMarks() {
-        for (provider, expected) in [("claude", "sparkle"), ("codex", "terminal"),
-                                     ("cursor", "cube"), ("local", "cpu"),
-                                     ("ollama", "cpu"), ("", "sparkle"),
-                                     ("  CODEX  ", "terminal"), ("gemini", "sparkle")] {
-            precondition(PetProvider.glyph(provider) == expected,
-                         "\(provider) should wear \(expected), got \(PetProvider.glyph(provider))")
+        typealias Mark = PetProvider.Mark
+        for (provider, expected) in [("claude", Mark.asset("mark-claude")),
+                                     ("codex", .asset("mark-codex")),
+                                     ("cursor", .asset("mark-cursor")),
+                                     ("local", .symbol("cpu")), ("ollama", .symbol("cpu")),
+                                     ("", .asset("mark-claude")),
+                                     ("  CURSOR  ", .asset("mark-cursor")),
+                                     ("gemini", .asset("mark-claude"))] {
+            precondition(PetProvider.mark(provider) == expected,
+                         "\(provider) wears the wrong mark: \(PetProvider.mark(provider))")
         }
         let platforms = ["claude", "codex", "cursor", "local"]
-        for name in Set(platforms.map(PetProvider.glyph)) {
-            precondition(NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil,
-                         "SF Symbol '\(name)' does not resolve on this OS — the row would "
-                         + "render an invisible mark")
-        }
-        precondition(Set(platforms.map(PetProvider.glyph)).count == platforms.count,
+        precondition(Set(platforms.map(PetProvider.mark)).count == platforms.count,
                      "two platforms wear the same mark; the point is telling them apart")
-        print("COS Control: every platform mark resolves and is distinct")
+
+        // The load-bearing check. A bundled SVG that is missing, malformed or
+        // empty renders as NOTHING, which no mapping assertion can see. Each
+        // asset is loaded from the shipped Resources and rasterized, and the
+        // ink is counted. Resolved from #filePath so the working directory
+        // cannot make this vacuous.
+        let resources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Resources")
+        for platform in platforms {
+            switch PetProvider.mark(platform) {
+            case .symbol(let name):
+                precondition(NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil,
+                             "SF Symbol '\(name)' does not resolve; the row would be blank")
+            case .asset(let name):
+                let url = resources.appendingPathComponent("\(name).svg")
+                precondition(FileManager.default.fileExists(atPath: url.path),
+                             "\(name).svg is not in Resources; the row would render nothing")
+                guard let image = NSImage(contentsOf: url) else {
+                    preconditionFailure("\(name).svg does not load as an image")
+                }
+                precondition(image.size.width >= 8 && image.size.height >= 8,
+                             "\(name).svg reports \(image.size) — an em-sized SVG lands at 1x1 "
+                             + "and breaks layout; give it explicit pixel dimensions")
+                let side = 32
+                guard let rep = NSBitmapImageRep(
+                    bitmapDataPlanes: nil, pixelsWide: side, pixelsHigh: side,
+                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                    colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+                ) else { preconditionFailure("could not rasterize \(name)") }
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+                image.draw(in: NSRect(x: 0, y: 0, width: side, height: side))
+                NSGraphicsContext.restoreGraphicsState()
+                var inked = 0
+                for x in 0..<side {
+                    for y in 0..<side where (rep.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.1 {
+                        inked += 1
+                    }
+                }
+                let coverage = Double(inked) / Double(side * side)
+                precondition(coverage > 0.08,
+                             "\(name).svg draws almost nothing (\(Int(coverage * 100))% ink) — "
+                             + "the row would show an invisible mark")
+                precondition(coverage < 0.95,
+                             "\(name).svg draws a solid block (\(Int(coverage * 100))% ink) — "
+                             + "a logo that fills its box is a fill, not a mark")
+            }
+        }
+        print("COS Control: every platform mark is a real logo that actually draws")
     }
 
     /// The LIVE line ticker: computed from the monospaced advance, so the

@@ -43,6 +43,9 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp "$ROOT/Resources/COSMark.svg" "$APP/Contents/Resources/COSMark.svg"
+# Platform marks for the agent rows. A missing file renders NOTHING, so
+# the contract loads and rasterizes each one.
+cp "$ROOT/Resources/mark-"*.svg "$APP/Contents/Resources/"
 cp "$ROOT/Resources/COSLockup.svg" "$APP/Contents/Resources/COSLockup.svg"
 mkdir -p "$APP/Contents/Resources/Fonts"
 cp "$ROOT/Resources/Fonts/"*.ttf "$APP/Contents/Resources/Fonts/"

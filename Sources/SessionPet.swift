@@ -584,7 +584,7 @@ private struct SessionPetRoot: View {
             // the row's entire width, roughly double.
             VStack(alignment: .leading, spacing: size.length(4)) {
                 HStack(alignment: .top, spacing: size.length(8)) {
-                    providerMark(session.petProviderGlyph, label: session.providerLabel,
+                    providerMark(session.petProviderMark, label: session.providerLabel,
                                  tint: providerTint(session.provider))
                         .padding(.top, size.length(2))
                     Text(session.title)
@@ -651,7 +651,7 @@ private struct SessionPetRoot: View {
             model.openSessionInPlatform(session)
         } label: {
             HStack(spacing: size.length(8)) {
-                providerMark(session.petProviderGlyph, label: session.providerLabel,
+                providerMark(session.petProviderMark, label: session.providerLabel,
                              tint: providerTint(session.provider).opacity(0.75))
                 Text(session.title)
                     .font(COSType.body(size.typeSize(10), weight: .medium))
@@ -677,15 +677,26 @@ private struct SessionPetRoot: View {
     /// One platform mark for every surface: the SF Symbol beside the
     /// wordmark, in the provider's tint. Fixed width so titles start on the
     /// same x down the whole list.
-    private func providerMark(_ glyph: String, label: String, tint: Color) -> some View {
+    private func providerMark(_ mark: PetProvider.Mark, label: String, tint: Color) -> some View {
         HStack(spacing: size.length(3)) {
-            Image(systemName: glyph)
-                .font(.system(size: size.typeSize(8), weight: .bold))
+            switch mark {
+            case .asset(let name):
+                // The real logo, bundled and tinted like every other template
+                // mark in the app, so it reads in light and dark alike.
+                Image(nsImage: COSBrand.svg(name))
+                    .renderingMode(.template)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: size.typeSize(10), height: size.typeSize(10))
+            case .symbol(let name):
+                Image(systemName: name)
+                    .font(.system(size: size.typeSize(9), weight: .bold))
+            }
             Text(label.uppercased())
                 .font(COSType.mono(size.typeSize(8), weight: .bold))
         }
         .foregroundStyle(tint)
-        .frame(width: size.length(52), alignment: .leading)
+        .frame(width: size.length(54), alignment: .leading)
     }
 
     /// One shared control for the finished row's three paths, so they cannot
@@ -736,7 +747,7 @@ private struct SessionPetRoot: View {
                         }
                     } label: {
                         HStack(alignment: .top, spacing: size.length(8)) {
-                            providerMark(PetProvider.glyph(row.provider),
+                            providerMark(PetProvider.mark(row.provider),
                                          label: row.provider,
                                          tint: providerTint(row.provider))
                             VStack(alignment: .leading, spacing: size.length(2)) {

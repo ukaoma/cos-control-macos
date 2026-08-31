@@ -1,3 +1,11 @@
+## 0.5.163 (build 201)
+
+The agent rows now carry each platform's real logo instead of a stand-in:
+the Anthropic sunburst for Claude, the OpenAI knot for Codex, and the Cursor
+prism. They ship as monochrome vectors tinted like every other mark in the
+app, so they stay legible in light and dark. A local model, which has no
+brand mark, keeps its chip.
+
 ## 0.5.162 (build 200)
 
 Large Codex and Cursor sessions open now. A transcript over 32 MB was

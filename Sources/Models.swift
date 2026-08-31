@@ -724,7 +724,7 @@ struct ClaudeSession: Identifiable, Sendable {
         return "Updated \(value)"
     }
 
-    var petProviderGlyph: String { PetProvider.glyph(provider) }
+    var petProviderMark: PetProvider.Mark { PetProvider.mark(provider) }
 
     var providerLabel: String {
         switch provider {
@@ -3278,19 +3278,27 @@ enum PetAnimationSpeed {
 /// loop timing are COMPUTED rather than measured through a layout pass.
 /// Kerning is not applied to this line, so the estimate is exact; the gap
 /// between the two loop copies absorbs any sub-point rounding.
-/// Platform marks for the agent rows, matching the gotcos "replaceable
-/// engine" card: a spark for Claude, a terminal prompt for Codex, a cube for
-/// Cursor, a chip for a local model. Shared by live rows and finished chips
-/// so one provider can never wear two marks. Every name is asserted to
-/// resolve on the shipped OS by the contract — an SF Symbol that does not
-/// exist renders as nothing at all.
+/// Platform marks for the agent rows: each platform's REAL logo, bundled as
+/// a monochrome SVG and tinted like every other template mark in the app —
+/// the Anthropic sunburst, the OpenAI knot, the Cursor prism. Stand-in SF
+/// Symbols (a spark, a terminal, a cube) read as generic and were replaced
+/// on sight (Miles, 2026-08-31). A local model has no brand mark and keeps a
+/// symbol. Shared by live rows and finished chips so one provider can never
+/// wear two marks. The contract LOADS AND RASTERIZES every asset: a missing
+/// or empty SVG renders as nothing at all.
 enum PetProvider {
-    static func glyph(_ provider: String) -> String {
+    /// A bundled brand SVG, or an SF Symbol where no brand mark ships.
+    enum Mark: Hashable {
+        case asset(String)
+        case symbol(String)
+    }
+
+    static func mark(_ provider: String) -> Mark {
         switch provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "codex": "terminal"
-        case "cursor": "cube"
-        case "local", "ollama": "cpu"
-        default: "sparkle"
+        case "codex": .asset("mark-codex")
+        case "cursor": .asset("mark-cursor")
+        case "local", "ollama": .symbol("cpu")
+        default: .asset("mark-claude")
         }
     }
 }

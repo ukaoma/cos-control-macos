@@ -2895,9 +2895,15 @@ need("providerMark(" in code[code.index("private func idleRow"):
 need(code.count("providerMark(") == 4,
      "platform marks must come from the single shared builder used by all "
      "three row types (3 call sites + 1 definition)")
-need("Image(systemName: glyph)" in code[code.index("private func providerMark"):
-                                        code.index("private func dismissControl")],
-     "the platform mark renders no icon")
+_mark_src = code[code.index("private func providerMark"):code.index("private func dismissControl")]
+need("COSBrand.svg(name)" in _mark_src and "Image(systemName: name)" in _mark_src,
+     "the platform mark must render the bundled brand logo, with an SF Symbol "
+     "only where no brand mark ships")
+for _asset in ["mark-claude", "mark-codex", "mark-cursor"]:
+    need((root / f"Resources/{_asset}.svg").exists(),
+         f"Resources/{_asset}.svg is missing; the row would render nothing")
+need('cp "$ROOT/Resources/mark-"*.svg' in (root / "scripts/build-release.sh").read_text(),
+     "the release build does not ship the platform marks")
 # The ticker owns its own full-width line BELOW the title row. Nested back
 # inside the title column it shares ~110pt with the meta stack and cannot
 # show one whole word (Miles, 2026-08-31).
