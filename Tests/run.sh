@@ -2081,7 +2081,11 @@ need('COSPalette.plateInk' in (root / "Sources/SessionPet.swift").read_text(),
      "pet controls regressed to fixed ink: black-on-black in dark mode")
 need('foregroundStyle(COSPalette.ink)' not in (root / "Sources/SessionPet.swift").read_text(),
      "a pet control paints fixed ink on the adaptive card: black-on-black in dark mode")
-need('arrow.up.forward.app' in (root / "Sources/SessionPet.swift").read_text(), "the pet has no Open in platform control")
+# 0.5.155 mission rows: the whole row IS the jump; the old trailing glyph is
+# clutter the meta column replaced. The affordance is pinned as the row help
+# plus the openSessionInPlatform call the ROUTECHK slice already asserts.
+need((root / "Sources/SessionPet.swift").read_text().count('.help("Open in platform")') >= 2,
+     "the session rows lost their whole-row Open in platform affordance")
 # 0.5.147: the scope/target button and openTarget split are REMOVED with the
 # hover bubble (Miles, on-device) — the pills, list rows, and the sprite click
 # are the only openers. Keep the dead chrome out.
@@ -2826,6 +2830,23 @@ for name, src in (("live", live_src), ("finished", done_src)):
          f"the {name} list left the material surface family")
     need(src.count('content.padding(.trailing, size.length(10))') == 2,
          f"the {name} list must inset its rows in BOTH the scrolling and flat branches")
+
+# Mission rows (0.5.155, design B): sectioning comes from the executable
+# ClaudeSession.petSections — never re-derived in the view — in RUNNING,
+# WAITING ON YOU, IDLE order, and the LIVE line renders petLiveLine.
+need("ClaudeSession.petSections(sessions)" in live_src,
+     "the live list no longer sections through the executable helper")
+for a, b in [('"RUNNING"', '"WAITING ON YOU"'), ('"WAITING ON YOU"', '"IDLE"')]:
+    need(live_src.index(a) < live_src.index(b),
+         f"section {a} must render before {b} — weight order is the design")
+mission_src = code[code.index("private func missionRow"):code.index("private func idleRow")]
+need("session.petLiveLine" in mission_src and "session.compactAgeLabel()" in mission_src
+     and "session.workspace" in mission_src,
+     "a mission row lost its LIVE line, age figure, or workspace tag")
+need("lineLimit(2)" in mission_src, "mission titles regressed to a one-line ellipsis")
+idle_src = code[code.index("private func idleRow"):code.index("private func dismissControl")]
+need("petLiveLine" not in idle_src and "lineLimit(1)" in idle_src,
+     "idle rows must stay dim one-liners — periphery reads as periphery")
 
 # The pet floats over arbitrary wallpaper: the ledger needs its own surface.
 bar_src = pet[pet.index("private func ledgerBar"):pet.index("private func pillsRow")]

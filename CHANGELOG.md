@@ -1,3 +1,15 @@
+## 0.5.155 (build 193)
+
+The live-session list is now mission rows, built to orchestrate a fleet at a
+glance. One list, three weights: RUNNING rows carry a green rail, a two-line
+title, a pulsing mono LIVE line saying what the agent is doing right now,
+its workspace, and a colored age figure. WAITING ON YOU is its own amber
+section that names what it waits on. Idle sessions recede to dim one-liners.
+The LIVE line renders the per-session summary the helper has shipped all
+along and the pet never displayed; the raw "user" wait token reads as
+"needs you." The whole row still jumps, the drop x and restore row are
+unchanged, and the scroll frame grew to fit the richer rows.
+
 ## 0.5.154 (build 192)
 
 All four Jedi now have walking animations. Nia Solari, Elara Vale and Rowan

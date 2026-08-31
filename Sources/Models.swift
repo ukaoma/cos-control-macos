@@ -638,6 +638,17 @@ struct ClaudeSession: Identifiable, Sendable {
         }
     }
 
+    /// Mission-rows sectioning (0.5.155, design B): the live list groups by
+    /// weight — running rich, waiting amber, idle receded. Pure so the
+    /// contract executes the grouping; within each section the sorted input
+    /// order (petVisibleSessions) is preserved.
+    static func petSections(_ sessions: [ClaudeSession])
+        -> (running: [ClaudeSession], waiting: [ClaudeSession], idle: [ClaudeSession]) {
+        (sessions.filter(\.isPetWorking),
+         sessions.filter { $0.state == "waiting" },
+         sessions.filter { !$0.isPetWorking && $0.state != "waiting" })
+    }
+
     private static func petLiveRank(_ session: ClaudeSession) -> Int {
         switch session.state {
         case "running": 0
@@ -660,6 +671,31 @@ struct ClaudeSession: Identifiable, Sendable {
             return row
         }
         return sessions.first
+    }
+
+    /// The mission row's mono LIVE line (0.5.155, design B): what the agent
+    /// is doing RIGHT NOW. A waiting row names what it waits on; a running
+    /// row speaks its live summary — the field the helper has shipped all
+    /// along and the pet never rendered.
+    var petLiveLine: String {
+        if state == "waiting" {
+            let need = waitingFor.trimmingCharacters(in: .whitespacesAndNewlines)
+            return need.isEmpty || need == "user" ? "needs you" : need
+        }
+        let summary = discussionSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? "working" : summary
+    }
+
+    /// The mission row's right-aligned figure: "4s", "12m", "1h", "2d" — the
+    /// bare duration. relativeAgeLabel keeps its "Updated …" prose for
+    /// surfaces that read as sentences.
+    func compactAgeLabel(now: Date = Date()) -> String? {
+        guard let updated = updatedDate else { return nil }
+        let seconds = max(0, now.timeIntervalSince(updated))
+        if seconds < 60 { return "\(Int(seconds.rounded(.down)))s" }
+        if seconds < 3600 { return "\(Int((seconds / 60).rounded(.down)))m" }
+        if seconds < 86400 { return "\(Int((seconds / 3600).rounded(.down)))h" }
+        return "\(Int((seconds / 86400).rounded(.down)))d"
     }
 
     func relativeAgeLabel(now: Date = Date()) -> String? {

@@ -445,58 +445,32 @@ private struct SessionPetRoot: View {
     }
 
     private var sessionList: some View {
+        // Mission rows (0.5.155, Miles-approved design B): one list, three
+        // weights. Running rows are heavy and alive — rail, two-line title,
+        // the mono LIVE line, workspace. Waiting gets its own amber section.
+        // Idle recedes to dim one-liners. Section membership comes from the
+        // executable ClaudeSession.petSections, never re-derived here.
+        let grouped = ClaudeSession.petSections(sessions)
         let content = VStack(alignment: .leading, spacing: 0) {
-            ForEach(sessions) { session in
-                // The drop control is a SIBLING of the row button, not a child:
-                // a Button nested inside another Button's label never receives
-                // the click on macOS.
-                HStack(spacing: 0) {
-                Button {
-                    model.petFocusID = session.id
-                    model.openSessionInPlatform(session)
-                } label: {
-                    HStack(alignment: .top, spacing: size.length(8)) {
-                        Text(session.providerLabel.uppercased())
-                            .font(COSType.mono(size.typeSize(8), weight: .bold))
-                            .foregroundStyle(providerTint(session.provider))
-                            .frame(width: size.length(44), alignment: .leading)
-                        VStack(alignment: .leading, spacing: size.length(2)) {
-                            Text(session.title)
-                                .font(COSType.body(size.typeSize(11), weight: .medium))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                            Text(listSubtitle(session))
-                                .font(COSType.body(size.typeSize(10)))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        Spacer(minLength: 0)
-                        Image(systemName: "arrow.up.forward.app")
-                            .font(.system(size: size.typeSize(11), weight: .semibold))
-                            .foregroundStyle(COSPalette.plateInk)
-                    }
-                    .padding(.vertical, size.length(7))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+            if !grouped.running.isEmpty {
+                petSectionHeader("RUNNING", count: grouped.running.count, tint: COSPalette.green)
+                ForEach(Array(grouped.running.enumerated()), id: \.element.id) { index, session in
+                    if index > 0 { Divider() }
+                    missionRow(session, tint: COSPalette.green)
                 }
-                .buttonStyle(.plain)
-                .help("Open in platform")
-                if model.canDismissPetSession(session) {
-                    Button {
-                        model.dismissPetSession(session)
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: size.typeSize(9), weight: .bold))
-                            .foregroundStyle(.secondary)
-                            .padding(size.length(5))
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Drop from the pet list. The session keeps running.")
+            }
+            if !grouped.waiting.isEmpty {
+                petSectionHeader("WAITING ON YOU", count: grouped.waiting.count, tint: COSPalette.amber)
+                ForEach(Array(grouped.waiting.enumerated()), id: \.element.id) { index, session in
+                    if index > 0 { Divider() }
+                    missionRow(session, tint: COSPalette.amber)
                 }
-                }
-                if session.id != sessions.last?.id {
-                    Divider()
+            }
+            if !grouped.idle.isEmpty {
+                petSectionHeader("IDLE", count: grouped.idle.count, tint: Color.secondary)
+                ForEach(Array(grouped.idle.enumerated()), id: \.element.id) { index, session in
+                    if index > 0 { Divider() }
+                    idleRow(session)
                 }
             }
             // Dropping a row must be undoable from the app itself. Without this
@@ -530,7 +504,7 @@ private struct SessionPetRoot: View {
                     // the same right edge the drop x lives on.
                     content.padding(.trailing, size.length(10))
                 }
-                .frame(height: size.length(200))
+                .frame(height: size.length(240))
             } else {
                 content.padding(.trailing, size.length(10))
             }
@@ -545,6 +519,130 @@ private struct SessionPetRoot: View {
             RoundedRectangle(cornerRadius: size.length(12), style: .continuous)
                 .stroke(COSPalette.line, lineWidth: 1)
         )
+    }
+
+    private func petSectionHeader(_ label: String, count: Int, tint: Color) -> some View {
+        HStack(spacing: size.length(5)) {
+            Circle()
+                .fill(tint)
+                .frame(width: size.length(6), height: size.length(6))
+            Text("\(label) \(count)")
+                .font(COSType.mono(size.typeSize(8), weight: .bold))
+                .kerning(0.5)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .padding(.top, size.length(7))
+        .padding(.bottom, size.length(3))
+    }
+
+    /// A running or waiting session: state rail, two-line title, the LIVE
+    /// line saying what the agent is doing right now, and where. The whole
+    /// row jumps; the drop control is a SIBLING of the row button, never
+    /// nested in its label — a nested Button never receives the click.
+    private func missionRow(_ session: ClaudeSession, tint: Color) -> some View {
+        HStack(spacing: 0) {
+        Button {
+            model.petFocusID = session.id
+            model.openSessionInPlatform(session)
+        } label: {
+            HStack(alignment: .top, spacing: size.length(8)) {
+                RoundedRectangle(cornerRadius: size.length(2))
+                    .fill(tint)
+                    .frame(width: size.length(3))
+                Text(session.providerLabel.uppercased())
+                    .font(COSType.mono(size.typeSize(8), weight: .bold))
+                    .foregroundStyle(providerTint(session.provider))
+                    .frame(width: size.length(40), alignment: .leading)
+                    .padding(.top, size.length(2))
+                VStack(alignment: .leading, spacing: size.length(3)) {
+                    Text(session.title)
+                        .font(COSType.body(size.typeSize(11), weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                    HStack(spacing: size.length(4)) {
+                        if session.isPetWorking {
+                            Circle()
+                                .fill(tint)
+                                .frame(width: size.length(5), height: size.length(5))
+                                .modifier(LedgerBreathing(active: !reduceMotion))
+                        }
+                        Text(session.petLiveLine)
+                            .font(COSType.mono(size.typeSize(8), weight: .bold))
+                            .foregroundStyle(tint)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 0)
+                VStack(alignment: .trailing, spacing: size.length(3)) {
+                    Text(session.compactAgeLabel() ?? "")
+                        .font(COSType.mono(size.typeSize(8), weight: .bold))
+                        .foregroundStyle(tint)
+                    Text(session.workspace.lowercased())
+                        .font(COSType.body(size.typeSize(8)))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .frame(maxWidth: size.length(70), alignment: .trailing)
+                }
+            }
+            .padding(.vertical, size.length(7))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open in platform")
+        if model.canDismissPetSession(session) {
+            dismissControl(session)
+        }
+        }
+    }
+
+    /// An idle-alive session: one dim line. The fleet's periphery should
+    /// read as periphery.
+    private func idleRow(_ session: ClaudeSession) -> some View {
+        HStack(spacing: 0) {
+        Button {
+            model.petFocusID = session.id
+            model.openSessionInPlatform(session)
+        } label: {
+            HStack(spacing: size.length(8)) {
+                Text(session.providerLabel.uppercased())
+                    .font(COSType.mono(size.typeSize(8), weight: .bold))
+                    .foregroundStyle(providerTint(session.provider).opacity(0.75))
+                    .frame(width: size.length(40), alignment: .leading)
+                Text(session.title)
+                    .font(COSType.body(size.typeSize(10), weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Text(session.compactAgeLabel() ?? "")
+                    .font(COSType.mono(size.typeSize(8), weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, size.length(5))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open in platform")
+        if model.canDismissPetSession(session) {
+            dismissControl(session)
+        }
+        }
+    }
+
+    private func dismissControl(_ session: ClaudeSession) -> some View {
+        Button {
+            model.dismissPetSession(session)
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: size.typeSize(9), weight: .bold))
+                .foregroundStyle(.secondary)
+                .padding(size.length(5))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Drop from the pet list. The session keeps running.")
     }
 
     /// Finished sessions. Lives on the ~310pt pet, so the list is capped and
@@ -683,13 +781,6 @@ private struct SessionPetRoot: View {
             }
         }
         return true
-    }
-
-    private func listSubtitle(_ session: ClaudeSession) -> String {
-        if let age = session.relativeAgeLabel() {
-            return "\(session.petStateCaption) · \(age)"
-        }
-        return session.petStateCaption
     }
 
     private func providerTint(_ provider: String) -> Color {

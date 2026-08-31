@@ -3172,6 +3172,50 @@ struct ModelsContract {
         precondition(workingVp.height == 100,
                      "a 1x pose must not carry the 3x idle headroom above the figure")
         precondition(idleVp.height == 300, "the tallest pose still gets its full height")
+        // Mission-row helpers (0.5.155, design B) — executable.
+        let fleet = [live("r1", "running"), live("w1", "waiting"),
+                     live("i1", "recent"), live("r2", "running")]
+        let grouped = ClaudeSession.petSections(fleet)
+        precondition(grouped.running.map(\.id) == ["claude:r1", "claude:r2"],
+                     "running section keeps input order")
+        precondition(grouped.waiting.map(\.id) == ["claude:w1"])
+        precondition(grouped.idle.map(\.id) == ["claude:i1"],
+                     "idle is everything neither running nor waiting")
+        precondition(grouped.running.count + grouped.waiting.count + grouped.idle.count
+                     == fleet.count, "sections partition — no row lost or doubled")
+
+        func lineSession(_ state: String, summary: String = "", waitingFor: String = "") -> ClaudeSession {
+            ClaudeSession(.object([
+                "id": .string("s"), "name": .string("s"),
+                "workspace": .string("MU-Chief-Staff"),
+                "state": .string(state), "alive": .bool(true),
+                "discussion_summary": .string(summary),
+                "waitingFor": .string(waitingFor),
+            ]))!
+        }
+        precondition(lineSession("running", summary: "indexing wk36 backlog").petLiveLine
+                     == "indexing wk36 backlog", "a running row speaks its live summary")
+        precondition(lineSession("running").petLiveLine == "working",
+                     "an empty summary still says something honest")
+        precondition(lineSession("waiting", waitingFor: "user").petLiveLine == "needs you",
+                     "the raw 'user' token reads as prose")
+        precondition(lineSession("waiting", waitingFor: "permission prompt").petLiveLine
+                     == "permission prompt", "a named wait passes through")
+        precondition(lineSession("waiting", summary: "old summary").petLiveLine == "needs you",
+                     "waiting outranks a stale summary — the row must say it is blocked")
+
+        let stamped = ClaudeSession(.object([
+            "id": .string("t"), "name": .string("t"),
+            "workspace": .string("w"), "state": .string("running"),
+            "alive": .bool(true),
+            "updatedAt": .string("2026-08-31T15:00:00Z"),
+        ]))!
+        let base = ISO8601DateFormatter().date(from: "2026-08-31T15:00:00Z")!
+        precondition(stamped.compactAgeLabel(now: base.addingTimeInterval(4)) == "4s")
+        precondition(stamped.compactAgeLabel(now: base.addingTimeInterval(12 * 60)) == "12m")
+        precondition(stamped.compactAgeLabel(now: base.addingTimeInterval(3 * 3600)) == "3h")
+        precondition(stamped.compactAgeLabel(now: base.addingTimeInterval(2 * 86400)) == "2d")
+
         print("COS Control: the ledger vocabulary matches the approved canvas")
     }
 
