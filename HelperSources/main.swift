@@ -7316,11 +7316,19 @@ final class COSControlHelper {
 
     static let agentSessionListLimit = 20
     static let agentSessionMaxFileBytes = 32 * 1024 * 1024
-    /// Newest bytes parsed for an oversized transcript. Turn text is a small
-    /// fraction of a transcript's bytes (tool calls dominate and are dropped),
-    /// so this comfortably covers the claudeHistoryTurnLimit turns the detail
-    /// view actually renders.
-    static let agentSessionTailWindowBytes = 8 * 1024 * 1024
+    /// Newest bytes parsed for an oversized transcript. Sized by MEASUREMENT
+    /// against a real 278 MB Codex rollout, not by guess — tool calls dominate
+    /// a transcript's bytes and are dropped, so turn text is sparse:
+    ///
+    ///     8 MB ->  15 turns (0.39s)     64 MB -> 120 turns (1.11s)
+    ///    32 MB ->  69 turns (0.67s)    128 MB -> 120 turns (1.99s)
+    ///
+    /// 64 MB is where the window stops being the constraint and
+    /// claudeHistoryTurnLimit does; past it the extra read buys nothing but
+    /// time. The first cut at 8 MB opened the session but surfaced an eighth
+    /// of the history the view can hold (Miles asked for as much history as
+    /// possible alongside the current response, 2026-08-31).
+    static let agentSessionTailWindowBytes = 64 * 1024 * 1024
     /// Enough to carry the session_meta line that opens a transcript, and no
     /// more — the head exists for metadata, not for history.
     static let transcriptHeadBytes = 64 * 1024
@@ -12469,6 +12477,14 @@ final class COSControlHelper {
                    "a windowed read must skip the middle, not read everything")
         try expect(seen.allSatisfy { (try? JSONSerialization.jsonObject(with: Data($0.utf8))) != nil },
                    "a window that opens mid-file must drop its partial first line")
+
+        // The window must be able to FILL the view's turn budget, or opening a
+        // large session shows a sliver of history for no reason. Measured: 64 MB
+        // yields the full 120 turns on a 278 MB rollout, 8 MB yielded 15.
+        try expect(Self.agentSessionTailWindowBytes >= 64 * 1024 * 1024,
+                   "the tail window is too small to fill claudeHistoryTurnLimit turns")
+        try expect(Self.agentSessionTailWindowBytes > Self.transcriptHeadBytes,
+                   "the tail window must dominate the head; the head is for metadata")
 
         // A file only a LITTLE past the window is where head and tail would
         // overlap. Without the clamp the seam is delivered twice and the

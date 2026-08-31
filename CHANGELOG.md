@@ -1,3 +1,12 @@
+## 0.5.164 (build 202)
+
+A large session now opens with its full history, not a sliver. 0.5.162 fixed
+the refusal but read only the newest 8 MB, which on a 278 MB transcript
+surfaced fifteen turns where the view can hold a hundred and twenty. The
+window is now sized by measurement rather than guess: 64 MB fills the view's
+turn budget on that same transcript in about a second, and reading further
+buys nothing.
+
 ## 0.5.163 (build 201)
 
 The agent rows now carry each platform's real logo instead of a stand-in:
