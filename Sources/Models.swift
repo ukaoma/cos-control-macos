@@ -696,6 +696,15 @@ struct ClaudeSession: Identifiable, Sendable {
         return summary.isEmpty ? "working" : summary
     }
 
+    /// What this session DID, for a row that has already finished. petLiveLine
+    /// answers "what is it doing" and falls back to "working", which is wrong
+    /// once nothing is running; this falls back to "Finished", the literal the
+    /// finished list used to print for every row on every line.
+    var petOutcomeLine: String {
+        let summary = discussionSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? "Finished" : summary
+    }
+
     /// The mission row's right-aligned figure: "4s", "12m", "1h", "2d" — the
     /// bare duration. relativeAgeLabel keeps its "Updated …" prose for
     /// surfaces that read as sentences.
@@ -929,14 +938,29 @@ struct PetCompletion: Identifiable, Sendable, Equatable {
     let workspace: String
     let finishedAt: Date
     var seen: Bool
+    /// The last thing the session was doing, captured at the moment it stopped.
+    /// Empty on rows written before 0.5.171, which render the old literal.
+    var summary: String = ""
 }
 
 // Codable by hand in BOTH directions: decode defaults provider/workspace to ""
 // and seen to false so a partial live blob still decodes, and a type with only
 // init(from:) does not compile.
+extension PetCompletion {
+    /// The same compact figure the live rows show, from a finish timestamp:
+    /// "4s", "12m", "1h", "2d".
+    static func compactAge(_ finished: Date, now: Date = Date()) -> String {
+        let seconds = max(0, now.timeIntervalSince(finished))
+        if seconds < 60 { return "\(Int(seconds.rounded(.down)))s" }
+        if seconds < 3600 { return "\(Int((seconds / 60).rounded(.down)))m" }
+        if seconds < 86400 { return "\(Int((seconds / 3600).rounded(.down)))h" }
+        return "\(Int((seconds / 86400).rounded(.down)))d"
+    }
+}
+
 extension PetCompletion: Codable {
     private enum CodingKeys: String, CodingKey {
-        case id, sessionId, name, provider, workspace, finishedAt, seen
+        case id, sessionId, name, provider, workspace, finishedAt, seen, summary
     }
 
     init(from decoder: Decoder) throws {
@@ -948,6 +972,7 @@ extension PetCompletion: Codable {
         workspace = try c.decodeIfPresent(String.self, forKey: .workspace) ?? ""
         finishedAt = try c.decode(Date.self, forKey: .finishedAt)
         seen = try c.decodeIfPresent(Bool.self, forKey: .seen) ?? false
+        summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
     }
 
     func encode(to encoder: Encoder) throws {
@@ -958,6 +983,7 @@ extension PetCompletion: Codable {
         try c.encode(provider, forKey: .provider)
         try c.encode(workspace, forKey: .workspace)
         try c.encode(finishedAt, forKey: .finishedAt)
+        try c.encode(summary, forKey: .summary)
         try c.encode(seen, forKey: .seen)
     }
 }
@@ -1111,7 +1137,7 @@ enum PetCompletionDetector {
             out.append(PetCompletion(
                 id: prior.id, sessionId: prior.sessionId, name: prior.name,
                 provider: prior.provider, workspace: prior.workspace,
-                finishedAt: now, seen: false
+                finishedAt: now, seen: false, summary: prior.petOutcomeLine
             ))
         }
         return out
@@ -3384,32 +3410,52 @@ enum PetTicker {
     /// fall back to full-width faces at 1.67x to 2.29x the monospace advance.
     /// The estimate then said "it fits" for text that overflowed, and the
     /// window clipped it with neither motion nor an ellipsis (QA, 2026-08-31).
-    static func width(_ text: String, fontSize: CGFloat) -> CGFloat {
-        if text.allSatisfy(\.isASCII) {
+    enum Face: Equatable {
+        case mono, body
+
+        func nsFont(_ size: CGFloat) -> NSFont {
+            switch self {
+            case .mono:
+                NSFont(name: "JetBrains Mono", size: size)
+                    ?? .monospacedSystemFont(ofSize: size, weight: .bold)
+            case .body:
+                NSFont(name: "DM Sans", size: size)
+                    ?? .systemFont(ofSize: size, weight: .semibold)
+            }
+        }
+    }
+
+    static func width(_ text: String, fontSize: CGFloat, face: Face = .mono) -> CGFloat {
+        if face == .mono, text.allSatisfy(\.isASCII) {
             return CGFloat(text.count) * fontSize * advanceRatio
         }
-        return measuredWidth(text, fontSize: fontSize)
+        return measuredWidth(text, fontSize: fontSize, face: face)
     }
 
     /// Real typographic width, including whatever fallback face supplies the
     /// glyphs the mono font lacks.
-    static func measuredWidth(_ text: String, fontSize: CGFloat) -> CGFloat {
-        let font = NSFont(name: "JetBrains Mono", size: fontSize)
-            ?? NSFont.monospacedSystemFont(ofSize: fontSize, weight: .bold)
+    static func measuredWidth(
+        _ text: String, fontSize: CGFloat, face: Face = .mono
+    ) -> CGFloat {
+        let font = face.nsFont(fontSize)
         return (NSAttributedString(string: text, attributes: [.font: font])
             .size().width).rounded(.up)
     }
 
     /// Only text that genuinely overflows scrolls; anything that fits stays
     /// still. A ticker that moves when it does not need to is noise.
-    static func scrolls(_ text: String, fontSize: CGFloat, container: CGFloat) -> Bool {
-        container > 0 && width(text, fontSize: fontSize) > container
+    static func scrolls(
+        _ text: String, fontSize: CGFloat, container: CGFloat, face: Face = .mono
+    ) -> Bool {
+        container > 0 && width(text, fontSize: fontSize, face: face) > container
     }
 
     /// One full loop travels the text plus the gap at a constant reading
     /// speed, so a longer summary scrolls for longer instead of faster.
-    static func loopDuration(_ text: String, fontSize: CGFloat) -> TimeInterval {
-        max(Double((width(text, fontSize: fontSize) + gap) / speed), 1)
+    static func loopDuration(
+        _ text: String, fontSize: CGFloat, face: Face = .mono
+    ) -> TimeInterval {
+        max(Double((width(text, fontSize: fontSize, face: face) + gap) / speed), 1)
     }
 }
 

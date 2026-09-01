@@ -2138,13 +2138,18 @@ need('foregroundStyle(COSPalette.ink)' not in (root / "Sources/SessionPet.swift"
 _pet_code = (root / "Sources/SessionPet.swift").read_text()
 _pet_code = "\n".join(l.split("//")[0] if l.strip().startswith("//") else l
                       for l in _pet_code.splitlines())
+# Direction D routes every row through petRowD, so the help string lives on
+# the shared builder and each row proves only that it wires the jump.
 for _row, _end in [("private func missionRow", "private func idleRow"),
-                   ("private func idleRow", "private func dismissControl")]:
+                   ("private func idleRow", "private struct PetRowActions")]:
     _slice = _pet_code[_pet_code.index(_row):_pet_code.index(_end)]
-    need("model.openSessionInPlatform(session)" in _slice
-         and '.help("Open in platform")' in _slice,
+    need("model.openSessionInPlatform(session)" in _slice and "petRowD(" in _slice,
          f"{_row.split()[-1]} lost its whole-row jump; a shared slice let one "
          "occurrence cover both rows")
+_shared_row = _pet_code[_pet_code.index("private func petRowD"):
+                        _pet_code.index("private func petRowSlot")]
+need('.help("Open in platform")' in _shared_row,
+     "the shared row builder lost the affordance naming what a click does")
 # 0.5.147: the scope/target button and openTarget split are REMOVED with the
 # hover bubble (Miles, on-device) — the pills, list rows, and the sprite click
 # are the only openers. Keep the dead chrome out.
@@ -2920,32 +2925,103 @@ done_src = code[code.index("private var completionsList"):code.index("private fu
 for name, src in (("live", live_src), ("finished", done_src)):
     need(src.count(".regularMaterial") == 1,
          f"the {name} list left the material surface family")
-    need(src.count('content.padding(.trailing, size.length(10))') == 2,
-         f"the {name} list must inset its rows in BOTH the scrolling and flat branches")
+    # Direction D (0.5.171): the 10pt inset that dodged the overlay scroll
+    # indicator IS the dead space Miles kept pointing at, twice. The indicator
+    # is hidden instead, and the row breaks the list padding to reach the edge.
+    need('content.padding(.trailing, size.length(10))' not in src,
+         f"the {name} list re-inset its rows off the card edge")
+    need(".scrollIndicators(.hidden)" in src,
+         f"the {name} list must hide the overlay indicator; it paints on the "
+         "same right edge the row controls now occupy")
 
 # Mission rows (0.5.155, design B): sectioning comes from the executable
 # ClaudeSession.petSections — never re-derived in the view — in RUNNING,
-# WAITING ON YOU, IDLE order, and the LIVE line renders petLiveLine.
+# WAITING ON YOU, IDLE order.
 need("ClaudeSession.petSections(sessions)" in live_src,
      "the live list no longer sections through the executable helper")
 for a, b in [('"RUNNING"', '"WAITING ON YOU"'), ('"WAITING ON YOU"', '"IDLE"')]:
     need(live_src.index(a) < live_src.index(b),
          f"section {a} must render before {b} — weight order is the design")
+
+# ---- Direction D (0.5.171), approved from the artboard --------------------
+# ONE row shape for all three lists. Three call sites plus the definition; a
+# list that grows its own row shape is how the finished row and the mission
+# row drifted into two different anatomies in the first place.
+need(code.count("petRowD(") == 4,
+     "every list must render through the ONE Direction D row builder "
+     "(3 call sites + 1 definition)")
 mission_src = code[code.index("private func missionRow"):code.index("private func idleRow")]
-need("session.petLiveLine" in mission_src and "session.compactAgeLabel()" in mission_src
-     and "session.workspace" in mission_src,
-     "a mission row lost its LIVE line, age figure, or workspace tag")
-need("lineLimit(2)" in mission_src, "mission titles regressed to a one-line ellipsis")
-# Every row wears its platform mark through the ONE shared builder, so a
-# provider can never look different in the live list than in the chips.
-need("providerMark(" in mission_src, "the mission row lost its platform mark")
-need("providerMark(" in code[code.index("private func idleRow"):
-                            code.index("private func dismissControl")],
-     "the idle row lost its platform mark")
-need(code.count("providerMark(") == 4,
-     "platform marks must come from the single shared builder used by all "
-     "three row types (3 call sites + 1 definition)")
-_mark_src = code[code.index("private func providerMark"):code.index("private func dismissControl")]
+idle_src = code[code.index("private func idleRow"):code.index("private struct PetRowActions")]
+for _name, _src in (("mission", mission_src), ("idle", idle_src)):
+    need("petRowD(" in _src and "model.openSessionInPlatform(session)" in _src,
+         f"the {_name} row lost its whole-row jump through the shared builder")
+row_src = code[code.index("private func petRowD"):code.index("private func petRowSlot")]
+need('.help("Open in platform")' in row_src,
+     "the row lost the affordance naming what a click does")
+# Line one is the OUTCOME. Before D every finished row printed the literal
+# "Finished", so two forked sessions read as the same three tokens no matter
+# how wide the row got.
+need("row.summary.isEmpty ?" in done_src and "row.summary" in done_src,
+     "the finished row went back to a literal instead of what the session did")
+_models_code = strip_comments((root / "Sources/Models.swift").read_text())
+need("summary: prior.petOutcomeLine" in _models_code,
+     "nothing captures the outcome at the moment a session stops")
+need("petOutcomeLine" in _models_code and 'summary.isEmpty ? "Finished"' in _models_code,
+     "petOutcomeLine is gone; petLiveLine falls back to \"working\", which is "
+     "wrong once nothing is running")
+# The outcome is measured in the face it is DRAWN in. The 0.6em fast path is a
+# fact about JetBrains Mono only; asking it about a proportional face answers
+# "it fits" for text that overflows, and the window clips it with neither
+# motion nor an ellipsis.
+need("face: .body" in row_src, "the outcome line is no longer measured as body text")
+need("face == .mono, text.allSatisfy" in _models_code,
+     "the monospace fast path is no longer guarded by the face")
+# Hover starts exactly ONE ticker: the pointer is on one row, and four rows
+# scrolling at once is noise.
+need("active: hovered" in row_src, "the row ticker is no longer hover gated")
+need("!reduceMotion && active" in code,
+     "TickerLine stopped honouring the hover gate")
+# Hover must change NO layout. The slot is a FIXED frame whose two occupants
+# cross-fade; a size that keys on hover re-measures the panel through
+# sizeThatFits and reads as the jumpiness Miles rejected in the prototype.
+slot_src = code[code.index("private func petRowSlot"):code.index("private var completionsList")]
+need(".frame(width: size.length(57), alignment: .trailing)" in slot_src,
+     "the trailing slot lost its fixed frame")
+need(".opacity(hovered ? 0 : 1)" in slot_src and ".opacity(hovered ? 1 : 0)" in slot_src,
+     "the slot occupants no longer cross-fade")
+for _bad in ["frame(width: hovered", "frame(height: hovered", "hovered ? size.",
+             "padding(hovered", "size.length(hovered"]:
+    need(_bad not in slot_src,
+         f"a hover-keyed size returned to the slot ({_bad}); hover must move nothing")
+need(".allowsHitTesting(hovered)" in slot_src,
+     "the hidden actions still take clicks; a resting row would fire them")
+# Pointer-only actions need a non-pointer path.
+need(".contextMenu {" in row_src and row_src.count("Button(") >= 3,
+     "the three paths are pointer-only; a right-click must reach them too")
+# Per-row hover comes from the SAME .activeAlways sensor the root uses.
+need("HoverSensor { inside in" in row_src and "hoveredRowID" in code,
+     "per-row hover is not on the activeAlways sensor; .onHover does not fire "
+     "on a nonactivating panel")
+# The trailing items end ON the card edge, not on its padding (Miles, twice).
+need(".padding(.trailing, -size.length(10))" in row_src,
+     "the row stopped breaking the list inset; the controls sit back off the edge")
+need(".padding(.trailing, -size.length(4))" in slot_src,
+     "the action row stopped overhanging its own hit padding, so the glyph INK "
+     "no longer lands where the age and workspace sit")
+# The reading surface is no longer sized by the sprite.
+need("size.length(392)" in code,
+     "the card went back to the 248 root, where a finished title is 68pt "
+     "(ten characters of DM Sans 11, measured)")
+
+# Every row wears its platform mark through the ONE shared builder.
+# D collapsed three row anatomies into one, so there is exactly ONE place a
+# platform mark is drawn: the shared row's identity line, plus the definition.
+need(code.count("providerGlyph(") == 2,
+     "the platform mark is drawn somewhere other than the one shared row "
+     "builder (1 call site + 1 definition)")
+need("providerGlyph(mark, tint: markTint)" in row_src,
+     "the shared row lost its platform mark")
+_mark_src = code[code.index("private func providerGlyph"):code.index("private func rowAction")]
 need("COSBrand.svg(name)" in _mark_src and "Image(systemName: name)" in _mark_src,
      "the platform mark must render the bundled brand logo, with an SF Symbol "
      "only where no brand mark ships")
@@ -2954,38 +3030,30 @@ for _asset in ["mark-claude", "mark-codex", "mark-cursor"]:
          f"Resources/{_asset}.svg is missing; the row would render nothing")
 need('cp "$ROOT/Resources/mark-"*.svg' in (root / "scripts/build-release.sh").read_text(),
      "the release build does not ship the platform marks")
-# The ticker owns its own full-width line BELOW the title row. Nested back
-# inside the title column it shares ~110pt with the meta stack and cannot
-# show one whole word (Miles, 2026-08-31).
-need(mission_src.index("compactAgeLabel") < mission_src.index("TickerLine("),
-     "the ticker moved back above/inside the title column; it must be the "
-     "full-width line beneath the title row")
 # The rail must be an OVERLAY of the row content, never an HStack child: a
 # bare Shape child accepts any offered height, and under the panel's
 # sizeThatFits probe one running row absorbed ~800px of blank card (shipped
 # in 0.5.155, caught by Miles's screenshot within the hour).
-label_src = mission_src[:mission_src.index(".overlay(alignment: .leading)")]
-# The defect class is a Shape with NO explicit height: it accepts whatever
-# the row is offered and absorbed ~800px of blank card (0.5.155). Shapes with
-# a fixed height — the running dot — are fine, so pin the height, not the type.
-_label_body = label_src.split("} label: {")[1]
+label_src = row_src[:row_src.index(".overlay(alignment: .leading)")]
+# D's row button takes a trailing closure rather than `label:`, so anchor on
+# the button itself. Getting this wrong silently empties the window and the
+# height check below stops checking anything.
+need("Button(action: primary) {" in label_src,
+     "the row button changed shape; the bare-Shape height check below is "
+     "reading the wrong window and would pass on an empty string")
+_label_body = label_src.split("Button(action: primary) {")[1]
 for _m in re.finditer(r"\b(RoundedRectangle|Rectangle|Capsule|Circle|Ellipse)\s*\(", _label_body):
     _before = _label_body[max(0, _m.start() - 24):_m.start()]
-    # contentShape/clipShape/background(in:) take a shape as a PARAMETER; only
-    # a shape mounted as a layout child can absorb the row's height.
     if any(k in _before for k in ("contentShape(", "clipShape(", "in: ", "background(")):
         continue
     _tail = _label_body[_m.start():_m.start() + 240]
     need("height:" in _tail,
-         f"a {_m.group(1)} in the mission-row label declares no height; it will "
+         f"a {_m.group(1)} in the row label declares no height; it will "
          "stretch to whatever the row is offered — give it a height or make it "
          "an overlay like the rail")
-rail_src = mission_src[mission_src.index(".overlay(alignment: .leading)"):]
+rail_src = row_src[row_src.index(".overlay(alignment: .leading)"):]
 need("RoundedRectangle" in rail_src and ".frame(width: size.length(3))" in rail_src,
-     "the mission row lost its state rail overlay")
-idle_src = code[code.index("private func idleRow"):code.index("private func dismissControl")]
-need("petLiveLine" not in idle_src and "lineLimit(1)" in idle_src,
-     "idle rows must stay dim one-liners — periphery reads as periphery")
+     "the row lost its state rail overlay")
 
 _aw = strip_comments((root / "Sources/ActivityWindow.swift").read_text())
 # Semantic layer (0.5.170): the helper's FIRST model call, so every stop the
@@ -3130,19 +3198,28 @@ need("UserDefaults.standard.bool(forKey: ControllerModel.petCalmMotionKey)" in m
      "the calm preference is never read back at launch")
 need("Calm motion" in (root / "Sources/Views.swift").read_text(),
      "calm motion has no control in Session Pet settings")
-# The token-spending switch lives in the TOOLBAR, not three panes deep in pet
-# settings, and it must read as a cost before it reads as a feature (0.5.170).
+# The token-spending switch lives beside the search it governs, NOT in the
+# toolbar panel, where it sat third between Activity and Server status
+# (Miles, 2026-09-01: "should be out of the way"). Wherever it lives it must
+# read as a cost before it reads as a feature.
 _v = strip_comments((root / "Sources/Views.swift").read_text())
-_panel_src = _v[_v.index("private var mainPanel"):]
-_panel_src = _panel_src[:_panel_src.index("\n    }")]
-need("searchModeRow" in _panel_src,
-     "the search-by-meaning flag is not in the toolbar panel")
-_flag = _v[_v.index("private var searchModeRow"):]
-_flag = _flag[:_flag.index("\n    }\n")]
-need("model.setSemanticSearchEnabled($0)" in _flag,
-     "the toolbar flag does not write the setting")
-need("Uses your Claude usage" in _flag and "Keyword only" in _flag,
-     "the flag must state the cost in both states; a bare switch hides what it spends")
+need("searchModeRow" not in _v and "semanticSearchEnabled" not in _v,
+     "the search-by-meaning switch is back in the toolbar panel")
+_awv = strip_comments((root / "Sources/ActivityWindow.swift").read_text())
+_msg_row = _awv[_awv.index('TextField("Search recent and archive"'):]
+_msg_row = _msg_row[:_msg_row.index("messageSearchCrossing")]
+need("model.setSemanticSearchEnabled($0)" in _msg_row,
+     "the meaning switch is not in the row that owns search")
+need("your Claude usage" in _msg_row and "keyword only" in _msg_row,
+     "the switch must state the cost; a bare checkbox hides what it spends")
+# An off-state that names a pane it no longer lives in is an instruction with
+# no affordance, which is the Control defect from 2026-08-26 one layer smaller.
+need("turn it on in Settings" not in _awv,
+     "the offer still sends the user to Settings for a switch that moved")
+_off = _awv[_awv.index("Search by meaning is off"):]
+_off = _off[:_off.index("} else {")]
+need("setSemanticSearchEnabled(true)" in _off,
+     "the off-state must offer to turn it on, not merely say that it is off")
 _pet_pane = _v[_v.index("private struct PetSizeControls"):]
 _pet_pane = _pet_pane[:_pet_pane.index("onAppear { pixelDraft")]
 need("semanticSearchEnabled" not in _pet_pane,
@@ -3186,7 +3263,7 @@ need(code.count("applyingFrame = true") == 1
 
 # The LIVE line is a ticker: fixed window, hidden overflow, motion only when
 # the text genuinely overflows.
-need("TickerLine(" in mission_src, "the live line lost its ticker")
+need("TickerLine(" in row_src, "the outcome line lost its ticker")
 tick = code[code.index("private struct TickerLine"):code.index("private struct PetReveal")]
 need(".clipped()" in tick, "the ticker window must hide its overflow")
 need("PetTicker.scrolls(" in tick and "!reduceMotion" in tick,
@@ -3213,13 +3290,17 @@ need("$petHoverRevealed.sink" not in code,
 # emptied list instead of pinning an empty card over the figure.
 comp2 = pet[pet.index("private var completionsList"):pet.index("private func petFloatingText")]
 need("clearPetCompletion(" in comp2, "finished rows have no clear control")
-# Three paths off a finished row (Miles, 2026-08-31): open in the platform,
-# open the session view in Control, clear the entry.
+# Three paths off a row (Miles, 2026-08-31): open in the platform, open the
+# session view in Control, clear the entry. Since D they live in the shared
+# slot, so pin them THERE and pin that the finished row still supplies all
+# three — a row that passes no clear closure silently loses the control.
 for _sym, _what in [('"arrow.up.forward.app"', "open in platform"),
                     ('"text.alignleft"', "open the session view"),
                     ('"xmark"', "clear the entry")]:
-    need(f"completionAction({_sym}" in comp2,
-         f"a finished row lost its {_what} control")
+    need(f"rowAction({_sym}" in slot_src,
+         f"the row slot lost its {_what} control")
+for _arg in ["openInPlatform:", "openInControl:", "clear:"]:
+    need(_arg in comp2, f"the finished row supplies no {_arg} action")
 need("model.openSessionInPlatform(session)" in comp2 and "presenter.openInControl(session)" in comp2,
      "the finished row's two open paths must reach different destinations")
 # Oversized transcripts are WINDOWED, never refused. The window itself is

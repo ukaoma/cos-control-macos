@@ -1309,6 +1309,23 @@ struct ActivityWindow: View {
                         .buttonStyle(.link).font(.system(size: 11))
                 }
                 Spacer()
+                // The one control in Control that spends model tokens. It
+                // lives beside the search it governs rather than in the
+                // toolbar, and it carries its cost in its own tooltip.
+                Toggle("Meaning", isOn: Binding(
+                    get: { model.semanticSearchEnabled },
+                    set: { model.setSemanticSearchEnabled($0) }
+                ))
+                .toggleStyle(.checkbox)
+                .controlSize(.small)
+                .font(.system(size: 11))
+                // Each concatenated chunk is a whole clause on purpose: a
+                // phrase split across the + never appears in the source, so a
+                // pin on it would be asserting where the line happens to wrap.
+                .help("Search by meaning uses your Claude usage. "
+                      + "Off is keyword only, with no model calls. "
+                      + "On, Control offers it when a search comes up thin, "
+                      + "and only asks when you tap. Up to 25 a day.")
             }
             .padding(.horizontal, 12)
             messageSearchCrossing
@@ -2681,8 +2698,11 @@ struct ActivityWindow: View {
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                         ProgressView().controlSize(.small)
                     } else if !model.semanticSearchEnabled {
-                        Text("Search by meaning is off — turn it on in Settings")
+                        Text("Search by meaning is off.")
                             .font(.system(size: 11)).foregroundStyle(.secondary)
+                        Button("Turn it on") { model.setSemanticSearchEnabled(true) }
+                            .controlSize(.small)
+                            .help("Uses your Claude usage. Up to 25 a day.")
                     } else {
                         Text(model.archiveHits.isEmpty
                              ? "No exact match. Try searching by meaning?"

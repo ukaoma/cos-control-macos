@@ -243,6 +243,10 @@ private struct SessionPetRoot: View {
 
     /// Reveal = hover intent OR a pinned list. A pin survives mouse-out, so a
     /// click-opened list never collapses under the cursor.
+    /// Which row the pointer is on. Direction D reveals a row's three paths
+    /// and starts its ticker on hover, and the pointer can only be on one row,
+    /// so exactly one line ever moves.
+    @State private var hoveredRowID: String?
     private var pinnedList: Bool { model.petExpanded || model.petCompletionsExpanded }
     private var revealActive: Bool { model.petHoverRevealed || pinnedList }
     /// A fully quiet pet — nothing alive, nothing finished, nothing hidden by
@@ -320,8 +324,12 @@ private struct SessionPetRoot: View {
             ledgerSlot
         }
         .padding(size.length(10))
+        // Direction D (0.5.171): the sprite no longer decides how wide the
+        // reading surface is. At 248 a finished row left the title 68pt, which
+        // is ten characters of DM Sans 11 — measured, and exactly the "You
+        // match…" Miles screenshotted.
         .frame(width: max(
-            size.length(248),
+            size.length(392),
             viewportSize.width + size.length(36)
         ))
         // NOT .onHover: SwiftUI's tracking area is tied to app activation, and
@@ -531,13 +539,12 @@ private struct SessionPetRoot: View {
         return Group {
             if sessions.count > 3 {
                 ScrollView {
-                    // Inset from the overlay scroll indicator, which paints on
-                    // the same right edge the drop x lives on.
-                    content.padding(.trailing, size.length(10))
+                    content
                 }
+                .scrollIndicators(.hidden)
                 .frame(height: size.length(240))
             } else {
-                content.padding(.trailing, size.length(10))
+                content
             }
         }
         .padding(.horizontal, size.length(10))
@@ -567,118 +574,224 @@ private struct SessionPetRoot: View {
         .padding(.bottom, size.length(3))
     }
 
-    /// A running or waiting session: state rail, two-line title, the LIVE
-    /// line saying what the agent is doing right now, and where. The whole
-    /// row jumps; the drop control is a SIBLING of the row button, never
-    /// nested in its label — a nested Button never receives the click.
+    /// A live session as a Direction D row. The outcome leads on its own
+    /// line; identity is demoted underneath. Actions are SIBLINGS of the row
+    /// button, never nested in its label — a nested Button never receives the
+    /// click on macOS.
     private func missionRow(_ session: ClaudeSession, tint: Color) -> some View {
-        HStack(spacing: 0) {
-        Button {
-            model.petFocusID = session.id
-            model.openSessionInPlatform(session)
-        } label: {
-            // The ticker sits on its OWN full-width line beneath the title
-            // row, not inside the title column: sharing that column with the
-            // meta stack left it about 110pt — too narrow to show one whole
-            // word (Miles, 2026-08-31, screenshot). On its own line it gets
-            // the row's entire width, roughly double.
-            VStack(alignment: .leading, spacing: size.length(4)) {
-                HStack(alignment: .top, spacing: size.length(8)) {
-                    providerMark(session.petProviderMark, label: session.providerLabel,
-                                 tint: providerTint(session.provider))
-                        .padding(.top, size.length(2))
-                    Text(session.title)
-                        .font(COSType.body(size.typeSize(11), weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(2)
-                    Spacer(minLength: 0)
-                    VStack(alignment: .trailing, spacing: size.length(3)) {
-                        Text(session.compactAgeLabel() ?? "")
-                            .font(COSType.mono(size.typeSize(8), weight: .bold))
-                            .foregroundStyle(tint)
-                        Text(session.workspace.lowercased())
-                            .font(COSType.body(size.typeSize(8)))
+        petRowD(
+            id: session.id,
+            outcome: session.petLiveLine,
+            title: session.title,
+            mark: session.petProviderMark,
+            markTint: providerTint(session.provider),
+            tint: tint,
+            age: session.compactAgeLabel() ?? "",
+            workspace: session.workspace,
+            breathing: session.isPetWorking,
+            dim: false,
+            primary: {
+                model.petFocusID = session.id
+                model.openSessionInPlatform(session)
+            },
+            actions: PetRowActions(
+                openInPlatform: {
+                    model.petFocusID = session.id
+                    model.openSessionInPlatform(session)
+                },
+                openInControl: { presenter.openInControl(session) },
+                clear: model.canDismissPetSession(session)
+                    ? { model.dismissPetSession(session) } : nil,
+                clearLabel: "Drop from the list",
+                clearHelp: "Drop from the pet list. The session keeps running."
+            )
+        )
+    }
+
+    /// An idle-alive session: the same row, dimmed. The fleet's periphery
+    /// should read as periphery, but it must not read as a DIFFERENT shape.
+    private func idleRow(_ session: ClaudeSession) -> some View {
+        petRowD(
+            id: session.id,
+            outcome: session.petLiveLine,
+            title: session.title,
+            mark: session.petProviderMark,
+            markTint: providerTint(session.provider).opacity(0.75),
+            tint: Color.secondary,
+            age: session.compactAgeLabel() ?? "",
+            workspace: session.workspace,
+            breathing: false,
+            dim: true,
+            primary: {
+                model.petFocusID = session.id
+                model.openSessionInPlatform(session)
+            },
+            actions: PetRowActions(
+                openInPlatform: {
+                    model.petFocusID = session.id
+                    model.openSessionInPlatform(session)
+                },
+                openInControl: { presenter.openInControl(session) },
+                clear: model.canDismissPetSession(session)
+                    ? { model.dismissPetSession(session) } : nil,
+                clearLabel: "Drop from the list",
+                clearHelp: "Drop from the pet list. The session keeps running."
+            )
+        )
+    }
+
+    /// The three paths off a row. Optional so a row that cannot be dropped
+    /// simply does not offer it, rather than offering a dead control.
+    private struct PetRowActions {
+        var openInPlatform: (() -> Void)?
+        var openInControl: (() -> Void)?
+        var clear: (() -> Void)?
+        var clearLabel: String = "Clear this entry"
+        var clearHelp: String = "Clear this finished entry"
+    }
+
+    /// ONE row shape for every list (Direction D, Miles 2026-09-01). Line one
+    /// is what the session did or is doing, in the body face at 12pt, inside a
+    /// ticker window that scrolls ONLY while this row is hovered. Line two is
+    /// identity: the platform glyph and the title. The trailing slot is a
+    /// FIXED 57pt frame with two occupants that cross-fade, so hover changes
+    /// no layout — the same contract ledgerSlot holds one layer up, and the
+    /// reason the first hover prototype was rebuilt.
+    private func petRowD(
+        id: String,
+        outcome: String,
+        title: String,
+        mark: PetProvider.Mark,
+        markTint: Color,
+        tint: Color,
+        age: String,
+        workspace: String,
+        breathing: Bool,
+        dim: Bool,
+        primary: @escaping () -> Void,
+        actions: PetRowActions
+    ) -> some View {
+        let hovered = hoveredRowID == id
+        return HStack(spacing: 0) {
+            Button(action: primary) {
+                VStack(alignment: .leading, spacing: size.length(2)) {
+                    HStack(spacing: size.length(6)) {
+                        if breathing {
+                            Circle()
+                                .fill(tint)
+                                .frame(width: size.length(5), height: size.length(5))
+                                .modifier(LedgerBreathing(active: !reduceMotion))
+                        }
+                        TickerLine(
+                            text: outcome,
+                            fontSize: size.typeSize(12),
+                            tint: dim ? Color.secondary : Color.primary,
+                            reduceMotion: reduceMotion,
+                            face: .body,
+                            weight: .semibold,
+                            active: hovered
+                        )
+                    }
+                    HStack(spacing: size.length(5)) {
+                        providerGlyph(mark, tint: markTint)
+                        Text(title)
+                            .font(COSType.body(size.typeSize(9)))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                            .frame(maxWidth: size.length(66), alignment: .trailing)
+                        Spacer(minLength: 0)
                     }
                 }
-                HStack(spacing: size.length(5)) {
-                    if session.isPetWorking {
-                        Circle()
-                            .fill(tint)
-                            .frame(width: size.length(5), height: size.length(5))
-                            .modifier(LedgerBreathing(active: !reduceMotion))
-                    }
-                    TickerLine(
-                        text: session.petLiveLine,
-                        fontSize: size.typeSize(9),
-                        tint: tint,
-                        reduceMotion: reduceMotion
-                    )
-                }
+                .padding(.vertical, size.length(7))
+                .padding(.leading, size.length(11))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .padding(.vertical, size.length(7))
-            .padding(.leading, size.length(11))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            // The rail is an OVERLAY, never an HStack child: a bare Shape in
-            // the row accepts any offered height, and under the panel's
-            // sizeThatFits probe one running row greedily absorbed ~800px of
-            // blank card (Miles, 2026-08-31, screenshot). An overlay adopts
-            // the row's content height by definition and cannot stretch it.
-            .overlay(alignment: .leading) {
-                RoundedRectangle(cornerRadius: size.length(2))
-                    .fill(tint)
-                    .frame(width: size.length(3))
-                    .padding(.vertical, size.length(6))
+            .buttonStyle(.plain)
+            .help("Open in platform")
+            petRowSlot(age: age, workspace: workspace, tint: tint,
+                       hovered: hovered, actions: actions)
+        }
+        // The rail is an OVERLAY, never an HStack child: a bare Shape in the
+        // row accepts any offered height, and under the panel's sizeThatFits
+        // probe one running row absorbed ~800px of blank card (2026-08-31).
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: size.length(2))
+                .fill(tint)
+                .frame(width: size.length(3))
+                .padding(.vertical, size.length(6))
+        }
+        // Break the list's own 10pt inset so the trailing items end ON the
+        // card edge rather than on its padding, and hand that 10pt to the
+        // reading lines (Miles, 2026-09-01: "it's not up against the edge").
+        .padding(.trailing, -size.length(10))
+        // NOT .onHover: SwiftUI's tracking area is tied to app activation and
+        // the pet is a nonactivating panel, so it would effectively never fire.
+        .background(HoverSensor { inside in
+            if inside { hoveredRowID = id } else if hoveredRowID == id { hoveredRowID = nil }
+        })
+        // The slot's three paths are pointer-only. They must also exist where
+        // a pointer is not the input.
+        .contextMenu {
+            if let open = actions.openInPlatform {
+                Button("Open in platform", action: open)
             }
-        }
-        .buttonStyle(.plain)
-        .help("Open in platform")
-        if model.canDismissPetSession(session) {
-            dismissControl(session)
-        }
+            if let control = actions.openInControl {
+                Button("Open the session view", action: control)
+            }
+            if let clear = actions.clear {
+                Button(actions.clearLabel, action: clear)
+            }
         }
     }
 
-    /// An idle-alive session: one dim line. The fleet's periphery should
-    /// read as periphery.
-    private func idleRow(_ session: ClaudeSession) -> some View {
-        HStack(spacing: 0) {
-        Button {
-            model.petFocusID = session.id
-            model.openSessionInPlatform(session)
-        } label: {
-            HStack(spacing: size.length(8)) {
-                providerMark(session.petProviderMark, label: session.providerLabel,
-                             tint: providerTint(session.provider).opacity(0.75))
-                Text(session.title)
-                    .font(COSType.body(size.typeSize(10), weight: .medium))
+    /// The trailing slot: one FIXED frame, two occupants. At rest the age over
+    /// the workspace; under the pointer the three paths. Only opacity crosses.
+    private func petRowSlot(
+        age: String, workspace: String, tint: Color,
+        hovered: Bool, actions: PetRowActions
+    ) -> some View {
+        ZStack(alignment: .trailing) {
+            VStack(alignment: .trailing, spacing: size.length(2)) {
+                Text(age)
+                    .font(COSType.mono(size.typeSize(8), weight: .bold))
+                    .foregroundStyle(tint)
+                Text(workspace.lowercased())
+                    .font(COSType.body(size.typeSize(8)))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                Spacer(minLength: 0)
-                Text(session.compactAgeLabel() ?? "")
-                    .font(COSType.mono(size.typeSize(8), weight: .bold))
-                    .foregroundStyle(.secondary)
             }
-            .padding(.vertical, size.length(5))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .opacity(hovered ? 0 : 1)
+
+            HStack(spacing: 0) {
+                if let open = actions.openInPlatform {
+                    rowAction("arrow.up.forward.app", help: "Open in platform", action: open)
+                }
+                if let control = actions.openInControl {
+                    rowAction("text.alignleft",
+                              help: "Open the session view in COS Control", action: control)
+                }
+                if let clear = actions.clear {
+                    rowAction("xmark", help: actions.clearHelp, action: clear)
+                }
+            }
+            // The trailing symbol carries its own 4pt hit padding. Overhang by
+            // exactly that, so the glyph's INK lands on the card edge the age
+            // and workspace already sit on. The 57pt frame does not move.
+            .padding(.trailing, -size.length(4))
+            .opacity(hovered ? 1 : 0)
+            .allowsHitTesting(hovered)
         }
-        .buttonStyle(.plain)
-        .help("Open in platform")
-        if model.canDismissPetSession(session) {
-            dismissControl(session)
-        }
-        }
+        .frame(width: size.length(57), alignment: .trailing)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: hovered)
     }
 
-    /// One platform mark for every surface: the SF Symbol beside the
-    /// wordmark, in the provider's tint. Fixed width so titles start on the
-    /// same x down the whole list.
-    private func providerMark(_ mark: PetProvider.Mark, label: String, tint: Color) -> some View {
-        HStack(spacing: size.length(3)) {
+    /// One platform mark for every row type, so a provider can never look
+    /// different in one list than in another. Direction D puts it on the
+    /// identity line beside the title, where the 54pt wordmark block it
+    /// replaced was spending width the title needed.
+    private func providerGlyph(_ mark: PetProvider.Mark, tint: Color) -> some View {
+        Group {
             switch mark {
             case .asset(let name):
                 // The real logo, bundled and tinted like every other template
@@ -687,21 +800,19 @@ private struct SessionPetRoot: View {
                     .renderingMode(.template)
                     .resizable()
                     .scaledToFit()
-                    .frame(width: size.typeSize(10), height: size.typeSize(10))
+                    .frame(width: size.typeSize(11), height: size.typeSize(11))
             case .symbol(let name):
                 Image(systemName: name)
-                    .font(.system(size: size.typeSize(9), weight: .bold))
+                    .font(.system(size: size.typeSize(10), weight: .bold))
             }
-            Text(label.uppercased())
-                .font(COSType.mono(size.typeSize(8), weight: .bold))
         }
         .foregroundStyle(tint)
-        .frame(width: size.length(54), alignment: .leading)
+        .frame(width: size.typeSize(12), alignment: .leading)
     }
 
-    /// One shared control for the finished row's three paths, so they cannot
-    /// drift in size, tint or hit area.
-    private func completionAction(
+    /// One shared control for a row's three paths, so they cannot drift in
+    /// size, tint or hit area.
+    private func rowAction(
         _ symbol: String, help: String, action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -715,20 +826,6 @@ private struct SessionPetRoot: View {
         .help(help)
     }
 
-    private func dismissControl(_ session: ClaudeSession) -> some View {
-        Button {
-            model.dismissPetSession(session)
-        } label: {
-            Image(systemName: "xmark")
-                .font(.system(size: size.typeSize(9), weight: .bold))
-                .foregroundStyle(.secondary)
-                .padding(size.length(5))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("Drop from the pet list. The session keeps running.")
-    }
-
     /// Finished sessions. Lives on the ~310pt pet, so the list is capped and
     /// scrolls in a fixed frame — an unbounded ForEach outside a scroll frame
     /// is the Add-a-voice 34-row failure again.
@@ -740,50 +837,41 @@ private struct SessionPetRoot: View {
         // capsule with every row unreachable (Miles, 2026-08-30).
         let content = VStack(alignment: .leading, spacing: 0) {
                 ForEach(model.petCompletions) { row in
-                    HStack(spacing: 0) {
-                    Button {
-                        if let session = ClaudeSession.fromCompletion(row) {
-                            presenter.openInControl(session)
-                        }
-                    } label: {
-                        HStack(alignment: .top, spacing: size.length(8)) {
-                            providerMark(PetProvider.mark(row.provider),
-                                         label: row.provider,
-                                         tint: providerTint(row.provider))
-                            VStack(alignment: .leading, spacing: size.length(2)) {
-                                Text(row.name)
-                                    .font(COSType.body(size.typeSize(11), weight: row.seen ? .regular : .medium))
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-                                Text("Finished")
-                                    .font(COSType.body(size.typeSize(10)))
-                                    .foregroundStyle(.secondary)
+                    petRowD(
+                        id: row.id,
+                        // The row now says what the session DID. Before 0.5.171
+                        // every finished row printed the literal "Finished", so
+                        // two forked sessions read as the same three tokens.
+                        outcome: row.summary.isEmpty ? "Finished" : row.summary,
+                        title: row.name,
+                        mark: PetProvider.mark(row.provider),
+                        markTint: providerTint(row.provider),
+                        tint: COSPalette.gold,
+                        age: PetCompletion.compactAge(row.finishedAt),
+                        workspace: row.workspace,
+                        breathing: false,
+                        dim: row.seen,
+                        primary: {
+                            if let session = ClaudeSession.fromCompletion(row) {
+                                presenter.openInControl(session)
                             }
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.vertical, size.length(7))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Open the session in COS Control")
-                    // Three paths off a finished row (Miles, 2026-08-31), each
-                    // a SIBLING of the row button — a Button nested in another
-                    // Button's label never receives the click on macOS.
-                    completionAction("arrow.up.forward.app", help: "Open in platform") {
-                        if let session = ClaudeSession.fromCompletion(row) {
-                            model.openSessionInPlatform(session)
-                        }
-                    }
-                    completionAction("text.alignleft", help: "Open the session view in COS Control") {
-                        if let session = ClaudeSession.fromCompletion(row) {
-                            presenter.openInControl(session)
-                        }
-                    }
-                    completionAction("xmark", help: "Clear this finished entry") {
-                        model.clearPetCompletion(row)
-                    }
-                    }
+                        },
+                        actions: PetRowActions(
+                            openInPlatform: {
+                                if let session = ClaudeSession.fromCompletion(row) {
+                                    model.openSessionInPlatform(session)
+                                }
+                            },
+                            openInControl: {
+                                if let session = ClaudeSession.fromCompletion(row) {
+                                    presenter.openInControl(session)
+                                }
+                            },
+                            clear: { model.clearPetCompletion(row) },
+                            clearLabel: "Clear this entry",
+                            clearHelp: "Clear this finished entry"
+                        )
+                    )
                     if row.id != model.petCompletions.last?.id {
                         Divider()
                     }
@@ -792,13 +880,15 @@ private struct SessionPetRoot: View {
         return Group {
             if model.petCompletions.count > 3 {
                 ScrollView {
-                    // Inset from the overlay scroll indicator, which paints on
-                    // the same right edge the clear x lives on.
-                    content.padding(.trailing, size.length(10))
+                    content
                 }
+                // The overlay indicator painted on the same right edge the
+                // row's controls live on, and the 10pt inset that dodged it
+                // is exactly the dead space Miles kept pointing at.
+                .scrollIndicators(.hidden)
                 .frame(height: size.length(160))
             } else {
-                content.padding(.trailing, size.length(10))
+                content
             }
         }
         .padding(.horizontal, size.length(10))
@@ -886,13 +976,24 @@ private struct TickerLine: View {
     let fontSize: CGFloat
     let tint: Color
     var reduceMotion: Bool
+    /// The measurement face. The 0.6em fast path is a fact about JetBrains
+    /// Mono ONLY; asking it about a proportional face would answer "it fits"
+    /// for text that overflows, and the window would clip it with neither
+    /// motion nor an ellipsis.
+    var face: PetTicker.Face = .mono
+    var weight: Font.Weight = .bold
+    /// Hover gate (0.5.171). Four stacked rows scrolling at once is noise, and
+    /// the pointer is on one row, so exactly one line moves. The 1.4s hold
+    /// covers a pointer sweeping down the list without stopping.
+    var active: Bool = true
     @State private var rolling = false
 
     var body: some View {
         GeometryReader { geo in
-            let travel = PetTicker.width(text, fontSize: fontSize) + PetTicker.gap
-            let scrolls = !reduceMotion
-                && PetTicker.scrolls(text, fontSize: fontSize, container: geo.size.width)
+            let travel = PetTicker.width(text, fontSize: fontSize, face: face) + PetTicker.gap
+            let scrolls = !reduceMotion && active
+                && PetTicker.scrolls(text, fontSize: fontSize,
+                                     container: geo.size.width, face: face)
             Group {
                 if scrolls {
                     HStack(spacing: PetTicker.gap) {
@@ -922,7 +1023,7 @@ private struct TickerLine: View {
                 try? await Task.sleep(for: .seconds(PetTicker.startHold))
                 guard !Task.isCancelled else { return }
                 withAnimation(
-                    .linear(duration: PetTicker.loopDuration(text, fontSize: fontSize))
+                    .linear(duration: PetTicker.loopDuration(text, fontSize: fontSize, face: face))
                         .repeatForever(autoreverses: false)
                 ) {
                     rolling = true
@@ -934,7 +1035,8 @@ private struct TickerLine: View {
 
     private var tickerText: some View {
         Text(text)
-            .font(COSType.mono(fontSize, weight: .bold))
+            .font(face == .mono ? COSType.mono(fontSize, weight: weight)
+                                : COSType.body(fontSize, weight: weight))
             .foregroundStyle(tint)
             .lineLimit(1)
     }

@@ -1,3 +1,37 @@
+## 0.5.171 (build 209)
+
+The session card tells you what happened. Every finished row used to print the
+literal word "Finished", so two sessions forked off the same repo read as the
+same three tokens no matter how long you looked at them. A row now leads with
+what that session actually did, on its own line at the top of the row.
+
+The card is wider, because the sprite was deciding how much room the reading
+got. At the old width a finished title was 68pt, which is ten characters of the
+font it is set in, and that is exactly the "You match…" you were looking at.
+The title has 276pt now and the outcome line has 281pt.
+
+Point at a row and it opens up. The three paths off a row, open it in the
+platform, open the session view here, clear it, used to sit lit on every row,
+spending 57pt of every line on controls you were not using. They now share the
+fixed slot that carries the age and the workspace at rest, and cross over when
+the pointer arrives. Nothing changes size, so the card never jumps. Right-click
+reaches the same three, for when the pointer is not the input.
+
+The outcome scrolls while you point at it, like a ticker, so a long sentence
+can be read without the row growing. Only the row under the pointer moves, and
+it waits a beat before it starts, so sweeping down the list moves nothing.
+
+The trailing items sit on the card's edge now instead of 11pt inside it. Every
+row was being inset to dodge a scroll indicator. The indicator is hidden, and
+the 10pt went to the words.
+
+Search by meaning moved out of the toolbar. It was sitting third in the panel,
+between Activity and Server status, which is a lot of room for a switch most
+people set once. It now sits at the end of the Messages search row, beside the
+search it governs, and still says what it costs. When a search comes up thin
+and the switch is off, the offer turns it on for you instead of sending you
+somewhere else to find it.
+
 ## 0.5.170 (build 208)
 
 One box searches recent messages and the archive. Two boxes meant "No recent

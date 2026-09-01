@@ -3510,7 +3510,96 @@ struct ModelsContract {
         print("COS Control: the live-line ticker moves only on overflow, at one speed")
     }
 
+    /// Direction D (0.5.171). The row now says what a session DID, and the
+    /// outcome is measured in the face it is DRAWN in.
+    private static func checkPetRowOutcome() {
+        // petLiveLine answers "what is it doing" and falls back to "working",
+        // which is a lie once nothing is running. petOutcomeLine is the
+        // finished-row voice, and it must never print an empty line.
+        func sess(_ summary: String) -> ClaudeSession {
+            ClaudeSession(.object([
+                "id": .string("a"),
+                "name": .string("task a"),
+                "workspace": .string("MU-Chief-Staff"),
+                "state": .string("running"),
+                "alive": .bool(true),
+                "discussion_summary": .string(summary),
+                "updatedAt": .string("2026-08-30T18:00:00Z"),
+            ]))!
+        }
+        let running = sess("Rebuilt the matrix")
+        precondition(running.petOutcomeLine == "Rebuilt the matrix")
+        let blank = sess("   ")
+        precondition(blank.petOutcomeLine == "Finished",
+                     "an empty summary must fall back to the old literal, never to \"working\"")
+        precondition(blank.petLiveLine == "working",
+                     "petLiveLine keeps its own fallback; the two are different questions")
+
+        // The outcome is captured at the moment the session stops, from the
+        // value already in scope there. Without this every finished row prints
+        // the same three tokens no matter how wide it gets.
+        let done = PetCompletionDetector.diff(
+            previous: [running], current: [], suppressedIDs: [], now: Date()
+        )
+        precondition(done.count == 1)
+        precondition(done[0].summary == "Rebuilt the matrix",
+                     "the finish must carry the outcome, not discover it later")
+
+        // A row written before 0.5.171 has no summary key at all. It must still
+        // decode, and it must render the old literal rather than an empty line.
+        let legacy = """
+        {"id":"claude:a","sessionId":"a","name":"n","provider":"claude",
+         "workspace":"w","finishedAt":0,"seen":false}
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let row = try? decoder.decode(PetCompletion.self, from: Data(legacy.utf8))
+        precondition(row != nil, "a pre-0.5.171 completion must still decode")
+        precondition(row?.summary == "", "a missing summary decodes empty, not nil")
+
+        // Round trip: a summary that is written must come back.
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        let blob = try! encoder.encode(done[0])
+        let back = try! decoder.decode(PetCompletion.self, from: blob)
+        precondition(back.summary == "Rebuilt the matrix",
+                     "the outcome must survive the restart that persists these rows")
+
+        // Age, from a finish timestamp rather than an update one.
+        let base = Date(timeIntervalSince1970: 1_000_000)
+        precondition(PetCompletion.compactAge(base, now: base.addingTimeInterval(4)) == "4s")
+        precondition(PetCompletion.compactAge(base, now: base.addingTimeInterval(720)) == "12m")
+        precondition(PetCompletion.compactAge(base, now: base.addingTimeInterval(7_200)) == "2h")
+        precondition(PetCompletion.compactAge(base, now: base.addingTimeInterval(172_800)) == "2d")
+        precondition(PetCompletion.compactAge(base, now: base.addingTimeInterval(-50)) == "0s",
+                     "a clock that moved backwards must not print a negative age")
+
+        // The 0.6em fast path is a fact about JetBrains Mono ONLY. Asked about
+        // a proportional face it would answer "it fits" for text that
+        // overflows, and the window clips it with neither motion nor ellipsis.
+        let line = "Published 6.41.0 and pushed the appcast to gotcos"
+        let mono = PetTicker.width(line, fontSize: 12, face: .mono)
+        let body = PetTicker.width(line, fontSize: 12, face: .body)
+        precondition(mono == CGFloat(line.count) * 12 * PetTicker.advanceRatio,
+                     "the mono fast path must stay exact")
+        precondition(body != mono,
+                     "the body face must be MEASURED, not assumed to be 0.6em")
+        precondition(body > 0)
+        // Same text, same window: the two faces must be able to disagree about
+        // whether it scrolls, which is the whole reason face is a parameter.
+        precondition(PetTicker.scrolls(line, fontSize: 12, container: body - 1, face: .body),
+                     "text wider than its window must scroll")
+        precondition(!PetTicker.scrolls(line, fontSize: 12, container: body + 1, face: .body),
+                     "text that fits must stay still")
+        precondition(PetTicker.loopDuration(line, fontSize: 12, face: .body)
+                     >= Double((body + PetTicker.gap) / PetTicker.speed) - 0.001,
+                     "the loop must travel the BODY width, not the mono estimate")
+
+        print("COS Control: finished rows carry their outcome, measured in their own face")
+    }
+
     static func main() throws {
+        checkPetRowOutcome()
         checkRenameEligibility()
         checkAmbiguousTitles()
         checkConfirmEligibility()
