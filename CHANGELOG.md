@@ -1,3 +1,19 @@
+## 0.5.168 (build 206)
+
+Search results read like conversations again. The server cuts its snippets as
+a raw window out of the archive file, so a hit near the top of a chat dragged
+"sessionId", "exchanges" and "role" into the result with it. Snippets are
+cleaned to the sentence a person actually said.
+
+A search now opens on its matches. Finding one chat in eleven and then having
+to flip a switch to see it buried the thing you asked for; the filter starts
+on, and stays off when nothing matched so a day is never mysteriously empty.
+
+Search tolerates a typo. "Thulle" finds Thule — one doubled or transposed
+letter no longer makes a conversation look like it never happened. Short
+words still match exactly rather than fuzzily, because at three letters
+almost every word is one edit from another.
+
 ## 0.5.167 (build 205)
 
 Updates moved to the top of the panel. The check used to be the very last

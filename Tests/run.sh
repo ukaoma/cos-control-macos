@@ -2968,6 +2968,19 @@ need("petLiveLine" not in idle_src and "lineLimit(1)" in idle_src,
      "idle rows must stay dim one-liners — periphery reads as periphery")
 
 _aw = strip_comments((root / "Sources/ActivityWindow.swift").read_text())
+# Search quality (0.5.168). The maths is EXECUTED in the helper self-test;
+# these pin the wiring.
+_helper_code = strip_comments((root / "HelperSources/main.swift").read_text())
+need("cleanedSnippet(" in _helper_code,
+     "day-level snippets must be cleaned or raw JSON reaches the UI")
+need("fuzzyMatches(" in _helper_code,
+     "search lost its typo tolerance")
+_only = model_code[model_code.index("archiveMatchingChats = response.details"):]
+_only = _only[:_only.index("\n        } catch")]
+need("archiveOnlyMatches = !query.isEmpty && archiveMatchingChats > 0" in _only,
+     "a search must default to showing its matches, and must NOT filter when "
+     "nothing matched or the day would look empty")
+
 # In-chat search (0.5.167): the THIRD rung. Day -> chat -> the passage itself.
 # A 28-message transcript with 46 matches and no way to jump was the same dead
 # end one level deeper (Miles, 2026-08-31).
@@ -3001,7 +3014,6 @@ need('if query.count >= 2 { args += ["--q", query] }' in _load,
      "alone can sit behind a dead condition")
 need("archiveMatchingChats" in _load,
      "the day never records how many of its chats matched")
-_helper_code = strip_comments((root / "HelperSources/main.swift").read_text())
 need('request("/api/archive/\\(date)"' in _helper_code,
      "archive-day must read the FULL day; /chats carries no exchanges to search")
 need("archiveChatTopic(" in _helper_code and "archiveChatMatches(" in _helper_code,

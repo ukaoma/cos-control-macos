@@ -10080,7 +10080,14 @@ final class COSControlHelper {
             let reason = (response.body?["error"] as? String) ?? "Request failed (\(response.status))"
             throw HelperError.message(reason)
         }
-        let hits = (body["hits"] as? [[String: Any]]) ?? []
+        var hits = (body["hits"] as? [[String: Any]]) ?? []
+        // The server's snippets are raw file cuts; clean them here so every
+        // surface that renders a hit gets prose rather than JSON debris.
+        for i in hits.indices {
+            if let raw = hits[i]["snippets"] as? [String] {
+                hits[i]["snippets"] = raw.map(Self.cleanedSnippet).filter { !$0.isEmpty }
+            }
+        }
         emit(ok: true, message: hits.isEmpty ? "No matches." : "\(hits.count) day(s) matched", details: [
             "state": "ready",
             "hits": hits,
@@ -10148,6 +10155,67 @@ final class COSControlHelper {
         return top.joined(separator: " · ")
     }
 
+    /// The server cuts search snippets as a byte window out of the archive FILE,
+    /// so a hit near the top of a chat drags "sessionId": …, "exchanges": [ {
+    /// "role": "user", "content": … into the UI with it (Miles, 2026-08-31).
+    /// Strip the JSON scaffolding and keep the prose.
+    static func cleanedSnippet(_ raw: String) -> String {
+        var text = raw
+        // Drop a leading fragment of JSON structure up to the last content key,
+        // which is where the human sentence actually starts.
+        if let marker = text.range(of: "\"content\": \"", options: .backwards) {
+            text = String(text[marker.upperBound...])
+        }
+        // Any remaining key/punctuation debris from the cut.
+        for junk in ["\"sessionId\":", "\"exchanges\":", "\"role\":", "\"user\",", "\"assistant\",",
+                     "\"timestamp\":", "\"content\":", "[ {", "} ]", "{", "}", "[", "]"] {
+            text = text.replacingOccurrences(of: junk, with: " ")
+        }
+        text = text.replacingOccurrences(of: "\\n", with: " ")
+        while text.contains("  ") { text = text.replacingOccurrences(of: "  ", with: " ") }
+        return text.trimmingCharacters(in: CharacterSet(charactersIn: " \"',:"))
+    }
+
+    /// Typo tolerance. BOTH arguments must already be lowercased — callers fold
+    /// case, this does not. "thulle" must find "Thule": one transposed or doubled
+    /// letter is the difference between finding a conversation and concluding
+    /// it never happened (Miles, 2026-08-31). Bounded edit distance, computed
+    /// only for words of similar length, so this stays cheap on a full archive.
+    static func fuzzyMatches(_ candidate: String, _ needle: String) -> Bool {
+        if candidate.contains(needle) { return true }
+        guard needle.count >= 5 else { return false }   // short words fuzz into noise
+        let allowed = needle.count >= 8 ? 2 : 1
+        let n = Array(needle)
+        for word in candidate.split(whereSeparator: { !$0.isLetter }) {
+            let w = Array(word)
+            guard abs(w.count - n.count) <= allowed else { continue }
+            if editDistance(w, n, limit: allowed) <= allowed { return true }
+        }
+        return false
+    }
+
+    /// Levenshtein with an early exit once the budget is blown. The early exit
+    /// is an OPTIMISATION, not a behaviour: callers compare against the same
+    /// budget either way, so removing it changes speed and nothing else.
+    static func editDistance(_ a: [Character], _ b: [Character], limit: Int) -> Int {
+        if a.isEmpty { return b.count }
+        if b.isEmpty { return a.count }
+        var previous = Array(0...b.count)
+        var current = [Int](repeating: 0, count: b.count + 1)
+        for i in 1...a.count {
+            current[0] = i
+            var rowBest = current[0]
+            for j in 1...b.count {
+                let cost = a[i - 1] == b[j - 1] ? 0 : 1
+                current[j] = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
+                rowBest = min(rowBest, current[j])
+            }
+            if rowBest > limit { return limit + 1 }
+            previous = current
+        }
+        return previous[b.count]
+    }
+
     /// Matches for one query inside one chat, with the surrounding words so the
     /// row can show WHY it matched.
     static func archiveChatMatches(exchanges: [[String: Any]], query: String) -> (count: Int, snippet: String) {
@@ -10155,9 +10223,20 @@ final class COSControlHelper {
         guard !needle.isEmpty else { return (0, "") }
         var count = 0
         var snippet = ""
+        var fuzzyOnly = false
         for ex in exchanges {
             guard let content = ex["content"] as? String else { continue }
             let hay = content.lowercased()
+            // A near-miss still counts as finding the chat: one typo must not
+            // make a conversation look like it never happened.
+            if !hay.contains(needle), Self.fuzzyMatches(hay, needle) {
+                fuzzyOnly = true
+                count += 1
+                if snippet.isEmpty {
+                    snippet = String(content.prefix(150))
+                }
+                continue
+            }
             var searchStart = hay.startIndex
             while let r = hay.range(of: needle, range: searchStart..<hay.endIndex) {
                 count += 1
@@ -10170,7 +10249,7 @@ final class COSControlHelper {
                 searchStart = r.upperBound
             }
         }
-        return (count, snippet)
+        return (count, snippet.isEmpty && fuzzyOnly ? "" : snippet)
     }
 
     private func emitArchiveDay(args: [String]) throws {
@@ -12627,6 +12706,45 @@ final class COSControlHelper {
                    "a term that is absent must not match")
         try expect(Self.archiveChatMatches(exchanges: chatA, query: "").count == 0,
                    "an empty query matches nothing rather than everything")
+
+        // Snippet cleaning: the server cuts a byte window out of the archive
+        // FILE, so a hit near the top of a chat drags JSON structure with it.
+        let leaky = "\"sessionId\": \"f5ce4bee\", \"exchanges\": [ { \"role\": \"user\", "
+            + "\"content\": \"Alright, so our stroller, the inner wall of the tire"
+        let cleaned = Self.cleanedSnippet(leaky)
+        try expect(cleaned.hasPrefix("Alright, so our stroller"),
+                   "the snippet must start at the human sentence, got: \(cleaned)")
+        for junk in ["sessionId", "exchanges", "role\":", "{", "["] {
+            try expect(!cleaned.contains(junk),
+                       "JSON debris survived snippet cleaning: \(junk) in \(cleaned)")
+        }
+        try expect(Self.cleanedSnippet("plain prose with no json") == "plain prose with no json",
+                   "a clean snippet must pass through untouched")
+
+        // Typo tolerance: one doubled letter must not hide a conversation.
+        try expect(Self.fuzzyMatches("the thule urban glide double", "thulle"),
+                   "a single-typo query must still find the word")
+        try expect(Self.fuzzyMatches("we compared thule and bob", "thule"),
+                   "an exact word must still match")
+        try expect(!Self.fuzzyMatches("the stroller has a flat tire", "helicopter"),
+                   "an unrelated word must not fuzzy-match")
+        try expect(!Self.fuzzyMatches("the cat sat", "bat"),
+                   "short words must not fuzz: every three-letter word is one edit from another")
+        // …but a short word must still match EXACTLY. The fuzzy path is gated
+        // at five characters, so the exact check is the only thing serving
+        // short queries; losing it silently breaks every one of them.
+        try expect(Self.fuzzyMatches("the cat sat", "cat"),
+                   "an exact short word must still match")
+        // Contract: BOTH sides arrive lowercased — callers fold case before
+        // calling, and the raw form deliberately does not match.
+        try expect(Self.fuzzyMatches("psi readings", "psi"),
+                   "an exact short query must match once case is folded")
+        try expect(!Self.fuzzyMatches("PSI readings", "psi"),
+                   "fuzzyMatches does not fold case itself; callers must")
+        try expect(Self.editDistance(Array("thulle"), Array("thule"), limit: 2) == 1,
+                   "one inserted letter is one edit")
+        try expect(Self.editDistance(Array("abc"), Array("xyz"), limit: 1) > 1,
+                   "the edit budget must cut off rather than compute the whole matrix")
 
         // The window must be able to FILL the view's turn budget, or opening a
         // large session shows a sliver of history for no reason. Measured: 64 MB

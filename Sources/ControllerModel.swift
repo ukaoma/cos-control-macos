@@ -4542,6 +4542,11 @@ final class ControllerModel: ObservableObject {
             let response = try await helper.run(args)
             archiveChats = (response.details["chats"]?.array ?? []).compactMap(ArchiveChat.init)
             archiveMatchingChats = response.details["matchingChats"]?.int ?? 0
+            // If you searched, you came for the matches. Showing all eleven
+            // chats and making you flip a switch buries what you asked for
+            // (Miles, 2026-08-31). No matches means no filter, so the day is
+            // never mysteriously empty.
+            archiveOnlyMatches = !query.isEmpty && archiveMatchingChats > 0
             // "absent" is the server saying the day file is gone, which is a real
             // answer and not a failure. An empty ready list is also a real answer.
             if response.details["state"]?.string == "absent" {
