@@ -4512,6 +4512,13 @@ final class ControllerModel: ObservableObject {
         archiveNotice = nil
     }
 
+    /// The query the loaded chats were scanned with, and how many matched. Kept
+    /// separate from archiveQuery so editing the box does not silently relabel
+    /// chats that were scanned for something else.
+    @Published var archiveChatsQuery = ""
+    @Published var archiveMatchingChats = 0
+    @Published var archiveOnlyMatches = false
+
     /// Open one archived DAY: load the chats it holds.
     ///
     /// State is cleared before the await, not after: the previous day's chats
@@ -4522,10 +4529,19 @@ final class ControllerModel: ObservableObject {
         archiveChatsNotice = nil
         archiveChatsLoading = true
         archiveDayRouteActive = false
+        // The search that found the day carries INTO the day. Finding the right
+        // date and then losing the term is the dead end Miles hit: the day list
+        // said which day, and the day said nothing about which chat.
+        let query = archiveQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        archiveChatsQuery = query
+        archiveMatchingChats = 0
         defer { archiveChatsLoading = false }
         do {
-            let response = try await helper.run(["archive-day", "--date", date])
+            var args = ["archive-day", "--date", date]
+            if query.count >= 2 { args += ["--q", query] }
+            let response = try await helper.run(args)
             archiveChats = (response.details["chats"]?.array ?? []).compactMap(ArchiveChat.init)
+            archiveMatchingChats = response.details["matchingChats"]?.int ?? 0
             // "absent" is the server saying the day file is gone, which is a real
             // answer and not a failure. An empty ready list is also a real answer.
             if response.details["state"]?.string == "absent" {

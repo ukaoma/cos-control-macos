@@ -2288,21 +2288,43 @@ struct ActivityWindow: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(model.archiveChats) { chat in
+                        if !model.archiveChatsQuery.isEmpty {
+                            archiveDaySearchBar(date: date)
+                        }
+                        ForEach(visibleArchiveChats) { chat in
                             Button { openArchiveChat(date: date, index: chat.index) } label: {
                                 HStack(spacing: 8) {
                                     VStack(alignment: .leading, spacing: 3) {
+                                        // The TOPIC leads. "Chat 1 … Chat 11" is
+                                        // an ordinal, not a memory aid, and every
+                                        // opening line starts the same way.
                                         HStack(spacing: 8) {
-                                            // 1-based for display only. The index is
-                                            // the server's array position and stays
-                                            // 0-based everywhere it is sent.
-                                            Text("Chat \(chat.index + 1)")
+                                            Text(chat.headline)
                                                 .font(.system(size: 12, weight: .semibold))
-                                            Text("\(chat.timeLabel) · \(chat.countLabel)")
-                                                .font(.system(size: 10, design: .monospaced))
-                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                            if chat.matches > 0 {
+                                                Text("\(chat.matches) match\(chat.matches == 1 ? "" : "es")")
+                                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                                    .foregroundStyle(COSPalette.cream)
+                                                    .padding(.horizontal, 5).padding(.vertical, 1.5)
+                                                    .background(Capsule().fill(COSPalette.green))
+                                            }
                                         }
-                                        if let summary = chat.summary, !summary.isEmpty {
+                                        // 1-based for display only. The index is
+                                        // the server's array position and stays
+                                        // 0-based everywhere it is sent.
+                                        Text("Chat \(chat.index + 1) · \(chat.timeLabel) · \(chat.countLabel)")
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                        // A matched chat shows WHY it matched;
+                                        // otherwise the opening line still reads.
+                                        if !chat.snippet.isEmpty {
+                                            Text(chat.snippet)
+                                                .font(.system(size: 11))
+                                                .foregroundStyle(.primary)
+                                                .lineLimit(3)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        } else if let summary = chat.summary, !summary.isEmpty {
                                             Text(summary)
                                                 .font(.system(size: 11))
                                                 .foregroundStyle(.secondary)
@@ -2321,11 +2343,47 @@ struct ActivityWindow: View {
                             .buttonStyle(.plain)
                             Divider().opacity(0.4)
                         }
+                        if visibleArchiveChats.isEmpty {
+                            Text("No chat on this day contains \"\(model.archiveChatsQuery)\".")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 14).padding(.vertical, 10)
+                        }
                     }
                     .padding(.top, 4)
                 }
             }
         }
+    }
+
+    /// Chats shown for the open day: everything, or only those that matched the
+    /// search that got you here.
+    private var visibleArchiveChats: [ArchiveChat] {
+        guard model.archiveOnlyMatches, !model.archiveChatsQuery.isEmpty else {
+            return model.archiveChats
+        }
+        return model.archiveChats.filter { $0.matches > 0 }
+    }
+
+    /// The search that found this day, carried in and made actionable.
+    @ViewBuilder private func archiveDaySearchBar(date: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text("\"\(model.archiveChatsQuery)\" · \(model.archiveMatchingChats) of \(model.archiveChats.count) chat\(model.archiveChats.count == 1 ? "" : "s")")
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            if model.archiveMatchingChats > 0 {
+                Toggle("Only matches", isOn: $model.archiveOnlyMatches)
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .font(.system(size: 10.5))
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 6)
+        Divider().opacity(0.4)
     }
 
     /// Counts come from the day list rather than being recomputed, so the header

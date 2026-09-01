@@ -578,7 +578,11 @@ assert 'func loadArchiveMessages(date: String, index: Int)' in model, 'the chat 
 # Cleared BEFORE the await, not after: otherwise the previous day's chats sit on
 # screen under the new day's title for the length of the request.
 day_fn = model.index('func loadArchiveChats(date: String)')
-day_body = model[day_fn:day_fn+420]
+# The FUNCTION BODY, not a fixed byte window: a 420-char slice silently stopped
+# covering the await the moment the function grew (0.5.166), turning a real
+# ordering guard into a crash.
+day_body = model[day_fn:]
+day_body = day_body[:day_body.index('\n    }')]
 assert day_body.index('archiveChats = []') < day_body.index('await helper.run'), \
     'stale chats must be cleared before the request, not after it returns'
 
@@ -2936,6 +2940,28 @@ need("RoundedRectangle" in rail_src and ".frame(width: size.length(3))" in rail_
 idle_src = code[code.index("private func idleRow"):code.index("private func dismissControl")]
 need("petLiveLine" not in idle_src and "lineLimit(1)" in idle_src,
      "idle rows must stay dim one-liners — periphery reads as periphery")
+
+# Archive topics + within-day search (0.5.166). The topic/match maths is
+# EXECUTED in the helper self-test; these pin the wiring it cannot see.
+_aw = strip_comments((root / "Sources/ActivityWindow.swift").read_text())
+need("chat.headline" in _aw,
+     "the archive row must lead with the topic, not the ordinal")
+need('Text("Chat \\(chat.index + 1) ·' in _aw,
+     "the ordinal must survive as a reference line, just not as the headline")
+need("visibleArchiveChats" in _aw and "archiveOnlyMatches" in _aw,
+     "the day view cannot filter to the chats that matched")
+_load = model_code[model_code.index("func loadArchiveChats("):]
+_load = _load[:_load.index("\n    }")]
+need('if query.count >= 2 { args += ["--q", query] }' in _load,
+     "the search that found the day must carry INTO the day — the argument line "
+     "alone can sit behind a dead condition")
+need("archiveMatchingChats" in _load,
+     "the day never records how many of its chats matched")
+_helper_code = strip_comments((root / "HelperSources/main.swift").read_text())
+need('request("/api/archive/\\(date)"' in _helper_code,
+     "archive-day must read the FULL day; /chats carries no exchanges to search")
+need("archiveChatTopic(" in _helper_code and "archiveChatMatches(" in _helper_code,
+     "the topic and match helpers are gone")
 
 # Calm motion (0.5.165) is a FIGURE preference, never a status one: it feeds
 # the pose resolver and must never touch the ledger, which carries the counts.

@@ -10090,12 +10090,99 @@ final class COSControlHelper {
         ])
     }
 
+    /// Words that say how Miles talks, not what a chat was about. Every day's
+    /// chats open "Alright, I want you to…", so a summary built from the first
+    /// line makes eleven chats look identical (Miles, 2026-08-31).
+    static let archiveTopicStopwords: Set<String> = [
+        "alright", "okay", "right", "well", "hey", "please", "thanks", "yeah", "yes", "no",
+        "want", "need", "like", "just", "going", "gonna", "let", "lets", "make", "made",
+        "give", "given", "take", "look", "looking", "looked", "know", "think", "thing",
+        "things", "that", "this", "these", "those", "there", "here", "then", "than",
+        "with", "from", "into", "onto", "over", "about", "after", "before", "through",
+        "have", "has", "had", "been", "was", "were", "are", "is", "am", "be", "being",
+        "and", "but", "for", "the", "you", "your", "yours", "our", "ours", "their",
+        "can", "could", "would", "should", "will", "shall", "may", "might", "must",
+        "what", "when", "where", "which", "who", "whom", "why", "how", "all", "any",
+        "some", "one", "two", "get", "got", "put", "run", "ran", "see", "saw", "say",
+        "said", "tell", "told", "ask", "asked", "come", "came", "back", "also", "very",
+        "really", "quick", "quickly", "actually", "basically", "kind", "sort", "little",
+        "bit", "more", "most", "much", "many", "now", "today", "tomorrow", "yesterday",
+        "still", "even", "only", "out", "off", "down", "again", "because", "does", "did",
+        "doing", "done", "not", "dont", "cant", "wont", "its", "his", "her", "him",
+        "she", "they", "them", "were", "weve", "ive", "ill", "were", "lot", "way",
+        // Observed leaking into real topics on 2026-08-31: filler that survives
+        // the length filter, plus "undefined", which is literal text some rows
+        // carry and reads as a bug when it surfaces as a topic.
+        "able", "undefined", "inside", "against", "recently", "using", "around",
+        "something", "anything", "everything", "someone", "another", "however",
+        "though", "while", "since", "until", "during", "without", "within",
+        "across", "between", "maybe", "perhaps", "probably", "definitely",
+        "essentially", "literally", "obviously", "honestly", "sure", "fine",
+        "nice", "great", "better", "best", "worse", "worst", "first", "last",
+        "next", "other", "others", "same", "different", "whole", "full", "part",
+        "instead", "rather", "already", "always", "never", "sometimes", "often",
+    ]
+
+    /// A deterministic topic for one archived chat: the terms the conversation
+    /// actually kept returning to, taken from the USER's side. No model call —
+    /// this is a read path that opens on every archive tap.
+    static func archiveChatTopic(exchanges: [[String: Any]]) -> String {
+        var counts: [String: Int] = [:]
+        var order: [String: Int] = [:]
+        var seen = 0
+        for ex in exchanges where (ex["role"] as? String) == "user" {
+            guard let content = ex["content"] as? String else { continue }
+            for raw in content.lowercased().split(whereSeparator: { !$0.isLetter && $0 != "-" }) {
+                let word = raw.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+                guard word.count >= 4, !archiveTopicStopwords.contains(word) else { continue }
+                counts[word, default: 0] += 1
+                if order[word] == nil { order[word] = seen; seen += 1 }
+            }
+        }
+        guard !counts.isEmpty else { return "" }
+        // Frequency first, then first-appearance, so the topic is stable for a
+        // given chat instead of reshuffling on ties.
+        let top = counts.sorted {
+            $0.value != $1.value ? $0.value > $1.value : (order[$0.key] ?? 0) < (order[$1.key] ?? 0)
+        }.prefix(4).map(\.key)
+        return top.joined(separator: " · ")
+    }
+
+    /// Matches for one query inside one chat, with the surrounding words so the
+    /// row can show WHY it matched.
+    static func archiveChatMatches(exchanges: [[String: Any]], query: String) -> (count: Int, snippet: String) {
+        let needle = query.lowercased()
+        guard !needle.isEmpty else { return (0, "") }
+        var count = 0
+        var snippet = ""
+        for ex in exchanges {
+            guard let content = ex["content"] as? String else { continue }
+            let hay = content.lowercased()
+            var searchStart = hay.startIndex
+            while let r = hay.range(of: needle, range: searchStart..<hay.endIndex) {
+                count += 1
+                if snippet.isEmpty {
+                    let lo = hay.index(r.lowerBound, offsetBy: -60, limitedBy: hay.startIndex) ?? hay.startIndex
+                    let hi = hay.index(r.upperBound, offsetBy: 90, limitedBy: hay.endIndex) ?? hay.endIndex
+                    let cut = String(content[lo..<hi]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    snippet = (lo > hay.startIndex ? "…" : "") + cut + (hi < hay.endIndex ? "…" : "")
+                }
+                searchStart = r.upperBound
+            }
+        }
+        return (count, snippet)
+    }
+
     private func emitArchiveDay(args: [String]) throws {
         guard let date = option("--date", in: args), isArchiveDateString(date) else {
             throw HelperError.message("Pass --date as YYYY-MM-DD.")
         }
+        let query = (option("--q", in: args) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let token = try speakerReviewToken()
-        guard let response = request("/api/archive/\(date)/chats", token: token, timeout: 60) else {
+        // The FULL day, not /chats: it carries every exchange, which is what
+        // makes both a real topic and a within-day search possible in ONE
+        // request instead of one per chat.
+        guard let response = request("/api/archive/\(date)", token: token, timeout: 60) else {
             throw HelperError.message("Server stopped")
         }
         if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
@@ -10106,8 +10193,29 @@ final class COSControlHelper {
         guard response.status == 200, let body = response.body else {
             throw HelperError.message("Request failed (\(response.status))")
         }
+        let rawChats = (body["chats"] as? [[String: Any]]) ?? []
+        var chats: [[String: Any]] = []
+        var matchingChats = 0
+        for (index, chat) in rawChats.enumerated() {
+            let exchanges = (chat["exchanges"] as? [[String: Any]]) ?? []
+            var row: [String: Any] = [
+                "index": index,
+                "summary": chat["summary"] as? String ?? "",
+                "exchangeCount": chat["exchangeCount"] as? Int ?? exchanges.count,
+                "topic": Self.archiveChatTopic(exchanges: exchanges),
+            ]
+            if let started = chat["startedAt"] { row["startedAt"] = started }
+            if !query.isEmpty {
+                let hit = Self.archiveChatMatches(exchanges: exchanges, query: query)
+                row["matches"] = hit.count
+                row["snippet"] = hit.snippet
+                if hit.count > 0 { matchingChats += 1 }
+            }
+            chats.append(row)
+        }
         emit(ok: true, message: "Archive for \(date)", details: [
-            "state": "ready", "date": date, "chats": (body["chats"] as? [[String: Any]]) ?? [],
+            "state": "ready", "date": date, "chats": chats,
+            "query": query, "matchingChats": matchingChats,
         ])
     }
 
@@ -12477,6 +12585,48 @@ final class COSControlHelper {
                    "a windowed read must skip the middle, not read everything")
         try expect(seen.allSatisfy { (try? JSONSerialization.jsonObject(with: Data($0.utf8))) != nil },
                    "a window that opens mid-file must drop its partial first line")
+
+        // Archive topics and within-day search (0.5.166). Executed against the
+        // shipped functions: a topic that just echoes the opening line is the
+        // defect being fixed, so the fixture uses Miles's real speech shape.
+        let chatA: [[String: Any]] = [
+            ["role": "user", "content": "Alright, I want you to look at the stroller tire. "
+                + "The stroller wheel is flat and the Thule warranty might cover it."],
+            // "portal" appears only here, three times — enough to rank if the
+            // topic ever started counting the assistant's words.
+            ["role": "assistant", "content": "I can draft that. The warranty portal wants a "
+                + "receipt, the portal also wants photos, and the portal confirms in a day."],
+            ["role": "user", "content": "Yes, send the Thule warranty email about the stroller."],
+        ]
+        let topicA = Self.archiveChatTopic(exchanges: chatA)
+        try expect(topicA.contains("stroller"),
+                   "the topic must surface what the chat was about, got: \(topicA)")
+        try expect(!topicA.contains("alright") && !topicA.contains("want"),
+                   "filler must not become a topic: \(topicA)")
+        try expect(!topicA.contains("portal"),
+                   "the topic reads the USER's words, not the assistant's: \(topicA)")
+        // Two chats that OPEN identically must still be told apart, which is
+        // exactly what the old first-line summary could not do.
+        let chatB: [[String: Any]] = [
+            ["role": "user", "content": "Alright, I want you to run the good morning skill "
+                + "and give me the calendar briefing for today."],
+        ]
+        let topicB = Self.archiveChatTopic(exchanges: chatB)
+        try expect(topicA != topicB,
+                   "chats with the same opening must get different topics")
+        try expect(Self.archiveChatTopic(exchanges: []).isEmpty,
+                   "an empty chat has no topic to invent")
+
+        let hit = Self.archiveChatMatches(exchanges: chatA, query: "thule")
+        try expect(hit.count == 2, "both Thule mentions must be counted, got \(hit.count)")
+        try expect(hit.snippet.lowercased().contains("thule"),
+                   "the snippet must show why the chat matched")
+        try expect(Self.archiveChatMatches(exchanges: chatA, query: "STROLLER").count == 3,
+                   "search is case-insensitive and counts every occurrence, both roles")
+        try expect(Self.archiveChatMatches(exchanges: chatA, query: "helicopter").count == 0,
+                   "a term that is absent must not match")
+        try expect(Self.archiveChatMatches(exchanges: chatA, query: "").count == 0,
+                   "an empty query matches nothing rather than everything")
 
         // The window must be able to FILL the view's turn budget, or opening a
         // large session shows a sliver of history for no reason. Measured: 64 MB

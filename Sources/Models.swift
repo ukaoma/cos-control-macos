@@ -2932,15 +2932,33 @@ struct ArchiveHit: Identifiable, Sendable, Hashable {
 struct ArchiveChat: Identifiable, Sendable, Hashable {
     let index: Int
     let summary: String?
+    /// What the chat kept returning to, derived from the user's own words.
+    /// "Chat 1 … Chat 11" told you nothing, and every summary opens with the
+    /// same "Alright, I want you to…" (Miles, 2026-08-31).
+    let topic: String
     let exchangeCount: Int
     let startedAt: TimeInterval?
+    /// Populated only when the day was loaded with an active search.
+    let matches: Int
+    let snippet: String
 
     var id: Int { index }
+
+    /// The line the row leads with: the topic when there is one, the opening
+    /// line when there is not. Never "Chat N" alone.
+    var headline: String {
+        if !topic.isEmpty { return topic }
+        let opening = (summary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return opening.isEmpty ? "Untitled chat" : opening
+    }
 
     init?(_ value: JSONValue?) {
         guard let o = value?.object, let index = o["index"]?.int else { return nil }
         self.index = index
         summary = o["summary"]?.string
+        topic = o["topic"]?.string ?? ""
+        matches = o["matches"]?.int ?? 0
+        snippet = o["snippet"]?.string ?? ""
         exchangeCount = o["exchangeCount"]?.int ?? 0
         // Same millisecond heuristic the live turns use: the archive writes epoch
         // milliseconds, and reading those as seconds would date every chat to 1970.

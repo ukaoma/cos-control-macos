@@ -1,3 +1,20 @@
+## 0.5.166 (build 204)
+
+Archived days are searchable and readable. Finding the day a conversation
+happened on used to end there: the day opened as "Chat 1" through "Chat 11",
+and the term you searched for did not come with you, so you had to open every
+chat to find the one you meant.
+
+Each chat now leads with what it was actually about — the words that
+conversation kept returning to, taken from your own side of it — instead of
+an ordinal and an opening line that reads the same on every chat of the day.
+The time, message count and chat number are still there underneath.
+
+The search that found the day now carries into it. Chats that contain the
+term are badged with their match count and show the passage that matched,
+and a switch narrows the day to just those chats. Searching an archived day
+costs one request, not one per chat.
+
 ## 0.5.165 (build 203)
 
 Calm motion. An advanced character's multi-session fights are the whole
