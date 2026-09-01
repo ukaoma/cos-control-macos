@@ -149,6 +149,9 @@ private enum VoiceDirectorySort: String, CaseIterable, Identifiable {
 /// from silently replacing the 390pt menu-bar console when it is opened later.
 struct ActivityWindow: View {
     @ObservedObject var model: ControllerModel
+    /// In-chat search: the term and which match the cursor is on.
+    @State private var chatQuery = ""
+    @State private var chatMatchCursor = 0
     @State private var section: ActivitySection?
     @State private var selectedTurnID: String?
     /// The archive drill-through: a date, then a chat index inside that date.
@@ -2407,41 +2410,120 @@ struct ActivityWindow: View {
         } else if model.archiveMessages.isEmpty {
             emptyState(.messages, text: "That chat holds no messages.")
         } else {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    HStack(alignment: .top) {
-                        sectionGlyph(.messages, large: true)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Chat \(index + 1)")
-                                .font(.system(size: 19, weight: .semibold))
-                            Text("\(date) · \(model.archiveMessages.count) message\(model.archiveMessages.count == 1 ? "" : "s")")
-                                .font(.system(size: 10.5, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                    }
-
-                    ForEach(model.archiveMessages) { message in
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 8) {
-                                Text(message.title)
-                                    .font(.system(size: 11, weight: .semibold))
-                                Text(message.timeLabel)
-                                    .font(.system(size: 10, design: .monospaced))
+            // ScrollViewReader so a match can be JUMPED to. Finding the day,
+            // then the chat, and then scrolling a 28-message transcript by eye
+            // was the last rung of the same dead end (Miles, 2026-08-31).
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        HStack(alignment: .top) {
+                            sectionGlyph(.messages, large: true)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Chat \(index + 1)")
+                                    .font(.system(size: 19, weight: .semibold))
+                                Text("\(date) · \(model.archiveMessages.count) message\(model.archiveMessages.count == 1 ? "" : "s")")
+                                    .font(.system(size: 10.5, design: .monospaced))
                                     .foregroundStyle(.secondary)
-                                Spacer()
-                                Button("Copy turn") { model.copyArchiveMessage(message) }
-                                    .controlSize(.small)
                             }
-                            messageBlock(label: "You", text: message.query, tint: ActivitySection.messages.tint)
-                            messageBlock(label: "COS", text: message.text, tint: COSPalette.green)
+                            Spacer()
+                        }
+
+                        chatSearchBar(proxy: proxy)
+
+                        ForEach(model.archiveMessages) { message in
+                            let hit = chatQuery.count >= 2 && messageMatches(message)
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 8) {
+                                    Text(message.title)
+                                        .font(.system(size: 11, weight: .semibold))
+                                    Text(message.timeLabel)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                    if hit {
+                                        Text("match")
+                                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                            .foregroundStyle(COSPalette.cream)
+                                            .padding(.horizontal, 5).padding(.vertical, 1.5)
+                                            .background(Capsule().fill(COSPalette.green))
+                                    }
+                                    Spacer()
+                                    Button("Copy turn") { model.copyArchiveMessage(message) }
+                                        .controlSize(.small)
+                                }
+                                messageBlock(label: "You", text: message.query, tint: ActivitySection.messages.tint)
+                                messageBlock(label: "COS", text: message.text, tint: COSPalette.green)
+                            }
+                            .padding(hit ? 10 : 0)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(hit ? COSPalette.green.opacity(0.07) : .clear)
+                            )
+                            .id(message.id)
                         }
                     }
+                    .padding(28)
+                    .frame(maxWidth: 820, alignment: .leading)
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(28)
-                .frame(maxWidth: 820, alignment: .leading)
-                .frame(maxWidth: .infinity)
+                // The term that found the day is the term you are still looking
+                // for; seed it rather than making it be typed a third time.
+                .onAppear { if chatQuery.isEmpty { chatQuery = model.archiveChatsQuery } }
             }
+        }
+    }
+
+    /// Does this turn contain the in-chat query, on either side of it?
+    private func messageMatches(_ message: ArchiveMessage) -> Bool {
+        let needle = chatQuery.lowercased()
+        guard needle.count >= 2 else { return false }
+        return message.query.lowercased().contains(needle)
+            || message.text.lowercased().contains(needle)
+    }
+
+    private var chatMatchIDs: [ArchiveMessage.ID] {
+        model.archiveMessages.filter { messageMatches($0) }.map(\.id)
+    }
+
+    /// Search WITHIN one transcript, with jump-to-match. The chat is the last
+    /// place the term can hide, and a 28-message chat is too long to scan.
+    @ViewBuilder private func chatSearchBar(proxy: ScrollViewProxy) -> some View {
+        let ids = chatMatchIDs
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+            TextField("Find in this chat", text: $chatQuery)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+                .frame(maxWidth: 260)
+                .onSubmit { jumpToMatch(step: 1, ids: ids, proxy: proxy) }
+            if chatQuery.count >= 2 {
+                Text(ids.isEmpty ? "no matches"
+                     : "\(min(chatMatchCursor + 1, ids.count)) of \(ids.count)")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Button { jumpToMatch(step: -1, ids: ids, proxy: proxy) } label: {
+                    Image(systemName: "chevron.up")
+                }
+                .controlSize(.small).disabled(ids.isEmpty)
+                Button { jumpToMatch(step: 1, ids: ids, proxy: proxy) } label: {
+                    Image(systemName: "chevron.down")
+                }
+                .controlSize(.small).disabled(ids.isEmpty)
+                Button("Clear") { chatQuery = ""; chatMatchCursor = 0 }
+                    .buttonStyle(.link).controlSize(.small)
+            }
+            Spacer()
+        }
+    }
+
+    /// Move the cursor and scroll. Wraps at both ends so a match is never a
+    /// dead end at the bottom of a transcript.
+    private func jumpToMatch(step: Int, ids: [ArchiveMessage.ID], proxy: ScrollViewProxy) {
+        guard !ids.isEmpty else { return }
+        chatMatchCursor = ((chatMatchCursor + step) % ids.count + ids.count) % ids.count
+        withAnimation(.easeInOut(duration: 0.25)) {
+            proxy.scrollTo(ids[chatMatchCursor], anchor: .center)
         }
     }
 

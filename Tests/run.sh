@@ -513,7 +513,28 @@ assert 'updateAvailable && ' not in models.split('var hasNotice')[1][:200], \
 assert 'dismissedNoticeIds' in ctrl and 'UserDefaults' in ctrl, 'dismissal must persist'
 assert 'dismissedNoticeIds.contains(id)' in ctrl, 'dismissal must be keyed per notice id'
 
-assert 'noticeBanner' in views.split('updateBanner')[1][:400], 'banner must render in the panel'
+# Slice the REAL panel body, not a fixed window after a symbol name: the old
+# 400-char probe broke the moment the row was renamed (0.5.167).
+_panel = views[views.index('private var mainPanel'):]
+_panel = _panel[:_panel.index('\n    }')]
+assert 'updateRow' in _panel and 'noticeBanner' in _panel, \
+    'the panel must render both the update row and the notice banner'
+# Updates answer "am I current?" FIRST. Buried under the status card and the
+# utilities, the only way to ask was to scroll to the very bottom (Miles).
+assert _panel.index('updateRow') < _panel.index('statusCard'), \
+    'the update row must sit at the top of the panel, above the status card'
+# The CALL SITE, not the words: the footer's own comment quotes the old label
+# ("Check for updates Quit"), so a bare string check trips on documentation.
+_row = views.split('private var updateRow')[1].split('private var updateBanner')[0]
+assert 'Button("Check for updates"' in _row, \
+    'the manual check must live in the top update row'
+# The whole footer body, bounded by the next declaration. A 1200-char window
+# stopped one line short of the Quit button — the third fixed-window pin to
+# break this way today, so this one slices to a real boundary.
+_footer = views.split('private var footer')[1].split('private var footerLabel')[0]
+assert 'Button("Check for updates"' not in _footer, \
+    'the manual check must no longer be buried in the footer'
+assert 'Button("Quit"' in _footer, 'Quit stays in the footer'
 assert 'model.dismissNotice(id)' in views, 'banner must offer dismiss'
 print('    publisher notice: parsed pre-return, minBuild-gated, update-independent, dismissible')
 PYEOF
@@ -862,9 +883,14 @@ import sys
 views = open(sys.argv[1]).read()
 panel = views[views.index("private var mainPanel"): views.index("private var activityLauncher")]
 # Activity is the first destination in the menu bar, above Restart/Stop/Update.
-for name in ("header", "updateBanner", "activityLauncher", "statusCard", "controls"):
+# updateRow replaced updateBanner in the panel (0.5.167): it renders the offer
+# when there is one and the standing version when there is not, and carries the
+# manual check either way.
+for name in ("header", "updateRow", "activityLauncher", "statusCard", "controls"):
     if name not in panel:
         raise SystemExit(f"mainPanel lost {name}")
+if panel.index("updateRow") > panel.index("activityLauncher"):
+    raise SystemExit("the update row must be the first card in the panel")
 if panel.index("activityLauncher") > panel.index("statusCard"):
     raise SystemExit("Activity is below status again")
 if panel.index("activityLauncher") > panel.index("controls"):
@@ -2941,9 +2967,27 @@ idle_src = code[code.index("private func idleRow"):code.index("private func dism
 need("petLiveLine" not in idle_src and "lineLimit(1)" in idle_src,
      "idle rows must stay dim one-liners — periphery reads as periphery")
 
+_aw = strip_comments((root / "Sources/ActivityWindow.swift").read_text())
+# In-chat search (0.5.167): the THIRD rung. Day -> chat -> the passage itself.
+# A 28-message transcript with 46 matches and no way to jump was the same dead
+# end one level deeper (Miles, 2026-08-31).
+# The VIEW BODY only. A slice that ran to messageDetail also swallowed
+# chatSearchBar's own definition, so deleting the CALL still satisfied the pin.
+_chat = _aw[_aw.index("private func archiveChatDetail"):_aw.index("private func messageMatches")]
+need("ScrollViewReader" in _chat and "proxy.scrollTo(" in _aw,
+     "the transcript cannot jump to a match without a ScrollViewReader")
+need(".id(message.id)" in _chat,
+     "matched turns need stable ids or scrollTo has nothing to aim at")
+need("chatSearchBar(proxy:" in _chat, "the transcript has no in-chat search")
+need("chatQuery = model.archiveChatsQuery" in _chat,
+     "the day's term must seed the chat search rather than being typed a third time")
+_jump = _aw[_aw.index("private func jumpToMatch"):]
+_jump = _jump[:_jump.index("\n    }")]
+need("% ids.count + ids.count) % ids.count" in _jump,
+     "match navigation must wrap at both ends, not dead-end at the last hit")
+
 # Archive topics + within-day search (0.5.166). The topic/match maths is
 # EXECUTED in the helper self-test; these pin the wiring it cannot see.
-_aw = strip_comments((root / "Sources/ActivityWindow.swift").read_text())
 need("chat.headline" in _aw,
      "the archive row must lead with the topic, not the ordinal")
 need('Text("Chat \\(chat.index + 1) ·' in _aw,

@@ -1,3 +1,18 @@
+## 0.5.167 (build 205)
+
+Updates moved to the top of the panel. The check used to be the very last
+thing under everything else, so asking "am I current?" meant scrolling to the
+bottom. The first card now answers it on every open: the version you are on
+when you are current, an install offer when you are not, and the manual check
+in both states. Quit stays at the bottom where it belongs.
+
+Search now follows you all the way down. Finding the day got you a day;
+finding the chat got you a transcript you still had to read by eye. An
+archived chat now has its own find bar, seeded with the term that got you
+there, with a match count, next and previous, and matched turns highlighted
+in place — so a chat with forty-six mentions takes one keystroke to walk
+rather than a scroll.
+
 ## 0.5.166 (build 204)
 
 Archived days are searchable and readable. Finding the day a conversation

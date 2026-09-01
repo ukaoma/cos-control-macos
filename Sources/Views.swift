@@ -1191,7 +1191,7 @@ struct ControlPanel: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header
-                updateBanner
+                updateRow
                 noticeBanner
                 activityLauncher
                 statusCard
@@ -1879,6 +1879,40 @@ struct ControlPanel: View {
         }
     }
 
+    /// Updates belong at the TOP of the panel, not buried under everything else
+    /// (Miles, 2026-08-31). The row answers "am I current?" on every open — an
+    /// offer when one is waiting, the standing version when not — and carries
+    /// the manual check in both states, so asking never means scrolling to the
+    /// bottom of the panel.
+    @ViewBuilder private var updateRow: some View {
+        if model.appUpdate.shouldSurface {
+            updateBanner
+        } else {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(COSPalette.green)
+                Text("COS Control \(ControllerModel.currentVersion)")
+                    .font(COSType.mono(10, weight: .bold))
+                Spacer(minLength: 8)
+                if model.updateCheckInFlight {
+                    Text("Checking…").font(COSType.mono(10)).foregroundStyle(.secondary)
+                } else {
+                    Button("Check for updates", systemImage: "arrow.triangle.2.circlepath") {
+                        Task { await model.checkForAppUpdateManually() }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(model.busy)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 11).padding(.vertical, 8)
+            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
+        }
+    }
+
     @ViewBuilder private var updateBanner: some View {
         if model.appUpdate.shouldSurface {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -1921,20 +1955,11 @@ struct ControlPanel: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 10) {
                 Spacer()
-                // ASK FOR AN UPDATE. The automatic check runs at launch and every
-                // 6 hours, so a long-running Control can sit two builds behind
-                // with no banner and no way to ask -- which is exactly what
-                // happened on 2026-08-24. This is the ask.
-                if model.updateCheckInFlight {
-                    Text("Checking…")
-                } else {
-                    Button("Check for updates", systemImage: "arrow.triangle.2.circlepath") {
-                        Task { await model.checkForAppUpdateManually() }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(model.busy)
-                }
+                // ASK FOR AN UPDATE lives in updateRow at the TOP of the panel
+                // now. The automatic check runs at launch and every 6 hours, so
+                // a long-running Control can sit two builds behind with no
+                // banner and no way to ask (2026-08-24) — the ask still exists,
+                // it just is not the last thing in the panel any more.
                 Button("Quit", systemImage: "power") { NSApplication.shared.terminate(nil) }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
