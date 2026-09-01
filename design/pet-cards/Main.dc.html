@@ -1,0 +1,430 @@
+<script src="./support.js"></script>
+<!-- Artboard: 880 x 1460. Direction A, "Outcome line". 1pt = 1px. -->
+<div class="ab ab-a">
+<style>
+.ab-a{
+  /* ---- fixed artboard ---- */
+  width:880px; height:1460px; position:relative; overflow:hidden;
+  box-sizing:border-box; padding:36px;
+  /* real COSPalette values, Sources/Views.swift:80-89 */
+  --ink:#1F1712; --cream:#F5F0E6; --gold:#C9A86E; --amber:#C98045; --green:#339457;
+  --card:#261D16; --panel:#17120D;
+  --line:rgba(201,168,110,0.16);
+  --claude:#C77338; --codex:#1A8C7A; --cursor:#6B61DB;
+  --body:"DM Sans",-apple-system,"SF Pro Text","Helvetica Neue",Helvetica,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --disp:"Fraunces",Georgia,"Iowan Old Style","Times New Roman",serif;
+  font-family:var(--body); color:var(--cream);
+}
+.ab-a *{box-sizing:border-box;}
+
+/* ---- stand-in for arbitrary wallpaper. Miles's on-device failure case was an
+       orange checkerboard (SessionPet.swift:380 comment), so the mock has one. ---- */
+.ab-a .wall{position:absolute; inset:0; z-index:0;
+  background:
+    radial-gradient(680px 420px at 12% 8%, rgba(255,168,64,.55), transparent 62%),
+    radial-gradient(720px 520px at 88% 22%, rgba(60,180,190,.45), transparent 60%),
+    radial-gradient(900px 700px at 55% 96%, rgba(190,70,110,.42), transparent 64%),
+    linear-gradient(155deg,#3a2a17 0%,#1c2b2e 46%,#2a1622 100%);
+}
+.ab-a .wall::after{content:""; position:absolute; inset:0; opacity:.30;
+  background-image:
+    linear-gradient(45deg,rgba(255,140,40,.55) 25%,transparent 25%,transparent 75%,rgba(255,140,40,.55) 75%),
+    linear-gradient(45deg,rgba(255,140,40,.55) 25%,transparent 25%,transparent 75%,rgba(255,140,40,.55) 75%);
+  background-size:44px 44px; background-position:0 0,22px 22px;
+}
+.ab-a .stage{position:relative; z-index:1;}
+
+/* ---- artboard chrome ---- */
+.ab-a h1{font-family:var(--disp); font-size:35px; line-height:1.1; font-weight:600;
+  margin:0; letter-spacing:-.01em; color:#FFF6E6; text-shadow:0 2px 18px rgba(0,0,0,.55);}
+.ab-a .thesis{font-size:15px; line-height:1.5; margin:9px 0 0; max-width:640px;
+  color:rgba(255,246,230,.9); text-shadow:0 1px 12px rgba(0,0,0,.6);}
+.ab-a .band{display:grid; grid-template-columns:480px 1fr; gap:28px; align-items:start; margin-top:30px;}
+.ab-a .bandlabel{font-family:var(--mono); font-size:9px; font-weight:700; letter-spacing:.14em;
+  color:rgba(255,240,220,.72); margin:0 0 9px; text-shadow:0 1px 8px rgba(0,0,0,.7);}
+.ab-a .plates{display:flex; gap:24px; align-items:flex-start;}
+.ab-a .note{background:rgba(18,13,9,.78); border:1px solid var(--line); border-radius:10px;
+  padding:12px 14px; backdrop-filter:blur(10px);}
+.ab-a .note h4{font-family:var(--mono); font-size:9px; font-weight:700; letter-spacing:.12em;
+  margin:0 0 7px; color:var(--gold);}
+.ab-a .note p{font-size:11.5px; line-height:1.55; margin:0 0 7px; color:rgba(245,240,230,.86);}
+.ab-a .note p:last-child{margin-bottom:0;}
+.ab-a .note b{color:#FFF3DE; font-weight:600;}
+.ab-a .num{font-family:var(--mono); font-size:11px; color:var(--gold);}
+.ab-a .bad{color:#E68A6B;}
+.ab-a .good{color:#8CC79C;}
+
+/* ---- the card plate: .regularMaterial in RoundedRectangle(12) + 1pt line stroke ---- */
+.ab-a .plate{border-radius:12px; border:1px solid var(--line); padding:4px 10px;
+  background:rgba(20,15,11,.74); backdrop-filter:blur(22px) saturate(1.15);
+  box-shadow:0 10px 34px rgba(0,0,0,.42);}
+.ab-a .scrollinset{padding-right:10px;}
+.ab-a .div{height:1px; background:var(--line);}
+
+/* ---- provider mark ---- */
+.ab-a .glyph{width:12px; height:12px; flex:0 0 12px; display:block;}
+.ab-a .markblock{display:flex; align-items:center; gap:3px; width:54px; flex:0 0 54px;
+  font-family:var(--mono); font-size:8px; font-weight:700; letter-spacing:.03em;}
+.ab-a .tclaude{color:var(--claude);} .ab-a .tcodex{color:var(--codex);} .ab-a .tcursor{color:var(--cursor);}
+
+/* =======================  NOW: shipped rows  ======================= */
+.ab-a .n-done-row{display:flex; align-items:flex-start; gap:0; height:43px; padding:7px 0;}
+.ab-a .n-done-row .col{display:flex; align-items:flex-start; gap:8px; flex:1 1 auto; min-width:0;}
+.ab-a .n-name{width:68px; flex:0 0 68px; font-size:11px; font-weight:500; line-height:14px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#F3EDE2;}
+.ab-a .n-sub{font-size:10px; line-height:13px; color:rgba(240,232,220,.55); margin-top:2px;}
+.ab-a .n-acts{display:flex; gap:0; flex:0 0 57px; align-items:center; height:29px;}
+.ab-a .n-acts i{width:19px; height:19px; display:grid; place-items:center; font-style:normal;
+  font-size:9px; color:rgba(240,232,220,.55);}
+
+.ab-a .n-mrow{display:flex; height:61px; padding:7px 0 7px 11px; position:relative;}
+.ab-a .n-mrow .rail{position:absolute; left:0; top:6px; bottom:6px; width:3px; border-radius:2px;}
+.ab-a .n-mtop{display:flex; align-items:flex-start; gap:8px;}
+.ab-a .n-mtitle{width:41px; flex:0 0 41px; font-size:11px; font-weight:600; line-height:14px;
+  color:#F3EDE2; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;}
+.ab-a .n-meta{margin-left:auto; text-align:right; flex:0 0 auto;}
+.ab-a .n-age{font-family:var(--mono); font-size:8px; font-weight:700; line-height:11px;}
+.ab-a .n-ws{font-size:8px; line-height:11px; color:rgba(240,232,220,.55); margin-top:3px;
+  max-width:66px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.ab-a .n-tick{display:flex; align-items:center; gap:5px; margin-top:4px; height:15px;}
+.ab-a .dot{width:5px; height:5px; border-radius:50%; flex:0 0 5px;}
+.ab-a .n-tickt{font-family:var(--mono); font-size:9px; font-weight:700; width:157px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.ab-a .n-x{width:20px; flex:0 0 20px; display:grid; place-items:center; align-self:flex-start;
+  height:20px; font-size:9px; color:rgba(240,232,220,.5);}
+.ab-a .sechead{display:flex; align-items:center; gap:5px; padding:7px 0 3px;
+  font-family:var(--mono); font-size:8px; font-weight:700; letter-spacing:.05em; color:rgba(240,232,220,.6);}
+.ab-a .sechead .dot{width:6px; height:6px; flex:0 0 6px;}
+
+/* =======================  DIRECTION A rows  ======================= */
+.ab-a .a-row{display:flex; gap:0; padding:8px 0 8px 11px; position:relative;}
+.ab-a .a-row .rail{position:absolute; left:0; top:6px; bottom:6px; width:3px; border-radius:2px;}
+.ab-a .a-body{flex:1 1 auto; min-width:0;}
+.ab-a .a-l1{display:flex; align-items:center; gap:6px; height:14px;}
+.ab-a .a-title{flex:0 0 121px; width:121px; font-size:11px; font-weight:600; line-height:14px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#F5EFE4;}
+.ab-a .a-age{margin-left:auto; font-family:var(--mono); font-size:8px; font-weight:700; line-height:14px;}
+.ab-a .a-l2{width:165px; margin-top:3px; height:15px; font-family:var(--mono); font-size:9px;
+  font-weight:700; line-height:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.ab-a .a-slot{flex:0 0 22px; width:22px; display:grid; place-items:center; align-self:stretch;}
+.ab-a .a-slot span{font-size:11px; color:rgba(240,232,220,.5); line-height:1;}
+.ab-a .a-slot.hov span{color:#F0D9A8;}
+.ab-a .a-done{height:48px;}
+.ab-a .a-mis{height:61px;}
+.ab-a .a-mis .a-title{white-space:normal; height:28px; line-height:14px;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;}
+.ab-a .a-mis .a-l1{height:28px; align-items:flex-start;}
+.ab-a .a-mis .a-age{line-height:14px;}
+.ab-a .a-l2row{display:flex; align-items:center; gap:5px; margin-top:4px; height:15px;}
+.ab-a .a-l2row .a-l2{margin-top:0; width:155px;}
+
+/* =======================  2x detail  ======================= */
+.ab-a .zoom{transform:scale(2); transform-origin:top left;}
+.ab-a .zoomwrap{width:456px; height:112px; overflow:hidden;}
+.ab-a .zoomwrap.small{height:104px;}
+
+/* =======================  Small preset  ======================= */
+.ab-a .s-plate{width:166px;}
+.ab-a .s-row{display:flex; padding:6px 0 6px 8px; position:relative; height:38px;}
+.ab-a .s-row .rail{position:absolute; left:0; top:5px; bottom:5px; width:2px; border-radius:2px;}
+.ab-a .s-body{flex:1 1 auto; min-width:0;}
+.ab-a .s-l1{display:flex; align-items:center; gap:5px; height:11px;}
+.ab-a .s-title{flex:0 0 86px; width:86px; font-size:8px; font-weight:600; line-height:11px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#F5EFE4;}
+.ab-a .s-age{margin-left:auto; font-family:var(--mono); font-size:8px; font-weight:700;}
+.ab-a .s-l2{width:120px; margin-top:2px; font-family:var(--mono); font-size:8px; font-weight:700;
+  line-height:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.ab-a .s-slot{flex:0 0 16px; display:grid; place-items:center; font-size:9px; color:rgba(240,232,220,.5);}
+
+.ab-a .foot{margin-top:26px; display:flex; flex-wrap:wrap; gap:6px; align-items:center;}
+.ab-a .chip{font-family:var(--mono); font-size:8px; font-weight:700; letter-spacing:.1em;
+  padding:5px 9px; border-radius:20px; border:1px solid var(--line);
+  background:rgba(18,13,9,.8); backdrop-filter:blur(8px); color:rgba(245,238,226,.82);}
+.ab-a .chip.win{color:#A9D8B8; border-color:rgba(140,199,156,.35);}
+.ab-a .chip.cost{color:#EDB08E; border-color:rgba(230,138,107,.35);}
+.ab-a .footnote{width:100%; font-family:var(--mono); font-size:8px; letter-spacing:.11em;
+  font-weight:700; color:rgba(255,240,220,.5); text-shadow:0 1px 6px rgba(0,0,0,.75); margin-top:4px;}
+</style>
+
+<div class="wall"></div>
+<div class="stage">
+
+  <h1>Outcome line</h1>
+  <p class="thesis">Give the answer its own full width line and stop spending the title line on chrome: the row keeps today's card width but drops the provider wordmark, the workspace column and two of three icon buttons, and spends every point it recovers on what the session actually did.</p>
+
+  <!-- ============ BAND 1: NOW ============ -->
+  <div class="band">
+    <div>
+      <p class="bandlabel">NOW / SHIPPED / MEDIUM / ROOT 248PT</p>
+      <div class="plates">
+
+        <!-- current finished list -->
+        <div class="plate" style="width:228px">
+          <div class="scrollinset">
+            <div class="n-done-row">
+              <div class="col">
+                <div class="markblock tclaude">
+                  <svg class="glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  CLAUDE
+                </div>
+                <div>
+                  <div class="n-name">COS-glasses server release train</div>
+                  <div class="n-sub">Finished</div>
+                </div>
+              </div>
+              <div class="n-acts"><i>&#8599;</i><i>&#9776;</i><i>&#10005;</i></div>
+            </div>
+            <div class="div"></div>
+            <div class="n-done-row">
+              <div class="col">
+                <div class="markblock tclaude">
+                  <svg class="glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  CLAUDE
+                </div>
+                <div>
+                  <div class="n-name">COS-glasses session archive purge</div>
+                  <div class="n-sub">Finished</div>
+                </div>
+              </div>
+              <div class="n-acts"><i>&#8599;</i><i>&#9776;</i><i>&#10005;</i></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- current live list -->
+        <div class="plate" style="width:228px">
+          <div class="scrollinset">
+            <div class="sechead"><span class="dot" style="background:var(--green)"></span>RUNNING 1</div>
+            <div class="n-mrow">
+              <span class="rail" style="background:var(--green)"></span>
+              <div style="flex:1 1 auto; min-width:0">
+                <div class="n-mtop">
+                  <div class="markblock tcodex" style="padding-top:2px">
+                    <svg class="glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="8" cy="8" r="6.3"/><path d="M8 1.7v12.6M2.2 5.1l11.6 5.8"/></svg>
+                    CODEX
+                  </div>
+                  <div class="n-mtitle">Persona v26 enrichment</div>
+                  <div class="n-meta">
+                    <div class="n-age" style="color:var(--green)">31s</div>
+                    <div class="n-ws">mu-chief-staff</div>
+                  </div>
+                </div>
+                <div class="n-tick">
+                  <span class="dot" style="background:var(--green)"></span>
+                  <span class="n-tickt" style="color:var(--green)">Editing enrich_matrix_with_resonance.py, 12 brands queued</span>
+                </div>
+              </div>
+              <div class="n-x">&#10005;</div>
+            </div>
+            <div class="sechead"><span class="dot" style="background:var(--amber)"></span>WAITING ON YOU 1</div>
+            <div class="n-mrow">
+              <span class="rail" style="background:var(--amber)"></span>
+              <div style="flex:1 1 auto; min-width:0">
+                <div class="n-mtop">
+                  <div class="markblock tcursor" style="padding-top:2px">
+                    <svg class="glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1l6.2 3.6v6.8L8 15 1.8 11.4V4.6z" opacity=".9"/></svg>
+                    CURSOR
+                  </div>
+                  <div class="n-mtitle">Pet card readability</div>
+                  <div class="n-meta">
+                    <div class="n-age" style="color:var(--amber)">2m</div>
+                    <div class="n-ws">cos-control-macos</div>
+                  </div>
+                </div>
+                <div class="n-tick">
+                  <span class="n-tickt" style="color:var(--amber)">approve the SessionPet.swift edit</span>
+                </div>
+              </div>
+              <div class="n-x">&#10005;</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+    <div class="note">
+      <h4>MEASURED, NOT ESTIMATED</h4>
+      <p>Finished row title box: <span class="num bad">68pt</span>. DM Sans 11pt runs 6.291 pt/char, so that is <b>10 characters</b> plus an ellipsis. Both rows above render <span class="num">COS-glasse&#8230;</span> and the word <span class="num">Finished</span>. They are the same three tokens.</p>
+      <p>Mission row title box: <span class="num bad">41pt</span>. Two lines at 11pt is about 12 characters.</p>
+      <p>What eats the 198pt row: three icon buttons <span class="num">57pt</span>, the provider wordmark block <span class="num">54pt</span>, the age and workspace column <span class="num">44 to 66pt</span>.</p>
+    </div>
+  </div>
+
+  <!-- ============ BAND 2: DIRECTION A ============ -->
+  <div class="band">
+    <div>
+      <p class="bandlabel">DIRECTION A / SAME 248PT ROOT / SAME 160PT AND 240PT FRAMES</p>
+      <div class="plates">
+
+        <!-- proposed finished list -->
+        <div class="plate" style="width:228px">
+          <div class="scrollinset">
+            <div class="a-row a-done">
+              <span class="rail" style="background:var(--gold)"></span>
+              <div class="a-body">
+                <div class="a-l1">
+                  <svg class="glyph tclaude" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  <span class="a-title">COS-glasses server release train</span>
+                  <span class="a-age" style="color:var(--gold)">4m</span>
+                </div>
+                <div class="a-l2" style="color:var(--gold)">Published 6.41.0, appcast live</div>
+              </div>
+              <div class="a-slot"><span>&#8943;</span></div>
+            </div>
+            <div class="div"></div>
+            <div class="a-row a-done">
+              <span class="rail" style="background:var(--gold)"></span>
+              <div class="a-body">
+                <div class="a-l1">
+                  <svg class="glyph tclaude" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  <span class="a-title">COS-glasses session archive purge</span>
+                  <span class="a-age" style="color:var(--gold)">12m</span>
+                </div>
+                <div class="a-l2" style="color:var(--gold)">Pruned 412 archives, 1.2 GB</div>
+              </div>
+              <div class="a-slot hov"><span>&#10005;</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- proposed live list -->
+        <div class="plate" style="width:228px">
+          <div class="scrollinset">
+            <div class="sechead"><span class="dot" style="background:var(--green)"></span>RUNNING 1</div>
+            <div class="a-row a-mis">
+              <span class="rail" style="background:var(--green)"></span>
+              <div class="a-body">
+                <div class="a-l1">
+                  <svg class="glyph tcodex" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="8" cy="8" r="6.3"/><path d="M8 1.7v12.6M2.2 5.1l11.6 5.8"/></svg>
+                  <span class="a-title">Persona v26 enrichment</span>
+                  <span class="a-age" style="color:var(--green)">31s</span>
+                </div>
+                <div class="a-l2row">
+                  <span class="dot" style="background:var(--green)"></span>
+                  <span class="a-l2" style="color:var(--green)">Editing enrich_matrix_with_resonance.py</span>
+                </div>
+              </div>
+              <div class="a-slot"><span>&#8943;</span></div>
+            </div>
+            <div class="sechead"><span class="dot" style="background:var(--amber)"></span>WAITING ON YOU 1</div>
+            <div class="a-row a-mis">
+              <span class="rail" style="background:var(--amber)"></span>
+              <div class="a-body">
+                <div class="a-l1">
+                  <svg class="glyph tcursor" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1l6.2 3.6v6.8L8 15 1.8 11.4V4.6z" opacity=".9"/></svg>
+                  <span class="a-title">Pet card readability directions</span>
+                  <span class="a-age" style="color:var(--amber)">2m</span>
+                </div>
+                <div class="a-l2row">
+                  <span class="a-l2" style="color:var(--amber)">approve the SessionPet.swift edit</span>
+                </div>
+              </div>
+              <div class="a-slot"><span>&#8943;</span></div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+    <div class="note">
+      <h4>WHAT MOVED</h4>
+      <p>Provider wordmark to a 12pt glyph, tinted. Recovers <span class="num good">40pt</span>.</p>
+      <p>Age and workspace column deleted; the age moves inline, the workspace moves to the row tooltip. Recovers <span class="num good">44 to 66pt</span>.</p>
+      <p>Three icon buttons to one 22pt slot. Recovers <span class="num good">35pt</span>. The slot cross fades between the overflow dot and a one click clear, so hover changes color, never size.</p>
+      <p>Title box <span class="num bad">68</span> to <span class="num good">121pt</span>. New outcome line <span class="num good">165pt</span> at mono 9pt, 30 characters. Readable per finished row: <b>10 to 49 characters</b>.</p>
+      <p>Finished row grows <span class="num">43 to 48pt</span>. Three rows still fit the 160pt frame (48 x 3 + 2 dividers = 146). Mission rows stay 61pt.</p>
+    </div>
+  </div>
+
+  <!-- ============ BAND 3: 2x DETAIL ============ -->
+  <div class="band">
+    <div>
+      <p class="bandlabel">FINISHED ROW AT 2X / DIRECTION A</p>
+      <div class="zoomwrap">
+        <div class="zoom">
+          <div class="plate" style="width:228px">
+            <div class="scrollinset">
+              <div class="a-row a-done">
+                <span class="rail" style="background:var(--gold)"></span>
+                <div class="a-body">
+                  <div class="a-l1">
+                    <svg class="glyph tclaude" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                    <span class="a-title">COS-glasses server release train</span>
+                    <span class="a-age" style="color:var(--gold)">4m</span>
+                  </div>
+                  <div class="a-l2" style="color:var(--gold)">Published 6.41.0, appcast live</div>
+                </div>
+                <div class="a-slot"><span>&#8943;</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="note">
+      <h4>READING ORDER</h4>
+      <p>Glyph and rail carry provider and state in color alone, at zero horizontal cost. Line one names the session. Line two, in mono at the state tint, is the sentence Miles came for.</p>
+      <p>The outcome string is the one thing this direction needs that does not exist yet. Every finished row prints the literal <span class="num">"Finished"</span> today.</p>
+    </div>
+  </div>
+
+  <!-- ============ BAND 4: SMALL ============ -->
+  <div class="band">
+    <div>
+      <p class="bandlabel">SMALL PRESET / 48PX / ROOT 186PT</p>
+      <div class="plates">
+        <div class="plate s-plate">
+          <div class="scrollinset" style="padding-right:8px">
+            <div class="s-row">
+              <span class="rail" style="background:var(--gold)"></span>
+              <div class="s-body">
+                <div class="s-l1">
+                  <svg class="glyph tclaude" style="width:10px;height:10px;flex:0 0 10px" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  <span class="s-title">COS-glasses server release</span>
+                  <span class="s-age" style="color:var(--gold)">4m</span>
+                </div>
+                <div class="s-l2" style="color:var(--gold)">Published 6.41.0, appcast</div>
+              </div>
+              <div class="s-slot">&#8943;</div>
+            </div>
+            <div class="div"></div>
+            <div class="s-row">
+              <span class="rail" style="background:var(--gold)"></span>
+              <div class="s-body">
+                <div class="s-l1">
+                  <svg class="glyph tclaude" style="width:10px;height:10px;flex:0 0 10px" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  <span class="s-title">COS-glasses session archive</span>
+                  <span class="s-age" style="color:var(--gold)">12m</span>
+                </div>
+                <div class="s-l2" style="color:var(--gold)">Pruned 412 archives 1.2GB</div>
+              </div>
+              <div class="s-slot">&#8943;</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="note">
+      <h4>WHAT DEGRADES FIRST AT SMALL</h4>
+      <p>The <span class="num">typeSize</span> floor of 8 flattens title, outcome and age onto one size, so the title and its outcome line stop being separated by scale. <b>Weight, tint and the mono face are the only surviving hierarchy.</b></p>
+      <p>Budgets hold up: title <span class="num">86pt</span> at 8pt DM Sans is 18 characters, outcome <span class="num">120pt</span> at 8pt mono is 25. Still <b>43 characters</b> against the shipped Small row's 9.</p>
+      <p>Second to go is the age label. Below root 200pt it should drop off line one and let the title run to the slot.</p>
+    </div>
+  </div>
+
+
+  <div class="foot">
+    <span class="chip win">TITLE 68 TO 121PT</span>
+    <span class="chip win">OUTCOME LINE 165PT, NEW</span>
+    <span class="chip win">READABLE 10 TO 49 CHARACTERS</span>
+    <span class="chip">CARD WIDTH UNCHANGED</span>
+    <span class="chip cost">FINISHED ROW 43 TO 48PT</span>
+    <span class="chip">ROWS VISIBLE 3, UNCHANGED</span>
+    <span class="chip cost">WORKSPACE LEAVES THE ROW</span>
+    <span class="chip cost">NEEDS ONE NEW MODEL FIELD</span>
+    <p class="footnote">HOLDS: BLUR BACKING ON EVERY SURFACE. HOVER CHANGES NO LAYOUT. FIXED FRAME HEIGHT. RAIL IS AN OVERLAY. CONTROLS STAY SIBLINGS OF THE ROW BUTTON.</p>
+  </div>
+
+</div>
+</div>

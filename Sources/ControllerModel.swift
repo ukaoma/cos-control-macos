@@ -119,6 +119,7 @@ final class ControllerModel: ObservableObject {
     private static let petCharacterPercentKey = "cos.sessionPetCharacterPercent"
     private static let petAnimationSpeedPercentKey = "cos.sessionPetAnimationSpeedPercent"
     private static let petCalmMotionKey = "cos.sessionPetCalmMotion"
+    private static let semanticSearchKey = "cos.archiveSemanticSearch"
     private static let petCharacterScaleGenerationKey = "cos.sessionPetCharacterScaleGeneration"
     private static let petCharacterScaleGeneration = 2
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
@@ -178,6 +179,10 @@ final class ControllerModel: ObservableObject {
     // MARK: Archive (0.5.72)
     @Published var archiveDays: [ArchiveDay] = []
     @Published var archiveHits: [ArchiveHit] = []
+    /// The term archiveHits actually answer. The two surfaces share one box, so
+    /// Recent shows the archive's count as you type; without this it would show
+    /// the PREVIOUS term's count beside the new term and read as a live answer.
+    @Published var archiveHitsQuery = ""
     @Published var archiveLoading = false
     @Published var archiveSearching = false
     @Published var archiveQuery = ""
@@ -4477,6 +4482,7 @@ final class ControllerModel: ObservableObject {
         guard q.count >= 2 else {
             archiveNotice = "Type at least two characters to search."
             archiveHits = []
+            archiveHitsQuery = ""
             return
         }
         archiveSearching = true
@@ -4487,11 +4493,13 @@ final class ControllerModel: ObservableObject {
             archiveRouteAbsent = response.details["state"]?.string == "route_absent"
             if archiveRouteAbsent {
                 archiveHits = []
+                archiveHitsQuery = ""
                 archiveNotice = response.message
                 archiveSearchMeta = nil
                 return
             }
             archiveHits = (response.details["hits"]?.array ?? []).compactMap(ArchiveHit.init)
+            archiveHitsQuery = q
             let scanned = response.details["scannedDays"]?.int ?? 0
             let ms = response.details["elapsedMs"]?.int ?? 0
             let truncated = response.details["truncated"]?.bool ?? false
@@ -4500,6 +4508,7 @@ final class ControllerModel: ObservableObject {
                 : "\(archiveHits.count) day(s)\(truncated ? "+" : "") · scanned \(scanned) · \(ms) ms"
         } catch {
             archiveHits = []
+            archiveHitsQuery = ""
             archiveNotice = error.localizedDescription
             archiveSearchMeta = nil
         }
@@ -4508,6 +4517,9 @@ final class ControllerModel: ObservableObject {
     func clearArchiveSearch() {
         archiveQuery = ""
         archiveHits = []
+        archiveHitsQuery = ""
+        archiveSemanticHits = []
+        archiveSemanticNotice = nil
         archiveSearchMeta = nil
         archiveNotice = nil
     }
@@ -4518,6 +4530,52 @@ final class ControllerModel: ObservableObject {
     @Published var archiveChatsQuery = ""
     @Published var archiveMatchingChats = 0
     @Published var archiveOnlyMatches = false
+    /// Search by meaning: OFF until the user turns it on, because it is the
+    /// only thing in Control that spends model tokens.
+    @Published var semanticSearchEnabled =
+        UserDefaults.standard.bool(forKey: ControllerModel.semanticSearchKey)
+    @Published var archiveSemanticHits: [ArchiveSemanticHit] = []
+    @Published var archiveSemanticRunning = false
+    @Published var archiveSemanticNotice: String?
+    /// The keyword answer was thin enough to be worth offering meaning for:
+    /// nothing, or a single day out of a long window.
+    var archiveResultIsThin: Bool {
+        let q = archiveQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !q.isEmpty
+            && !archiveSearching
+            && archiveHitsQuery == q
+            && archiveHits.count <= 1
+    }
+
+    func setSemanticSearchEnabled(_ enabled: Bool) {
+        guard enabled != semanticSearchEnabled else { return }
+        semanticSearchEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.semanticSearchKey)
+    }
+
+    /// Never automatic. The OFFER appears on its own; the call happens only
+    /// when the user asks for it.
+    func runArchiveSemantic() async {
+        let q = archiveQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= 2, semanticSearchEnabled else { return }
+        archiveSemanticRunning = true
+        archiveSemanticNotice = nil
+        defer { archiveSemanticRunning = false }
+        do {
+            let response = try await helper.run(
+                ["archive-semantic", "--q", q, "--enabled"], timeout: 180
+            )
+            archiveSemanticHits = (response.details["hits"]?.array ?? [])
+                .compactMap(ArchiveSemanticHit.init)
+            let state = response.details["state"]?.string ?? "ready"
+            archiveSemanticNotice = state == "ready"
+                ? (archiveSemanticHits.isEmpty ? "No day related to that." : nil)
+                : response.message
+        } catch {
+            archiveSemanticHits = []
+            archiveSemanticNotice = error.localizedDescription
+        }
+    }
 
     /// Open one archived DAY: load the chats it holds.
     ///

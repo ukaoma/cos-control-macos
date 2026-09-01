@@ -153,7 +153,10 @@ struct ActivityWindow: View {
     @Environment(\.colorScheme) private var colorScheme
     /// Recent-view search. Recent turns are already in memory, so this filters
     /// locally — the archive is the only side that needs the server.
-    @State private var recentQuery = ""
+    /// Recent and Archive search the SAME term. This mirrors it rather than
+    /// holding a second one: a term absent from the last few turns is usually
+    /// months back, and retyping it to find that out was the whole complaint.
+    private var recentQuery: String { model.archiveQuery }
     @State private var chatQuery = ""
     @State private var chatMatchCursor = 0
     @State private var section: ActivitySection?
@@ -1161,6 +1164,7 @@ struct ActivityWindow: View {
         } else if !model.archiveHits.isEmpty {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
+                    semanticSection
                     if let meta = model.archiveSearchMeta {
                         Text(meta)
                             .font(.system(size: 10.5, design: .monospaced))
@@ -1202,6 +1206,8 @@ struct ActivityWindow: View {
                 }
                 .padding(.top, 4)
             }
+        } else if model.archiveResultIsThin && model.archiveDays.isEmpty {
+            ScrollView { semanticSection.padding(.top, 8) }
         } else if model.archiveDays.isEmpty {
             emptyState(.messages, text: model.archiveQuery.isEmpty
                        ? "Nothing is archived yet. Conversations move here at the end of each day."
@@ -1284,40 +1290,31 @@ struct ActivityWindow: View {
                     selectedArchiveChat = nil
                     model.closeArchiveDay()
                     model.closeArchiveChat()
-                    if next == .archive, model.archiveDays.isEmpty {
-                        Task { await model.loadArchiveDays() }
+                    if next == .archive {
+                        if model.archiveDays.isEmpty { Task { await model.loadArchiveDays() } }
+                        runPendingArchiveSearch()
                     }
                 }
 
-                // BOTH views search. Recent held the newest turns and no way to
-                // look through them, so a term you remembered from an hour ago
-                // meant scrolling (Miles, 2026-08-31).
-                if messagesSubview == .archive {
-                    TextField("Search the archive", text: $model.archiveQuery)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 260)
-                        .onSubmit { Task { await model.runArchiveSearch() } }
-                    if model.archiveSearching { ProgressView().controlSize(.small) }
-                    if !model.archiveHits.isEmpty || !model.archiveQuery.isEmpty {
-                        Button("Clear") { model.clearArchiveSearch() }
-                            .buttonStyle(.link).font(.system(size: 11))
-                    }
-                } else {
-                    TextField("Search recent messages", text: $recentQuery)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 260)
-                    if !recentQuery.isEmpty {
-                        Text("\(visibleRecentMessages.count) of \(model.recentMessages.count)")
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                        Button("Clear") { recentQuery = "" }
-                            .buttonStyle(.link).font(.system(size: 11))
-                    }
+                // ONE box for both surfaces. Recent filters as you type because
+                // it is a handful of turns in memory; the archive is a real scan
+                // of months, so it still runs on Return.
+                TextField("Search recent and archive", text: $model.archiveQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 260)
+                    .onSubmit { Task { await model.runArchiveSearch() } }
+                if model.archiveSearching { ProgressView().controlSize(.small) }
+                if !model.archiveQuery.isEmpty {
+                    Button("Clear") { model.clearArchiveSearch() }
+                        .buttonStyle(.link).font(.system(size: 11))
                 }
                 Spacer()
             }
             .padding(.horizontal, 12)
-            .padding(.bottom, 8)
+            messageSearchCrossing
+                .padding(.horizontal, 12)
+                .padding(.top, 6)
+                .padding(.bottom, 8)
 
             if messagesSubview == .archive {
                 archiveBody
@@ -1326,7 +1323,7 @@ struct ActivityWindow: View {
             } else if model.recentMessages.isEmpty {
                 emptyState(.messages, text: messagesEmptyCopy)
             } else if visibleRecentMessages.isEmpty {
-                emptyState(.messages, text: "No recent message contains \"\(recentQuery)\".")
+                emptyState(.messages, text: recentMissCopy)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
@@ -2499,6 +2496,80 @@ struct ActivityWindow: View {
         }
     }
 
+    /// The count for the side you are NOT on. Both numbers answer the same term,
+    /// so the answer to "is it here or back there" is on screen before you cross.
+    @ViewBuilder private var messageSearchCrossing: some View {
+        let q = model.archiveQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        if q.count >= SearchMark.minimumQuery {
+            HStack(spacing: 7) {
+                crossingCount(.recent, value: "\(visibleRecentMessages.count)")
+                Text("·").font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                crossingCount(.archive, value: archiveCountLabel(for: q))
+                if let meta = model.archiveSearchMeta, messagesSubview == .archive {
+                    Text(meta)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+            }
+        }
+    }
+
+    /// Its own side is a label; the other side is the door.
+    @ViewBuilder private func crossingCount(_ side: MessagesSubview, value: String) -> some View {
+        let text = Text("\(side.title) \(value)")
+            .font(.system(size: 10.5, design: .monospaced))
+        if messagesSubview == side {
+            text.foregroundStyle(.secondary)
+        } else {
+            Button {
+                messagesSubview = side
+                selectedTurnID = nil
+                selectedArchiveDate = nil
+                selectedArchiveChat = nil
+                model.closeArchiveDay()
+                model.closeArchiveChat()
+                if side == .archive {
+                    if model.archiveDays.isEmpty { Task { await model.loadArchiveDays() } }
+                    runPendingArchiveSearch()
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    text
+                    Image(systemName: "arrow.right").font(.system(size: 8, weight: .semibold))
+                }
+                .foregroundStyle(COSPalette.gold)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    /// Never report a count the current term did not earn: until the scan runs,
+    /// say what to press instead of showing the previous term's answer.
+    private func archiveCountLabel(for query: String) -> String {
+        if model.archiveSearching { return "…" }
+        guard model.archiveHitsQuery == query else { return "press return" }
+        let n = model.archiveHits.count
+        return n == 1 ? "1 day" : "\(n) days"
+    }
+
+    private func runPendingArchiveSearch() {
+        let q = model.archiveQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= SearchMark.minimumQuery, model.archiveHitsQuery != q else { return }
+        Task { await model.runArchiveSearch() }
+    }
+
+    /// A miss in Recent is only half an answer while the archive holds months.
+    private var recentMissCopy: String {
+        let q = model.archiveQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard model.archiveHitsQuery == q, !model.archiveHits.isEmpty else {
+            return "No recent message contains \"\(recentQuery)\". The archive goes back further."
+        }
+        let n = model.archiveHits.count
+        return "No recent message contains \"\(recentQuery)\", but \(n) archived "
+            + "day\(n == 1 ? "" : "s") do."
+    }
+
     /// Recent turns matching the recent-view query, on either side of the turn.
     private var visibleRecentMessages: [GlassesTurn] {
         model.recentMessages.filter {
@@ -2591,6 +2662,75 @@ struct ActivityWindow: View {
             .padding(28)
             .frame(maxWidth: 820, alignment: .leading)
             .frame(maxWidth: .infinity)
+        }
+    }
+
+    /// Offered on its own when the keyword answer comes back thin, because
+    /// that is the moment you would otherwise conclude the conversation never
+    /// happened. The offer appears automatically; the CALL never does — it
+    /// spends model tokens, so it waits for a tap (Miles, 2026-08-31).
+    @ViewBuilder private var semanticSection: some View {
+        if model.archiveResultIsThin || !model.archiveSemanticHits.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkle.magnifyingglass")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(COSPalette.gold)
+                    if model.archiveSemanticRunning {
+                        Text("Looking for related days…")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                        ProgressView().controlSize(.small)
+                    } else if !model.semanticSearchEnabled {
+                        Text("Search by meaning is off — turn it on in Settings")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    } else {
+                        Text(model.archiveHits.isEmpty
+                             ? "No exact match. Try searching by meaning?"
+                             : "Only one day matched. Try searching by meaning?")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                        Button("Search by meaning") {
+                            Task { await model.runArchiveSemantic() }
+                        }
+                        .controlSize(.small)
+                    }
+                    Spacer()
+                }
+                if let notice = model.archiveSemanticNotice {
+                    Text(notice).font(.system(size: 10.5)).foregroundStyle(.secondary)
+                }
+                // Always its own labelled section: a guess and an exact match
+                // must never read as the same kind of answer.
+                ForEach(model.archiveSemanticHits) { hit in
+                    Button { openArchiveDay(hit.date) } label: {
+                        HStack(spacing: 8) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 8) {
+                                    Text(hit.date).font(.system(size: 12, weight: .semibold))
+                                    Text("related")
+                                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(COSPalette.cream)
+                                        .padding(.horizontal, 5).padding(.vertical, 1.5)
+                                        .background(Capsule().fill(COSPalette.gold))
+                                    Text("\(hit.chatCount) chats")
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
+                                Text(hit.why).font(.system(size: 11)).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 8)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(COSPalette.card.opacity(0.5))
+            Divider().opacity(0.5)
         }
     }
 

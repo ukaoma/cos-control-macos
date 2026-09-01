@@ -1,0 +1,416 @@
+<script src="./support.js"></script>
+<!-- Artboard: 880 x 1460. Direction B, "Outcome first, identity second". 1pt = 1px. -->
+<div class="ab ab-b">
+<style>
+.ab-b{
+  width:880px; height:1460px; position:relative; overflow:hidden;
+  box-sizing:border-box; padding:36px;
+  --ink:#1F1712; --cream:#F5F0E6; --gold:#C9A86E; --amber:#C98045; --green:#339457;
+  --card:#261D16; --panel:#17120D;
+  --line:rgba(201,168,110,0.16);
+  --claude:#C77338; --codex:#1A8C7A; --cursor:#6B61DB;
+  --body:"DM Sans",-apple-system,"SF Pro Text","Helvetica Neue",Helvetica,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --disp:"Fraunces",Georgia,"Iowan Old Style","Times New Roman",serif;
+  font-family:var(--body); color:var(--cream);
+}
+.ab-b *{box-sizing:border-box;}
+
+.ab-b .wall{position:absolute; inset:0; z-index:0;
+  background:
+    radial-gradient(680px 420px at 12% 8%, rgba(255,168,64,.55), transparent 62%),
+    radial-gradient(720px 520px at 88% 22%, rgba(60,180,190,.45), transparent 60%),
+    radial-gradient(900px 700px at 55% 96%, rgba(190,70,110,.42), transparent 64%),
+    linear-gradient(155deg,#3a2a17 0%,#1c2b2e 46%,#2a1622 100%);
+}
+.ab-b .wall::after{content:""; position:absolute; inset:0; opacity:.30;
+  background-image:
+    linear-gradient(45deg,rgba(255,140,40,.55) 25%,transparent 25%,transparent 75%,rgba(255,140,40,.55) 75%),
+    linear-gradient(45deg,rgba(255,140,40,.55) 25%,transparent 25%,transparent 75%,rgba(255,140,40,.55) 75%);
+  background-size:44px 44px; background-position:0 0,22px 22px;
+}
+.ab-b .stage{position:relative; z-index:1;}
+
+.ab-b h1{font-family:var(--disp); font-size:35px; line-height:1.1; font-weight:600;
+  margin:0; letter-spacing:-.01em; color:#FFF6E6; text-shadow:0 2px 18px rgba(0,0,0,.55);}
+.ab-b .thesis{font-size:15px; line-height:1.5; margin:9px 0 0; max-width:680px;
+  color:rgba(255,246,230,.9); text-shadow:0 1px 12px rgba(0,0,0,.6);}
+.ab-b .bandlabel{font-family:var(--mono); font-size:9px; font-weight:700; letter-spacing:.14em;
+  color:rgba(255,240,220,.72); margin:0 0 9px; text-shadow:0 1px 8px rgba(0,0,0,.7);}
+.ab-b .band{margin-top:28px;}
+.ab-b .split{display:grid; grid-template-columns:372px 1fr; gap:28px; align-items:start;}
+.ab-b .compare{display:flex; gap:34px; align-items:flex-start;}
+.ab-b .arrow{align-self:center; font-family:var(--mono); font-size:8px; font-weight:700; letter-spacing:.14em;
+  color:rgba(255,240,220,.6); text-shadow:0 1px 6px rgba(0,0,0,.7); writing-mode:vertical-rl;}
+.ab-b .note{background:rgba(18,13,9,.78); border:1px solid var(--line); border-radius:10px;
+  padding:12px 14px; backdrop-filter:blur(10px);}
+.ab-b .note.wide{margin-top:16px;}
+.ab-b .note h4{font-family:var(--mono); font-size:9px; font-weight:700; letter-spacing:.12em;
+  margin:0 0 7px; color:var(--gold);}
+.ab-b .note p{font-size:11.5px; line-height:1.55; margin:0 0 7px; color:rgba(245,240,230,.86);}
+.ab-b .note p:last-child{margin-bottom:0;}
+.ab-b .note b{color:#FFF3DE; font-weight:600;}
+.ab-b .cols2{columns:2; column-gap:22px;}
+.ab-b .cols2 p{break-inside:avoid;}
+.ab-b .num{font-family:var(--mono); font-size:11px; color:var(--gold);}
+.ab-b .bad{color:#E68A6B;} .ab-b .good{color:#8CC79C;}
+.ab-b .caption{font-family:var(--mono); font-size:8px; letter-spacing:.1em; font-weight:700;
+  color:rgba(255,240,220,.62); margin:0 0 6px; text-shadow:0 1px 6px rgba(0,0,0,.7);}
+
+.ab-b .plate{border-radius:12px; border:1px solid var(--line); padding:4px 10px;
+  background:rgba(20,15,11,.74); backdrop-filter:blur(22px) saturate(1.15);
+  box-shadow:0 10px 34px rgba(0,0,0,.42);}
+.ab-b .scrollinset{padding-right:10px;}
+.ab-b .div{height:1px; background:var(--line);}
+.ab-b .glyph{width:11px; height:11px; flex:0 0 11px; display:block;}
+.ab-b .tclaude{color:var(--claude);} .ab-b .tcodex{color:var(--codex);} .ab-b .tcursor{color:var(--cursor);}
+.ab-b .dot{width:5px; height:5px; border-radius:50%; flex:0 0 5px;}
+.ab-b .sechead{display:flex; align-items:center; gap:5px; padding:7px 0 3px;
+  font-family:var(--mono); font-size:8px; font-weight:700; letter-spacing:.05em; color:rgba(240,232,220,.6);}
+.ab-b .sechead .dot{width:6px; height:6px; flex:0 0 6px;}
+
+/* ---------- shipped rows, for comparison ---------- */
+.ab-b .n-done-row{display:flex; align-items:flex-start; height:43px; padding:7px 0;}
+.ab-b .n-done-row .col{display:flex; align-items:flex-start; gap:8px; flex:1 1 auto; min-width:0;}
+.ab-b .markblock{display:flex; align-items:center; gap:3px; width:54px; flex:0 0 54px;
+  font-family:var(--mono); font-size:8px; font-weight:700;}
+.ab-b .markblock .glyph{width:12px; height:12px; flex:0 0 12px;}
+.ab-b .n-name{width:68px; flex:0 0 68px; font-size:11px; font-weight:500; line-height:14px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#F3EDE2;}
+.ab-b .n-sub{font-size:10px; line-height:13px; color:rgba(240,232,220,.55); margin-top:2px;}
+.ab-b .n-acts{display:flex; flex:0 0 57px; align-items:center; height:29px;}
+.ab-b .n-acts i{width:19px; height:19px; display:grid; place-items:center; font-style:normal;
+  font-size:9px; color:rgba(240,232,220,.55);}
+.ab-b .n-mrow{display:flex; height:61px; padding:7px 0 7px 11px; position:relative;}
+.ab-b .n-mrow .rail{position:absolute; left:0; top:6px; bottom:6px; width:3px; border-radius:2px;}
+.ab-b .n-mtop{display:flex; align-items:flex-start; gap:8px;}
+.ab-b .n-mtitle{width:41px; flex:0 0 41px; font-size:11px; font-weight:600; line-height:14px;
+  color:#F3EDE2; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;}
+.ab-b .n-meta{margin-left:auto; text-align:right;}
+.ab-b .n-age{font-family:var(--mono); font-size:8px; font-weight:700; line-height:11px;}
+.ab-b .n-ws{font-size:8px; line-height:11px; color:rgba(240,232,220,.55); margin-top:3px;
+  max-width:66px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.ab-b .n-tick{display:flex; align-items:center; gap:5px; margin-top:4px; height:15px;}
+.ab-b .n-tickt{font-family:var(--mono); font-size:9px; font-weight:700; width:157px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.ab-b .n-x{width:20px; flex:0 0 20px; display:grid; place-items:center; height:20px;
+  font-size:9px; color:rgba(240,232,220,.5); align-self:flex-start;}
+
+/* ---------- Direction B rows ---------- */
+.ab-b .b-row{display:flex; height:44px; padding:7px 0 7px 11px; position:relative;}
+.ab-b .b-row .rail{position:absolute; left:0; top:6px; bottom:6px; width:3px; border-radius:2px;}
+.ab-b .b-body{flex:1 1 auto; min-width:0;}
+.ab-b .b-l1{display:flex; align-items:center; gap:6px; height:16px;}
+.ab-b .b-out{flex:0 0 274px; width:274px; font-size:12px; font-weight:600; line-height:16px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#F8F2E6;}
+.ab-b .b-age{margin-left:auto; font-family:var(--mono); font-size:8px; font-weight:700;}
+.ab-b .b-l2{display:flex; align-items:center; gap:5px; height:12px; margin-top:2px; width:293px;}
+.ab-b .b-title{font-size:9px; line-height:12px; color:rgba(240,232,220,.62);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:172px;}
+.ab-b .b-sep{color:rgba(240,232,220,.3); font-size:9px; line-height:12px;}
+.ab-b .b-ws{font-family:var(--mono); font-size:8px; font-weight:700; letter-spacing:.02em;
+  color:rgba(201,168,110,.78); white-space:nowrap;}
+.ab-b .b-slot{flex:0 0 22px; width:22px; display:grid; place-items:center; align-self:stretch;}
+.ab-b .b-slot span{font-size:11px; color:rgba(240,232,220,.5); line-height:1;}
+.ab-b .b-slot.hov span{color:#F0D9A8;}
+
+/* ---------- 2x detail ---------- */
+.ab-b .zoomwrap{width:744px; height:104px; overflow:hidden;}
+.ab-b .zoom{transform:scale(2); transform-origin:top left;}
+
+/* ---------- Small ---------- */
+.ab-b .s-plate{width:274px;}
+.ab-b .s-row{display:flex; height:34px; padding:5px 0 5px 8px; position:relative;}
+.ab-b .s-row .rail{position:absolute; left:0; top:5px; bottom:5px; width:2px; border-radius:2px;}
+.ab-b .s-body{flex:1 1 auto; min-width:0;}
+.ab-b .s-l1{display:flex; align-items:center; gap:5px; height:12px;}
+.ab-b .s-out{flex:0 0 176px; width:176px; font-size:8px; font-weight:600; line-height:12px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#F8F2E6;}
+.ab-b .s-age{margin-left:auto; font-family:var(--mono); font-size:8px; font-weight:700;}
+.ab-b .s-l2{display:flex; align-items:center; gap:4px; height:11px; margin-top:2px;}
+.ab-b .s-title{font-size:8px; line-height:11px; color:rgba(240,232,220,.6);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:118px;}
+.ab-b .s-ws{font-family:var(--mono); font-size:8px; font-weight:700; color:rgba(201,168,110,.78);}
+.ab-b .s-slot{flex:0 0 16px; display:grid; place-items:center; font-size:9px; color:rgba(240,232,220,.5);}
+.ab-b .figure{width:175px; height:44px; border:1px dashed rgba(255,240,220,.35); border-radius:6px;
+  display:grid; place-items:center; font-family:var(--mono); font-size:8px; letter-spacing:.1em;
+  color:rgba(255,240,220,.6); margin-top:10px;}
+
+.ab-b .foot{margin-top:26px; display:flex; flex-wrap:wrap; gap:6px; align-items:center;}
+.ab-b .chip{font-family:var(--mono); font-size:8px; font-weight:700; letter-spacing:.1em;
+  padding:5px 9px; border-radius:20px; border:1px solid var(--line);
+  background:rgba(18,13,9,.8); backdrop-filter:blur(8px); color:rgba(245,238,226,.82);}
+.ab-b .chip.win{color:#A9D8B8; border-color:rgba(140,199,156,.35);}
+.ab-b .chip.cost{color:#EDB08E; border-color:rgba(230,138,107,.35);}
+.ab-b .footnote{width:100%; font-family:var(--mono); font-size:8px; letter-spacing:.11em;
+  font-weight:700; color:rgba(255,240,220,.5); text-shadow:0 1px 6px rgba(0,0,0,.75); margin-top:4px;}
+</style>
+
+<div class="wall"></div>
+<div class="stage">
+
+  <h1>Outcome first, identity second</h1>
+  <p class="thesis">Stop letting the sprite decide how wide the reading surface is: give the card a content floor of 392pt, then invert the row so the first and heaviest line is what the session did and the session's name and workspace recede to a dim second line.</p>
+
+  <!-- ============ BAND 1: side by side ============ -->
+  <div class="band">
+    <p class="bandlabel">FINISHED LIST / SHIPPED 228PT PLATE VS DIRECTION B 372PT PLATE</p>
+    <div class="compare">
+
+      <div>
+        <p class="caption">NOW</p>
+        <div class="plate" style="width:228px">
+          <div class="scrollinset">
+            <div class="n-done-row">
+              <div class="col">
+                <div class="markblock tclaude">
+                  <svg class="glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  CLAUDE
+                </div>
+                <div><div class="n-name">COS-glasses server release train</div><div class="n-sub">Finished</div></div>
+              </div>
+              <div class="n-acts"><i>&#8599;</i><i>&#9776;</i><i>&#10005;</i></div>
+            </div>
+            <div class="div"></div>
+            <div class="n-done-row">
+              <div class="col">
+                <div class="markblock tclaude">
+                  <svg class="glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  CLAUDE
+                </div>
+                <div><div class="n-name">COS-glasses session archive purge</div><div class="n-sub">Finished</div></div>
+              </div>
+              <div class="n-acts"><i>&#8599;</i><i>&#9776;</i><i>&#10005;</i></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="arrow">BECOMES</div>
+
+      <div>
+        <p class="caption">DIRECTION B</p>
+        <div class="plate" style="width:372px">
+          <div class="scrollinset">
+            <div class="b-row">
+              <span class="rail" style="background:var(--gold)"></span>
+              <div class="b-body">
+                <div class="b-l1">
+                  <span class="dot" style="background:var(--gold)"></span>
+                  <span class="b-out">Published 6.41.0 and pushed the appcast</span>
+                  <span class="b-age" style="color:var(--gold)">4m</span>
+                </div>
+                <div class="b-l2">
+                  <svg class="glyph tclaude" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  <span class="b-title">COS-glasses server release train</span>
+                  <span class="b-sep">/</span>
+                  <span class="b-ws">cos-glasses-app</span>
+                </div>
+              </div>
+              <div class="b-slot"><span>&#8943;</span></div>
+            </div>
+            <div class="div"></div>
+            <div class="b-row">
+              <span class="rail" style="background:var(--gold)"></span>
+              <div class="b-body">
+                <div class="b-l1">
+                  <span class="dot" style="background:var(--gold)"></span>
+                  <span class="b-out">Pruned 412 archives, freed 1.2 GB</span>
+                  <span class="b-age" style="color:var(--gold)">12m</span>
+                </div>
+                <div class="b-l2">
+                  <svg class="glyph tclaude" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  <span class="b-title">COS-glasses session archive purge</span>
+                  <span class="b-sep">/</span>
+                  <span class="b-ws">cos-glasses-app</span>
+                </div>
+              </div>
+              <div class="b-slot hov"><span>&#10005;</span></div>
+            </div>
+            <div class="div"></div>
+            <div class="b-row">
+              <span class="rail" style="background:var(--gold)"></span>
+              <div class="b-body">
+                <div class="b-l1">
+                  <span class="dot" style="background:var(--gold)"></span>
+                  <span class="b-out">Rebuilt the software matrix, 4,265 rows</span>
+                  <span class="b-age" style="color:var(--gold)">41m</span>
+                </div>
+                <div class="b-l2">
+                  <svg class="glyph tcodex" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="8" cy="8" r="6.3"/><path d="M8 1.7v12.6M2.2 5.1l11.6 5.8"/></svg>
+                  <span class="b-title">Matrix resonance refresh</span>
+                  <span class="b-sep">/</span>
+                  <span class="b-ws">MU-Chief-Staff</span>
+                </div>
+              </div>
+              <div class="b-slot"><span>&#8943;</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="note wide">
+      <div class="cols2">
+        <p><b>Primary line.</b> Outcome at DM Sans 12pt semibold in a <span class="num good">274pt</span> box, 39 characters. The two forked Claude rows are now unmistakable at a glance, which is the whole complaint.</p>
+        <p><b>Secondary line.</b> Glyph, title and workspace at 9pt dim across <span class="num">293pt</span>, about 56 characters together. The workspace comes back from the model, where it has been stored and unrendered all along.</p>
+        <p><b>Row height 44pt</b>, one point up from today's 43. Three rows still fit the 160pt frame with 28pt to spare.</p>
+        <p><b>The cost is width.</b> Root 248 to 392pt, a 58% wider plate over a roughly 233pt sprite. The plate reads as a nameplate the figure stands under rather than a label beside it.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ BAND 2: live list ============ -->
+  <div class="band">
+    <p class="bandlabel">LIVE LIST / DIRECTION B / 240PT FRAME</p>
+    <div class="split">
+      <div class="plate" style="width:372px">
+        <div class="scrollinset">
+          <div class="sechead"><span class="dot" style="background:var(--green)"></span>RUNNING 1</div>
+          <div class="b-row">
+            <span class="rail" style="background:var(--green)"></span>
+            <div class="b-body">
+              <div class="b-l1">
+                <span class="dot" style="background:var(--green)"></span>
+                <span class="b-out" style="color:#EAF6EE">Editing enrich_matrix_with_resonance.py, 12 brands queued</span>
+                <span class="b-age" style="color:var(--green)">31s</span>
+              </div>
+              <div class="b-l2">
+                <svg class="glyph tcodex" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="8" cy="8" r="6.3"/><path d="M8 1.7v12.6M2.2 5.1l11.6 5.8"/></svg>
+                <span class="b-title">Persona v26 enrichment</span>
+                <span class="b-sep">/</span>
+                <span class="b-ws">MU-Chief-Staff</span>
+              </div>
+            </div>
+            <div class="b-slot"><span>&#8943;</span></div>
+          </div>
+          <div class="sechead"><span class="dot" style="background:var(--amber)"></span>WAITING ON YOU 1</div>
+          <div class="b-row">
+            <span class="rail" style="background:var(--amber)"></span>
+            <div class="b-body">
+              <div class="b-l1">
+                <span class="dot" style="background:var(--amber)"></span>
+                <span class="b-out" style="color:#FBEDE0">approve the SessionPet.swift edit</span>
+                <span class="b-age" style="color:var(--amber)">2m</span>
+              </div>
+              <div class="b-l2">
+                <svg class="glyph tcursor" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1l6.2 3.6v6.8L8 15 1.8 11.4V4.6z" opacity=".9"/></svg>
+                <span class="b-title">Pet card readability directions</span>
+                <span class="b-sep">/</span>
+                <span class="b-ws">cos-control-macos</span>
+              </div>
+            </div>
+            <div class="b-slot"><span>&#8943;</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="note">
+        <h4>RUNNING ROWS GET SHORTER</h4>
+        <p>The shipped mission row is <span class="num bad">61pt</span> tall because the age over workspace stack measures 23pt against the title's 14pt and sets line one's height. B deletes that stack, so the row is <span class="num good">44pt</span>.</p>
+        <p>The 240pt live frame therefore holds <b>5 rows instead of 3</b>, even after the section headers.</p>
+        <p>Running and waiting need no new model field. <span class="num">petLiveLine</span> already returns the live summary or what the session waits on; B simply promotes it from the second line to the first.</p>
+        <p>The ticker keeps its scroll behaviour and gains room: <span class="num">157</span> to <span class="num good">274pt</span>, so far fewer lines scroll at all.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ BAND 3: 2x detail ============ -->
+  <div class="band">
+    <p class="bandlabel">FINISHED ROW AT 2X / DIRECTION B</p>
+    <div class="zoomwrap">
+      <div class="zoom">
+        <div class="plate" style="width:372px">
+          <div class="scrollinset">
+            <div class="b-row">
+              <span class="rail" style="background:var(--gold)"></span>
+              <div class="b-body">
+                <div class="b-l1">
+                  <span class="dot" style="background:var(--gold)"></span>
+                  <span class="b-out">Published 6.41.0 and pushed the appcast</span>
+                  <span class="b-age" style="color:var(--gold)">4m</span>
+                </div>
+                <div class="b-l2">
+                  <svg class="glyph tclaude" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  <span class="b-title">COS-glasses server release train</span>
+                  <span class="b-sep">/</span>
+                  <span class="b-ws">cos-glasses-app</span>
+                </div>
+              </div>
+              <div class="b-slot"><span>&#8943;</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ BAND 4: Small ============ -->
+  <div class="band">
+    <p class="bandlabel">SMALL PRESET / 48PX / ROOT 294PT AGAINST A 175PT FIGURE</p>
+    <div class="split">
+      <div>
+        <div class="plate s-plate">
+          <div class="scrollinset" style="padding-right:8px">
+            <div class="s-row">
+              <span class="rail" style="background:var(--gold)"></span>
+              <div class="s-body">
+                <div class="s-l1">
+                  <span class="dot" style="width:4px;height:4px;flex:0 0 4px;background:var(--gold)"></span>
+                  <span class="s-out">Published 6.41.0, pushed the appcast</span>
+                  <span class="s-age" style="color:var(--gold)">4m</span>
+                </div>
+                <div class="s-l2">
+                  <svg class="glyph tclaude" style="width:9px;height:9px;flex:0 0 9px" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  <span class="s-title">COS-glasses server release train</span>
+                  <span class="s-ws">cos-glasses-app</span>
+                </div>
+              </div>
+              <div class="s-slot">&#8943;</div>
+            </div>
+            <div class="div"></div>
+            <div class="s-row">
+              <span class="rail" style="background:var(--gold)"></span>
+              <div class="s-body">
+                <div class="s-l1">
+                  <span class="dot" style="width:4px;height:4px;flex:0 0 4px;background:var(--gold)"></span>
+                  <span class="s-out">Pruned 412 archives, freed 1.2 GB</span>
+                  <span class="s-age" style="color:var(--gold)">12m</span>
+                </div>
+                <div class="s-l2">
+                  <svg class="glyph tclaude" style="width:9px;height:9px;flex:0 0 9px" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  <span class="s-title">COS-glasses session archive purge</span>
+                  <span class="s-ws">cos-glasses-app</span>
+                </div>
+              </div>
+              <div class="s-slot">&#8943;</div>
+            </div>
+          </div>
+        </div>
+        <div class="figure">THE FIGURE, 175PT WIDE, UNDER THIS</div>
+      </div>
+      <div class="note">
+        <h4>WHAT DEGRADES FIRST AT SMALL</h4>
+        <p>Not the text. <span class="num">size.length(392)</span> gives a 294pt root, the outcome box holds <span class="num good">176pt</span>, and the 8pt floor still reads 38 characters. The plate to figure ratio is unchanged at 1.7x, because both scale together.</p>
+        <p>What degrades is the <b>hierarchy</b>. B rests entirely on 12pt primary over 9pt secondary, and the <span class="num">typeSize</span> floor of 8 collapses both onto 8pt. The promotion that carries the direction disappears; only weight and tint survive.</p>
+        <p>Second: <b>Small stops meaning small.</b> A 294pt plate at the Small preset is still wider than the shipped Medium card's 248pt root, so the smallest pet parks the widest label on the desktop.</p>
+        <p>Mitigation, if this direction is taken: hold the content floor only at Medium and Large, and let Small fall back to <span class="num">max(248, viewport + 36)</span>.</p>
+      </div>
+    </div>
+  </div>
+
+
+  <div class="foot">
+    <span class="chip win">OUTCOME 274PT, 39 CHARACTERS</span>
+    <span class="chip win">READABLE 10 TO 95 CHARACTERS</span>
+    <span class="chip win">LIVE ROWS VISIBLE 3 TO 5</span>
+    <span class="chip">FINISHED ROW 43 TO 44PT</span>
+    <span class="chip">FINISHED ROWS VISIBLE 3</span>
+    <span class="chip cost">ROOT 248 TO 392PT</span>
+    <span class="chip cost">PLATE 1.7X THE FIGURE</span>
+    <span class="chip cost">NEEDS ONE NEW MODEL FIELD</span>
+    <p class="footnote">HOLDS: BLUR BACKING ON EVERY SURFACE. HOVER CHANGES NO LAYOUT. FIXED FRAME HEIGHT. RAIL IS AN OVERLAY. CONTROLS STAY SIBLINGS OF THE ROW BUTTON.</p>
+  </div>
+
+</div>
+</div>

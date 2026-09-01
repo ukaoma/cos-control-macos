@@ -13,8 +13,28 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   -framework Security \
   -o "$TMP/cos-control-helper"
 
-SELF_TEST="$(COS_CONTROL_TEST_HOME="$TMP/home" "$TMP/cos-control-helper" self-test)"
-/usr/bin/python3 -c 'import json,sys; value=json.loads(sys.argv[1]); assert value["ok"] and value["details"]["tests"] >= 24' "$SELF_TEST"
+# The helper prints WHICH expectation failed. Capturing that into a variable
+# under `set -e` threw it away: a failing self-test aborted this script at this
+# line having printed nothing at all, so the whole suite reported "exit 1" with
+# zero bytes of output (measured 2026-08-31, mutating firstJSONArray). Every
+# helper self-test failure was silent. Show it, then fail.
+if ! SELF_TEST="$(COS_CONTROL_TEST_HOME="$TMP/home" "$TMP/cos-control-helper" self-test 2>&1)"; then
+  print -u2 "helper self-test FAILED (helper exited non-zero):"
+  print -u2 -r -- "$SELF_TEST"
+  exit 1
+fi
+/usr/bin/python3 -c '
+import json, sys
+try:
+    value = json.loads(sys.argv[1])
+except ValueError:
+    sys.exit("helper self-test emitted no JSON:\n" + sys.argv[1][:2000])
+if not value.get("ok"):
+    sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
+count = value.get("details", {}).get("tests", 0)
+if count < 24:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 24")
+' "$SELF_TEST"
 
 # THE APP ITSELF MUST COMPILE.
 #
@@ -2968,6 +2988,37 @@ need("petLiveLine" not in idle_src and "lineLimit(1)" in idle_src,
      "idle rows must stay dim one-liners — periphery reads as periphery")
 
 _aw = strip_comments((root / "Sources/ActivityWindow.swift").read_text())
+# Semantic layer (0.5.170): the helper's FIRST model call, so every stop the
+# cost policy requires is pinned. The parsing is executed in the self-test.
+_sem_helper = strip_comments((root / "HelperSources/main.swift").read_text())
+_sem = _sem_helper[_sem_helper.index("private func emitArchiveSemantic"):]
+_sem = _sem[:_sem.index("private func emitArchiveDay")]
+need('args.contains("--enabled")' in _sem and 'COS_CONTROL_SEMANTIC_SEARCH' in _sem,
+     "the master switch is gone; a model call must never be reachable by default")
+need("ledger.failures >= 2" in _sem, "the breaker is gone")
+need("ledger.used >= Self.semanticDailyCap" in _sem, "the daily cap is gone")
+need("guard enabled else" in _sem,
+     "the master switch is no longer an unconditional guard")
+need('findExecutable("claude")' in _sem, "the model call itself is gone")
+need(_sem.index("guard enabled else") < _sem.index("findExecutable(\"claude\")"),
+     "the switch must be checked BEFORE the model is invoked")
+need(_sem.index("ledger.used >= Self.semanticDailyCap") < _sem.index("findExecutable(\"claude\")"),
+     "the cap must be checked BEFORE the spend, not after")
+need('"--model", Self.semanticModel' in _sem,
+     "the model must be pinned on the command line")
+# VERIFY-BEFORE-SHOW is what makes this safe without embeddings.
+need("known.contains(date)" in _sem and "guard !exchanges.isEmpty else { continue }" in _sem,
+     "a suggested day must be verified against the archive before it is shown")
+# The OFFER is automatic; the CALL is not.
+need("archiveResultIsThin" in model_code,
+     "nothing decides when a keyword answer is thin enough to offer meaning")
+_run = model_code[model_code.index("func runArchiveSemantic("):]
+_run = _run[:_run.index("\n    }")]
+need("semanticSearchEnabled" in _run,
+     "the semantic call must respect the user's setting")
+need("runArchiveSemantic" not in _aw.split("Button(\"Search by meaning\")")[0].split("semanticSection")[-1],
+     "the semantic call must be reachable only from the explicit button")
+
 # Search quality (0.5.168). The maths is EXECUTED in the helper self-test;
 # these pin the wiring.
 _helper_code = strip_comments((root / "HelperSources/main.swift").read_text())
@@ -2984,8 +3035,29 @@ need("archiveOnlyMatches = !query.isEmpty && archiveMatchingChats > 0" in _only,
 # Search everywhere, visible while you scroll, with the TERM marked (0.5.169).
 need("visibleRecentMessages" in _aw,
      "Recent has no search; the newest turns were the one place you could not look")
-need('TextField("Search recent messages"' in _aw,
+need('TextField("Search recent and archive"' in _aw,
      "the Recent view lost its search field")
+# ONE term spans both surfaces (0.5.170). Two boxes meant "No recent message
+# contains thule" while the archive held 34 hits one tap away, and you had to
+# retype the word to find that out (Miles, 2026-08-31).
+need('@State private var recentQuery' not in _aw
+     and 'private var recentQuery: String { model.archiveQuery }' in _aw,
+     "Recent went back to its own search term; the two surfaces must share one")
+need(_aw.count('TextField("Search') == 1 or 'Search the archive"' not in _aw,
+     "a second top-level message search box returned")
+need("messageSearchCrossing" in _aw and "func crossingCount(" in _aw,
+     "nothing tells you how many matches are on the side you are not looking at")
+need("archiveHitsQuery == query else { return \"press return\" }" in _aw,
+     "the archive count must not report the PREVIOUS term's answer beside a new term")
+need("runPendingArchiveSearch()" in _aw and _aw.count("runPendingArchiveSearch()") >= 3,
+     "crossing into the archive with a term already typed must run it, from both "
+     "the picker and the count")
+need("recentMissCopy" in _aw,
+     "a miss in Recent must name the archive rather than dead-ending")
+_model_thin = model_code[model_code.index("var archiveResultIsThin"):]
+_model_thin = _model_thin[:_model_thin.index("\n    }")]
+need("archiveHitsQuery == q" in _model_thin,
+     "the semantic offer must key on an answer to the CURRENT term")
 # The bars sit OUTSIDE their ScrollViews, or they scroll away with the content
 # and you lose sight of what you searched for.
 _chat_body = _aw[_aw.index("private func archiveChatDetail"):_aw.index("private var visibleRecentMessages")]
@@ -3058,6 +3130,30 @@ need("UserDefaults.standard.bool(forKey: ControllerModel.petCalmMotionKey)" in m
      "the calm preference is never read back at launch")
 need("Calm motion" in (root / "Sources/Views.swift").read_text(),
      "calm motion has no control in Session Pet settings")
+# The token-spending switch lives in the TOOLBAR, not three panes deep in pet
+# settings, and it must read as a cost before it reads as a feature (0.5.170).
+_v = strip_comments((root / "Sources/Views.swift").read_text())
+_panel_src = _v[_v.index("private var mainPanel"):]
+_panel_src = _panel_src[:_panel_src.index("\n    }")]
+need("searchModeRow" in _panel_src,
+     "the search-by-meaning flag is not in the toolbar panel")
+_flag = _v[_v.index("private var searchModeRow"):]
+_flag = _flag[:_flag.index("\n    }\n")]
+need("model.setSemanticSearchEnabled($0)" in _flag,
+     "the toolbar flag does not write the setting")
+need("Uses your Claude usage" in _flag and "Keyword only" in _flag,
+     "the flag must state the cost in both states; a bare switch hides what it spends")
+_pet_pane = _v[_v.index("private struct PetSizeControls"):]
+_pet_pane = _pet_pane[:_pet_pane.index("onAppear { pixelDraft")]
+need("semanticSearchEnabled" not in _pet_pane,
+     "the search flag is back in the pet settings pane")
+# The first version of that flag orphaned calm motion's caption: it sat between
+# the toggle and the text explaining it, so the text read as the flag's.
+_calm_gap = _pet_pane[_pet_pane.index('Toggle("Calm motion"'):
+                      _pet_pane.index("Rests the character")]
+need("Toggle(" not in _calm_gap.replace('Toggle("Calm motion"', "", 1),
+     "another control sits between the Calm motion toggle and its own caption; "
+     "the caption now reads as that control's")
 
 # The pet must return to where it was parked. Every frame is rebuilt from the
 # resting anchor: reading the last CLAMPED origin back walked a high-parked

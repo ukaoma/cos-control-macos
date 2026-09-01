@@ -1194,6 +1194,7 @@ struct ControlPanel: View {
                 updateRow
                 noticeBanner
                 activityLauncher
+                searchModeRow
                 statusCard
                 controls
                 if !model.fenceRecords.isEmpty { fencesCard }
@@ -1203,6 +1204,42 @@ struct ControlPanel: View {
             }
             .padding(16)
         }
+    }
+
+    /// The one place in Control that can spend model tokens, so the switch for
+    /// it lives in the toolbar rather than three panes deep: Miles reads what
+    /// Control is allowed to spend before he opens anything (2026-08-31).
+    /// OFF is keyword only, and OFF is the shipped default.
+    private var searchModeRow: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: model.semanticSearchEnabled
+                  ? "sparkle.magnifyingglass" : "magnifyingglass")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(model.semanticSearchEnabled ? COSPalette.gold : .secondary)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Search by meaning")
+                    .font(COSType.display(12, weight: .semibold))
+                Text(model.semanticSearchEnabled
+                     ? "Uses your Claude usage. Control offers it when a search comes up thin, and only asks when you tap. Up to 25 a day."
+                     : "Keyword only. No model calls, no usage spent.")
+                    .font(COSType.body(10.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Toggle("", isOn: Binding(
+                get: { model.semanticSearchEnabled },
+                set: { model.setSemanticSearchEnabled($0) }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .labelsHidden()
+        }
+        .padding(13)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
     }
 
     /// One doorway instead of five nested browsers in a 390pt transient panel.

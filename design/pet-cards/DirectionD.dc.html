@@ -1,0 +1,575 @@
+<script src="./support.js"></script>
+<!-- Artboard: 880 x 1460. Direction D, "Outcome first, actions on demand". 1pt = 1px. -->
+<!-- INTERACTIVE. Hover any .d-row: the trailing slot cross-fades, the primary line tickers. -->
+<div class="ab ab-d">
+<style>
+.ab-d{
+  width:880px; height:1460px; position:relative; overflow:hidden;
+  box-sizing:border-box; padding:36px;
+  --ink:#1F1712; --cream:#F5F0E6; --gold:#C9A86E; --amber:#C98045; --green:#339457;
+  --card:#261D16; --panel:#17120D;
+  --line:rgba(201,168,110,0.16);
+  --claude:#C77338; --codex:#1A8C7A; --cursor:#6B61DB;
+  --body:"DM Sans",-apple-system,"SF Pro Text","Helvetica Neue",Helvetica,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --disp:"Fraunces",Georgia,"Iowan Old Style","Times New Roman",serif;
+  font-family:var(--body); color:var(--cream);
+}
+.ab-d *{box-sizing:border-box;}
+
+.ab-d .wall{position:absolute; inset:0; z-index:0;
+  background:
+    radial-gradient(680px 420px at 12% 8%, rgba(255,168,64,.55), transparent 62%),
+    radial-gradient(720px 520px at 88% 22%, rgba(60,180,190,.45), transparent 60%),
+    radial-gradient(900px 700px at 55% 96%, rgba(190,70,110,.42), transparent 64%),
+    linear-gradient(155deg,#3a2a17 0%,#1c2b2e 46%,#2a1622 100%);
+}
+.ab-d .wall::after{content:""; position:absolute; inset:0; opacity:.30;
+  background-image:
+    linear-gradient(45deg,rgba(255,140,40,.55) 25%,transparent 25%,transparent 75%,rgba(255,140,40,.55) 75%),
+    linear-gradient(45deg,rgba(255,140,40,.55) 25%,transparent 25%,transparent 75%,rgba(255,140,40,.55) 75%);
+  background-size:44px 44px; background-position:0 0,22px 22px;
+}
+.ab-d .stage{position:relative; z-index:1;}
+
+.ab-d h1{font-family:var(--disp); font-size:35px; line-height:1.1; font-weight:600;
+  margin:0; letter-spacing:-.01em; color:#FFF6E6; text-shadow:0 2px 18px rgba(0,0,0,.55);}
+.ab-d .thesis{font-size:15px; line-height:1.5; margin:6px 0 0; max-width:700px;
+  color:rgba(255,246,230,.9); text-shadow:0 1px 12px rgba(0,0,0,.6);}
+.ab-d .bandlabel{font-family:var(--mono); font-size:9px; font-weight:700; letter-spacing:.14em;
+  color:rgba(255,240,220,.72); margin:0 0 9px; text-shadow:0 1px 8px rgba(0,0,0,.7);}
+.ab-d .band{margin-top:16px;}
+.ab-d .split{display:grid; grid-template-columns:372px 1fr; gap:28px; align-items:start;}
+.ab-d .compare{display:flex; gap:30px; align-items:flex-start;}
+.ab-d .arrow{align-self:center; font-family:var(--mono); font-size:8px; font-weight:700; letter-spacing:.14em;
+  color:rgba(255,240,220,.6); text-shadow:0 1px 6px rgba(0,0,0,.7); writing-mode:vertical-rl;}
+.ab-d .note{background:rgba(18,13,9,.78); border:1px solid var(--line); border-radius:10px;
+  padding:12px 14px; backdrop-filter:blur(10px);}
+.ab-d .note.wide{margin-top:8px;}
+.ab-d .note h4{font-family:var(--mono); font-size:9px; font-weight:700; letter-spacing:.12em;
+  margin:0 0 7px; color:var(--gold);}
+.ab-d .note p{font-size:11.5px; line-height:1.55; margin:0 0 7px; color:rgba(245,240,230,.86);}
+.ab-d .note p:last-child{margin-bottom:0;}
+.ab-d .note b{color:#FFF3DE; font-weight:600;}
+.ab-d .cols2{columns:2; column-gap:22px;}
+.ab-d .cols2 p{break-inside:avoid;}
+.ab-d .num{font-family:var(--mono); font-size:11px; color:var(--gold);}
+.ab-d .bad{color:#E68A6B;} .ab-d .good{color:#8CC79C;}
+.ab-d .caption{font-family:var(--mono); font-size:8px; letter-spacing:.1em; font-weight:700;
+  color:rgba(255,240,220,.62); margin:0 0 6px; text-shadow:0 1px 6px rgba(0,0,0,.7);}
+.ab-d .caption em{font-style:normal; color:#F5D9A6;}
+
+.ab-d .plate{border-radius:12px; border:1px solid var(--line); padding:4px 10px;
+  background:rgba(20,15,11,.74); backdrop-filter:blur(22px) saturate(1.15);
+  box-shadow:0 10px 34px rgba(0,0,0,.42);}
+/* The shipped list insets its content 10pt on the RIGHT for the overlay scroll
+   indicator and nothing on the left (SessionPet.swift:800). That is the dead
+   space: the rail starts on the card's content edge, every trailing item stopped
+   10pt inside it. D hides the indicator and hands the 10pt to the reading line. */
+.ab-d .scrollinset{padding-right:10px;}
+.ab-d .rowlist{padding-right:0;}
+.ab-d .div{height:1px; background:var(--line);}
+.ab-d .glyph{width:11px; height:11px; flex:0 0 11px; display:block;}
+.ab-d .tclaude{color:var(--claude);} .ab-d .tcodex{color:var(--codex);} .ab-d .tcursor{color:var(--cursor);}
+.ab-d .dot{width:5px; height:5px; border-radius:50%; flex:0 0 5px;}
+.ab-d .sechead{display:flex; align-items:center; gap:5px; padding:7px 0 3px;
+  font-family:var(--mono); font-size:8px; font-weight:700; letter-spacing:.05em; color:rgba(240,232,220,.6);}
+.ab-d .sechead .dot{width:6px; height:6px; flex:0 0 6px;}
+
+/* ---------- shipped rows, for comparison ---------- */
+.ab-d .n-done-row{display:flex; align-items:flex-start; height:43px; padding:7px 0;}
+.ab-d .n-done-row .col{display:flex; align-items:flex-start; gap:8px; flex:1 1 auto; min-width:0;}
+.ab-d .markblock{display:flex; align-items:center; gap:3px; width:54px; flex:0 0 54px;
+  font-family:var(--mono); font-size:8px; font-weight:700;}
+.ab-d .markblock .glyph{width:12px; height:12px; flex:0 0 12px;}
+.ab-d .n-name{width:68px; flex:0 0 68px; font-size:11px; font-weight:500; line-height:14px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#F3EDE2;}
+.ab-d .n-sub{font-size:10px; line-height:13px; color:rgba(240,232,220,.55); margin-top:2px;}
+.ab-d .n-acts{display:flex; flex:0 0 57px; align-items:center; height:29px;}
+.ab-d .n-acts i{display:grid; place-items:center; font-style:normal; height:19px;
+  font-size:9px; color:rgba(240,232,220,.55);}
+.ab-d .n-acts i.a1{width:19px;} .ab-d .n-acts i.a2{width:20px;} .ab-d .n-acts i.a3{width:18px;}
+
+/* ================= Direction D row =================
+   row 352  =  11 pad-left + 284 body + 57 slot
+   line 1   =  5 dot + 6 gap + 281 ticker window
+   line 2   =  11 glyph + 5 gap + 268 title
+   height   =  16 + 2 + 12 + 14 padding = 44
+   The slot is 57pt in BOTH states, so hover moves nothing.        */
+.ab-d .d-row{display:flex; height:44px; padding:7px 0 7px 11px; position:relative;
+  border-radius:8px; background:transparent; transition:background .18s ease-out;}
+.ab-d .d-row:hover, .ab-d .d-row.hovered{background:rgba(201,168,110,.075);}
+.ab-d .d-row .rail{position:absolute; left:0; top:6px; bottom:6px; width:3px; border-radius:2px;}
+.ab-d .d-body{flex:1 1 auto; min-width:0;}
+.ab-d .d-l1{display:flex; align-items:center; gap:6px; height:16px;}
+.ab-d .d-l2{display:flex; align-items:center; gap:5px; height:12px; margin-top:2px;}
+.ab-d .d-title{flex:1 1 auto; min-width:0; max-width:276px; font-size:9px; line-height:12px;
+  color:rgba(240,232,220,.62); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+
+/* ---- the ticker window: fixed 263, hidden overflow, still at rest ---- */
+.ab-d .d-win{position:relative; flex:0 0 281px; width:281px; height:16px; overflow:hidden;}
+.ab-d .d-rest{display:block; width:281px; font-size:12px; font-weight:600; line-height:16px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#F8F2E6;}
+.ab-d .d-track{display:none; width:max-content; gap:30px; font-size:12px; font-weight:600;
+  line-height:16px; color:#F8F2E6;}
+.ab-d .d-track span{white-space:nowrap;}
+.ab-d .d-row:hover .d-win.roll .d-rest{display:none;}
+.ab-d .d-row:hover .d-win.roll .d-track{display:flex;
+  animation:d-roll var(--dur,14s) linear 1.4s infinite;}
+/* travel = text + 30 gap. Track is 2 copies + one 30 gap, so -50% - 15px is exact,
+   whatever face the browser actually resolves. */
+@keyframes d-roll{ from{transform:translateX(0);} to{transform:translateX(calc(-50% - 15px));} }
+/* Frozen mid-loop, for the still comparison below. Shifts the single copy and
+   clips it, which is what the window shows at any point away from the wrap,
+   and unlike a fixed track offset it holds whatever face the browser resolves. */
+.ab-d .d-win.roll.mid .d-rest{text-overflow:clip; text-indent:-44px;}
+.ab-d .d-win.roll.mid .d-track{display:none;}
+
+/* ---- the trailing slot: one footprint, two occupants ---- */
+.ab-d .d-slot{position:relative; flex:0 0 57px; width:57px; align-self:stretch;
+  margin-right:-10px;}
+.ab-d .d-meta{position:absolute; inset:0; display:flex; flex-direction:column; align-items:flex-end;
+  justify-content:flex-start; gap:3px; padding-top:3px; opacity:1; transition:opacity .26s ease-out;}
+.ab-d .d-age{font-family:var(--mono); font-size:8px; font-weight:700; line-height:10px;}
+.ab-d .d-ws{font-size:8px; line-height:10px; color:rgba(240,232,220,.55);
+  max-width:57px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+/* The trailing symbol carries 4pt of its own padding, which is hit target, not
+   layout. Overhang the row by that 4pt so the glyph's INK lands on the same
+   edge as the age and the workspace. The slot's 57pt frame does not move. */
+.ab-d .d-acts{position:absolute; inset:0 -4px 0 0; display:flex; align-items:center;
+  justify-content:flex-end; opacity:0; transition:opacity .26s ease-out;}
+.ab-d .d-acts i{display:grid; place-items:center; font-style:normal; font-size:9px;
+  color:rgba(243,237,226,.86);}
+.ab-d .d-acts i.a1{width:19px; height:19px;}
+.ab-d .d-acts i.a2{width:20px; height:20px;}
+/* the trailing symbol fills its box to 4pt, as the real xmark does */
+.ab-d .d-acts i.a3{width:18px; height:18px; justify-items:end; padding-right:4px;}
+.ab-d .d-row:hover .d-meta, .ab-d .d-row.hovered .d-meta{opacity:0;}
+.ab-d .d-row:hover .d-acts, .ab-d .d-row.hovered .d-acts{opacity:1;}
+
+@media (prefers-reduced-motion: reduce){
+  .ab-d .d-row:hover .d-win.roll .d-rest{display:block;}
+  .ab-d .d-row:hover .d-win.roll .d-track{display:none; animation:none;}
+  .ab-d .d-win.roll.mid .d-rest{text-overflow:ellipsis; text-indent:0;}
+  .ab-d .d-row, .ab-d .d-meta, .ab-d .d-acts{transition:none;}
+}
+
+/* ---------- 2x detail ---------- */
+.ab-d .zoomwrap{width:744px; height:104px; overflow:hidden;}
+.ab-d .zoom{transform:scale(2); transform-origin:top left;}
+
+/* ---------- Small ----------
+   root 294, row 262, slot 47 (glyphs floor at 8pt, padding scales), body 207,
+   ticker window 204.                                                        */
+.ab-d .s-plate{width:282px;}
+.ab-d .s-row{display:flex; height:34px; padding:5px 0 4px 8px; position:relative; border-radius:6px;}
+.ab-d .s-row.hovered{background:rgba(201,168,110,.075);}
+.ab-d .s-row .rail{position:absolute; left:0; top:5px; bottom:5px; width:2px; border-radius:2px;}
+.ab-d .s-body{flex:1 1 auto; min-width:0;}
+.ab-d .s-l1{display:flex; align-items:center; gap:5px; height:12px;}
+.ab-d .s-win{flex:0 0 204px; width:204px; height:12px; overflow:hidden;}
+.ab-d .s-rest{display:block; width:204px; font-size:9px; font-weight:600; line-height:12px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#F8F2E6;}
+.ab-d .s-l2{display:flex; align-items:center; gap:4px; height:11px; margin-top:2px;}
+.ab-d .s-title{flex:1 1 auto; min-width:0; font-size:8px; line-height:11px;
+  color:rgba(240,232,220,.6); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.ab-d .s-slot{position:relative; flex:0 0 47px; width:47px; align-self:stretch;
+  margin-right:-10px;}
+.ab-d .s-meta{position:absolute; inset:0; display:flex; flex-direction:column; align-items:flex-end;
+  gap:2px; padding-top:1px;}
+.ab-d .s-age{font-family:var(--mono); font-size:8px; font-weight:700; line-height:10px;}
+.ab-d .s-ws{font-size:8px; line-height:10px; color:rgba(240,232,220,.55); max-width:47px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.ab-d .s-acts{position:absolute; inset:0 -3px 0 0; display:flex; align-items:center; justify-content:flex-end;}
+.ab-d .s-acts i{display:grid; place-items:center; font-style:normal; font-size:8px;
+  color:rgba(243,237,226,.86);}
+.ab-d .s-acts i.a1{width:16px;} .ab-d .s-acts i.a2{width:17px;}
+.ab-d .s-acts i.a3{width:15px; justify-items:end; padding-right:3px;}
+.ab-d .s-row .s-acts{opacity:0;} .ab-d .s-row.hovered .s-acts{opacity:1;}
+.ab-d .s-row.hovered .s-meta{opacity:0;}
+.ab-d .figure{width:175px; height:44px; border:1px dashed rgba(255,240,220,.35); border-radius:6px;
+  display:grid; place-items:center; font-family:var(--mono); font-size:8px; letter-spacing:.1em;
+  color:rgba(255,240,220,.6); margin-top:10px;}
+
+.ab-d .foot{margin-top:16px; display:flex; flex-wrap:wrap; gap:6px; align-items:center;}
+.ab-d .chip{font-family:var(--mono); font-size:8px; font-weight:700; letter-spacing:.1em;
+  padding:5px 9px; border-radius:20px; border:1px solid var(--line);
+  background:rgba(18,13,9,.8); backdrop-filter:blur(8px); color:rgba(245,238,226,.82);}
+.ab-d .chip.win{color:#A9D8B8; border-color:rgba(140,199,156,.35);}
+.ab-d .chip.cost{color:#EDB08E; border-color:rgba(230,138,107,.35);}
+.ab-d .footnote{width:100%; font-family:var(--mono); font-size:8px; letter-spacing:.11em;
+  font-weight:700; color:rgba(255,240,220,.5); text-shadow:0 1px 6px rgba(0,0,0,.75); margin-top:4px;}
+</style>
+
+<div class="wall"></div>
+<div class="stage">
+
+  <h1>Outcome first, actions on demand</h1>
+  <p class="thesis">Take B's row, then make the trailing 57pt do two jobs instead of none. At rest it says when and where; under the pointer it becomes the three paths off the row, and the outcome line starts scrolling. The row never changes size by a point.</p>
+
+  <!-- ============ BAND 1: the finished list, live ============ -->
+  <div class="band">
+    <p class="bandlabel">FINISHED LIST / SHIPPED 228PT PLATE VS DIRECTION D 372PT PLATE</p>
+    <div class="compare">
+
+      <div>
+        <p class="caption">NOW &#183; THREE ICONS LIT ON EVERY ROW</p>
+        <div class="plate" style="width:228px">
+          <div class="scrollinset">
+            <div class="n-done-row">
+              <div class="col">
+                <div class="markblock tclaude">
+                  <svg class="glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  CLAUDE
+                </div>
+                <div><div class="n-name">COS-glasses server release train</div><div class="n-sub">Finished</div></div>
+              </div>
+              <div class="n-acts"><i class="a1">&#8599;</i><i class="a2">&#9776;</i><i class="a3">&#10005;</i></div>
+            </div>
+            <div class="div"></div>
+            <div class="n-done-row">
+              <div class="col">
+                <div class="markblock tclaude">
+                  <svg class="glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  CLAUDE
+                </div>
+                <div><div class="n-name">COS-glasses session archive purge</div><div class="n-sub">Finished</div></div>
+              </div>
+              <div class="n-acts"><i class="a1">&#8599;</i><i class="a2">&#9776;</i><i class="a3">&#10005;</i></div>
+            </div>
+            <div class="div"></div>
+            <div class="n-done-row">
+              <div class="col">
+                <div class="markblock tcodex">
+                  <svg class="glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="8" cy="8" r="6.3"/><path d="M8 1.7v12.6M2.2 5.1l11.6 5.8"/></svg>
+                  CODEX
+                </div>
+                <div><div class="n-name">Matrix resonance refresh</div><div class="n-sub">Finished</div></div>
+              </div>
+              <div class="n-acts"><i class="a1">&#8599;</i><i class="a2">&#9776;</i><i class="a3">&#10005;</i></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="arrow">BECOMES</div>
+
+      <div>
+        <p class="caption">DIRECTION D &#183; <em>HOVER ANY ROW. IT IS LIVE.</em></p>
+        <div class="plate" style="width:372px">
+          <div class="rowlist">
+
+            <div class="d-row">
+              <span class="rail" style="background:var(--gold)"></span>
+              <div class="d-body">
+                <div class="d-l1">
+                  <span class="dot" style="background:var(--gold)"></span>
+                  <span class="d-win roll" style="--dur:15.1s">
+                    <span class="d-rest">Published 6.41.0 and pushed the appcast to gotcos.com</span>
+                    <span class="d-track"><span>Published 6.41.0 and pushed the appcast to gotcos.com</span><span>Published 6.41.0 and pushed the appcast to gotcos.com</span></span>
+                  </span>
+                </div>
+                <div class="d-l2">
+                  <svg class="glyph tclaude" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  <span class="d-title">COS-glasses server release train</span>
+                </div>
+              </div>
+              <div class="d-slot">
+                <div class="d-meta"><span class="d-age" style="color:var(--gold)">4m</span><span class="d-ws">cos-glasses-app</span></div>
+                <div class="d-acts"><i class="a1">&#8599;</i><i class="a2">&#9776;</i><i class="a3">&#10005;</i></div>
+              </div>
+            </div>
+
+            <div class="div"></div>
+
+            <div class="d-row">
+              <span class="rail" style="background:var(--gold)"></span>
+              <div class="d-body">
+                <div class="d-l1">
+                  <span class="dot" style="background:var(--gold)"></span>
+                  <span class="d-win">
+                    <span class="d-rest">Pruned 412 archives, freed 1.2 GB</span>
+                  </span>
+                </div>
+                <div class="d-l2">
+                  <svg class="glyph tclaude" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  <span class="d-title">COS-glasses session archive purge</span>
+                </div>
+              </div>
+              <div class="d-slot">
+                <div class="d-meta"><span class="d-age" style="color:var(--gold)">12m</span><span class="d-ws">cos-glasses-app</span></div>
+                <div class="d-acts"><i class="a1">&#8599;</i><i class="a2">&#9776;</i><i class="a3">&#10005;</i></div>
+              </div>
+            </div>
+
+            <div class="div"></div>
+
+            <div class="d-row">
+              <span class="rail" style="background:var(--gold)"></span>
+              <div class="d-body">
+                <div class="d-l1">
+                  <span class="dot" style="background:var(--gold)"></span>
+                  <span class="d-win roll" style="--dur:15.9s">
+                    <span class="d-rest">Rebuilt the software matrix, 4,265 rows across 12 brands</span>
+                    <span class="d-track"><span>Rebuilt the software matrix, 4,265 rows across 12 brands</span><span>Rebuilt the software matrix, 4,265 rows across 12 brands</span></span>
+                  </span>
+                </div>
+                <div class="d-l2">
+                  <svg class="glyph tcodex" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="8" cy="8" r="6.3"/><path d="M8 1.7v12.6M2.2 5.1l11.6 5.8"/></svg>
+                  <span class="d-title">Matrix resonance refresh</span>
+                </div>
+              </div>
+              <div class="d-slot">
+                <div class="d-meta"><span class="d-age" style="color:var(--gold)">41m</span><span class="d-ws">MU-Chief-Staff</span></div>
+                <div class="d-acts"><i class="a1">&#8599;</i><i class="a2">&#9776;</i><i class="a3">&#10005;</i></div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="note wide">
+      <div class="cols2">
+        <p><b>The slot is exactly the 57pt the three icons cost today</b>, 19 + 20 + 18 from the measured 11.0, 12.0 and 10.0pt symbols with 4pt padding. At rest it carries the age over the workspace instead of three permanently lit glyphs. Row two proves the still case: 33 characters, <span class="num">226pt</span> in a <span class="num">281pt</span> window, so it fits and never moves.</p>
+        <p><b>That meta stack is free here.</b> On the shipped mission row it measured 23pt against a 14pt title and set the row to 61pt. D's body is already two lines at 30pt, so 23pt sets nothing. Moving the workspace into it hands line two its whole <span class="num good">276pt</span>, 53 characters, where B capped the title at 172.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ BAND 2: live list, live ============ -->
+  <div class="band">
+    <p class="bandlabel">LIVE LIST / DIRECTION D / 240PT FRAME / STILL UNTIL YOU POINT AT IT</p>
+    <div class="split">
+      <div class="plate" style="width:372px">
+        <div class="rowlist">
+          <div class="sechead"><span class="dot" style="background:var(--green)"></span>RUNNING 1</div>
+
+          <div class="d-row">
+            <span class="rail" style="background:var(--green)"></span>
+            <div class="d-body">
+              <div class="d-l1">
+                <span class="dot" style="background:var(--green)"></span>
+                <span class="d-win roll" style="--dur:16.2s">
+                  <span class="d-rest" style="color:#EAF6EE">Editing enrich_matrix_with_resonance.py, 12 brands queued</span>
+                  <span class="d-track" style="color:#EAF6EE"><span>Editing enrich_matrix_with_resonance.py, 12 brands queued</span><span>Editing enrich_matrix_with_resonance.py, 12 brands queued</span></span>
+                </span>
+              </div>
+              <div class="d-l2">
+                <svg class="glyph tcodex" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="8" cy="8" r="6.3"/><path d="M8 1.7v12.6M2.2 5.1l11.6 5.8"/></svg>
+                <span class="d-title">Persona v26 enrichment</span>
+              </div>
+            </div>
+            <div class="d-slot">
+              <div class="d-meta"><span class="d-age" style="color:var(--green)">31s</span><span class="d-ws">MU-Chief-Staff</span></div>
+              <div class="d-acts"><i class="a1">&#8599;</i><i class="a2">&#9776;</i><i class="a3">&#10005;</i></div>
+            </div>
+          </div>
+
+          <div class="sechead"><span class="dot" style="background:var(--amber)"></span>WAITING ON YOU 1</div>
+
+          <div class="d-row">
+            <span class="rail" style="background:var(--amber)"></span>
+            <div class="d-body">
+              <div class="d-l1">
+                <span class="dot" style="background:var(--amber)"></span>
+                <span class="d-win">
+                  <span class="d-rest" style="color:#FBEDE0">approve the SessionPet.swift edit</span>
+                </span>
+              </div>
+              <div class="d-l2">
+                <svg class="glyph tcursor" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1l6.2 3.6v6.8L8 15 1.8 11.4V4.6z" opacity=".9"/></svg>
+                <span class="d-title">Pet card readability directions</span>
+              </div>
+            </div>
+            <div class="d-slot">
+              <div class="d-meta"><span class="d-age" style="color:var(--amber)">2m</span><span class="d-ws">cos-control-macos</span></div>
+              <div class="d-acts"><i class="a1">&#8599;</i><i class="a2">&#9776;</i><i class="a3">&#10005;</i></div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+      <div class="note">
+        <h4>THE TICKER IS HOVER GATED HERE TOO</h4>
+        <p>Every running row scrolls by itself today. At D's proportions the 240pt frame holds five, so that can be five lines moving at once over wallpaper.</p>
+        <p><b>Hover gating makes it one line, ever</b>: the pointer is on one row. The <span class="num">1.4s</span> hold covers the sweep, since crossing four rows never holds one long enough to start it.</p>
+        <p>The arguable carve out, an automatic ticker on <span class="num">petPreferredFocus</span>, costs the card its one law. Skip it.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ BAND 3: static rest vs hover ============ -->
+  <div class="band">
+    <p class="bandlabel">THE SAME ROW, HELD IN BOTH STATES / FOR A SCREENSHOT WHERE NOBODY IS HOVERING</p>
+    <div class="split" style="grid-template-columns:372px 372px; gap:24px">
+
+      <div>
+        <p class="caption">REST &#183; SLOT SAYS WHEN AND WHERE &#183; LINE ELLIPSISED</p>
+        <div class="plate" style="width:372px">
+          <div class="rowlist">
+            <div class="d-row">
+              <span class="rail" style="background:var(--gold)"></span>
+              <div class="d-body">
+                <div class="d-l1">
+                  <span class="dot" style="background:var(--gold)"></span>
+                  <span class="d-win roll">
+                    <span class="d-rest">Published 6.41.0 and pushed the appcast to gotcos.com</span>
+                    <span class="d-track"><span>Published 6.41.0 and pushed the appcast to gotcos.com</span><span>Published 6.41.0 and pushed the appcast to gotcos.com</span></span>
+                  </span>
+                </div>
+                <div class="d-l2">
+                  <svg class="glyph tclaude" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  <span class="d-title">COS-glasses server release train</span>
+                </div>
+              </div>
+              <div class="d-slot">
+                <div class="d-meta"><span class="d-age" style="color:var(--gold)">4m</span><span class="d-ws">cos-glasses-app</span></div>
+                <div class="d-acts"><i class="a1">&#8599;</i><i class="a2">&#9776;</i><i class="a3">&#10005;</i></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <p class="caption">HOVER &#183; SAME 57PT FLUSH RIGHT &#183; LINE MID SCROLL</p>
+        <div class="plate" style="width:372px">
+          <div class="rowlist">
+            <div class="d-row hovered">
+              <span class="rail" style="background:var(--gold)"></span>
+              <div class="d-body">
+                <div class="d-l1">
+                  <span class="dot" style="background:var(--gold)"></span>
+                  <span class="d-win roll mid">
+                    <span class="d-rest">Published 6.41.0 and pushed the appcast to gotcos.com</span>
+                    <span class="d-track"><span>Published 6.41.0 and pushed the appcast to gotcos.com</span><span>Published 6.41.0 and pushed the appcast to gotcos.com</span></span>
+                  </span>
+                </div>
+                <div class="d-l2">
+                  <svg class="glyph tclaude" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  <span class="d-title">COS-glasses server release train</span>
+                </div>
+              </div>
+              <div class="d-slot">
+                <div class="d-meta"><span class="d-age" style="color:var(--gold)">4m</span><span class="d-ws">cos-glasses-app</span></div>
+                <div class="d-acts"><i class="a1">&#8599;</i><i class="a2">&#9776;</i><i class="a3">&#10005;</i></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div class="note wide">
+      <div class="cols2">
+        <p><b>Nothing between the panels differs in size.</b> Row 44, body 292, slot 57, window 281, both states. The only deltas are opacity and a transform inside a clipped window, which is what <span class="num">ledgerSlot</span> does one layer up. <b>Under Reduce Motion</b> the hover panel keeps the ellipsis instead of scrolling, matching <span class="num">TickerLine</span>'s guard.</p>
+        <p><b>Both occupants end on the card's content edge.</b> The shipped list insets content <span class="num">10pt</span> on the right for the scroll indicator and nothing on the left, so every trailing item stopped inside the margin. Hiding it returned 10pt to the line and breaking the plate's own 10pt padding returned another, <span class="num">263</span> to <span class="num good">281pt</span>. The trailing items now end ON the card edge rather than on its padding, which is where a corner control belongs and where the age and workspace read as deliberate rather than inset (Miles, 2026-08-31).</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ BAND 4: 2x ============ -->
+  <div class="band">
+    <p class="bandlabel">HOVERED ROW AT 2X / 19 + 20 + 18 = THE SAME 57PT THE META COLUMN HELD</p>
+    <div class="zoomwrap">
+      <div class="zoom">
+        <div class="plate" style="width:372px">
+          <div class="rowlist">
+            <div class="d-row hovered">
+              <span class="rail" style="background:var(--gold)"></span>
+              <div class="d-body">
+                <div class="d-l1">
+                  <span class="dot" style="background:var(--gold)"></span>
+                  <span class="d-win"><span class="d-rest">Published 6.41.0 and pushed the appcast</span></span>
+                </div>
+                <div class="d-l2">
+                  <svg class="glyph tclaude" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  <span class="d-title">COS-glasses server release train</span>
+                </div>
+              </div>
+              <div class="d-slot">
+                <div class="d-meta"><span class="d-age" style="color:var(--gold)">4m</span><span class="d-ws">cos-glasses-app</span></div>
+                <div class="d-acts"><i class="a1">&#8599;</i><i class="a2">&#9776;</i><i class="a3">&#10005;</i></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ BAND 5: Small ============ -->
+  <div class="band">
+    <p class="bandlabel">SMALL PRESET / 48PX / ROOT 294PT / SECOND ROW HELD IN HOVER</p>
+    <div class="split" style="grid-template-columns:282px 1fr">
+      <div>
+        <div class="plate s-plate">
+          <div class="rowlist">
+            <div class="s-row">
+              <span class="rail" style="background:var(--gold)"></span>
+              <div class="s-body">
+                <div class="s-l1">
+                  <span class="dot" style="width:4px;height:4px;flex:0 0 4px;background:var(--gold)"></span>
+                  <span class="s-win"><span class="s-rest">Published 6.41.0, pushed the appcast</span></span>
+                </div>
+                <div class="s-l2">
+                  <svg class="glyph tclaude" style="width:9px;height:9px;flex:0 0 9px" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  <span class="s-title">COS-glasses server release train</span>
+                </div>
+              </div>
+              <div class="s-slot">
+                <div class="s-meta"><span class="s-age" style="color:var(--gold)">4m</span><span class="s-ws">cos-glasses-app</span></div>
+                <div class="s-acts"><i class="a1">&#8599;</i><i class="a2">&#9776;</i><i class="a3">&#10005;</i></div>
+              </div>
+            </div>
+            <div class="div"></div>
+            <div class="s-row hovered">
+              <span class="rail" style="background:var(--gold)"></span>
+              <div class="s-body">
+                <div class="s-l1">
+                  <span class="dot" style="width:4px;height:4px;flex:0 0 4px;background:var(--gold)"></span>
+                  <span class="s-win"><span class="s-rest">Pruned 412 archives, freed 1.2 GB</span></span>
+                </div>
+                <div class="s-l2">
+                  <svg class="glyph tclaude" style="width:9px;height:9px;flex:0 0 9px" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.5 4.2 4.1-1.8-2.8 3.4 4.2 1.6-4.2 1.6 2.8 3.4-4.1-1.8L8 15.4 6.5 11.2l-4.1 1.8 2.8-3.4L1 8l4.2-1.6-2.8-3.4 4.1 1.8z"/></svg>
+                  <span class="s-title">COS-glasses session archive purge</span>
+                </div>
+              </div>
+              <div class="s-slot">
+                <div class="s-meta"><span class="s-age" style="color:var(--gold)">12m</span><span class="s-ws">cos-glasses-app</span></div>
+                <div class="s-acts"><i class="a1">&#8599;</i><i class="a2">&#9776;</i><i class="a3">&#10005;</i></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="figure">THE FIGURE, 175PT WIDE, UNDER THIS</div>
+      </div>
+      <div class="note">
+        <h4>WHAT DEGRADES FIRST AT SMALL</h4>
+        <p><b>The slot, and only the slot.</b> Its occupants scale differently: the symbols are <span class="num">typeSize(9)</span>, which floors at 8, so they shrink 11% while their 4pt padding shrinks 25%. The slot lands at <span class="num">47pt</span>, not 43, and the workspace truncates there where the shipped row truncated at 66. Below root 300pt, return it to line two and leave the slot the age.</p>
+        <p><span class="num">typeSize(12)</span> at Small is <span class="num">max(8, round(9)) = 9</span>, not 8; ANATOMY's table stops at 11pt, which is why B reads as if both lines collapse. D keeps 9 over 8. Window <span class="num good">204pt</span> is 39 characters, title <span class="num good">200pt</span> is 43 at the 8pt advance, against the shipped row's 9.</p>
+      </div>
+    </div>
+  </div>
+
+
+  <div class="foot">
+    <span class="chip win">OUTCOME 281PT, 40 CHARS</span>
+    <span class="chip win">READABLE 10 TO 91 CHARS</span>
+    <span class="chip win">57PT OF ICONS BECOMES WHEN AND WHERE</span>
+    <span class="chip win">LIVE ROWS VISIBLE 3 TO 5</span>
+    <span class="chip">HOVER MOVES NOTHING, 0PT</span>
+    <span class="chip win">TRAILING EDGE FLUSH, 10PT BACK</span>
+    <span class="chip">IN MOTION: 0 AT REST, 1 ON HOVER</span>
+    <span class="chip cost">ROOT 248 TO 392PT</span>
+    <span class="chip cost">ACTIONS ARE POINTER ONLY</span>
+    <span class="chip cost">ONE HOVER SENSOR PER ROW</span>
+    <span class="chip cost">NEEDS ONE NEW MODEL FIELD</span>
+    <p class="footnote">HOLDS: BLUR BACKING ON EVERY SURFACE. HOVER CHANGES NO LAYOUT. FIXED FRAME HEIGHT. RAIL IS AN OVERLAY. CONTROLS STAY SIBLINGS OF THE ROW BUTTON.</p>
+  </div>
+
+</div>
+</div>

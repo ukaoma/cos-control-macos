@@ -1,3 +1,26 @@
+## 0.5.170 (build 208)
+
+One box searches recent messages and the archive. Two boxes meant "No recent
+message contains thule" while the archive held thirty four hits one tap away,
+and you had to retype the word to find that out. The line under the box now
+carries both counts for the same term. The side you are on is a label, the
+other side is a door, and crossing over runs the term for you.
+
+The archive count never answers for a term you have moved on from. Until the
+scan runs for what is actually in the box it says "press return" rather than
+showing the last term's number as though it were live.
+
+Search by meaning has a switch in the toolbar, and it is off. It is the one
+thing in Control that spends model tokens, so it states what it costs in both
+states rather than sitting there as a bare switch. Off is keyword only, no
+model calls. On, Control offers to look for related days when a search comes
+up thin, and asks only when you tap it. Twenty five a day.
+
+Behind that switch, the model is pinned to Haiku, a breaker stops it after two
+failures, and every day it proposes is checked against the real archive before
+it reaches you. A date that holds nothing is dropped rather than shown, which
+is what makes the layer safe without building an embedding index.
+
 ## 0.5.169 (build 207)
 
 Recent messages are searchable. The newest turns were the one place you could

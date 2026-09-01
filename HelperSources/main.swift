@@ -517,6 +517,7 @@ final class COSControlHelper {
         case "archive-dates": try emitArchiveDates()
         case "archive-search": try emitArchiveSearch(args: args)
         case "archive-day": try emitArchiveDay(args: args)
+        case "archive-semantic": try emitArchiveSemantic(args: args)
         case "archive-chat": try emitArchiveChat(args: args)
         case "voice-enroll-ext": try emitVoiceEnrollExt(args: args)
         case "meeting-relabel": try emitMeetingRelabel(args: args)
@@ -720,6 +721,10 @@ final class COSControlHelper {
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         if let environment { process.environment = environment }
+        // No child of this helper is ever fed on stdin, and one that INHERITS
+        // ours can block on it: `claude -p` waits ~3s for piped input that is
+        // never coming (measured, 2026-08-31). Hand every child a dead stdin.
+        process.standardInput = FileHandle.nullDevice
         let completion = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in completion.signal() }
 
@@ -10133,7 +10138,7 @@ final class COSControlHelper {
     /// A deterministic topic for one archived chat: the terms the conversation
     /// actually kept returning to, taken from the USER's side. No model call —
     /// this is a read path that opens on every archive tap.
-    static func archiveChatTopic(exchanges: [[String: Any]]) -> String {
+    static func archiveChatTopic(exchanges: [[String: Any]], limit: Int = 4) -> String {
         var counts: [String: Int] = [:]
         var order: [String: Int] = [:]
         var seen = 0
@@ -10151,7 +10156,7 @@ final class COSControlHelper {
         // given chat instead of reshuffling on ties.
         let top = counts.sorted {
             $0.value != $1.value ? $0.value > $1.value : (order[$0.key] ?? 0) < (order[$1.key] ?? 0)
-        }.prefix(4).map(\.key)
+        }.prefix(limit).map(\.key)
         return top.joined(separator: " · ")
     }
 
@@ -10250,6 +10255,212 @@ final class COSControlHelper {
             }
         }
         return (count, snippet.isEmpty && fuzzyOnly ? "" : snippet)
+    }
+
+    // MARK: - Semantic suggestion (0.5.170)
+
+    /// The FIRST model call this helper has ever made, so it carries the full
+    /// set of stops the cost policy requires: a master switch that defaults
+    /// OFF, an explicit user action (never a keystroke or a timer), a daily
+    /// cap, and a breaker. The model is PINNED — an unpinned `claude -p` can
+    /// resolve to Opus.
+    static let semanticModel = "claude-haiku-4-5-20251001"
+    static let semanticDailyCap = 25
+    static let semanticMaxCandidates = 6
+
+    /// Canary findings, 2026-08-31, against the real CLI:
+    ///   • the reply arrives fenced in ```json … ```
+    ///   • an unrelated query returns [] AND THEN explains itself in prose
+    /// so the parser takes the first bracketed array and ignores everything
+    /// around it rather than parsing the whole reply.
+    static func firstJSONArray(in reply: String) -> String? {
+        guard let start = reply.firstIndex(of: "[") else { return nil }
+        var depth = 0
+        var index = start
+        while index < reply.endIndex {
+            if reply[index] == "[" { depth += 1 }
+            if reply[index] == "]" {
+                depth -= 1
+                if depth == 0 { return String(reply[start...index]) }
+            }
+            index = reply.index(after: index)
+        }
+        return nil
+    }
+
+    private var semanticLedgerURL: URL {
+        support.appendingPathComponent("semantic-search-ledger.json")
+    }
+
+    /// Calls used today, and whether the breaker is open.
+    private func semanticLedger() -> (day: String, used: Int, failures: Int) {
+        let today = String(Self.isoString(from: Date()).prefix(10))
+        guard let data = try? Data(contentsOf: semanticLedgerURL),
+              let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (o["day"] as? String) == today else {
+            return (today, 0, 0)
+        }
+        return (today, o["used"] as? Int ?? 0, o["failures"] as? Int ?? 0)
+    }
+
+    private func writeSemanticLedger(day: String, used: Int, failures: Int) {
+        let payload: [String: Any] = ["day": day, "used": used, "failures": failures]
+        if let data = try? JSONSerialization.data(withJSONObject: payload) {
+            try? data.write(to: semanticLedgerURL, options: .atomic)
+        }
+    }
+
+    /// v2: the first cut aggregated a whole DAY into one topic and it
+    /// converged on boilerplate — "sessions · plan · good · skill" — because
+    /// the most frequent words across eleven chats are the ones common to all
+    /// of them. Per-CHAT topics stay distinctive. The filename carries the
+    /// version so an old cache is ignored rather than silently reused.
+    private var semanticTopicsURL: URL {
+        support.appendingPathComponent("semantic-topics-v2.json")
+    }
+
+    /// Day topics, derived and cached. The archive index's own `summary` is
+    /// two TRUNCATED OPENING LINES — "Somewhat of a separate requ..., Alright,
+    /// I want you to run ." — which carries no subject at all, so the first
+    /// canary returned nothing for a query the archive plainly contained
+    /// (2026-08-31). Real topics are derived from the exchanges instead.
+    /// Measured: all 180 days cost 3 seconds and 45 MB of local reads, and an
+    /// archived day is immutable, so the cache only grows.
+    private func semanticTopics(dates: [String], token: String) -> [String: String] {
+        var cache: [String: String] = [:]
+        if let data = try? Data(contentsOf: semanticTopicsURL),
+           let stored = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
+            cache = stored
+        }
+        var added = false
+        for date in dates where cache[date] == nil {
+            guard let day = request("/api/archive/\(date)", token: token, timeout: 30),
+                  day.status == 200, let body = day.body,
+                  let chats = body["chats"] as? [[String: Any]] else { continue }
+            // One topic PER CHAT, joined. A day is not one subject.
+            let perChat = chats.compactMap { chat -> String? in
+                let exchanges = (chat["exchanges"] as? [[String: Any]]) ?? []
+                let topic = Self.archiveChatTopic(exchanges: exchanges, limit: 4)
+                return topic.isEmpty ? nil : topic
+            }
+            cache[date] = perChat.prefix(12).joined(separator: " | ")
+            added = true
+        }
+        if added, let data = try? JSONSerialization.data(withJSONObject: cache) {
+            try? data.write(to: semanticTopicsURL, options: .atomic)
+        }
+        return cache
+    }
+
+    private func emitArchiveSemantic(args: [String]) throws {
+        guard let q = option("--q", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              q.count >= 2 else {
+            throw HelperError.message("Type at least two characters to search.")
+        }
+        // 1. MASTER SWITCH, default off.
+        // Two locks, either of which opens it: the app passes --enabled only
+        // when the user has turned the setting on (that is the affirmative
+        // choice the cost policy requires), and the env var stays as the
+        // operator switch for anyone driving the helper directly.
+        let enabled = args.contains("--enabled")
+            || ProcessInfo.processInfo.environment["COS_CONTROL_SEMANTIC_SEARCH"] == "1"
+        guard enabled else {
+            emit(ok: true, message: "Search by meaning is off.", details: [
+                "state": "disabled", "hits": [],
+            ])
+            return
+        }
+        // 2. BREAKER and DAILY CAP, before any spend.
+        var ledger = semanticLedger()
+        if ledger.failures >= 2 {
+            emit(ok: true, message: "Search by meaning is paused after repeated failures.",
+                 details: ["state": "breaker_open", "hits": []])
+            return
+        }
+        if ledger.used >= Self.semanticDailyCap {
+            emit(ok: true, message: "Search by meaning has used its \(Self.semanticDailyCap) runs for today.",
+                 details: ["state": "capped", "hits": [], "used": ledger.used])
+            return
+        }
+
+        // 3. The corpus is the DAY SUMMARIES the index already carries, not
+        //    the archive itself: one small prompt instead of gigabytes.
+        let token = try speakerReviewToken()
+        guard let listing = request("/api/archive", token: token, timeout: 30),
+              listing.status == 200, let body = listing.body,
+              let archives = body["archives"] as? [[String: Any]] else {
+            throw HelperError.message("Could not read the archive index.")
+        }
+        let dates = archives.compactMap { $0["date"] as? String }
+        let topics = semanticTopics(dates: dates, token: token)
+        let lines = dates.compactMap { date -> String? in
+            guard let topic = topics[date], !topic.isEmpty else { return nil }
+            return "\(date) :: \(topic)"
+        }
+        guard !lines.isEmpty else {
+            emit(ok: true, message: "Nothing is archived yet.", details: ["state": "ready", "hits": []])
+            return
+        }
+
+        let prompt = """
+        You match a search query to days of a conversation archive.
+
+        QUERY: \(q)
+
+        DAYS (date :: summary):
+        \(lines.joined(separator: "\n"))
+
+        Return ONLY a JSON array, at most \(Self.semanticMaxCandidates) items, of         days whose subject plausibly relates to the query even if the exact word         is absent. Format:
+        [{"date":"YYYY-MM-DD","why":"<8 words max>"}]
+        If none relate, return [].
+        """
+
+        guard let claude = findExecutable("claude") else {
+            throw HelperError.message("The claude CLI is not installed.")
+        }
+        // execute() hands every child a null stdin, which is what keeps this
+        // call off the CLI's 3-second wait for piped input (measured).
+        let result: CommandResult
+        do {
+            result = try execute(claude, ["-p", "--model", Self.semanticModel, prompt], timeout: 90)
+        } catch {
+            writeSemanticLedger(day: ledger.day, used: ledger.used, failures: ledger.failures + 1)
+            throw HelperError.message("Search by meaning failed: \(error.localizedDescription)")
+        }
+        guard result.code == 0, let array = Self.firstJSONArray(in: result.output),
+              let parsed = try? JSONSerialization.jsonObject(with: Data(array.utf8)) as? [[String: Any]] else {
+            writeSemanticLedger(day: ledger.day, used: ledger.used, failures: ledger.failures + 1)
+            emit(ok: true, message: "Search by meaning could not read its own answer.",
+                 details: ["state": "unparseable", "hits": []])
+            return
+        }
+        ledger.used += 1
+        writeSemanticLedger(day: ledger.day, used: ledger.used, failures: 0)
+
+        // 4. VERIFY. The model proposes, the archive disposes: a suggested day
+        //    that holds nothing is dropped rather than shown. This is what
+        //    makes the layer safe without embeddings.
+        let known = Set(dates)
+        var hits: [[String: Any]] = []
+        for row in parsed.prefix(Self.semanticMaxCandidates) {
+            guard let date = row["date"] as? String, known.contains(date) else { continue }
+            guard let day = request("/api/archive/\(date)", token: token, timeout: 30),
+                  day.status == 200, let dayBody = day.body,
+                  let chats = dayBody["chats"] as? [[String: Any]] else { continue }
+            let exchanges = chats.flatMap { ($0["exchanges"] as? [[String: Any]]) ?? [] }
+            guard !exchanges.isEmpty else { continue }
+            hits.append([
+                "date": date,
+                "why": (row["why"] as? String ?? "").prefix(80).description,
+                "chatCount": chats.count,
+            ])
+        }
+        emit(ok: true, message: hits.isEmpty
+                ? "No day related to that."
+                : "\(hits.count) day(s) related", details: [
+            "state": "ready", "hits": hits, "used": ledger.used,
+            "cap": Self.semanticDailyCap,
+        ])
     }
 
     private func emitArchiveDay(args: [String]) throws {
@@ -12706,6 +12917,22 @@ final class COSControlHelper {
                    "a term that is absent must not match")
         try expect(Self.archiveChatMatches(exchanges: chatA, query: "").count == 0,
                    "an empty query matches nothing rather than everything")
+
+        // Semantic layer (0.5.170). The canary found BOTH of these shapes in
+        // real CLI output, so they are pinned rather than assumed.
+        try expect(Self.firstJSONArray(in: "```json\n[{\"date\":\"2026-08-30\"}]\n```")
+                   == "[{\"date\":\"2026-08-30\"}]",
+                   "a fenced reply must yield its array")
+        try expect(Self.firstJSONArray(in: "[]\n\nNone of the days relate to that.") == "[]",
+                   "trailing prose after the array must be ignored")
+        try expect(Self.firstJSONArray(in: "I could not answer") == nil,
+                   "a reply with no array must parse as no array, not as a crash")
+        try expect(Self.firstJSONArray(in: "[{\"a\":[1,2]}]") == "[{\"a\":[1,2]}]",
+                   "a nested array must not end the scan early")
+        try expect(Self.semanticModel.contains("haiku"),
+                   "the model must stay pinned to haiku; an unpinned claude -p can resolve to Opus")
+        try expect(Self.semanticDailyCap > 0 && Self.semanticDailyCap <= 100,
+                   "the daily cap must exist and stay small")
 
         // Snippet cleaning: the server cuts a byte window out of the archive
         // FILE, so a hit near the top of a chat drags JSON structure with it.

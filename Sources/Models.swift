@@ -3308,6 +3308,22 @@ enum PetAnimationSpeed {
 /// the contract. Two mutations survived while this lived in ActivityWindow —
 /// a grep can see that a highlight function exists, never that it highlights
 /// (2026-08-31).
+/// A day the meaning-search proposed AND the archive confirmed still holds
+/// conversations. Unverified suggestions never reach this type.
+struct ArchiveSemanticHit: Identifiable, Sendable, Hashable {
+    let date: String
+    let why: String
+    let chatCount: Int
+    var id: String { date }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let date = o["date"]?.string, !date.isEmpty else { return nil }
+        self.date = date
+        why = o["why"]?.string ?? ""
+        chatCount = o["chatCount"]?.int ?? 0
+    }
+}
+
 enum SearchMark {
     /// Below this a mark is noise: one letter paints most of a paragraph.
     static let minimumQuery = 2
