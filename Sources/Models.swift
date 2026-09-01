@@ -3304,6 +3304,37 @@ enum PetAnimationSpeed {
 /// symbol. Shared by live rows and finished chips so one provider can never
 /// wear two marks. The contract LOADS AND RASTERIZES every asset: a missing
 /// or empty SVG renders as nothing at all.
+/// Search marking and filtering, kept OUT of the view so it can be executed by
+/// the contract. Two mutations survived while this lived in ActivityWindow —
+/// a grep can see that a highlight function exists, never that it highlights
+/// (2026-08-31).
+enum SearchMark {
+    /// Below this a mark is noise: one letter paints most of a paragraph.
+    static let minimumQuery = 2
+
+    /// Every occurrence of `query` in `text`, case-insensitively.
+    static func ranges(in text: String, query: String) -> [Range<String.Index>] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard needle.count >= minimumQuery else { return [] }
+        let hay = text.lowercased()
+        var out: [Range<String.Index>] = []
+        var from = hay.startIndex
+        while let r = hay.range(of: needle, range: from..<hay.endIndex) {
+            out.append(r)
+            from = r.upperBound
+        }
+        return out
+    }
+
+    /// Does either side of this turn carry the query? A query too short to
+    /// mark also does not filter — the list stays whole rather than empty.
+    static func matches(query: String, in fields: [String]) -> Bool {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard needle.count >= minimumQuery else { return true }
+        return fields.contains { $0.lowercased().contains(needle) }
+    }
+}
+
 enum PetProvider {
     /// A bundled brand SVG, or an SF Symbol where no brand mark ships.
     enum Mark: Hashable {

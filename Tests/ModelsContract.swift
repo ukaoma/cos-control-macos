@@ -3345,6 +3345,38 @@ struct ModelsContract {
         print("COS Control: a parked pet returns to its anchor after any open/close")
     }
 
+    /// Search marking and filtering. Lives here rather than in the view
+    /// precisely so it can be EXECUTED: while it sat in ActivityWindow, a
+    /// mutation that disabled highlighting entirely passed every grep.
+    private static func checkSearchMark() {
+        let text = "The Thule Urban Glide is a thule stroller"
+        let hits = SearchMark.ranges(in: text, query: "thule")
+        precondition(hits.count == 2, "both mentions must be marked, got \(hits.count)")
+        precondition(String(text[hits[0]]) == "Thule",
+                     "the mark must cover the ORIGINAL casing, not the folded copy")
+        precondition(String(text[hits[1]]) == "thule")
+        precondition(SearchMark.ranges(in: text, query: "THULE").count == 2,
+                     "marking is case-insensitive in both directions")
+        precondition(SearchMark.ranges(in: text, query: "helicopter").isEmpty)
+        // A one-character query would paint most of a paragraph.
+        precondition(SearchMark.ranges(in: text, query: "t").isEmpty,
+                     "a query under the minimum must mark nothing")
+        precondition(SearchMark.ranges(in: text, query: "  ").isEmpty,
+                     "whitespace is not a query")
+        precondition(!SearchMark.ranges(in: text, query: "  thule  ").isEmpty,
+                     "a padded query still marks; the box is not a trap")
+
+        // Filtering: too-short means NO filter, never an empty list. An
+        // inverted guard empties the view the moment you touch the box.
+        precondition(SearchMark.matches(query: "t", in: ["anything"]),
+                     "a query under the minimum must not filter the list away")
+        precondition(SearchMark.matches(query: "", in: ["anything"]))
+        precondition(SearchMark.matches(query: "stroller", in: ["the STROLLER tire", "other"]),
+                     "a match on either field counts")
+        precondition(!SearchMark.matches(query: "stroller", in: ["nothing here", "or here"]))
+        print("COS Control: search marks the term and never empties a list by accident")
+    }
+
     /// Platform marks. The load-bearing check is RESOLUTION: an SF Symbol
     /// name that does not exist on the shipped OS renders as nothing at all,
     /// so a typo would ship an invisible mark with a green suite.
@@ -3501,6 +3533,7 @@ struct ModelsContract {
         checkPetPanelAnchor()
         checkPetTicker()
         checkPetProviderMarks()
+        checkSearchMark()
         checkPetSpritePoses()
         checkPetSize()
         checkCursorAgentTabMatch()

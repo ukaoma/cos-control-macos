@@ -1,3 +1,17 @@
+## 0.5.169 (build 207)
+
+Recent messages are searchable. The newest turns were the one place you could
+not look, so a phrase you remembered from an hour ago meant scrolling. The
+box filters as you type and says how many of how many matched.
+
+The search box stays put while you scroll. In an archived day and inside a
+chat, the bar now sits above the list instead of scrolling away with it, so
+what you searched for is still on screen when you reach the passage.
+
+Matches are marked in the text itself, in yellow on dark and amber on light,
+with dark ink either way. A tinted row told you the term was somewhere in
+there; the mark tells you where.
+
 ## 0.5.168 (build 206)
 
 Search results read like conversations again. The server cuts its snippets as

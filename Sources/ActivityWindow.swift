@@ -150,6 +150,10 @@ private enum VoiceDirectorySort: String, CaseIterable, Identifiable {
 struct ActivityWindow: View {
     @ObservedObject var model: ControllerModel
     /// In-chat search: the term and which match the cursor is on.
+    @Environment(\.colorScheme) private var colorScheme
+    /// Recent-view search. Recent turns are already in memory, so this filters
+    /// locally — the archive is the only side that needs the server.
+    @State private var recentQuery = ""
     @State private var chatQuery = ""
     @State private var chatMatchCursor = 0
     @State private var section: ActivitySection?
@@ -1285,6 +1289,9 @@ struct ActivityWindow: View {
                     }
                 }
 
+                // BOTH views search. Recent held the newest turns and no way to
+                // look through them, so a term you remembered from an hour ago
+                // meant scrolling (Miles, 2026-08-31).
                 if messagesSubview == .archive {
                     TextField("Search the archive", text: $model.archiveQuery)
                         .textFieldStyle(.roundedBorder)
@@ -1293,6 +1300,17 @@ struct ActivityWindow: View {
                     if model.archiveSearching { ProgressView().controlSize(.small) }
                     if !model.archiveHits.isEmpty || !model.archiveQuery.isEmpty {
                         Button("Clear") { model.clearArchiveSearch() }
+                            .buttonStyle(.link).font(.system(size: 11))
+                    }
+                } else {
+                    TextField("Search recent messages", text: $recentQuery)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 260)
+                    if !recentQuery.isEmpty {
+                        Text("\(visibleRecentMessages.count) of \(model.recentMessages.count)")
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        Button("Clear") { recentQuery = "" }
                             .buttonStyle(.link).font(.system(size: 11))
                     }
                 }
@@ -1307,10 +1325,12 @@ struct ActivityWindow: View {
                 centeredProgress("Loading messages…")
             } else if model.recentMessages.isEmpty {
                 emptyState(.messages, text: messagesEmptyCopy)
+            } else if visibleRecentMessages.isEmpty {
+                emptyState(.messages, text: "No recent message contains \"\(recentQuery)\".")
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(model.recentMessages) { turn in
+                        ForEach(visibleRecentMessages) { turn in
                             Button {
                                 selectedTurnID = turn.id
                             } label: {
@@ -2289,11 +2309,11 @@ struct ActivityWindow: View {
             } else if model.archiveChats.isEmpty {
                 emptyState(.messages, text: "No conversations were archived on \(date).")
             } else {
+                if !model.archiveChatsQuery.isEmpty {
+                    archiveDaySearchBar(date: date)
+                }
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        if !model.archiveChatsQuery.isEmpty {
-                            archiveDaySearchBar(date: date)
-                        }
                         ForEach(visibleArchiveChats) { chat in
                             Button { openArchiveChat(date: date, index: chat.index) } label: {
                                 HStack(spacing: 8) {
@@ -2414,6 +2434,12 @@ struct ActivityWindow: View {
             // then the chat, and then scrolling a 28-message transcript by eye
             // was the last rung of the same dead end (Miles, 2026-08-31).
             ScrollViewReader { proxy in
+                VStack(spacing: 0) {
+                // The bar stays put while the transcript scrolls: losing sight
+                // of what you searched for halfway down is the whole problem.
+                chatSearchBar(proxy: proxy)
+                    .padding(.horizontal, 28).padding(.top, 14).padding(.bottom, 10)
+                Divider().opacity(0.5)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         HStack(alignment: .top) {
@@ -2427,8 +2453,6 @@ struct ActivityWindow: View {
                             }
                             Spacer()
                         }
-
-                        chatSearchBar(proxy: proxy)
 
                         ForEach(model.archiveMessages) { message in
                             let hit = chatQuery.count >= 2 && messageMatches(message)
@@ -2450,8 +2474,10 @@ struct ActivityWindow: View {
                                     Button("Copy turn") { model.copyArchiveMessage(message) }
                                         .controlSize(.small)
                                 }
-                                messageBlock(label: "You", text: message.query, tint: ActivitySection.messages.tint)
-                                messageBlock(label: "COS", text: message.text, tint: COSPalette.green)
+                                messageBlock(label: "You", text: message.query,
+                                             tint: ActivitySection.messages.tint, highlight: chatQuery)
+                                messageBlock(label: "COS", text: message.text,
+                                             tint: COSPalette.green, highlight: chatQuery)
                             }
                             .padding(hit ? 10 : 0)
                             .background(
@@ -2465,6 +2491,7 @@ struct ActivityWindow: View {
                     .frame(maxWidth: 820, alignment: .leading)
                     .frame(maxWidth: .infinity)
                 }
+                }
                 // The term that found the day is the term you are still looking
                 // for; seed it rather than making it be typed a third time.
                 .onAppear { if chatQuery.isEmpty { chatQuery = model.archiveChatsQuery } }
@@ -2472,12 +2499,18 @@ struct ActivityWindow: View {
         }
     }
 
+    /// Recent turns matching the recent-view query, on either side of the turn.
+    private var visibleRecentMessages: [GlassesTurn] {
+        model.recentMessages.filter {
+            SearchMark.matches(query: recentQuery, in: [$0.query, $0.text])
+        }
+    }
+
     /// Does this turn contain the in-chat query, on either side of it?
     private func messageMatches(_ message: ArchiveMessage) -> Bool {
-        let needle = chatQuery.lowercased()
-        guard needle.count >= 2 else { return false }
-        return message.query.lowercased().contains(needle)
-            || message.text.lowercased().contains(needle)
+        guard chatQuery.trimmingCharacters(in: .whitespacesAndNewlines).count >= SearchMark.minimumQuery
+        else { return false }
+        return SearchMark.matches(query: chatQuery, in: [message.query, message.text])
     }
 
     private var chatMatchIDs: [ArchiveMessage.ID] {
@@ -2548,9 +2581,11 @@ struct ActivityWindow: View {
                 }
                 .controlSize(.small)
 
-                messageBlock(label: "You", text: turn.query, tint: ActivitySection.messages.tint)
+                messageBlock(label: "You", text: turn.query,
+                             tint: ActivitySection.messages.tint, highlight: recentQuery)
                 attachmentStrip(attachments: turn.attachments.filter(\.isUserPhoto), fallback: "Your attachments")
-                messageBlock(label: "COS", text: turn.text, tint: COSPalette.green)
+                messageBlock(label: "COS", text: turn.text,
+                             tint: COSPalette.green, highlight: recentQuery)
                 attachmentStrip(attachments: turn.attachments.filter { !$0.isUserPhoto }, fallback: "From COS")
             }
             .padding(28)
@@ -2559,13 +2594,35 @@ struct ActivityWindow: View {
         }
     }
 
-    private func messageBlock(label: String, text: String, tint: Color) -> some View {
+    /// Marks every occurrence of the query inside the text. A tinted ROW says
+    /// "somewhere in here"; this says exactly where, which is the difference
+    /// between finding a passage and re-reading a chat (Miles, 2026-08-31).
+    /// Yellow on dark, amber on light — both carry dark ink, so the mark reads
+    /// at a glance in either scheme rather than blending into the card.
+    private func highlighted(_ text: String, query: String) -> AttributedString {
+        var attributed = AttributedString(text)
+        let fill = colorScheme == .dark
+            ? Color(red: 1.0, green: 0.85, blue: 0.30)
+            : Color(red: 1.0, green: 0.80, blue: 0.20)
+        for r in SearchMark.ranges(in: text, query: query) {
+            if let lo = AttributedString.Index(r.lowerBound, within: attributed),
+               let hi = AttributedString.Index(r.upperBound, within: attributed) {
+                attributed[lo..<hi].backgroundColor = fill
+                attributed[lo..<hi].foregroundColor = Color.black
+            }
+        }
+        return attributed
+    }
+
+    private func messageBlock(
+        label: String, text: String, tint: Color, highlight: String = ""
+    ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(label.uppercased())
                 .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                 .tracking(1.2)
                 .foregroundStyle(.primary)
-            Text(text.isEmpty ? "(empty)" : text)
+            Text(text.isEmpty ? AttributedString("(empty)") : highlighted(text, query: highlight))
                 .font(.system(size: 13))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)

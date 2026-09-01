@@ -2981,6 +2981,30 @@ need("archiveOnlyMatches = !query.isEmpty && archiveMatchingChats > 0" in _only,
      "a search must default to showing its matches, and must NOT filter when "
      "nothing matched or the day would look empty")
 
+# Search everywhere, visible while you scroll, with the TERM marked (0.5.169).
+need("visibleRecentMessages" in _aw,
+     "Recent has no search; the newest turns were the one place you could not look")
+need('TextField("Search recent messages"' in _aw,
+     "the Recent view lost its search field")
+# The bars sit OUTSIDE their ScrollViews, or they scroll away with the content
+# and you lose sight of what you searched for.
+_chat_body = _aw[_aw.index("private func archiveChatDetail"):_aw.index("private var visibleRecentMessages")]
+need(_chat_body.index("chatSearchBar(proxy:") < _chat_body.index("ScrollView {"),
+     "the in-chat search bar must sit above the ScrollView, not inside it")
+_day_body = _aw[_aw.index("private func archiveDayDetail"):_aw.index("private func archiveDaySubtitle")]
+need("archiveDaySearchBar(date: date)" in _day_body
+     and _day_body.index("archiveDaySearchBar(date: date)") < _day_body.rindex("ScrollView {"),
+     "the day search bar must stay visible while the chat list scrolls")
+# The TERM is marked, not merely the row: a tinted row says "somewhere in here".
+need("func highlighted(" in _aw and "SearchMark.ranges(in: text, query: query)" in _aw,
+     "the highlighter must mark the ranges SearchMark finds")
+need("SearchMark.matches(query: recentQuery" in _aw,
+     "the recent filter must run through the executed matcher")
+need("colorScheme == .dark" in _aw,
+     "the highlight must pick a high-contrast fill per appearance")
+need(_aw.count("highlight: chatQuery") == 2 and _aw.count("highlight: recentQuery") == 2,
+     "both sides of a turn must highlight, in both the archive and recent views")
+
 # In-chat search (0.5.167): the THIRD rung. Day -> chat -> the passage itself.
 # A 28-message transcript with 46 matches and no way to jump was the same dead
 # end one level deeper (Miles, 2026-08-31).
