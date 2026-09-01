@@ -1640,14 +1640,15 @@ struct ModelsContract {
                         && PetSpriteStrip.clampFrames(17) == 17
                         && PetSpriteStrip.clampFrames(23) == 23
                         && PetSpriteStrip.clampFrames(25) == 25
-                        && PetSpriteStrip.clampFrames(32) == 32
-                        && PetSpriteStrip.clampFrames(99) == 32,
+                        && PetSpriteStrip.clampFrames(52) == 52
+                        && PetSpriteStrip.clampFrames(64) == 64
+                        && PetSpriteStrip.clampFrames(99) == 64,
                      "authored counts above 16 must survive the bounded frame contract")
         let authoredStories: [(pose: PetSpritePose, file: String, frames: Int)] = [
             (.working, "session-pet-working-one-droid-v15-2.png", 16),
             (.duel, "session-pet-duel-two-droid-v15-2.png", 17),
-            (.trio, "session-pet-trio-story-v15-2.png", 13),
-            (.swarm, "session-pet-swarm-story-v15-4.png", 26),
+            (.trio, "session-pet-trio-story-v16.png", 26),
+            (.swarm, "session-pet-swarm-story-v16.png", 52),
         ]
         var storyFrames: [PetSpritePose: [NSImage]] = [:]
         for story in authoredStories {
@@ -1714,16 +1715,31 @@ struct ModelsContract {
                 precondition(subjects.hero >= 20,
                              "\(story.pose.rawValue) frame \(index) drops Miles")
                 let authoredDroidFreeBeat = (story.pose == .duel && [12, 13, 14].contains(index + 1))
-                    || (story.pose == .swarm && index + 1 == 22)
+                    || (story.pose == .swarm && [43, 44].contains(index + 1))
                 if (story.pose == .duel || story.pose == .trio || story.pose == .swarm)
                     && !authoredDroidFreeBeat {
                     precondition(subjects.droidEye >= 1,
                                  "\(story.pose.rawValue) frame \(index) drops every droid")
                 }
-                if index > 0 {
-                    precondition(pngData(frames[index - 1]) != pngData(frame),
-                                 "\(story.pose.rawValue) frame \(index) stalls unexpectedly")
+            }
+            let runs = frames.reduce(into: [[Data]]()) { grouped, frame in
+                let data = pngData(frame)
+                if grouped.last?.last == data {
+                    grouped[grouped.count - 1].append(data)
+                } else {
+                    grouped.append([data])
                 }
+            }
+            if story.pose == .trio || story.pose == .swarm {
+                let expectedRuns = story.pose == .trio ? 15 : 28
+                let expectedHolds = story.pose == .trio ? 11 : 24
+                precondition(runs.count == expectedRuns
+                                && runs.filter({ $0.count == 2 }).count == expectedHolds
+                                && runs.allSatisfy({ $0.count == 1 || $0.count == 2 }),
+                             "\(story.pose.rawValue) must encode only approved 220ms holds and 110ms bridges")
+            } else {
+                precondition(runs.count == frames.count,
+                             "\(story.pose.rawValue) frame cadence stalls unexpectedly")
             }
             // V15.1 uses a continuous seam rather than duplicating F1 at the
             // end: the final recovery beat leads into the opening beat. Exact
@@ -1932,10 +1948,10 @@ struct ModelsContract {
         let refreshedScales = PetSpriteStore.loadRenderScales(in: refreshDest)
         precondition(refreshedMap[.working]?.frames == 16
                         && refreshedMap[.duel]?.frames == 17
-                        && refreshedMap[.trio]?.frames == 13
-                        && refreshedMap[.swarm]?.frames == 26,
+                        && refreshedMap[.trio]?.frames == 26
+                        && refreshedMap[.swarm]?.frames == 52,
                      "the refresh must install all four authored story strips")
-        precondition(refreshedScales[.idle] == 1.3,
+        precondition(refreshedScales[.idle] == 1.45,
                      "the refresh must land the pack-owned Miles idle scale")
         // The live 0.5.141 defect: the seed carries the stale V15-1 duel
         // interval (0.1467), and the refresh replaces the duel FILE — so the
@@ -2004,8 +2020,8 @@ struct ModelsContract {
                             && v15RefreshedMap[story.pose]?.frames == story.frames,
                          "V15 refresh must promote \(story.pose.rawValue) to V15.1")
         }
-        precondition(PetSpriteStore.loadRenderScales(in: v15Template)[.idle] == 1.3,
-                     "V15 refresh must land the approved 1.30x idle scale")
+        precondition(PetSpriteStore.loadRenderScales(in: v15Template)[.idle] == 1.45,
+                     "V15 refresh must land the approved 1.45x idle scale")
 
         // 0.5.139 already carries the V15.1 story bytes and a stock 2x idle
         // scale. Generation 11 must recognize that exact install, upgrade the
@@ -2036,8 +2052,8 @@ struct ModelsContract {
         precondition(PetSpriteStore.refreshRecognizedBundledDefault(
             into: stockV151, from: defaultPet
         ) == .refreshed, "the retained V15.1 Miles pack must accept the idle correction")
-        precondition(PetSpriteStore.loadRenderScales(in: stockV151)[.idle] == 1.3,
-                     "the retained stock 2x Miles idle must normalize to 1.30x")
+        precondition(PetSpriteStore.loadRenderScales(in: stockV151)[.idle] == 1.45,
+                     "the retained stock 2x Miles idle must normalize to 1.45x")
         let migratedV152 = PetSpriteStore.loadStateMap(in: stockV151)
         for story in authoredStories {
             precondition(migratedV152[story.pose]?.file == story.file
@@ -2088,13 +2104,13 @@ struct ModelsContract {
                          && v153Map[story.pose]?.frames == story.frames,
                          "V15.2 migration must retain every approved story mapping")
         }
-        precondition(abs((PetSpriteStore.loadFrameIntervals(in: stockV152)[.swarm] ?? 0) - 0.22) < 0.000001,
-                     "V15.4 migration must preserve the authored 0.22-second cadence")
+        precondition(abs((PetSpriteStore.loadFrameIntervals(in: stockV152)[.swarm] ?? 0) - 0.11) < 0.000001,
+                     "V16 migration must preserve the authored 0.11-second runtime cadence")
         precondition(PetSpriteStore.loadRenderScales(in: stockV152)[.idle] == 1.75,
                      "V15.2 migration must preserve custom pose scale")
-        precondition(try! Data(contentsOf: stockV152.appendingPathComponent("session-pet-swarm-story-v15-4.png"))
-                     == Data(contentsOf: defaultPet.appendingPathComponent("session-pet-swarm-story-v15-4.png")),
-                     "V15.4 installed bytes must match the approved bundle")
+        precondition(try! Data(contentsOf: stockV152.appendingPathComponent("session-pet-swarm-story-v16.png"))
+                     == Data(contentsOf: defaultPet.appendingPathComponent("session-pet-swarm-story-v16.png")),
+                     "V16 installed bytes must match the approved bundle")
 
         // Public 0.5.148 has V15.3, 25 swarm frames and a stock 3x idle.
         // Exercise that exact mapping, not just a copy of the new defaults.
@@ -2120,9 +2136,9 @@ struct ModelsContract {
                 into: currentStock, from: defaultPet
             ) == .refreshed, "published V15.3 must upgrade to V15.4")
             let upgraded = PetSpriteStore.loadStateMap(in: currentStock)
-            precondition(upgraded[.swarm]?.file == "session-pet-swarm-story-v15-4.png"
-                         && upgraded[.swarm]?.frames == 26, "all 26 approved frames must land")
-            let expectedScale = idleScale == 3 ? 1.3 : idleScale
+            precondition(upgraded[.swarm]?.file == "session-pet-swarm-story-v16.png"
+                         && upgraded[.swarm]?.frames == 52, "all 52 cadence cells must land")
+            let expectedScale = idleScale == 3 || idleScale == 1.3 ? 1.45 : idleScale
             precondition(abs((PetSpriteStore.loadRenderScales(in: currentStock)[.idle] ?? 0)
                              - expectedScale) < 0.000001,
                          "normalize only stock 3x; retain custom and already-approved scales")
@@ -2179,7 +2195,7 @@ struct ModelsContract {
         let brokenSource = seedRoot.appendingPathComponent("broken-source", isDirectory: true)
         try! FileManager.default.copyItem(at: defaultPet, to: brokenSource)
         try! FileManager.default.removeItem(
-            at: brokenSource.appendingPathComponent("session-pet-swarm-story-v15-4.png")
+            at: brokenSource.appendingPathComponent("session-pet-swarm-story-v16.png")
         )
         let retryDest = seedRoot.appendingPathComponent("retryable-legacy", isDirectory: true)
         try! FileManager.default.copyItem(at: legacyTemplate, to: retryDest)

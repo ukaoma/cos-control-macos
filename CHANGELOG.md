@@ -1,3 +1,31 @@
+## 0.5.173 (build 211)
+
+Miles moves through the Three and Four-plus fights with four additional bridge
+poses at the seams that were still reading as jumps. Every approved V15 cel is
+unchanged, and both stories keep their exact original loop length. The runtime
+strip encodes the approved 110 ms bridges and 220 ms holds without blending,
+camera movement or a new timing engine.
+
+Idle is 1.45x, an 11.5 percent increase from 1.30x. It uses the same authored
+eight-frame loop and changes only the character's pack-owned presentation
+scale. Recognized stock Miles installs receive both updates automatically;
+custom art and custom idle scales remain untouched.
+
+Release packaging now adopts the stable COS Control signing identity whenever
+it is available. A throwaway ad-hoc build can no longer replace a signed local
+release and silently strand an existing Accessibility grant.
+
+## 0.5.172 (build 210)
+
+The session list keeps its right edge. The age, the workspace and the three row
+actions were landing on the card border itself, so a resting row read as clipped
+and the actions looked like they had slid off the panel. They sit 6pt in now,
+still tucked well past the 10pt the list would hand them by default, and clear
+of the 1px stroke they were touching.
+
+Nothing else about the rows moved. Same sections, same hover crossfade, same
+three actions in the same order, same fixed 57pt slot.
+
 ## 0.5.171 (build 209)
 
 The session card tells you what happened. Every finished row used to print the

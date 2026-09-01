@@ -74,8 +74,30 @@ NOTARY_PROFILE="${COS_NOTARY_PROFILE:-}"
 # across updates. No notarization; Gatekeeper story matches ad-hoc.
 LOCAL_SIGN_ID="${COS_LOCAL_SIGN_IDENTITY:-}"
 ALLOW_ADHOC="${COS_ALLOW_ADHOC:-0}"
+# The stable identity is ADOPTED AUTOMATICALLY when it is in the keychain, and
+# it OUTRANKS the ad-hoc escape hatch. Ad-hoc re-keys the designated
+# requirement every build, which strands the user's Accessibility grant while
+# System Settings still shows the app enabled. That cost a debugging saga in
+# 0.5.107, and again on 2026-09-01 when a QA build signed through
+# release-adhoc.sh was installed over a release and broke the grant on a
+# machine that already had one. Opting IN to a stable identity was the bug:
+# the default must be the safe one, and ad-hoc must be unreachable while a
+# stable identity exists.
+LOCAL_IDENTITY_NAME="${COS_LOCAL_IDENTITY_NAME:-COS Control Local}"
+if [ -z "$SIGN_ID" ] \
+   && /usr/bin/security find-identity -v -p codesigning 2>/dev/null \
+      | /usr/bin/grep -qF "\"$LOCAL_IDENTITY_NAME\""; then
+  if [ -z "$LOCAL_SIGN_ID" ]; then
+    LOCAL_SIGN_ID="$LOCAL_IDENTITY_NAME"
+    echo "Signing with the stable local identity \"$LOCAL_IDENTITY_NAME\" (adopted automatically; keeps Accessibility grants across updates)."
+  fi
+  if [ "$ALLOW_ADHOC" = "1" ]; then
+    echo "Ignoring COS_ALLOW_ADHOC=1: \"$LOCAL_IDENTITY_NAME\" is available, and ad-hoc would strand every existing Accessibility grant." >&2
+    ALLOW_ADHOC=0
+  fi
+fi
 if [ -z "$SIGN_ID" ] && [ -z "$LOCAL_SIGN_ID" ] && [ "$ALLOW_ADHOC" != "1" ]; then
-  echo "Release requires COS_SIGN_IDENTITY (public) or COS_LOCAL_SIGN_IDENTITY (stable local). COS_ALLOW_ADHOC=1 is throwaway-QA only." >&2
+  echo "Release requires COS_SIGN_IDENTITY (public) or COS_LOCAL_SIGN_IDENTITY (stable local). COS_ALLOW_ADHOC=1 is throwaway-QA only, and only on a machine with no stable identity." >&2
   exit 66
 fi
 if [ -n "$SIGN_ID" ] && [ -z "$NOTARY_PROFILE" ]; then

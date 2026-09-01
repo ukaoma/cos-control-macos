@@ -44,19 +44,19 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
     )
     need(
         state["trio"] == {
-            "file": "session-pet-trio-story-v15-2.png", "frames": 13, "interval": 0.22
+            "file": "session-pet-trio-story-v16.png", "frames": 26, "interval": 0.11
         },
-        "three sessions do not point at the rebuilt three-droid story",
+        "three sessions do not point at the approved sparse-bridge story",
     )
     need(
         state["swarm"] == {
-            "file": "session-pet-swarm-story-v15-4.png", "frames": 26, "interval": 0.22
+            "file": "session-pet-swarm-story-v16.png", "frames": 52, "interval": 0.11
         },
-        "four-plus sessions do not point at the rebuilt five-droid story",
+        "four-plus sessions do not point at the approved sparse-bridge story",
     )
-    need(state["idle"].get("renderScale") == 1.3, "Miles idle is not authored at 1.30x scale")
+    need(state["idle"].get("renderScale") == 1.45, "Miles idle is not authored at 1.45x scale")
     frame_cap = int(re.search(r"static let maxFrames = (\d+)", models).group(1))
-    need(frame_cap == 32, "runtime frame limit must preserve longer authored stories")
+    need(frame_cap == 64, "runtime frame limit must preserve the 52-cell authored swarm")
     cell_widths = {"working": 304, "duel": 304, "trio": 286, "swarm": 311}
     for pose, cell_width in cell_widths.items():
         row = state[pose]
@@ -71,6 +71,8 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         "session-pet-swarm-story-v15-2.png": "ae2ae5e9f196e4d2b9892e3c076f361ac20aa8e33374486445c1ade0f83377ac",
         "session-pet-swarm-story-v15-3.png": "9cf09b01a930d8980eb765825fc2a12e2213289d7792df2249c26fcc8eec8b7e",
         "session-pet-swarm-story-v15-4.png": "a44550df21b81bd52604d18f5972697bc3e36bbf8823f7a9c34b5f0b1bf7d7ee",
+        "session-pet-trio-story-v16.png": "bd0147eccacc01ef7cded5dd247cb35dbddc966c010d6bb0e1a0e0f6a227ccbd",
+        "session-pet-swarm-story-v16.png": "80415ed66aa649763b42c3a934df40511e0ff258185b82b39a73fb8aca3211f3",
     }
     for file, expected_hash in approved_hashes.items():
         actual_hash = hashlib.sha256((root / "Resources/DefaultPet" / file).read_bytes()).hexdigest()
@@ -174,7 +176,7 @@ def main() -> None:
 
     must_fail(
         "sixteen-frame cap truncates longer stories",
-        root, models.replace("static let maxFrames = 32", "static let maxFrames = 16"),
+        root, models.replace("static let maxFrames = 64", "static let maxFrames = 32"),
         controller, motion, pet,
     )
 

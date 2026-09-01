@@ -357,6 +357,62 @@ if (m.group(1), m.group(2)) != (version, build):
     )
 PY
 
+# --- Signing: a shipped build must never be ad-hoc --------------------------
+# macOS keys TCC (Accessibility) to the DESIGNATED REQUIREMENT. Ad-hoc signing
+# makes that requirement a per-build cdhash, so every install strands the
+# user's grant while System Settings still shows the toggle ON. The stable
+# self-signed identity "COS Control Local" gives a constant requirement
+# (certificate root) instead. Cost of not pinning this: the 0.5.107 saga, then
+# again on 2026-09-01 when a release-adhoc.sh build went over a release.
+/usr/bin/python3 - "$ROOT" <<'SIGNCHK'
+import re, subprocess, sys, pathlib, tempfile, shutil
+root = pathlib.Path(sys.argv[1])
+def need(c, m):
+    if not c: sys.exit(f"signing: {m}")
+
+rel = (root / "Scripts/build-release.sh").read_text()
+# The safe identity must be the DEFAULT, not something a builder opts into.
+need("security find-identity" in rel,
+     "build-release.sh no longer looks for the stable identity, so a build "
+     "silently falls back to ad-hoc and strands every Accessibility grant")
+need(re.search(r'ALLOW_ADHOC=0', rel) is not None,
+     "build-release.sh no longer overrides COS_ALLOW_ADHOC when the stable "
+     "identity exists — release-adhoc.sh could ship an ad-hoc build again")
+adhoc = (root / "Scripts/release-adhoc.sh").read_text()
+need("ONLY shipping path" not in adhoc,
+     "release-adhoc.sh again claims to be the shipping path; that stale "
+     "header is what caused the 2026-09-01 Accessibility regression")
+
+# Real artifacts, not just source shape: anything staged in dist/ must carry
+# the stable requirement. A source-shape check alone cannot see the signature.
+STABLE_ROOT = "c520fc85c286e47d67da5e9b6af583be30a20d06"
+# ONLY the artifact for the version being built. dist/ accumulates every
+# historical zip (189 of them, 2.3 GB, as of 2026-09-01); globbing them all
+# made this check unpack the entire archive on every run.
+import plistlib
+_v = plistlib.loads((root / "Resources/Info.plist").read_bytes())["CFBundleShortVersionString"]
+for zf in sorted((root / "dist").glob(f"COS-Control-macOS-arm64-{_v}.zip")):
+    tmp = tempfile.mkdtemp()
+    try:
+        subprocess.run(["/usr/bin/ditto", "-xk", str(zf), tmp],
+                       check=True, capture_output=True)
+        app = pathlib.Path(tmp) / "COS Control.app"
+        if not app.exists(): continue
+        req = subprocess.run(["/usr/bin/codesign", "-d", "-r-", str(app)],
+                             capture_output=True, text=True).stderr \
+            + subprocess.run(["/usr/bin/codesign", "-d", "-r-", str(app)],
+                             capture_output=True, text=True).stdout
+        need("cdhash" not in req.split("designated =>")[-1],
+             f"{zf.name} is AD-HOC signed (designated requirement is a per-build "
+             "cdhash). Installing it strands the user's Accessibility grant. "
+             "Rebuild with the stable identity.")
+        need(STABLE_ROOT in req,
+             f"{zf.name} is not signed by the stable 'COS Control Local' root; "
+             "TCC grants will not survive the update")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+SIGNCHK
+
 # --- 0.3.0 meeting sync status ----------------------------------------------
 /usr/bin/grep -q 'Meeting sync' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'meetingSyncActive' "$ROOT/Sources/Models.swift"
@@ -3002,9 +3058,20 @@ need(".contextMenu {" in row_src and row_src.count("Button(") >= 3,
 need("HoverSensor { inside in" in row_src and "hoveredRowID" in code,
      "per-row hover is not on the activeAlways sensor; .onHover does not fire "
      "on a nonactivating panel")
-# The trailing items end ON the card edge, not on its padding (Miles, twice).
-need(".padding(.trailing, -size.length(10))" in row_src,
-     "the row stopped breaking the list inset; the controls sit back off the edge")
+# Trailing inset, THIRD correction. Miles asked twice for the trailing items
+# to end ON the card edge rather than on the list's 10pt padding, so the row
+# cancelled the full 10pt. Landing at zero put the age, the workspace and both
+# action glyphs onto the card's 1px stroke, which reads as clipped, and he
+# rejected THAT on 2026-09-01: "the x and the tab target are nested right
+# against the right. no padding". 4pt back is the settlement: a 6pt margin,
+# still tucked well past the 10pt default he objected to, clear of the border.
+# Pinned as a RANGE so the next reader cannot drift back to either failure.
+_trail = re.search(r"\.padding\(\.trailing, -size\.length\((\d+)\)\)", row_src)
+need(_trail is not None, "the row lost its trailing inset adjustment entirely")
+need(2 <= int(_trail.group(1)) <= 6,
+     f"the row's trailing inset is -{_trail.group(1) if _trail else '?'}pt; "
+     "-10 puts the controls onto the card stroke (rejected 2026-09-01), "
+     "0 sits them back on the padding (rejected twice before that)")
 need(".padding(.trailing, -size.length(4))" in slot_src,
      "the action row stopped overhanging its own hit padding, so the glyph INK "
      "no longer lands where the age and workspace sit")

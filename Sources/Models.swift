@@ -3950,7 +3950,7 @@ enum PetSpriteStrip {
     static let minFrames = 1
     // Longer authored stories need their exact count for cell slicing. Keep a
     // bounded import limit without silently truncating the 17/23-frame stories.
-    static let maxFrames = 32
+    static let maxFrames = 64
 
     static func clampFrames(_ value: Int) -> Int {
         min(max(value, minFrames), maxFrames)
@@ -5419,6 +5419,7 @@ enum PetSpriteStore {
                 ("session-pet-trio-story-v15.png", 13),
                 ("session-pet-trio-story-v15-1.png", 13),
                 ("session-pet-trio-story-v15-2.png", 13),
+                ("session-pet-trio-story-v16.png", 26),
             ],
             .swarm: [
                 (poseFileName(.swarm), 6),
@@ -5428,6 +5429,7 @@ enum PetSpriteStore {
                 ("session-pet-swarm-story-v15-2.png", 23),
                 ("session-pet-swarm-story-v15-3.png", 25),
                 ("session-pet-swarm-story-v15-4.png", 26),
+                ("session-pet-swarm-story-v16.png", 52),
             ],
         ]
         guard installed.count == retainedStock.count,
@@ -5477,6 +5479,8 @@ enum PetSpriteStore {
             let installedScales = loadRenderScales(in: directory, fileManager: fileManager)
             let bundledScales = loadRenderScales(in: source, fileManager: fileManager)
             let idleScaleWasStock = installedScales[.idle] == nil
+                || abs((installedScales[.idle] ?? 0) - 1.2) < 0.001
+                || abs((installedScales[.idle] ?? 0) - 1.3) < 0.001
                 || abs((installedScales[.idle] ?? 0) - 2) < 0.001
                 || abs((installedScales[.idle] ?? 0) - 3) < 0.001
             let scaleOverrides: [PetSpritePose: CGFloat] = idleScaleWasStock

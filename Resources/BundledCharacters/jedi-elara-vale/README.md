@@ -12,7 +12,7 @@ Original identity, single-blade ownership and registered character scale are pre
 | swarm | 24 | 0.18 | 704 × 256 |
 
 Idle uses a 1.00x pack scale, matched to this character's combat art. Miles
-Windu's separate source pack keeps its approved 1.30x idle multiplier.
+Windu's separate source pack keeps its approved 1.45x idle multiplier.
 Control 0.5.153 routed patrol and waiting to this idle instead of a still.
 Since Control 0.5.154 (build 192), patrol has a dedicated eight-frame walking
 cycle (0.14 s/frame; 256 × 256 cells), with planted steps and moving coat tails.

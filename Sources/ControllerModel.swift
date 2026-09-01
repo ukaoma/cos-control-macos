@@ -125,7 +125,7 @@ final class ControllerModel: ObservableObject {
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 17
+    private static let petDefaultArtGeneration = 18
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -1756,6 +1756,9 @@ final class ControllerModel: ObservableObject {
             // normalizes recognized stock 2x/3x idle to the approved 1.30x.
             // Generation 15 promotes all three exact-stock Jedi to their
             // approved eight-frame idle and four authored combat stories.
+            // Generation 18 keeps every V15 checkpoint, adds four approved
+            // 110ms bridge poses across Three and Four-plus, and raises the
+            // recognized stock Miles idle from 1.30x to 1.45x.
             let bundledRefresh = PetSpriteStore.refreshRecognizedBundledCharacter(
                 into: directory
             )

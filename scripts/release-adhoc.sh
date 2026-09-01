@@ -1,12 +1,24 @@
 #!/bin/zsh
-# Ad-hoc release wrapper — the ONLY shipping path this project has.
+# THROWAWAY QA BUILDS ONLY. This is NOT the shipping path, and it has not
+# been since 0.5.107 (build 145).
 #
-# There is no Apple Developer ID on this machine (documented decision,
-# 2026-07-27): every shipped COS Control since 0.2.3, including the live
-# 0.3.0, is ad-hoc signed and installs with the documented one-time
-# `xattr -cr` quarantine workaround from gotcos.com/control. The
-# COS_SIGN_IDENTITY gate in build-release.sh describes an identity this
-# project does not possess; this wrapper is the honest front door.
+# There is still no Apple Developer ID on this machine (2026-07-27), but the
+# project DOES have a stable self-signed identity, "COS Control Local", and
+# every published build since 0.5.107 is signed with it. That identity is what
+# keeps a user's Accessibility grant alive across updates: macOS keys TCC to
+# the designated requirement, and ad-hoc signing re-keys it on every single
+# build, stranding the grant while System Settings still shows the toggle ON.
+#
+# The header this file used to carry described it as the project's sole
+# release route. That was written before 0.5.107 and was never updated. On
+# 2026-09-01 it did exactly what a stale rationale does: it read as
+# authoritative, a build made through here was installed over a release, and
+# it broke Accessibility on a machine that already had a working grant.
+#
+# build-release.sh now adopts the stable identity automatically and ignores
+# COS_ALLOW_ADHOC whenever that identity exists, so this wrapper produces an
+# ad-hoc build ONLY on a machine that has no stable identity to begin with.
+# Do not install its output over a release.
 set -euo pipefail
 export COS_ALLOW_ADHOC=1
 exec zsh "${0:A:h}/build-release.sh" "$@"

@@ -720,10 +720,16 @@ private struct SessionPetRoot: View {
                 .frame(width: size.length(3))
                 .padding(.vertical, size.length(6))
         }
-        // Break the list's own 10pt inset so the trailing items end ON the
-        // card edge rather than on its padding, and hand that 10pt to the
-        // reading lines (Miles, 2026-09-01: "it's not up against the edge").
-        .padding(.trailing, -size.length(10))
+        // Give back most of the list's 10pt inset so the trailing items sit
+        // TUCKED toward the card edge without landing on it. Cancelling the
+        // full 10pt put the age, the workspace and both glyphs flush against
+        // the 1px stroke, which reads as clipped (Miles, 2026-09-01: "the x
+        // and the tab target are nested right against the right. no padding").
+        // 4pt back leaves a 6pt margin: closer than the default 10pt he
+        // objected to earlier the same day, clear of the border he objects to
+        // now. The slot's own -4pt glyph overhang is an INK alignment against
+        // rowAction's 4pt hit padding and is deliberately left alone.
+        .padding(.trailing, -size.length(4))
         // NOT .onHover: SwiftUI's tracking area is tied to app activation and
         // the pet is a nonactivating panel, so it would effectively never fire.
         .background(HoverSensor { inside in
