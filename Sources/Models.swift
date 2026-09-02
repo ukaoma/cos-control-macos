@@ -1681,8 +1681,9 @@ struct GlassesTurn: Identifiable, Sendable, Equatable {
     let sessionId: String
     let source: String
     let attachments: [GlassesAttachmentRef]
-    /// 0.5.185 — the model that answered, as the server stamped it. Nil when
-    /// the server did not say (a 6.43.3 row), never a guess.
+    /// 0.5.185 — the model, as the server reports it: a live row may carry the
+    /// session's current preference when the exchange itself was not stamped,
+    /// and an archived row carries none. Nil when the server did not say.
     let modelPreference: String?
     /// 0.5.185 — "routine" or "task" when the Mac started the run (server
     /// 6.43.4 stamps it at submission). Nil means Miles started it himself;
@@ -1690,6 +1691,8 @@ struct GlassesTurn: Identifiable, Sendable, Equatable {
     let origin: String?
     /// The routine slug or task id behind `origin`; only ever set beside it.
     let originId: String?
+    /// Carried for Phase B (`ref: { messageEra, globalMsgNum, originId }`); not
+    /// rendered by 0.5.185.
     let messageEra: String?
 
     init(id: String, no: Int?, timestamp: TimeInterval?, query: String, text: String, sessionId: String, source: String, attachments: [GlassesAttachmentRef] = [], modelPreference: String? = nil, origin: String? = nil, originId: String? = nil, messageEra: String? = nil) {
@@ -1716,6 +1719,16 @@ struct GlassesTurn: Identifiable, Sendable, Equatable {
         return value
     }
 
+    /// A rendered identifier: bounded AND confined to `A-Za-z0-9._:-`, so a
+    /// value the server never sends (whitespace, a newline, a bidi override)
+    /// cannot reach a Text. The model ids are short lowercase slugs.
+    static func boundedToken(_ value: String?, max: Int) -> String? {
+        guard let value = boundedString(value, max: max) else { return nil }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._:-"))
+        guard value.unicodeScalars.allSatisfy({ $0.isASCII && allowed.contains($0) }) else { return nil }
+        return value
+    }
+
     /// Mirrors the server's `QUERY_JOB_ORIGIN_ID_RE` (`^[a-z0-9][a-z0-9-]{0,63}$`).
     static func validOriginID(_ value: String?) -> String? {
         guard let value, (1...64).contains(value.count), let first = value.unicodeScalars.first else { return nil }
@@ -1731,7 +1744,7 @@ struct GlassesTurn: Identifiable, Sendable, Equatable {
         let sessionId = object["sessionId"]?.string ?? ""
         let source = object["source"]?.string ?? ""
         let no = object["no"]?.int
-        let modelPreference = Self.boundedString(object["modelPreference"]?.string, max: 64)
+        let modelPreference = Self.boundedToken(object["modelPreference"]?.string, max: 64)
         let origin = object["origin"]?.string.flatMap { Self.originKinds.contains($0) ? $0 : nil }
         let originId = origin == nil ? nil : Self.validOriginID(object["originId"]?.string)
         let messageEra = Self.boundedString(object["messageEra"]?.string, max: 80)
@@ -1770,8 +1783,8 @@ struct GlassesTurn: Identifiable, Sendable, Equatable {
     /// Hover text for the label.
     var originTitle: String? {
         switch origin {
-        case "routine": return "Produced by a scheduled routine on your Mac"
-        case "task": return "Produced by an agent working a task on your Mac"
+        case "routine": return "Produced by a scheduled routine on your Mac" + (originId.map { " (\($0))" } ?? "")
+        case "task": return "Produced by an agent working a task on your Mac" + (originId.map { " (\($0))" } ?? "")
         default: return nil
         }
     }

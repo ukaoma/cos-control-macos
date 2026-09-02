@@ -1464,120 +1464,6 @@ struct ControlPanel: View {
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
     }
 
-    private var recentGlassesCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            DisclosureGroup(
-                isExpanded: Binding(
-                    get: { model.recentGlassesExpanded },
-                    set: { model.setRecentGlassesExpanded($0) }
-                )
-            ) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(recentGlassesStatusLabel)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Refresh") { Task { await model.refreshRecentMessages() } }
-                            .controlSize(.mini)
-                        Button("Copy handoff") { model.copyHandoff() }
-                            .controlSize(.mini)
-                            .disabled(model.recentMessages.isEmpty)
-                    }
-                    if model.recentGlassesStatus == .loading {
-                        ProgressView().controlSize(.small)
-                    } else if model.recentMessages.isEmpty {
-                        Text(recentGlassesEmptyCopy)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        // Turns render in FULL inside a bounded, scrollable viewport.
-                        // Two rules keep this honest:
-                        //  1. `.fixedSize(horizontal: false, vertical: true)` — inside the
-                        //     panel's outer ScrollView a wrapping Text is offered unbounded
-                        //     height and does NOT reserve its true laid-out height, so it
-                        //     painted over the Divider and the next row (clipped/overlapping
-                        //     bodies). fixedSize makes each Text claim exactly the height it
-                        //     needs, so rows push each other down instead of colliding.
-                        //  2. The list gets its own maxHeight + ScrollView so a long day of
-                        //     turns cannot push the rest of the panel off-screen.
-                        ScrollView(.vertical) {
-                            LazyVStack(alignment: .leading, spacing: 0) {
-                                ForEach(model.recentMessages.prefix(30)) { turn in
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        HStack(alignment: .firstTextBaseline) {
-                                            Text(turnRowTitle(turn))
-                                                .font(.caption.weight(.semibold))
-                                                .fixedSize(horizontal: false, vertical: true)
-                                            Spacer(minLength: 8)
-                                            Button("Copy turn") { model.copyTurn(turn) }
-                                                .controlSize(.mini)
-                                                .layoutPriority(1)
-                                            if !turn.attachments.isEmpty {
-                                                if model.mediaExportingTurnIDs.contains(turn.id) {
-                                                    ProgressView()
-                                                        .controlSize(.mini)
-                                                        .help("Preparing a private local image handoff")
-                                                } else {
-                                                    Button("Copy + images") { model.copyTurnWithImages(turn) }
-                                                        .controlSize(.mini)
-                                                        .layoutPriority(1)
-                                                }
-                                            }
-                                        }
-                                        Text("User: \(turn.query)")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                            .textSelection(.enabled)
-                                        attachmentStrip(
-                                            title: "Your image",
-                                            attachments: turn.attachments.filter(\.isUserPhoto)
-                                        )
-                                        Text("COS: \(turn.text)")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                            .textSelection(.enabled)
-                                        attachmentStrip(
-                                            title: "Answer image",
-                                            attachments: turn.attachments.filter { !$0.isUserPhoto }
-                                        )
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.vertical, 6)
-                                    if turn.id != model.recentMessages.prefix(30).last?.id {
-                                        Divider()
-                                    }
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .frame(maxHeight: 300)
-                        .scrollIndicatorsFlash(onAppear: true)
-                        // 0.5.185 — the legend for the ROUTINE / TASK label. Absence is
-                        // the common case and it has to mean something on its own.
-                        Text("Unlabeled rows were started by you. ROUTINE and TASK rows were started by your Mac.")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.top, 4)
-                    }
-                }
-                .padding(.top, 6)
-            } label: {
-                Text("Recent Glasses")
-                    .font(.caption2.weight(.bold))
-                    .tracking(1.3)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(13)
-        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
-        .buttonStyle(.bordered)
-    }
-
     @ViewBuilder
     private func attachmentStrip(title: String, attachments: [GlassesAttachmentRef]) -> some View {
         if !attachments.isEmpty {
@@ -1830,7 +1716,7 @@ struct ControlPanel: View {
         }
     }
 
-    private var morningBriefActions: some View {
+    @ViewBuilder private var morningBriefActions: some View {
         HStack(spacing: 8) {
             Button("Apply", systemImage: "checkmark") {
                 if let draft = briefDraft { model.saveMorningBrief(draft) }
@@ -1840,12 +1726,18 @@ struct ControlPanel: View {
                 .disabled(model.busy || model.status.morningBriefGate == "durable_jobs_off" || model.status.runtimeState != "managedHealthy")
                 .help("Runs the brief right away and drops it in the inbox. Five a day.")
             Spacer()
-            if let last = model.morningBrief?.runs.first {
-                Text(morningBriefRunLabel(last)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-            }
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
+        if let last = model.morningBrief?.runs.first {
+            // 0.5.185 — its own wrapping line, so a refusal reason is readable on
+            // the 390pt card instead of truncated behind two buttons.
+            Text(morningBriefRunLabel(last))
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .help(morningBriefRunLabel(last))
+        }
     }
 
     private func morningBriefRunLabel(_ run: MorningBriefSettings.Run) -> String {
@@ -1858,7 +1750,8 @@ struct ControlPanel: View {
             // 0.5.185 — the reason travels with the verdict. A 6.43.4 server
             // that refuses the submission (a strict-origin 400, a closed
             // admission) is visible here, on the card, before any inbox exists.
-            if let message = run.errorMessage, !message.isEmpty { return "Last brief failed · \(message)" }
+            let reason = (run.errorMessage ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !reason.isEmpty { return "Last brief failed · \(reason.prefix(160))" }
             return "Last brief failed"
         case "canceled", "interrupted": return "Last brief \(run.status)"
         default: return "Brief running\(number)"
@@ -2332,36 +2225,6 @@ struct ControlPanel: View {
         if model.status.unsavedCaptures > 0 { return "\(model.status.unsavedCaptures) recoverable" }
         if !model.strandedCaptures.isEmpty { return "\(model.strandedCaptures.count) still live" }
         return "None"
-    }
-
-    private var recentGlassesStatusLabel: String {
-        switch model.recentGlassesStatus {
-        case .idle: "Expand to load today’s last 30 turns"
-        case .loading: "Loading…"
-        case .ready: "Newest first · \(model.recentMessages.count) turn(s)"
-        case .empty: "Empty today"
-        case .serverStopped: "Server stopped"
-        case .unauthorized: "Unauthorized"
-        case .error: "Could not load messages"
-        }
-    }
-
-    private var recentGlassesEmptyCopy: String {
-        switch model.recentGlassesStatus {
-        case .serverStopped: "Server stopped"
-        case .unauthorized: "Use Copy Pairing Token and paste the complete value (existing tokens need at least 16 characters)"
-        case .empty: "No glasses turns yet today"
-        case .error: "Could not load recent glasses messages"
-        default: "No messages"
-        }
-    }
-
-    private func turnRowTitle(_ turn: GlassesTurn) -> String {
-        let number = turn.no.map { "#\($0)" } ?? "#"
-        // 0.5.185 — the label sits BEFORE the preview so a scan down the list
-        // separates the Mac's runs from Miles's own without reading a word.
-        let label = turn.originLabel.map { " · \($0)" } ?? ""
-        return "\(number)\(label) · \(turn.timeLabel) · \(turn.previewQuery)"
     }
 
     private var runtimeLabel: String {

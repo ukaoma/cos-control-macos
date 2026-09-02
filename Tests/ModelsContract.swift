@@ -3787,6 +3787,30 @@ struct ModelsContract {
         // originId never crosses without its origin, and never outside the id alphabet.
         precondition(GlassesTurn(["query": .string("q"), "text": .string("a"), "originId": .string("morning-brief")])?.originId == nil)
         precondition(GlassesTurn(["query": .string("q"), "text": .string("a"), "origin": .string("task"), "originId": .string("Bad Id")])?.originId == nil)
+        // The bounds themselves, both sides: 64 in / 65 out, 80 in / 81 out.
+        let atBound = GlassesTurn([
+            "query": .string("q"), "text": .string("a"), "origin": .string("task"),
+            "originId": .string(String(repeating: "a", count: 64)),
+            "modelPreference": .string(String(repeating: "m", count: 64)),
+            "messageEra": .string(String(repeating: "e", count: 80)),
+        ])
+        precondition(atBound?.originId?.count == 64 && atBound?.modelLabel?.count == 64 && atBound?.messageEra?.count == 80)
+        precondition(GlassesTurn(["query": .string("q"), "text": .string("a"), "origin": .string("task"), "originId": .string(String(repeating: "a", count: 65))])?.originId == nil)
+        // A rendered identifier never carries whitespace or a control character.
+        precondition(GlassesTurn(["query": .string("q"), "text": .string("a"), "modelPreference": .string("opus\nsonnet")])?.modelLabel == nil)
+        precondition(GlassesTurn(["query": .string("q"), "text": .string("a"), "modelPreference": .string("codex-frontier")])?.modelLabel == "codex-frontier")
+        // Single-fault id fixtures: each breaks exactly ONE rule of the alphabet,
+        // so a widened head, a widened body, or a dropped first-char rule each
+        // turns one of these green on its own.
+        for bad in ["Morningbrief", "-morning-brief", "morning_brief"] {
+            precondition(GlassesTurn(["query": .string("q"), "text": .string("a"), "origin": .string("task"), "originId": .string(bad)])?.originId == nil, bad)
+        }
+        precondition(GlassesTurn(["query": .string("q"), "text": .string("a"), "origin": .string("task"), "originId": .string("morning-brief-2")])?.originId == "morning-brief-2")
+        precondition(GlassesTurn.boundedString("", max: 8) == nil && GlassesTurn.boundedString("x", max: 1) == "x")
+        // The hover title names the routine or task behind the label.
+        precondition(stamped?.originTitle == "Produced by a scheduled routine on your Mac (morning-brief)")
+        precondition(taskTurn?.originTitle == "Produced by an agent working a task on your Mac")
+        print("COS Control: origin label contract (helper allowlist twin, bounds, titles) passed")
 
         let status = ServerStatus([
             "meetingPreviewSupported": .bool(true),

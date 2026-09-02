@@ -5939,9 +5939,10 @@ final class COSControlHelper {
         // 0.5.185 — four bounded pass-throughs (server 6.43.4). `origin` is the
         // server's stamp on a run the Mac started; only its two kinds cross, and
         // `originId` crosses only beside a kept origin and only in the server's
-        // own id alphabet. Anything else is dropped here, so the app never has
-        // to decide what a value it did not expect means.
-        if let model = raw["modelPreference"] as? String, !model.isEmpty, model.count <= 64 {
+        // own id alphabet. `modelPreference` must be a plain identifier (it is
+        // rendered); `messageEra` is bounded in length only (it is not). Every
+        // drop is silent and display-only: the row simply carries no label.
+        if let model = raw["modelPreference"] as? String, validToken(model, max: 64) {
             normalized["modelPreference"] = model
         }
         if let origin = raw["origin"] as? String, Self.recentOriginKinds.contains(origin) {
@@ -5958,6 +5959,15 @@ final class COSControlHelper {
 
     /// The two origin kinds the server stamps (server/lib/query-job-types.ts).
     private static let recentOriginKinds: Set<String> = ["routine", "task"]
+
+    /// A rendered identifier: 1...max characters of `A-Za-z0-9._:-`, so a value
+    /// the server never sends (whitespace, a newline, a bidi override) never
+    /// reaches the app. Model ids are short lowercase slugs.
+    private func validToken(_ value: String, max: Int) -> Bool {
+        guard (1...max).contains(value.count) else { return false }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._:-"))
+        return value.unicodeScalars.allSatisfy { $0.isASCII && allowed.contains($0) }
+    }
 
     /// Mirrors the server's `QUERY_JOB_ORIGIN_ID_RE` (`^[a-z0-9][a-z0-9-]{0,63}$`).
     private func validOriginID(_ value: String) -> Bool {
@@ -11979,6 +11989,20 @@ final class COSControlHelper {
         try expect((orphanId["origin"] as? String) == "task" && orphanId["originId"] == nil, "recent-messages originId is validated on its own")
         let idWithoutOrigin = normalizeRecentMessage(["query": "q", "text": "a", "originId": "morning-brief"])
         try expect(idWithoutOrigin["originId"] == nil, "recent-messages originId never crosses without its origin")
+        // The bounds themselves: 64 in, 65 out; 80 in, 81 out; a newline never in.
+        let atBound = normalizeRecentMessage([
+            "query": "q", "text": "a", "origin": "task", "originId": String(repeating: "a", count: 64),
+            "modelPreference": String(repeating: "m", count: 64), "messageEra": String(repeating: "e", count: 80),
+        ])
+        try expect((atBound["originId"] as? String)?.count == 64 && (atBound["modelPreference"] as? String)?.count == 64 && (atBound["messageEra"] as? String)?.count == 80, "recent-messages bounds are inclusive")
+        let overBound = normalizeRecentMessage(["query": "q", "text": "a", "origin": "task", "originId": String(repeating: "a", count: 65), "modelPreference": "opus\nsonnet"])
+        try expect(overBound["originId"] == nil && overBound["modelPreference"] == nil, "recent-messages 65-char originId and a model with a newline are dropped")
+        // Single-fault id fixtures: each breaks exactly ONE rule of the alphabet.
+        for (bad, why) in [("Morningbrief", "uppercase"), ("-morning-brief", "leading hyphen"), ("morning_brief", "underscore")] {
+            let row = normalizeRecentMessage(["query": "q", "text": "a", "origin": "task", "originId": bad])
+            try expect(row["originId"] == nil, "recent-messages originId rejects \(why)")
+        }
+        try expect(normalizeRecentMessage(["query": "q", "text": "a", "modelPreference": ""])["modelPreference"] == nil, "recent-messages empty model is absent, not empty")
         try expect(
             imageMIME(Data([0xff, 0xd8, 0xff, 0x00])) == "image/jpeg"
                 && imageMIME(Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) == "image/png"

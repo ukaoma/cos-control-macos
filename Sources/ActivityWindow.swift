@@ -1342,6 +1342,15 @@ struct ActivityWindow: View {
             } else if visibleRecentMessages.isEmpty {
                 emptyState(.messages, text: recentMissCopy)
             } else {
+                // 0.5.185 — the legend for the ROUTINE / TASK label. A positive
+                // claim only: it is true on a server that stamps nothing, and it
+                // infers nothing from a row that carries no label.
+                Text("Runs your Mac started are labeled ROUTINE or TASK.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 22)
+                    .padding(.top, 8)
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(visibleRecentMessages) { turn in
@@ -1353,12 +1362,6 @@ struct ActivityWindow: View {
                             .buttonStyle(.plain)
                             Divider().padding(.leading, 46)
                         }
-                        // 0.5.185 — the legend for the ROUTINE / TASK label, at the
-                        // foot of the list where the eye lands after a scan.
-                        Text("Unlabeled rows were started by you. ROUTINE and TASK rows were started by your Mac.")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.tertiary)
-                            .padding(.top, 14)
                     }
                     .padding(.horizontal, 22)
                     .padding(.bottom, 22)
@@ -2135,9 +2138,10 @@ struct ActivityWindow: View {
                     Text(turn.timeLabel)
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.tertiary)
-                    // 0.5.185 — three tertiary segments, each omitted when unknown.
+                    // 0.5.185 — two tertiary segments, each omitted when unknown.
                     // The label comes first: it is the one thing that changes
-                    // what the row IS. Unlabeled rows were started by Miles.
+                    // what the row IS. A row with no label was not started by
+                    // a routine or a task; that is all its absence says.
                     if let origin = turn.originLabel {
                         Text(origin)
                             .font(.system(size: 9, weight: .semibold, design: .monospaced))
@@ -2149,11 +2153,6 @@ struct ActivityWindow: View {
                         Text(modelLabel)
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.tertiary)
-                    }
-                    if !turn.sessionId.isEmpty {
-                        Text(String(turn.sessionId.prefix(8)))
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.quaternary)
                     }
                     if let glyph = turn.attachmentGlyph {
                         Label("\(turn.attachments.count)", systemImage: glyph)

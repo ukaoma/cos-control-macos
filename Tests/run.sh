@@ -32,8 +32,8 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 24:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 24")
+if count < 400:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 400 (403 at 0.5.185)")
 ' "$SELF_TEST"
 
 # THE APP ITSELF MUST COMPILE.
@@ -95,7 +95,7 @@ GALLERY
 /usr/bin/grep -q 'recent-messages' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "fetch-media"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q '/api/media/\\(id)/content?variant=\\(variant)' "$ROOT/HelperSources/main.swift"
-/usr/bin/grep -q 'Copy + images' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'Copy + images' "$ROOT/Sources/ActivityWindow.swift"
 
 # ── Morning brief (0.5.181) ───────────────────────────────────────────────────
 # The card must be mounted, the helper must carry all three commands, and the
@@ -132,9 +132,13 @@ BRIEF
 # ── Origin label (0.5.185) ────────────────────────────────────────────────────
 # Server 6.43.4 stamps origin/originId on a run the Mac started. The helper
 # passes exactly four bounded keys through its allowlist, the model reads them
-# through the failable init with the same bounds, and every row surface renders
-# the label. The behaviour executes in the helper self-test and ModelsContract
-# above; these pins only stop the wiring from being quietly removed.
+# through the failable init with the same bounds, and the Activity window rows
+# render the label. What EXECUTES: the allowlist (helper self-test) and the
+# failable init + every derived label incl. detailMetaLine order and the hover
+# titles (ModelsContract). What is SHAPE-ONLY, because Views/ActivityWindow are
+# compiled and never run here: the row segments, their order, the legend, the
+# brief card's reason line. Those pins stop the wiring from being removed and
+# nothing more.
 /usr/bin/python3 - "$ROOT" <<'ORIGIN'
 import pathlib, sys
 root = pathlib.Path(sys.argv[1])
@@ -143,8 +147,9 @@ norm = helper.split('private func normalizeRecentMessage(', 1)[1].split('\n    }
 for key in ('"modelPreference"', '"origin"', '"originId"', '"messageEra"'):
     assert key in norm, 'helper allowlist lost %s' % key
 assert 'Self.recentOriginKinds.contains(origin)' in norm and 'validOriginID(originId)' in norm
-assert 'model.count <= 64' in norm and 'era.count <= 80' in norm
+assert 'validToken(model, max: 64)' in norm and 'era.count <= 80' in norm
 assert 'recentOriginKinds: Set<String> = ["routine", "task"]' in helper
+assert 'guard (1...64).contains(value.count)' in helper.split('private func validOriginID(', 1)[1].split('\n    }', 1)[0]
 models = (root / 'Sources/Models.swift').read_text()
 turn = models.split('struct GlassesTurn:', 1)[1].split('\nstruct ', 1)[0]
 for key in ('object["modelPreference"]?.string', 'object["origin"]?.string', 'object["originId"]?.string', 'object["messageEra"]?.string'):
@@ -154,15 +159,21 @@ assert 'var originLabel: String?' in turn and 'var modelLabel: String?' in turn
 assert 'originKinds: Set<String> = ["routine", "task"]' in turn
 activity = (root / 'Sources/ActivityWindow.swift').read_text()
 row = activity.split('private func messageRow(', 1)[1].split('\n    }', 1)[0]
-assert 'turn.originLabel' in row and 'turn.modelLabel' in row, 'messageRow lost a segment'
+# Each segment is GUARDED, never rendered empty: an unstamped row (any server
+# before 6.43.4) must carry neither. Label before model.
+assert 'if let origin = turn.originLabel {' in row and 'if let modelLabel = turn.modelLabel {' in row, 'messageRow lost a guarded segment'
+assert row.index('if let origin = turn.originLabel {') < row.index('if let modelLabel = turn.modelLabel {'), 'label must precede model'
+assert 'turn.sessionId.prefix(8)' not in row, 'the session chunk would appear on every row from any server'
 detail = activity.split('private func messageDetail(', 1)[1].split('\n    }', 1)[0]
 assert 'turn.detailMetaLine' in detail
+# The legend is a positive claim, above the list, and the panel has no message list at all.
+assert 'Runs your Mac started are labeled ROUTINE or TASK.' in activity, 'Activity window legend missing'
+assert activity.index('Runs your Mac started are labeled ROUTINE or TASK.') < activity.index('ForEach(visibleRecentMessages)'), 'legend must sit above the list'
+assert 'Unlabeled rows were started by you' not in activity
 views = (root / 'Sources/Views.swift').read_text()
-title = views.split('private func turnRowTitle(', 1)[1].split('\n    }', 1)[0]
-assert 'turn.originLabel' in title and title.index('label') < title.index('turn.timeLabel')
-assert 'Last brief failed · ' in views
-assert 'Unlabeled rows were started by you' in views, 'panel legend missing'
-assert 'Unlabeled rows were started by you' in activity, 'Activity window legend missing'
+assert 'recentGlassesCard' not in views and 'turnRowTitle' not in views, 'the dead panel message card is back'
+assert 'Last brief failed · ' in views and '.help(morningBriefRunLabel(last))' in views
+assert '@ViewBuilder private var morningBriefActions' in views or '@ViewBuilder\n    private var morningBriefActions' in views
 ORIGIN
 
 # Release build must compile the component too, or the shipped app loses it.
