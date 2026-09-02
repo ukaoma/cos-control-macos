@@ -39,7 +39,6 @@ enum JSONValue: Codable, Sendable {
     var array: [JSONValue]? { if case .array(let value) = self { value } else { nil } }
 }
 
-
 struct HelperResponse: Codable, Sendable {
     let ok: Bool
     let message: String
