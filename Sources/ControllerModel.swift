@@ -961,6 +961,88 @@ final class ControllerModel: ObservableObject {
         perform("set-meeting-preview", arguments: [enabled ? "on" : "off"])
     }
 
+    // ── Morning brief (server 6.43.0) ──
+    //
+    // The server owns the schedule and the source list; Control is a settings
+    // surface over GET/PUT /api/morning-brief. Load is quiet and idempotent, so
+    // the card can call it on appear and after every save without a spinner
+    // storm; save and run-now go through the same busy/notice/error path as
+    // every other action so a refused change reads as a sentence, not silence.
+    @Published var morningBrief: MorningBriefSettings?
+    /// "" | loading | ready | unsupported | error:<message>
+    @Published var morningBriefState = ""
+
+    func loadMorningBrief(quiet: Bool = false) async {
+        guard status.morningBriefSupported else {
+            morningBrief = nil
+            morningBriefState = "unsupported"
+            return
+        }
+        if !quiet { morningBriefState = "loading" }
+        do {
+            let response = try await helper.run(["morning-brief"], timeout: 30)
+            if let parsed = MorningBriefSettings(response.details) {
+                morningBrief = parsed
+                morningBriefState = "ready"
+            } else {
+                morningBriefState = "error:The server answered with an unexpected shape."
+            }
+        } catch {
+            morningBriefState = "error:\(error.localizedDescription)"
+        }
+    }
+
+    func saveMorningBrief(_ settings: MorningBriefSettings) {
+        guard !busy else { return }
+        guard let data = try? JSONSerialization.data(withJSONObject: settings.patch()) else {
+            error = "The morning brief change could not be encoded."
+            return
+        }
+        busy = true
+        operationProgress = "Saving morning brief…"
+        notice = nil
+        error = nil
+        Task {
+            defer {
+                busy = false
+                operationProgress = nil
+            }
+            do {
+                let response = try await helper.run(["set-morning-brief"], timeout: 30, stdinData: data)
+                if let parsed = MorningBriefSettings(response.details) {
+                    morningBrief = parsed
+                    morningBriefState = "ready"
+                }
+                notice = response.message
+                await refresh(quiet: true)
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    func runMorningBriefNow() {
+        guard !busy else { return }
+        busy = true
+        operationProgress = "Starting the brief…"
+        notice = nil
+        error = nil
+        Task {
+            defer {
+                busy = false
+                operationProgress = nil
+            }
+            do {
+                let response = try await helper.run(["run-morning-brief"], timeout: 40)
+                notice = response.message
+                await loadMorningBrief(quiet: true)
+                await refresh(quiet: true)
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
     func setThreadAttachEnabled(_ enabled: Bool) {
         perform("set-thread-attach", arguments: [enabled ? "on" : "off"])
     }
@@ -1312,6 +1394,10 @@ final class ControllerModel: ObservableObject {
     /// Finished sessions, D2: a completion now outlives its 2-second flash.
     @Published var petCompletions: [PetCompletion] = []
     @Published var petCompletionsExpanded = false
+    /// Which list a double-tap on the figure reopens. The gesture is a toggle,
+    /// so closing from DONE must reopen DONE — snapping back to RUNNING loses
+    /// the place the user was actually in.
+    @Published var petLastOpenList: PetListTab = .running
     /// Baseline for the per-id completion diff. ONLY the authoritative poll
     /// writes it; dismiss/restore replays must not shift the baseline or a
     /// finish landing between replays would emit twice or never.
@@ -2162,6 +2248,16 @@ final class ControllerModel: ObservableObject {
         if petCompletions.isEmpty { petCompletionsExpanded = false }
     }
 
+    /// Clear the whole finished list at once. Same contract as the single-row
+    /// clear: persist, and close a list that has nothing left to show rather
+    /// than pinning an empty card over the figure.
+    func clearAllPetCompletions() {
+        guard !petCompletions.isEmpty else { return }
+        petCompletions.removeAll()
+        savePetCompletions()
+        petCompletionsExpanded = false
+    }
+
     /// Offered only once a row has been still for ten minutes, so the control
     /// never appears on a session mid-turn.
     func canDismissPetSession(_ session: ClaudeSession) -> Bool {
@@ -2304,7 +2400,25 @@ final class ControllerModel: ObservableObject {
                 petNotice = "Agents miss (no Cursor.app path; did not open the folder)."
                 return
             }
-            await revealCursorAgentsWindow(appURL: appURL, bundleId: bundleId, agentTab: session.name)
+            // Pressing by NAME is only safe while the name identifies ONE agent.
+            // The session index emits duplicates — measured 2026-09-01, two
+            // Cursor rows both named "COS glasses session update" — and both
+            // clear CursorAgentTabMatch.minimumCount, so the press takes
+            // whichever row comes first and silently opens the wrong agent.
+            // Opening the wrong session is worse than opening none: hand the
+            // window over and say which one is theirs.
+            let clash = PetRowIdentity.indistinguishable(
+                petSessions.map { (id: $0.id, name: $0.name, workspace: $0.workspace) }
+            ).contains(session.id)
+            let clashHint: String? = clash
+                ? session.createdDate.map {
+                    "Opened Agents. Another agent shares this name — yours started \(PetRowIdentity.clockLabel($0))."
+                  } ?? "Opened Agents. Another agent shares this name; pick it by hand."
+                : nil
+            await revealCursorAgentsWindow(
+                appURL: appURL, bundleId: bundleId,
+                agentTab: clash ? "" : session.name, clashHint: clashHint
+            )
             return
         }
         if openMode == "thread" {
@@ -2685,7 +2799,9 @@ final class ControllerModel: ObservableObject {
     /// title matches this session. Do not match that title against Cursor
     /// window titles. Do not spawn `--glass --new-window` while Cursor is
     /// already running.
-    private func revealCursorAgentsWindow(appURL: URL, bundleId: String?, agentTab: String) async {
+    private func revealCursorAgentsWindow(
+        appURL: URL, bundleId: String?, agentTab: String, clashHint: String? = nil
+    ) async {
         func runningCursor() -> NSRunningApplication? {
             bundleId.flatMap {
                 NSRunningApplication.runningApplications(withBundleIdentifier: $0).first
@@ -2720,6 +2836,11 @@ final class ControllerModel: ObservableObject {
                 return
             }
             try? await Task.sleep(for: .milliseconds(350))
+            // An ambiguous name never presses: the window is up, the user picks.
+            if let clashHint {
+                petNotice = clashHint
+                return
+            }
             if pressCursorAgentTab(named: agentTab, of: running) { return }
             if await searchAndPressCursorAgentTab(named: agentTab, of: running) { return }
             let want = agentTab.trimmingCharacters(in: .whitespacesAndNewlines)

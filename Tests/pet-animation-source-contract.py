@@ -141,8 +141,19 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
     # expected as of 0.5.130 -- the chevron, and the double-click Miles asked
     # for. A SINGLE click still may not expand; that is the layout-shift rule.
     handle = pet.split("private func handleSpriteClick()", 1)[1].split("\n    }", 1)[0]
+    # Owner-based, not count-based. The count was 2 only while the double-click
+    # spelled its work as `.toggle()`; on 2026-09-01 it became a real
+    # toggle-with-memory using explicit assignment, and three copies of this
+    # check failed on the SHAPE while the RULE was intact.
+    _exp_owners = set()
+    for _m in re.finditer(r"model\.petExpanded(?:\.toggle\(\)|\s*=\s*true)", pet):
+        _fn = None
+        for _f in re.finditer(r"private (?:func|var) (\w+)", pet[:_m.start()]):
+            _fn = _f.group(1)
+        _exp_owners.add(_fn)
     need(
-        "petExpanded" not in handle and pet.count("model.petExpanded.toggle()") == 2,
+        "petExpanded" not in handle
+        and _exp_owners == {"pillsRow", "toggleSessionMenu"},
         "a single character click can still expand sessions",
     )
     need(

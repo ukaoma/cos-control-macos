@@ -98,6 +98,16 @@ struct ServerStatus: Sendable {
     var backgroundJobsEnabled: Bool?
     var meetingPreviewSupported = false
     var meetingPreviewEnabled: Bool?
+    /// Morning brief (server 6.43.0). Supported comes from health; the rest is
+    /// the public capability summary -- times and gate, never a prompt or an id.
+    var morningBriefSupported = false
+    var morningBriefEnabled: Bool?
+    var morningBriefTime: String?
+    var morningBriefTimezone: String?
+    var morningBriefNextRunAt: String?
+    var morningBriefLastRunAt: String?
+    var morningBriefLastRunStatus: String?
+    var morningBriefGate: String?
     var threadAttachSupported = false
     var threadAttachEnabled: Bool?
     /// Optional on purpose: absent means a server too old to report it, and the
@@ -238,6 +248,14 @@ struct ServerStatus: Sendable {
         backgroundJobsEnabled = details["backgroundJobsEnabled"]?.bool
         meetingPreviewSupported = details["meetingPreviewSupported"]?.bool ?? false
         meetingPreviewEnabled = details["meetingPreviewEnabled"]?.bool
+        morningBriefSupported = details["morningBriefSupported"]?.bool ?? false
+        morningBriefEnabled = details["morningBriefEnabled"]?.bool
+        morningBriefTime = details["morningBriefTime"]?.string
+        morningBriefTimezone = details["morningBriefTimezone"]?.string
+        morningBriefNextRunAt = details["morningBriefNextRunAt"]?.string
+        morningBriefLastRunAt = details["morningBriefLastRunAt"]?.string
+        morningBriefLastRunStatus = details["morningBriefLastRunStatus"]?.string
+        morningBriefGate = details["morningBriefGate"]?.string
         threadAttachSupported = details["threadAttachSupported"]?.bool ?? false
         threadAttachEnabled = details["threadAttachEnabled"]?.bool
         claudeSessionsEnabled = details["claudeSessionsEnabled"]?.bool
@@ -1054,6 +1072,53 @@ enum PetJumpRoute: Equatable {
     }
 }
 
+/// Which pet rows cannot be told apart by what is already on screen.
+///
+/// A Claude fork inherits its parent's history, so the derived title is
+/// identical; when both rows also sit in the same workspace, the slot's second
+/// line is spending itself on a value that distinguishes nothing. Measured
+/// 2026-09-01 against the live session index: 8 rows shared one label, 5 more
+/// shared "Codex session", and every one of those pairs shared a workspace too.
+///
+/// Pure, and shared by both lists, so there is ONE implementation under test
+/// rather than a copy per call site.
+enum PetRowIdentity {
+    /// Ids whose (name, workspace) pair repeats in `rows`. Rows with a unique
+    /// name are never included, and neither are rows that merely share a name
+    /// while sitting in different workspaces — there the workspace is already
+    /// doing the job and must be left alone.
+    static func indistinguishable(_ rows: [(id: String, name: String, workspace: String)]) -> Set<String> {
+        var byKey: [String: [String]] = [:]
+        for row in rows {
+            let name = row.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { continue }
+            byKey["\(name)\u{0000}\(row.workspace.trimmingCharacters(in: .whitespacesAndNewlines))",
+                  default: []].append(row.id)
+        }
+        var out: Set<String> = []
+        for (_, ids) in byKey where ids.count > 1 { out.formUnion(ids) }
+        return out
+    }
+
+    /// The wall-clock time a row happened, for the slot's second line: "2:41 PM".
+    /// Deliberately time-only — the slot is 57pt and every row in a pet list is
+    /// recent enough that the date is noise.
+    static func clockLabel(_ date: Date, locale: Locale = .current, timeZone: TimeZone = .current) -> String {
+        let f = DateFormatter()
+        f.locale = locale
+        f.timeZone = timeZone
+        f.setLocalizedDateFormatFromTemplate("jmm")
+        return f.string(from: date)
+    }
+}
+
+/// The two lists the pet can show. Stored so the sprite's double-tap can
+/// reopen whichever one was last closed.
+enum PetListTab: String, Codable, Sendable {
+    case running
+    case done
+}
+
 /// The idle-state health bar riding above the sprite (0.5.142 ledger design,
 /// Miles 2026-08-30). Pure so ModelsContract executes the whole vocabulary.
 ///
@@ -1068,6 +1133,7 @@ struct PetLedger: Equatable {
     var unseen: Int
 
     enum SegmentKind: Equatable { case waiting, running, done }
+
     struct Segment: Equatable {
         var kind: SegmentKind
         var count: Int
@@ -3484,6 +3550,15 @@ enum PetPanelFrame {
         if frame.height > screen.height { frame.size.height = screen.height }
         if frame.width > screen.width { frame.size.width = screen.width }
         if frame.minY < screen.minY { frame.origin.y = screen.minY }
+        // The panel is anchored by its BOTTOM edge and the menu opens UPWARD, so
+        // the figure holds still and the list grows above it. Sliding down is
+        // correct in exactly one case: parked so high that the open menu would
+        // run off the top of the display. That is the behaviour Miles asked for
+        // on 2026-09-01 ("it would only be in instances where the pet is at the
+        // very top of the screen that we want to push the pet down"). Trimming
+        // the height instead was wrong — it shrank the panel while the real
+        // defect was elsewhere, in NSHostingController re-anchoring the window
+        // to its top-left.
         if frame.maxY > screen.maxY { frame.origin.y = screen.maxY - frame.height }
         if frame.minX < screen.minX { frame.origin.x = screen.minX }
         if frame.maxX > screen.maxX { frame.origin.x = screen.maxX - frame.width }
@@ -5646,3 +5721,161 @@ struct OpenPetsCatalogRow: Identifiable, Sendable, Hashable {
         self.preview = preview
     }
 }
+
+extension JSONValue {
+    /// Foundation form for JSONSerialization. Used to hand a settings patch back
+    /// to the helper on stdin exactly as the server will parse it.
+    var foundationValue: Any {
+        switch self {
+        case .string(let value): return value
+        case .bool(let value): return value
+        case .number(let value): return value == value.rounded() && abs(value) < 1e15 ? Int(value) : value
+        case .object(let value): return value.mapValues { $0.foundationValue }
+        case .array(let value): return value.map(\.foundationValue)
+        case .null: return NSNull()
+        }
+    }
+}
+
+/// The morning brief as the server describes it: the saved config, the source
+/// catalog a settings screen renders from, the status line, and recent runs.
+/// Parsed from `GET /api/morning-brief` via the helper's `morning-brief` command.
+struct MorningBriefSettings: Sendable {
+    struct OptionSpec: Sendable, Identifiable {
+        let key: String
+        let type: String
+        let label: String
+        let unit: String?
+        let placeholder: String?
+        let min: Int?
+        let max: Int?
+        let defaultValue: JSONValue
+        var id: String { key }
+    }
+
+    struct SourceSpec: Sendable, Identifiable {
+        let id: String
+        let label: String
+        let description: String
+        let options: [OptionSpec]
+    }
+
+    struct Source: Sendable, Identifiable {
+        var id: String
+        var enabled: Bool
+        var options: [String: JSONValue]
+    }
+
+    struct Run: Sendable, Identifiable {
+        let id: String
+        let trigger: String
+        let firedAt: String
+        let status: String
+        let globalMsgNum: Int?
+        let preview: String?
+        let errorMessage: String?
+    }
+
+    var enabled: Bool
+    var time: String
+    var timezone: String
+    var days: [Int]
+    var model: String?
+    var sources: [Source]
+    var closingInstruction: String
+    var updatedAt: String
+    let catalog: [SourceSpec]
+    let nextRunAt: String?
+    let gate: String
+    let serverTimezone: String
+    let runs: [Run]
+
+    init?(_ details: [String: JSONValue]) {
+        guard let config = details["config"]?.object,
+              let time = config["time"]?.string,
+              let timezone = config["timezone"]?.string else { return nil }
+        enabled = config["enabled"]?.bool ?? true
+        self.time = time
+        self.timezone = timezone
+        days = (config["days"]?.array ?? []).compactMap(\.int)
+        model = config["model"]?.string
+        sources = (config["sources"]?.array ?? []).compactMap { entry in
+            guard let object = entry.object, let id = object["id"]?.string else { return nil }
+            return Source(id: id, enabled: object["enabled"]?.bool ?? false, options: object["options"]?.object ?? [:])
+        }
+        closingInstruction = config["closingInstruction"]?.string ?? ""
+        updatedAt = config["updatedAt"]?.string ?? ""
+        catalog = (details["sources"]?.array ?? []).compactMap { entry in
+            guard let object = entry.object, let id = object["id"]?.string else { return nil }
+            let options = (object["options"]?.object ?? [:]).compactMap { key, value -> OptionSpec? in
+                guard let spec = value.object, let type = spec["type"]?.string else { return nil }
+                return OptionSpec(
+                    key: key,
+                    type: type,
+                    label: spec["label"]?.string ?? key,
+                    unit: spec["unit"]?.string,
+                    placeholder: spec["placeholder"]?.string,
+                    min: spec["min"]?.int,
+                    max: spec["max"]?.int,
+                    defaultValue: spec["default"] ?? .null
+                )
+            }.sorted { $0.key < $1.key }
+            return SourceSpec(
+                id: id,
+                label: object["label"]?.string ?? id,
+                description: object["description"]?.string ?? "",
+                options: options
+            )
+        }
+        let status = details["status"]?.object ?? [:]
+        nextRunAt = status["nextRunAt"]?.string
+        gate = status["gate"]?.string ?? "ready"
+        serverTimezone = status["serverTimezone"]?.string ?? timezone
+        runs = (details["runs"]?.array ?? []).compactMap { entry in
+            guard let object = entry.object, let id = object["id"]?.string else { return nil }
+            return Run(
+                id: id,
+                trigger: object["trigger"]?.string ?? "scheduled",
+                firedAt: object["firedAt"]?.string ?? "",
+                status: object["status"]?.string ?? "unknown",
+                globalMsgNum: object["globalMsgNum"]?.int,
+                preview: object["preview"]?.string,
+                errorMessage: object["error"]?.object?["message"]?.string
+            )
+        }
+    }
+
+    func spec(for sourceID: String) -> SourceSpec? {
+        catalog.first { $0.id == sourceID }
+    }
+
+    /// The patch `PUT /api/morning-brief` accepts, built from the editable fields.
+    func patch() -> [String: Any] {
+        [
+            "enabled": enabled,
+            "time": time,
+            "timezone": timezone,
+            "days": days,
+            "model": model ?? NSNull(),
+            "sources": sources.map { source -> [String: Any] in
+                ["id": source.id, "enabled": source.enabled, "options": source.options.mapValues { $0.foundationValue }]
+            },
+            "closingInstruction": closingInstruction,
+        ]
+    }
+
+    /// "Tue 7:00 AM" in the Mac's locale, or nil when the brief is off.
+    /// Formatters are built per call: ISO8601DateFormatter is not Sendable, so a
+    /// static instance fails strict concurrency, and this runs on a click.
+    var nextRunLabel: String? {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let nextRunAt, let date = iso.date(from: nextRunAt) else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = .current
+        formatter.timeZone = TimeZone(identifier: timezone) ?? .current
+        formatter.dateFormat = "EEE h:mm a"
+        return formatter.string(from: date)
+    }
+}
+

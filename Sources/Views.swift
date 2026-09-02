@@ -102,6 +102,12 @@ struct ControlPanel: View {
     @State private var selectedTranscriptionTier = "balanced"
     @State private var selectedBackgroundJobs = true
     @State private var selectedMeetingPreview = false
+    /// Morning brief card: a local editable copy of the server's settings. Synced
+    /// from `model.morningBrief` whenever the server's `updatedAt` changes, so a
+    /// half-edited card is never overwritten by a background refresh.
+    @State private var briefDraft: MorningBriefSettings?
+    @State private var briefDraftStamp = ""
+    @State private var briefSourcesExpanded = false
     @State private var selectedClaudeSessions = false
     @State private var selectedVideoUploadV2 = false
     @State private var confirmClearStrandedVideoUploads = false
@@ -1196,6 +1202,7 @@ struct ControlPanel: View {
                 activityLauncher
                 statusCard
                 controls
+                if model.status.morningBriefSupported { morningBriefCard }
                 if !model.fenceRecords.isEmpty { fencesCard }
                 if !model.doctorChecks.isEmpty { doctorCard }
                 utilities
@@ -1612,6 +1619,226 @@ struct ControlPanel: View {
                 }
                 .scrollIndicators(.hidden)
             }
+        }
+    }
+
+    // ── Morning brief (server 6.43.0) ────────────────────────────────────────
+    //
+    // Split into small views on purpose: one `body` holding the schedule row,
+    // the weekday buttons, and the per-source option editors exceeded what the
+    // SwiftUI type-checker will solve in one expression (see `mainPanel`).
+    // The card edits a DRAFT and saves in one Apply, because every field is
+    // one PUT and a stepper that saved on each tick would restart the schedule
+    // math on every click. Lists cap and scroll: 11 sources with options would
+    // otherwise push the footer off the 390pt panel (2026-08-26 rule).
+
+    private var morningBriefCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            morningBriefHeader
+            if let draft = briefDraft {
+                morningBriefSchedule(draft)
+                morningBriefSources(draft)
+                morningBriefActions
+            } else {
+                morningBriefPlaceholder
+            }
+        }
+        .padding(13)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
+        .task { await model.loadMorningBrief(quiet: true) }
+        .onChange(of: model.morningBrief?.updatedAt) { _, stamp in
+            syncMorningBriefDraft(force: stamp != briefDraftStamp)
+        }
+        .onAppear { syncMorningBriefDraft(force: briefDraft == nil) }
+    }
+
+    private func syncMorningBriefDraft(force: Bool) {
+        guard force, let settings = model.morningBrief else { return }
+        briefDraft = settings
+        briefDraftStamp = settings.updatedAt
+    }
+
+    private var morningBriefHeader: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text("MORNING BRIEF").font(.caption2.weight(.bold)).tracking(1.3).foregroundStyle(.secondary)
+            Spacer()
+            Text(morningBriefStatusLine).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+        }
+    }
+
+    /// One line the wearer can trust: when the next brief fires, or why it will not.
+    private var morningBriefStatusLine: String {
+        switch model.status.morningBriefGate {
+        case "durable_jobs_off": return "Off while Background jobs are off"
+        case "admissions_closed": return "Paused for maintenance"
+        default: break
+        }
+        if let draft = briefDraft, !draft.enabled { return "Off" }
+        if let next = (briefDraft ?? model.morningBrief)?.nextRunLabel { return "Next \(next)" }
+        if let time = model.status.morningBriefTime { return "Daily at \(time)" }
+        return ""
+    }
+
+    private var morningBriefPlaceholder: some View {
+        Group {
+            if model.morningBriefState.hasPrefix("error:") {
+                Text(String(model.morningBriefState.dropFirst("error:".count)))
+                    .font(.caption2).foregroundStyle(COSPalette.amber)
+                Button("Retry") { Task { await model.loadMorningBrief() } }
+            } else {
+                Text("Loading the schedule…").font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func morningBriefSchedule(_ draft: MorningBriefSettings) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Toggle("Brief every", isOn: Binding(
+                    get: { briefDraft?.enabled ?? draft.enabled },
+                    set: { briefDraft?.enabled = $0 }
+                ))
+                TextField("07:00", text: Binding(
+                    get: { briefDraft?.time ?? draft.time },
+                    set: { briefDraft?.time = $0 }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 58)
+                .multilineTextAlignment(.center)
+                Text(draft.timezone).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            }
+            morningBriefWeekdays
+            Text("Lands in the inbox as a numbered reply before you open COS. One run a day; a Mac asleep at the slot still fires within three hours.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private static let morningBriefWeekdayOrder: [(day: Int, label: String)] = [
+        (1, "M"), (2, "T"), (3, "W"), (4, "T"), (5, "F"), (6, "S"), (0, "S"),
+    ]
+
+    private var morningBriefWeekdays: some View {
+        HStack(spacing: 4) {
+            ForEach(Self.morningBriefWeekdayOrder, id: \.day) { entry in
+                Toggle(entry.label, isOn: Binding(
+                    get: { briefDraft?.days.contains(entry.day) ?? false },
+                    set: { on in
+                        guard var draft = briefDraft else { return }
+                        var days = Set(draft.days)
+                        if on { days.insert(entry.day) } else { days.remove(entry.day) }
+                        draft.days = days.sorted()
+                        briefDraft = draft
+                    }
+                ))
+                .toggleStyle(.button)
+                .controlSize(.mini)
+                .frame(width: 26)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func morningBriefSources(_ draft: MorningBriefSettings) -> some View {
+        DisclosureGroup(isExpanded: $briefSourcesExpanded) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(draft.sources) { source in
+                        morningBriefSourceRow(source, spec: draft.spec(for: source.id))
+                    }
+                }
+                .padding(.top, 4)
+            }
+            .frame(maxHeight: 230)
+        } label: {
+            let count = draft.sources.filter(\.enabled).count
+            Text("Sources · \(count) on").font(.caption)
+        }
+        .font(.caption)
+    }
+
+    private func morningBriefSourceRow(_ source: MorningBriefSettings.Source, spec: MorningBriefSettings.SourceSpec?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(isOn: Binding(
+                get: { briefDraft?.sources.first { $0.id == source.id }?.enabled ?? source.enabled },
+                set: { on in updateBriefSource(source.id) { $0.enabled = on } }
+            )) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(spec?.label ?? source.id).font(.caption.weight(.semibold))
+                    if let description = spec?.description, !description.isEmpty {
+                        Text(description).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            if source.enabled, let options = spec?.options, !options.isEmpty {
+                ForEach(options) { option in
+                    morningBriefOption(sourceID: source.id, option: option, value: source.options[option.key])
+                }
+                .padding(.leading, 22)
+            }
+        }
+    }
+
+    private func updateBriefSource(_ id: String, _ mutate: (inout MorningBriefSettings.Source) -> Void) {
+        guard var draft = briefDraft, let index = draft.sources.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&draft.sources[index])
+        briefDraft = draft
+    }
+
+    @ViewBuilder
+    private func morningBriefOption(sourceID: String, option: MorningBriefSettings.OptionSpec, value: JSONValue?) -> some View {
+        switch option.type {
+        case "boolean":
+            Toggle(option.label, isOn: Binding(
+                get: { value?.bool ?? option.defaultValue.bool ?? false },
+                set: { on in updateBriefSource(sourceID) { $0.options[option.key] = .bool(on) } }
+            ))
+            .font(.caption2)
+        case "integer":
+            let current = value?.int ?? option.defaultValue.int ?? 0
+            Stepper(value: Binding(
+                get: { current },
+                set: { new in updateBriefSource(sourceID) { $0.options[option.key] = .number(Double(new)) } }
+            ), in: (option.min ?? 0)...(option.max ?? 365)) {
+                Text("\(option.label): \(current) \(option.unit ?? "")").font(.caption2)
+            }
+            .controlSize(.mini)
+        default:
+            TextField(option.placeholder ?? option.label, text: Binding(
+                get: { value?.string ?? "" },
+                set: { text in updateBriefSource(sourceID) { $0.options[option.key] = .string(text) } }
+            ))
+            .textFieldStyle(.roundedBorder)
+            .font(.caption2)
+        }
+    }
+
+    private var morningBriefActions: some View {
+        HStack(spacing: 8) {
+            Button("Apply", systemImage: "checkmark") {
+                if let draft = briefDraft { model.saveMorningBrief(draft) }
+            }
+            .disabled(model.busy || briefDraft == nil)
+            Button("Run Now", systemImage: "sunrise") { model.runMorningBriefNow() }
+                .disabled(model.busy || model.status.morningBriefGate == "durable_jobs_off" || model.status.runtimeState != "managedHealthy")
+                .help("Runs the brief right away and drops it in the inbox. Five a day.")
+            Spacer()
+            if let last = model.morningBrief?.runs.first {
+                Text(morningBriefRunLabel(last)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+    }
+
+    private func morningBriefRunLabel(_ run: MorningBriefSettings.Run) -> String {
+        let number = run.globalMsgNum.map { " #\($0)" } ?? ""
+        switch run.status {
+        case "completed": return "Last brief delivered\(number)"
+        case "failed", "submit_failed": return "Last brief failed"
+        case "canceled", "interrupted": return "Last brief \(run.status)"
+        default: return "Brief running\(number)"
         }
     }
 

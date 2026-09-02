@@ -119,11 +119,11 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
                 model.petSize.length(260),
                 viewportSize.width + model.petSize.length(36)
             )
-            let fitting = host.sizeThatFits(in: NSSize(width: width, height: 900))
-            let size = NSSize(width: width, height: max(fitting.height, model.petSize.length(120)))
             let anchor = restingAnchor ?? CGPoint(x: panel.frame.minX, y: panel.frame.minY)
             restingAnchor = anchor
             let screens = NSScreen.screens.map(\.visibleFrame)
+            let fitting = host.sizeThatFits(in: NSSize(width: width, height: 900))
+            let size = NSSize(width: width, height: max(fitting.height, model.petSize.length(120)))
             applyingFrame = true
             panel.setFrame(
                 PetPanelFrame.positioned(size: size, anchor: anchor, screens: screens),
@@ -200,6 +200,39 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         restingAnchor = CGPoint(x: placed.minX, y: placed.minY)
         self.panel = panel
         return panel
+    }
+
+    /// NSHostingController sizes this window from its SwiftUI content, and an
+    /// AppKit content-size resize is anchored at the TOP-LEFT — so opening a
+    /// list grew the panel DOWNWARD and pushed a bottom-parked figure off the
+    /// display. Measured 2026-09-01: collapsed top=1371 bottom=1620, expanded
+    /// top=1371 bottom=1788, the top held and the bottom fell 168pt.
+    ///
+    /// Disabling the controller's sizing was the wrong lever — it also stopped
+    /// the hosting VIEW tracking the window, so every list laid out against a
+    /// stale width and spilled out of its card. Let the controller size the
+    /// window exactly as it always has, and put the ORIGIN back afterwards:
+    /// the parked bottom edge is restored, and the menu grows upward from it.
+    func windowDidResize(_ notification: Notification) {
+        guard !applyingFrame, let panel, let anchor = restingAnchor else {
+            // Whether this handler runs at all with the guard DOWN is the one
+            // thing three attempts at this bug could never observe, because the
+            // path reported nothing and every verdict came from a screenshot.
+            PetLog.panel("resize ignored applying=\(applyingFrame) anchor=\(restingAnchor.map { "\($0.y)" } ?? "nil")")
+            return
+        }
+        let screens = NSScreen.screens.map(\.visibleFrame)
+        let corrected = PetPanelFrame.positioned(
+            size: panel.frame.size, anchor: anchor, screens: screens
+        )
+        guard corrected != panel.frame else {
+            PetLog.panel("resize no-op parked=\(anchor.y) frame=\(panel.frame.minY)")
+            return
+        }
+        PetLog.panel("re-anchor parked=\(anchor.y) was=\(panel.frame.minY) now=\(corrected.minY)")
+        applyingFrame = true
+        defer { applyingFrame = false }
+        panel.setFrame(corrected, display: true)
     }
 
     /// A drag re-parks the pet. Our own setFrame also posts this, so the
@@ -289,6 +322,34 @@ private struct SessionPetRoot: View {
             // set of openers were pure redundancy. Hover changes NOTHING in
             // layout now — the bar cross-fades into the pills in its own slot,
             // and only a pill CLICK adds the list above the figure.
+            // Clearing eight finished rows one X at a time is the whole reason
+            // this exists (Miles, 2026-09-01). It sits between the card and the
+            // figure so it reads as belonging to the list above it, and only
+            // while that list is open — it is never a control floating over the
+            // pet on its own.
+            if model.petCompletionsExpanded, !model.petCompletions.isEmpty {
+                Button {
+                    model.clearAllPetCompletions()
+                } label: {
+                    HStack(spacing: size.length(5)) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: size.typeSize(8), weight: .bold))
+                        Text("Close all \(model.petCompletions.count)")
+                            .font(COSType.mono(size.typeSize(9), weight: .bold))
+                            .kerning(0.5)
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, size.length(10))
+                    .padding(.vertical, size.length(5))
+                    .background(.regularMaterial, in: Capsule())
+                    .overlay(Capsule().stroke(COSPalette.line, lineWidth: 1))
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("Clear the finished list. The sessions themselves are untouched.")
+                .accessibilityLabel("Close all \(model.petCompletions.count) finished sessions")
+                .modifier(PetReveal(reduceMotion: reduceMotion))
+            }
             if let hint = model.petTerminalHint, !hint.isEmpty {
                 petFloatingText(hint, style: .secondary, lines: 2)
             }
@@ -376,7 +437,16 @@ private struct SessionPetRoot: View {
                 }
             }
             .frame(width: barWidth, height: size.length(7), alignment: .leading)
+            // The segments used to composite down through the bar's thin
+            // material onto the desktop, so the SAME token rendered two
+            // different colours: measured from Miles's screen 2026-09-01, the
+            // DONE segment came out #b39a67 while the DONE pill's dot — the
+            // dot that names it — was #c4aa75, and RUNNING dulled to #688658.
+            // The pills sit on a solid capsule; give the bar the same opaque
+            // floor underneath the track so a palette colour means one colour
+            // wherever it appears.
             .background(Capsule().fill(COSPalette.line.opacity(0.35)))
+            .background(Capsule().fill(COSPalette.card))
             .clipShape(Capsule())
             .overlay(Capsule().stroke(COSPalette.line, lineWidth: 1))
             Text(ledger.caption)
@@ -409,6 +479,7 @@ private struct SessionPetRoot: View {
             ) {
                 model.petExpanded.toggle()
                 if model.petExpanded { model.petCompletionsExpanded = false }
+                model.petLastOpenList = .running
             }
             ledgerPill(
                 dot: COSPalette.gold, label: "DONE", count: ledger.done,
@@ -416,6 +487,7 @@ private struct SessionPetRoot: View {
             ) {
                 model.petCompletionsExpanded.toggle()
                 if model.petCompletionsExpanded { model.petExpanded = false }
+                model.petLastOpenList = .done
             }
             ledgerPill(
                 dot: COSPalette.amber, label: "WAITING", count: ledger.waiting,
@@ -547,7 +619,12 @@ private struct SessionPetRoot: View {
                 content
             }
         }
-        .padding(.horizontal, size.length(10))
+        .padding(.leading, size.length(10))
+        // Trailing is tighter than leading ON PURPOSE: the rows' trailing slot
+        // carries its own 4pt, so ink lands 6pt off the card edge — tucked,
+        // which is what Miles asked for twice, but never touching the stroke
+        // and never outside the ScrollView's clip.
+        .padding(.trailing, size.length(2))
         .padding(.vertical, size.length(4))
         .background(
             .regularMaterial,
@@ -574,20 +651,57 @@ private struct SessionPetRoot: View {
         .padding(.bottom, size.length(3))
     }
 
-    /// A live session as a Direction D row. The outcome leads on its own
-    /// line; identity is demoted underneath. Actions are SIBLINGS of the row
-    /// button, never nested in its label — a nested Button never receives the
-    /// click on macOS.
+    /// The slot's second line. It exists to answer "which one is this", so when
+    /// the workspace cannot — because another row on screen shares this name AND
+    /// this workspace — it gives way to the time instead. Live rows show when
+    /// they were opened; finished rows show when they finished, which is the
+    /// figure Miles asked for (2026-09-01). Rows with a unique name are
+    /// untouched, and so are rows that merely share a name across different
+    /// workspaces: there the workspace is already doing the job.
+    private func slotSecondLine(for session: ClaudeSession) -> String {
+        guard indistinguishableSessionIDs.contains(session.id),
+              let opened = session.createdDate else { return session.workspace }
+        return PetRowIdentity.clockLabel(opened)
+    }
+
+    private func slotSecondLine(for row: PetCompletion) -> String {
+        guard indistinguishableCompletionIDs.contains(row.id) else { return row.workspace }
+        return PetRowIdentity.clockLabel(row.finishedAt)
+    }
+
+    private var indistinguishableSessionIDs: Set<String> {
+        PetRowIdentity.indistinguishable(
+            sessions.map { (id: $0.id, name: $0.title, workspace: $0.workspace) }
+        )
+    }
+
+    private var indistinguishableCompletionIDs: Set<String> {
+        PetRowIdentity.indistinguishable(
+            model.petCompletions.map { (id: $0.id, name: $0.name, workspace: $0.workspace) }
+        )
+    }
+
+    /// A live session as a Direction D row. A LIVE row leads with its NAME —
+    /// the same name the Sessions tab shows — because the point of the running
+    /// list is spotting which session is which at a glance. It used to lead
+    /// with the live summary, and for any resumed session that summary is the
+    /// boilerplate "This session is being continued from a previous…", so
+    /// several running rows read identically while their real names sat demoted
+    /// underneath (Miles, 2026-09-01). What it is DOING moves to the second
+    /// line. Finished rows keep leading with their outcome: there, what it did
+    /// is the useful thing, and that is the 0.5.171 design.
+    /// Actions are SIBLINGS of the row button, never nested in its label — a
+    /// nested Button never receives the click on macOS.
     private func missionRow(_ session: ClaudeSession, tint: Color) -> some View {
         petRowD(
             id: session.id,
-            outcome: session.petLiveLine,
-            title: session.title,
+            outcome: session.title,
+            title: session.petLiveLine,
             mark: session.petProviderMark,
             markTint: providerTint(session.provider),
             tint: tint,
             age: session.compactAgeLabel() ?? "",
-            workspace: session.workspace,
+            workspace: slotSecondLine(for: session),
             breathing: session.isPetWorking,
             dim: false,
             primary: {
@@ -609,17 +723,18 @@ private struct SessionPetRoot: View {
     }
 
     /// An idle-alive session: the same row, dimmed. The fleet's periphery
-    /// should read as periphery, but it must not read as a DIFFERENT shape.
+    /// should read as periphery, but it must not read as a DIFFERENT shape —
+    /// which includes leading with the NAME, exactly like a running row.
     private func idleRow(_ session: ClaudeSession) -> some View {
         petRowD(
             id: session.id,
-            outcome: session.petLiveLine,
-            title: session.title,
+            outcome: session.title,
+            title: session.petLiveLine,
             mark: session.petProviderMark,
             markTint: providerTint(session.provider).opacity(0.75),
             tint: Color.secondary,
             age: session.compactAgeLabel() ?? "",
-            workspace: session.workspace,
+            workspace: slotSecondLine(for: session),
             breathing: false,
             dim: true,
             primary: {
@@ -720,16 +835,15 @@ private struct SessionPetRoot: View {
                 .frame(width: size.length(3))
                 .padding(.vertical, size.length(6))
         }
-        // Give back most of the list's 10pt inset so the trailing items sit
-        // TUCKED toward the card edge without landing on it. Cancelling the
-        // full 10pt put the age, the workspace and both glyphs flush against
-        // the 1px stroke, which reads as clipped (Miles, 2026-09-01: "the x
-        // and the tab target are nested right against the right. no padding").
-        // 4pt back leaves a 6pt margin: closer than the default 10pt he
-        // objected to earlier the same day, clear of the border he objects to
-        // now. The slot's own -4pt glyph overhang is an INK alignment against
-        // rowAction's 4pt hit padding and is deliberately left alone.
-        .padding(.trailing, -size.length(4))
+        // NO trailing overhang. Both lists put their rows inside a ScrollView
+        // once they pass three items, and a ScrollView CLIPS to its bounds, so
+        // in the scrolling branch (>3 rows) every negative trailing inset here was cutting the trailing
+        // slot instead of moving it: measured 2026-09-01 on 0.5.173, the age
+        // rendered "7" for "7m" and the workspace "mu-chief-staf" for
+        // "mu-chief-staff", with no ellipsis, because the last 4pt lay outside
+        // the clip. On hover the row's 4pt plus the glyph row's own 4pt put 8pt
+        // outside and sliced the trailing action. The tucked look comes from
+        // the CONTAINER's trailing inset instead, where nothing is clipped.
         // NOT .onHover: SwiftUI's tracking area is tied to app activation and
         // the pet is a nonactivating panel, so it would effectively never fire.
         .background(HoverSensor { inside in
@@ -766,6 +880,10 @@ private struct SessionPetRoot: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+            // Matches rowAction's 4pt hit padding so the resting text and the
+            // hover glyphs share one trailing edge. Insetting the text is safe;
+            // outsetting the glyphs was not, because the clip is on this side.
+            .padding(.trailing, size.length(4))
             .frame(maxWidth: .infinity, alignment: .trailing)
             .opacity(hovered ? 0 : 1)
 
@@ -781,10 +899,10 @@ private struct SessionPetRoot: View {
                     rowAction("xmark", help: actions.clearHelp, action: clear)
                 }
             }
-            // The trailing symbol carries its own 4pt hit padding. Overhang by
-            // exactly that, so the glyph's INK lands on the card edge the age
-            // and workspace already sit on. The 57pt frame does not move.
-            .padding(.trailing, -size.length(4))
+            // rowAction carries 4pt of hit padding, so its glyph ink already
+            // sits 4pt inside this row's trailing edge. The age and workspace
+            // are inset by the SAME 4pt above, so both occupants line up on one
+            // edge WITHOUT anything crossing the ScrollView's clip boundary.
             .opacity(hovered ? 1 : 0)
             .allowsHitTesting(hovered)
         }
@@ -830,6 +948,11 @@ private struct SessionPetRoot: View {
         }
         .buttonStyle(.plain)
         .help(help)
+        // These are icon-only controls. `.help` is a POINTER affordance; it is
+        // not exposed to VoiceOver, so without this the three row actions read
+        // as unlabelled buttons. Reuses the same string, so the label can never
+        // drift from the tooltip.
+        .accessibilityLabel(help)
     }
 
     /// Finished sessions. Lives on the ~310pt pet, so the list is capped and
@@ -848,13 +971,25 @@ private struct SessionPetRoot: View {
                         // The row now says what the session DID. Before 0.5.171
                         // every finished row printed the literal "Finished", so
                         // two forked sessions read as the same three tokens.
-                        outcome: row.summary.isEmpty ? "Finished" : row.summary,
-                        title: row.name,
+                        // Finished rows lead with the NAME too, matching the live
+                        // rows and the Sessions tab. 0.5.171 moved the outcome up
+                        // here because every row printed the literal "Finished";
+                        // leading with the name solves that just as well, because
+                        // names differ, while summaries do NOT — a resumed session
+                        // carries the same "This session is being continued from a
+                        // previous..." boilerplate as every other resumed session,
+                        // so the outcome line reproduced the very collision it was
+                        // meant to fix (Miles, 2026-09-01). What it did stays, one
+                        // line down, where it still reads.
+                        outcome: row.name.isEmpty
+                            ? (row.summary.isEmpty ? "Finished" : row.summary)
+                            : row.name,
+                        title: row.summary.isEmpty ? "Finished" : row.summary,
                         mark: PetProvider.mark(row.provider),
                         markTint: providerTint(row.provider),
                         tint: COSPalette.gold,
                         age: PetCompletion.compactAge(row.finishedAt),
-                        workspace: row.workspace,
+                        workspace: slotSecondLine(for: row),
                         breathing: false,
                         dim: row.seen,
                         primary: {
@@ -897,7 +1032,12 @@ private struct SessionPetRoot: View {
                 content
             }
         }
-        .padding(.horizontal, size.length(10))
+        .padding(.leading, size.length(10))
+        // Trailing is tighter than leading ON PURPOSE: the rows' trailing slot
+        // carries its own 4pt, so ink lands 6pt off the card edge — tucked,
+        // which is what Miles asked for twice, but never touching the stroke
+        // and never outside the ScrollView's clip.
+        .padding(.trailing, size.length(2))
         .padding(.vertical, size.length(4))
         .background(
             .regularMaterial,
@@ -929,19 +1069,46 @@ private struct SessionPetRoot: View {
 
     private var spriteHelp: String {
         let base = focus.map { "\(pose.title) · \($0.petStateCaption) · \($0.providerLabel)" } ?? pose.title
-        return sessions.count > 1 ? base + " · double-click for the session list" : base
+        return // Gate on "is there a list to show", the same predicate toggleSessionMenu
+        // uses. Gating on a session count left the gesture unadvertised at
+        // RUNNING 1 — the case the count guard was removed for.
+        (!sessions.isEmpty || !model.petCompletions.isEmpty || !model.petDismissals.stamps.isEmpty)
+            ? base + " · double-click for the session list" : base
     }
 
     private func handleSpriteClick() {
         if let focus { model.openSessionInPlatform(focus) }
     }
 
-    /// The chevron was the only way in. A double-click on the figure itself is
-    /// the same toggle, and stays a no-op at one session where there is no list.
+    /// Double-click the figure to open and close the menu. This is the ONLY
+    /// gesture that does both, so it must not care which list is showing:
+    /// - anything open -> remember which, then close
+    /// - nothing open  -> reopen the remembered one
+    ///
+    /// It used to guard on `sessions.count > 1`, which made the gesture a
+    /// silent no-op for the very common one-running-session case (Miles,
+    /// 2026-09-01, at RUNNING 1), and it only ever toggled the RUNNING list,
+    /// so a double-click while DONE was open appeared to do nothing at all.
+    /// Gate on "is there anything to show" instead of a session count.
     private func toggleSessionMenu() {
-        guard sessions.count > 1 else { return }
-        model.petExpanded.toggle()
-        if model.petExpanded { model.petCompletionsExpanded = false }
+        if model.petExpanded || model.petCompletionsExpanded {
+            model.petLastOpenList = model.petCompletionsExpanded ? .done : .running
+            model.petExpanded = false
+            model.petCompletionsExpanded = false
+            return
+        }
+        // Reopen where they left off, but never onto an empty card: fall
+        // through to the other list rather than opening nothing.
+        let hasRunning = !sessions.isEmpty || !model.petDismissals.stamps.isEmpty
+        let hasDone = !model.petCompletions.isEmpty
+        switch model.petLastOpenList {
+        case .done:
+            if hasDone { model.petCompletionsExpanded = true }
+            else if hasRunning { model.petExpanded = true }
+        case .running:
+            if hasRunning { model.petExpanded = true }
+            else if hasDone { model.petCompletionsExpanded = true }
+        }
     }
 
     private func handleSpriteDrop(_ providers: [NSItemProvider]) -> Bool {

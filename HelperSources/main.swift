@@ -450,6 +450,9 @@ final class COSControlHelper {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing meeting preview setting") }
             try setMeetingPreview(value)
         }
+        case "morning-brief": try emitMorningBrief()
+        case "set-morning-brief": try setMorningBrief()
+        case "run-morning-brief": try runMorningBrief()
         case "set-idle-metal-hq": try withMutationLock {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing idle Metal HQ setting") }
             try setIdleMetalHq(value)
@@ -2088,6 +2091,10 @@ final class COSControlHelper {
         let hqTranscription = transcription?["hq"] as? [String: Any]
         let transcriptionProfile = transcription?["profile"] as? [String: Any]
         let featureFlags = health?["features"] as? [String: Any]
+        // Morning brief (server 6.43.0). The capability rides public health so the
+        // card can show before a token is held; the settings call needs one.
+        let morningBriefCapability = (health?["capabilities"] as? [String: Any])?["morningBrief"] as? [String: Any]
+        let morningBriefSupported = featureFlags?["morningBrief"] as? Bool == true || morningBriefCapability != nil
         let requestedTier = liveTranscription?["requestedTier"] as? String
         let effectiveTier = liveTranscription?["effectiveTier"] as? String
         let commitReason = liveTranscription?["commitReason"] as? String
@@ -2256,6 +2263,14 @@ final class COSControlHelper {
             "backgroundJobsEnabled": backgroundJobsEnabled ?? NSNull(),
             "meetingPreviewSupported": meetingPreviewSupported,
             "meetingPreviewEnabled": meetingPreviewEnabled ?? NSNull(),
+            "morningBriefSupported": morningBriefSupported,
+            "morningBriefEnabled": morningBriefCapability?["enabled"] ?? NSNull(),
+            "morningBriefTime": morningBriefCapability?["time"] ?? NSNull(),
+            "morningBriefTimezone": morningBriefCapability?["timezone"] ?? NSNull(),
+            "morningBriefNextRunAt": morningBriefCapability?["nextRunAt"] ?? NSNull(),
+            "morningBriefLastRunAt": morningBriefCapability?["lastRunAt"] ?? NSNull(),
+            "morningBriefLastRunStatus": morningBriefCapability?["lastRunStatus"] ?? NSNull(),
+            "morningBriefGate": morningBriefCapability?["gate"] ?? NSNull(),
             "claudeSessionsEnabled": claudeSessionsEnabled ?? NSNull(),
             "threadAttachSupported": threadAttachSupported,
             "threadAttachEnabled": threadAttachEnabled ?? NSNull(),
@@ -3873,6 +3888,72 @@ final class COSControlHelper {
             throw HelperError.message("Install the managed server or choose Manage in place first.")
         }
         try applyInPlaceProviderEnvironment(values, operationLabel: operationLabel)
+    }
+
+    // ── Morning brief (server 6.43.0) ──────────────────────────────────────
+    //
+    // Three thin pass-throughs to /api/morning-brief. The SERVER owns the
+    // schedule, the source list, and validation; this helper only carries the
+    // pairing token and turns a JSON error into a sentence the panel can show.
+    // A config change is not a lifecycle operation, so no mutation lock and no
+    // restart: the running server picks the new time up on its next tick.
+
+    private func morningBriefRequest(_ path: String, method: String = "GET", body: String? = nil, timeout: Int = 20) throws -> HTTPResponse {
+        let token = try readToken()
+        guard let response = request(path, method: method, token: token, body: body, timeout: timeout) else {
+            throw HelperError.message("Could not reach the glasses server. Check that it is running, then try again.")
+        }
+        if response.status == 404 {
+            throw HelperError.message("Update the managed server to 6.43.0 or newer to use the Morning brief.")
+        }
+        return response
+    }
+
+    private func morningBriefErrorMessage(_ response: HTTPResponse, fallback: String) -> String {
+        if let error = response.body?["error"] as? [String: Any],
+           let message = error["message"] as? String, !message.isEmpty {
+            return message
+        }
+        return fallback
+    }
+
+    private func emitMorningBrief() throws {
+        let response = try morningBriefRequest("/api/morning-brief")
+        guard response.status == 200, let body = response.body else {
+            throw HelperError.message(morningBriefErrorMessage(
+                response, fallback: "The server could not read the morning brief settings (HTTP \(response.status))."))
+        }
+        emit(ok: true, message: "Morning brief settings", details: body)
+    }
+
+    private func setMorningBrief() throws {
+        // The patch arrives on stdin, like a chat prompt: free text (a custom
+        // section instruction) must never be an argv string visible in `ps`.
+        let data = FileHandle.standardInput.readDataToEndOfFile()
+        guard data.count <= 64_000 else { throw HelperError.message("That morning brief change is too large.") }
+        guard !data.isEmpty, (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] != nil else {
+            throw HelperError.message("The morning brief change was not a JSON object.")
+        }
+        let response = try morningBriefRequest("/api/morning-brief", method: "PUT", body: String(decoding: data, as: UTF8.self))
+        guard response.status == 200, let body = response.body else {
+            throw HelperError.message(morningBriefErrorMessage(
+                response, fallback: "The server rejected the morning brief change (HTTP \(response.status))."))
+        }
+        let config = body["config"] as? [String: Any]
+        let enabled = config?["enabled"] as? Bool ?? true
+        let time = config?["time"] as? String ?? "07:00"
+        emit(ok: true, message: enabled ? "Morning brief set for \(time)" : "Morning brief off", details: body)
+    }
+
+    private func runMorningBrief() throws {
+        let response = try morningBriefRequest("/api/morning-brief/run", method: "POST", timeout: 30)
+        guard response.status == 202, let body = response.body else {
+            throw HelperError.message(morningBriefErrorMessage(
+                response, fallback: "The brief could not be started (HTTP \(response.status))."))
+        }
+        let run = body["run"] as? [String: Any]
+        let number = (run?["globalMsgNum"] as? Int).map { " as #\($0)" } ?? ""
+        emit(ok: true, message: "Brief running\(number). It lands in the inbox when it finishes.", details: body)
     }
 
     private func requireMeetingPreview(_ raw: String) throws {

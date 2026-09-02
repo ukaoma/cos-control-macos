@@ -1,3 +1,4 @@
+import OSLog
 import SwiftUI
 
 // MARK: - Section glyphs
@@ -368,4 +369,17 @@ struct SessionPetSprite: View {
         let index = Int(elapsed / primaryFrameInterval) % frames.count
         return frames[index]
     }
+}
+
+
+/// The pet's panel geometry had no telemetry at all: `grep` for a logger in
+/// SessionPet.swift returned one hit and it was the word "logo" in a comment.
+/// Three separate attempts at the open/close jump each needed a round trip
+/// through Miles to disprove, because the only evidence available was a
+/// screenshot. These four values — the guard, the parked anchor, the frame we
+/// found and the frame we set — are what discriminate between "the handler
+/// never ran", "it ran and declined" and "it ran and corrected".
+enum PetLog {
+    private static let log = Logger(subsystem: "com.gotcos.control", category: "pet-panel")
+    static func panel(_ message: String) { log.debug("\(message, privacy: .public)") }
 }

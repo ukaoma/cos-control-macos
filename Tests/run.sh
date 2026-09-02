@@ -97,6 +97,30 @@ GALLERY
 /usr/bin/grep -q '/api/media/\\(id)/content?variant=\\(variant)' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'Copy + images' "$ROOT/Sources/Views.swift"
 
+# ── Morning brief (0.5.181) ───────────────────────────────────────────────────
+# The card must be mounted, the helper must carry all three commands, and the
+# settings model must build its patch from the same keys the server validates.
+/usr/bin/grep -q 'case "morning-brief": try emitMorningBrief()' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "set-morning-brief": try setMorningBrief()' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "run-morning-brief": try runMorningBrief()' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q '"/api/morning-brief/run", method: "POST"' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q '"morningBriefSupported": morningBriefSupported' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'if model.status.morningBriefSupported { morningBriefCard }' "$ROOT/Sources/Views.swift"
+/usr/bin/python3 - "$ROOT" <<'BRIEF'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+models = (root / 'Sources/Models.swift').read_text()
+patch = models.split('func patch() -> [String: Any] {', 1)[1].split('\n    }', 1)[0]
+for key in ('"enabled"', '"time"', '"timezone"', '"days"', '"sources"', '"closingInstruction"'):
+    assert key in patch, 'MorningBriefSettings.patch() lost %s' % key
+views = (root / 'Sources/Views.swift').read_text()
+# The save path must go through the DRAFT, never straight from model state.
+assert 'if let draft = briefDraft { model.saveMorningBrief(draft) }' in views
+# The source list is capped and scrolls, per the 390pt panel rule.
+sources = views.split('private func morningBriefSources(', 1)[1].split('\n    }', 1)[0]
+assert 'ScrollView' in sources and '.frame(maxHeight: 230)' in sources
+BRIEF
+
 # Release build must compile the component too, or the shipped app loses it.
 /usr/bin/grep -q 'Sources/COSConfirm.swift' "$ROOT/scripts/build-release.sh"
 
@@ -1930,8 +1954,15 @@ need('.frame(height:' in ledger_slot_src and 'maxHeight' not in ledger_slot_src,
 handle_sprite = pet_src.split('private func handleSpriteClick()', 1)[1].split('\n    }', 1)[0]
 need('petExpanded' not in handle_sprite,
      "a SINGLE click on the character must open its focus, never expand the session list")
-need(pet_src.count('model.petExpanded.toggle()') == 2,
-     "only the dropdown control and the double-click handler may toggle the session list")
+_exp_owners = set()
+for _m in re.finditer(r"model\.petExpanded(?:\.toggle\(\)|\s*=\s*true)", pet_src):
+    _fn = None
+    for _f in re.finditer(r"private (?:func|var) (\w+)", pet_src[:_m.start()]):
+        _fn = _f.group(1)
+    _exp_owners.add(_fn)
+need(_exp_owners == {"pillsRow", "toggleSessionMenu"},
+     f"the session list can be expanded from {sorted(_exp_owners)}; only the "
+     "pills and the double-click handler may expand it")
 need('.onTapGesture(count: 2) { toggleSessionMenu() }' in pet_src,
      "the double-click route into the session list is gone")
 need('scale: characterScale' in pet_src and 'characterScale: characterScale' in pet_src,
@@ -2277,7 +2308,12 @@ need(model.count('ensureAccessibilityTrust()') >= 3,
 need('Opened Agents. Could not select that tab' in model,
      "a tab miss is not named on the pet")
 need('pressCursorAgentTab' in model, "Cursor jump does not press the Agents list row")
-need('agentTab: session.name' in model,
+_chat_branch_src = model[model.index('if openMode == "chat"'):]
+_chat_branch_src = _chat_branch_src[:_chat_branch_src.index('if openMode ==', 20)]
+# The RULE is that the tab match keys on `name`, never on `title` (which falls
+# back to the workspace). Pinning the exact expression broke on 2026-09-01 when
+# an ambiguity check was added around it; the rule was intact throughout.
+need('session.name' in _chat_branch_src and 'session.title' not in _chat_branch_src,
      "Cursor tab match must use the session name, not the workspace fallback title")
 need('Agents miss' in model, "Cursor miss is not named on the pet")
 need('did not open the folder' in model, "a missing Cursor.app path still opens the IDE folder")
@@ -2767,7 +2803,10 @@ need(pet.index(".onTapGesture(count: 2)") < pet.index(".onTapGesture { handleSpr
      "the double-click must be declared first or the single tap wins the race")
 menu = pet[pet.index("private func toggleSessionMenu()"):]
 menu = menu[:menu.index("\n    }") + 6]
-need("guard sessions.count > 1 else { return }" in menu,
+# Same rule, same correction as the pet-layout contract: "inert when there is
+# nothing to show" was spelled as a session COUNT, which was also inert at
+# exactly one running session and silently killed the gesture (2026-09-01).
+need("sessions.count > 1" not in menu and "isEmpty" in menu,
      "double-click must be inert when there is no list to show")
 PETCHK
 
@@ -2968,8 +3007,17 @@ need("Circle()" not in body_code and "petStateColor" not in code,
      "a focus-dot shape returned to the sprite body")
 # Floating text: pin the CALL SITES (reverting a caller to a Capsule while
 # the helper stayed intact passed the old pin) and the helper's surface.
-need(body_code.count("petFloatingText(") == 2 and "Capsule" not in body_code,
+# Scope the Capsule ban to the hint/notice region. A body-wide ban also
+# outlawed any NEW capsule control in the stack — it fired on 2026-09-01 for
+# the Close all button, which is not a hint/notice caller at all. The rule is
+# "a hint/notice caller must not revert to a bare Capsule", so check there.
+_float_region = body_code[body_code.index("model.petTerminalHint"):]
+_float_region = _float_region[:_float_region.index("SessionPetSprite")]
+need(body_code.count("petFloatingText(") == 2,
      "hint/notice no longer route through the shared floating surface")
+need("Capsule" not in _float_region,
+     "a hint/notice caller was reverted to a bare Capsule instead of the "
+     "shared floating surface")
 float_src = code[code.index("private func petFloatingText"):code.index("private var spriteHelp")]
 need(".regularMaterial" in float_src and "RoundedRectangle" in float_src and "Capsule" not in float_src,
      "petFloatingText must use the lists' regularMaterial rounded rect — "
@@ -3058,23 +3106,177 @@ need(".contextMenu {" in row_src and row_src.count("Button(") >= 3,
 need("HoverSensor { inside in" in row_src and "hoveredRowID" in code,
      "per-row hover is not on the activeAlways sensor; .onHover does not fire "
      "on a nonactivating panel")
-# Trailing inset, THIRD correction. Miles asked twice for the trailing items
-# to end ON the card edge rather than on the list's 10pt padding, so the row
-# cancelled the full 10pt. Landing at zero put the age, the workspace and both
-# action glyphs onto the card's 1px stroke, which reads as clipped, and he
-# rejected THAT on 2026-09-01: "the x and the tab target are nested right
-# against the right. no padding". 4pt back is the settlement: a 6pt margin,
-# still tucked well past the 10pt default he objected to, clear of the border.
-# Pinned as a RANGE so the next reader cannot drift back to either failure.
-_trail = re.search(r"\.padding\(\.trailing, -size\.length\((\d+)\)\)", row_src)
-need(_trail is not None, "the row lost its trailing inset adjustment entirely")
-need(2 <= int(_trail.group(1)) <= 6,
-     f"the row's trailing inset is -{_trail.group(1) if _trail else '?'}pt; "
-     "-10 puts the controls onto the card stroke (rejected 2026-09-01), "
-     "0 sits them back on the padding (rejected twice before that)")
-need(".padding(.trailing, -size.length(4))" in slot_src,
-     "the action row stopped overhanging its own hit padding, so the glyph INK "
-     "no longer lands where the age and workspace sit")
+# Trailing inset, FOURTH correction, and the first one with a measurement
+# behind it. Both lists wrap their rows in a ScrollView past three items, and a
+# ScrollView CLIPS to its bounds — so a NEGATIVE trailing inset here does not
+# move the trailing slot outward, it CUTS it. Measured on 0.5.173 against a
+# window capture: the age rendered "7" for "7m" and the workspace
+# "mu-chief-staf" for "mu-chief-staff", with no ellipsis, and on hover the
+# trailing action glyph was sliced (row 4pt + glyph row 4pt = 8pt outside the
+# clip). Three prior attempts tuned the MAGNITUDE of that overhang; every one
+# of them was clipping, just by different amounts. No overhang is allowed.
+need(not re.search(r"\.padding\(\.trailing, -size\.length\(", row_src),
+     "the row overhangs its container again. The lists clip in a ScrollView, "
+     "so this cuts the age/workspace/actions instead of moving them. Put the "
+     "tucked edge on the CONTAINER's trailing inset.")
+# Reverting the tuck to the 10pt default — the spacing rejected twice — kept
+# the suite green (2026-09-01 QA). Pin it, and ban the other overhang spellings.
+need(code.count(".padding(.trailing, size.length(2))") == 2
+     and code.count(".padding(.leading, size.length(10))") == 2,
+     "the lists lost their asymmetric trailing tuck; .horizontal 10pt restores "
+     "the dead space that was rejected twice")
+for _src, _nm in ((row_src, "row"), (slot_src, "slot")):
+    need(not re.search(r"\.offset\(x:", _src),
+         f"the {_nm} re-creates the overhang with .offset(x:), which clips "
+         "inside the ScrollView exactly like a negative inset")
+    need(not re.search(r"\.padding\(\.trailing, size\.length\(-", _src),
+         f"the {_nm} re-creates the overhang with a negative length()")
+need(not re.search(r"\.padding\(\.trailing, -size\.length\(", slot_src),
+     "the trailing slot overhangs again; the glyph row is inside the same "
+     "ScrollView clip and its last action gets sliced")
+# Both occupants must share one trailing edge: rowAction ships 4pt of hit
+# padding, so the resting text is inset by the same 4pt rather than the glyphs
+# being pushed out past the clip.
+need(re.search(r"\.padding\(\.trailing, size\.length\(4\)\)", slot_src),
+     "the resting text lost the 4pt inset that matches rowAction's hit "
+     "padding; text and hover glyphs no longer share a trailing edge")
+# (Superseded 2026-09-01. This used to require the glyph row to OVERHANG by
+# 4pt so its ink matched the age and workspace. That overhang crossed the
+# ScrollView's clip boundary and sliced the trailing action; the same edge is
+# now achieved by insetting the TEXT instead, asserted just above.)
+# A LIVE row leads with the session NAME, not its live summary. Every resumed
+# session's summary is the same boilerplate ("This session is being continued
+# from a previous..."), so leading with it made running rows indistinguishable
+# while their real names sat on the second line (Miles, 2026-09-01). Finished
+# rows still lead with their outcome — that is the 0.5.171 design and is right.
+for _fn in ("missionRow", "idleRow"):
+    _row = code[code.index(f"private func {_fn}("):]
+    _row = _row[:_row.index("actions: PetRowActions")]
+    need("outcome: session.title" in _row,
+         f"{_fn} no longer leads with the session name; running rows become "
+         "indistinguishable whenever their summaries match")
+    need("title: session.petLiveLine" in _row,
+         f"{_fn} lost its live summary from the second line")
+_done = code[code.index("private var completionsList"):]
+_done = _done[:_done.index("actions: PetRowActions")]
+# Finished rows lead with the NAME, like the live rows and the Sessions tab.
+# Leading with the summary reproduced the collision 0.5.171 was fixing: every
+# resumed session carries identical boilerplate (Miles, 2026-09-01).
+need("outcome: row.name.isEmpty" in _done,
+     "finished rows stopped leading with the session name; every resumed "
+     "session shares one summary, so the rows become indistinguishable")
+need('title: row.summary.isEmpty ? "Finished" : row.summary' in _done,
+     "finished rows lost the outcome from their second line")
+
+# The pet panel sizes ITSELF. NSHostingController defaults to
+# .preferredContentSize on macOS 13+, which resizes the window from the
+# SwiftUI content — and an AppKit content-size resize is anchored TOP-LEFT, so
+# the panel grew downward and pushed a bottom-parked figure off the display
+# (measured 2026-09-01: collapsed bottom=1620, expanded bottom=1788). syncPanel
+# anchors the BOTTOM on purpose; without this the anchor is silently overridden.
+# The position fix hangs on this handler being DELIVERED and correcting toward
+# the PARKED anchor. Both were deletable with the suite green (2026-09-01 QA):
+# dropping `panel.delegate = self` killed both handlers, and swapping
+# `anchor: anchor` for `anchor: panel.frame.origin` made it a permanent no-op.
+need("panel.delegate = self" in code,
+     "the panel has no delegate, so windowDidResize and windowDidMove are both "
+     "dead and the figure drifts with nothing looking wrong")
+need("func windowDidResize(" in code,
+     "windowDidResize is gone or renamed; NSWindowDelegate dispatch is by name")
+_resize = code[code.index("func windowDidResize("):code.index("func windowDidMove")]
+need("guard !applyingFrame" in _resize,
+     "windowDidResize lost its !applyingFrame guard, so our own setFrame "
+     "re-enters it — the documented ratchet")
+need("anchor: anchor" in _resize and "restingAnchor" in _resize,
+     "windowDidResize no longer corrects toward the PARKED anchor; computing "
+     "from the current frame makes the correction a permanent no-op")
+need("host.sizingOptions" not in code,
+     "disabling the hosting controller's sizing also stops the hosting VIEW "
+     "tracking the window, so lists lay out at a stale width and overflow "
+     "their card (2026-09-01 field regression)")
+
+# The Cursor jump presses an Agents row BY NAME. That is only safe while the
+# name identifies one agent, and the session index emits duplicates (measured
+# 2026-09-01: two Cursor rows named "COS glasses session update"), so an
+# unguarded press silently opens the wrong agent.
+_chat = model[model.index('if openMode == "chat"'):]
+_chat = _chat[:_chat.index("if openMode ==", 20)]
+need("PetRowIdentity.indistinguishable" in _chat,
+     "the Cursor jump no longer checks whether the name is ambiguous; it will "
+     "press whichever Agents row matches first and open the wrong session")
+need('agentTab: clash ? "" : session.name' in _chat,
+     "the Cursor jump passes an ambiguous name to the tab press instead of "
+     "declining it")
+_rev = model[model.index("private func revealCursorAgentsWindow("):]
+_rev = _rev[:_rev.index("\n    }\n")]
+need("if let clashHint" in _rev and _rev.index("if let clashHint") < _rev.index("pressCursorAgentTab"),
+     "the clash check must come BEFORE the tab press, or the wrong row is "
+     "pressed before the notice is ever shown")
+
+# The slot's second line must actually be RESOLVED, not passed straight through.# The slot's second line must actually be RESOLVED, not passed straight through.
+# PetRowIdentity is pure and executed in ModelsContract, but a pure helper the
+# views never call is dead code that tests green (2026-09-01).
+need("private func slotSecondLine(for session: ClaudeSession)" in code
+     and "private func slotSecondLine(for row: PetCompletion)" in code,
+     "the slot resolvers are gone; the second line falls back to a workspace "
+     "that cannot tell duplicate rows apart")
+need("workspace: slotSecondLine(for: session)" in code
+     and "workspace: slotSecondLine(for: row)" in code,
+     "a row passes its workspace straight to the slot again, bypassing the "
+     "duplicate check")
+need(code.count("workspace: slotSecondLine(for: session)") == 2,
+     "only one of the two live row builders resolves its slot line")
+_slot_s = code[code.index("private func slotSecondLine(for session: ClaudeSession)"):]
+_slot_s = _slot_s[:_slot_s.index("\n    }") + 6]
+need("createdDate" in _slot_s and "PetRowIdentity.clockLabel" in _slot_s,
+     "live rows no longer fall back to their opened time")
+_slot_c = code[code.index("private func slotSecondLine(for row: PetCompletion)"):]
+_slot_c = _slot_c[:_slot_c.index("\n    }") + 6]
+need("finishedAt" in _slot_c,
+     "finished rows must show when they FINISHED, not another clock")
+
+# Double-tap is the only gesture that both opens AND closes the menu.# Double-tap is the only gesture that both opens AND closes the menu.
+# It previously guarded on `sessions.count > 1`, so at one running session it
+# was a silent no-op, and it only toggled the RUNNING list, so a double-tap
+# while DONE was open did nothing visible (Miles, 2026-09-01, at RUNNING 1).
+_toggle = code[code.index("private func toggleSessionMenu"):]
+_toggle = _toggle[:_toggle.index("\n    }") + 6]
+need("sessions.count > 1" not in _toggle,
+     "double-tap guards on a session count again; at RUNNING 1 the gesture "
+     "silently does nothing")
+need(re.search(r"petLastOpenList = model\.petCompletionsExpanded", _toggle),
+     "double-tap no longer records which list it closed, so reopening snaps "
+     "back to RUNNING instead of where the user was")
+need("petCompletionsExpanded = false" in _toggle and "petExpanded = false" in _toggle,
+     "double-tap must close BOTH lists; closing only one leaves the other "
+     "pinned over the figure")
+# An explicit pill click is also a choice of tab; the memory has to follow it.
+_pills = code[code.index("private func pillsRow"):]
+_pills = _pills[:_pills.index("private func ledgerPill")]
+need(_pills.count("petLastOpenList") >= 2,
+     "the RUNNING/DONE pills no longer record the tab, so a later double-tap "
+     "reopens a list the user did not last use")
+# Bulk clear exists and is gated on the finished list actually being open.
+need("clearAllPetCompletions" in code,
+     "the Close all control is gone; clearing eight finished rows one X at a "
+     "time is what it exists to avoid")
+# Structural, not a 400-character proximity window: the gate sat 382 chars away
+# and one cosmetic modifier would have false-alarmed it.
+_cta_if = code.rindex("if model.petCompletionsExpanded", 0, code.index("Close all"))
+need("petCompletions.isEmpty" in code[_cta_if:code.index("Close all")],
+     "the Close all control is not gated on the finished list being open and "
+     "non-empty; it would float over the pet on its own")
+need("clearAllPetCompletions" in model,
+     "clearAllPetCompletions vanished from the model")
+# Name-only pins let the button ship dead: emptying the body, or dropping
+# either half of its contract, kept the suite green (2026-09-01 QA).
+_clr = model[model.index("func clearAllPetCompletions("):]
+_clr = _clr[:_clr.index("\n    }") + 6]
+need("petCompletions.removeAll()" in _clr, "Close all clears nothing; the button is dead")
+need("savePetCompletions()" in _clr, "Close all does not persist; rows return on relaunch")
+need("petCompletionsExpanded = false" in _clr, "Close all leaves an emptied list pinned open")
+need("guard !petCompletions.isEmpty" in _clr, "Close all lost its empty guard")
+
 # The reading surface is no longer sized by the sprite.
 need("size.length(392)" in code,
      "the card went back to the 248 root, where a finished title is 68pt "
@@ -3324,9 +3526,35 @@ need("frame.size =" not in sync,
 move = code[code.index("func windowDidMove"):code.index("private func syncLists")]
 need("guard !applyingFrame" in move,
      "windowDidMove must ignore our own setFrame or a clamped slide re-parks the pet")
-need(code.count("applyingFrame = true") == 1
-     and len(re.findall(r"(?<!var )applyingFrame = false", code)) == 1,
-     "the programmatic-move guard must wrap exactly the one setFrame")
+# Every PROGRAMMATIC setFrame must be wrapped, so windowDidMove/windowDidResize
+# never mistake our own correction for the user re-parking the pet. This used to
+# count the guard sites as exactly 1, which was a proxy for "there is only one
+# such setFrame" — it broke on 2026-09-01 when the resize re-anchor added a
+# second, equally guarded one. Assert the RULE: balanced, and every site wrapped.
+_true = len(re.findall(r"(?<!var )applyingFrame = true", code))
+_false = len(re.findall(r"(?<!var )applyingFrame = false", code))
+need(_true == _false and _true >= 1,
+     f"the applyingFrame guard is unbalanced ({_true} on, {_false} off); an "
+     "unguarded setFrame lets a clamped slide re-park the pet")
+for _fn in ("syncPanel", "windowDidResize"):
+    _body = code[code.index(f"func {_fn}("):]
+    _body = _body[:_body.index("\n    }") + 6]
+    # No `continue`. Skipping a setFrame-less body is how gutting
+    # windowDidResize passed with the suite green (2026-09-01 QA).
+    need("panel.setFrame(" in _body,
+         f"{_fn} no longer applies a frame; the correction is computed and discarded")
+    # `defer { applyingFrame = false }` is the stronger spelling — it resets on
+    # every exit path, including one a future edit inserts — but it puts the
+    # reset textually BEFORE the setFrame, so a positional check rejects it.
+    _deferred = re.search(r"defer\s*\{\s*applyingFrame = false\s*\}", _body)
+    if _deferred:
+        need(_body.index("applyingFrame = true") < _deferred.start()
+             < _body.index("panel.setFrame("),
+             f"{_fn} defers the reset before it arms the guard")
+    else:
+        need(_body.index("applyingFrame = true") < _body.index("panel.setFrame(")
+             < _body.index("applyingFrame = false"),
+             f"{_fn}'s setFrame is not wrapped by the applyingFrame guard")
 
 # The LIVE line is a ticker: fixed window, hidden overflow, motion only when
 # the text genuinely overflows.

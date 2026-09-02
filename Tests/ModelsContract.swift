@@ -1173,9 +1173,100 @@ struct ModelsContract {
         precondition(primary.intersects(healed),
                      "an off-screen pet frame must snap back onto a display")
         precondition(healed.minY >= primary.minY)
+        // Which rows the slot must disambiguate. Pure, so this is executed
+        // rather than grepped (Miles, 2026-09-01).
+        let dupPair = PetRowIdentity.indistinguishable([
+            (id: "a", name: "Codex session", workspace: "MU-Chief-Staff"),
+            (id: "b", name: "Codex session", workspace: "MU-Chief-Staff"),
+            (id: "c", name: "Fireflies meeting sync", workspace: "MU-Chief-Staff"),
+        ])
+        precondition(dupPair == ["a", "b"],
+                     "rows sharing a name AND a workspace must both be flagged; got \(dupPair)")
+        // Same name, DIFFERENT workspace: the workspace already tells them
+        // apart, so neither row may lose it.
+        precondition(PetRowIdentity.indistinguishable([
+            (id: "a", name: "Codex session", workspace: "MU-Chief-Staff"),
+            (id: "b", name: "Codex session", workspace: "cos-glasses-app"),
+        ]).isEmpty, "a shared name across different workspaces is not ambiguous")
+        // An empty name is not a name; it must never group rows together.
+        precondition(PetRowIdentity.indistinguishable([
+            (id: "a", name: "", workspace: "w"),
+            (id: "b", name: "   ", workspace: "w"),
+        ]).isEmpty, "blank names must not be treated as a shared identity")
+        // Three-way collision — the live index had eight.
+        precondition(PetRowIdentity.indistinguishable([
+            (id: "a", name: "You match a search query", workspace: "w"),
+            (id: "b", name: "You match a search query", workspace: "w"),
+            (id: "c", name: "You match a search query", workspace: "w"),
+        ]).count == 3, "every member of a collision group is flagged, not just the extras")
+        // Whitespace must not create a false distinction.
+        precondition(PetRowIdentity.indistinguishable([
+            (id: "a", name: "Codex session ", workspace: "w"),
+            (id: "b", name: "Codex session", workspace: " w"),
+        ]) == ["a", "b"], "names and workspaces are compared trimmed")
+        // The clock label is time-only and stable for a fixed locale/zone.
+        // Built from components, not a magic epoch — the first attempt hardcoded
+        // one and was two hours out, which the assertion caught.
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        let stamp = utc.date(from: DateComponents(
+            year: 2026, month: 9, day: 1, hour: 14, minute: 41))!
+        let clock = PetRowIdentity.clockLabel(
+            stamp, locale: Locale(identifier: "en_US"), timeZone: TimeZone(identifier: "UTC")!)
+        precondition(clock.contains("41") && (clock.contains("PM") || clock.contains("pm")),
+                     "the slot's clock label must read as a wall-clock time; got \(clock)")
+        precondition(!clock.contains("2026") && !clock.contains("Sep"),
+                     "the clock label must be time-only — the 57pt slot has no room for a date")
+
         let parked = CGRect(x: 2500, y: 40, width: 260, height: 180)
         precondition(PetPanelFrame.clamped(parked, screens: [primary]) == parked,
                      "an on-screen pet frame stays put")
+
+        // The parked figure must not move when a list opens. The panel is
+        // anchored by its BOTTOM edge and the menu grows UPWARD, so the figure
+        // holds still and the list appears above it. Sliding down is correct in
+        // exactly one case: parked so high that the open menu would leave the
+        // display (Miles, 2026-09-01).
+        let shortScreen = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let collapsed = CGSize(width: 490, height: 249)
+        let opened = CGSize(width: 490, height: 640)
+
+        // Parked at the BOTTOM: the figure must not move at all, and the menu
+        // must not push it off the display. This is the case that regressed.
+        let lowPark = CGPoint(x: 400, y: 0)
+        let lowClosed = PetPanelFrame.positioned(size: collapsed, anchor: lowPark, screens: [shortScreen])
+        let lowOpen = PetPanelFrame.positioned(size: opened, anchor: lowPark, screens: [shortScreen])
+        precondition(lowClosed.minY == lowPark.y && lowOpen.minY == lowPark.y,
+                     "a bottom-parked figure moved when the menu opened: bottom went from "
+                     + "\(lowClosed.minY) to \(lowOpen.minY); it gets pushed off the display")
+        precondition(lowOpen.maxY > lowClosed.maxY,
+                     "the menu must grow UPWARD, above the figure")
+        precondition(lowOpen.height == opened.height,
+                     "a panel with room above it must not be shrunk")
+
+        // Mid-screen park with room above: identical rule, nothing moves.
+        let midPark = CGPoint(x: 400, y: 200)
+        precondition(PetPanelFrame.positioned(size: opened, anchor: midPark, screens: [shortScreen])
+                     == CGRect(origin: midPark, size: opened),
+                     "a panel that already fits must be returned untouched")
+
+        // Parked at the TOP: here, and only here, the panel slides down so the
+        // menu stays on screen.
+        // Closed (249) fits at y=640; open (640) does not. That is precisely the
+        // "parked at the top" case and nothing else.
+        let highPark = CGPoint(x: 400, y: 640)
+        let highOpen = PetPanelFrame.positioned(size: opened, anchor: highPark, screens: [shortScreen])
+        precondition(highOpen.maxY <= shortScreen.maxY,
+                     "an open menu must never run off the top of the display")
+        precondition(highOpen.minY < highPark.y,
+                     "a top-parked figure is expected to slide down to keep the menu on screen")
+        precondition(highOpen.height == opened.height,
+                     "the top-parked case moves the panel; it must not also shrink it")
+
+        // Closing returns to exactly where it was parked, from either case.
+        precondition(PetPanelFrame.positioned(size: collapsed, anchor: highPark, screens: [shortScreen])
+                     == CGRect(origin: highPark, size: collapsed),
+                     "closing must land back on the parked frame")
     }
 
     /// Agents list rows, not Cursor window titles. Contains matching against

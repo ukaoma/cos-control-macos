@@ -1,3 +1,107 @@
+## 0.5.181 (build 219)
+
+A Morning brief card, when the managed server is 6.43.0 or newer. The server
+now composes a start-of-day brief on a schedule and drops it in the inbox as a
+numbered reply; this card is where you say when and from what. Turn it on or
+off, set the time and the weekdays, and open Sources to choose what goes in
+(Calendar, recent-meeting decisions, tasks due, what is waiting on you, and the
+optional set: knowledge graph, reflection, health, an opening reading, a
+metrics pulse, one of your own skills such as /good-morning, or a custom
+section), each with its own window. Apply saves the whole card in one change.
+Run Now fires a brief immediately, five a day at most.
+
+The card edits a draft. A background refresh never overwrites a half-typed
+time, and every field goes to the server in one PUT rather than a stepper
+saving on each click. The status line tells you when the next brief fires, or
+why it will not: off while Background jobs are off, paused during maintenance.
+The source list is capped and scrolls, so eleven sources with their options
+cannot push the footer off the panel.
+
+The helper carries three pass-throughs (`morning-brief`, `set-morning-brief`
+with the change on stdin, `run-morning-brief`). Validation stays on the
+server; a refused change comes back as the server's own sentence.
+
+## 0.5.180 (build 218)
+
+When two rows cannot be told apart, the pet shows the time instead of the
+workspace. Sessions that share a name usually share a workspace too, so the
+second line under the age was spending itself on a value that distinguished
+nothing. A finished row now shows when it finished; a live one shows when it
+opened. Rows with a name of their own are untouched, and so are rows that share
+a name across different workspaces, where the workspace is already doing the job.
+
+Clicking a Cursor row no longer opens the wrong agent. The jump presses the
+Agents row whose title matches the session's name, which is only safe while the
+name belongs to one agent. It does not always: two Cursor sessions here are both
+called "COS glasses session update", and the press took whichever came first.
+When the name is shared, Control now opens the Agents window, leaves the choice
+alone, and tells you which one is yours by the time it started.
+
+## 0.5.179 (build 217)
+
+Finished rows lead with the session's name, the same as the live rows and the
+Sessions tab. They led with the summary, and every resumed session carries the
+same one, so the finished list repeated a single line of boilerplate where the
+names should have been. What the session did moves to the second line.
+
+The ledger bar shows its true colours. The bar's segments were painting through
+the panel's material onto whatever was behind the window, so DONE came out a
+duller, greener tan than the DONE button's own dot, even though both are set
+from one value. The bar now sits on a solid floor like the buttons do.
+
+## 0.5.178 (build 216)
+
+The figure holds still when a list opens, and the lists keep their own width.
+
+The window sizes itself from its content, and that kind of resize is anchored at
+the top left, so opening a list grew the panel downward and pushed a
+bottom-parked character off the screen. The panel now puts its bottom edge back
+after every resize, so the menu opens upward from where you parked it. It still
+moves down in one case only, when the pet sits so high that an open menu would
+leave the top of the display.
+
+The previous attempt at this turned the window's self-sizing off entirely. That
+stopped the downward growth but also stopped the content tracking the window, so
+the lists laid out at the wrong width and spilled out of their cards. That build
+was withdrawn and never published.
+
+Running rows lead with the session's name. They led with the live summary, and
+every resumed session carries the same one, so several rows read identically
+while the name that tells them apart sat underneath.
+
+## 0.5.176 (build 214) — withdrawn, never published
+
+This build tried to hold the figure still by trimming the panel's height. That
+was the wrong lever and it was rejected in testing. The entry is kept so the
+build numbers read straight; the behaviour it described is not in any shipped
+release. 0.5.177 was withdrawn the same way, for changing how the window sized
+itself, which made the lists lay out at the wrong width.
+
+## 0.5.175 (build 213)
+
+Double-clicking the figure opens and closes the menu again, and it remembers
+where you were. It had been gated on having more than one running session, so
+at one running session, which is most of the time, the gesture quietly did
+nothing. It also only ever worked on the running list, so double-clicking while
+the finished list was open looked broken. Now it closes whichever list is open
+and reopens that same one, and the RUNNING and DONE buttons set what it reopens
+too. It stays inert only when there is genuinely nothing to show.
+
+Close all clears the finished list in one go. It sits between the list and the
+figure while that list is open. Nothing is stopped or deleted; the rows just
+stop being listed.
+
+## 0.5.174 (build 212)
+
+The session list stops cutting the ends off its right-hand column. Past three
+items each list scrolls, and a scroll view clips whatever leaves its bounds, so
+the rows' trailing column was being sliced rather than nudged: an age of seven
+minutes rendered as "7", a workspace called mu-chief-staff rendered as
+mu-chief-staf, and under the pointer the last of the three row actions lost its
+right edge. Nothing there reached outside the list any more. The tucked edge is
+now set by the list itself, and the resting text and the hover actions share one
+trailing edge instead of being aligned by hand.
+
 ## 0.5.173 (build 211)
 
 Miles moves through the Three and Four-plus fights with four additional bridge

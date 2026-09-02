@@ -114,6 +114,17 @@ else
   /usr/bin/codesign --force --deep --sign - "$APP"
 fi
 /usr/bin/codesign --verify --deep --strict "$APP"
+# TCC (Accessibility) is keyed to the DESIGNATED REQUIREMENT. If we signed with
+# a real identity, that requirement must be certificate-based; a bare cdhash
+# means the signature silently fell back to ad-hoc and every installed grant
+# would be stranded on update. Fail the BUILD, not a later test run.
+if [ -n "$SIGN_ID" ] || [ -n "$LOCAL_SIGN_ID" ]; then
+  if /usr/bin/codesign -d -r- "$APP" 2>&1 | /usr/bin/sed -n 's/.*designated => //p' \
+     | /usr/bin/grep -q 'cdhash'; then
+    echo "Refusing to ship: designated requirement is a per-build cdhash (ad-hoc). Installing this would strand every Accessibility grant." >&2
+    exit 68
+  fi
+fi
 /usr/bin/vtool -show-build "$APP/Contents/MacOS/COS Control" | /usr/bin/grep -q 'minos 14.0'
 /usr/bin/vtool -show-build "$APP/Contents/Resources/cos-control-helper" | /usr/bin/grep -q 'minos 14.0'
 if [ -n "$SIGN_ID" ]; then
