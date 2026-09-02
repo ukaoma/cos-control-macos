@@ -1342,10 +1342,11 @@ struct ActivityWindow: View {
             } else if visibleRecentMessages.isEmpty {
                 emptyState(.messages, text: recentMissCopy)
             } else {
-                // 0.5.185 — the legend for the ROUTINE / TASK label. A positive
-                // claim only: it is true on a server that stamps nothing, and it
-                // infers nothing from a row that carries no label.
-                Text("Runs your Mac started are labeled ROUTINE or TASK.")
+                // 0.5.185 — the legend explains the two labels and says NOTHING
+                // about a row that carries none: on a server that does not stamp
+                // (before 6.43.4) the Mac's own brief is unlabeled, so any sentence
+                // about unlabeled rows, positive or negative, would be false there.
+                Text("ROUTINE and TASK mark a run your Mac started.")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2140,8 +2141,8 @@ struct ActivityWindow: View {
                         .foregroundStyle(.tertiary)
                     // 0.5.185 — two tertiary segments, each omitted when unknown.
                     // The label comes first: it is the one thing that changes
-                    // what the row IS. A row with no label was not started by
-                    // a routine or a task; that is all its absence says.
+                    // what the row IS. A row with no label says nothing on a
+                    // server that does not stamp; nothing is inferred from it.
                     if let origin = turn.originLabel {
                         Text(origin)
                             .font(.system(size: 9, weight: .semibold, design: .monospaced))

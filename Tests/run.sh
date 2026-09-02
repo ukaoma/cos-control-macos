@@ -33,7 +33,7 @@ if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
 if count < 400:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 400 (403 at 0.5.185)")
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 400 (409 at 0.5.185)")
 ' "$SELF_TEST"
 
 # THE APP ITSELF MUST COMPILE.
@@ -167,11 +167,15 @@ assert 'turn.sessionId.prefix(8)' not in row, 'the session chunk would appear on
 detail = activity.split('private func messageDetail(', 1)[1].split('\n    }', 1)[0]
 assert 'turn.detailMetaLine' in detail
 # The legend is a positive claim, above the list, and the panel has no message list at all.
-assert 'Runs your Mac started are labeled ROUTINE or TASK.' in activity, 'Activity window legend missing'
-assert activity.index('Runs your Mac started are labeled ROUTINE or TASK.') < activity.index('ForEach(visibleRecentMessages)'), 'legend must sit above the list'
-assert 'Unlabeled rows were started by you' not in activity
+assert 'ROUTINE and TASK mark a run your Mac started.' in activity, 'Activity window legend missing'
+assert activity.index('ROUTINE and TASK mark a run your Mac started.') < activity.index('ForEach(visibleRecentMessages)'), 'legend must sit above the list'
+# No sentence about UNLABELED rows in either voice: on a pre-6.43.4 server the
+# Mac's own brief is unlabeled, so both "were started by you" and "runs your
+# Mac started are labeled" are false there.
+assert 'Unlabeled rows were started by you' not in activity and 'Runs your Mac started are labeled' not in activity
 views = (root / 'Sources/Views.swift').read_text()
 assert 'recentGlassesCard' not in views and 'turnRowTitle' not in views, 'the dead panel message card is back'
+assert 'attachmentStrip(title:' not in views, 'orphaned helper of the deleted panel card is back'
 assert 'Last brief failed · ' in views and '.help(morningBriefRunLabel(last))' in views
 assert '@ViewBuilder private var morningBriefActions' in views or '@ViewBuilder\n    private var morningBriefActions' in views
 ORIGIN
@@ -1954,7 +1958,6 @@ need('loadVoiceDirectory' in model and 'voiceDirectoryError' in model,
      "voice directory has no explicit loading/error contract")
 main_panel = re.search(r"private var mainPanel: some View \{(.*?)\n    \}\n\n", views, re.S)
 need(main_panel is not None, "mainPanel not found")
-need('recentGlassesCard' not in main_panel.group(1), "Recent Glasses is still nested in the menu panel")
 need('reviewableMeetingsCard' not in main_panel.group(1), "Review Speakers is still nested in the menu panel")
 need('contextListCard' not in main_panel.group(1), "Memory/Threads are still nested in the menu panel")
 need('SessionPetPresenter' in app, "the pet presenter is not constructed at launch")

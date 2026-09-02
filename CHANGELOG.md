@@ -3,16 +3,19 @@
 Every message row says where it came from. With server 6.43.4 a run the Mac
 started, the scheduled morning brief today and agent tasks next, carries a
 ROUTINE or TASK label in the Activity window's Messages list and on the
-message detail line, with the routine or task named in the hover; the model
-that answered sits beside it wherever the server reports one. Nothing is
-inferred from a row that carries no label. A legend above the list says only
-what is true on every server: runs your Mac started are labeled. The helper
+message detail line, with the routine or task named in the list row's hover;
+the model that answered sits beside it wherever the server reports one.
+Nothing is inferred from a row that carries no label, and the legend above
+the list explains the two labels without saying anything about rows that
+carry none (on a server before 6.43.4 the Mac's own brief is unlabeled). The
+helper
 passes four bounded keys through its allowlist (modelPreference, origin,
 originId, messageEra) and drops anything outside the server's two origin
 kinds, its id alphabet, or a plain identifier; the model applies the same
 bounds again. The morning brief card now shows WHY the last brief failed, on
 its own line, so a server that refuses a submission is readable on the card.
-The panel's own recent-messages card, unmounted since 0.5.19, is removed.
+The panel's own recent-messages card, unmounted since 0.5.19, is removed
+along with the private attachment strip only it called.
 
 ## 0.5.184 (build 222)
 

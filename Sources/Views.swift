@@ -1465,56 +1465,6 @@ struct ControlPanel: View {
     }
 
     @ViewBuilder
-    private func attachmentStrip(title: String, attachments: [GlassesAttachmentRef]) -> some View {
-        if !attachments.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title.uppercased())
-                    .font(.system(size: 9, weight: .semibold))
-                    .tracking(1)
-                    .foregroundStyle(.secondary)
-                ScrollView(.horizontal) {
-                    LazyHStack(spacing: 6) {
-                        ForEach(attachments) { attachment in
-                            Button {
-                                model.openMediaPreview(attachment)
-                            } label: {
-                                ZStack {
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(COSPalette.panel)
-                                    switch model.mediaPreviewStates[attachment.id] {
-                                    case .ready(let image):
-                                        Image(nsImage: image)
-                                            .resizable()
-                                            .aspectRatio(contentMode: .fill)
-                                    case .unavailable(let reason):
-                                        Image(systemName: "photo.badge.exclamationmark")
-                                            .foregroundStyle(.secondary)
-                                            .help(reason)
-                                    case .loading, nil:
-                                        ProgressView().controlSize(.mini)
-                                    }
-                                    if model.previewingMediaID == attachment.id {
-                                        Color.black.opacity(0.18)
-                                        ProgressView().controlSize(.mini)
-                                    }
-                                }
-                                .frame(width: 72, height: 54)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(COSPalette.line, lineWidth: 1))
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(model.previewingMediaID != nil)
-                            .help("Open \(attachment.displayLabel.lowercased())")
-                            .onAppear { model.loadThumbnail(attachment) }
-                            .onDisappear { model.cancelThumbnail(attachment) }
-                        }
-                    }
-                }
-                .scrollIndicators(.hidden)
-            }
-        }
-    }
-
     // ── Morning brief (server 6.43.0) ────────────────────────────────────────
     //
     // Split into small views on purpose: one `body` holding the schedule row,
@@ -1750,7 +1700,14 @@ struct ControlPanel: View {
             // 0.5.185 — the reason travels with the verdict. A 6.43.4 server
             // that refuses the submission (a strict-origin 400, a closed
             // admission) is visible here, on the card, before any inbox exists.
-            let reason = (run.errorMessage ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            // Server-authored text on a card line: collapse newlines and drop
+            // control characters before it reaches a Text, the way boundedToken
+            // does for identifiers; then cap it.
+            let reason = (run.errorMessage ?? "")
+                .components(separatedBy: .newlines).joined(separator: " ")
+                .unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
+                .reduce(into: "") { $0.unicodeScalars.append($1) }
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             if !reason.isEmpty { return "Last brief failed · \(reason.prefix(160))" }
             return "Last brief failed"
         case "canceled", "interrupted": return "Last brief \(run.status)"
