@@ -1,3 +1,13 @@
+## 0.5.182 (build 220)
+
+Miles's three-session fight now keeps his feet under him through both retreat
+beats instead of explaining depth with a shrinking figure. The repaired
+footwork leads into the approved slash, the Force-thrown debris blocks the
+incoming bolt without putting it through his hand, and the bottom-right droid
+separates on contact before the larger destruction burst. The exact 2.86-second
+loop, 110 ms shipping cadence, other session stories, idle scale, and every
+custom character remain unchanged.
+
 ## 0.5.181 (build 219)
 
 A Morning brief card, when the managed server is 6.43.0 or newer. The server

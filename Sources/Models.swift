@@ -39,6 +39,7 @@ enum JSONValue: Codable, Sendable {
     var array: [JSONValue]? { if case .array(let value) = self { value } else { nil } }
 }
 
+
 struct HelperResponse: Codable, Sendable {
     let ok: Bool
     let message: String
@@ -5495,6 +5496,7 @@ enum PetSpriteStore {
                 ("session-pet-trio-story-v15-1.png", 13),
                 ("session-pet-trio-story-v15-2.png", 13),
                 ("session-pet-trio-story-v16.png", 26),
+                ("session-pet-trio-story-v17.png", 26),
             ],
             .swarm: [
                 (poseFileName(.swarm), 6),
@@ -5878,4 +5880,3 @@ struct MorningBriefSettings: Sendable {
         return formatter.string(from: date)
     }
 }
-

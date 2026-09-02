@@ -1738,7 +1738,7 @@ struct ModelsContract {
         let authoredStories: [(pose: PetSpritePose, file: String, frames: Int)] = [
             (.working, "session-pet-working-one-droid-v15-2.png", 16),
             (.duel, "session-pet-duel-two-droid-v15-2.png", 17),
-            (.trio, "session-pet-trio-story-v16.png", 26),
+            (.trio, "session-pet-trio-story-v17.png", 26),
             (.swarm, "session-pet-swarm-story-v16.png", 52),
         ]
         var storyFrames: [PetSpritePose: [NSImage]] = [:]
@@ -1822,8 +1822,8 @@ struct ModelsContract {
                 }
             }
             if story.pose == .trio || story.pose == .swarm {
-                let expectedRuns = story.pose == .trio ? 15 : 28
-                let expectedHolds = story.pose == .trio ? 11 : 24
+                let expectedRuns = story.pose == .trio ? 20 : 28
+                let expectedHolds = story.pose == .trio ? 6 : 24
                 precondition(runs.count == expectedRuns
                                 && runs.filter({ $0.count == 2 }).count == expectedHolds
                                 && runs.allSatisfy({ $0.count == 1 || $0.count == 2 }),

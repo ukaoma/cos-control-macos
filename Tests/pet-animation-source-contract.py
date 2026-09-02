@@ -44,9 +44,9 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
     )
     need(
         state["trio"] == {
-            "file": "session-pet-trio-story-v16.png", "frames": 26, "interval": 0.11
+            "file": "session-pet-trio-story-v17.png", "frames": 26, "interval": 0.11
         },
-        "three sessions do not point at the approved sparse-bridge story",
+        "three sessions do not point at the approved footwork-and-strike repair",
     )
     need(
         state["swarm"] == {
@@ -72,6 +72,7 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         "session-pet-swarm-story-v15-3.png": "9cf09b01a930d8980eb765825fc2a12e2213289d7792df2249c26fcc8eec8b7e",
         "session-pet-swarm-story-v15-4.png": "a44550df21b81bd52604d18f5972697bc3e36bbf8823f7a9c34b5f0b1bf7d7ee",
         "session-pet-trio-story-v16.png": "bd0147eccacc01ef7cded5dd247cb35dbddc966c010d6bb0e1a0e0f6a227ccbd",
+        "session-pet-trio-story-v17.png": "e08983b98e99220dd09885c4e68ef4061bdfd2b15756aae110de9fd7166b2bc1",
         "session-pet-swarm-story-v16.png": "80415ed66aa649763b42c3a934df40511e0ff258185b82b39a73fb8aca3211f3",
     }
     for file, expected_hash in approved_hashes.items():
@@ -132,7 +133,7 @@ def validate(root: pathlib.Path, models: str, controller: str, motion: str, pet:
         and "installed.count == retainedStock.count" in models
         and "let storyPoses: [PetSpritePose] = [.working, .duel, .trio, .swarm]" in models
         and "updated[story.pose] = (story.file, story.frames)" in models
-        and int(re.search(r"petDefaultArtGeneration = (\d+)", controller).group(1)) >= 14
+        and int(re.search(r"petDefaultArtGeneration = (\d+)", controller).group(1)) >= 19
         and "if refresh != .failed" in controller,
         "installed Miles packs will not receive all four new story assets",
     )
@@ -192,9 +193,9 @@ def main() -> None:
     )
 
     must_fail(
-        "old art generation strands installed V15.3 packs",
+        "old art generation strands installed V16 packs",
         root, models,
-        re.sub(r"petDefaultArtGeneration = \d+", "petDefaultArtGeneration = 13", controller),
+        re.sub(r"petDefaultArtGeneration = \d+", "petDefaultArtGeneration = 18", controller),
         motion, pet,
     )
 
