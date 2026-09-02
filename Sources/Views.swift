@@ -1769,6 +1769,15 @@ struct ControlPanel: View {
                     if let description = spec?.description, !description.isEmpty {
                         Text(description).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
+                    // Server 6.43.1: the depth behind the source, from the same
+                    // wells the Activity tiles read. Amber only when a probe that
+                    // should answer did not; "runtime" is a fact, not a warning.
+                    if let coverage = model.morningBrief?.coverage[source.id] {
+                        Text(coverage.summary)
+                            .font(.caption2)
+                            .foregroundStyle(coverage.state == "unavailable" ? COSPalette.amber : coverage.state == "ready" ? COSPalette.green : Color.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             if source.enabled, let options = spec?.options, !options.isEmpty {
@@ -1835,7 +1844,9 @@ struct ControlPanel: View {
     private func morningBriefRunLabel(_ run: MorningBriefSettings.Run) -> String {
         let number = run.globalMsgNum.map { " #\($0)" } ?? ""
         switch run.status {
-        case "completed": return "Last brief delivered\(number)"
+        case "completed":
+            if let sections = run.sectionsLabel { return "Delivered\(number) · \(sections)" }
+            return "Last brief delivered\(number)"
         case "failed", "submit_failed": return "Last brief failed"
         case "canceled", "interrupted": return "Last brief \(run.status)"
         default: return "Brief running\(number)"

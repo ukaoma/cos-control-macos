@@ -1,3 +1,15 @@
+## 0.5.183 (build 221)
+
+The Morning brief card now shows what is behind each source. Under every
+source in the Sources list is the line server 6.43.1 reports for it: meetings
+stored and the newest month, memories and threads, events on today's calendar,
+open tasks, the reflection log, whether the named skill exists. Green when
+the well is reachable and non-empty, amber only when a probe that should
+answer did not, plain when the COS reads it at run time (Slack, health,
+dashboards). The last-run line reads "Delivered #74 · 3 of 4 sections ·
+calendar not delivered" once the brief completes. On a 6.43.0 server the card
+is unchanged.
+
 ## 0.5.182 (build 220)
 
 Miles's three-session fight now keeps his feet under him through both retreat

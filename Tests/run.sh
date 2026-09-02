@@ -119,6 +119,14 @@ assert 'if let draft = briefDraft { model.saveMorningBrief(draft) }' in views
 # The source list is capped and scrolls, per the 390pt panel rule.
 sources = views.split('private func morningBriefSources(', 1)[1].split('\n    }', 1)[0]
 assert 'ScrollView' in sources and '.frame(maxHeight: 230)' in sources
+# 0.5.183 — server 6.43.1 coverage: parsed by source id, rendered under the
+# description, amber ONLY for unavailable; and the last run's section outcome.
+assert 'details["coverage"]?.object?["sources"]?.array' in models
+assert 'let coverage: [String: Coverage]' in models
+row = views.split('private func morningBriefSourceRow(', 1)[1].split('\n    }', 1)[0]
+assert 'model.morningBrief?.coverage[source.id]' in row and 'coverage.state == "unavailable" ? COSPalette.amber' in row
+assert 'var sectionsLabel: String?' in models and 'object["sections"]?.array' in models
+assert 'if let sections = run.sectionsLabel { return "Delivered' in views
 BRIEF
 
 # Release build must compile the component too, or the shipped app loses it.

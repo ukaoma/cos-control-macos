@@ -5767,6 +5767,21 @@ struct MorningBriefSettings: Sendable {
         var options: [String: JSONValue]
     }
 
+    /// Server 6.43.1: what the server can see behind one source. `state` is
+    /// ready / empty / unavailable / runtime; `summary` is one settings line.
+    struct Coverage: Sendable {
+        let state: String
+        let summary: String
+    }
+
+    /// Server 6.43.1: one asked-for section of a finished run and how it came
+    /// back (present / unavailable / skipped / missing / pending).
+    struct SectionOutcome: Sendable, Identifiable {
+        let id: String
+        let label: String
+        let state: String
+    }
+
     struct Run: Sendable, Identifiable {
         let id: String
         let trigger: String
@@ -5775,6 +5790,21 @@ struct MorningBriefSettings: Sendable {
         let globalMsgNum: Int?
         let preview: String?
         let errorMessage: String?
+        let sections: [SectionOutcome]
+
+        /// "3 of 4 sections · calendar not delivered", or nil before completion.
+        var sectionsLabel: String? {
+            guard status == "completed", !sections.isEmpty else { return nil }
+            let present = sections.filter { $0.state == "present" }.count
+            let notDelivered = sections.filter { $0.state == "unavailable" || $0.state == "missing" }.map { $0.label.lowercased() }
+            var line = "\(present) of \(sections.count) section\(sections.count == 1 ? "" : "s")"
+            if !notDelivered.isEmpty {
+                line += " · " + notDelivered.prefix(2).joined(separator: ", ")
+                if notDelivered.count > 2 { line += " +\(notDelivered.count - 2)" }
+                line += " not delivered"
+            }
+            return line
+        }
     }
 
     var enabled: Bool
@@ -5790,6 +5820,8 @@ struct MorningBriefSettings: Sendable {
     let gate: String
     let serverTimezone: String
     let runs: [Run]
+    /// Keyed by source id. Empty on a 6.43.0 server (no `coverage` in the reply).
+    let coverage: [String: Coverage]
 
     init?(_ details: [String: JSONValue]) {
         guard let config = details["config"]?.object,
@@ -5834,6 +5866,14 @@ struct MorningBriefSettings: Sendable {
         serverTimezone = status["serverTimezone"]?.string ?? timezone
         runs = (details["runs"]?.array ?? []).compactMap { entry in
             guard let object = entry.object, let id = object["id"]?.string else { return nil }
+            let sections = (object["sections"]?.array ?? []).compactMap { entry -> SectionOutcome? in
+                guard let section = entry.object, let sectionID = section["id"]?.string else { return nil }
+                return SectionOutcome(
+                    id: sectionID,
+                    label: section["label"]?.string ?? sectionID,
+                    state: section["state"]?.string ?? "pending"
+                )
+            }
             return Run(
                 id: id,
                 trigger: object["trigger"]?.string ?? "scheduled",
@@ -5841,9 +5881,17 @@ struct MorningBriefSettings: Sendable {
                 status: object["status"]?.string ?? "unknown",
                 globalMsgNum: object["globalMsgNum"]?.int,
                 preview: object["preview"]?.string,
-                errorMessage: object["error"]?.object?["message"]?.string
+                errorMessage: object["error"]?.object?["message"]?.string,
+                sections: sections
             )
         }
+        var coverage: [String: Coverage] = [:]
+        for entry in details["coverage"]?.object?["sources"]?.array ?? [] {
+            guard let row = entry.object, let sourceID = row["id"]?.string,
+                  let summary = row["summary"]?.string, !summary.isEmpty else { continue }
+            coverage[sourceID] = Coverage(state: row["state"]?.string ?? "runtime", summary: summary)
+        }
+        self.coverage = coverage
     }
 
     func spec(for sourceID: String) -> SourceSpec? {
