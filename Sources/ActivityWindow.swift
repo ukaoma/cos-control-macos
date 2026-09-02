@@ -1353,6 +1353,12 @@ struct ActivityWindow: View {
                             .buttonStyle(.plain)
                             Divider().padding(.leading, 46)
                         }
+                        // 0.5.185 — the legend for the ROUTINE / TASK label, at the
+                        // foot of the list where the eye lands after a scan.
+                        Text("Unlabeled rows were started by you. ROUTINE and TASK rows were started by your Mac.")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                            .padding(.top, 14)
                     }
                     .padding(.horizontal, 22)
                     .padding(.bottom, 22)
@@ -2129,6 +2135,26 @@ struct ActivityWindow: View {
                     Text(turn.timeLabel)
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.tertiary)
+                    // 0.5.185 — three tertiary segments, each omitted when unknown.
+                    // The label comes first: it is the one thing that changes
+                    // what the row IS. Unlabeled rows were started by Miles.
+                    if let origin = turn.originLabel {
+                        Text(origin)
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .tracking(0.6)
+                            .foregroundStyle(.tertiary)
+                            .help(turn.originTitle ?? "")
+                    }
+                    if let modelLabel = turn.modelLabel {
+                        Text(modelLabel)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                    }
+                    if !turn.sessionId.isEmpty {
+                        Text(String(turn.sessionId.prefix(8)))
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.quaternary)
+                    }
                     if let glyph = turn.attachmentGlyph {
                         Label("\(turn.attachments.count)", systemImage: glyph)
                             .font(.system(size: 9.5))
@@ -2656,7 +2682,7 @@ struct ActivityWindow: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(turn.no.map { "Message #\($0)" } ?? "Message")
                             .font(.system(size: 19, weight: .semibold))
-                        Text("\(turn.timeLabel) · \(turn.source.isEmpty ? "COS Glasses" : turn.source)")
+                        Text(turn.detailMetaLine)
                             .font(.system(size: 10.5, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }

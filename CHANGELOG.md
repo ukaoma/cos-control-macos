@@ -1,3 +1,17 @@
+## 0.5.185 (build 223)
+
+Every message row says where it came from. With server 6.43.4 a run the Mac
+started, the scheduled morning brief today and agent tasks next, carries a
+ROUTINE or TASK label in the panel's recent messages, in the Activity window's
+Messages list, and on the message detail line, beside the model that answered
+and the first eight characters of the session. Unlabeled rows were started by
+you; nothing is inferred from a missing label, so rows from an older server
+render exactly as before. The helper passes four bounded keys through its
+allowlist (modelPreference, origin, originId, messageEra) and drops anything
+outside the server's two origin kinds or its id alphabet; the model applies the
+same bounds again. The morning brief card now shows WHY the last brief failed,
+so a server that refuses a submission is visible on the card.
+
 ## 0.5.184 (build 222)
 
 Update Server no longer depends on one vendor's meter. The transactional

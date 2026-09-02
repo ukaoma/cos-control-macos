@@ -129,6 +129,42 @@ assert 'var sectionsLabel: String?' in models and 'object["sections"]?.array' in
 assert 'if let sections = run.sectionsLabel { return "Delivered' in views
 BRIEF
 
+# ── Origin label (0.5.185) ────────────────────────────────────────────────────
+# Server 6.43.4 stamps origin/originId on a run the Mac started. The helper
+# passes exactly four bounded keys through its allowlist, the model reads them
+# through the failable init with the same bounds, and every row surface renders
+# the label. The behaviour executes in the helper self-test and ModelsContract
+# above; these pins only stop the wiring from being quietly removed.
+/usr/bin/python3 - "$ROOT" <<'ORIGIN'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+helper = (root / 'HelperSources/main.swift').read_text()
+norm = helper.split('private func normalizeRecentMessage(', 1)[1].split('\n    }', 1)[0]
+for key in ('"modelPreference"', '"origin"', '"originId"', '"messageEra"'):
+    assert key in norm, 'helper allowlist lost %s' % key
+assert 'Self.recentOriginKinds.contains(origin)' in norm and 'validOriginID(originId)' in norm
+assert 'model.count <= 64' in norm and 'era.count <= 80' in norm
+assert 'recentOriginKinds: Set<String> = ["routine", "task"]' in helper
+models = (root / 'Sources/Models.swift').read_text()
+turn = models.split('struct GlassesTurn:', 1)[1].split('\nstruct ', 1)[0]
+for key in ('object["modelPreference"]?.string', 'object["origin"]?.string', 'object["originId"]?.string', 'object["messageEra"]?.string'):
+    assert key in turn, 'GlassesTurn failable init lost %s' % key
+assert 'let idBase = [no.map(String.init) ?? "x", sessionId, object["timestamp"]?.int.map(String.init) ?? UUID().uuidString].joined(separator: "|")' in turn
+assert 'var originLabel: String?' in turn and 'var modelLabel: String?' in turn
+assert 'originKinds: Set<String> = ["routine", "task"]' in turn
+activity = (root / 'Sources/ActivityWindow.swift').read_text()
+row = activity.split('private func messageRow(', 1)[1].split('\n    }', 1)[0]
+assert 'turn.originLabel' in row and 'turn.modelLabel' in row, 'messageRow lost a segment'
+detail = activity.split('private func messageDetail(', 1)[1].split('\n    }', 1)[0]
+assert 'turn.detailMetaLine' in detail
+views = (root / 'Sources/Views.swift').read_text()
+title = views.split('private func turnRowTitle(', 1)[1].split('\n    }', 1)[0]
+assert 'turn.originLabel' in title and title.index('label') < title.index('turn.timeLabel')
+assert 'Last brief failed · ' in views
+assert 'Unlabeled rows were started by you' in views, 'panel legend missing'
+assert 'Unlabeled rows were started by you' in activity, 'Activity window legend missing'
+ORIGIN
+
 # Release build must compile the component too, or the shipped app loses it.
 /usr/bin/grep -q 'Sources/COSConfirm.swift' "$ROOT/scripts/build-release.sh"
 

@@ -1555,6 +1555,13 @@ struct ControlPanel: View {
                         }
                         .frame(maxHeight: 300)
                         .scrollIndicatorsFlash(onAppear: true)
+                        // 0.5.185 — the legend for the ROUTINE / TASK label. Absence is
+                        // the common case and it has to mean something on its own.
+                        Text("Unlabeled rows were started by you. ROUTINE and TASK rows were started by your Mac.")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 4)
                     }
                 }
                 .padding(.top, 6)
@@ -1847,7 +1854,12 @@ struct ControlPanel: View {
         case "completed":
             if let sections = run.sectionsLabel { return "Delivered\(number) · \(sections)" }
             return "Last brief delivered\(number)"
-        case "failed", "submit_failed": return "Last brief failed"
+        case "failed", "submit_failed":
+            // 0.5.185 — the reason travels with the verdict. A 6.43.4 server
+            // that refuses the submission (a strict-origin 400, a closed
+            // admission) is visible here, on the card, before any inbox exists.
+            if let message = run.errorMessage, !message.isEmpty { return "Last brief failed · \(message)" }
+            return "Last brief failed"
         case "canceled", "interrupted": return "Last brief \(run.status)"
         default: return "Brief running\(number)"
         }
@@ -2346,7 +2358,10 @@ struct ControlPanel: View {
 
     private func turnRowTitle(_ turn: GlassesTurn) -> String {
         let number = turn.no.map { "#\($0)" } ?? "#"
-        return "\(number) · \(turn.timeLabel) · \(turn.previewQuery)"
+        // 0.5.185 — the label sits BEFORE the preview so a scan down the list
+        // separates the Mac's runs from Miles's own without reading a word.
+        let label = turn.originLabel.map { " · \($0)" } ?? ""
+        return "\(number)\(label) · \(turn.timeLabel) · \(turn.previewQuery)"
     }
 
     private var runtimeLabel: String {

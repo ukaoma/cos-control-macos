@@ -5936,7 +5936,36 @@ final class COSControlHelper {
         ]
         let attachments = normalizeAttachments(raw["attachments"])
         if !attachments.isEmpty { normalized["attachments"] = attachments }
+        // 0.5.185 — four bounded pass-throughs (server 6.43.4). `origin` is the
+        // server's stamp on a run the Mac started; only its two kinds cross, and
+        // `originId` crosses only beside a kept origin and only in the server's
+        // own id alphabet. Anything else is dropped here, so the app never has
+        // to decide what a value it did not expect means.
+        if let model = raw["modelPreference"] as? String, !model.isEmpty, model.count <= 64 {
+            normalized["modelPreference"] = model
+        }
+        if let origin = raw["origin"] as? String, Self.recentOriginKinds.contains(origin) {
+            normalized["origin"] = origin
+            if let originId = raw["originId"] as? String, validOriginID(originId) {
+                normalized["originId"] = originId
+            }
+        }
+        if let era = raw["messageEra"] as? String, !era.isEmpty, era.count <= 80 {
+            normalized["messageEra"] = era
+        }
         return normalized
+    }
+
+    /// The two origin kinds the server stamps (server/lib/query-job-types.ts).
+    private static let recentOriginKinds: Set<String> = ["routine", "task"]
+
+    /// Mirrors the server's `QUERY_JOB_ORIGIN_ID_RE` (`^[a-z0-9][a-z0-9-]{0,63}$`).
+    private func validOriginID(_ value: String) -> Bool {
+        guard (1...64).contains(value.count), let first = value.unicodeScalars.first else { return false }
+        let head = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789")
+        let body = head.union(CharacterSet(charactersIn: "-"))
+        guard head.contains(first) else { return false }
+        return value.unicodeScalars.dropFirst().allSatisfy { body.contains($0) }
     }
 
     /// Mirrors the server's own session-id contract (`^[A-Za-z0-9:_-]{3,96}$`).
@@ -11931,6 +11960,25 @@ final class COSControlHelper {
             ["id": "m_" + String(repeating: "a", count: 24), "kind": "unknown", "mime": "image/jpeg", "width": 1, "height": 1, "createdAt": "2026-08-03T12:00:00Z"],
         ]
         try expect(normalizeAttachments(invalidMedia).isEmpty, "malformed or unsupported recent media refs fail closed")
+
+        // 0.5.185 — origin/model/era pass-through is an allowlist with bounds.
+        let stamped = normalizeRecentMessage([
+            "no": 78, "timestamp": 1_000, "query": "brief", "text": "the brief", "sessionId": "s", "source": "live",
+            "modelPreference": "opus", "origin": "routine", "originId": "morning-brief", "messageEra": "era-2026-09",
+        ])
+        try expect((stamped["origin"] as? String) == "routine" && (stamped["originId"] as? String) == "morning-brief", "recent-messages origin + originId pass through")
+        try expect((stamped["modelPreference"] as? String) == "opus" && (stamped["messageEra"] as? String) == "era-2026-09", "recent-messages model + era pass through")
+        let rejected = normalizeRecentMessage([
+            "no": 79, "timestamp": 1_001, "query": "q", "text": "a", "sessionId": "s", "source": "live",
+            "modelPreference": String(repeating: "m", count: 65), "origin": "g2",
+            "originId": "Morning Brief", "messageEra": String(repeating: "e", count: 81),
+        ])
+        try expect(rejected["origin"] == nil && rejected["originId"] == nil, "recent-messages origin outside routine|task is dropped")
+        try expect(rejected["modelPreference"] == nil && rejected["messageEra"] == nil, "recent-messages over-long model/era are dropped")
+        let orphanId = normalizeRecentMessage(["query": "q", "text": "a", "origin": "task", "originId": "BAD ID"])
+        try expect((orphanId["origin"] as? String) == "task" && orphanId["originId"] == nil, "recent-messages originId is validated on its own")
+        let idWithoutOrigin = normalizeRecentMessage(["query": "q", "text": "a", "originId": "morning-brief"])
+        try expect(idWithoutOrigin["originId"] == nil, "recent-messages originId never crosses without its origin")
         try expect(
             imageMIME(Data([0xff, 0xd8, 0xff, 0x00])) == "image/jpeg"
                 && imageMIME(Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) == "image/png"

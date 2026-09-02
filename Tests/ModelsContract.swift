@@ -3761,6 +3761,33 @@ struct ModelsContract {
         ])
         precondition(turn?.attachments.count == 5)
 
+        // 0.5.185 — origin/model/era ride through the failable init with the
+        // same allowlist the helper applies; absent keys stay nil, so a legacy
+        // server's rows render exactly as before and carry no label.
+        precondition(turn?.originLabel == nil && turn?.modelLabel == nil && turn?.origin == nil)
+        let stamped = GlassesTurn([
+            "query": .string("brief"), "text": .string("the brief"),
+            "sessionId": .string("session"), "source": .string("live"),
+            "modelPreference": .string("opus"), "origin": .string("routine"),
+            "originId": .string("morning-brief"), "messageEra": .string("era-2026-09"),
+        ])
+        precondition(stamped?.originLabel == "ROUTINE" && stamped?.originId == "morning-brief")
+        precondition(stamped?.modelLabel == "opus" && stamped?.messageEra == "era-2026-09")
+        precondition(stamped?.detailMetaLine.hasSuffix("live · opus · ROUTINE") == true)
+        let taskTurn = GlassesTurn(["query": .string("q"), "text": .string("a"), "origin": .string("task")])
+        precondition(taskTurn?.originLabel == "TASK" && taskTurn?.originId == nil)
+        precondition(taskTurn?.detailMetaLine.hasSuffix("COS Glasses · TASK") == true)
+        let rejected = GlassesTurn([
+            "query": .string("q"), "text": .string("a"),
+            "modelPreference": .string(String(repeating: "m", count: 65)), "origin": .string("g2"),
+            "originId": .string("Morning Brief"), "messageEra": .string(String(repeating: "e", count: 81)),
+        ])
+        precondition(rejected?.origin == nil && rejected?.originLabel == nil && rejected?.originId == nil)
+        precondition(rejected?.modelLabel == nil && rejected?.messageEra == nil)
+        // originId never crosses without its origin, and never outside the id alphabet.
+        precondition(GlassesTurn(["query": .string("q"), "text": .string("a"), "originId": .string("morning-brief")])?.originId == nil)
+        precondition(GlassesTurn(["query": .string("q"), "text": .string("a"), "origin": .string("task"), "originId": .string("Bad Id")])?.originId == nil)
+
         let status = ServerStatus([
             "meetingPreviewSupported": .bool(true),
             "meetingPreviewEnabled": .bool(true),

@@ -1681,8 +1681,18 @@ struct GlassesTurn: Identifiable, Sendable, Equatable {
     let sessionId: String
     let source: String
     let attachments: [GlassesAttachmentRef]
+    /// 0.5.185 — the model that answered, as the server stamped it. Nil when
+    /// the server did not say (a 6.43.3 row), never a guess.
+    let modelPreference: String?
+    /// 0.5.185 — "routine" or "task" when the Mac started the run (server
+    /// 6.43.4 stamps it at submission). Nil means Miles started it himself;
+    /// nothing is ever inferred from absence.
+    let origin: String?
+    /// The routine slug or task id behind `origin`; only ever set beside it.
+    let originId: String?
+    let messageEra: String?
 
-    init(id: String, no: Int?, timestamp: TimeInterval?, query: String, text: String, sessionId: String, source: String, attachments: [GlassesAttachmentRef] = []) {
+    init(id: String, no: Int?, timestamp: TimeInterval?, query: String, text: String, sessionId: String, source: String, attachments: [GlassesAttachmentRef] = [], modelPreference: String? = nil, origin: String? = nil, originId: String? = nil, messageEra: String? = nil) {
         self.id = id
         self.no = no
         self.timestamp = timestamp
@@ -1691,6 +1701,28 @@ struct GlassesTurn: Identifiable, Sendable, Equatable {
         self.sessionId = sessionId
         self.source = source
         self.attachments = Array(attachments.prefix(5))
+        self.modelPreference = modelPreference
+        self.origin = origin
+        self.originId = originId
+        self.messageEra = messageEra
+    }
+
+    /// The same allowlist the helper applies, so a value the helper did not
+    /// bound (a direct decode in a test, a future transport) cannot widen it.
+    static let originKinds: Set<String> = ["routine", "task"]
+
+    static func boundedString(_ value: String?, max: Int) -> String? {
+        guard let value, !value.isEmpty, value.count <= max else { return nil }
+        return value
+    }
+
+    /// Mirrors the server's `QUERY_JOB_ORIGIN_ID_RE` (`^[a-z0-9][a-z0-9-]{0,63}$`).
+    static func validOriginID(_ value: String?) -> String? {
+        guard let value, (1...64).contains(value.count), let first = value.unicodeScalars.first else { return nil }
+        let head = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789")
+        let body = head.union(CharacterSet(charactersIn: "-"))
+        guard head.contains(first), value.unicodeScalars.dropFirst().allSatisfy({ body.contains($0) }) else { return nil }
+        return value
     }
 
     init?(_ object: [String: JSONValue]) {
@@ -1699,6 +1731,10 @@ struct GlassesTurn: Identifiable, Sendable, Equatable {
         let sessionId = object["sessionId"]?.string ?? ""
         let source = object["source"]?.string ?? ""
         let no = object["no"]?.int
+        let modelPreference = Self.boundedString(object["modelPreference"]?.string, max: 64)
+        let origin = object["origin"]?.string.flatMap { Self.originKinds.contains($0) ? $0 : nil }
+        let originId = origin == nil ? nil : Self.validOriginID(object["originId"]?.string)
+        let messageEra = Self.boundedString(object["messageEra"]?.string, max: 80)
         var seen = Set<String>()
         let attachments: [GlassesAttachmentRef]
         if let values = object["attachments"]?.array {
@@ -1718,7 +1754,37 @@ struct GlassesTurn: Identifiable, Sendable, Equatable {
             timestamp = nil
         }
         let idBase = [no.map(String.init) ?? "x", sessionId, object["timestamp"]?.int.map(String.init) ?? UUID().uuidString].joined(separator: "|")
-        self.init(id: idBase, no: no, timestamp: timestamp, query: query, text: text, sessionId: sessionId, source: source, attachments: attachments)
+        self.init(id: idBase, no: no, timestamp: timestamp, query: query, text: text, sessionId: sessionId, source: source, attachments: attachments, modelPreference: modelPreference, origin: origin, originId: originId, messageEra: messageEra)
+    }
+
+    /// The label a row wears when the Mac started the run. Nil for a row Miles
+    /// started himself, which is what makes the label mean something.
+    var originLabel: String? {
+        switch origin {
+        case "routine": return "ROUTINE"
+        case "task": return "TASK"
+        default: return nil
+        }
+    }
+
+    /// Hover text for the label.
+    var originTitle: String? {
+        switch origin {
+        case "routine": return "Produced by a scheduled routine on your Mac"
+        case "task": return "Produced by an agent working a task on your Mac"
+        default: return nil
+        }
+    }
+
+    /// The model badge, nil when the server did not say.
+    var modelLabel: String? { modelPreference }
+
+    var sourceLabel: String { source.isEmpty ? "COS Glasses" : source }
+
+    /// Second line of the detail header: time · source · model · origin, each
+    /// segment present only when known.
+    var detailMetaLine: String {
+        [timeLabel, sourceLabel, modelLabel, originLabel].compactMap { $0 }.joined(separator: " · ")
     }
 
     var previewQuery: String {
