@@ -1906,8 +1906,19 @@ final class COSControlHelper {
         deadlineUptime: TimeInterval? = nil
     ) -> String? {
         guard let token = try? readToken() else { return "pairing token is unavailable for transactional proof" }
-        for provider in expectedProviders.sorted() {
-            guard provider == "claude" || provider == "codex" else { continue }
+        // 0.5.184 — fail-open across providers. Every installed provider is
+        // proved; the update commits when AT LEAST ONE real query passes and
+        // the others are recorded as skips with the server's failure code
+        // (server 6.43.2) or a classified reason (older servers). On
+        // 2026-09-01 Claude's session limit rolled six 6.43.1 updates back
+        // while Codex proved in 7 s; a vendor's meter is not a fact about the
+        // candidate. Zero proofs still fails closed. Whisper and Kokoro gates
+        // are untouched.
+        let proofProviders = transactionalProofProviders(expectedProviders)
+        var proved: [String] = []
+        var skipped: [String] = []
+        var endpointMissing = false
+        for provider in proofProviders {
             let proofWindow = provider == "claude" ? "45s" : "120s"
             progress("Proving \(provider.capitalized) (up to \(proofWindow))…")
             let body = try? jsonBody(["provider": provider])
@@ -1921,12 +1932,38 @@ final class COSControlHelper {
                 body: body,
                 timeout: 130,
                 deadlineUptime: deadlineUptime
-            ) else { return provider.capitalized + " transactional proof did not answer" }
-            if response.status == 404 && !requireProviderEndpoint { continue }
-            guard response.status == 200, response.body?["ok"] as? Bool == true else {
-                let detail = response.body?["error"] as? String ?? "HTTP \(response.status)"
-                return provider.capitalized + " real query failed: " + detail
+            ) else {
+                skipped.append(provider.capitalized + " did not answer")
+                continue
             }
+            if response.status == 404 {
+                // Pre-6.15.2 server: no proof endpoint at all.
+                endpointMissing = true
+                continue
+            }
+            if response.status == 400, provider == "cursor" {
+                // Pre-6.43.2 server: Cursor is not a proof provider there.
+                continue
+            }
+            if response.status == 200, response.body?["ok"] as? Bool == true {
+                let ms = (response.body?["durationMs"] as? Int).map { " (\(($0 + 500) / 1000)s)" } ?? ""
+                proved.append(provider.capitalized + ms)
+                continue
+            }
+            let detail = response.body?["error"] as? String ?? "HTTP \(response.status)"
+            let code = response.body?["code"] as? String ?? classifyProofFailure(detail)
+            skipped.append(provider.capitalized + " skipped: " + proofSkipReason(code: code, detail: detail))
+        }
+        if endpointMissing && proved.isEmpty && skipped.isEmpty {
+            if requireProviderEndpoint { return "provider proof endpoint is missing on a server that must have it" }
+        } else if proved.isEmpty {
+            // Fail closed: nothing proved. Name every provider's reason.
+            let reasons = skipped.isEmpty ? "no provider could be proved" : skipped.joined(separator: "; ")
+            recordProofSummary(proved: proved, skipped: skipped, committed: false)
+            return "no AI provider proved a real query (" + reasons + ")"
+        } else {
+            recordProofSummary(proved: proved, skipped: skipped, committed: true)
+            progress("Provider proof: " + proved.joined(separator: ", ") + " proved" + (skipped.isEmpty ? "" : " · " + skipped.joined(separator: " · ")))
         }
 
         let localTTS = health["tts_local"] as? [String: Any]
@@ -1993,6 +2030,73 @@ final class COSControlHelper {
 
     private func detectedManagedProviders() -> Set<String> {
         Set(["claude", "codex"].filter { findExecutable($0) != nil })
+    }
+
+    /// Providers a transactional proof tries, in a fixed order: the expected
+    /// managed providers plus Cursor whenever its `agent` binary is present.
+    /// Cursor is NOT added to the capability check (features.cursor is a
+    /// static probe, not a PATH-regression signal), only to the proof set.
+    private func transactionalProofProviders(_ expected: Set<String>) -> [String] {
+        var providers = expected.filter { $0 == "claude" || $0 == "codex" }.sorted()
+        if resolveAgentBinary() != nil { providers.append("cursor") }
+        return providers
+    }
+
+    /// Server 6.43.2 returns `code`; older servers only say "provider process
+    /// exited 1". Classify the sentence the same way the server would so the
+    /// skip reason is still honest, and never treat an unknown as a pass.
+    private func classifyProofFailure(_ detail: String) -> String {
+        let lower = detail.lowercased()
+        if lower.contains("usage limit") || lower.contains("session limit") || lower.contains("rate limit")
+            || lower.contains("too many requests") || lower.contains("quota") || lower.contains("resets at") {
+            return "provider_quota"
+        }
+        if lower.contains("not logged in") || lower.contains("sign in") || lower.contains("log in")
+            || lower.contains("unauthorized") || lower.contains("api key") {
+            return "provider_auth"
+        }
+        if lower.contains("too long") || lower.contains("context window") { return "provider_context_overflow" }
+        if lower.contains("timed out") { return "provider_timeout" }
+        if lower.contains("canceled") { return "provider_canceled" }
+        if lower.contains("not installed") || lower.contains("before launch") { return "provider_missing" }
+        return "provider_failed"
+    }
+
+    private func proofSkipReason(code: String, detail: String) -> String {
+        switch code {
+        case "provider_quota": return "session or usage limit"
+        case "provider_auth": return "not signed in"
+        case "provider_context_overflow": return "proof prompt too long"
+        case "provider_missing": return "binary not found"
+        case "provider_timeout": return "timed out"
+        case "provider_canceled": return "canceled"
+        case "provider_bad_answer": return "wrong answer"
+        default: return detail
+        }
+    }
+
+    private lazy var lastProofURL = runtimeRoot.appendingPathComponent("last-proof.json")
+
+    /// What the last transactional proof decided, for `status` and Doctor:
+    /// "Codex (7s) proved · Claude skipped: session or usage limit".
+    private func recordProofSummary(proved: [String], skipped: [String], committed: Bool) {
+        let summary: [String: Any] = [
+            "at": ISO8601DateFormatter().string(from: Date()),
+            "proved": proved,
+            "skipped": skipped,
+            "committed": committed,
+            "line": (proved.isEmpty ? "No provider proved" : proved.joined(separator: ", ") + " proved")
+                + (skipped.isEmpty ? "" : " · " + skipped.joined(separator: " · ")),
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys]) {
+            try? atomicWriteData(data, to: lastProofURL, permissions: 0o600)
+        }
+    }
+
+    private func lastProofSummaryLine() -> String? {
+        guard let data = try? Data(contentsOf: lastProofURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return object["line"] as? String
     }
 
     /// A reachable health endpoint is not enough: the managed service must see
@@ -2226,6 +2330,7 @@ final class COSControlHelper {
             "desiredState": manifest?.desiredState ?? "running",
             "providerCapabilitiesReady": providerFailure == nil && health != nil,
             "providerCapabilityError": providerFailure ?? NSNull(),
+            "lastProofSummary": lastProofSummaryLine() ?? NSNull(),
             "serviceDisabled": serviceDisabled(),
             "recoveryInstalled": recoveryLaunchAgentValid(),
             "recoveryLoaded": recoveryServiceLoaded(),

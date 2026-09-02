@@ -1,3 +1,16 @@
+## 0.5.184 (build 222)
+
+Update Server no longer depends on one vendor's meter. The transactional
+proof now tries every installed provider (Claude, Codex, and Cursor when its
+agent is present), commits the update when at least one real query passes,
+and records the others as skips with a named reason: "Codex (7s) proved ·
+Claude skipped: session or usage limit". Zero proofs still fails closed, and
+the Whisper and Kokoro gates are unchanged. On 2026-09-01 Claude's session
+limit rolled six 6.43.1 updates back while Codex had proved in seven seconds.
+With server 6.43.2 the reason comes from the server's failure code; older
+servers are classified from their error sentence. The last proof's verdict is
+carried in status as lastProofSummary.
+
 ## 0.5.183 (build 221)
 
 The Morning brief card now shows what is behind each source. Under every

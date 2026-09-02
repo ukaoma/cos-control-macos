@@ -337,6 +337,26 @@ PY
 /usr/bin/grep -q 'onAppear' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -Fq 'transcription-tier \(normalized)' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -Fq 'Proving \(provider.capitalized) (up to \(proofWindow))' "$ROOT/HelperSources/main.swift"
+# 0.5.184 — fail-open provider proof: every installed provider is tried, the
+# update commits on ANY real-query pass, a vendor quota is a skip with a named
+# reason, and zero proofs still fails closed. On 2026-09-01 Claude's session
+# limit rolled six 6.43.1 updates back while Codex proved in 7s.
+/usr/bin/python3 - "$ROOT" <<'PROOF'
+import pathlib, sys
+src = (pathlib.Path(sys.argv[1]) / 'HelperSources/main.swift').read_text()
+body = src.split('private func transactionalRuntimeProofFailure(', 1)[1].split('\n    private func maintenanceStatus(', 1)[0]
+assert 'return provider.capitalized + " real query failed: "' not in body, 'proof loop still fails on the first provider'
+assert 'let proofProviders = transactionalProofProviders(expectedProviders)' in body
+assert 'skipped.append(provider.capitalized + " skipped: " + proofSkipReason(code: code, detail: detail))' in body
+assert '} else if proved.isEmpty {' in body and 'return "no AI provider proved a real query ("' in body, 'zero proofs must fail closed'
+assert 'recordProofSummary(proved: proved, skipped: skipped, committed: true)' in body
+# Kokoro gates stay after the provider block, unchanged.
+assert body.index('recordProofSummary(proved: proved, skipped: skipped, committed: true)') < body.index('progress("Proving Kokoro generation…")')
+assert 'return "Kokoro native playback proof failed"' in body
+assert 'if resolveAgentBinary() != nil { providers.append("cursor") }' in src
+assert 'case "provider_quota": return "session or usage limit"' in src
+assert '"lastProofSummary": lastProofSummaryLine() ?? NSNull(),' in src
+PROOF
 /usr/bin/grep -q 'Server change in progress · recovery is armed' "$ROOT/Sources/Views.swift"
 /usr/bin/python3 - "$ROOT" <<'PY'
 import pathlib, sys
