@@ -108,6 +108,7 @@ struct ServerStatus: Sendable {
     var morningBriefLastRunAt: String?
     var morningBriefLastRunStatus: String?
     var morningBriefGate: String?
+    var tasksGate: String?
     var threadAttachSupported = false
     var threadAttachEnabled: Bool?
     /// Optional on purpose: absent means a server too old to report it, and the
@@ -256,6 +257,7 @@ struct ServerStatus: Sendable {
         morningBriefLastRunAt = details["morningBriefLastRunAt"]?.string
         morningBriefLastRunStatus = details["morningBriefLastRunStatus"]?.string
         morningBriefGate = details["morningBriefGate"]?.string
+        tasksGate = details["tasksGate"]?.string
         threadAttachSupported = details["threadAttachSupported"]?.bool ?? false
         threadAttachEnabled = details["threadAttachEnabled"]?.bool
         claudeSessionsEnabled = details["claudeSessionsEnabled"]?.bool
@@ -795,6 +797,48 @@ struct ClaudeSession: Identifiable, Sendable {
         let t = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if t == "ready" { return true }
         return t.hasPrefix("this is an automated local readiness check")
+    }
+}
+
+struct TaskRow: Identifiable, Sendable {
+    let id: String
+    let ref: String
+    let domain: String
+    let title: String
+    let column: String
+    let section: String
+    let due: Bool?
+    let missed: Bool?
+    let failed: Bool?
+    let late: Bool?
+    let carriedOver: Bool?
+    let runAt: String
+
+    var runAtDate: Date? {
+        let trimmed = runAt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = withFraction.date(from: trimmed) { return date }
+        let basic = ISO8601DateFormatter()
+        basic.formatOptions = [.withInternetDateTime]
+        return basic.date(from: trimmed)
+    }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let id = o["id"]?.string, !id.isEmpty else { return nil }
+        self.id = id
+        ref = o["ref"]?.string ?? ""
+        domain = o["domain"]?.string ?? ""
+        title = o["title"]?.string ?? ""
+        column = o["column"]?.string ?? ""
+        section = o["section"]?.string ?? ""
+        due = o["due"]?.bool
+        missed = o["missed"]?.bool
+        failed = o["failed"]?.bool
+        late = o["late"]?.bool
+        carriedOver = o["carriedOver"]?.bool
+        runAt = o["runAt"]?.string ?? ""
     }
 }
 

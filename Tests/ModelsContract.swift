@@ -491,6 +491,40 @@ struct ModelsContract {
         }
     }
 
+    private static func checkTaskRow() {
+        precondition(TaskRow(.object(["title": .string("no id")])) == nil,
+                     "task rows without id are dropped")
+        let row = TaskRow(.object([
+            "id": .string("a1b2c3d4e5f6"),
+            "ref": .string("quilt-1"),
+            "domain": .string("quilt"),
+            "title": .string("Ship the tasks pane"),
+            "column": .string("inbox"),
+            "section": .string("inbox"),
+            "due": .bool(true),
+            "missed": .bool(true),
+            "failed": .bool(false),
+            "late": .bool(false),
+            "carriedOver": .bool(true),
+            "runAt": .string("2026-09-02T14:00:00.000Z"),
+        ]))
+        precondition(row?.id == "a1b2c3d4e5f6")
+        precondition(row?.ref == "quilt-1")
+        precondition(row?.title == "Ship the tasks pane")
+        precondition(row?.column == "inbox")
+        precondition(row?.section == "inbox")
+        precondition(row?.due == true)
+        precondition(row?.missed == true)
+        precondition(row?.failed == false)
+        precondition(row?.late == false)
+        precondition(row?.carriedOver == true)
+        precondition(row?.runAtDate != nil, "ISO runAt must parse")
+        let older = ServerStatus(["morningBriefGate": .string("ready")])
+        precondition(older.tasksGate == nil, "absent tasksGate must stay nil")
+        let stamped = ServerStatus(["tasksGate": .string("ready")])
+        precondition(stamped.tasksGate == "ready")
+    }
+
     private static func checkClaudeSession() {
         let waiting = ClaudeSession(.object([
             "id": .string("sess_1"),
@@ -3720,6 +3754,7 @@ struct ModelsContract {
         checkSessionSearchHit()
         checkOrphanCapture()
         checkClaudeSession()
+        checkTaskRow()
         checkPetSpriteStore()
         checkPetDismissals()
         checkPetCompletionDetector()
@@ -3823,12 +3858,14 @@ struct ModelsContract {
             "threadAttachSupported": .bool(true),
             "threadAttachEnabled": .bool(true),
             "threadAttachProviders": .array([.string("claude"), .string("codex")]),
+            "tasksGate": .string("ready"),
         ])
         precondition(status.meetingPreviewSupported && status.meetingPreviewEnabled == true)
         precondition(status.idleMetalHqSupported && status.idleMetalHqEnabled == true && status.idleMetalHqForceCpu == false)
         precondition(status.adaptiveAudioCleanupSupported && status.adaptiveAudioCleanupEnabled == false)
         precondition(status.threadAttachSupported && status.threadAttachEnabled == true)
         precondition(status.threadAttachProviders == ["claude", "codex"])
+        precondition(status.tasksGate == "ready")
 
         // A server that predates the capability contract sends none of these
         // fields. Absent MUST resolve to off, never to "probably on" — the same
@@ -3837,6 +3874,7 @@ struct ModelsContract {
         precondition(!legacy.threadAttachSupported)
         precondition(legacy.threadAttachEnabled == nil)
         precondition(legacy.threadAttachProviders.isEmpty)
+        precondition(legacy.tasksGate == nil)
 
         // Decode into an owned in-memory image before deleting the source.
         let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")!

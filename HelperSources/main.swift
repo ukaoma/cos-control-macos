@@ -453,6 +453,12 @@ final class COSControlHelper {
         case "morning-brief": try emitMorningBrief()
         case "set-morning-brief": try setMorningBrief()
         case "run-morning-brief": try runMorningBrief()
+        case "tasks": try emitTasks(args: args)
+        case "task-capture": try emitTaskCapture(args: args)
+        case "task-schedule": try emitTaskSchedule(args: args)
+        case "task-move": try emitTaskMove(args: args)
+        case "task-run": try emitTaskRun(args: args)
+        case "task-set-cap": try emitTaskSetCap(args: args)
         case "set-idle-metal-hq": try withMutationLock {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing idle Metal HQ setting") }
             try setIdleMetalHq(value)
@@ -2199,6 +2205,7 @@ final class COSControlHelper {
         // card can show before a token is held; the settings call needs one.
         let morningBriefCapability = (health?["capabilities"] as? [String: Any])?["morningBrief"] as? [String: Any]
         let morningBriefSupported = featureFlags?["morningBrief"] as? Bool == true || morningBriefCapability != nil
+        let tasksCapability = (health?["capabilities"] as? [String: Any])?["tasks"] as? [String: Any]
         let requestedTier = liveTranscription?["requestedTier"] as? String
         let effectiveTier = liveTranscription?["effectiveTier"] as? String
         let commitReason = liveTranscription?["commitReason"] as? String
@@ -2376,6 +2383,7 @@ final class COSControlHelper {
             "morningBriefLastRunAt": morningBriefCapability?["lastRunAt"] ?? NSNull(),
             "morningBriefLastRunStatus": morningBriefCapability?["lastRunStatus"] ?? NSNull(),
             "morningBriefGate": morningBriefCapability?["gate"] ?? NSNull(),
+            "tasksGate": tasksCapability?["gate"] ?? NSNull(),
             "claudeSessionsEnabled": claudeSessionsEnabled ?? NSNull(),
             "threadAttachSupported": threadAttachSupported,
             "threadAttachEnabled": threadAttachEnabled ?? NSNull(),
@@ -4059,6 +4067,217 @@ final class COSControlHelper {
         let run = body["run"] as? [String: Any]
         let number = (run?["globalMsgNum"] as? Int).map { " as #\($0)" } ?? ""
         emit(ok: true, message: "Brief running\(number). It lands in the inbox when it finishes.", details: body)
+    }
+
+    private func taskRequest(
+        _ path: String,
+        method: String = "GET",
+        body: String? = nil,
+        timeout: Int = 20
+    ) throws -> HTTPResponse {
+        let token = try readToken()
+        func once() throws -> HTTPResponse {
+            guard let response = request(path, method: method, token: token, body: body, timeout: timeout) else {
+                throw HelperError.message("Could not reach the glasses server. Check that it is running, then try again.")
+            }
+            return response
+        }
+        let first = try once()
+        if first.status == 404 {
+            throw HelperError.message("Update the managed server to 6.44.0 or newer to use Tasks.")
+        }
+        let locked = (first.body?["error"] as? [String: Any])?["code"] as? String == "task_file_locked"
+        if first.status == 503, locked {
+            let wait = Double(first.headers["retry-after"] ?? "2") ?? 2
+            Thread.sleep(forTimeInterval: min(max(wait, 0), 10))
+            let second = try once()
+            if second.status == 503,
+               (second.body?["error"] as? [String: Any])?["code"] as? String == "task_file_locked" {
+                throw HelperError.message("Tasks file busy, try again")
+            }
+            return second
+        }
+        return first
+    }
+
+    private func taskErrorMessage(_ response: HTTPResponse, fallback: String) -> String {
+        if let error = response.body?["error"] as? [String: Any],
+           let message = error["message"] as? String, !message.isEmpty {
+            return message
+        }
+        return fallback
+    }
+
+    private func jsonObject(_ object: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    static func taskFlag(_ row: [String: Any], _ key: String) -> Bool {
+        if let value = row[key] as? Bool { return value }
+        if let value = row[key] as? NSNumber { return value.boolValue }
+        return false
+    }
+
+    static func taskRowProjection(_ raw: [String: Any]) -> [String: Any]? {
+        guard let id = raw["id"] as? String, !id.isEmpty else { return nil }
+        return [
+            "id": id,
+            "ref": raw["ref"] as? String ?? "",
+            "domain": raw["domain"] as? String ?? "",
+            "title": raw["title"] as? String ?? "",
+            "column": raw["column"] as? String ?? "",
+            "section": raw["section"] as? String ?? "",
+            "due": raw["due"] ?? NSNull(),
+            "missed": raw["missed"] ?? NSNull(),
+            "failed": raw["failed"] ?? NSNull(),
+            "late": raw["late"] ?? NSNull(),
+            "carriedOver": raw["carriedOver"] ?? NSNull(),
+            "runAt": raw["runAt"] as? String ?? NSNull(),
+        ]
+    }
+
+    static func filterTaskRows(_ raw: [[String: Any]]) -> [[String: Any]] {
+        var latest: [String: [String: Any]] = [:]
+        var order: [String] = []
+        var missed: Set<String> = []
+        var failed: Set<String> = []
+        for row in raw {
+            guard let projected = taskRowProjection(row),
+                  let id = projected["id"] as? String else { continue }
+            if latest[id] == nil { order.append(id) }
+            latest[id] = projected
+            if taskFlag(row, "missed") { missed.insert(id) }
+            if taskFlag(row, "failed") { failed.insert(id) }
+        }
+        var kept: [[String: Any]] = []
+        for id in order {
+            guard var row = latest[id] else { continue }
+            if missed.contains(id) { row["missed"] = true }
+            if failed.contains(id) { row["failed"] = true }
+            let column = row["column"] as? String ?? ""
+            let flagged = taskFlag(row, "missed") || taskFlag(row, "failed")
+            let keep = column == "today" || column == "carried" || column == "scheduled"
+                || (column == "inbox" && flagged)
+                || flagged
+            if keep { kept.append(row) }
+        }
+        kept.sort { a, b in
+            let aFlag = taskFlag(a, "missed") || taskFlag(a, "failed")
+            let bFlag = taskFlag(b, "missed") || taskFlag(b, "failed")
+            if aFlag != bFlag { return aFlag && !bFlag }
+            return false
+        }
+        return kept
+    }
+
+    private func emitTasks(args: [String]) throws {
+        let limit = min(max(Int(option("--limit", in: args) ?? "30") ?? 30, 1), 50)
+        let board = try taskRequest("/api/tasks")
+        guard board.status == 200, let body = board.body else {
+            throw HelperError.message(taskErrorMessage(
+                board, fallback: "The server could not read tasks (HTTP \(board.status))."))
+        }
+        let raw = (body["tasks"] as? [[String: Any]]) ?? []
+        let filtered = Array(Self.filterTaskRows(raw).prefix(limit))
+        let next = try? taskRequest("/api/tasks/next")
+        let runs = try? taskRequest("/api/tasks/runs?limit=6")
+        emit(ok: true, message: filtered.isEmpty ? "No open tasks" : "Tasks ready", details: [
+            "state": filtered.isEmpty ? "empty" : "ready",
+            "tasks": filtered,
+            "count": filtered.count,
+            "gate": body["gate"] ?? NSNull(),
+            "workBadge": body["workBadge"] ?? NSNull(),
+            "next": next?.status == 200 ? (next?.body?["task"] ?? NSNull()) : NSNull(),
+            "runs": runs?.status == 200 ? (runs?.body?["runs"] ?? []) : [],
+        ])
+    }
+
+    private func emitTaskCapture(args: [String]) throws {
+        let domain = option("--domain", in: args)
+            ?? args.dropFirst().first
+        guard let domain, !domain.isEmpty else { throw HelperError.message("missing domain") }
+        let section = option("--section", in: args) ?? "inbox"
+        let runAt = option("--run-at", in: args)
+        let text = String(decoding: FileHandle.standardInput.readDataToEndOfFile(), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { throw HelperError.message("Task text is required.") }
+        var payload: [String: Any] = [
+            "domain": domain,
+            "text": text,
+            "section": section,
+            "captureId": UUID().uuidString.lowercased(),
+        ]
+        if let runAt, !runAt.isEmpty { payload["runAt"] = runAt }
+        let response = try taskRequest("/api/tasks/capture", method: "POST", body: try jsonObject(payload))
+        guard response.status == 200, let body = response.body else {
+            throw HelperError.message(taskErrorMessage(
+                response, fallback: "The server rejected the capture (HTTP \(response.status))."))
+        }
+        emit(ok: true, message: "Task captured", details: body)
+    }
+
+    private func emitTaskSchedule(args: [String]) throws {
+        guard let id = option("--id", in: args), !id.isEmpty else { throw HelperError.message("missing task id") }
+        guard let domain = option("--domain", in: args), !domain.isEmpty else { throw HelperError.message("missing domain") }
+        guard let runAt = option("--run-at", in: args), !runAt.isEmpty else { throw HelperError.message("missing run-at") }
+        let response = try taskRequest(
+            "/api/tasks/\(queryEscape(id))",
+            method: "PATCH",
+            body: try jsonObject(["domain": domain, "runAt": runAt])
+        )
+        guard response.status == 200, let body = response.body else {
+            throw HelperError.message(taskErrorMessage(
+                response, fallback: "The server rejected the schedule (HTTP \(response.status))."))
+        }
+        emit(ok: true, message: "Task scheduled", details: body)
+    }
+
+    private func emitTaskMove(args: [String]) throws {
+        guard let id = option("--id", in: args), !id.isEmpty else { throw HelperError.message("missing task id") }
+        guard let domain = option("--domain", in: args), !domain.isEmpty else { throw HelperError.message("missing domain") }
+        guard let section = option("--section", in: args), !section.isEmpty else { throw HelperError.message("missing section") }
+        let response = try taskRequest(
+            "/api/tasks/\(queryEscape(id))",
+            method: "PATCH",
+            body: try jsonObject(["domain": domain, "section": section])
+        )
+        guard response.status == 200, let body = response.body else {
+            throw HelperError.message(taskErrorMessage(
+                response, fallback: "The server rejected the move (HTTP \(response.status))."))
+        }
+        emit(ok: true, message: "Task moved", details: body)
+    }
+
+    private func emitTaskRun(args: [String]) throws {
+        guard let id = option("--id", in: args), !id.isEmpty else { throw HelperError.message("missing task id") }
+        guard let domain = option("--domain", in: args), !domain.isEmpty else { throw HelperError.message("missing domain") }
+        let response = try taskRequest(
+            "/api/tasks/\(queryEscape(id))/run",
+            method: "POST",
+            body: try jsonObject(["domain": domain])
+        )
+        guard response.status == 202, let body = response.body else {
+            throw HelperError.message(taskErrorMessage(
+                response, fallback: "The task could not be started (HTTP \(response.status))."))
+        }
+        emit(ok: true, message: "Task running", details: body)
+    }
+
+    private func emitTaskSetCap(args: [String]) throws {
+        guard let raw = option("--cap", in: args), let cap = Int(raw) else {
+            throw HelperError.message("missing cap")
+        }
+        let response = try taskRequest(
+            "/api/tasks/dispatch-cap",
+            method: "PATCH",
+            body: try jsonObject(["capPerDay": cap])
+        )
+        guard response.status == 200, let body = response.body else {
+            throw HelperError.message(taskErrorMessage(
+                response, fallback: "The server rejected the dispatch cap (HTTP \(response.status))."))
+        }
+        emit(ok: true, message: "Dispatch cap set", details: body)
     }
 
     private func requireMeetingPreview(_ raw: String) throws {

@@ -1236,15 +1236,15 @@ struct ControlPanel: View {
                 }
             }
             .buttonStyle(.plain)
-            .help("Open Messages, Speakers, Meetings, Memories, Threads, and Sessions in a separate window")
+            .help("Open Messages, Speakers, Meetings, Memories, Threads, Sessions, and Tasks in a separate window")
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 7) {
-                    ForEach(Array(ActivitySection.allCases.prefix(3))) { item in
+                    ForEach(Array(ActivitySection.allCases.prefix(4))) { item in
                         activityChip(item)
                     }
                 }
                 HStack(spacing: 7) {
-                    ForEach(Array(ActivitySection.allCases.dropFirst(3))) { item in
+                    ForEach(Array(ActivitySection.allCases.dropFirst(4))) { item in
                         activityChip(item)
                     }
                 }

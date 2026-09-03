@@ -60,6 +60,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
     case memories
     case threads
     case sessions
+    case tasks
 
     var id: String { rawValue }
 
@@ -71,6 +72,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         case .memories: "Memories"
         case .threads: "Threads"
         case .sessions: "Sessions"
+        case .tasks: "Tasks"
         }
     }
 
@@ -82,6 +84,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         case .memories: "sparkles"
         case .threads: "point.3.connected.trianglepath.dotted"
         case .sessions: "terminal"
+        case .tasks: "checklist"
         }
     }
 
@@ -93,6 +96,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         case .memories: Color(red: 0.48, green: 0.36, blue: 0.72)
         case .threads: Color(red: 0.22, green: 0.57, blue: 0.39)
         case .sessions: Color(red: 0.36, green: 0.36, blue: 0.40)
+        case .tasks: Color(red: 0.18, green: 0.45, blue: 0.52)
         }
     }
 
@@ -104,6 +108,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         case .memories: "Browse the durable context your COS can recall."
         case .threads: "Follow work that develops across meetings and time."
         case .sessions: "Claude, Codex, and Cursor sessions on this Mac."
+        case .tasks: "Capture, schedule, and run the work sitting in tasks.md."
         }
     }
 }
@@ -179,6 +184,10 @@ struct ActivityWindow: View {
     @State private var selectedContextID: String?
     @State private var selectedLibraryRecordID: String?
     @State private var selectedSessionID: String?
+    @State private var taskCapture = ""
+    @State private var taskDomain = "quilt"
+    @State private var taskRunAt = Date()
+    @State private var taskBusy = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Drives the gateway paint-in. Flips once on appear; every tile reads it with its
     /// own delay, which is how `anime.stagger` translates into SwiftUI.
@@ -231,6 +240,7 @@ struct ActivityWindow: View {
         case .meetings: selectedLibraryRecordID != nil
         case .memories, .threads: selectedContextID != nil
         case .sessions: selectedSessionID != nil
+        case .tasks: false
         case nil: false
         }
     }
@@ -572,14 +582,14 @@ struct ActivityWindow: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Activity")
                         .font(COSType.display(28, weight: .medium))
-                    Text("Six views into the work your COS already holds.")
+                    Text("Seven views into the work your COS already holds.")
                         .font(COSType.display(13, italic: true))
                         .foregroundStyle(.secondary)
                 }
 
-                // Three columns, two rows: all six stay above the fold. Two columns cost
-                // three rows for the same content, which is a row of scroll on a short window.
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 3), spacing: 14) {
+                // Four columns, two rows: seven tiles stay above the fold. Three
+                // columns would put Tasks on a third row at the minimum window height.
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 4), spacing: 14) {
                     ForEach(Array(ActivitySection.allCases.enumerated()), id: \.element.id) { index, item in
                         Button { select(item) } label: {
                             activityHomeCard(item, index: index)
@@ -713,6 +723,8 @@ struct ActivityWindow: View {
             return (n(model.status.threadCount), "TRACKED")
         case .sessions:
             return model.claudeSessions.isEmpty ? ("—", "REFRESH") : (n(model.claudeSessions.count), "ON DISK")
+        case .tasks:
+            return model.tasks.isEmpty ? ("—", "REFRESH") : (n(model.tasks.count), "OPEN")
         }
     }
 
@@ -741,6 +753,10 @@ struct ActivityWindow: View {
         case .sessions:
             if model.claudeSessions.isEmpty { return "Refresh to load" }
             return "\(model.claudeSessions.count) session(s)"
+        case .tasks:
+            if model.tasks.isEmpty { return "Refresh to load" }
+            let flagged = model.tasks.filter { $0.missed == true || $0.failed == true }.count
+            return flagged > 0 ? "\(flagged) need attention" : "\(model.tasks.count) open"
         }
     }
 
@@ -755,6 +771,7 @@ struct ActivityWindow: View {
         case .memories: contextList(kind: "memory")
         case .threads: contextList(kind: "thread")
         case .sessions: sessionsList
+        case .tasks: tasksList
         }
     }
 
@@ -824,6 +841,129 @@ struct ActivityWindow: View {
                     .padding(.bottom, 22)
                 }
             }
+        }
+    }
+
+    private var tasksList: some View {
+        VStack(spacing: 0) {
+            sectionHeader(
+                section: .tasks,
+                title: "Tasks",
+                detail: tasksStatus,
+                refresh: { Task { await model.loadTasks(force: true) } },
+                refreshDisabled: model.tasksLoading
+            )
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    TextField("Capture a task", text: $taskCapture)
+                        .textFieldStyle(.roundedBorder)
+                    Picker("Domain", selection: $taskDomain) {
+                        Text("Quilt").tag("quilt")
+                        Text("Personal").tag("personal")
+                        Text("Hermit Crabs").tag("hermit_crabs")
+                        Text("Sprocket Rocket").tag("sprocket_rocket")
+                    }
+                    .labelsHidden()
+                    .frame(width: 140)
+                    Button("Capture") {
+                        Task { await captureTask() }
+                    }
+                    .disabled(taskCapture.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || taskBusy)
+                }
+                DatePicker("Run at", selection: $taskRunAt, displayedComponents: [.date, .hourAndMinute])
+                    .labelsHidden()
+            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 12)
+            if model.tasksLoading && model.tasks.isEmpty {
+                centeredProgress("Loading tasks…")
+            } else if let error = model.tasksError, model.tasks.isEmpty {
+                emptyState(.tasks, text: error)
+            } else if model.tasks.isEmpty {
+                emptyState(.tasks, text: "No open tasks in today, carried, scheduled, or missed.")
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(model.tasks) { task in
+                            taskRow(task)
+                        }
+                    }
+                    .padding(.horizontal, 22)
+                    .padding(.bottom, 22)
+                }
+            }
+        }
+    }
+
+    private var tasksStatus: String {
+        if model.tasksLoading { return "Loading…" }
+        if let error = model.tasksError { return error }
+        if let gate = model.status.tasksGate, gate != "ready" { return "Gate \(gate)" }
+        return model.tasks.isEmpty ? "Nothing due" : "\(model.tasks.count) open"
+    }
+
+    private func taskRow(_ task: TaskRow) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(task.title)
+                    .font(COSType.body(13.5))
+                Text([task.domain, task.column, task.section].joined(separator: " · "))
+                    .font(COSType.body(11))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if task.missed == true { Text("Missed").font(COSType.body(10.5)).foregroundStyle(.orange) }
+            if task.failed == true { Text("Failed").font(COSType.body(10.5)).foregroundStyle(.red) }
+            Button("Schedule") {
+                Task { await scheduleTask(task) }
+            }
+            .disabled(taskBusy)
+            Button("Run now") {
+                Task { await runTask(task) }
+            }
+            .disabled(taskBusy)
+        }
+        .padding(.vertical, 10)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private func taskRunAtStamp() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: taskRunAt)
+    }
+
+    private func captureTask() async {
+        let text = taskCapture.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        taskBusy = true
+        defer { taskBusy = false }
+        do {
+            try await model.captureTask(domain: taskDomain, text: text, runAt: taskRunAtStamp())
+            taskCapture = ""
+        } catch {
+            model.tasksError = error.localizedDescription
+        }
+    }
+
+    private func scheduleTask(_ task: TaskRow) async {
+        taskBusy = true
+        defer { taskBusy = false }
+        do {
+            try await model.scheduleTask(id: task.id, domain: task.domain, runAt: taskRunAtStamp())
+        } catch {
+            model.tasksError = error.localizedDescription
+        }
+    }
+
+    private func runTask(_ task: TaskRow) async {
+        taskBusy = true
+        defer { taskBusy = false }
+        do {
+            try await model.runTask(id: task.id, domain: task.domain)
+        } catch {
+            model.tasksError = error.localizedDescription
         }
     }
 
@@ -2943,6 +3083,7 @@ struct ActivityWindow: View {
             await model.loadContextRecords(kind: "thread")
         }
         if model.claudeSessions.isEmpty { await model.loadClaudeSessions() }
+        if model.tasks.isEmpty { await model.loadTasks(force: true) }
     }
 
     private func load(_ item: ActivitySection) async {
@@ -2965,6 +3106,8 @@ struct ActivityWindow: View {
             if model.status.threadsAvailable == true { await model.loadContextRecords(kind: "thread") }
         case .sessions:
             await model.loadClaudeSessions()
+        case .tasks:
+            await model.loadTasks(force: true)
         }
     }
 

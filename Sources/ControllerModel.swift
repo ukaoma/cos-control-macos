@@ -1364,6 +1364,11 @@ final class ControllerModel: ObservableObject {
     @Published var claudeSessionsReason = ""
     @Published var claudeSessionsLoading = false
     @Published var claudeSessionsError: String?
+    @Published var tasks: [TaskRow] = []
+    @Published var tasksLoading = false
+    @Published var tasksError: String?
+    private var tasksLoadInFlight: Task<Void, Never>?
+    private var tasksLoadGeneration = 0
     @Published var petEnabled = UserDefaults.standard.object(forKey: ControllerModel.petEnabledKey) as? Bool ?? true
     /// Character dial, independent of petSize: pet size is the card, this is
     /// the figure inside it.
@@ -1635,6 +1640,74 @@ final class ControllerModel: ObservableObject {
             claudeSessionsError = nil
         } catch {
             claudeSessionsError = error.localizedDescription
+        }
+    }
+
+    func loadTasks(force: Bool = false) async {
+        if let inflight = tasksLoadInFlight {
+            if !force { return }
+            await inflight.value
+        }
+        tasksLoadGeneration += 1
+        let generation = tasksLoadGeneration
+        let work = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performLoadTasks()
+        }
+        tasksLoadInFlight = work
+        await work.value
+        if tasksLoadGeneration == generation {
+            tasksLoadInFlight = nil
+        }
+    }
+
+    private func performLoadTasks() async {
+        tasksLoading = true
+        defer { tasksLoading = false }
+        do {
+            let response = try await helper.run(["tasks", "--limit", "30"], timeout: 30)
+            tasks = (response.details["tasks"]?.array ?? []).compactMap(TaskRow.init)
+            tasksError = nil
+        } catch {
+            tasksError = error.localizedDescription
+        }
+    }
+
+    func captureTask(domain: String, text: String, runAt: String? = nil) async throws {
+        var args = ["task-capture", "--domain", domain, "--section", "inbox"]
+        if let runAt, !runAt.isEmpty { args += ["--run-at", runAt] }
+        do {
+            _ = try await helper.run(args, timeout: 30, stdinData: Data(text.utf8))
+            tasksError = nil
+            await loadTasks(force: true)
+        } catch {
+            tasksError = error.localizedDescription
+            throw error
+        }
+    }
+
+    func scheduleTask(id: String, domain: String, runAt: String) async throws {
+        do {
+            _ = try await helper.run(
+                ["task-schedule", "--id", id, "--domain", domain, "--run-at", runAt],
+                timeout: 30
+            )
+            tasksError = nil
+            await loadTasks(force: true)
+        } catch {
+            tasksError = error.localizedDescription
+            throw error
+        }
+    }
+
+    func runTask(id: String, domain: String) async throws {
+        do {
+            _ = try await helper.run(["task-run", "--id", id, "--domain", domain], timeout: 30)
+            tasksError = nil
+            await loadTasks(force: true)
+        } catch {
+            tasksError = error.localizedDescription
+            throw error
         }
     }
 

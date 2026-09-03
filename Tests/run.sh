@@ -909,7 +909,7 @@ echo "    manual update check: button, method, and all three outcomes"
 /usr/bin/grep -q 'libraryMeetingProjection' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'struct LibrarySearchHit' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'Search topics, ideas' "$ROOT/Sources/ActivityMeetings.swift"
-/usr/bin/grep -q 'Six views into the work' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'Seven views into the work' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'Image(systemName: model.status.running ? "eyeglasses"' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q '\.fixedSize()' "$ROOT/Sources/COSControlApp.swift"
 ! /usr/bin/grep -q 'Image(nsImage:' "$ROOT/Sources/COSControlApp.swift"
@@ -1080,7 +1080,16 @@ if "func activityChip(_ item: ActivitySection)" not in views:
     raise SystemExit("chips are display-only again")
 print("Activity sits above controls; chips open their tab")
 PY
+/usr/bin/grep -q 'Sessions, and Tasks' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'Open Messages, Speakers, Meetings' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'case "tasks": try emitTasks' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "task-capture": try emitTaskCapture' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "task-schedule": try emitTaskSchedule' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "task-move": try emitTaskMove' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "task-run": try emitTaskRun' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'case "task-set-cap": try emitTaskSetCap' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'struct TaskRow' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q 'func loadTasks' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'ActivityWindowPresenter' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'activityWindow.show(model: model, section: section)' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'SessionPetPresenter' "$ROOT/Sources/COSControlApp.swift"
@@ -1944,7 +1953,15 @@ need('case .speakers: speakersList' in activity, "Speakers is not mounted")
 need('case .memories: contextList(kind: "memory")' in activity, "Memories is not mounted")
 need('case .threads: contextList(kind: "thread")' in activity, "Threads is not mounted")
 need('case .sessions: sessionsList' in activity, "Sessions is not mounted")
+need('case .tasks: tasksList' in activity, "Tasks is not mounted")
 need('case sessions' in activity, "Sessions is not an ActivitySection")
+need('case tasks' in activity, "Tasks is not an ActivitySection")
+need('case .tasks: "checklist"' in activity, "Tasks chip does not use checklist")
+section_enum = re.search(r"enum ActivitySection: String, CaseIterable, Identifiable \{(.*?)\n    var id:", activity, re.S)
+need(section_enum is not None, "ActivitySection enum block not found")
+section_cases = re.findall(r"^\s+case \w+", section_enum.group(1), re.M)
+need(len(section_cases) <= 9, f"ActivitySection has {len(section_cases)} cases; keyboard shortcuts only cover 1-9")
+need(len(section_cases) == 7, f"ActivitySection should have 7 panes, found {section_cases}")
 need('private func goHome()' in activity and 'private func goBack()' in activity,
      "Activity does not own Home and Back navigation")
 need('private var breadcrumb' in activity, "Activity has no breadcrumb")

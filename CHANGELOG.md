@@ -1,3 +1,9 @@
+## 0.5.186 (build 224)
+
+Tasks is a seventh Activity pane. Capture, schedule, move, and Run now go
+through the helper to server 6.44.0. The home grid is four-wide so seven
+tiles stay two rows. Pairs with server 6.44.0.
+
 ## 0.5.185 (build 223)
 
 Every message row says where it came from. With server 6.43.4 a run the Mac
