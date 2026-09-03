@@ -850,18 +850,21 @@ struct ActivityWindow: View {
                 section: .tasks,
                 title: "Tasks",
                 detail: tasksStatus,
-                refresh: { Task { await model.loadTasks(force: true) } },
+                refresh: { Task { await model.loadDomains(force: true); reconcileTaskDomain(); await model.loadTasks(force: true) } },
                 refreshDisabled: model.tasksLoading
             )
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     TextField("Capture a task", text: $taskCapture)
                         .textFieldStyle(.roundedBorder)
+                    // Server-resolved, not hardcoded: these were one user's
+                    // four business units, so a second COS install had nothing
+                    // it could file a task against. Falls back to the four only
+                    // while an older server has no /api/domains to answer with.
                     Picker("Domain", selection: $taskDomain) {
-                        Text("Quilt").tag("quilt")
-                        Text("Personal").tag("personal")
-                        Text("Hermit Crabs").tag("hermit_crabs")
-                        Text("Sprocket Rocket").tag("sprocket_rocket")
+                        ForEach(model.domainOptions) { option in
+                            Text(option.label).tag(option.name)
+                        }
                     }
                     .labelsHidden()
                     .frame(width: 140)
@@ -880,7 +883,7 @@ struct ActivityWindow: View {
             } else if let error = model.tasksError, model.tasks.isEmpty {
                 emptyState(.tasks, text: error)
             } else if model.tasks.isEmpty {
-                emptyState(.tasks, text: "No open tasks in today, carried, scheduled, or missed.")
+                emptyState(.tasks, text: "No open tasks. Capture one above, or say \"save as task\" on the glasses.")
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
@@ -899,7 +902,7 @@ struct ActivityWindow: View {
         if model.tasksLoading { return "Loading…" }
         if let error = model.tasksError { return error }
         if let gate = model.status.tasksGate, gate != "ready" { return "Gate \(gate)" }
-        return model.tasks.isEmpty ? "Nothing due" : "\(model.tasks.count) open"
+        return model.tasks.isEmpty ? "Nothing captured" : "\(model.tasks.count) open"
     }
 
     private func taskRow(_ task: TaskRow) -> some View {
@@ -925,6 +928,20 @@ struct ActivityWindow: View {
         }
         .padding(.vertical, 10)
         .overlay(alignment: .bottom) { Divider() }
+    }
+
+    /// Keeps `taskDomain` inside the resolved list.
+    ///
+    /// A SwiftUI Picker whose selection is not among its tags renders blank, and
+    /// the default here is the literal "quilt" — a domain that exists on exactly
+    /// one machine. Without this, a fresh install would show an empty picker and
+    /// Capture would post a domain the server rejects as unknown.
+    private func reconcileTaskDomain() {
+        let names = model.domainOptions.map(\.name)
+        guard !names.isEmpty else { return }
+        if !names.contains(taskDomain) {
+            taskDomain = names.first ?? taskDomain
+        }
     }
 
     private func taskRunAtStamp() -> String {
@@ -3084,6 +3101,8 @@ struct ActivityWindow: View {
         }
         if model.claudeSessions.isEmpty { await model.loadClaudeSessions() }
         if model.tasks.isEmpty { await model.loadTasks(force: true) }
+        await model.loadDomains()
+        reconcileTaskDomain()
     }
 
     private func load(_ item: ActivitySection) async {
@@ -3107,6 +3126,8 @@ struct ActivityWindow: View {
         case .sessions:
             await model.loadClaudeSessions()
         case .tasks:
+            await model.loadDomains()
+            reconcileTaskDomain()
             await model.loadTasks(force: true)
         }
     }

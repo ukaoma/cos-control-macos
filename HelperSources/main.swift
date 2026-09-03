@@ -454,6 +454,7 @@ final class COSControlHelper {
         case "set-morning-brief": try setMorningBrief()
         case "run-morning-brief": try runMorningBrief()
         case "tasks": try emitTasks(args: args)
+        case "domains": try emitDomains()
         case "task-capture": try emitTaskCapture(args: args)
         case "task-schedule": try emitTaskSchedule(args: args)
         case "task-move": try emitTaskMove(args: args)
@@ -4084,7 +4085,13 @@ final class COSControlHelper {
         }
         let first = try once()
         if first.status == 404 {
-            throw HelperError.message("Update the managed server to 6.44.0 or newer to use Tasks.")
+            // Route-specific, because these landed in different versions: a
+            // blanket "update to 6.44.0" told a user on 6.44.1 to update to a
+            // version they already had, while the missing route was /api/domains
+            // from 6.44.2.
+            let needed = path.hasPrefix("/api/domains") ? "6.44.2" : "6.44.0"
+            throw HelperError.message(
+                "Update the managed server to \(needed) or newer for this (\(path) is not there).")
         }
         let locked = (first.body?["error"] as? [String: Any])?["code"] as? String == "task_file_locked"
         if first.status == 503, locked {
@@ -4156,18 +4163,31 @@ final class COSControlHelper {
             if missed.contains(id) { row["missed"] = true }
             if failed.contains(id) { row["failed"] = true }
             let column = row["column"] as? String ?? ""
-            let flagged = taskFlag(row, "missed") || taskFlag(row, "failed")
-            let keep = column == "today" || column == "carried" || column == "scheduled"
-                || (column == "inbox" && flagged)
-                || flagged
-            if keep { kept.append(row) }
+            // Keep every OPEN row, not just what is due. This used to keep only
+            // today/carried/scheduled plus anything flagged, so a server holding
+            // 80 captured rows and nothing yet scheduled reported "No open
+            // tasks" and the pane read as broken. `done` is the one exclusion:
+            // it is history, there are 121 of them here, and the limit is 30, so
+            // including it would push out every actionable row.
+            if column != "done" { kept.append(row) }
         }
-        kept.sort { a, b in
-            let aFlag = taskFlag(a, "missed") || taskFlag(a, "failed")
-            let bFlag = taskFlag(b, "missed") || taskFlag(b, "failed")
-            if aFlag != bFlag { return aFlag && !bFlag }
-            return false
+        // Urgency order, so the 30-row limit keeps what matters: flagged first,
+        // then due, then queued, then in flight, then merely captured.
+        func rank(_ row: [String: Any]) -> Int {
+            if taskFlag(row, "failed") { return 0 }
+            if taskFlag(row, "missed") { return 1 }
+            switch row["column"] as? String ?? "" {
+            case "today", "carried": return 2
+            case "running": return 3
+            case "scheduled": return 4
+            default: return 5
+            }
         }
+        // Stable: equal ranks keep the server's own order.
+        kept = kept.enumerated().sorted { a, b in
+            let ra = rank(a.element), rb = rank(b.element)
+            return ra == rb ? a.offset < b.offset : ra < rb
+        }.map(\.element)
         return kept
     }
 
@@ -4190,6 +4210,23 @@ final class COSControlHelper {
             "workBadge": body["workBadge"] ?? NSNull(),
             "next": next?.status == 200 ? (next?.body?["task"] ?? NSNull()) : NSNull(),
             "runs": runs?.status == 200 ? (runs?.body?["runs"] ?? []) : [],
+        ])
+    }
+
+    /// The domain list the server resolved from the user's own config and
+    /// `operations/` tree. Needs server 6.44.2; an older server 404s and the
+    /// caller keeps whatever it already had rather than emptying its picker.
+    private func emitDomains() throws {
+        let response = try taskRequest("/api/domains")
+        guard response.status == 200, let body = response.body else {
+            throw HelperError.message(taskErrorMessage(
+                response, fallback: "The server could not list domains (HTTP \(response.status))."))
+        }
+        let raw = (body["domains"] as? [[String: Any]]) ?? []
+        emit(ok: true, message: raw.isEmpty ? "No domains" : "Domains ready", details: [
+            "domains": raw,
+            "count": raw.count,
+            "gate": body["gate"] ?? NSNull(),
         ])
     }
 

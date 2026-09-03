@@ -1090,6 +1090,69 @@ PY
 /usr/bin/grep -q 'case "task-set-cap": try emitTaskSetCap' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'struct TaskRow' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'func loadTasks' "$ROOT/Sources/ControllerModel.swift"
+
+# The Tasks pane kept only today/carried/scheduled plus anything flagged, so a
+# server holding 80 captured rows and nothing due reported "No open tasks" and
+# read as broken. And the domain picker hardcoded one user's four business units,
+# so a second install had nothing it could file against. Both are executable
+# checks on the real files, not comment matches.
+/usr/bin/python3 - "$ROOT" <<'PY'
+import re, sys
+root = sys.argv[1]
+helper = open(f"{root}/HelperSources/main.swift", encoding="utf-8").read()
+activity = open(f"{root}/Sources/ActivityWindow.swift", encoding="utf-8").read()
+model = open(f"{root}/Sources/ControllerModel.swift", encoding="utf-8").read()
+models = open(f"{root}/Sources/Models.swift", encoding="utf-8").read()
+
+def need(cond, msg):
+    if not cond: raise SystemExit(f"tasks/domains contract: {msg}")
+
+# 1. The filter must not be a due-only whitelist any more.
+body = helper[helper.index("static func filterTaskRows"):]
+body = body[:body.index("\n    private func emitTasks")]
+need('if column != "done" { kept.append(row) }' in body,
+     "filterTaskRows no longer keeps every open row")
+need('column == "today" || column == "carried" || column == "scheduled"' not in body,
+     "filterTaskRows still whitelists only due columns")
+# The 30-row limit only keeps the right rows if it is ranked.
+need("func rank(" in body and "a.offset < b.offset" in body,
+     "filterTaskRows lost its stable urgency ranking")
+
+# 2. The picker reads the server's list; no hardcoded business units anywhere.
+need("ForEach(model.domainOptions)" in activity, "the domain picker is not server-driven")
+for name in ('Text("Quilt").tag', 'Text("Hermit Crabs").tag', 'Text("Sprocket Rocket").tag'):
+    need(name not in activity, f"the picker still hardcodes {name}")
+need('let known = ["quilt", "sprocket_rocket", "hermit_crabs", "personal"]' not in model,
+     "librarySearchDomainOptions still hardcodes four domains")
+need("struct DomainOption" in models, "DomainOption is gone")
+need('case "domains": try emitDomains' in helper, "the helper has no domains command")
+
+# 3. A Picker whose selection is not among its tags renders BLANK, and the
+#    default is the literal "quilt". The reconcile must run wherever domains load.
+need("private func reconcileTaskDomain()" in activity, "reconcileTaskDomain is gone")
+need(len(re.findall(r"reconcileTaskDomain\(\)", activity)) >= 4,
+     "reconcileTaskDomain is not called on every domain-load path")
+need("func loadDomains" in model, "loadDomains is gone")
+# Fails soft on purpose: an older server has no /api/domains, and emptying the
+# picker would remove the only way to file a task.
+soft = model[model.index("func loadDomains"):]
+soft = soft[:soft.index("\n    }")]
+need("if !parsed.isEmpty" in soft, "loadDomains would empty the picker on an older server")
+# An EMPTY picker is worse than a hardcoded one: it removes the only way to file
+# a task. /api/domains landed in 6.44.2, so every older server takes this path.
+need("derivedDomainOptions()" in soft, "loadDomains has no fallback for a server without /api/domains")
+derived = model[model.index("func derivedDomainOptions"):]
+derived = derived[:derived.index("\n    /// Same derivation")]
+need("tasks.map(\\.domain)" in derived, "the fallback does not derive from the board's own rows")
+need('["personal", "business"]' in derived, "the fallback has no last-resort defaults")
+for baked in ("quilt", "hermit_crabs", "sprocket_rocket"):
+    need(baked not in derived, f"the fallback bakes in {baked}")
+# The 404 text must name the route's OWN requirement: a blanket 6.44.0 told a
+# user already on 6.44.1 to update to a version they had.
+need('path.hasPrefix("/api/domains") ? "6.44.2"' in helper,
+     "the 404 message does not name the per-route version")
+print("Tasks pane keeps every open row; domain picker is server-resolved")
+PY
 /usr/bin/grep -q 'ActivityWindowPresenter' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'activityWindow.show(model: model, section: section)' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'SessionPetPresenter' "$ROOT/Sources/COSControlApp.swift"

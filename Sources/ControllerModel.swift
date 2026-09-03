@@ -1365,6 +1365,9 @@ final class ControllerModel: ObservableObject {
     @Published var claudeSessionsLoading = false
     @Published var claudeSessionsError: String?
     @Published var tasks: [TaskRow] = []
+    /// Empty until the server answers. The Tasks picker falls back to whatever
+    /// the user last saw rather than emptying itself against an older server.
+    @Published var domainOptions: [DomainOption] = []
     @Published var tasksLoading = false
     @Published var tasksError: String?
     private var tasksLoadInFlight: Task<Void, Never>?
@@ -1605,9 +1608,64 @@ final class ControllerModel: ObservableObject {
     }
 
     var librarySearchDomainOptions: [String] {
-        let known = ["quilt", "sprocket_rocket", "hermit_crabs", "personal"]
+        // Was a hardcoded ["quilt","sprocket_rocket","hermit_crabs","personal"].
+        // The server's resolved list is the authority; meetings already on disk
+        // are unioned in so a folder made by hand never becomes unsearchable.
+        let known = domainOptions.map(\.name)
         let present = libraryMeetings.map(\.domain).filter { !$0.isEmpty }
         return ["all"] + Array(Set(known + present)).sorted()
+    }
+
+    /// Resolved domains. Fails SOFT on purpose: an older server has no
+    /// /api/domains, and emptying the picker would take away the only way to
+    /// file a task. Keeps the previous list and records nothing as an error.
+    func loadDomains(force: Bool = false) async {
+        if !force && !domainOptions.isEmpty { return }
+        do {
+            let response = try await helper.run(["domains"], timeout: 15)
+            let parsed = (response.details["domains"]?.array ?? []).compactMap(DomainOption.init)
+            if !parsed.isEmpty {
+                domainOptions = parsed
+                return
+            }
+        } catch {
+            // /api/domains landed in server 6.44.2. Fall through rather than
+            // surfacing an error: an empty picker is worse than a derived one.
+        }
+        if domainOptions.isEmpty { domainOptions = derivedDomainOptions() }
+    }
+
+    /// Fallback for a server without /api/domains.
+    ///
+    /// Derived from the board's own rows, which each carry their domain, so this
+    /// needs no baked-in list — the previous picker hardcoded four names and a
+    /// second install had nothing it could file against. If there are no rows
+    /// either, the two generic defaults are all anyone can honestly offer.
+    func derivedDomainOptions() -> [DomainOption] {
+        let present = Array(Set(tasks.map(\.domain).filter { !$0.isEmpty })).sorted()
+        let names = present.isEmpty ? ["personal", "business"] : present
+        return names.compactMap { name in
+            DomainOption(JSONValue.object([
+                "name": .string(name),
+                "label": .string(Self.humanDomainLabel(name)),
+                "abbr": .string(Self.derivedDomainAbbr(name)),
+            ]))
+        }
+    }
+
+    /// Same derivation the server does, so the two agree when the route is absent.
+    static func humanDomainLabel(_ name: String) -> String {
+        let words = name.split(whereSeparator: { $0 == "_" || $0 == "-" }).map(String.init)
+        guard !words.isEmpty else { return name }
+        return words.map { word in
+            word == word.lowercased() ? word.prefix(1).uppercased() + word.dropFirst() : word
+        }.joined(separator: " ")
+    }
+
+    static func derivedDomainAbbr(_ name: String) -> String {
+        let words = name.split(whereSeparator: { $0 == "_" || $0 == "-" })
+        let initials = words.prefix(2).compactMap { $0.first }.map { String($0).uppercased() }
+        return initials.isEmpty ? String(name.prefix(2)).uppercased() : initials.joined()
     }
 
     var recoverableOrphans: [OrphanCapture] {

@@ -800,6 +800,25 @@ struct ClaudeSession: Identifiable, Sendable {
     }
 }
 
+/// A domain the SERVER resolved, from the user's own config and their own
+/// `operations/` tree. The picker used to hardcode four names — one user's
+/// business units — so a second COS install had nothing it could file against.
+struct DomainOption: Identifiable, Sendable, Equatable {
+    let name: String
+    let label: String
+    let abbr: String
+
+    var id: String { name }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let name = o["name"]?.string, !name.isEmpty else { return nil }
+        self.name = name
+        // Fall back to the key rather than rendering an empty row.
+        label = o["label"]?.string ?? name
+        abbr = o["abbr"]?.string ?? String(name.prefix(2)).uppercased()
+    }
+}
+
 struct TaskRow: Identifiable, Sendable {
     let id: String
     let ref: String

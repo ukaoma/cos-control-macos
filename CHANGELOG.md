@@ -1,3 +1,25 @@
+## 0.5.187 (build 225)
+
+The Tasks pane shows captured work, and the domain picker is the user's own.
+
+- The pane kept only `today`, `carried`, `scheduled` and anything flagged, so a
+  server holding 80 captured rows and nothing yet due reported "No open tasks"
+  and read as broken. It keeps every open row now, ranked so the 30-row limit
+  holds what matters: failed, missed, due, running, scheduled, then captured.
+  `done` stays out — it is history, there are 121 of them here, and including it
+  would push out every actionable row.
+- The domain picker hardcoded Quilt / Personal / Hermit Crabs / Sprocket Rocket,
+  one user's business units, so a second COS install had nothing it could file a
+  task against. It reads `GET /api/domains` (server 6.44.2) via a new `domains`
+  helper command. `librarySearchDomainOptions` loses the same hardcoded four.
+- On a server without that route the picker derives its options from the board's
+  own rows rather than emptying itself, because an empty picker removes the only
+  way to file a task. Label and abbreviation are derived the same way the server
+  derives them, so the two agree.
+- A 404 on a task route named 6.44.0 regardless of which route was missing,
+  which told a user already on 6.44.1 to update to a version they had. It now
+  names the route and the version that route actually needs.
+
 ## 0.5.186 (build 224)
 
 Tasks is a seventh Activity pane. Capture, schedule, move, and Run now go
