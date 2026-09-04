@@ -455,6 +455,8 @@ final class COSControlHelper {
         case "run-morning-brief": try runMorningBrief()
         case "tasks": try emitTasks(args: args)
         case "domains": try emitDomains()
+        case "set-domains": try withMutationLock { try emitSetDomains(args: args) }
+        case "task-set-text": try withMutationLock { try emitTaskSetText(args: args) }
         case "task-capture": try emitTaskCapture(args: args)
         case "task-schedule": try emitTaskSchedule(args: args)
         case "task-move": try emitTaskMove(args: args)
@@ -4228,6 +4230,47 @@ final class COSControlHelper {
             "count": raw.count,
             "gate": body["gate"] ?? NSNull(),
         ])
+    }
+
+    /// Replace the configured domain list. Names arrive as repeated --name flags
+    /// so a domain containing a space needs no escaping.
+    private func emitSetDomains(args: [String]) throws {
+        var names: [String] = []
+        var idx = args.startIndex
+        while idx < args.endIndex {
+            if args[idx] == "--name", args.index(after: idx) < args.endIndex {
+                names.append(args[args.index(after: idx)])
+                idx = args.index(idx, offsetBy: 2)
+            } else {
+                idx = args.index(after: idx)
+            }
+        }
+        let response = try taskRequest("/api/domains", method: "PUT", body: try jsonObject(["domains": names]))
+        guard response.status == 200, let body = response.body else {
+            throw HelperError.message(taskErrorMessage(
+                response, fallback: "The server could not save domains (HTTP \(response.status))."))
+        }
+        emit(ok: true, message: "Domains saved", details: [
+            "domains": body["domains"] ?? [],
+            "configured": body["configured"] ?? [],
+        ])
+    }
+
+    /// Rewrite a task's words. Text arrives as a flag value, not STDIN, because
+    /// the helper's other task mutations are argv-shaped.
+    private func emitTaskSetText(args: [String]) throws {
+        let domain = option("--domain", in: args)
+        guard let domain, !domain.isEmpty else { throw HelperError.message("missing domain") }
+        guard let id = option("--id", in: args), !id.isEmpty else { throw HelperError.message("missing task id") }
+        guard let text = option("--text", in: args), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw HelperError.message("missing task text")
+        }
+        let response = try taskRequest("/api/tasks/\(id)", method: "PATCH", body: try jsonObject(["domain": domain, "text": text]))
+        guard response.status == 200 else {
+            throw HelperError.message(taskErrorMessage(
+                response, fallback: "The server could not update the task (HTTP \(response.status))."))
+        }
+        emit(ok: true, message: "Task updated", details: ["id": id])
     }
 
     private func emitTaskCapture(args: [String]) throws {

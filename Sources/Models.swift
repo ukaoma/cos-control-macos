@@ -832,6 +832,12 @@ struct TaskRow: Identifiable, Sendable {
     let late: Bool?
     let carriedOver: Bool?
     let runAt: String
+    /// Whole description. `title` is capped at 44 for a G2 lens row; a Mac
+    /// window has no business rendering that cap. Server 6.44.3 and newer.
+    let text: String
+    let source: String
+    let checked: Bool
+    let agentState: String
 
     var runAtDate: Date? {
         let trimmed = runAt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -858,6 +864,12 @@ struct TaskRow: Identifiable, Sendable {
         late = o["late"]?.bool
         carriedOver = o["carriedOver"]?.bool
         runAt = o["runAt"]?.string ?? ""
+        // Falls back to the capped title on an older server, so the detail view
+        // shows something real rather than an empty body.
+        text = o["text"]?.string ?? o["title"]?.string ?? ""
+        source = o["source"]?.string ?? ""
+        checked = o["checked"]?.bool ?? false
+        agentState = o["agentState"]?.string ?? ""
     }
 }
 

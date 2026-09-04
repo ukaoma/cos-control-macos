@@ -1151,6 +1151,36 @@ for baked in ("quilt", "hermit_crabs", "sprocket_rocket"):
 # user already on 6.44.1 to update to a version they had.
 need('path.hasPrefix("/api/domains") ? "6.44.2"' in helper,
      "the 404 message does not name the per-route version")
+
+# 0.5.188: the row opens a detail, and domains have a place to be set.
+views = open(f"{root}/Sources/Views.swift", encoding="utf-8").read()
+need("openTaskDetail(task)" in activity, "the task row does not open a detail")
+need("private func taskDetailSheet" in activity, "the task detail sheet is gone")
+# The row rendered `title`, which the server caps at 44 for a G2 lens row.
+need("task.text.isEmpty ? task.title : task.text" in activity,
+     "the row still renders the lens-capped title instead of the full text")
+detail = activity[activity.index("private func taskDetailSheet"):]
+detail = detail[:detail.index("\n    private func detailLine")]
+for action in ("setTaskText", "setTaskChecked", "moveTask", "scheduleTask", "runTask"):
+    need(f"model.{action}(" in detail, f"the detail view cannot {action}")
+need('Text(task.checked ? "Reopen" : "Done")' in detail or 'task.checked ? "Reopen" : "Done"' in detail,
+     "the detail view has no Done/Reopen")
+# A running agent owns the line; Run now must not offer to race it.
+need('task.agentState == "running"' in detail, "Run now is offered while an agent is already running")
+# Its own route flag, written only by the opener, so a board refresh cannot
+# dismiss the sheet under the user.
+need(len(re.findall(r"taskDetail = ", activity)) == 2,
+     "taskDetail is written from somewhere other than open/close")
+
+need("private var domainsCard" in views, "there is no Domains settings card")
+need("model.saveDomains(" in views, "the Domains card cannot save")
+need("func saveDomains" in model, "saveDomains is gone from the model")
+need('case "set-domains"' in helper, "the helper cannot set domains")
+need('case "task-set-text"' in helper, "the helper cannot edit task text")
+# Removing a name must not read as deleting the folder's tasks.
+need("Removing a name only unlists it" in views,
+     "the Domains card does not say what removing a name does")
+print("Task detail and Domains settings are wired")
 print("Tasks pane keeps every open row; domain picker is server-resolved")
 PY
 /usr/bin/grep -q 'ActivityWindowPresenter' "$ROOT/Sources/COSControlApp.swift"

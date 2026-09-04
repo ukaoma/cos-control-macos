@@ -120,6 +120,9 @@ struct ControlPanel: View {
     @State private var selectedOllamaModel = ""
     @State private var openPetsQuery = ""
     @State private var petSettingsExpanded = false
+    @State private var domainsDraft: [String] = []
+    @State private var domainsBusy = false
+    @State private var domainsError = ""
     @State private var petStateSpritesExpanded = false
     @State private var petCharactersExpanded = false
     @State private var confirmOpenPetsSprite = false
@@ -1203,6 +1206,7 @@ struct ControlPanel: View {
                 statusCard
                 controls
                 if model.status.morningBriefSupported { morningBriefCard }
+                if model.status.tasksGate != nil { domainsCard }
                 if !model.fenceRecords.isEmpty { fencesCard }
                 if !model.doctorChecks.isEmpty { doctorCard }
                 utilities
@@ -1474,6 +1478,90 @@ struct ControlPanel: View {
     // one PUT and a stepper that saved on each tick would restart the schedule
     // math on every click. Lists cap and scroll: 11 sources with options would
     // otherwise push the footer off the 390pt panel (2026-08-26 rule).
+
+    /// Domains card. The place a user sets their own domains, so nobody has to
+    /// hand-edit ~/.cos-glasses/.cos-profile.json — and so a COS that is not this
+    /// one is not stuck with this one's business units.
+    ///
+    /// The list shown is the RESOLVED list: configured names plus any folder on
+    /// disk holding a tasks.md. Removing a name only removes it from config, so a
+    /// folder that still holds tasks keeps appearing. Saying that in the card is
+    /// the point: a delete that looks like it failed is worse than no delete.
+    private var domainsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Domains").font(.headline)
+                Spacer()
+                if domainsBusy { ProgressView().controlSize(.small) }
+            }
+            if model.domainOptions.isEmpty {
+                Text("No domains yet. COS uses the folders under operations/ that hold a tasks.md.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            ForEach(Array(domainsDraft.enumerated()), id: \.offset) { index, _ in
+                HStack(spacing: 6) {
+                    TextField("domain", text: Binding(
+                        get: { index < domainsDraft.count ? domainsDraft[index] : "" },
+                        set: { if index < domainsDraft.count { domainsDraft[index] = $0 } }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    Button {
+                        if index > 0 { domainsDraft.swapAt(index, index - 1) }
+                    } label: { Image(systemName: "chevron.up") }
+                    .disabled(index == 0)
+                    .buttonStyle(.borderless)
+                    Button {
+                        if index < domainsDraft.count { domainsDraft.remove(at: index) }
+                    } label: { Image(systemName: "minus.circle") }
+                    .buttonStyle(.borderless)
+                }
+            }
+            HStack(spacing: 8) {
+                Button("Add") { domainsDraft.append("") }
+                Button("Save") { saveDomainsDraft() }
+                    .disabled(domainsBusy || domainsDraft.allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty })
+                Button("Reset") { syncDomainsDraft(force: true) }
+                    .disabled(domainsBusy)
+                Spacer()
+            }
+            if !domainsError.isEmpty {
+                Text(domainsError).font(.caption2).foregroundStyle(.red)
+            }
+            Text("A folder under operations/ with a tasks.md always shows here, whether or not it is listed. Removing a name only unlists it; the folder and its tasks stay.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(13)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
+        .task {
+            await model.loadDomains()
+            syncDomainsDraft(force: false)
+        }
+    }
+
+    private func syncDomainsDraft(force: Bool) {
+        if force || domainsDraft.isEmpty {
+            domainsDraft = model.domainOptions.map(\.name)
+            domainsError = ""
+        }
+    }
+
+    private func saveDomainsDraft() {
+        let names = domainsDraft
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        domainsBusy = true
+        domainsError = ""
+        Task {
+            defer { domainsBusy = false }
+            do {
+                try await model.saveDomains(names)
+                syncDomainsDraft(force: true)
+            } catch {
+                domainsError = error.localizedDescription
+            }
+        }
+    }
 
     private var morningBriefCard: some View {
         VStack(alignment: .leading, spacing: 10) {

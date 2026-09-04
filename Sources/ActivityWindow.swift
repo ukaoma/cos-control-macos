@@ -186,6 +186,12 @@ struct ActivityWindow: View {
     @State private var selectedSessionID: String?
     @State private var taskCapture = ""
     @State private var taskDomain = "quilt"
+    /// The task whose detail is open. Its own route flag, written only by
+    /// openTaskDetail, so a board refresh cannot close the sheet under the user.
+    @State private var taskDetail: TaskRow?
+    @State private var taskDetailDraft = ""
+    @State private var taskDetailBusy = false
+    @State private var taskDetailError = ""
     @State private var taskRunAt = Date()
     @State private var taskBusy = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -896,6 +902,21 @@ struct ActivityWindow: View {
                 }
             }
         }
+        // Inline overlay, matching the rest of this window: a detail that dims
+        // the list behind it and closes on its own button, so a board refresh
+        // underneath cannot dismiss it.
+        .overlay {
+            if let task = taskDetail {
+                ZStack {
+                    Color.black.opacity(0.28).ignoresSafeArea()
+                        .onTapGesture { if !taskDetailBusy { closeTaskDetail() } }
+                    taskDetailSheet(task)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(.background))
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.secondary.opacity(0.25)))
+                        .shadow(radius: 18)
+                }
+            }
+        }
     }
 
     private var tasksStatus: String {
@@ -907,14 +928,26 @@ struct ActivityWindow: View {
 
     private func taskRow(_ task: TaskRow) -> some View {
         HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(task.title)
-                    .font(COSType.body(13.5))
-                Text([task.domain, task.column, task.section].joined(separator: " · "))
-                    .font(COSType.body(11))
-                    .foregroundStyle(.secondary)
+            // The whole left side opens the detail. `text` is the full line;
+            // `title` is capped at 44 for a lens row and was truncating every
+            // task in a 1900px window.
+            Button {
+                openTaskDetail(task)
+            } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(task.text.isEmpty ? task.title : task.text)
+                        .font(COSType.body(13.5))
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text([task.domain, task.column, task.section].joined(separator: " · "))
+                        .font(COSType.body(11))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            Spacer()
+            .buttonStyle(.plain)
+            Spacer(minLength: 8)
             if task.missed == true { Text("Missed").font(COSType.body(10.5)).foregroundStyle(.orange) }
             if task.failed == true { Text("Failed").font(COSType.body(10.5)).foregroundStyle(.red) }
             Button("Schedule") {
@@ -941,6 +974,99 @@ struct ActivityWindow: View {
         guard !names.isEmpty else { return }
         if !names.contains(taskDomain) {
             taskDomain = names.first ?? taskDomain
+        }
+    }
+
+    private func openTaskDetail(_ task: TaskRow) {
+        taskDetail = task
+        taskDetailDraft = task.text.isEmpty ? task.title : task.text
+        taskDetailError = ""
+    }
+
+    private func closeTaskDetail() {
+        taskDetail = nil
+        taskDetailDraft = ""
+        taskDetailError = ""
+    }
+
+    /// Runs one detail action and keeps the sheet open on failure, because the
+    /// message is the only thing that explains why nothing changed.
+    private func runDetailAction(_ work: @escaping () async throws -> Void, closeOnSuccess: Bool = true) {
+        taskDetailBusy = true
+        taskDetailError = ""
+        Task {
+            defer { taskDetailBusy = false }
+            do {
+                try await work()
+                if closeOnSuccess { closeTaskDetail() }
+            } catch {
+                taskDetailError = error.localizedDescription
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func taskDetailSheet(_ task: TaskRow) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text(task.checked ? "Task (done)" : "Task").font(COSType.display(17))
+                Spacer()
+                Button("Close") { closeTaskDetail() }
+            }
+            TextEditor(text: $taskDetailDraft)
+                .font(COSType.body(13.5))
+                .frame(minHeight: 72, maxHeight: 140)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.secondary.opacity(0.35)))
+            VStack(alignment: .leading, spacing: 4) {
+                detailLine("Domain", task.domain)
+                detailLine("Lane", task.column)
+                detailLine("Section", task.section)
+                if !task.runAt.isEmpty { detailLine("Scheduled", task.runAt) }
+                if !task.source.isEmpty { detailLine("Source", task.source) }
+                if !task.agentState.isEmpty { detailLine("Agent", task.agentState) }
+                detailLine("Ref", task.ref)
+            }
+            if !taskDetailError.isEmpty {
+                Text(taskDetailError).font(COSType.body(11.5)).foregroundStyle(.red)
+            }
+            HStack(spacing: 8) {
+                Button("Save text") {
+                    let next = taskDetailDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !next.isEmpty else { taskDetailError = "Task text cannot be empty."; return }
+                    runDetailAction { try await model.setTaskText(id: task.id, domain: task.domain, text: next) }
+                }
+                .disabled(taskDetailBusy || taskDetailDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button(task.checked ? "Reopen" : "Done") {
+                    runDetailAction { try await model.setTaskChecked(id: task.id, domain: task.domain, checked: !task.checked) }
+                }
+                .disabled(taskDetailBusy)
+                Spacer()
+            }
+            HStack(spacing: 8) {
+                Button("To inbox") {
+                    runDetailAction { try await model.moveTask(id: task.id, domain: task.domain, section: "inbox") }
+                }
+                .disabled(taskDetailBusy || task.section == "inbox")
+                Button("Schedule") {
+                    runDetailAction { try await model.scheduleTask(id: task.id, domain: task.domain, runAt: taskRunAtStamp()) }
+                }
+                .disabled(taskDetailBusy)
+                Button("Run now") {
+                    runDetailAction { try await model.runTask(id: task.id, domain: task.domain) }
+                }
+                .disabled(taskDetailBusy || task.agentState == "running")
+                Spacer()
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+
+    private func detailLine(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(label).font(COSType.body(11)).foregroundStyle(.secondary).frame(width: 74, alignment: .leading)
+            Text(value).font(COSType.body(11.5)).textSelection(.enabled)
+            Spacer()
         }
     }
 

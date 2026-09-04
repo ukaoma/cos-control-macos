@@ -1758,6 +1758,63 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    func setTaskText(id: String, domain: String, text: String) async throws {
+        do {
+            _ = try await helper.run(
+                ["task-set-text", "--id", id, "--domain", domain, "--text", text],
+                timeout: 30
+            )
+            tasksError = nil
+            await loadTasks(force: true)
+        } catch {
+            tasksError = error.localizedDescription
+            throw error
+        }
+    }
+
+    func setTaskChecked(id: String, domain: String, checked: Bool) async throws {
+        do {
+            var args = ["task-check", "--id", id, "--domain", domain]
+            if !checked { args.append("--uncheck") }
+            _ = try await helper.run(args, timeout: 30)
+            tasksError = nil
+            await loadTasks(force: true)
+        } catch {
+            tasksError = error.localizedDescription
+            throw error
+        }
+    }
+
+    func moveTask(id: String, domain: String, section: String) async throws {
+        do {
+            _ = try await helper.run(
+                ["task-move", "--id", id, "--domain", domain, "--section", section],
+                timeout: 30
+            )
+            tasksError = nil
+            await loadTasks(force: true)
+        } catch {
+            tasksError = error.localizedDescription
+            throw error
+        }
+    }
+
+    /// Replace the configured domain list. Names go as repeated --name flags so a
+    /// domain containing a space needs no escaping.
+    func saveDomains(_ names: [String]) async throws {
+        do {
+            var args = ["set-domains"]
+            for name in names { args.append(contentsOf: ["--name", name]) }
+            let response = try await helper.run(args, timeout: 30)
+            let parsed = (response.details["domains"]?.array ?? []).compactMap(DomainOption.init)
+            if !parsed.isEmpty { domainOptions = parsed }
+            tasksError = nil
+        } catch {
+            tasksError = error.localizedDescription
+            throw error
+        }
+    }
+
     func runTask(id: String, domain: String) async throws {
         do {
             _ = try await helper.run(["task-run", "--id", id, "--domain", domain], timeout: 30)

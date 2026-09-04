@@ -1,3 +1,23 @@
+## 0.5.188 (build 226)
+
+Open a task, read it, change it. And set your own domains.
+
+- **Click a task.** The row opens a detail with the whole line, its source, lane,
+  section, schedule, agent state and ref. Rows used to render `title`, which the
+  server caps at 44 characters for a G2 lens row, so every task in a 1900px
+  window ended in an ellipsis. Needs server 6.44.3 for the full text; on an older
+  server the detail falls back to the capped title rather than showing nothing.
+- **Edit the words**, then Save text. The source block and the schedule survive
+  the edit. A task with a running agent is refused, because rewriting the line
+  would change the task the agent was dispatched against.
+- **Done and Reopen**, which Control had no button for at all. Plus To inbox,
+  Schedule, and Run now from the same place.
+- **Domains card in the panel.** Add, rename, reorder and remove, written to
+  `~/.cos-glasses/.cos-profile.json` through server 6.44.3 instead of by hand. A
+  folder under `operations/` holding a `tasks.md` always appears whether or not
+  it is listed, and the card says so: removing a name only unlists it, and the
+  folder and its tasks stay.
+
 ## 0.5.187 (build 225)
 
 The Tasks pane shows captured work, and the domain picker is the user's own.
