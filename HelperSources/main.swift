@@ -457,6 +457,8 @@ final class COSControlHelper {
         case "domains": try emitDomains()
         case "set-domains": try withMutationLock { try emitSetDomains(args: args) }
         case "task-set-text": try withMutationLock { try emitTaskSetText(args: args) }
+        case "task-set-stage": try withMutationLock { try emitTaskSetStage(args: args) }
+        case "task-set-done-when": try withMutationLock { try emitTaskSetDoneWhen(args: args) }
         case "task-capture": try emitTaskCapture(args: args)
         case "task-schedule": try emitTaskSchedule(args: args)
         case "task-move": try emitTaskMove(args: args)
@@ -4271,6 +4273,49 @@ final class COSControlHelper {
                 response, fallback: "The server could not update the task (HTTP \(response.status))."))
         }
         emit(ok: true, message: "Task updated", details: ["id": id])
+    }
+
+    private func emitTaskStageArgs(args: [String]) throws -> (String, String) {
+        guard let domain = option("--domain", in: args), !domain.isEmpty else {
+            throw HelperError.message("missing domain")
+        }
+        guard let id = option("--id", in: args), !id.isEmpty else {
+            throw HelperError.message("missing task id")
+        }
+        return (domain, id)
+    }
+
+    /// Move a task between board stages. `planning` clears the marker, which is
+    /// the unmarked default every captured row starts in.
+    private func emitTaskSetStage(args: [String]) throws {
+        let (domain, id) = try emitTaskStageArgs(args: args)
+        guard let stage = option("--stage", in: args),
+              ["planning", "active", "review"].contains(stage) else {
+            throw HelperError.message("stage must be planning, active or review")
+        }
+        let response = try taskRequest("/api/tasks/\(id)", method: "PATCH",
+                                       body: try jsonObject(["domain": domain, "stage": stage]))
+        guard response.status == 200 else {
+            throw HelperError.message(taskErrorMessage(
+                response, fallback: "The server could not move the task (HTTP \(response.status))."))
+        }
+        emit(ok: true, message: "Stage set", details: ["id": id, "stage": stage])
+    }
+
+    /// Set or clear what finished looks like. An empty value clears it, which
+    /// re-blocks Run now: the server answers `run` with 409 done_when_required
+    /// while a task has no finish line.
+    private func emitTaskSetDoneWhen(args: [String]) throws {
+        let (domain, id) = try emitTaskStageArgs(args: args)
+        let doneWhen = (option("--done-when", in: args) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let response = try taskRequest("/api/tasks/\(id)", method: "PATCH",
+                                       body: try jsonObject(["domain": domain, "doneWhen": doneWhen]))
+        guard response.status == 200 else {
+            throw HelperError.message(taskErrorMessage(
+                response, fallback: "The server could not set the finish line (HTTP \(response.status))."))
+        }
+        emit(ok: true, message: doneWhen.isEmpty ? "Finish line cleared" : "Finish line set", details: ["id": id])
     }
 
     private func emitTaskCapture(args: [String]) throws {

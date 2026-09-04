@@ -1772,6 +1772,35 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    func setTaskStage(id: String, domain: String, stage: String) async throws {
+        do {
+            _ = try await helper.run(
+                ["task-set-stage", "--id", id, "--domain", domain, "--stage", stage],
+                timeout: 30
+            )
+            tasksError = nil
+            await loadTasks(force: true)
+        } catch {
+            tasksError = error.localizedDescription
+            throw error
+        }
+    }
+
+    /// Empty clears the finish line, which re-blocks Run now.
+    func setTaskDoneWhen(id: String, domain: String, doneWhen: String) async throws {
+        do {
+            _ = try await helper.run(
+                ["task-set-done-when", "--id", id, "--domain", domain, "--done-when", doneWhen],
+                timeout: 30
+            )
+            tasksError = nil
+            await loadTasks(force: true)
+        } catch {
+            tasksError = error.localizedDescription
+            throw error
+        }
+    }
+
     func setTaskChecked(id: String, domain: String, checked: Bool) async throws {
         do {
             var args = ["task-check", "--id", id, "--domain", domain]

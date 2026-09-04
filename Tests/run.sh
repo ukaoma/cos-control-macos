@@ -1180,6 +1180,32 @@ need('case "task-set-text"' in helper, "the helper cannot edit task text")
 # Removing a name must not read as deleting the folder's tasks.
 need("Removing a name only unlists it" in views,
      "the Domains card does not say what removing a name does")
+
+# 0.5.189: the three-stage board reaches Control.
+models = open(f"{root}/Sources/Models.swift", encoding="utf-8").read()
+need('stage = (rawStage == "active" || rawStage == "review") ? rawStage : "planning"' in models,
+     "TaskRow does not default an unknown stage to planning")
+need('doneWhen = o["doneWhen"]?.string ?? ""' in models, "TaskRow does not decode doneWhen")
+
+need('case "task-set-stage"' in helper, "the helper cannot set a stage")
+need('case "task-set-done-when"' in helper, "the helper cannot set a finish line")
+# planning|active|review and nothing else reaches the server.
+need('["planning", "active", "review"].contains(stage)' in helper,
+     "the helper does not validate the stage value")
+
+need("func setTaskStage" in model, "setTaskStage is gone from the model")
+need("func setTaskDoneWhen" in model, "setTaskDoneWhen is gone from the model")
+
+# Run now is gated on the finish line, because the server refuses that dispatch
+# with 409 done_when_required and a button that only fails is worse than none.
+need('task.agentState == "running" || task.doneWhen.isEmpty' in detail,
+     "Run now is offered on a task with no finish line")
+# Setting the finish line must NOT close the sheet: it unblocks the very button
+# it enables, and closing would hide the result of the action.
+need("}, closeOnSuccess: false)" in detail,
+     "setting the finish line closes the sheet it just unblocked")
+need('ForEach(["planning", "active", "review"]' in detail, "the detail view has no stage moves")
+print("Stage, finish line, and the run gate are wired")
 print("Task detail and Domains settings are wired")
 print("Tasks pane keeps every open row; domain picker is server-resolved")
 PY

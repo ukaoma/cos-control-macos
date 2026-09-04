@@ -1,3 +1,19 @@
+## 0.5.189 (build 227)
+
+A task says what finished looks like, and nothing runs until it does.
+
+- **Done when.** Every task detail carries a finish line. It is the first thing
+  in the sheet, and an empty one is marked, because **Run now is refused without
+  it** — the server answers that dispatch with `409 done_when_required`. An agent
+  sent at a task with no definition of done cannot succeed at it, and cannot be
+  judged to have failed either. Setting it leaves the sheet open, since it
+  unblocks the button right below it.
+- **Stage.** Tasks move Planning, Active, Review. The detail shows the stage and
+  moves between them. A row with no marker is Planning, so nothing needed
+  migrating and every captured task started where it belongs.
+- Needs server 6.44.4 for both. On an older server the fields simply read empty
+  and the stage shows Planning.
+
 ## 0.5.188 (build 226)
 
 Open a task, read it, change it. And set your own domains.

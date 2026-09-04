@@ -838,6 +838,13 @@ struct TaskRow: Identifiable, Sendable {
     let source: String
     let checked: Bool
     let agentState: String
+    /// Board stage. Absent or unknown means planning, the unmarked default every
+    /// captured row starts in, so an older server degrades to a full PLANNING lane
+    /// rather than an empty board. Server 6.44.4 and newer.
+    let stage: String
+    /// What finished looks like. A dispatch is refused while this is empty: the
+    /// server answers `run` with 409 done_when_required.
+    let doneWhen: String
 
     var runAtDate: Date? {
         let trimmed = runAt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -868,6 +875,9 @@ struct TaskRow: Identifiable, Sendable {
         // shows something real rather than an empty body.
         text = o["text"]?.string ?? o["title"]?.string ?? ""
         source = o["source"]?.string ?? ""
+        let rawStage = o["stage"]?.string ?? ""
+        stage = (rawStage == "active" || rawStage == "review") ? rawStage : "planning"
+        doneWhen = o["doneWhen"]?.string ?? ""
         checked = o["checked"]?.bool ?? false
         agentState = o["agentState"]?.string ?? ""
     }

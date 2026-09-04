@@ -190,6 +190,7 @@ struct ActivityWindow: View {
     /// openTaskDetail, so a board refresh cannot close the sheet under the user.
     @State private var taskDetail: TaskRow?
     @State private var taskDetailDraft = ""
+    @State private var taskDoneWhenDraft = ""
     @State private var taskDetailBusy = false
     @State private var taskDetailError = ""
     @State private var taskRunAt = Date()
@@ -980,12 +981,14 @@ struct ActivityWindow: View {
     private func openTaskDetail(_ task: TaskRow) {
         taskDetail = task
         taskDetailDraft = task.text.isEmpty ? task.title : task.text
+        taskDoneWhenDraft = task.doneWhen
         taskDetailError = ""
     }
 
     private func closeTaskDetail() {
         taskDetail = nil
         taskDetailDraft = ""
+        taskDoneWhenDraft = ""
         taskDetailError = ""
     }
 
@@ -1017,8 +1020,34 @@ struct ActivityWindow: View {
                 .font(COSType.body(13.5))
                 .frame(minHeight: 72, maxHeight: 140)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(.secondary.opacity(0.35)))
+            VStack(alignment: .leading, spacing: 5) {
+                Text("DONE WHEN").font(COSType.body(10)).foregroundStyle(
+                    task.doneWhen.isEmpty ? Color.orange : Color.secondary)
+                HStack(spacing: 8) {
+                    TextField("What does finished look like?", text: $taskDoneWhenDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(COSType.body(12))
+                    Button("Set") {
+                        // Sheet stays open: setting the finish line is what UNBLOCKS
+                        // Run now, so closing here would hide the button it enables.
+                        runDetailAction({
+                            try await model.setTaskDoneWhen(
+                                id: task.id, domain: task.domain,
+                                doneWhen: taskDoneWhenDraft.trimmingCharacters(in: .whitespacesAndNewlines))
+                        }, closeOnSuccess: false)
+                    }
+                    .disabled(taskDetailBusy)
+                }
+                if task.doneWhen.isEmpty {
+                    // Named here rather than left to a failed run: the server
+                    // refuses the dispatch with 409 done_when_required.
+                    Text("Run now needs a finish line.")
+                        .font(COSType.body(10.5)).foregroundStyle(.orange)
+                }
+            }
             VStack(alignment: .leading, spacing: 4) {
                 detailLine("Domain", task.domain)
+                detailLine("Stage", task.stage.capitalized)
                 detailLine("Lane", task.column)
                 detailLine("Section", task.section)
                 if !task.runAt.isEmpty { detailLine("Scheduled", task.runAt) }
@@ -1054,7 +1083,17 @@ struct ActivityWindow: View {
                 Button("Run now") {
                     runDetailAction { try await model.runTask(id: task.id, domain: task.domain) }
                 }
-                .disabled(taskDetailBusy || task.agentState == "running")
+                .disabled(taskDetailBusy || task.agentState == "running" || task.doneWhen.isEmpty)
+                Spacer()
+            }
+            HStack(spacing: 8) {
+                Text("Move to").font(COSType.body(11)).foregroundStyle(.secondary)
+                ForEach(["planning", "active", "review"], id: \.self) { stage in
+                    Button(stage.capitalized) {
+                        runDetailAction { try await model.setTaskStage(id: task.id, domain: task.domain, stage: stage) }
+                    }
+                    .disabled(taskDetailBusy || task.stage == stage)
+                }
                 Spacer()
             }
         }
