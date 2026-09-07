@@ -7467,7 +7467,7 @@ final class COSControlHelper {
     static let setupOwnerMessage = "Only the ingestion owner Mac can do this. Make this Mac the owner first, or open COS Control on the owner."
 
     private func setupRequest(_ route: String, method: String = "POST", body: String? = nil, timeout: Int = 20,
-                              accepted: Set<Int> = [200]) throws -> [String: Any] {
+                              accepted: Set<Int> = [200], needs: String = COSControlHelper.setupNeeds) throws -> [String: Any] {
         guard request("/api/health", timeout: 5)?.status == 200 else { throw HelperError.message("Server stopped") }
         let token: String
         do { token = try readToken() } catch { throw HelperError.message("Unauthorized") }
@@ -7479,7 +7479,7 @@ final class COSControlHelper {
         switch response.status {
         case 401, 403: throw HelperError.message("Unauthorized")
         case 404 where klass == nil:
-            throw HelperError.message("Update the managed server to \(Self.setupNeeds) or newer for this (\(route) is not there).")
+            throw HelperError.message("Update the managed server to \(needs) or newer for this (\(route) is not there).")
         case 404: throw HelperError.message(detail ?? "Not found (\(klass ?? "not_found")).")
         case 400: throw HelperError.message(detail ?? "The server did not accept this (\(klass ?? "invalid")).")
         case 409: throw HelperError.message(klass == "not_owner" ? Self.setupOwnerMessage : (detail ?? "The server refused this (\(klass ?? "refused")))."))
@@ -7582,7 +7582,7 @@ final class COSControlHelper {
             payload["model"] = model
         }
         if args.contains("--fetch") { payload["fetch"] = true }
-        let body = try setupRequest("/api/context/graph/setup/embedding", body: try setupJSON(payload), timeout: 100, accepted: [200])
+        let body = try setupRequest("/api/context/graph/setup/embedding", body: try setupJSON(payload), timeout: 100, accepted: [200], needs: Self.choiceNeeds)
         let label = (body["embedding"] as? [String: Any])?["label"] as? String ?? provider
         let fetch = body["fetch"] as? [String: Any]
         let message = fetch?["started"] as? Bool == true ? "Embeddings set to \(label); fetching the model"
@@ -7596,7 +7596,7 @@ final class COSControlHelper {
         guard let tier = option("--tier", in: args), Self.extractionTiers.contains(tier) else {
             throw HelperError.message("--tier must be haiku, sonnet or opus")
         }
-        let body = try setupRequest("/api/context/graph/setup/extraction", body: try setupJSON(["tier": tier]), timeout: 20, accepted: [200])
+        let body = try setupRequest("/api/context/graph/setup/extraction", body: try setupJSON(["tier": tier]), timeout: 20, accepted: [200], needs: Self.choiceNeeds)
         let label = (body["extraction"] as? [String: Any])?["label"] as? String ?? tier
         emit(ok: true, message: "Extraction set to \(label)", details: body)
     }

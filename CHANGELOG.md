@@ -1,3 +1,7 @@
+## 0.5.199 (build 237)
+
+- The two choice commands name 6.44.11 when their route is missing, not 6.44.9.
+
 ## 0.5.198 (build 236)
 
 Choose how Knowledge indexes (server 6.44.11).
