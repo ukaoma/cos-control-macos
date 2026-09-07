@@ -4003,6 +4003,26 @@ page = (root / "Resources/memories/memories-app.js").read_text()
 need("function chooseDefaultFocus()" in page and "state.status.ownerName" in page and "graphFocusChosen" in page,
      "the page must default the graph focus to the owner and keep a chosen focus")
 need(page.count("state.graphFocusChosen = true") >= 3, "recenter, Focus and Explore in graph must all mark the focus as chosen")
+# 0.5.193: the native panes use the brand type and the shared surface styles,
+# so no pane row or header falls back to the system font; the only system-font
+# line a row may keep is the chevron glyph.
+brand = (root / "Sources/COSBrand.swift").read_text()
+need("struct COSStat: View" in brand and "struct COSQuietButtonStyle: ButtonStyle" in brand and "struct COSPrimaryButtonStyle: ButtonStyle" in brand
+     and "func cosRowCard() -> some View" in brand and "func cosField() -> some View" in brand, "the shared surface styles are gone")
+header = between(activity, "    private func sectionHeader<Accessory: View>(", "    /// The section mark inside an open pane.")
+need("COSType.display(24, weight: .medium)" in header and "COSStat(value: stat.value, label: stat.label)" in header and ".font(.system(" not in header,
+     "the pane header must set its title in Fraunces with a stat strip and no system font")
+for name, start, end in (("sessionRow", "    private func sessionRow(", "    private var sessionsStatus: String {"),
+                         ("contextRow", "    private func contextRow(", "    private func sectionHeader("),
+                         ("taskRow", "    private func taskRow(", "    /// Keeps `taskDomain` inside the resolved list.")):
+    row = between(activity, start, end)
+    need(".cosRowCard()" in row, f"{name} is not a card")
+    need(row.count(".font(.system(size:") == row.count('Image(systemName: "chevron.right")'), f"{name} still sets prose in the system font")
+need("stats: meetingsStats" in activity and "stats: sessionsStats" in activity and "stats: tasksStats" in activity, "each pane must pass its stat strip")
+meetings_src = (root / "Sources/ActivityMeetings.swift").read_text()
+need(meetings_src.count(".cosRowCard()") == 2 and "List(" not in meetings_src, "the meeting rows must be cards in the shared scroll list, not a List")
+need("COSType.display(22, weight: .medium)" in meetings_src and "COSType.display(15, weight: .medium)" in meetings_src, "the meeting detail title and the calendar month must be Fraunces")
+need("Search topics, ideas" in meetings_src, "the meetings search placeholder changed")
 
 # 5. Every list fed by server state in the entity pane is capped by COUNT with a
 #    Show all button, inside the pane's one ScrollView; nested scrolls are gone.

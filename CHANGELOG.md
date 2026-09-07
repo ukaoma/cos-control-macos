@@ -1,3 +1,19 @@
+## 0.5.193 (build 231)
+
+The other tabs speak the Memories tab's language.
+
+- **Meetings, Threads, Sessions, and Tasks wear the reviewed vocabulary.**
+  Each pane opens with its title in Fraunces and a strip of live numbers under
+  it (the month's calls, stored, days with calls; on disk, waiting, pinned;
+  open, scheduled, need attention; tracked, shown), the same value and label
+  pair the home tiles show. Rows are warm cards with a hairline that turns
+  gold under the pointer; search and capture fields share that card; buttons
+  are one quiet style with a single gold primary (Capture, a prominent
+  Refresh). DM Sans carries prose and JetBrains Mono the instrument chrome, so
+  no row or header in these panes falls back to the system font. The meeting,
+  session, thread, and memory detail panes get the same title and label
+  treatment. No new motion.
+
 ## 0.5.192 (build 230)
 
 Knowledge opens on you, and the queue can be indexed from the Sync card.

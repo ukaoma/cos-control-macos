@@ -58,15 +58,15 @@ struct MeetingLibraryBody: View {
     private var unsavedCaptureBanner: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Unsaved captures")
-                .font(.system(size: 11, weight: .semibold))
+                .font(COSType.body(11, weight: .semibold))
                 .foregroundStyle(COSPalette.amber)
             Text("Audio that never became a meeting. This is not Speakers’ Meetings to review.")
-                .font(.system(size: 11))
+                .font(COSType.body(11))
                 .foregroundStyle(.secondary)
             ForEach(model.recoverableOrphans) { capture in
                 HStack {
                     Text(capture.label)
-                        .font(.system(size: 11))
+                        .font(COSType.body(11))
                         .lineLimit(1)
                     Spacer()
                     Button("Recover") { model.recoverOrphan(capture.sessionId) }
@@ -82,7 +82,7 @@ struct MeetingLibraryBody: View {
             ForEach(model.strandedCaptures) { capture in
                 HStack {
                     Text(capture.label)
-                        .font(.system(size: 11))
+                        .font(COSType.body(11))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                     Spacer()
@@ -97,6 +97,7 @@ struct MeetingLibraryBody: View {
                     .disabled(model.busy || model.orphanBusy)
             }
         }
+        .buttonStyle(COSQuietButtonStyle())
         .padding(.horizontal, 24)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -124,9 +125,7 @@ struct MeetingLibraryBody: View {
                         .accessibilityLabel("Clear search")
                     }
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+                .cosField()
                 .frame(maxWidth: 320)
 
                 if domainOptions.count > 2 || model.isLibraryQueryActive {
@@ -151,12 +150,12 @@ struct MeetingLibraryBody: View {
 
                 Spacer()
                 Text(listDetail)
-                    .font(.system(size: 11))
+                    .font(COSType.body(11))
                     .foregroundStyle(.secondary)
             }
             if model.isLibraryQueryActive, !model.librarySemanticAvailable {
                 Text("Keyword only — meaning search needs the COS meeting index")
-                    .font(.system(size: 11))
+                    .font(COSType.body(11))
                     .foregroundStyle(.secondary)
             }
         }
@@ -174,7 +173,7 @@ struct MeetingLibraryBody: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let error = model.libraryError, model.libraryMeetings.isEmpty {
             Text(error)
-                .font(.system(size: 12))
+                .font(COSType.body(12))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
@@ -182,20 +181,25 @@ struct MeetingLibraryBody: View {
                 .padding(30)
         } else if model.visibleLibraryMeetings.isEmpty {
             Text(emptyCopy)
-                .font(.system(size: 12))
+                .font(COSType.body(12))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(30)
         } else {
-            List(model.visibleLibraryMeetings) { meeting in
-                Button { onOpen(meeting) } label: {
-                    meetingRow(meeting.title, subtitle: meeting.subtitle, sessionId: meeting.sessionId)
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(model.visibleLibraryMeetings) { meeting in
+                        Button { onOpen(meeting) } label: {
+                            meetingRow(meeting.title, subtitle: meeting.subtitle, sessionId: meeting.sessionId)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .buttonStyle(.plain)
+                .padding(.horizontal, 22)
+                .padding(.vertical, 12)
             }
-            .listStyle(.inset)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
@@ -207,7 +211,7 @@ struct MeetingLibraryBody: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let error = model.librarySearchError, model.librarySearchHits.isEmpty {
             Text(error)
-                .font(.system(size: 12))
+                .font(COSType.body(12))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
@@ -215,56 +219,62 @@ struct MeetingLibraryBody: View {
                 .padding(30)
         } else if model.librarySearchHits.isEmpty {
             Text("No meetings match that lookup.")
-                .font(.system(size: 12))
+                .font(COSType.body(12))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(30)
         } else {
-            List(model.visibleLibrarySearchHits) { hit in
-                Button { onOpen(hit.meeting) } label: {
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(hit.meeting.title)
-                                .font(.system(size: 13.5, weight: .semibold))
-                                .foregroundStyle(.primary)
-                                .multilineTextAlignment(.leading)
-                            if !hit.snippet.isEmpty {
-                                Text(hit.snippet)
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(model.visibleLibrarySearchHits) { hit in
+                        Button { onOpen(hit.meeting) } label: {
+                            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(hit.meeting.title)
+                                        .font(COSType.body(13.5, weight: .semibold))
+                                        .foregroundStyle(.primary)
+                                        .multilineTextAlignment(.leading)
+                                    if !hit.snippet.isEmpty {
+                                        Text(hit.snippet)
+                                            .font(COSType.body(11))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                    }
+                                    Text(hit.meeting.subtitle)
+                                        .font(COSType.body(11))
+                                        .foregroundStyle(.tertiary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Text(hit.matchLabel)
+                                    .font(COSType.mono(9.5, weight: .semibold))
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(
+                                        Capsule().fill(ActivitySection.meetings.tint.opacity(0.16))
+                                    )
+                                if !hit.meeting.sessionId.isEmpty {
+                                    MeetingStatusPills(
+                                        isNew: model.isInboxNew(hit.meeting.sessionId),
+                                        tag: model.voiceTag(sessionId: hit.meeting.sessionId)
+                                    )
+                                }
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(.tertiary)
                             }
-                            Text(hit.meeting.subtitle)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
+                            .padding(.vertical, 2)
+                            .contentShape(Rectangle())
+                            .cosRowCard()
                         }
-                        Spacer()
-                        Text(hit.matchLabel)
-                            .font(.system(size: 10, weight: .semibold))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(
-                                Capsule().fill(ActivitySection.meetings.tint.opacity(0.16))
-                            )
-                        if !hit.meeting.sessionId.isEmpty {
-                            MeetingStatusPills(
-                                isNew: model.isInboxNew(hit.meeting.sessionId),
-                                tag: model.voiceTag(sessionId: hit.meeting.sessionId)
-                            )
-                        }
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.tertiary)
+                        .buttonStyle(.plain)
                     }
-                    .padding(.vertical, 4)
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .padding(.horizontal, 22)
+                .padding(.vertical, 12)
             }
-            .listStyle(.inset)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
@@ -273,11 +283,11 @@ struct MeetingLibraryBody: View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
-                    .font(.system(size: 13.5, weight: .semibold))
+                    .font(COSType.body(13.5, weight: .semibold))
                     .foregroundStyle(.primary)
                     .multilineTextAlignment(.leading)
                 Text(subtitle)
-                    .font(.system(size: 11))
+                    .font(COSType.body(11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -292,8 +302,9 @@ struct MeetingLibraryBody: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.tertiary)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 2)
         .contentShape(Rectangle())
+        .cosRowCard()
     }
 
     private var domainOptions: [String] {
@@ -337,7 +348,7 @@ struct MeetingMonthCalendar: View {
                 .accessibilityLabel("Previous month")
                 Spacer()
                 Text(MeetingMonth.title(month))
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(COSType.display(15, weight: .medium))
                 Spacer()
                 Button { onShift(1) } label: {
                     Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
@@ -348,7 +359,7 @@ struct MeetingMonthCalendar: View {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7), spacing: 6) {
                 ForEach(weekdayHeaders, id: \.self) { name in
                     Text(name)
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(COSType.mono(9, weight: .semibold))
                         .foregroundStyle(.tertiary)
                         .frame(maxWidth: .infinity)
                 }
@@ -360,7 +371,7 @@ struct MeetingMonthCalendar: View {
                         } label: {
                             VStack(spacing: 3) {
                                 Text("\(cell.day)")
-                                    .font(.system(size: 11.5, weight: selectedDay == cell.date ? .semibold : .regular))
+                                    .font(COSType.body(11.5, weight: selectedDay == cell.date ? .semibold : .regular))
                                 Circle()
                                     .fill(count > 0 ? tint : Color.clear)
                                     .frame(width: 5, height: 5)
@@ -389,7 +400,7 @@ struct MeetingMonthCalendar: View {
             }
             if selectedDay != nil {
                 Button("All month") { onSelectDay(nil) }
-                    .controlSize(.small)
+                    .buttonStyle(COSQuietButtonStyle())
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -434,10 +445,10 @@ struct MeetingLibraryDetailPane: View {
             if let row = model.openLibraryRow {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(row.title)
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(COSType.display(22, weight: .medium))
                         .textSelection(.enabled)
                     Text(row.subtitle)
-                        .font(.system(size: 12))
+                        .font(COSType.body(12))
                         .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 24)
@@ -451,7 +462,7 @@ struct MeetingLibraryDetailPane: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = model.libraryDetailError, model.libraryDetail == nil {
                 Text(error)
-                    .font(.system(size: 12))
+                    .font(COSType.body(12))
                     .foregroundStyle(.secondary)
                     .padding(24)
                 if let row = model.openLibraryRow {
@@ -476,7 +487,7 @@ struct MeetingLibraryDetailPane: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    .font(.system(size: 12.5))
+                    .font(COSType.body(12.5))
                     .padding(24)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -499,12 +510,13 @@ struct MeetingLibraryDetailPane: View {
                         )
                     }
                 }
+                .buttonStyle(COSQuietButtonStyle())
                 .controlSize(.small)
                 .padding(.horizontal, 24)
                 .padding(.vertical, 12)
                 if let note = model.copyNote {
                     Text(note)
-                        .font(.system(size: 11))
+                        .font(COSType.body(11))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 24)
                         .padding(.bottom, 10)
@@ -519,7 +531,8 @@ struct MeetingLibraryDetailPane: View {
     private func labeled(_ title: String, _ body: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title.uppercased())
-                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .font(COSType.mono(10, weight: .semibold))
+                .tracking(0.8)
                 .foregroundStyle(.secondary)
             Text(body)
                 .textSelection(.enabled)

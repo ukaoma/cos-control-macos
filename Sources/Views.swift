@@ -3225,20 +3225,20 @@ struct ContextDetailPane: View {
             }
             if let record = model.contextDetail {
                 Text(record.title)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(COSType.display(18, weight: .medium))
                     .fixedSize(horizontal: false, vertical: true)
                 if !record.subtitle.isEmpty {
-                    Text(record.subtitle).font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text(record.subtitle).font(COSType.body(11)).foregroundStyle(.secondary)
                 }
                 // The id is the addressable handle the glasses use, and a copied
                 // excerpt is worth little without knowing which record it came from.
                 Text(record.id)
-                    .font(.system(size: 9.5, design: .monospaced))
+                    .font(COSType.mono(9.5))
                     .foregroundStyle(.tertiary)
                     .textSelection(.enabled)
                 ScrollView {
                     Text(record.body.isEmpty ? "(no stored body)" : record.body)
-                        .font(.system(size: 11.5))
+                        .font(COSType.body(12))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .fixedSize(horizontal: false, vertical: true)
@@ -3250,13 +3250,14 @@ struct ContextDetailPane: View {
                         Button("Reveal in Finder", systemImage: "folder") { model.revealContextRecord(record) }
                     }
                 }
+                .buttonStyle(COSQuietButtonStyle())
                 .controlSize(.small)
                 if let note = model.copyNote {
                     Text(note).font(.caption2).foregroundStyle(.secondary)
                 }
                 if let path = record.filePath {
                     Text(path)
-                        .font(.system(size: 9, design: .monospaced))
+                        .font(COSType.mono(9))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
                 }

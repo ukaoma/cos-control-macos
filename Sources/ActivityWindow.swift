@@ -514,7 +514,7 @@ struct ActivityWindow: View {
                                 .frame(width: 13, height: 13)
                             Text(item.title)
                         }
-                        .font(.system(size: 11.5, weight: section == item ? .semibold : .medium))
+                        .font(COSType.body(11.5, weight: section == item ? .semibold : .medium))
                         .foregroundStyle(section == item ? .primary : .secondary)
                         // The indicator is ONE view that moves between tabs, not six that
                         // toggle. `matchedGeometryEffect` interpolates its frame across the
@@ -793,11 +793,13 @@ struct ActivityWindow: View {
     /// unit. That turned "50 of 5528" into `50 / OF 5528` and "30 shown · 11 active" into
     /// `30 / SHOWN · 11 ACTIVE` — the smaller number promoted and the label left a
     /// fragment. `status.memoryCount` and `status.threadCount` were there the whole time.
+    private func formatted(_ value: Int) -> String {
+        let f = NumberFormatter(); f.numberStyle = .decimal
+        return f.string(from: NSNumber(value: value)) ?? "\(value)"
+    }
+
     private func homeMetric(_ item: ActivitySection) -> (count: String, unit: String) {
-        func n(_ value: Int) -> String {
-            let f = NumberFormatter(); f.numberStyle = .decimal
-            return f.string(from: NSNumber(value: value)) ?? "\(value)"
-        }
+        func n(_ value: Int) -> String { formatted(value) }
         switch item {
         case .messages:
             return model.recentMessages.isEmpty ? ("—", "REFRESH") : (n(model.recentMessages.count), "RECENT")
@@ -873,6 +875,31 @@ struct ActivityWindow: View {
         }
     }
 
+    // The strip under a pane's title: what the pane holds right now, in the
+    // value/label pair the home tiles use, read from the model it already has.
+    private var meetingsStats: [(value: String, label: String)] {
+        let scope = model.libraryDay.map { "ON \($0)" } ?? MeetingMonth.title(model.libraryMonth).uppercased()
+        var stats: [(value: String, label: String)] = [(formatted(model.visibleLibraryMeetings.count), scope)]
+        if model.status.meetingLibraryCount > 0 { stats.append((formatted(model.status.meetingLibraryCount), "STORED")) }
+        let days = model.libraryDays.filter { $0.count > 0 }.count
+        if days > 0 { stats.append((formatted(days), "DAYS WITH CALLS")) }
+        return stats
+    }
+
+    private var sessionsStats: [(value: String, label: String)] {
+        guard !visibleSessions.isEmpty else { return [] }
+        let waiting = visibleSessions.filter { $0.state == "waiting" }.count
+        let pinned = visibleSessions.filter(\.pinned).count
+        return [(formatted(visibleSessions.count), "ON DISK"), (formatted(waiting), "WAITING"), (formatted(pinned), "PINNED")]
+    }
+
+    private var tasksStats: [(value: String, label: String)] {
+        guard !model.tasks.isEmpty else { return [] }
+        let scheduled = model.tasks.filter { !$0.runAt.isEmpty }.count
+        let flagged = model.tasks.filter { $0.missed == true || $0.failed == true }.count
+        return [(formatted(model.tasks.count), "OPEN"), (formatted(scheduled), "SCHEDULED"), (formatted(flagged), "NEED ATTENTION")]
+    }
+
     private var meetingsList: some View {
         VStack(spacing: 0) {
             sectionHeader(
@@ -884,7 +911,8 @@ struct ActivityWindow: View {
                         ? "Loading…"
                         : (model.libraryError ?? "Saved calls by day · transcript and summary")),
                 refresh: { Task { await model.loadLibraryMeetings() } },
-                refreshDisabled: model.libraryLoading
+                refreshDisabled: model.libraryLoading,
+                stats: meetingsStats
             )
             MeetingLibraryBody(model: model) { meeting in
                 selectedLibraryRecordID = meeting.id
@@ -901,6 +929,7 @@ struct ActivityWindow: View {
                 detail: sessionsStatus,
                 refresh: { Task { await model.loadClaudeSessions() } },
                 refreshDisabled: model.claudeSessionsLoading,
+                stats: sessionsStats,
                 accessory: {
                     if !model.isSessionQueryActive {
                         Picker("Clock", selection: $model.sessionClock) {
@@ -930,7 +959,7 @@ struct ActivityWindow: View {
                 emptyState(.sessions, text: sessionsEmptyCopy)
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 0) {
+                    LazyVStack(spacing: 6) {
                         ForEach(visibleSessions) { session in
                             sessionRow(session)
                         }
@@ -949,12 +978,14 @@ struct ActivityWindow: View {
                 title: "Tasks",
                 detail: tasksStatus,
                 refresh: { Task { await model.loadDomains(force: true); reconcileTaskDomain(); await model.loadTasks(force: true) } },
-                refreshDisabled: model.tasksLoading
+                refreshDisabled: model.tasksLoading,
+                stats: tasksStats
             )
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     TextField("Capture a task", text: $taskCapture)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
+                        .cosField()
                     // Server-resolved, not hardcoded: these were one user's
                     // four business units, so a second COS install had nothing
                     // it could file a task against. Falls back to the four only
@@ -969,10 +1000,14 @@ struct ActivityWindow: View {
                     Button("Capture") {
                         Task { await captureTask() }
                     }
+                    .buttonStyle(COSPrimaryButtonStyle())
                     .disabled(taskCapture.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || taskBusy)
                 }
-                DatePicker("Run at", selection: $taskRunAt, displayedComponents: [.date, .hourAndMinute])
-                    .labelsHidden()
+                HStack(spacing: 8) {
+                    Text("Run at").font(COSType.body(11)).foregroundStyle(.secondary)
+                    DatePicker("Run at", selection: $taskRunAt, displayedComponents: [.date, .hourAndMinute])
+                        .labelsHidden()
+                }
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 12)
@@ -984,7 +1019,7 @@ struct ActivityWindow: View {
                 emptyState(.tasks, text: "No open tasks. Capture one above, or say \"save as task\" on the glasses.")
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 0) {
+                    LazyVStack(spacing: 6) {
                         ForEach(model.tasks) { task in
                             taskRow(task)
                         }
@@ -1031,28 +1066,39 @@ struct ActivityWindow: View {
                         .font(COSType.body(13.5))
                         .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text([task.domain, task.column, task.section].joined(separator: " · "))
-                        .font(COSType.body(11))
-                        .foregroundStyle(.secondary)
+                    // Where the task sits, as three small marks rather than one
+                    // dotted string: each is a fact the board can filter on.
+                    HStack(spacing: 6) {
+                        ForEach(Array([task.domain, task.column, task.section].filter { !$0.isEmpty }.enumerated()), id: \.offset) { _, part in
+                            Text(part.uppercased())
+                                .font(COSType.mono(8.5, weight: .semibold))
+                                .tracking(0.5)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color.primary.opacity(0.06)))
+                        }
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             Spacer(minLength: 8)
-            if task.missed == true { Text("Missed").font(COSType.body(10.5)).foregroundStyle(.orange) }
-            if task.failed == true { Text("Failed").font(COSType.body(10.5)).foregroundStyle(.red) }
+            if task.missed == true { Text("Missed").font(COSType.body(10.5, weight: .semibold)).foregroundStyle(COSPalette.amber) }
+            if task.failed == true { Text("Failed").font(COSType.body(10.5, weight: .semibold)).foregroundStyle(.red) }
             Button("Schedule") {
                 Task { await scheduleTask(task) }
             }
+            .buttonStyle(COSQuietButtonStyle())
             .disabled(taskBusy)
             Button("Run now") {
                 Task { await runTask(task) }
             }
+            .buttonStyle(COSQuietButtonStyle())
             .disabled(taskBusy)
         }
-        .padding(.vertical, 10)
-        .overlay(alignment: .bottom) { Divider() }
+        .cosRowCard()
     }
 
     /// Keeps `taskDomain` inside the resolved list.
@@ -1260,9 +1306,7 @@ struct ActivityWindow: View {
                         .accessibilityLabel("Clear search")
                     }
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+                .cosField()
                 .frame(maxWidth: 320)
                 Picker("Recency", selection: $model.searchRecency) {
                     ForEach(SearchRecency.allCases) { option in
@@ -1276,7 +1320,7 @@ struct ActivityWindow: View {
             }
             if model.isSessionQueryActive, !model.sessionSemanticAvailable {
                 Text(sessionSemanticHint)
-                    .font(.system(size: 11))
+                    .font(COSType.body(11))
                     .foregroundStyle(.secondary)
             }
         }
@@ -1396,12 +1440,12 @@ struct ActivityWindow: View {
                     providerGlyph(session.provider)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(session.title)
-                            .font(.system(size: 12.5, weight: .medium))
+                            .font(COSType.body(13.5, weight: .semibold))
                             .lineLimit(1)
                             .foregroundStyle(.primary)
                         if !snippet.isEmpty {
                             Text(snippet)
-                                .font(.system(size: 10.5))
+                                .font(COSType.body(11))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(2)
                         }
@@ -1409,7 +1453,7 @@ struct ActivityWindow: View {
                             providerBadge(session)
                             if session.pinned {
                                 Text("PINNED")
-                                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                                    .font(COSType.mono(8.5, weight: .bold))
                                     .tracking(0.6)
                                     .foregroundStyle(.secondary)
                                     .padding(.horizontal, 6)
@@ -1418,12 +1462,12 @@ struct ActivityWindow: View {
                             }
                             if session.showsStateChip {
                                 Text(session.stateLabel)
-                                    .font(.system(size: 10, weight: .semibold))
+                                    .font(COSType.body(10.5, weight: .semibold))
                                     .foregroundStyle(sessionStateTint(session.state))
                             }
                             if let hint = sessionClockHint(session) {
                                 Text(hint)
-                                    .font(.system(size: 10.5))
+                                    .font(COSType.body(10.5))
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                             }
@@ -1435,20 +1479,20 @@ struct ActivityWindow: View {
                                 session.title.trimmingCharacters(in: .whitespacesAndNewlines)
                             ), let opened = session.createdDate {
                                 Text("Opened \(ClaudeSession.shortSessionDate(opened))")
-                                    .font(.system(size: 10.5, weight: .medium))
+                                    .font(COSType.body(10.5, weight: .medium))
                                     .foregroundStyle(COSPalette.amber)
                                     .lineLimit(1)
                                     .help("Another session on screen has the same name. This one was opened \(ClaudeSession.shortSessionDate(opened)).")
                             }
                             if !session.workspace.isEmpty, session.workspace != session.title {
                                 Text(session.workspace)
-                                    .font(.system(size: 10.5))
+                                    .font(COSType.body(10.5))
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                             }
                             if !session.waitingFor.isEmpty {
                                 Text(session.waitingFor)
-                                    .font(.system(size: 10.5))
+                                    .font(COSType.body(10.5))
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                             }
@@ -1457,7 +1501,7 @@ struct ActivityWindow: View {
                     Spacer()
                     if let matchLabel {
                         Text(matchLabel)
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(COSType.mono(9.5, weight: .semibold))
                             .padding(.horizontal, 7)
                             .padding(.vertical, 3)
                             .background(Capsule().fill(ActivitySection.sessions.tint.opacity(0.16)))
@@ -1466,11 +1510,11 @@ struct ActivityWindow: View {
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.tertiary)
                 }
-                .padding(.vertical, 13)
+                .padding(.vertical, 2)
                 .contentShape(Rectangle())
+                .cosRowCard()
             }
             .buttonStyle(.plain)
-            Divider().padding(.leading, 46)
         }
     }
 
@@ -2703,7 +2747,11 @@ struct ActivityWindow: View {
                 detail: queryActive
                     ? (searching ? "Looking up…" : "Lookup across stored \(item.title.lowercased())")
                     : (!headline.isEmpty ? headline : item.summary),
-                refresh: { Task { await model.loadContextRecords(kind: kind) } }
+                refresh: { Task { await model.loadContextRecords(kind: kind) } },
+                stats: available
+                    ? [(formatted(isThread ? model.status.threadCount : model.status.memoryCount), isThread ? "TRACKED" : "STORED"),
+                       (formatted(records.count), "SHOWN")]
+                    : []
             )
             if available {
                 contextSearchBar(kind: kind)
@@ -2718,7 +2766,7 @@ struct ActivityWindow: View {
                 emptyState(item, text: error ?? "No \(item.title.lowercased()) yet.")
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 0) {
+                    LazyVStack(spacing: 6) {
                         ForEach(records) { record in
                             Button {
                                 selectedContextID = record.id
@@ -2727,7 +2775,6 @@ struct ActivityWindow: View {
                                 contextRow(record, item: item)
                             }
                             .buttonStyle(.plain)
-                            Divider().padding(.leading, 46)
                         }
                     }
                     .padding(.horizontal, 22)
@@ -2761,9 +2808,7 @@ struct ActivityWindow: View {
                         .accessibilityLabel("Clear search")
                     }
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+                .cosField()
                 .frame(maxWidth: 320)
                 Picker("Recency", selection: $model.searchRecency) {
                     ForEach(SearchRecency.allCases) { option in
@@ -2779,7 +2824,7 @@ struct ActivityWindow: View {
                 Text(isThread
                      ? "Keyword only — threads have no meaning index"
                      : "Keyword only — meaning search needs the COS memory index")
-                    .font(.system(size: 11))
+                    .font(COSType.body(11))
                     .foregroundStyle(.secondary)
             }
         }
@@ -2857,17 +2902,17 @@ struct ActivityWindow: View {
             sectionGlyph(item)
             VStack(alignment: .leading, spacing: 4) {
                 Text(record.title)
-                    .font(.system(size: 12.5, weight: .medium))
+                    .font(COSType.body(13.5, weight: .semibold))
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                 if !record.subtitle.isEmpty {
                     Text(record.subtitle)
-                        .font(.system(size: 10.5))
+                        .font(COSType.body(11))
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
                 Text(record.id)
-                    .font(.system(size: 9.5, design: .monospaced))
+                    .font(COSType.mono(9.5))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
             }
@@ -2876,8 +2921,9 @@ struct ActivityWindow: View {
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.tertiary)
         }
-        .padding(.vertical, 13)
+        .padding(.vertical, 2)
         .contentShape(Rectangle())
+        .cosRowCard()
     }
 
     private func sectionHeader(
@@ -2890,7 +2936,8 @@ struct ActivityWindow: View {
         refreshProminent: Bool = false,
         secondaryTitle: String? = nil,
         secondaryAction: (() -> Void)? = nil,
-        secondaryDisabled: Bool = false
+        secondaryDisabled: Bool = false,
+        stats: [(value: String, label: String)] = []
     ) -> some View {
         sectionHeader(
             section: item,
@@ -2903,6 +2950,7 @@ struct ActivityWindow: View {
             secondaryTitle: secondaryTitle,
             secondaryAction: secondaryAction,
             secondaryDisabled: secondaryDisabled,
+            stats: stats,
             accessory: { EmptyView() }
         )
     }
@@ -2918,29 +2966,53 @@ struct ActivityWindow: View {
         secondaryTitle: String? = nil,
         secondaryAction: (() -> Void)? = nil,
         secondaryDisabled: Bool = false,
+        stats: [(value: String, label: String)] = [],
         @ViewBuilder accessory: () -> Accessory
     ) -> some View {
-        HStack(alignment: .center, spacing: 14) {
-            sectionGlyph(item, large: true)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.system(size: 19, weight: .semibold))
-                Text(detail).font(.system(size: 11.5)).foregroundStyle(.secondary)
+        // The pane hero (0.5.193): the title in Fraunces like the Memories
+        // page, one line of detail under it, and a strip of live numbers, the
+        // same value/label pair the home tiles show. Buttons share the quiet
+        // style; a prominent Refresh is the pane's single gold control.
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 14) {
+                sectionGlyph(item, large: true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).font(COSType.display(24, weight: .medium)).lineLimit(1)
+                    Text(detail).font(COSType.body(12)).foregroundStyle(.secondary).lineLimit(2)
+                }
+                Spacer()
+                accessory()
+                if let secondaryTitle, let secondaryAction {
+                    Button(secondaryTitle, action: secondaryAction)
+                        .buttonStyle(COSQuietButtonStyle())
+                        .disabled(secondaryDisabled)
+                }
+                if refreshProminent {
+                    Button(refreshTitle, systemImage: "arrow.clockwise", action: refresh)
+                        .buttonStyle(COSPrimaryButtonStyle())
+                        .disabled(refreshDisabled)
+                } else {
+                    Button(refreshTitle, systemImage: "arrow.clockwise", action: refresh)
+                        .buttonStyle(COSQuietButtonStyle())
+                        .disabled(refreshDisabled)
+                }
             }
-            Spacer()
-            accessory()
-            if let secondaryTitle, let secondaryAction {
-                Button(secondaryTitle, action: secondaryAction)
-                    .disabled(secondaryDisabled)
+            if !stats.isEmpty {
+                HStack(alignment: .top, spacing: 26) {
+                    ForEach(Array(stats.enumerated()), id: \.offset) { _, stat in
+                        COSStat(value: stat.value, label: stat.label)
+                    }
+                    Spacer()
+                }
+                .padding(.top, 14)
+                .padding(.leading, 56)
             }
-            Button(refreshTitle, systemImage: "arrow.clockwise", action: refresh)
-                .disabled(refreshDisabled)
-                .tint(refreshProminent ? COSPalette.amber : Color.accentColor)
         }
         .controlSize(.small)
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
-        .background(item.tint.opacity(0.055))
-        .overlay(alignment: .bottom) { Divider() }
+        .background(item.tint.opacity(0.045))
+        .overlay(alignment: .bottom) { Rectangle().fill(COSPalette.line).frame(height: 1) }
     }
 
     /// The section mark inside an open pane.
@@ -3946,7 +4018,7 @@ struct ActivityWindow: View {
     private func centeredProgress(_ label: String) -> some View {
         VStack(spacing: 10) {
             ProgressView()
-            Text(label).font(.system(size: 11.5)).foregroundStyle(.secondary)
+            Text(label).font(COSType.body(11.5)).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -3955,7 +4027,7 @@ struct ActivityWindow: View {
         VStack(spacing: 12) {
             sectionGlyph(item, large: true)
             Text(text)
-                .font(.system(size: 12))
+                .font(COSType.body(12))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 380)
@@ -3974,7 +4046,7 @@ struct ClaudeSessionDetailPane: View {
                 HStack(spacing: 8) {
                     if let row = model.openClaudeRow {
                         Text(row.providerLabel.uppercased())
-                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .font(COSType.mono(9, weight: .bold))
                             .tracking(0.6)
                             .foregroundStyle(Self.tint(row.provider))
                             .padding(.horizontal, 7)
@@ -3982,15 +4054,15 @@ struct ClaudeSessionDetailPane: View {
                             .background(Capsule().fill(Self.tint(row.provider).opacity(0.14)))
                     }
                     Text(model.claudeSessionDetail?.title ?? model.openClaudeRow?.title ?? "Session")
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(COSType.display(22, weight: .medium))
                         .textSelection(.enabled)
                 }
                 Text(model.claudeSessionDetail?.subtitle ?? "Read-only · local transcript")
-                    .font(.system(size: 12))
+                    .font(COSType.body(12))
                     .foregroundStyle(.secondary)
                 if let cwd = model.claudeSessionDetail?.cwd, !cwd.isEmpty {
                     Text(cwd)
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(COSType.mono(10.5))
                         .foregroundStyle(.tertiary)
                         .textSelection(.enabled)
                         .lineLimit(2)
@@ -4006,7 +4078,7 @@ struct ClaudeSessionDetailPane: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = model.claudeSessionDetailError, model.claudeSessionDetail == nil {
                 Text(error)
-                    .font(.system(size: 12))
+                    .font(COSType.body(12))
                     .foregroundStyle(.secondary)
                     .padding(24)
                 if let row = model.openClaudeRow {
@@ -4019,7 +4091,7 @@ struct ClaudeSessionDetailPane: View {
                     VStack(alignment: .leading, spacing: 14) {
                         if detail.truncated {
                             Text("Showing the last \(detail.turns.count) of \(detail.totalTurns) turns. Copy session keeps the original request plus the newest context.")
-                                .font(.system(size: 11.5))
+                                .font(COSType.body(11.5))
                                 .foregroundStyle(.secondary)
                         }
                         if detail.turns.isEmpty {
@@ -4029,10 +4101,10 @@ struct ClaudeSessionDetailPane: View {
                         ForEach(detail.turns) { turn in
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(turn.isUser ? "YOU" : "ASSISTANT")
-                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                    .font(COSType.mono(9.5, weight: .semibold))
                                     .tracking(1.2)
                                 Text(turn.text)
-                                    .font(.system(size: 12.5))
+                                    .font(COSType.body(12.5))
                                     .textSelection(.enabled)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -4058,18 +4130,19 @@ struct ClaudeSessionDetailPane: View {
                             .disabled(detail.copyText.isEmpty)
                         Spacer()
                         Text("Kickstart brief for another agent. Not a Claude Code resume.")
-                            .font(.system(size: 11))
+                            .font(COSType.body(11))
                             .foregroundStyle(.tertiary)
                     } else {
                         Spacer()
                     }
                 }
+                .buttonStyle(COSQuietButtonStyle())
                 .controlSize(.small)
                 .padding(.horizontal, 24)
                 .padding(.vertical, 12)
                 if let note = model.copyNote {
                     Text(note)
-                        .font(.system(size: 11))
+                        .font(COSType.body(11))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 24)
                         .padding(.bottom, 10)
@@ -4250,7 +4323,7 @@ struct MeetingStatusPills: View {
 
     private func pill(_ text: String, _ tint: Color) -> some View {
         Text(text.uppercased())
-            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+            .font(COSType.mono(8.5, weight: .bold))
             .tracking(0.5)
             .foregroundStyle(tint)
             .padding(.horizontal, 6)
