@@ -3739,7 +3739,92 @@ struct ModelsContract {
         print("COS Control: finished rows carry their outcome, measured in their own face")
     }
 
+
+    /// Recent learning and Knowledge (0.5.190): every count decodes as an
+    /// optional, the two Sync-card sentences exist verbatim, and the chip
+    /// number is nil whenever its source is.
+    private static func checkLearningModels() {
+        // learningState present, learningToReview absent: no number, not zero.
+        let partial = ServerStatus(["learningState": .string("ready"), "graphIndexState": .string("fresh")])
+        precondition(partial.learningState == "ready" && partial.learningToReview == nil,
+                     "a present state with an absent count must decode the count as nil")
+        precondition(partial.graphEntities == nil && partial.graphQueuePending == nil, "absent graph counts are nil")
+        let full = ServerStatus(["learningToReview": .number(121), "graphEntities": .number(40359), "graphIsOwner": .bool(true)])
+        precondition(full.learningToReview == 121 && full.graphEntities == 40359 && full.graphIsOwner == true)
+        precondition(ServerStatus([:]).learningState == nil && ServerStatus([:]).graphLockState == nil)
+
+        let event = LearningEvent(.object([
+            "event_id": .string("evt_0123456789abcdef"), "lesson_id": .string("siq_6bef5169aea2"), "event_type": .string("proposed"),
+            "ts": .string("2026-08-17T05:00:00.000000+00:00"), "store": .string("self_improvement_queue"),
+            "title": .string("daily-reflect: Repair the sync path"), "scope": .string("task"), "category": .string("daily-reflect"),
+            "engine": .string("task"), "target": .object(["kind": .string("task-proposal"), "id": .string("siq_6bef5169aea2")]),
+            "applies_to": .array([]), "source_refs": .array([.object(["kind": .string("self_improvement_queue"), "id": .string("line:7"), "excerpt": .string("Repair")])]),
+            "provenance": .string("complete"), "ordinal": .number(1),
+            "detail": .object(["task": .string("daily-reflect"), "future": .bool(false), "logged_times": .number(2), "bodies": .array([.string("b1")])]),
+        ]))
+        precondition(event?.id == "evt_0123456789abcdef" && event?.isTaskProposal == true && event?.needsReview == true)
+        precondition(event?.kindLabel == "Task proposal" && event?.rowSubtitle == "task · 2026-08-17 05:00", "row subtitle is scope · engine · time, engine folded when equal")
+        precondition(event?.sourceRefs.first?.excerpt == "Repair" && event?.detail?.loggedTimes == 2 && event?.detail?.bodies == ["b1"])
+        precondition(LearningEvent(.object(["event_id": .string("")])) == nil && LearningEvent(.string("x")) == nil, "an event needs an id")
+        let pattern = LearningEvent(.object(["event_id": .string("evt_fedcba9876543210"), "event_type": .string("promotable"), "scope": .string("claude-code"), "engine": .string("claude-code"), "ts": .string("2026-09-01T00:00:00+00:00")]))
+        precondition(pattern?.isPattern == true && pattern?.needsReview == true && pattern?.kindLabel == "Promotable pattern")
+        let plain = LearningEvent(.object(["event_id": .string("evt_fedcba9876543211"), "event_type": .string("captured"), "scope": .string("unknown"), "engine": .string("g2")]))
+        precondition(plain?.needsReview == false && plain?.rowSubtitle == "unknown · g2", "a captured event is not To review")
+
+        let coverage = LearningCoverage.list(.object(["bot_memory": .object(["state": .string("unavailable")]), "self_improvement_queue": .object(["state": .string("ok"), "count": .number(120)])]))
+        precondition(coverage.map(\.store) == ["bot_memory", "self_improvement_queue"] && coverage[0].count == nil && coverage[1].count == 120)
+
+        let graph = GraphStatus([
+            "entities": .number(40359), "relationships": .number(88369), "index_state": .string("stale"),
+            "source": .object(["owner_host": .string("m3"), "is_owner": .bool(true), "owner_state": .string("owner")]),
+            "queue": .object(["pending": .number(56), "oldest_pending_at": .string("2026-08-31T16:58:00+00:00"), "missing_sources": .number(6)]),
+            "budget": .object(["used": .number(0), "cap": .number(1500)]),
+            "lock": .object(["state": .string("exclusive"), "owner_pid": .number(4242)]),
+            "processor": .object(["state": .string("installed-idle")]),
+            "build": .object(["state": .string("done"), "wall_s": .number(4.4)]),
+        ])
+        precondition(graph.entities == 40359 && graph.queuePending == 56 && graph.missingSources == 6 && graph.conflictCopies == nil)
+        precondition(graph.lock.state == "exclusive" && graph.lock.ownerPID == 4242 && graph.build?.wallSeconds == 4.4)
+        precondition(graph.invitesIndexBuild && graph.processorLine == "Processor installed, no run recorded yet")
+        let bare = GraphStatus([:])
+        precondition(bare.indexState == "missing" && bare.lock.state == "unknown" && bare.queuePending == nil && bare.entities == nil)
+        precondition(bare.processorLine == "No processor configured on this Mac" && bare.invitesIndexBuild)
+        precondition(GraphStatus(["index_state": .string("fresh")]).invitesIndexBuild == false)
+
+        let entity = GraphEntity(.object([
+            "id": .string("Miles Ukaoma"), "type": .string("person"), "degree": .number(5251), "description": .string("d"),
+            "descriptions": .array([.string("a"), .string("b"), .string("c"), .string("d"), .string("e"), .string("f"), .string("g")]),
+            "edges": .array([
+                .object(["source": .string("Miles Ukaoma"), "target": .string("Ryan Hopkins"), "weight": .number(228), "description": .string("e1")]),
+                .object(["source": .string("COS"), "target": .string("Miles Ukaoma"), "weight": .number(900), "description": .string("e2")]),
+            ]),
+            "neighbors": .array([.object(["id": .string("Ryan Hopkins"), "type": .string("person"), "degree": .number(300)])]),
+            "total_relationships": .number(5251), "source_status": .string("partial"), "source_count": .number(200), "source_resolved": .number(80),
+        ]))
+        precondition(entity?.descriptions.count == 6, "descriptions cap at six")
+        precondition(entity?.edges.first?.other(than: "Miles Ukaoma") == "COS", "edges rank by weight, heaviest first")
+        precondition(entity?.neighbors.first?.id == "Ryan Hopkins" && entity?.sourceLine?.contains("80 of 200") == true)
+        precondition(GraphEntity.placeholder("COS").id == "COS" && GraphEntity(.object(["type": .string("person")])) == nil)
+        precondition(GraphPassage(.object(["chunk_id": .string("c1"), "excerpt": .string("x"), "source": .object(["status": .string("resolved"), "title": .string("t")])]))?.sourceTitle == "t")
+
+        let signals = ActivitySignals([
+            "memories": .object(["needsYou": .null, "newest": .string("2026-09-06"), "source": .string("context-status")]),
+            "speakers": .object(["needsYou": .number(7), "source": .string("voice-ext-audio")]),
+            "tasks": .object(["needsYou": .number(0), "inboxIDs": .array([.string("t1"), .string("t2")]), "source": .string("tasks")]),
+            "meetings": .object(["needsYou": .number(0), "source": .string("meeting-orphans")]),
+            "legend": .string("Number = needs you · Dot = new since you last opened it"),
+        ])
+        precondition(signals.number(for: "memories") == nil, "an absent count is no number, never zero")
+        precondition(signals.number(for: "speakers") == 7 && signals.number(for: "meetings") == nil, "zero is no number")
+        precondition(signals.number(for: "tasks", unseenInbox: 2) == 2 && signals.number(for: "tasks") == nil, "tasks add the unseen inbox")
+        precondition(signals.number(for: "threads") == nil, "a section with no source shows no mark")
+        precondition(signals.mark("memories")?.newest == "2026-09-06" && signals.legend.hasPrefix("Number"))
+        precondition(ActivitySignals.hasNewer(newest: "2026-09-06", cursor: nil) && ActivitySignals.hasNewer(newest: "2026-09-06", cursor: "2026-09-05"))
+        precondition(!ActivitySignals.hasNewer(newest: "2026-09-06", cursor: "2026-09-06") && !ActivitySignals.hasNewer(newest: nil, cursor: nil))
+    }
+
     static func main() throws {
+        checkLearningModels()
         checkPetRowOutcome()
         checkRenameEligibility()
         checkAmbiguousTitles()

@@ -32,8 +32,8 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 400:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 400 (409 at 0.5.185)")
+if count < 440:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 440 (445 at 0.5.190)")
 ' "$SELF_TEST"
 
 # THE APP ITSELF MUST COMPILE.
@@ -2069,7 +2069,13 @@ need('activityOpenSection' in model, "the menu chips have no way to name a tab")
 need('applyLaunchSection' in activity, "Activity does not consume the chip's tab")
 need('case .messages: messagesList' in activity, "Messages is not mounted")
 need('case .speakers: speakersList' in activity, "Speakers is not mounted")
-need('case .memories: contextList(kind: "memory")' in activity, "Memories is not mounted")
+# 0.5.190: Memories mounts a four-view pane whose All memories segment is the
+# 0.5.189 list unchanged, and the picker's default stays .allMemories (the flip
+# is 0.5.191). Both the mapping and the initializer are pinned.
+need('case .memories: memoriesPane()' in activity, "Memories is not mounted on memoriesPane")
+need('case .allMemories: contextList(kind: "memory")' in activity, "All memories no longer renders the memory list")
+need('@State private var memoriesSubview: MemoriesSubview = .allMemories' in activity,
+     "the Memories picker must default to .allMemories in 0.5.190")
 need('case .threads: contextList(kind: "thread")' in activity, "Threads is not mounted")
 need('case .sessions: sessionsList' in activity, "Sessions is not mounted")
 need('case .tasks: tasksList' in activity, "Tasks is not mounted")
@@ -3882,6 +3888,130 @@ need('"com.googlecode.iterm2"' in models and '"com.apple.Terminal"' in models,
      "the terminal allowlist lost a member")
 need("terminalHostBundleIds" in models, "the allowlist constant was renamed")
 JUMPRT
+
+# --- Recent learning and Knowledge (0.5.190, server 6.44.5) --------------------
+# Same discipline as the context routes above: every opener is tied to its
+# render condition, every new count is an optional, and the things this build
+# deliberately does NOT ship (a Dismiss, an explorer web view) are asserted absent.
+/usr/bin/python3 - "$ROOT" <<'LEARNCHK'
+import pathlib, re, sys
+root = pathlib.Path(sys.argv[1])
+activity = (root / "Sources/ActivityWindow.swift").read_text()
+views = (root / "Sources/Views.swift").read_text()
+model = (root / "Sources/ControllerModel.swift").read_text()
+models = (root / "Sources/Models.swift").read_text()
+helper = (root / "HelperSources/main.swift").read_text()
+release = (root / "scripts/build-release.sh").read_text()
+
+def need(condition, message):
+    if not condition:
+        sys.exit(f"learning wiring: {message}")
+
+# 1. Routes: the flag reads the var the opener writes, and the pane is gated on it.
+for flag, var, opener, pane in (
+    ("learningRouteActive", "learningDetail", "openLearningEvent", "LearningDetailPane"),
+    ("graphRouteActive", "graphEntity", "openGraphEntity", "GraphEntityPane"),
+):
+    route = re.search(r"var %s: Bool \{[^}]*\}" % flag, model, re.S)
+    need(route is not None, f"{flag} not found")
+    need(re.search(r"\b%s\b" % var, route.group(0)) is not None, f"{flag} does not read {var} itself")
+    fn = re.search(r"func %s\(_ [^)]*\) \{.*?\n    \}" % opener, model, re.S)
+    need(fn is not None, f"{opener} not found")
+    need(re.search(r"\n\s+%s = " % var, fn.group(0)) is not None, f"{opener} never assigns {var}, so the route can never activate")
+    need(re.search(r"if model\.%s\s*\{\s*%s\(" % (flag, pane), activity) is not None, f"{pane} is not gated on model.{flag}")
+need("selectedLearningID != nil" in activity and "selectedGraphEntityID != nil" in activity,
+     "learning and graph details have no window-local selection gate")
+
+# 2. The picker exists, Knowledge is a peer segment, and switching clears all three selections.
+need('Picker("Memories view", selection: $memoriesSubview)' in activity, "the Memories picker is missing")
+need(re.search(r"case knowledge\b", activity) is not None and "case toReview" in activity and "case recentLearning" in activity,
+     "MemoriesSubview lost a segment")
+on_change = re.search(r"\.onChange\(of: memoriesSubview\) \{ _, next in(.*?)\n                \}", activity, re.S)
+need(on_change is not None, "the Memories picker has no onChange")
+for cleared in ("selectedContextID = nil", "selectedLearningID = nil", "selectedGraphEntityID = nil"):
+    need(cleared in on_change.group(1), f"switching Memories views does not clear {cleared.split(' ')[0]}")
+
+# 3. No new count decodes with `?? 0`. Enumerated BY NAME, one physical line each,
+#    because thirteen pre-existing `?.int ?? 0` sites are legitimate. A mutation that
+#    adds `?? 0` to any of these fails here (proved on 2026-09-06).
+for name in ("learningCount", "learningToReview", "learningPatterns", "learningTaskProposals",
+             "graphEntities", "graphRelationships", "graphQueuePending"):
+    line = re.search(r'^\s+%s = details\["%s"\]\?\.int(.*)$' % (name, name), models, re.M)
+    need(line is not None, f"ServerStatus does not decode {name} from its own key")
+    need("??" not in line.group(1), f"{name} decodes with a default; a count has no safe scalar default")
+for name in ("needsYou", "newest"):
+    line = re.search(r'^\s+%s: o\["%s"\]\?\.(int|string)(.*)$' % (name, name), models, re.M)
+    need(line is not None, f"ActivitySignals.Mark does not decode {name}")
+    need("??" not in line.group(2), f"signal {name} decodes with a default")
+need(re.search(r"graphSearchTotal = response\.details\[\"total\"\]\?\.int$", model, re.M) is not None,
+     "graph search total decodes with a default")
+
+# 4. Nothing this build must not ship: no Dismiss in the Memories pane, no explorer
+#    web view, no explorer assets in the release script or the resources.
+memories_pane = activity[activity.index("private func memoriesPane()"):activity.index("private func contextList(kind: String)")]
+need("Dismiss" not in memories_pane and "dismiss" not in memories_pane, "0.5.190 is read-only; the Memories pane must carry no Dismiss")
+learning_pane = views[views.index("struct LearningDetailPane"):views.index("struct GraphEntityPane")]
+need("Dismiss" not in learning_pane, "the lesson detail must carry no Dismiss in 0.5.190")
+need("WKWebView" not in activity and "WKWebView" not in views and "import WebKit" not in views and "import WebKit" not in activity,
+     "0.5.190 ships a native list neighborhood only; no WKWebView")
+need("graph-explorer" not in release and "d3.min" not in release, "build-release.sh must not copy explorer assets")
+for asset in ("graph-explorer.js", "graph-explorer.css", "d3.min.js"):
+    need(not (root / "Resources" / asset).exists(), f"{asset} must not be in the app bundle")
+
+# 5. Every new list fed by server state outside a full-pane scroll is capped with an
+#    inline-limit / list-height pair and an explicit frame (the 2026-08-26 rule).
+for pair in ("graphRel", "graphMention"):
+    need(f"private static let {pair}InlineRowLimit" in views and f"private static let {pair}ListHeight: CGFloat" in views,
+         f"{pair} list has no inline-limit / height pair")
+    need(f".frame(height: Self.{pair}ListHeight)" in views, f"{pair} list never applies its height")
+    need(f"> Self.{pair}InlineRowLimit" in views, f"{pair} list never consults its inline limit")
+
+# 6. Helper: the GET wrapper takes `needs:` and its 404 branch passes it into the
+#    message that interpolates it; the GET wrapper still maps 202 to "Server
+#    stopped"; the mutate wrapper accepts 202 and nothing else; the memory and
+#    threads 503 sentence is byte-identical through the default parameter.
+browse = helper[helper.index("private func contextBrowseResponse("):helper.index("private func contextRecordPath(")]
+need("needs: String? = nil" in browse, "contextBrowseResponse lost its needs parameter (nil default keeps memory/threads 404s honest)")
+need(re.search(r"if response\.status == 404, let needs \{\s*throw HelperError\.message\(Self\.learningNotFoundMessage\(errorClass: [^,]+, needs: needs\)\)", browse) is not None,
+     "the 404 branch does not pass needs into the message")
+need('default: return "Update the managed server to \\(needs) or newer to see recent learning and knowledge."' in helper,
+     "learningNotFoundMessage does not interpolate needs")
+need('guard response.status == 200 else { throw HelperError.message("Server stopped") }' in browse,
+     "the GET wrapper no longer rejects 202 as Server stopped")
+mutate = helper[helper.index("private func contextMutateResponse("):helper.index("// ── Recent learning and Knowledge (server 6.44.5")]
+need("guard response.status == 202, let body = response.body else" in mutate, "contextMutateResponse does not accept exactly 202")
+need('"Server stopped"' not in mutate.split("if response.status == 404")[1], "the mutate wrapper says Server stopped after a 404 or a refusal")
+need('static let contextNotConfiguredMessage = "Memory and Threads are not set up yet. Use Create Folders."' in helper
+     and "notConfiguredMessage: String = COSControlHelper.contextNotConfiguredMessage" in browse,
+     "the memory/threads 503 sentence changed")
+for command in ("context-learning", "context-learning-status", "context-graph-status", "context-graph-search",
+                "context-graph-entity", "context-graph-passages", "context-graph-index-build", "activity-signals"):
+    need(f'case "{command}":' in helper, f"helper dispatch lost {command}")
+need("details.merge(Self.learningStatusDetails(context))" in helper, "status details lost the learning rows")
+need('add("Recent learning and Knowledge", line.state, line.detail)' in helper, "Doctor (and so redactedReport) lost the learning line")
+# Quoted argv literals, so a comment naming the flag cannot trip this and a real
+# execute(python, [..., "--build-index"]) cannot hide from it.
+need("emitContextGraphIndexBuild" in helper and '"--build-index"' not in helper and '"--apply-curation"' not in helper
+     and '"--process-queue"' not in helper,
+     "the helper must only ask the server to spawn a build, never run the pipeline")
+
+# 7. Activity signals: the legend line renders under the chips, every mark names its
+#    source (self-tested in the helper), the chip reads number then dot, and opening
+#    a section advances its cursor.
+need("model.activitySignals?.legend" in views, "the chip legend is not rendered")
+need("model.activityNumber(item)" in views and "model.activityDot(item)" in views, "chips do not read the two marks")
+need(re.search(r"private func select\(_ next: ActivitySection\) \{.*?model\.markActivityOpened\(next\).*?\n    \}", activity, re.S) is not None,
+     "opening a section does not advance its cursor")
+need('"legend": activitySignalsLegend' in helper and "Number = needs you" in helper, "the helper does not ship the legend")
+
+# 8. The Sync card renders inside a ScrollView and carries the owner line.
+knowledge = activity[activity.index("private func knowledgePane()"):activity.index("private var graphSearchBar")]
+need("ScrollView {" in knowledge and "syncCard" in knowledge, "the Sync card is not inside a ScrollView")
+need('syncRow("Topology", topologyLine(g))' in activity, "the Sync card lost its owner line")
+need('"No processor configured on this Mac"' in models and '"Processor installed, no run recorded yet"' in models,
+     "the two processor sentences are gone")
+need('"Build index (about 30 s)"' in activity, "the Sync card does not offer the build")
+LEARNCHK
 
 
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"

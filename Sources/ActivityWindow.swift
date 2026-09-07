@@ -122,6 +122,27 @@ private enum MessagesSubview: String, CaseIterable, Identifiable {
     var title: String { self == .archive ? "Archive" : "Recent" }
 }
 
+/// Memories is four peer views behind one picker (0.5.190). All memories is the
+/// 0.5.189 list unchanged; the other three read server 6.44.5. Knowledge is a
+/// PEER segment, not a nested browser.
+private enum MemoriesSubview: String, CaseIterable, Identifiable {
+    case recentLearning
+    case allMemories
+    case toReview
+    case knowledge
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .recentLearning: "Recent learning"
+        case .allMemories: "All memories"
+        case .toReview: "To review"
+        case .knowledge: "Knowledge"
+        }
+    }
+}
+
 private enum SpeakerSubview: String, CaseIterable, Identifiable {
     case meetings
     case voices
@@ -176,6 +197,11 @@ struct ActivityWindow: View {
     @State private var voiceParentName: String?
     @State private var speakerSubview: SpeakerSubview = .meetings
     @State private var messagesSubview: MessagesSubview = .recent
+    /// The default stays .allMemories in 0.5.190; the flip to Recent learning
+    /// is 0.5.191 (open decision 1), so today's Memories tab renders as before.
+    @State private var memoriesSubview: MemoriesSubview = .allMemories
+    @State private var selectedLearningID: String?
+    @State private var selectedGraphEntityID: String?
     /// Name being typed into Add a voice. Local to the view: it is transient and
     /// must not survive a tab switch.
     @State private var addVoiceName = ""
@@ -245,7 +271,8 @@ struct ActivityWindow: View {
                 || selectedArchiveDate != nil || selectedArchiveChat != nil
         case .speakers: selectedVoiceName != nil || selectedSpeakerSessionID != nil
         case .meetings: selectedLibraryRecordID != nil
-        case .memories, .threads: selectedContextID != nil
+        case .memories: selectedContextID != nil || selectedLearningID != nil || selectedGraphEntityID != nil
+        case .threads: selectedContextID != nil
         case .sessions: selectedSessionID != nil
         case .tasks: false
         case nil: false
@@ -281,6 +308,23 @@ struct ActivityWindow: View {
                         )
                     } else {
                         centeredProgress("Loading meeting…")
+                    }
+                } else if section == .memories, selectedLearningID != nil {
+                    if model.learningRouteActive {
+                        LearningDetailPane(
+                            model: model,
+                            showsBackButton: false,
+                            onOpenSource: openLearningSource,
+                            onExploreInGraph: exploreInGraph
+                        )
+                    } else {
+                        centeredProgress("Loading lesson…")
+                    }
+                } else if section == .memories, selectedGraphEntityID != nil {
+                    if model.graphRouteActive {
+                        GraphEntityPane(model: model, showsBackButton: false, onOpenMemory: openMemoryFromGraph)
+                    } else {
+                        centeredProgress("Loading entity…")
                     }
                 } else if (section == .memories || section == .threads), selectedContextID != nil {
                     if model.contextRouteActive {
@@ -429,6 +473,14 @@ struct ActivityWindow: View {
             if let row = model.openClaudeRow, row.id == selectedSessionID { return row.title }
             if model.claudeSessionDetailLoading { return "Loading session" }
         }
+        if section == .memories, selectedLearningID != nil {
+            if let lesson = model.learningDetail, lesson.id == selectedLearningID { return lesson.title }
+            if model.learningDetailLoading { return "Loading lesson" }
+        }
+        if section == .memories, selectedGraphEntityID != nil {
+            if let entity = model.graphEntity, entity.id == selectedGraphEntityID { return "Graph · \(entity.id)" }
+            if model.graphEntityLoading { return "Loading entity" }
+        }
         if (section == .memories || section == .threads),
            selectedContextID != nil,
            let context = model.contextDetail,
@@ -491,6 +543,9 @@ struct ActivityWindow: View {
     private func select(_ next: ActivitySection) {
         clearDetail()
         withOptionalAnimation { section = next }
+        // Opening a section is what clears its dot: the cursor moves to the
+        // newest stamp the last signals call saw.
+        model.markActivityOpened(next)
         Task { await load(next) }
     }
 
@@ -521,6 +576,12 @@ struct ActivityWindow: View {
                 voiceParentName = nil
             }
             Task { await model.peekReviewableMeetings() }
+        } else if section == .memories, selectedLearningID != nil {
+            selectedLearningID = nil
+            model.closeLearningDetail()
+        } else if section == .memories, selectedGraphEntityID != nil {
+            selectedGraphEntityID = nil
+            model.closeGraphEntity()
         } else if (section == .memories || section == .threads), selectedContextID != nil {
             selectedContextID = nil
             model.closeContextDetail()
@@ -560,10 +621,14 @@ struct ActivityWindow: View {
         voiceParentName = nil
         selectedSpeakerSessionID = nil
         selectedContextID = nil
+        selectedLearningID = nil
+        selectedGraphEntityID = nil
         selectedLibraryRecordID = nil
         selectedSessionID = nil
         model.closeSpeakerReview()
         model.closeContextDetail()
+        model.closeLearningDetail()
+        model.closeGraphEntity()
         model.closeLibraryDetail()
         model.closeClaudeSession()
     }
@@ -775,7 +840,7 @@ struct ActivityWindow: View {
         case .messages: messagesList
         case .speakers: speakersList
         case .meetings: meetingsList
-        case .memories: contextList(kind: "memory")
+        case .memories: memoriesPane()
         case .threads: contextList(kind: "thread")
         case .sessions: sessionsList
         case .tasks: tasksList
@@ -2090,6 +2155,466 @@ struct ActivityWindow: View {
         }
     }
 
+    // MARK: - Memories (Recent learning · All memories · To review · Knowledge)
+
+    private enum LearningFilter { case recent, toReview }
+
+    @ViewBuilder
+    private func memoriesPane() -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Picker("Memories view", selection: $memoriesSubview) {
+                    ForEach(MemoriesSubview.allCases) { item in Text(item.title).tag(item) }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 460)
+                .onChange(of: memoriesSubview) { _, next in
+                    // A switch unwinds every drill-through, or an open lesson would
+                    // survive into Knowledge and render under the wrong segment.
+                    selectedContextID = nil
+                    selectedLearningID = nil
+                    selectedGraphEntityID = nil
+                    model.closeContextDetail()
+                    model.closeLearningDetail()
+                    model.closeGraphEntity()
+                    Task { await loadMemoriesSubview(next) }
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 8)
+            .overlay(alignment: .bottom) { Divider() }
+            switch memoriesSubview {
+            case .allMemories: contextList(kind: "memory")
+            case .recentLearning: learningList(filter: .recent)
+            case .toReview: learningList(filter: .toReview)
+            case .knowledge: knowledgePane()
+            }
+        }
+    }
+
+    private func loadMemoriesSubview(_ view: MemoriesSubview? = nil) async {
+        switch view ?? memoriesSubview {
+        case .allMemories:
+            if model.status.memoryAvailable == true { await model.loadContextRecords(kind: "memory") }
+        case .recentLearning:
+            await model.loadLearningEvents()
+        case .toReview:
+            await model.loadToReviewEvents()
+        case .knowledge:
+            await model.loadGraphStatus()
+        }
+    }
+
+    /// A lesson's source record, when it is a memory the All memories list can
+    /// open. Other stores have no record route in 0.5.190 and offer no button.
+    private func openLearningSource(_ event: LearningEvent) {
+        guard event.store == "bot_memory", !event.lessonID.isEmpty else { return }
+        let record = ContextRecord.memory(["id": .string(event.lessonID), "summary": .string(event.title)])
+        selectedLearningID = nil
+        model.closeLearningDetail()
+        memoriesSubview = .allMemories
+        selectedContextID = record.id
+        model.openContextRecord(record, kind: "memory")
+    }
+
+    /// Carry a lesson's focus into Knowledge as an entity lookup.
+    private func exploreInGraph(_ term: String) {
+        selectedLearningID = nil
+        model.closeLearningDetail()
+        memoriesSubview = .knowledge
+        model.graphQuery = term
+        model.scheduleGraphSearch()
+        selectedGraphEntityID = term
+        model.openGraphEntity(id: term)
+    }
+
+    private func openMemoryFromGraph(_ record: ContextRecord) {
+        selectedGraphEntityID = nil
+        model.closeGraphEntity()
+        memoriesSubview = .allMemories
+        selectedContextID = record.id
+        model.openContextRecord(record, kind: "memory")
+    }
+
+    private var learningCoverageLine: String? {
+        let gaps = model.learningCoverage.filter { $0.state != "ok" }
+        guard !gaps.isEmpty else { return nil }
+        return "Not instrumented: " + gaps.map { "\($0.store) (\($0.state))" }.joined(separator: ", ")
+    }
+
+    @ViewBuilder
+    private func learningList(filter: LearningFilter) -> some View {
+        let toReview = filter == .toReview
+        let events = toReview ? model.toReviewEvents : model.learningEvents
+        let loading = toReview ? model.toReviewLoading : model.learningLoading
+        let error = toReview ? model.toReviewError : model.learningError
+        let headline = toReview ? model.toReviewHeadline : model.learningHeadline
+        VStack(spacing: 0) {
+            sectionHeader(
+                section: .memories,
+                title: toReview ? "To review" : "Recent learning",
+                detail: !headline.isEmpty
+                    ? headline
+                    : (toReview
+                        ? "Promotable patterns and task proposals waiting on you."
+                        : "What COS captured, proposed, checked and used, newest first."),
+                refresh: { Task { if toReview { await model.loadToReviewEvents() } else { await model.loadLearningEvents() } } }
+            )
+            if loading, events.isEmpty {
+                centeredProgress(toReview ? "Loading review queue…" : "Loading recent learning…")
+            } else if events.isEmpty {
+                VStack(spacing: 8) {
+                    emptyState(.memories, text: error ?? (toReview ? "Nothing to review." : "Nothing learned yet."))
+                    if let line = learningCoverageLine {
+                        Text(line).font(.system(size: 10.5)).foregroundStyle(.tertiary).padding(.bottom, 16)
+                    }
+                }
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(events) { event in
+                            Button {
+                                selectedLearningID = event.id
+                                model.openLearningEvent(event)
+                            } label: {
+                                learningRow(event)
+                            }
+                            .buttonStyle(.plain)
+                            Divider().padding(.leading, 46)
+                        }
+                        if let line = learningCoverageLine {
+                            Text(line)
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.tertiary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.top, 12)
+                        }
+                    }
+                    .padding(.horizontal, 22)
+                    .padding(.bottom, 22)
+                }
+            }
+        }
+    }
+
+    private func learningRow(_ event: LearningEvent) -> some View {
+        HStack(spacing: 13) {
+            Image(systemName: event.kindGlyph)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(ActivitySection.memories.tint)
+                .frame(width: 32, height: 32)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(event.title)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Text(event.rowSubtitle)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(event.id)
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Text(event.kindLabel)
+                .font(.system(size: 10, weight: .semibold))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(ActivitySection.memories.tint.opacity(0.16)))
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 13)
+        .contentShape(Rectangle())
+    }
+
+    // MARK: Knowledge
+
+    private var knowledgeHeadline: String {
+        if model.isGraphQueryActive {
+            if model.graphSearching { return "Looking up…" }
+            if let total = model.graphSearchTotal { return "\(total) matching entities" }
+            return "Entities in the knowledge graph"
+        }
+        if let error = model.graphStatusError { return error }
+        guard let g = model.graphStatus else { return "The knowledge graph, as this Mac sees it." }
+        var parts: [String] = []
+        if let e = g.entities { parts.append("\(e) entities") }
+        if let r = g.relationships { parts.append("\(r) relationships") }
+        parts.append("index \(g.indexState)")
+        return parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private func knowledgePane() -> some View {
+        VStack(spacing: 0) {
+            sectionHeader(
+                section: .memories,
+                title: "Knowledge",
+                detail: knowledgeHeadline,
+                refresh: { Task { await model.loadGraphStatus() } }
+            )
+            graphSearchBar
+            if model.isGraphQueryActive {
+                graphResults
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        syncCard
+                        Text("Search above to open an entity: its descriptions, relationships by weight, neighbors, and the memories that mention it. Merging, renaming and removing arrive in a later release.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 16)
+                }
+            }
+        }
+    }
+
+    private var graphSearchBar: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search people, projects, companies…", text: $model.graphQuery)
+                    .textFieldStyle(.plain)
+                if !model.graphQuery.isEmpty {
+                    Button {
+                        model.graphQuery = ""
+                        model.scheduleGraphSearch()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Clear search")
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+            .frame(maxWidth: 360)
+            Spacer()
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 8)
+        .overlay(alignment: .bottom) { Divider() }
+        .onChange(of: model.graphQuery) { _, _ in model.scheduleGraphSearch() }
+    }
+
+    @ViewBuilder
+    private var graphResults: some View {
+        if model.graphSearching, model.graphSearchHits.isEmpty {
+            centeredProgress("Looking up…")
+        } else if let error = model.graphSearchError, model.graphSearchHits.isEmpty {
+            emptyState(.memories, text: error)
+        } else if model.graphSearchHits.isEmpty {
+            emptyState(.memories, text: "No entities match that lookup.")
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(model.graphSearchHits) { hit in
+                        Button {
+                            selectedGraphEntityID = hit.id
+                            model.openGraphEntity(hit)
+                        } label: {
+                            graphRow(hit)
+                        }
+                        .buttonStyle(.plain)
+                        Divider().padding(.leading, 46)
+                    }
+                }
+                .padding(.horizontal, 22)
+                .padding(.bottom, 22)
+            }
+        }
+    }
+
+    private func graphRow(_ entity: GraphEntity) -> some View {
+        HStack(spacing: 13) {
+            sectionGlyph(.memories)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entity.id)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .lineLimit(1)
+                if !entity.description.isEmpty {
+                    Text(entity.description)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            Spacer()
+            if let degree = entity.degree {
+                Text("\(degree)")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            if !entity.type.isEmpty {
+                Text(entity.type)
+                    .font(.system(size: 10, weight: .semibold))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(ActivitySection.memories.tint.opacity(0.16)))
+            }
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 13)
+        .contentShape(Rectangle())
+    }
+
+    /// `Ukaoma-Mac-Studio.local` reads as `Ukaoma Mac Studio`.
+    private func hostLabel(_ host: String) -> String {
+        var name = host
+        if name.hasSuffix(".local") { name.removeLast(6) }
+        return name.replacingOccurrences(of: "-", with: " ")
+    }
+
+    private func topologyLine(_ g: GraphStatus) -> String {
+        var line: String
+        switch g.ownerState {
+        case "owner": line = "This Mac is the ingestion owner" + (g.ownerHost.map { " (\(hostLabel($0)))" } ?? "")
+        case "replica": line = "Replica of " + (g.ownerHost.map(hostLabel) ?? "the owner") + "; reads the iCloud copy of the graph"
+        default: line = "No ingestion owner set. Run --set-owner on the Mac that processes the queue."
+        }
+        if g.indexHostMismatch, let built = g.indexBuiltOnHost { line += ". Index built on \(hostLabel(built))" }
+        return line
+    }
+
+    private func indexedLine(_ g: GraphStatus) -> String {
+        var parts: [String] = []
+        if let e = g.entities { parts.append("\(e) entities") }
+        if let r = g.relationships { parts.append("\(r) relationships") }
+        if let updated = g.sourceUpdatedAt { parts.append("graph written \(LearningEvent.shortStamp(updated))") }
+        return parts.isEmpty ? "No graph on this Mac" : parts.joined(separator: " · ")
+    }
+
+    private func indexLine(_ g: GraphStatus) -> String {
+        var line = g.indexState
+        if let built = g.indexBuiltAt { line += " · built \(LearningEvent.shortStamp(built))" }
+        if g.indexDegraded { line += " · degraded (a store was unreadable)" }
+        return line
+    }
+
+    private func queueLine(_ g: GraphStatus) -> String {
+        guard let pending = g.queuePending else { return "unknown" }
+        var line = "\(pending) pending"
+        if let failed = g.queueFailed, failed > 0 { line += " · \(failed) failed" }
+        if let deferred = g.queueDeferred, deferred > 0 { line += " · \(deferred) deferred" }
+        if let total = g.queueLiveTotal { line += " · \(total) live rows" }
+        return line
+    }
+
+    private func oldestPendingLine(_ g: GraphStatus) -> String? {
+        guard let oldest = g.oldestPendingAt else { return nil }
+        var line = LearningEvent.shortStamp(oldest)
+        if let age = g.oldestPendingAgeSeconds {
+            let days = age / 86_400
+            line += days > 0 ? " (\(days) day\(days == 1 ? "" : "s") ago)" : " (today)"
+        }
+        return line
+    }
+
+    private func budgetLine(_ g: GraphStatus) -> String {
+        switch (g.budgetUsed, g.budgetCap) {
+        case let (used?, cap?): return "\(used) of \(cap) calls today"
+        case let (used?, nil): return "\(used) calls today"
+        default: return "unknown"
+        }
+    }
+
+    private func lockLine(_ g: GraphStatus) -> String {
+        switch g.lock.state {
+        case "free": return "free"
+        case "exclusive": return "held by an ingest" + (g.lock.ownerPID.map { " (pid \($0), advisory)" } ?? "")
+        case "shared": return "held by a backup"
+        default: return g.lock.error.map { "unknown (\($0))" } ?? "unknown"
+        }
+    }
+
+    private func processorLine(_ g: GraphStatus) -> String {
+        if g.isOwner == false, let owner = g.ownerHost {
+            return "Processing happens on \(hostLabel(owner))"
+        }
+        return g.processorLine
+    }
+
+    private func syncRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(label)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 104, alignment: .trailing)
+            Text(value)
+                .font(.system(size: 11.5))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// The Sync card: read-only topology, queue, index, budget, lock and
+    /// processor, plus the one kickoff a missing or stale index invites.
+    private var syncCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Sync")
+                    .font(.caption2.weight(.bold))
+                    .tracking(1.3)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if model.graphStatusLoading { ProgressView().controlSize(.mini) }
+            }
+            if let error = model.graphStatusError {
+                Text(error)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(COSPalette.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let g = model.graphStatus {
+                syncRow("Topology", topologyLine(g))
+                syncRow("Queued", queueLine(g))
+                if let oldest = oldestPendingLine(g) { syncRow("Oldest pending", oldest) }
+                if let missing = g.missingSources, missing > 0 { syncRow("Missing sources", "\(missing) queued meetings whose file is gone") }
+                if let copies = g.conflictCopies, copies > 0 { syncRow("Conflict copies", "\(copies) iCloud copies beside the queue") }
+                syncRow("Indexed", indexedLine(g))
+                syncRow("Index", indexLine(g))
+                syncRow("Budget", budgetLine(g))
+                syncRow("Lock", lockLine(g))
+                syncRow("Processor", processorLine(g))
+                if let state = model.graphBuildState {
+                    HStack(spacing: 6) {
+                        if state == "starting" || state == "running" || state == "already_running" {
+                            ProgressView().controlSize(.mini)
+                        }
+                        Text(model.graphBuildNote ?? state)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(state == "failed" ? COSPalette.amber : .secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if g.invitesIndexBuild, g.isOwner != false,
+                   model.graphBuildState == nil || model.graphBuildState == "done" || model.graphBuildState == "failed" {
+                    Button("Build index (about 30 s)", systemImage: "hammer") { model.buildGraphIndex() }
+                        .controlSize(.small)
+                }
+            } else {
+                Text("Loading…").font(.system(size: 11.5)).foregroundStyle(.secondary)
+            }
+        }
+        .padding(13)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
+    }
+
     private func contextList(kind: String) -> some View {
         let isThread = kind == "thread"
         let item: ActivitySection = isThread ? .threads : .memories
@@ -3285,7 +3810,7 @@ struct ActivityWindow: View {
                 await model.loadReviewableMeetings()
             }
         case .memories:
-            if model.status.memoryAvailable == true { await model.loadContextRecords(kind: "memory") }
+            await loadMemoriesSubview()
         case .threads:
             if model.status.threadsAvailable == true { await model.loadContextRecords(kind: "thread") }
         case .sessions:

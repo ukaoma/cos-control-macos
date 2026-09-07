@@ -437,6 +437,7 @@ final class ControllerModel: ObservableObject {
             status = ServerStatus(response.details)
             if !quiet { error = nil }
             await loadOrphans(quiet: true)
+            await loadActivitySignals()
         } catch {
             status.running = false
             if !quiet { self.error = error.localizedDescription }
@@ -4339,6 +4340,389 @@ final class ControllerModel: ObservableObject {
     /// in place instead of silently doing nothing when a row is clicked.
     var contextRouteActive: Bool {
         contextDetail != nil || contextDetailLoading || contextDetailError != nil
+    }
+
+    // ── Recent learning and Knowledge (0.5.190, server 6.44.5) ───────
+    //
+    // Read-only. Recent learning and To review list learning events; Knowledge
+    // is a Sync card plus a native list neighborhood over the graph index. No
+    // web view, no explorer script, no curation verb: those wait for Gate C.
+    // The one write is an index-build KICKOFF the server spawns detached; the
+    // helper never runs the pipeline itself.
+
+    @Published var learningEvents: [LearningEvent] = []
+    @Published var learningLoading = false
+    @Published var learningError: String?
+    @Published var learningHeadline = ""
+    @Published var learningCoverage: [LearningCoverage] = []
+    @Published var toReviewEvents: [LearningEvent] = []
+    @Published var toReviewLoading = false
+    @Published var toReviewError: String?
+    @Published var toReviewHeadline = ""
+    @Published var learningDetail: LearningEvent?
+    @Published var learningDetailLoading = false
+    @Published var learningDetailError: String?
+    private var learningDetailTask: Task<Void, Never>?
+
+    /// Route the panel to the lesson detail. Same shape as contextRouteActive:
+    /// the error case routes too, so a failed load is visible in place.
+    var learningRouteActive: Bool {
+        learningDetail != nil || learningDetailLoading || learningDetailError != nil
+    }
+
+    @Published var graphStatus: GraphStatus?
+    @Published var graphStatusLoading = false
+    @Published var graphStatusError: String?
+    @Published var graphQuery = ""
+    @Published var graphSearchHits: [GraphEntity] = []
+    @Published var graphSearchTotal: Int?
+    @Published var graphSearching = false
+    @Published var graphSearchError: String?
+    private var graphSearchID = UUID()
+    private var graphSearchTask: Task<Void, Never>?
+    @Published var graphEntity: GraphEntity?
+    @Published var graphEntityLoading = false
+    @Published var graphEntityError: String?
+    @Published var graphMentions: [ContextSearchHit] = []
+    @Published var graphMentionsLoading = false
+    private var graphEntityTask: Task<Void, Never>?
+    /// starting | running | already_running | done | failed, nil when idle.
+    @Published var graphBuildState: String?
+    @Published var graphBuildNote: String?
+    private var graphBuildTask: Task<Void, Never>?
+
+    var graphRouteActive: Bool {
+        graphEntity != nil || graphEntityLoading || graphEntityError != nil
+    }
+
+    var isGraphQueryActive: Bool {
+        graphQuery.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2
+    }
+
+    /// The last 90 days, every kind, newest first. `shown` is this page and
+    /// `total` the window, named apart for the same reason memories are.
+    func loadLearningEvents() async {
+        learningLoading = true
+        defer { learningLoading = false }
+        do {
+            let response = try await helper.run(["context-learning", "--limit", "50", "--days", "90"])
+            let events = (response.details["events"]?.array ?? []).compactMap { LearningEvent($0) }
+            learningEvents = events
+            learningCoverage = LearningCoverage.list(response.details["coverage"])
+            let shown = response.details["shown"]?.int ?? events.count
+            if let total = response.details["total"]?.int, total > shown {
+                learningHeadline = "\(shown) of \(total) in 90 days"
+            } else {
+                learningHeadline = "\(shown) in 90 days"
+            }
+            learningError = events.isEmpty
+                ? "Nothing learned in the last 90 days. Corrections, saved memories and task proposals land here as they happen."
+                : nil
+        } catch {
+            learningError = error.localizedDescription
+        }
+    }
+
+    /// To review: promotable patterns and self-improvement task proposals,
+    /// across the whole store (decision 4), first page of 50.
+    func loadToReviewEvents() async {
+        toReviewLoading = true
+        defer { toReviewLoading = false }
+        do {
+            let response = try await helper.run(["context-learning", "--limit", "50", "--days", "3650", "--kind", "proposed,promotable"])
+            let events = (response.details["events"]?.array ?? []).compactMap { LearningEvent($0) }.filter(\.needsReview)
+            toReviewEvents = events
+            if learningCoverage.isEmpty { learningCoverage = LearningCoverage.list(response.details["coverage"]) }
+            let shown = events.count
+            if let total = response.details["total"]?.int, total > shown {
+                toReviewHeadline = "\(shown) of \(total) to review"
+            } else {
+                toReviewHeadline = "\(shown) to review"
+            }
+            toReviewError = events.isEmpty ? "Nothing to review." : nil
+        } catch {
+            toReviewError = error.localizedDescription
+        }
+    }
+
+    /// Open one event. Routes immediately on the LIST row so the click always
+    /// shows something, then replaces it with the detail route's fuller record.
+    func openLearningEvent(_ event: LearningEvent) {
+        learningDetailTask?.cancel()
+        learningDetail = event
+        learningDetailError = nil
+        copyNote = nil
+        learningDetailTask = Task { [weak self] in
+            await self?.fetchLearningDetail(event)
+        }
+    }
+
+    private func fetchLearningDetail(_ event: LearningEvent) async {
+        learningDetailLoading = true
+        defer { if learningDetail?.id == event.id { learningDetailLoading = false } }
+        do {
+            let response = try await helper.run(["context-learning", "--id", event.id])
+            guard !Task.isCancelled, learningDetail?.id == event.id else { return }
+            if let full = LearningEvent(.object(response.details)) { learningDetail = full }
+        } catch {
+            guard !Task.isCancelled, learningDetail?.id == event.id else { return }
+            learningDetailError = error.localizedDescription
+        }
+    }
+
+    func closeLearningDetail() {
+        learningDetailTask?.cancel()
+        learningDetailTask = nil
+        learningDetailLoading = false
+        learningDetail = nil
+        learningDetailError = nil
+        copyNote = nil
+    }
+
+    /// Copy the lesson as grounded context, optionally with the open graph
+    /// entity. Quoted and labelled with its id, like copyContextRecord.
+    func copyLearningContext(_ event: LearningEvent, includeGraph: Bool) {
+        var lines: [String] = []
+        lines.append("Learning \(event.id) (\(event.kindLabel) · \(event.scope) · \(event.ts))")
+        lines.append("")
+        lines.append("\"\"\"")
+        lines.append(event.title)
+        if let detail = event.detail {
+            if let before = detail.before, !before.isEmpty { lines.append("Before: \(before)") }
+            if let after = detail.after, !after.isEmpty { lines.append("After: \(after)") }
+            if let rule = detail.rule, !rule.isEmpty { lines.append("Rule: \(rule)") }
+            if let content = detail.content, !content.isEmpty { lines.append(content) }
+            for body in detail.bodies { lines.append(body) }
+        }
+        lines.append("\"\"\"")
+        if includeGraph, let entity = graphEntity {
+            lines.append("")
+            lines.append("Related knowledge: \(entity.id) (\(entity.type))")
+            if !entity.description.isEmpty { lines.append(entity.description) }
+            for edge in entity.edges.prefix(8) {
+                lines.append("- \(edge.source) — \(edge.target): \(edge.description)")
+            }
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
+        copyNote = includeGraph && graphEntity != nil ? "Copied with related knowledge" : "Copied as grounded context"
+    }
+
+    func loadGraphStatus() async {
+        graphStatusLoading = true
+        defer { graphStatusLoading = false }
+        do {
+            let response = try await helper.run(["context-graph-status"])
+            graphStatus = GraphStatus(response.details)
+            graphStatusError = nil
+        } catch {
+            graphStatusError = error.localizedDescription
+        }
+    }
+
+    /// 500 ms debounce and a single in-flight search: a stale answer for an
+    /// earlier query can never overwrite the current one.
+    func scheduleGraphSearch() {
+        graphSearchTask?.cancel()
+        let trimmed = graphQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count < 2 {
+            graphSearchHits = []
+            graphSearchTotal = nil
+            graphSearchError = nil
+            graphSearching = false
+            return
+        }
+        let id = UUID()
+        graphSearchID = id
+        graphSearchTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled, self?.graphSearchID == id else { return }
+            await self?.runGraphSearch(query: trimmed, id: id)
+        }
+    }
+
+    private func runGraphSearch(query: String, id: UUID) async {
+        graphSearching = true
+        defer { if graphSearchID == id { graphSearching = false } }
+        do {
+            let response = try await helper.run(["context-graph-search", "--query", query, "--limit", "30"])
+            guard graphSearchID == id else { return }
+            graphSearchHits = (response.details["items"]?.array ?? []).compactMap { GraphEntity($0) }
+            graphSearchTotal = response.details["total"]?.int
+            graphSearchError = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            guard graphSearchID == id else { return }
+            graphSearchError = error.localizedDescription
+        }
+    }
+
+    /// Open an entity from a search hit, a neighbor chip, or a lesson's
+    /// "Explore in graph". Routes on what is known, then fills in from the
+    /// entity route and looks up the memories that mention it.
+    func openGraphEntity(_ entity: GraphEntity) {
+        graphEntityTask?.cancel()
+        graphEntity = entity
+        graphEntityError = nil
+        graphMentions = []
+        copyNote = nil
+        graphEntityTask = Task { [weak self] in
+            await self?.fetchGraphEntity(entity.id)
+        }
+    }
+
+    func openGraphEntity(id: String) {
+        openGraphEntity(GraphEntity.placeholder(id))
+    }
+
+    private func fetchGraphEntity(_ id: String) async {
+        graphEntityLoading = true
+        defer { if graphEntity?.id == id { graphEntityLoading = false } }
+        do {
+            let response = try await helper.run(["context-graph-entity", "--id", id, "--limit", "30"])
+            guard !Task.isCancelled, graphEntity?.id == id else { return }
+            if let full = GraphEntity(.object(response.details)) { graphEntity = full }
+        } catch {
+            guard !Task.isCancelled, graphEntity?.id == id else { return }
+            graphEntityError = error.localizedDescription
+            return
+        }
+        await loadGraphMentions(id)
+    }
+
+    /// "Memories mentioning this": the existing memory lookup, queried with
+    /// the entity name. Best effort; a failure leaves the list empty.
+    private func loadGraphMentions(_ id: String) async {
+        graphMentionsLoading = true
+        defer { if graphEntity?.id == id { graphMentionsLoading = false } }
+        guard let response = try? await helper.run(["context-memories-search", "--query", id, "--limit", "8"]),
+              !Task.isCancelled, graphEntity?.id == id else { return }
+        graphMentions = (response.details["hits"]?.array ?? []).compactMap { ContextSearchHit(kind: "memory", $0) }
+    }
+
+    func closeGraphEntity() {
+        graphEntityTask?.cancel()
+        graphEntityTask = nil
+        graphEntityLoading = false
+        graphEntity = nil
+        graphEntityError = nil
+        graphMentions = []
+        graphMentionsLoading = false
+        copyNote = nil
+    }
+
+    func copyGraphEntity(_ entity: GraphEntity) {
+        var lines = ["Knowledge \(entity.id) (\(entity.type)\(entity.degree.map { " · \($0) relationships" } ?? ""))", "", "\"\"\""]
+        if !entity.description.isEmpty { lines.append(entity.description) }
+        for text in entity.descriptions where text != entity.description { lines.append(text) }
+        for edge in entity.edges.prefix(12) { lines.append("- \(edge.source) — \(edge.target): \(edge.description)") }
+        lines.append("\"\"\"")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
+        copyNote = "Copied as grounded context"
+    }
+
+    /// Kick off a detached index build (the server answers 202), then poll
+    /// context-graph-status every 2 s until the receipt says done or failed,
+    /// for at most 5 minutes.
+    func buildGraphIndex() {
+        graphBuildTask?.cancel()
+        graphBuildState = "starting"
+        graphBuildNote = nil
+        graphBuildTask = Task { [weak self] in
+            await self?.runGraphIndexBuild()
+        }
+    }
+
+    private func runGraphIndexBuild() async {
+        do {
+            let response = try await helper.run(["context-graph-index-build"])
+            graphBuildState = response.details["already_running"]?.bool == true ? "already_running" : "running"
+            graphBuildNote = response.message
+        } catch {
+            graphBuildState = "failed"
+            graphBuildNote = error.localizedDescription
+            return
+        }
+        let deadline = Date().addingTimeInterval(300)
+        while !Task.isCancelled, Date() < deadline {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            await loadGraphStatus()
+            switch graphStatus?.build?.state {
+            case "done":
+                graphBuildState = "done"
+                graphBuildNote = "Index rebuilt"
+                return
+            case "failed":
+                graphBuildState = "failed"
+                graphBuildNote = graphStatus?.build?.error ?? "Index build failed"
+                return
+            default:
+                continue
+            }
+        }
+        if graphBuildState == "running" || graphBuildState == "already_running" {
+            graphBuildNote = "Still building after 5 minutes. Refresh the Sync card later."
+        }
+    }
+
+    // ── Activity signals (0.5.190) ──────────────────────────────────
+    //
+    // Two marks only: a NUMBER means needs you, a DOT means new since the
+    // section was last opened. The helper reports counts and newest stamps;
+    // the cursor is per section, per Mac, in UserDefaults, and advances when
+    // the section is opened. Every count is an optional (no `?? 0`).
+
+    @Published var activitySignals: ActivitySignals?
+    @Published var activitySignalsError: String?
+    /// Bumped when a cursor moves so the chips re-render.
+    @Published private(set) var activityCursorVersion = 0
+    private static let activityCursorPrefix = "activityCursor."
+    private static let seenInboxKey = "activitySeenInboxIDs"
+
+    func loadActivitySignals() async {
+        do {
+            let response = try await helper.run(["activity-signals"])
+            activitySignals = ActivitySignals(response.details)
+            activitySignalsError = nil
+        } catch {
+            activitySignalsError = error.localizedDescription
+        }
+    }
+
+    func activityCursor(_ section: ActivitySection) -> String? {
+        UserDefaults.standard.string(forKey: Self.activityCursorPrefix + section.rawValue)
+    }
+
+    /// Advance the section's cursor to the newest stamp the last signals call
+    /// saw, and mark the inbox tasks it listed as seen.
+    func markActivityOpened(_ section: ActivitySection) {
+        guard let mark = activitySignals?.mark(section.rawValue) else { return }
+        if let newest = mark.newest, !newest.isEmpty {
+            UserDefaults.standard.set(newest, forKey: Self.activityCursorPrefix + section.rawValue)
+        }
+        if section == .tasks, !mark.inboxIDs.isEmpty {
+            var seen = Set(UserDefaults.standard.stringArray(forKey: Self.seenInboxKey) ?? [])
+            seen.formUnion(mark.inboxIDs)
+            UserDefaults.standard.set(Array(seen).sorted(), forKey: Self.seenInboxKey)
+        }
+        activityCursorVersion += 1
+    }
+
+    /// The chip's number, or nil: absent source, absent count, or zero.
+    func activityNumber(_ section: ActivitySection) -> Int? {
+        guard let signals = activitySignals else { return nil }
+        let seen = Set(UserDefaults.standard.stringArray(forKey: Self.seenInboxKey) ?? [])
+        let unseenInbox = signals.mark(section.rawValue)?.inboxIDs.filter { !seen.contains($0) }.count ?? 0
+        return signals.number(for: section.rawValue, unseenInbox: unseenInbox)
+    }
+
+    /// The chip's dot: a newer item than the cursor exists.
+    func activityDot(_ section: ActivitySection) -> Bool {
+        guard let mark = activitySignals?.mark(section.rawValue) else { return false }
+        return ActivitySignals.hasNewer(newest: mark.newest, cursor: activityCursor(section))
     }
 
     // ── Fenced threads ──────────────────────────────────────

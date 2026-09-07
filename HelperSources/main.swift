@@ -516,6 +516,14 @@ final class COSControlHelper {
         case "context-threads": try emitContextThreads(args: args)
         case "context-memories-search": try emitContextSearch(kind: "memory", args: args)
         case "context-threads-search": try emitContextSearch(kind: "thread", args: args)
+        case "context-learning": try emitContextLearning(args: args)
+        case "context-learning-status": try emitContextLearningStatus()
+        case "context-graph-status": try emitContextGraphStatus()
+        case "context-graph-search": try emitContextGraphSearch(args: args)
+        case "context-graph-entity": try emitContextGraphEntity(args: args)
+        case "context-graph-passages": try emitContextGraphPassages(args: args)
+        case "context-graph-index-build": try emitContextGraphIndexBuild()
+        case "activity-signals": try emitActivitySignals()
         case "meetings": try emitMeetings(args: args)
         case "meetings-library": try emitMeetingsLibrary(args: args)
         case "meetings-library-search": try emitMeetingsLibrarySearch(args: args)
@@ -2477,6 +2485,8 @@ final class COSControlHelper {
         for (key, value) in cursorStatusFields(force: false) {
             details[key] = value
         }
+        // Recent learning and Knowledge (server 6.44.5): NSNull rows when absent.
+        details.merge(Self.learningStatusDetails(context)) { _, new in new }
         return details
     }
 
@@ -7108,7 +7118,21 @@ final class COSControlHelper {
     /// the file tier, revealing the actual file. Arming a reference for the next
     /// prompt would need a write route, which the amendment design deliberately does
     /// not have yet.
-    private func contextBrowseResponse(_ route: String, timeout: Int = 20) throws -> [String: Any] {
+    ///
+    /// `needs` is the server version that ships the route, for the learning and
+    /// knowledge callers (0.5.190): a 404 there is either an older server, which
+    /// gets an update sentence naming that version, or a missing RECORD, which the
+    /// server marks with a JSON `error` ending in `_not_found`. Memory and Threads
+    /// pass no `needs`, so their 404 keeps the "Server stopped" it always had
+    /// rather than gaining a false update prompt on a stale record id. The 503
+    /// sentence is a parameter for the same reason: the memory and threads copy
+    /// stays byte for byte, and the learning callers name their own gap.
+    private func contextBrowseResponse(
+        _ route: String,
+        timeout: Int = 20,
+        needs: String? = nil,
+        notConfiguredMessage: String = COSControlHelper.contextNotConfiguredMessage
+    ) throws -> [String: Any] {
         guard request("/api/health", timeout: 5)?.status == 200 else {
             throw HelperError.message("Server stopped")
         }
@@ -7121,7 +7145,12 @@ final class COSControlHelper {
         if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
         // 503 is the server's honest "no context source configured", not a fault.
         if response.status == 503 {
-            throw HelperError.message("Memory and Threads are not set up yet. Use Create Folders.")
+            throw HelperError.message(needs == nil
+                ? notConfiguredMessage
+                : Self.contextUnavailableMessage(errorClass: Self.bridgeErrorClass(response.body), notConfigured: notConfiguredMessage))
+        }
+        if response.status == 404, let needs {
+            throw HelperError.message(Self.learningNotFoundMessage(errorClass: Self.bridgeErrorClass(response.body), needs: needs))
         }
         guard response.status == 200 else { throw HelperError.message("Server stopped") }
         // /api/memory returns a TOP-LEVEL ARRAY for released companions, so a
@@ -7130,6 +7159,370 @@ final class COSControlHelper {
         if let body = response.body { return body }
         if let rows = response.bodyArray { return ["items": rows] }
         throw HelperError.message("Server stopped")
+    }
+
+    static let contextNotConfiguredMessage = "Memory and Threads are not set up yet. Use Create Folders."
+    static let learningNotConfiguredMessage = "Recent learning and Knowledge need the COS pipeline bridge. Plain-file memories keep working."
+    /// The server version that ships /api/context/learning* and /api/context/graph/*.
+    static let learningNeeds = "6.44.5"
+    /// The 503 classes that mean "no pipeline", as the server spells them
+    /// (pythonBridgeState and the file tier), rather than a passing fault.
+    static let notConfiguredErrorClasses: Set<String> = ["pipeline_missing", "bridge_missing", "cos_pipeline_not_configured"]
+
+    /// The server's error class from a JSON body: the string form the context
+    /// routes use, or the `{ code }` object form the task routes use.
+    static func bridgeErrorClass(_ body: [String: Any]?) -> String? {
+        if let text = body?["error"] as? String, !text.isEmpty { return text }
+        if let object = body?["error"] as? [String: Any], let code = object["code"] as? String, !code.isEmpty { return code }
+        return nil
+    }
+
+    /// What a 404 means on a learning or knowledge route. A missing RECORD comes
+    /// back with a JSON `error` ending in `_not_found`; an older server that lacks
+    /// the ROUTE answers Express's plain 404 with no such field. Only the second
+    /// is an update prompt, and it names the version that ships the route.
+    static func learningNotFoundMessage(errorClass: String?, needs: String) -> String {
+        switch errorClass {
+        case "entity_not_found": return "No entity by that name in the knowledge graph."
+        case "learning_event_not_found": return "That learning event is no longer there."
+        case let cls? where cls.hasSuffix("_not_found"): return "Not found (\(cls))."
+        default: return "Update the managed server to \(needs) or newer to see recent learning and knowledge."
+        }
+    }
+
+    /// A 503 on a learning route: the not-configured sentence for the pipeline
+    /// classes, otherwise the server's own class so a passing fault reads as one.
+    static func contextUnavailableMessage(errorClass: String?, notConfigured: String) -> String {
+        guard let errorClass, !errorClass.isEmpty, !notConfiguredErrorClasses.contains(errorClass) else { return notConfigured }
+        return "Recent learning and Knowledge are temporarily unavailable (\(errorClass)). Try again, or run Doctor."
+    }
+
+    /// POST kickoffs for the knowledge graph: the index build now, apply, revert
+    /// and sync in later gates. A SIBLING of contextBrowseResponse rather than a
+    /// flag on it, because the accepted statuses differ: a spawned kickoff answers
+    /// 202 and nothing else, while the GET wrapper must keep rejecting 202 as
+    /// "Server stopped". 409 and 423 carry the server's own class (not_owner,
+    /// lock_held, workspace_fenced) and are surfaced with it; a 404 names the
+    /// version that ships the route, never "Server stopped".
+    private func contextMutateResponse(
+        _ route: String,
+        method: String = "POST",
+        body: String? = nil,
+        timeout: Int = 20,
+        needs: String = COSControlHelper.learningNeeds
+    ) throws -> [String: Any] {
+        guard request("/api/health", timeout: 5)?.status == 200 else {
+            throw HelperError.message("Server stopped")
+        }
+        let token: String
+        do { token = try readToken() }
+        catch { throw HelperError.message("Unauthorized") }
+        guard let response = request(route, method: method, token: token, body: body, timeout: timeout) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if response.status == 404 {
+            throw HelperError.message("Update the managed server to \(needs) or newer for this (\(route) is not there).")
+        }
+        if response.status == 503 {
+            throw HelperError.message(Self.contextUnavailableMessage(
+                errorClass: Self.bridgeErrorClass(response.body), notConfigured: Self.learningNotConfiguredMessage))
+        }
+        if response.status == 409 || response.status == 423 {
+            throw HelperError.message("The server refused this (\(Self.bridgeErrorClass(response.body) ?? "refused")).")
+        }
+        guard response.status == 202, let body = response.body else {
+            throw HelperError.message("The server did not accept this (HTTP \(response.status)).")
+        }
+        return body
+    }
+
+    // ── Recent learning and Knowledge (server 6.44.5, Control 0.5.190) ──
+    //
+    // Read-only exposure of /api/context/learning* and /api/context/graph/*.
+    // The helper bounds argv the way the server bounds the query, so a bad id
+    // or a short query is refused here with a sentence rather than as a 400 the
+    // panel would have to translate. Nothing here mutates: the one POST only
+    // asks the pipeline to start a detached index build.
+
+    static func validLearningEventID(_ value: String) -> Bool {
+        guard value.hasPrefix("evt_"), value.count == 20 else { return false }
+        return value.dropFirst(4).allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) }
+    }
+
+    private func learningRoute(_ path: String, timeout: Int = 20) throws -> [String: Any] {
+        try contextBrowseResponse(path, timeout: timeout, needs: Self.learningNeeds, notConfiguredMessage: Self.learningNotConfiguredMessage)
+    }
+
+    private func emitContextLearning(args: [String]) throws {
+        if let id = option("--id", in: args), !id.isEmpty {
+            guard Self.validLearningEventID(id) else {
+                throw HelperError.message("--id must be a learning event id (evt_ plus 16 hex characters)")
+            }
+            emit(ok: true, message: "Learning event", details: try learningRoute("/api/context/learning/\(id)"))
+            return
+        }
+        let limit = min(max(Int(option("--limit", in: args) ?? "50") ?? 50, 1), 50)
+        let days = min(max(Int(option("--days", in: args) ?? "90") ?? 90, 1), 3650)
+        var path = "/api/context/learning?days=\(days)&limit=\(limit)"
+        if let kind = option("--kind", in: args), !kind.isEmpty { path += "&kind=\(queryEscape(kind))" }
+        if let sinceTs = option("--since-ts", in: args), !sinceTs.isEmpty { path += "&since_ts=\(queryEscape(sinceTs))" }
+        if let sinceID = option("--since-event-id", in: args), Self.validLearningEventID(sinceID) { path += "&since_event_id=\(sinceID)" }
+        let listing = try learningRoute(path)
+        let rows = (listing["events"] as? [[String: Any]]) ?? []
+        // `shown` is this page; `total` is the window the server counted.
+        emit(ok: true, message: rows.isEmpty ? "No learning yet" : "\(rows.count) shown", details: [
+            "state": rows.isEmpty ? "empty" : "ready",
+            "events": rows,
+            "shown": rows.count,
+            "total": listing["total"] ?? NSNull(),
+            "nextCursor": listing["next_cursor"] ?? NSNull(),
+            "coverage": listing["coverage"] ?? [:],
+            "days": days,
+        ])
+    }
+
+    private func emitContextLearningStatus() throws {
+        emit(ok: true, message: "Learning status", details: try learningRoute("/api/context/learning/status"))
+    }
+
+    private func emitContextGraphStatus() throws {
+        emit(ok: true, message: "Knowledge graph status", details: try learningRoute("/api/context/graph/status"))
+    }
+
+    private func emitContextGraphSearch(args: [String]) throws {
+        guard let query = option("--query", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              query.count >= 2, query.count <= 160 else {
+            throw HelperError.message("--query must be 2 to 160 characters")
+        }
+        let limit = min(max(Int(option("--limit", in: args) ?? "30") ?? 30, 1), 30)
+        let offset = min(max(Int(option("--offset", in: args) ?? "0") ?? 0, 0), 100_000)
+        var path = "/api/context/graph/search?q=\(queryEscape(query))&limit=\(limit)&offset=\(offset)"
+        if let type = option("--type", in: args), !type.isEmpty { path += "&type=\(queryEscape(type))" }
+        let body = try learningRoute(path, timeout: 25)
+        let items = (body["items"] as? [[String: Any]]) ?? []
+        emit(ok: true, message: items.isEmpty ? "No matching entities" : "Lookup ready", details: [
+            "state": items.isEmpty ? "empty" : "ready",
+            "items": items,
+            "count": items.count,
+            "total": body["total"] ?? NSNull(),
+            "indexState": body["index_state"] ?? NSNull(),
+            "matcher": body["matcher"] ?? NSNull(),
+            "window": body["window"] ?? NSNull(),
+            "offset": offset,
+            "limit": limit,
+        ])
+    }
+
+    static func validEntityID(_ value: String) -> Bool {
+        !value.isEmpty && value.count <= 200 && value.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7f }
+    }
+
+    private func emitContextGraphEntity(args: [String]) throws {
+        guard let id = option("--id", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines), Self.validEntityID(id) else {
+            throw HelperError.message("--id must be an entity name of at most 200 characters")
+        }
+        let limit = min(max(Int(option("--limit", in: args) ?? "30") ?? 30, 1), 100)
+        let offset = min(max(Int(option("--offset", in: args) ?? "0") ?? 0, 0), 100_000)
+        let body = try learningRoute("/api/context/graph/entity?id=\(queryEscape(id))&offset=\(offset)&limit=\(limit)", timeout: 25)
+        emit(ok: true, message: "Entity", details: body)
+    }
+
+    private func emitContextGraphPassages(args: [String]) throws {
+        let entity = option("--entity", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let relationA = option("--relation-a", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let relationB = option("--relation-b", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let limit = min(max(Int(option("--limit", in: args) ?? "5") ?? 5, 1), 5)
+        let path: String
+        if Self.validEntityID(entity), relationA.isEmpty, relationB.isEmpty {
+            path = "/api/context/graph/passages?entity=\(queryEscape(entity))&limit=\(limit)"
+        } else if entity.isEmpty, Self.validEntityID(relationA), Self.validEntityID(relationB) {
+            path = "/api/context/graph/passages?relationA=\(queryEscape(relationA))&relationB=\(queryEscape(relationB))&limit=\(limit)"
+        } else {
+            throw HelperError.message("Pass --entity, or --relation-a with --relation-b (each at most 200 characters)")
+        }
+        let body = try learningRoute(path, timeout: 25)
+        let empty = (body["items"] as? [Any])?.isEmpty ?? true
+        emit(ok: true, message: empty ? "No passages" : "Passages ready", details: body)
+    }
+
+    /// Start a detached index build through the server's spawning route. The
+    /// helper never runs the indexer itself: the pipeline owns its lock and
+    /// its receipt, and Control only reads the receipt back through
+    /// context-graph-status until it says done or failed.
+    private func emitContextGraphIndexBuild() throws {
+        let body = try contextMutateResponse("/api/context/graph/index")
+        let already = body["already_running"] as? Bool == true
+        emit(ok: true, message: already ? "An index build is already running" : "Index build started", details: body)
+    }
+
+    // ── Activity signals (0.5.190) ────────────────────────────────
+    //
+    // One call composes what each Activity chip may mark. A NUMBER means needs
+    // you; a DOT means something newer than the last time that section was
+    // opened. The cursor lives in the app (UserDefaults, per Mac), so the helper
+    // is stateless: it reports the newest stamp it can see per section and the
+    // app compares. Every count is NSNull when its source is absent, so a chip
+    // shows no mark rather than a false zero, and each mark names its source.
+
+    private func emitActivitySignals() throws {
+        guard request("/api/health", timeout: 5)?.status == 200 else { throw HelperError.message("Server stopped") }
+        let token: String
+        do { token = try readToken() }
+        catch { throw HelperError.message("Unauthorized") }
+        func fetch(_ path: String, timeout: Int = 12) -> [String: Any]? {
+            guard let response = request(path, token: token, timeout: timeout), response.status == 200 else { return nil }
+            if let body = response.body { return body }
+            if let rows = response.bodyArray { return ["items": rows] }
+            return nil
+        }
+        emit(ok: true, message: "Activity signals", details: Self.activitySignalsProjection(
+            messages: fetch("/api/sessions/today/all-messages"),
+            extAudio: fetch("/api/voice/ext-audio"),
+            orphans: fetch("/api/meeting/orphans"),
+            meetings: fetch("/api/meetings?limit=20"),
+            context: fetch("/api/context/status"),
+            memories: fetch("/api/memory?limit=50"),
+            threads: fetch("/api/threads?limit=50"),
+            fences: fetch("/api/agent-sessions/fences"),
+            tasks: fetch("/api/tasks")))
+    }
+
+    static let activitySignalsLegend = "Number = needs you · Dot = new since you last opened it"
+
+    /// `Any?` to `Any` with NSNull for absence, so a nested literal keeps one type.
+    static func nullable(_ value: Any?) -> Any { value ?? NSNull() }
+
+    static func activitySignalsProjection(
+        messages: [String: Any]?, extAudio: [String: Any]?, orphans: [String: Any]?, meetings: [String: Any]?,
+        context: [String: Any]?, memories: [String: Any]?, threads: [String: Any]?, fences: [String: Any]?, tasks: [String: Any]?
+    ) -> [String: Any] {
+        let learning = context?["learning"] as? [String: Any]
+        let taskRows = (tasks?["tasks"] as? [[String: Any]]) ?? []
+        let stranded: Int? = orphans.map { ($0["strandedCount"] as? Int) ?? (($0["stranded"] as? [Any])?.count ?? 0) }
+        let dueToday: Int? = tasks == nil ? nil : taskRows.filter { ($0["due"] as? Bool) == true }.count
+        let messagesBlock: [String: Any] = [
+            "newest": nullable(newestStamp((messages?["messages"] as? [[String: Any]]) ?? [], epochKey: "timestamp")),
+            "source": "recent-messages",
+        ]
+        let speakersBlock: [String: Any] = [
+            "needsYou": nullable((extAudio?["sessions"] as? [Any])?.count),
+            "source": "voice-ext-audio",
+        ]
+        let meetingsBlock: [String: Any] = [
+            "needsYou": nullable(stranded),
+            "newest": nullable(newestStamp((meetings?["meetings"] as? [[String: Any]]) ?? [], dateKey: "date", timeKey: "time")),
+            "source": "meeting-orphans · meetings",
+        ]
+        let memoriesBlock: [String: Any] = [
+            "needsYou": nullable(learningToReview(learning)),
+            "newest": nullable(newestStamp((memories?["items"] as? [[String: Any]]) ?? [], isoKey: "created_at")),
+            "source": "context-status · context-memories",
+        ]
+        let threadsBlock: [String: Any] = [
+            "newest": nullable(newestStamp((threads?["threads"] as? [[String: Any]]) ?? [], isoKey: "last_seen")),
+            "source": "context-threads",
+        ]
+        let sessionsBlock: [String: Any] = [
+            "needsYou": nullable((fences?["fences"] as? [Any])?.count),
+            "source": "fences",
+        ]
+        let tasksBlock: [String: Any] = [
+            "needsYou": nullable(dueToday),
+            "inboxIDs": taskRows.filter { ($0["section"] as? String) == "inbox" }.compactMap { $0["id"] as? String },
+            "source": "tasks",
+        ]
+        return [
+            "messages": messagesBlock,
+            "speakers": speakersBlock,
+            "meetings": meetingsBlock,
+            "memories": memoriesBlock,
+            "threads": threadsBlock,
+            "sessions": sessionsBlock,
+            "tasks": tasksBlock,
+            "legend": activitySignalsLegend,
+        ]
+    }
+
+    /// The newest ISO-8601 stamp among rows, or nil when no row carries one.
+    static func newestStamp(_ rows: [[String: Any]], isoKey: String) -> String? {
+        rows.compactMap { $0[isoKey] as? String }.filter { !$0.isEmpty }.max()
+    }
+
+    /// Epoch seconds or milliseconds (the messages route sends milliseconds), as ISO-8601 UTC.
+    static func newestStamp(_ rows: [[String: Any]], epochKey: String) -> String? {
+        let newest = rows.compactMap { row -> Double? in
+            if let n = row[epochKey] as? Double { return n }
+            if let n = row[epochKey] as? Int { return Double(n) }
+            return nil
+        }.max()
+        return newest.map { ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: $0 > 1e11 ? $0 / 1000 : $0)) }
+    }
+
+    /// A date plus a time column, joined so the newest sorts last.
+    static func newestStamp(_ rows: [[String: Any]], dateKey: String, timeKey: String) -> String? {
+        rows.compactMap { row -> String? in
+            guard let date = row[dateKey] as? String, !date.isEmpty else { return nil }
+            let time = row[timeKey] as? String ?? ""
+            return time.isEmpty ? date : "\(date)T\(time)"
+        }.max()
+    }
+
+    /// Patterns plus task proposals from the status block's `to_review` split,
+    /// falling back to the block's `count`. nil with no block at all.
+    static func learningToReview(_ learning: [String: Any]?) -> Int? {
+        guard let learning else { return nil }
+        let review = learning["to_review"] as? [String: Any]
+        if let patterns = review?["patterns"] as? Int, let proposals = review?["task_proposals"] as? Int { return patterns + proposals }
+        return learning["count"] as? Int
+    }
+
+    /// The learning and graph rows of `status`. Every value is NSNull when its
+    /// block is absent, so a Control on an older server renders no number rather
+    /// than a confident zero.
+    static func learningStatusDetails(_ context: [String: Any]?) -> [String: Any] {
+        let learning = context?["learning"] as? [String: Any]
+        let review = learning?["to_review"] as? [String: Any]
+        let graph = context?["graph"] as? [String: Any]
+        return [
+            "learningAvailable": learning?["available"] ?? NSNull(),
+            "learningState": learning?["state"] ?? NSNull(),
+            "learningCount": learning?["count"] ?? NSNull(),
+            "learningToReview": learningToReview(learning) ?? NSNull(),
+            "learningPatterns": review?["patterns"] ?? NSNull(),
+            "learningTaskProposals": review?["task_proposals"] ?? NSNull(),
+            "learningLastTs": learning?["last_ts"] ?? NSNull(),
+            "graphAvailable": graph?["available"] ?? NSNull(),
+            "graphState": graph?["state"] ?? NSNull(),
+            "graphEntities": graph?["entities"] ?? NSNull(),
+            "graphRelationships": graph?["relationships"] ?? NSNull(),
+            "graphSourceUpdatedAt": graph?["source_updated_at"] ?? NSNull(),
+            "graphIndexState": graph?["index_state"] ?? NSNull(),
+            "graphQueuePending": graph?["queue_pending"] ?? NSNull(),
+            "graphOwnerHost": graph?["owner_host"] ?? NSNull(),
+            "graphIsOwner": graph?["is_owner"] ?? NSNull(),
+            "graphReplica": graph?["replica"] ?? NSNull(),
+            "graphProcessorState": graph?["processor_state"] ?? NSNull(),
+            "graphLockState": graph?["lock_state"] ?? NSNull(),
+        ]
+    }
+
+    /// One Doctor line for Recent learning and Knowledge: states and counts, no
+    /// paths. nil when the server predates the blocks, so Doctor says nothing on
+    /// a 6.44.4 install that is otherwise fine.
+    static func learningDoctorLine(_ details: [String: Any]) -> (state: String, detail: String)? {
+        let learningState = details["learningState"] as? String
+        let graphState = details["graphState"] as? String
+        guard learningState != nil || graphState != nil else { return nil }
+        var parts: [String] = []
+        if let n = details["learningToReview"] as? Int { parts.append("\(n) to review") }
+        else { parts.append("learning \(learningState ?? "absent")") }
+        if let e = details["graphEntities"] as? Int, let r = details["graphRelationships"] as? Int { parts.append("\(e) entities · \(r) relationships") }
+        else { parts.append("graph \(graphState ?? "absent")") }
+        if let index = details["graphIndexState"] as? String { parts.append("index \(index)") }
+        if let lock = details["graphLockState"] as? String, lock != "free" { parts.append("lock \(lock)") }
+        let ready = details["learningAvailable"] as? Bool == true && details["graphAvailable"] as? Bool == true
+        return (ready ? "ok" : "warning", parts.joined(separator: " · "))
     }
 
     /// Absolute file path for a `file_` id, so the desktop can reveal it.
@@ -11684,6 +12077,9 @@ final class COSControlHelper {
                 contextDetail = "Choose COS Data to connect a compatible operations/scripts bridge"
             }
             add("Memory and Threads", memoryReady && threadsReady ? "ok" : "warning", contextDetail)
+            if let line = Self.learningDoctorLine(details) {
+                add("Recent learning and Knowledge", line.state, line.detail)
+            }
         }
         if loadManifest() != nil || inPlaceActive() {
             let providerReady = details["providerCapabilitiesReady"] as? Bool == true
@@ -13604,6 +14000,81 @@ final class COSControlHelper {
         try expect(!wholeRead, "a transcript inside the window is not windowed")
         try expect(whole.count == lines.count,
                    "an unwindowed read must deliver every line, including the last")
+
+        // ── Recent learning and Knowledge projections (0.5.190) ──────
+        //
+        // The status rows, the Doctor line, the 404 and 503 sentences, and the
+        // activity-signals composition are pure functions of server bodies, so
+        // they run here against the shapes 6.44.5 actually sends.
+        let learningBlock: [String: Any] = ["available": true, "state": "ready", "count": 121,
+                                            "to_review": ["patterns": 1, "task_proposals": 120], "last_ts": "2026-08-31"]
+        let graphBlock: [String: Any] = ["available": true, "state": "ready", "entities": 40359, "relationships": 88369,
+                                         "index_state": "fresh", "queue_pending": 56, "owner_host": "m3", "is_owner": true,
+                                         "replica": false, "processor_state": "none", "lock_state": "free"]
+        let fullStatus = Self.learningStatusDetails(["learning": learningBlock, "graph": graphBlock])
+        try expect(fullStatus["learningToReview"] as? Int == 121, "to-review sums patterns and task proposals")
+        try expect(fullStatus["graphEntities"] as? Int == 40359 && fullStatus["graphRelationships"] as? Int == 88369,
+                   "graph counts pass through")
+        try expect(fullStatus["graphOwnerHost"] as? String == "m3" && fullStatus["graphIsOwner"] as? Bool == true,
+                   "owner fields pass through")
+        let absentStatus = Self.learningStatusDetails(["memory": ["available": true]])
+        try expect(absentStatus["learningToReview"] is NSNull && absentStatus["graphEntities"] is NSNull,
+                   "absent blocks are NSNull, never zero")
+        try expect(absentStatus["learningState"] is NSNull && absentStatus["graphIndexState"] is NSNull,
+                   "absent states are NSNull")
+        try expect(Self.learningToReview(["count": 7]) == 7, "to-review falls back to count when the split is missing")
+        try expect(Self.learningToReview(nil) == nil, "no learning block, no to-review number")
+        try expect(Self.learningDoctorLine(absentStatus) == nil, "Doctor says nothing about learning on an older server")
+        let doctorLine = Self.learningDoctorLine(fullStatus)
+        try expect(doctorLine?.state == "ok" && doctorLine?.detail.contains("121 to review") == true,
+                   "the Doctor line carries states and counts")
+        try expect(doctorLine?.detail.contains("/") == false, "the Doctor line carries no path")
+        try expect(Self.validLearningEventID("evt_0123456789abcdef") && !Self.validLearningEventID("evt_xyz")
+                   && !Self.validLearningEventID("mem_0123456789abcdef"), "learning event ids are evt_ plus 16 hex")
+        try expect(Self.learningNotFoundMessage(errorClass: nil, needs: "6.44.5").contains("6.44.5"),
+                   "a route-missing 404 names the needed version")
+        try expect(!Self.learningNotFoundMessage(errorClass: "entity_not_found", needs: "6.44.5").contains("Update"),
+                   "a record 404 is not an update prompt")
+        try expect(Self.contextUnavailableMessage(errorClass: "pipeline_missing", notConfigured: "NC") == "NC",
+                   "pipeline_missing is the not-configured sentence")
+        try expect(Self.contextUnavailableMessage(errorClass: "graph_unavailable", notConfigured: "NC").contains("graph_unavailable"),
+                   "another 503 names its class")
+        try expect(Self.bridgeErrorClass(["error": ["code": "task_file_locked"]]) == "task_file_locked"
+                   && Self.bridgeErrorClass(["error": "not_owner"]) == "not_owner" && Self.bridgeErrorClass(["ok": true]) == nil,
+                   "both error body forms resolve to a class")
+        let signals = Self.activitySignalsProjection(
+            messages: ["messages": [["timestamp": 1_788_000_000_000], ["timestamp": 1_787_000_000_000]]],
+            extAudio: ["sessions": [["sessionId": "a"], ["sessionId": "b"]]],
+            orphans: ["strandedCount": 3],
+            meetings: ["meetings": [["date": "2026-09-05", "time": "14:00"], ["date": "2026-09-06", "time": "09:30"]]],
+            context: ["learning": learningBlock],
+            memories: ["items": [["created_at": "2026-09-01T00:00:00Z"], ["created_at": "2026-09-04T00:00:00Z"]]],
+            threads: ["threads": [["last_seen": "2026-09-02"]]],
+            fences: ["fences": [["target": "x"]]],
+            tasks: ["tasks": [["id": "t1", "due": true, "section": "inbox"], ["id": "t2", "due": false, "section": "inbox"],
+                              ["id": "t3", "due": true, "section": "active"]]])
+        func signal(_ section: String, _ key: String) -> Any? { (signals[section] as? [String: Any])?[key] }
+        try expect(signal("speakers", "needsYou") as? Int == 2, "the Speakers number counts unrecognized sessions")
+        try expect(signal("meetings", "needsYou") as? Int == 3, "the Meetings number is the stranded count")
+        try expect(signal("meetings", "newest") as? String == "2026-09-06T09:30", "the Meetings stamp is the latest date and time")
+        try expect(signal("memories", "needsYou") as? Int == 121, "the Memories number is learning to review")
+        try expect(signal("memories", "newest") as? String == "2026-09-04T00:00:00Z", "the Memories stamp is the latest created_at")
+        try expect(signal("messages", "newest") as? String == "2026-08-29T10:40:00Z", "the Messages stamp converts epoch milliseconds")
+        try expect(signal("threads", "newest") as? String == "2026-09-02", "the Threads stamp is the latest last_seen")
+        try expect(signal("sessions", "needsYou") as? Int == 1, "the Sessions number counts fences")
+        try expect(signal("tasks", "needsYou") as? Int == 2, "the Tasks number counts rows due today")
+        try expect((signal("tasks", "inboxIDs") as? [String]) == ["t1", "t2"], "inbox ids ride along for the unseen count")
+        for section in ["messages", "speakers", "meetings", "memories", "threads", "sessions", "tasks"] {
+            try expect((signal(section, "source") as? String)?.isEmpty == false, "every mark names its source (\(section))")
+        }
+        let quietSignals = Self.activitySignalsProjection(messages: nil, extAudio: nil, orphans: nil, meetings: nil,
+                                                          context: nil, memories: nil, threads: nil, fences: nil, tasks: nil)
+        func quiet(_ section: String, _ key: String) -> Any? { (quietSignals[section] as? [String: Any])?[key] }
+        try expect(quiet("speakers", "needsYou") is NSNull && quiet("tasks", "needsYou") is NSNull && quiet("sessions", "needsYou") is NSNull,
+                   "an absent source is NSNull, not zero")
+        try expect(quiet("messages", "newest") is NSNull && quiet("memories", "newest") is NSNull, "no rows, no newest stamp")
+        try expect((signals["legend"] as? String) == Self.activitySignalsLegend && Self.activitySignalsLegend.contains("Number"),
+                   "the legend line ships with the signals")
 
         emit(ok: true, message: "\(passed) deterministic helper tests passed", details: ["tests": passed])
     }

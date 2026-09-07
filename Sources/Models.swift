@@ -91,6 +91,28 @@ struct ServerStatus: Sendable {
     var threadCount = 0
     var activeThreadCount = 0
     var threadState: String?
+    /// Recent learning and Knowledge (server 6.44.5). OPTIONALS with no `?? 0`:
+    /// absent means a server without the blocks, and the chip must then show no
+    /// number rather than a confident zero. Dates arrive as ISO strings.
+    var learningAvailable: Bool?
+    var learningState: String?
+    var learningCount: Int?
+    var learningToReview: Int?
+    var learningPatterns: Int?
+    var learningTaskProposals: Int?
+    var learningLastTs: String?
+    var graphAvailable: Bool?
+    var graphState: String?
+    var graphEntities: Int?
+    var graphRelationships: Int?
+    var graphSourceUpdatedAt: String?
+    var graphIndexState: String?
+    var graphQueuePending: Int?
+    var graphOwnerHost: String?
+    var graphIsOwner: Bool?
+    var graphReplica: Bool?
+    var graphProcessorState: String?
+    var graphLockState: String?
     var safeToRestart = false
     var activeJobs: Int?
     var activeTranscriptionSessions: Int?
@@ -242,6 +264,25 @@ struct ServerStatus: Sendable {
         threadCount = details["threadCount"]?.int ?? 0
         activeThreadCount = details["activeThreadCount"]?.int ?? 0
         threadState = details["threadState"]?.string
+        learningAvailable = details["learningAvailable"]?.bool
+        learningState = details["learningState"]?.string
+        learningCount = details["learningCount"]?.int
+        learningToReview = details["learningToReview"]?.int
+        learningPatterns = details["learningPatterns"]?.int
+        learningTaskProposals = details["learningTaskProposals"]?.int
+        learningLastTs = details["learningLastTs"]?.string
+        graphAvailable = details["graphAvailable"]?.bool
+        graphState = details["graphState"]?.string
+        graphEntities = details["graphEntities"]?.int
+        graphRelationships = details["graphRelationships"]?.int
+        graphSourceUpdatedAt = details["graphSourceUpdatedAt"]?.string
+        graphIndexState = details["graphIndexState"]?.string
+        graphQueuePending = details["graphQueuePending"]?.int
+        graphOwnerHost = details["graphOwnerHost"]?.string
+        graphIsOwner = details["graphIsOwner"]?.bool
+        graphReplica = details["graphReplica"]?.bool
+        graphProcessorState = details["graphProcessorState"]?.string
+        graphLockState = details["graphLockState"]?.string
         safeToRestart = details["safeToRestart"]?.bool ?? false
         activeJobs = details["activeJobs"]?.int
         activeTranscriptionSessions = details["activeTranscriptionSessions"]?.int
@@ -378,6 +419,508 @@ struct ContextRecord: Identifiable, Equatable {
             meetingCount: meetings,
             isResolved: raw["is_resolved"]?.bool == true
         )
+    }
+}
+
+
+// ── Recent learning and Knowledge (server 6.44.5, Control 0.5.190) ──
+//
+// Read-only projections of /api/context/learning* and /api/context/graph/*,
+// decoded from the helper's pass-through details. Every count is an optional:
+// the server omits what it cannot count, and a zero here would be a claim.
+
+struct LearningSourceRef: Sendable, Equatable {
+    let kind: String
+    let id: String
+    let excerpt: String
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object else { return nil }
+        kind = o["kind"]?.string ?? ""
+        id = o["id"]?.string ?? ""
+        excerpt = o["excerpt"]?.string ?? ""
+    }
+}
+
+/// The store's own record behind one event, allowlisted server-side
+/// (LEARNING_DETAIL_KEYS). Present only on the detail route.
+struct LearningEventDetail: Sendable, Equatable {
+    let task: String?
+    let kind: String?
+    let layer: String?
+    let date: String?
+    let future: Bool?
+    let loggedTimes: Int?
+    let memoryType: String?
+    let content: String?
+    let before: String?
+    let after: String?
+    let rule: String?
+    let status: String?
+    let occurrences: Int?
+    let threshold: Int?
+    let entry: String?
+    let truncated: Bool?
+    let bodies: [String]
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object else { return nil }
+        task = o["task"]?.string
+        kind = o["kind"]?.string
+        layer = o["layer"]?.string
+        date = o["date"]?.string
+        future = o["future"]?.bool
+        loggedTimes = o["logged_times"]?.int
+        memoryType = o["memory_type"]?.string
+        content = o["content"]?.string
+        before = o["before"]?.string
+        after = o["after"]?.string
+        rule = o["rule"]?.string
+        status = o["status"]?.string
+        occurrences = o["occurrences"]?.int
+        threshold = o["threshold"]?.int
+        entry = o["entry"]?.string
+        truncated = o["truncated"]?.bool
+        bodies = o["bodies"]?.array?.compactMap { $0.string } ?? []
+    }
+}
+
+struct LearningEvent: Identifiable, Sendable, Equatable {
+    let id: String
+    let lessonID: String
+    let eventType: String
+    let ts: String
+    let store: String
+    let title: String
+    /// The engine enum (claude-code, codex, cursor, g2, task, unknown); free
+    /// text lives in `category`.
+    let scope: String
+    let category: String
+    let engine: String
+    let targetKind: String
+    let targetID: String
+    let targetVersion: String?
+    let appliesTo: [String]
+    let sourceRefs: [LearningSourceRef]
+    let priorEventID: String?
+    let outcome: String?
+    let provenance: String
+    let ordinal: Int?
+    let detail: LearningEventDetail?
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let id = o["event_id"]?.string, !id.isEmpty else { return nil }
+        self.id = id
+        lessonID = o["lesson_id"]?.string ?? ""
+        eventType = o["event_type"]?.string ?? ""
+        ts = o["ts"]?.string ?? ""
+        store = o["store"]?.string ?? ""
+        title = o["title"]?.string ?? "(untitled)"
+        scope = o["scope"]?.string ?? "unknown"
+        category = o["category"]?.string ?? ""
+        engine = o["engine"]?.string ?? "unknown"
+        let target = o["target"]?.object
+        targetKind = target?["kind"]?.string ?? ""
+        targetID = target?["id"]?.string ?? ""
+        targetVersion = target?["version"]?.string
+        // applies_to entries are `{ kind, name, cadence, evidence }` objects from
+        // the resolver (or plain strings); the row keeps name and cadence.
+        appliesTo = o["applies_to"]?.array?.compactMap { entry -> String? in
+            if let text = entry.string { return text }
+            guard let object = entry.object else { return nil }
+            let name = object["name"]?.string ?? object["path"]?.string ?? object["id"]?.string ?? ""
+            let cadence = object["cadence"]?.string ?? ""
+            guard !name.isEmpty else { return nil }
+            return cadence.isEmpty ? name : "\(name) · \(cadence)"
+        } ?? []
+        sourceRefs = o["source_refs"]?.array?.compactMap { LearningSourceRef($0) } ?? []
+        priorEventID = o["prior_event_id"]?.string
+        outcome = o["outcome"]?.string ?? o["outcome"]?.object?["state"]?.string
+        provenance = o["provenance"]?.string ?? ""
+        ordinal = o["ordinal"]?.int
+        detail = LearningEventDetail(o["detail"])
+    }
+
+    /// Task proposals come from the self-improvement queue; patterns from the
+    /// correction journal. Both sit in To review until a later release can move
+    /// them (0.5.190 is read-only: there is no Dismiss).
+    var isTaskProposal: Bool { targetKind == "task-proposal" }
+    var isPattern: Bool { eventType == "promotable" || targetKind == "pattern" }
+    var needsReview: Bool { isTaskProposal || isPattern }
+
+    var kindLabel: String {
+        if isTaskProposal { return "Task proposal" }
+        switch eventType {
+        case "captured": return "Captured"
+        case "proposed": return "Proposed"
+        case "promotable": return "Promotable pattern"
+        case "saved": return "Saved"
+        case "retrieved": return "Retrieved"
+        case "used": return "Used"
+        case "checked": return "Checked"
+        case "dismissed": return "Dismissed"
+        case "reverted": return "Reverted"
+        case "reopened": return "Reopened"
+        case "consolidated": return "Consolidated"
+        case "previewed": return "Previewed"
+        default: return eventType.isEmpty ? "Event" : eventType
+        }
+    }
+
+    var kindGlyph: String {
+        if isTaskProposal { return "checklist" }
+        switch eventType {
+        case "captured", "saved": return "tray.and.arrow.down"
+        case "proposed", "promotable": return "lightbulb"
+        case "checked", "used", "retrieved": return "checkmark.circle"
+        case "dismissed", "reverted": return "arrow.uturn.backward"
+        case "reopened": return "arrow.clockwise"
+        case "consolidated": return "square.stack"
+        case "previewed": return "eye"
+        default: return "sparkles"
+        }
+    }
+
+    /// `scope · engine · time`, the row's second line.
+    var rowSubtitle: String {
+        [scope, engine == scope ? nil : engine, Self.shortStamp(ts)]
+            .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// The store, said the way the panel says it.
+    var storeLabel: String {
+        switch store {
+        case "self_improvement_queue": return "Self-improvement queue"
+        case "correction_journal": return "Correction journal"
+        case "bot_memory": return "Bot memory"
+        case "review_ledger": return "Review ledger"
+        case "git_versions": return "Skill versions"
+        case "eval_scores": return "Eval scores"
+        case "reflect_log": return "Reflect log"
+        case "capture_ledger": return "Capture ledger"
+        default: return store.isEmpty ? "unknown store" : store
+        }
+    }
+
+    /// `2026-09-06T05:00:00.000000+00:00` reads as `2026-09-06 05:00`.
+    static func shortStamp(_ iso: String) -> String {
+        guard iso.count >= 16 else { return iso }
+        return String(iso.prefix(16)).replacingOccurrences(of: "T", with: " ")
+    }
+}
+
+struct LearningCoverage: Identifiable, Sendable, Equatable {
+    let store: String
+    let state: String
+    let count: Int?
+
+    var id: String { store }
+
+    static func list(_ value: JSONValue?) -> [LearningCoverage] {
+        guard let o = value?.object else { return [] }
+        return o.keys.sorted().compactMap { key in
+            guard let entry = o[key]?.object else { return nil }
+            return LearningCoverage(store: key, state: entry["state"]?.string ?? "unknown", count: entry["count"]?.int)
+        }
+    }
+}
+
+/// The ingest lock as the pipeline reports it. The pid is advisory text the
+/// holder wrote; the state comes from a real flock probe.
+struct GraphLock: Sendable, Equatable {
+    let state: String
+    let ownerPID: Int?
+    let error: String?
+
+    init(_ value: JSONValue?) {
+        let o = value?.object
+        state = o?["state"]?.string ?? "unknown"
+        ownerPID = o?["owner_pid"]?.int
+        error = o?["error"]?.string
+    }
+}
+
+/// One index build receipt (the current build or the last run).
+struct IndexBuildReceipt: Sendable, Equatable {
+    let state: String
+    let reason: String?
+    let startedAt: String?
+    let endedAt: String?
+    let pid: Int?
+    let host: String?
+    let error: String?
+    let wallSeconds: Double?
+    let nodeCount: Int?
+    let edgeCount: Int?
+    let buildSeq: Int?
+    let peakRssMB: Int?
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object else { return nil }
+        state = o["state"]?.string ?? "unknown"
+        reason = o["reason"]?.string
+        startedAt = o["started_at"]?.string
+        endedAt = o["ended_at"]?.string
+        pid = o["pid"]?.int
+        host = o["host"]?.string
+        error = o["error"]?.string
+        wallSeconds = o["wall_s"]?.double
+        nodeCount = o["node_count"]?.int
+        edgeCount = o["edge_count"]?.int
+        buildSeq = o["build_seq"]?.int
+        peakRssMB = o["peak_rss_mb"]?.int
+    }
+}
+
+/// /api/context/graph/status as the server shapes it: counts, the source
+/// topology, the queue census, the budget, the lock, the processor, and the
+/// build receipts. Nothing here is a path.
+struct GraphStatus: Sendable, Equatable {
+    let entities: Int?
+    let relationships: Int?
+    let sourceUpdatedAt: String?
+    let indexBuiltAt: String?
+    let indexState: String
+    let indexDegraded: Bool
+    let ownerHost: String?
+    let thisHost: String?
+    let isOwner: Bool?
+    let ownerState: String?
+    let indexBuiltOnHost: String?
+    let indexHostMismatch: Bool
+    let queueLiveTotal: Int?
+    let queuePending: Int?
+    let queueFailed: Int?
+    let queueDeferred: Int?
+    let oldestPendingAt: String?
+    let oldestPendingAgeSeconds: Int?
+    let missingSources: Int?
+    let conflictCopies: Int?
+    let budgetUsed: Int?
+    let budgetCap: Int?
+    let lock: GraphLock
+    let processorState: String?
+    let processorCadenceSeconds: Int?
+    let processorLastRunAt: String?
+    let processorLastOutcome: String?
+    let build: IndexBuildReceipt?
+    let lastRun: IndexBuildReceipt?
+
+    init(_ o: [String: JSONValue]) {
+        entities = o["entities"]?.int
+        relationships = o["relationships"]?.int
+        sourceUpdatedAt = o["source_updated_at"]?.string
+        indexBuiltAt = o["index_built_at"]?.string
+        indexState = o["index_state"]?.string ?? "missing"
+        indexDegraded = o["index_degraded"]?.bool ?? false
+        let source = o["source"]?.object
+        ownerHost = source?["owner_host"]?.string
+        thisHost = source?["this_host"]?.string
+        isOwner = source?["is_owner"]?.bool
+        ownerState = source?["owner_state"]?.string
+        indexBuiltOnHost = source?["index_built_on_host"]?.string
+        indexHostMismatch = source?["index_host_mismatch"]?.bool ?? false
+        let queue = o["queue"]?.object
+        queueLiveTotal = queue?["live_total"]?.int
+        queuePending = queue?["pending"]?.int
+        queueFailed = queue?["failed"]?.int
+        queueDeferred = queue?["deferred"]?.int
+        oldestPendingAt = queue?["oldest_pending_at"]?.string
+        oldestPendingAgeSeconds = queue?["oldest_pending_age_s"]?.int
+        missingSources = queue?["missing_sources"]?.int
+        conflictCopies = queue?["conflict_copies"]?.int
+        let budget = o["budget"]?.object
+        budgetUsed = budget?["used"]?.int
+        budgetCap = budget?["cap"]?.int
+        lock = GraphLock(o["lock"])
+        let processor = o["processor"]?.object
+        processorState = processor?["state"]?.string
+        processorCadenceSeconds = processor?["cadence_s"]?.int
+        processorLastRunAt = processor?["last_run_at"]?.string
+        processorLastOutcome = processor?["last_outcome"]?.string
+        build = IndexBuildReceipt(o["build"])
+        lastRun = IndexBuildReceipt(o["last_run"])
+    }
+
+    /// What the Sync card says about the processor, by its reported state. The
+    /// two sentences Miles asked for by name are pinned in ModelsContract.
+    var processorLine: String {
+        switch processorState {
+        case nil, "none": return "No processor configured on this Mac"
+        case "installed-idle": return "Processor installed, no run recorded yet"
+        case "cadence_unknown": return "Processor installed; cadence not readable"
+        case "running": return "Processor running"
+        case "failed": return "Processor last run failed"
+        case let state?: return "Processor \(state)"
+        }
+    }
+
+    /// Build offer: only a missing or stale index invites a rebuild.
+    var invitesIndexBuild: Bool { indexState == "missing" || indexState == "stale" }
+}
+
+struct GraphRelationship: Identifiable, Sendable, Equatable {
+    let source: String
+    let target: String
+    let weight: Double?
+    let description: String
+
+    var id: String { "\(source)\u{1F}\(target)" }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let source = o["source"]?.string, let target = o["target"]?.string else { return nil }
+        self.source = source
+        self.target = target
+        weight = o["weight"]?.double
+        description = o["description"]?.string ?? ""
+    }
+
+    func other(than entity: String) -> String { source == entity ? target : source }
+}
+
+struct GraphNeighbor: Identifiable, Sendable, Equatable {
+    let id: String
+    let type: String
+    let degree: Int?
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let id = o["id"]?.string, !id.isEmpty else { return nil }
+        self.id = id
+        type = o["type"]?.string ?? ""
+        degree = o["degree"]?.int
+    }
+}
+
+/// A graph entity, from a search hit (thin) or the entity route (with edges,
+/// neighbors and the source-record status).
+struct GraphEntity: Identifiable, Sendable, Equatable {
+    let id: String
+    let type: String
+    let degree: Int?
+    let description: String
+    let descriptions: [String]
+    let edges: [GraphRelationship]
+    let neighbors: [GraphNeighbor]
+    let totalRelationships: Int?
+    let sourceStatus: String?
+    let sourceCount: Int?
+    let sourceResolved: Int?
+    let createdAt: String?
+    let firstSeenBuild: Int?
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let id = o["id"]?.string, !id.isEmpty else { return nil }
+        self.id = id
+        type = o["type"]?.string ?? ""
+        degree = o["degree"]?.int
+        description = o["description"]?.string ?? ""
+        descriptions = Array((o["descriptions"]?.array?.compactMap { $0.string } ?? []).prefix(6))
+        edges = o["edges"]?.array?.compactMap { GraphRelationship($0) }.sorted { ($0.weight ?? 0) > ($1.weight ?? 0) } ?? []
+        neighbors = o["neighbors"]?.array?.compactMap { GraphNeighbor($0) } ?? []
+        totalRelationships = o["total_relationships"]?.int
+        sourceStatus = o["source_status"]?.string
+        sourceCount = o["source_count"]?.int
+        sourceResolved = o["source_resolved"]?.int
+        createdAt = o["created_at"]?.string
+        firstSeenBuild = o["first_seen_build"]?.int
+    }
+
+    /// A row for an entity known only by name (a neighbor chip, a lesson's
+    /// "Explore in graph"), until the entity route fills it in.
+    static func placeholder(_ id: String, type: String = "") -> GraphEntity {
+        GraphEntity(.object(["id": .string(id), "type": .string(type)]))!
+    }
+
+    var sourceLine: String? {
+        guard let sourceStatus else { return nil }
+        switch sourceStatus {
+        case "resolved": return "Source records: \(sourceResolved ?? 0) of \(sourceCount ?? 0) resolved"
+        case "partial": return "Source records: \(sourceResolved ?? 0) of \(sourceCount ?? 0) resolved; the rest have no document id in the archive"
+        case "unresolved": return "Source records: none of \(sourceCount ?? 0) carry a document id in the archive"
+        default: return "Source records: \(sourceStatus)"
+        }
+    }
+}
+
+struct GraphPassage: Identifiable, Sendable, Equatable {
+    let chunkID: String
+    let docID: String?
+    let order: Int?
+    let excerpt: String
+    let sourceStatus: String?
+    let sourceKey: String?
+    let sourceTitle: String?
+    let sourceDate: String?
+    let sourceSummary: String?
+
+    var id: String { chunkID }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let chunkID = o["chunk_id"]?.string, !chunkID.isEmpty else { return nil }
+        self.chunkID = chunkID
+        docID = o["doc_id"]?.string
+        order = o["order"]?.int
+        excerpt = o["excerpt"]?.string ?? ""
+        let source = o["source"]?.object
+        sourceStatus = source?["status"]?.string
+        sourceKey = source?["key"]?.string
+        sourceTitle = source?["title"]?.string
+        sourceDate = source?["date"]?.string
+        sourceSummary = source?["summary"]?.string
+    }
+}
+
+/// What each Activity chip may mark, from the helper's `activity-signals`. A
+/// NUMBER means needs you, a DOT means something newer than the cursor the app
+/// keeps per section. Every count is optional: an absent source is no mark.
+struct ActivitySignals: Sendable, Equatable {
+    struct Mark: Sendable, Equatable {
+        let needsYou: Int?
+        let newest: String?
+        let inboxIDs: [String]
+        let source: String
+    }
+
+    let marks: [String: Mark]
+    let legend: String
+
+    init(_ details: [String: JSONValue]) {
+        var marks: [String: Mark] = [:]
+        for (section, value) in details {
+            guard let o = value.object, o["source"]?.string != nil else { continue }
+            marks[section] = Mark(
+                needsYou: o["needsYou"]?.int,
+                newest: o["newest"]?.string,
+                inboxIDs: o["inboxIDs"]?.array?.compactMap { $0.string } ?? [],
+                source: o["source"]?.string ?? ""
+            )
+        }
+        self.marks = marks
+        legend = details["legend"]?.string ?? ""
+    }
+
+    func mark(_ section: String) -> Mark? { marks[section] }
+
+    /// The number a chip shows, or nil. Zero is not a number worth a mark, and
+    /// an absent count (older server, missing source) is never zero.
+    func number(for section: String, unseenInbox: Int = 0) -> Int? {
+        guard let mark = marks[section] else { return nil }
+        let base = mark.needsYou
+        if section == "tasks" {
+            guard base != nil || unseenInbox > 0 else { return nil }
+            let total = (base ?? 0) + unseenInbox
+            return total > 0 ? total : nil
+        }
+        guard let base, base > 0 else { return nil }
+        return base
+    }
+
+    /// A dot only when a newer item exists: no stamp, no dot; a stamp and no
+    /// cursor (never opened) is new by definition.
+    static func hasNewer(newest: String?, cursor: String?) -> Bool {
+        guard let newest, !newest.isEmpty else { return false }
+        guard let cursor, !cursor.isEmpty else { return true }
+        return newest > cursor
     }
 }
 

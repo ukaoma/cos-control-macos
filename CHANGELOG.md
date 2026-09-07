@@ -1,3 +1,41 @@
+## 0.5.190 (build 228)
+
+Memories learns to say what it learned, and the knowledge graph gets a front door.
+
+- **Memories is four views.** A picker at the top of the tab: Recent learning,
+  All memories, To review, Knowledge. All memories is the list you had. The
+  picker opens on All memories in this build; the flip to Recent learning is
+  the next one.
+- **Recent learning** is what COS captured, proposed, checked and used in the
+  last 90 days, newest first, from every store it can read: bot memory, the
+  correction journal, the self-improvement queue, the review ledger, skill
+  versions, eval scores, the reflect log. Click one for the source excerpt,
+  before/after/rule where the store has them, an Expected effect block by rung
+  (what it applies to, checks, repeat rate; the preview rung says it is not
+  here yet), the evidence, Copy context with an "Include related knowledge"
+  toggle, and Explore in graph.
+- **To review** lists the promotable patterns and the self-improvement task
+  proposals waiting on you. There is no Dismiss yet, on purpose: this build is
+  read-only, so it cannot move the number. That verb ships with the ledger
+  route in a following pair.
+- **Knowledge** opens on a Sync card: which Mac owns ingestion, what is queued
+  and how old the oldest is, missing sources and iCloud conflict copies when
+  there are any, what is indexed and how fresh the index is, the daily budget,
+  the ingest lock, the processor. A missing or stale index offers Build index;
+  the card then follows the build to done or failed. Under it, a search box:
+  an entity opens as a native list, its descriptions, relationships ranked by
+  weight, neighbor chips that re-select, the memories that mention it, and
+  where its source records stand. No web view and no explorer script in the
+  bundle; merging, renaming and removing are a later gate.
+- **Two marks on the Activity chips.** A number means needs you (unrecognized
+  speaker sessions, stranded recordings, learning to review, fenced sessions,
+  tasks due today plus unseen inbox rows). A dot means something newer than
+  the last time you opened that section. One legend line under the chips.
+  Every count is absent, not zero, when its source is.
+- Needs server 6.44.5 for Recent learning and Knowledge; on an older server
+  those tabs say Update the managed server and All memories keeps working.
+  Doctor gains one Recent learning and Knowledge line, states and counts only.
+
 ## 0.5.189 (build 227)
 
 A task says what finished looks like, and nothing runs until it does.

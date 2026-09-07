@@ -1252,6 +1252,14 @@ struct ControlPanel: View {
                         activityChip(item)
                     }
                 }
+                // Two marks only (Miles, 2026-09-06): a number means needs you, a
+                // dot means new since that section was last opened. The legend
+                // ships with the signals so the chips never explain themselves.
+                if let legend = model.activitySignals?.legend, !legend.isEmpty {
+                    Text(legend)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1261,12 +1269,29 @@ struct ControlPanel: View {
     }
 
     private func activityChip(_ item: ActivitySection) -> some View {
-        Button {
+        // Read the cursor version so a moved cursor re-renders the dot.
+        let _ = model.activityCursorVersion
+        let number = model.activityNumber(item)
+        let dot = number == nil && model.activityDot(item)
+        return Button {
             openActivity(item)
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: item.icon)
                 Text(item.title)
+                if let number {
+                    Text("\(number)")
+                        .font(.system(size: 8.5, weight: .bold, design: .rounded))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(item.tint.opacity(0.22), in: Capsule())
+                        .accessibilityLabel("\(number) need you")
+                } else if dot {
+                    Circle()
+                        .fill(item.tint)
+                        .frame(width: 5, height: 5)
+                        .accessibilityLabel("New since you last opened it")
+                }
             }
             .font(.system(size: 9.5, weight: .medium))
             .foregroundStyle(item.tint)
@@ -3237,6 +3262,397 @@ struct ContextDetailPane: View {
             Spacer(minLength: 0)
         }
         .padding(16)
+    }
+}
+
+
+/// One lesson: what happened, before/after/rule where the store has them, the
+/// expected effect by rung, evidence, and the two verbs that carry it onward.
+/// Read-only in 0.5.190: there is no Dismiss here, because nothing in Phases
+/// 0-2 can move the To review number; that ships with the ledger route later.
+struct LearningDetailPane: View {
+    @ObservedObject var model: ControllerModel
+    var showsBackButton = true
+    var onOpenSource: ((LearningEvent) -> Void)? = nil
+    var onExploreInGraph: ((String) -> Void)? = nil
+    @State private var includeGraph = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                if showsBackButton {
+                    Button { model.closeLearningDetail() } label: {
+                        Label("Learning", systemImage: "chevron.left")
+                    }
+                    .buttonStyle(.borderless)
+                }
+                Spacer()
+                if model.learningDetailLoading { ProgressView().controlSize(.small) }
+            }
+            if let event = model.learningDetail {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(event.title)
+                            .font(.system(size: 13, weight: .semibold))
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("\(event.kindLabel) · \(event.rowSubtitle) · \(event.storeLabel)")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        Text(event.id)
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .textSelection(.enabled)
+                        if let excerpt = event.sourceRefs.first?.excerpt, !excerpt.isEmpty {
+                            block("Source") {
+                                Text(excerpt)
+                                    .font(.system(size: 11.5))
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if event.store == "bot_memory", !event.lessonID.isEmpty, let onOpenSource {
+                                    Button("Open source record", systemImage: "arrow.up.right.square") { onOpenSource(event) }
+                                        .controlSize(.small)
+                                }
+                            }
+                        }
+                        if let detail = event.detail {
+                            if event.isTaskProposal {
+                                block("Proposal") {
+                                    if let entry = detail.entry ?? detail.content, !entry.isEmpty {
+                                        Text(entry).font(.system(size: 11.5)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    ForEach(Array(detail.bodies.enumerated()), id: \.offset) { _, body in
+                                        Text(body).font(.system(size: 11.5)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    if let task = detail.task, !task.isEmpty { labelled("Producing task", task) }
+                                    if let layer = detail.layer, !layer.isEmpty { labelled("Layer", layer) }
+                                    if let date = detail.date, !date.isEmpty { labelled("Date", date) }
+                                    if let future = detail.future { labelled("Timing", future ? "Dated after today" : "Dated on or before today") }
+                                    if let times = detail.loggedTimes { labelled("Logged", "\(times) time\(times == 1 ? "" : "s")") }
+                                }
+                            } else {
+                                if let before = detail.before, !before.isEmpty { block("Before") { Text(before).font(.system(size: 11.5)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) } }
+                                if let after = detail.after, !after.isEmpty { block("After") { Text(after).font(.system(size: 11.5)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) } }
+                                if let rule = detail.rule, !rule.isEmpty { block("Rule") { Text(rule).font(.system(size: 11.5)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) } }
+                                if let content = detail.content, !content.isEmpty, detail.before == nil, detail.rule == nil {
+                                    block("Record") { Text(content).font(.system(size: 11.5)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
+                                }
+                                ForEach(Array(detail.bodies.enumerated()), id: \.offset) { _, body in
+                                    Text(body).font(.system(size: 11.5)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                                }
+                                if let status = detail.status, !status.isEmpty { labelled("Status", status) }
+                                if let kind = detail.kind, !kind.isEmpty { labelled("Kind", kind) }
+                                if let memoryType = detail.memoryType, !memoryType.isEmpty { labelled("Memory type", memoryType) }
+                            }
+                        }
+                        if let version = event.targetVersion, !version.isEmpty { labelled("Version", version) }
+                        expectedEffect(event)
+                        evidence(event)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: .infinity)
+                HStack(spacing: 10) {
+                    Button("Copy context", systemImage: "doc.on.doc") { model.copyLearningContext(event, includeGraph: includeGraph) }
+                    Toggle("Include related knowledge", isOn: $includeGraph)
+                        .toggleStyle(.checkbox)
+                        .font(.system(size: 10.5))
+                        .disabled(model.graphEntity == nil)
+                        .help(model.graphEntity == nil ? "Open an entity in Knowledge first" : "Append the open entity's description and relationships")
+                    if let onExploreInGraph {
+                        Button("Explore in graph", systemImage: "point.3.connected.trianglepath.dotted") {
+                            onExploreInGraph(Self.exploreTerm(event))
+                        }
+                    }
+                }
+                .controlSize(.small)
+                if let note = model.copyNote {
+                    Text(note).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            if let error = model.learningDetailError {
+                Text(error).font(.caption2).foregroundStyle(COSPalette.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+    }
+
+    /// The graph lookup a lesson opens: the category (a task name, a topic)
+    /// when there is one, else the first words of the title.
+    static func exploreTerm(_ event: LearningEvent) -> String {
+        if !event.category.isEmpty, event.category != event.scope { return event.category }
+        let words = event.title.split(separator: " ").prefix(4).joined(separator: " ")
+        return words.isEmpty ? event.title : words
+    }
+
+    @ViewBuilder
+    private func expectedEffect(_ event: LearningEvent) -> some View {
+        block("Expected effect") {
+            labelled("Applies to", event.appliesTo.isEmpty ? "Scope not resolved" : event.appliesTo.joined(separator: ", "))
+            labelled("Preview", "Preview not available until 3.5")
+            labelled("Checks", event.outcome ?? event.detail?.status ?? "No check recorded")
+            if let detail = event.detail, let occurrences = detail.occurrences {
+                labelled("Repeat rate", "\(occurrences) occurrence\(occurrences == 1 ? "" : "s")"
+                    + (detail.threshold.map { " (threshold \($0))" } ?? ""))
+            } else if let times = event.detail?.loggedTimes {
+                labelled("Repeat rate", "logged \(times) time\(times == 1 ? "" : "s")")
+            } else {
+                labelled("Repeat rate", "No repeat data")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func evidence(_ event: LearningEvent) -> some View {
+        if !event.sourceRefs.isEmpty || event.priorEventID != nil {
+            block("Evidence") {
+                ForEach(Array(event.sourceRefs.prefix(6).enumerated()), id: \.offset) { _, ref in
+                    Text("\(ref.kind) · \(ref.id)\(ref.excerpt.isEmpty ? "" : " · \(ref.excerpt)")")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                }
+                if let prior = event.priorEventID { labelled("Prior event", prior) }
+                labelled("Provenance", event.provenance.isEmpty ? "unknown" : event.provenance)
+            }
+        }
+    }
+
+    private func block<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title.uppercased())
+                .font(.caption2.weight(.bold))
+                .tracking(1.2)
+                .foregroundStyle(.secondary)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func labelled(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 92, alignment: .trailing)
+            Text(value)
+                .font(.system(size: 11))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+/// One graph entity as a native list neighborhood: descriptions (at most six),
+/// relationships ranked by weight, neighbor chips that re-select, the memories
+/// that mention it, and the source-record status. No canvas and no web view
+/// in 0.5.190; the explorer embed and the Manage verbs are later gates.
+struct GraphEntityPane: View {
+    @ObservedObject var model: ControllerModel
+    var showsBackButton = true
+    var onOpenMemory: ((ContextRecord) -> Void)? = nil
+
+    /// Lists fed by server state render OUTSIDE a full-pane scroll here, so
+    /// each is capped: inline up to the limit, then a fixed-height scroll
+    /// (the 2026-08-26 Add-a-voice rule).
+    private static let graphRelInlineRowLimit = 8
+    private static let graphRelListHeight: CGFloat = 220
+    private static let graphMentionInlineRowLimit = 5
+    private static let graphMentionListHeight: CGFloat = 180
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                if showsBackButton {
+                    Button { model.closeGraphEntity() } label: {
+                        Label("Knowledge", systemImage: "chevron.left")
+                    }
+                    .buttonStyle(.borderless)
+                }
+                Spacer()
+                if model.graphEntityLoading { ProgressView().controlSize(.small) }
+            }
+            if let entity = model.graphEntity {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(entity.id)
+                            .font(.system(size: 13, weight: .semibold))
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text([entity.type.isEmpty ? nil : entity.type,
+                              entity.degree.map { "\($0) relationships" },
+                              entity.createdAt.map { "since \(LearningEvent.shortStamp($0))" }]
+                            .compactMap { $0 }.joined(separator: " · "))
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        if !entity.description.isEmpty || !entity.descriptions.isEmpty {
+                            section("Descriptions") {
+                                ForEach(Array((entity.descriptions.isEmpty ? [entity.description] : entity.descriptions).prefix(6).enumerated()), id: \.offset) { _, text in
+                                    Text(text)
+                                        .font(.system(size: 11.5))
+                                        .textSelection(.enabled)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+                        if !entity.edges.isEmpty {
+                            section("Relationships" + (entity.totalRelationships.map { " · \($0)" } ?? "")) {
+                                if entity.edges.count > Self.graphRelInlineRowLimit {
+                                    ScrollView {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            ForEach(entity.edges) { edge in relationshipRow(edge, entity: entity) }
+                                        }
+                                    }
+                                    .frame(height: Self.graphRelListHeight)
+                                } else {
+                                    ForEach(entity.edges) { edge in relationshipRow(edge, entity: entity) }
+                                }
+                            }
+                        }
+                        if !entity.neighbors.isEmpty {
+                            section("Neighbors") {
+                                FlowChips(items: entity.neighbors.prefix(24).map { ($0.id, $0.type) }) { id in
+                                    model.openGraphEntity(id: id)
+                                }
+                            }
+                        }
+                        section("Memories mentioning this") {
+                            if model.graphMentionsLoading {
+                                ProgressView().controlSize(.mini)
+                            } else if model.graphMentions.isEmpty {
+                                Text("No stored memory mentions this name.")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                            } else if model.graphMentions.count > Self.graphMentionInlineRowLimit {
+                                ScrollView {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        ForEach(model.graphMentions) { hit in mentionRow(hit) }
+                                    }
+                                }
+                                .frame(height: Self.graphMentionListHeight)
+                            } else {
+                                ForEach(model.graphMentions) { hit in mentionRow(hit) }
+                            }
+                        }
+                        if let line = entity.sourceLine {
+                            Text(line).font(.system(size: 10.5)).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: .infinity)
+                HStack {
+                    Button("Copy context", systemImage: "doc.on.doc") { model.copyGraphEntity(entity) }
+                }
+                .controlSize(.small)
+                if let note = model.copyNote {
+                    Text(note).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            if let error = model.graphEntityError {
+                Text(error).font(.caption2).foregroundStyle(COSPalette.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+    }
+
+    private func relationshipRow(_ edge: GraphRelationship, entity: GraphEntity) -> some View {
+        Button {
+            model.openGraphEntity(id: edge.other(than: entity.id))
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(edge.other(than: entity.id))
+                    .font(.system(size: 11.5, weight: .medium))
+                    .lineLimit(1)
+                if let weight = edge.weight {
+                    Text(weight.rounded() == weight ? "\(Int(weight))" : String(format: "%.1f", weight))
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+                Text(edge.description)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func mentionRow(_ hit: ContextSearchHit) -> some View {
+        Button {
+            onOpenMemory?(hit.record)
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(hit.record.title)
+                    .font(.system(size: 11))
+                    .lineLimit(1)
+                Text(hit.matchLabel)
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(onOpenMemory == nil)
+    }
+
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title.uppercased())
+                .font(.caption2.weight(.bold))
+                .tracking(1.2)
+                .foregroundStyle(.secondary)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Neighbor chips that wrap. Each re-selects its entity in place.
+private struct FlowChips: View {
+    let items: [(String, String)]
+    let action: (String) -> Void
+
+    var body: some View {
+        // A simple wrapping layout: rows of chips sized by their text.
+        var rows: [[(String, String)]] = [[]]
+        var width: CGFloat = 0
+        for item in items {
+            let estimate = CGFloat(item.0.count) * 6.4 + 22
+            if width + estimate > 560, !rows[rows.count - 1].isEmpty {
+                rows.append([])
+                width = 0
+            }
+            rows[rows.count - 1].append(item)
+            width += estimate + 6
+        }
+        return VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: 6) {
+                    ForEach(Array(row.enumerated()), id: \.offset) { _, item in
+                        Button { action(item.0) } label: {
+                            Text(item.0)
+                                .font(.system(size: 10.5, weight: .medium))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Capsule().fill(Color.primary.opacity(0.06)))
+                                .overlay(Capsule().stroke(COSPalette.line, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                        .help(item.1.isEmpty ? item.0 : "\(item.0) · \(item.1)")
+                    }
+                }
+            }
+        }
     }
 }
 
