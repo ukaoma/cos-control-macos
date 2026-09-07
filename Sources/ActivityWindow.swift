@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WebKit
 
 /// Click-only host for Activity on every supported macOS release.
 ///
@@ -865,7 +866,7 @@ struct ActivityWindow: View {
         case .messages: messagesList
         case .speakers: speakersList
         case .meetings: meetingsList
-        case .memories: memoriesPane()
+        case .memories: memoriesSurface()
         case .threads: contextList(kind: "thread")
         case .sessions: sessionsList
         case .tasks: tasksList
@@ -2177,6 +2178,23 @@ struct ActivityWindow: View {
                     .frame(maxWidth: .infinity)
                 }
             }
+        }
+    }
+
+
+    // MARK: - Memories (the reviewed prototype, on live data)
+
+    /// The Memories tab is the design prototype Miles reviewed
+    /// (wk36_2026/design/cos-control-learning/index.html), hosted in a web view
+    /// and fed through the helper: every op the page posts is answered by the
+    /// same commands the native panes use. The native panes remain the fallback
+    /// when the bundle is absent, so a broken resource copy never blanks the tab.
+    @ViewBuilder
+    private func memoriesSurface() -> some View {
+        if MemoriesWebView.bundleURL != nil {
+            MemoriesWebView(model: model, openSection: { section in select(section) })
+        } else {
+            memoriesPane()
         }
     }
 
@@ -4238,5 +4256,148 @@ struct MeetingStatusPills: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(Capsule().fill(tint.opacity(0.14)))
+    }
+}
+
+
+// ── Memories web host ─────────────────────────────────────────────
+
+/// Hosts Resources/memories/memories.html. The page never holds the API token:
+/// it posts `{id, op, args}` and this coordinator runs the helper (or a native
+/// action) and resolves the page's promise with `{ok, message, details}`.
+struct MemoriesWebView: NSViewRepresentable {
+    @ObservedObject var model: ControllerModel
+    var openSection: (ActivitySection) -> Void
+
+    static var bundleURL: URL? {
+        Bundle.main.url(forResource: "memories", withExtension: "html", subdirectory: "memories")
+    }
+
+    /// Every op the page may post, mapped to the helper command that answers it.
+    /// A name outside this table is refused, so the page cannot reach any other
+    /// helper verb (and never a lifecycle or install command).
+    static let helperOps: [String: ([String: Any]) -> [String]] = [
+        "status": { _ in ["status"] },
+        "learning.list": { a in
+            var cmd = ["context-learning", "--limit", MemoriesWebView.bounded(a["limit"], 50, 1, 50), "--days", MemoriesWebView.bounded(a["days"], 90, 1, 3650)]
+            if let ts = a["sinceTs"] as? String, !ts.isEmpty { cmd += ["--since-ts", ts] }
+            if let id = a["sinceEventId"] as? String, !id.isEmpty { cmd += ["--since-event-id", id] }
+            return cmd
+        },
+        "learning.review": { a in ["context-learning", "--to-review", "--limit", MemoriesWebView.bounded(a["limit"], 200, 1, 200)] },
+        "learning.event": { a in ["context-learning", "--id", MemoriesWebView.text(a["id"], 64)] },
+        "learning.status": { _ in ["context-learning-status"] },
+        "learning.decide": { a in ["context-learning-decide", "--id", MemoriesWebView.text(a["id"], 64), "--decision", MemoriesWebView.text(a["decision"], 16)] },
+        "memories.list": { a in ["context-memories", "--limit", MemoriesWebView.bounded(a["limit"], 50, 1, 50)] },
+        "memories.search": { a in ["context-memories-search", "--query", MemoriesWebView.text(a["q"], 160), "--limit", MemoriesWebView.bounded(a["limit"], 20, 1, 50)] },
+        "memory.detail": { a in ["context-memories", "--id", MemoriesWebView.text(a["id"], 200)] },
+        "graph.status": { _ in ["context-graph-status"] },
+        "graph.search": { a in ["context-graph-search", "--query", MemoriesWebView.text(a["q"], 160), "--limit", MemoriesWebView.bounded(a["limit"], 30, 1, 30)] },
+        "graph.entity": { a in ["context-graph-entity", "--id", MemoriesWebView.text(a["id"], 200), "--limit", MemoriesWebView.bounded(a["limit"], 30, 1, 30)] },
+        "graph.passages": { a in ["context-graph-passages", "--entity", MemoriesWebView.text(a["entity"], 200), "--limit", MemoriesWebView.bounded(a["limit"], 5, 1, 5)] },
+        "graph.build": { _ in ["context-graph-index-build"] },
+    ]
+
+    static func bounded(_ value: Any?, _ fallback: Int, _ low: Int, _ high: Int) -> String {
+        let n = (value as? Int) ?? (value as? Double).map { Int($0) } ?? fallback
+        return String(min(max(n, low), high))
+    }
+
+    static func text(_ value: Any?, _ limit: Int) -> String {
+        String((value as? String ?? "").prefix(limit)).replacingOccurrences(of: "\n", with: " ")
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(model: model, openSection: openSection) }
+
+    func makeNSView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.userContentController.add(context.coordinator, name: "cos")
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.setValue(false, forKey: "drawsBackground")
+        context.coordinator.webView = view
+        if let url = Self.bundleURL {
+            view.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        }
+        return view
+    }
+
+    func updateNSView(_ view: WKWebView, context: Context) {
+        context.coordinator.model = model
+        context.coordinator.openSection = openSection
+    }
+
+    static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "cos")
+        coordinator.webView = nil
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, WKScriptMessageHandler {
+        var model: ControllerModel
+        var openSection: (ActivitySection) -> Void
+        weak var webView: WKWebView?
+
+        init(model: ControllerModel, openSection: @escaping (ActivitySection) -> Void) {
+            self.model = model
+            self.openSection = openSection
+        }
+
+        nonisolated func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            // WebKit delivers script messages on the main thread; the protocol
+            // requirement is nonisolated, so state that fact and hop explicitly.
+            MainActor.assumeIsolated {
+                guard let body = message.body as? [String: Any], let id = body["id"] as? Int, let op = body["op"] as? String else { return }
+                let args = body["args"] as? [String: Any] ?? [:]
+                Task { @MainActor [weak self] in await self?.handle(id: id, op: op, args: args) }
+            }
+        }
+
+        private func handle(id: Int, op: String, args: [String: Any]) async {
+            switch op {
+            case "copy":
+                let text = MemoriesWebView.text(args["text"], 200_000)
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                model.copyNote = "Copied as grounded context"
+                reply(id, ok: true, message: "Copied", details: [:])
+            case "memory.reveal":
+                let recordID = MemoriesWebView.text(args["id"], 200)
+                do {
+                    let response = try await model.runHelper(["context-memories", "--id", recordID], timeout: 30)
+                    if let path = response.details["filePath"]?.string, !path.isEmpty {
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                        reply(id, ok: true, message: "Revealed", details: [:])
+                    } else {
+                        reply(id, ok: false, message: "This memory lives in the vector store; there is no file to reveal.", details: [:])
+                    }
+                } catch {
+                    reply(id, ok: false, message: error.localizedDescription, details: [:])
+                }
+            case "open.section":
+                if let name = args["section"] as? String, let section = ActivitySection(rawValue: name) {
+                    openSection(section)
+                    reply(id, ok: true, message: "Opened", details: [:])
+                } else {
+                    reply(id, ok: false, message: "Unknown section.", details: [:])
+                }
+            default:
+                guard let build = MemoriesWebView.helperOps[op] else {
+                    reply(id, ok: false, message: "This page cannot ask for \(op).", details: [:])
+                    return
+                }
+                do {
+                    let response = try await model.runHelper(build(args), timeout: op == "graph.build" ? 45 : 30)
+                    reply(id, ok: response.ok, message: response.message, details: response.details)
+                } catch {
+                    reply(id, ok: false, message: error.localizedDescription, details: [:])
+                }
+            }
+        }
+
+        private func reply(_ id: Int, ok: Bool, message: String, details: [String: JSONValue]) {
+            let payload = HelperResponse(ok: ok, message: message, details: details)
+            guard let data = try? JSONEncoder().encode(payload), let json = String(data: data, encoding: .utf8) else { return }
+            webView?.evaluateJavaScript("window.cosBridge && window.cosBridge.resolve(\(id), \(json))") { _, _ in }
+        }
     }
 }

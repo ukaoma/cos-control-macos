@@ -251,6 +251,12 @@ final class ControllerModel: ObservableObject {
     }
 
     private let helper = HelperClient()
+
+    /// The Memories web host runs the same helper commands the native panes do,
+    /// through this one door, so the page cannot reach the client directly.
+    func runHelper(_ arguments: [String], timeout: TimeInterval) async throws -> HelperResponse {
+        try await helper.run(arguments, timeout: timeout)
+    }
     private let mediaFetchGate = MediaFetchGate()
     private var refreshTask: Task<Void, Never>?
     private var updateCheckTask: Task<Void, Never>?

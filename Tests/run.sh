@@ -2072,7 +2072,7 @@ need('case .speakers: speakersList' in activity, "Speakers is not mounted")
 # 0.5.190: Memories mounts a four-view pane whose All memories segment is the
 # 0.5.189 list unchanged, and the picker's default stays .allMemories (the flip
 # is 0.5.191). Both the mapping and the initializer are pinned.
-need('case .memories: memoriesPane()' in activity, "Memories is not mounted on memoriesPane")
+need('case .memories: memoriesSurface()' in activity, "Memories is not mounted on the reviewed surface")
 need('case .allMemories: contextList(kind: "memory")' in activity, "All memories no longer renders the memory list")
 need('@State private var memoriesSubview: MemoriesSubview = .allMemories' in activity,
      "the Memories picker must default to .allMemories in 0.5.190")
@@ -3959,11 +3959,30 @@ memories_pane = between(activity, "private func memoriesPane()", "private func c
 need("Dismiss" not in memories_pane and "dismiss" not in memories_pane, "0.5.190 is read-only; the Memories pane must carry no Dismiss")
 learning_pane = between(views, "struct LearningDetailPane", "struct GraphEntityPane")
 need("Dismiss" not in learning_pane, "the lesson detail must carry no Dismiss in 0.5.190")
-need("WKWebView" not in activity and "WKWebView" not in views and "import WebKit" not in views and "import WebKit" not in activity,
-     "0.5.190 ships a native list neighborhood only; no WKWebView")
-need("graph-explorer" not in release and "d3.min" not in release, "build-release.sh must not copy explorer assets")
-for asset in ("graph-explorer.js", "graph-explorer.css", "d3.min.js"):
-    need(not (root / "Resources" / asset).exists(), f"{asset} must not be in the app bundle")
+# 0.5.191 (Miles, 2026-09-06 21:39): the Memories tab hosts the REVIEWED prototype on
+# live data, explorer included. Plan v8's X2 (no web view) is superseded by that
+# decision. The web view is confined to the Memories host; the page never sees the
+# token; every op it may post is allowlisted to a read command or a native action.
+need("import WebKit" in activity and "import WebKit" not in views, "the web view belongs to the Memories host only")
+need("struct MemoriesWebView: NSViewRepresentable" in activity and "case .memories: memoriesSurface()" in activity,
+     "Memories must mount the reviewed page")
+need("if MemoriesWebView.bundleURL != nil {" in activity and "memoriesPane()" in activity, "the native panes must remain the fallback")
+for asset in ("memories.html", "memories-app.js", "graph-explorer.js", "graph-explorer.css", "d3.min.js"):
+    need((root / "Resources/memories" / asset).exists(), f"Resources/memories/{asset} is missing")
+    need(f'"$ROOT/Resources/memories/{asset}"' in release, f"build-release.sh does not copy {asset}")
+bundle = "".join((root / "Resources/memories" / a).read_text(errors="ignore") for a in ("memories.html", "memories-app.js", "graph-explorer.js"))
+need("X-Cos-Token" not in bundle and "X-COS-Token" not in bundle and "COS_API_TOKEN" not in bundle, "the page must never carry the token")
+need("fetch(endpoint + path" in (root / "Resources/memories/graph-explorer.js").read_text() and "fetchActual.request" in (root / "Resources/memories/graph-explorer.js").read_text(),
+     "the explorer must accept the host transport")
+need('configuration.userContentController.add(context.coordinator, name: "cos")' in activity, "the bridge handler is not registered")
+ops = between(activity, "static let helperOps: [String: ([String: Any]) -> [String]] = [", "    static func bounded(")
+for forbidden in ("install", "update", "rollback", "reconcile", "adopt", "set-", "task-run", "fence-release", "graph-index-build\"] ", "context-graph-index-build\"]"):
+    pass
+for verb in ('"install"', '"update"', '"rollback"', '"reconcile"', '"adopt"', '"set-', '"task-', '"fence-release"', '"meeting-'):
+    need(verb not in ops, f"the page op table must never reach {verb}")
+need('"graph.build": { _ in ["context-graph-index-build"] }' in ops, "the only write op is the index-build kickoff")
+need('"learning.decide": { a in ["context-learning-decide"' in ops, "Dismiss must go through the decide command")
+need('reply(id, ok: false, message: "This page cannot ask for \\(op).", details: [:])' in activity, "an unknown op must be refused")
 
 # 5. Every list fed by server state in the entity pane is capped by COUNT with a
 #    Show all button, inside the pane's one ScrollView; nested scrolls are gone.
@@ -3988,11 +4007,12 @@ need('default: return "Update the managed server to \\(needs) or newer to see re
 need('guard response.status == 200 else { throw HelperError.message("Server stopped") }' in browse,
      "the GET wrapper no longer rejects 202 as Server stopped")
 mutate = helper[helper.index("private func contextMutateResponse("):helper.index("// ── Recent learning and Knowledge (server 6.44.5")]
-need("guard response.status == 202 else" in mutate, "contextMutateResponse does not accept exactly 202")
+need("accepted: Set<Int> = [202]" in mutate and "guard accepted.contains(response.status) else" in mutate,
+     "contextMutateResponse must accept exactly 202 by default; a caller widens it per route (the review route answers 200)")
 need('"Server stopped"' not in mutate.split("if response.status == 404")[1], "the mutate wrapper says Server stopped after a 404 or a refusal")
 need('throw HelperError.message("Update the managed server to \\(needs) or newer for this (\\(route) is not there).")' in mutate,
      "the mutate wrapper's own 404 does not name the version that ships the route")
-need("guard response.status == 202 else" in mutate and "return response.body ?? [:]" in mutate,
+need("guard accepted.contains(response.status) else" in mutate and "return response.body ?? [:]" in mutate,
      "a bare 202 with no body must still count as accepted")
 need('static let contextNotConfiguredMessage = "Memory and Threads are not set up yet. Use Create Folders."' in helper
      and "notConfiguredMessage: String = COSControlHelper.contextNotConfiguredMessage" in browse,
@@ -4010,6 +4030,10 @@ need('or run Doctor' not in helper.split("static func contextUnavailableMessage"
      "an unavailable class must not send the user to Doctor")
 need('if args.contains("--to-review")' in helper and 'needs: Self.reviewNeeds' in helper and 'static let reviewNeeds = "6.44.6"' in helper,
      "To review must come from the strict-set route, naming 6.44.6")
+need('case "context-learning-decide": try emitContextLearningDecide(args: args)' in helper and 'static let decideNeeds = "6.44.7"' in helper
+     and 'needs: Self.decideNeeds, accepted: [200]' in helper,
+     "Dismiss must go through the 6.44.7 review route with its own version and a 200 acceptance")
+need('decision == "dismissed" || decision == "reopened"' in helper, "the helper must refuse any decision outside the ledger vocabulary")
 # Quoted argv literals, so a comment naming the flag cannot trip this and a real
 # execute(python, [..., "--build-index"]) cannot hide from it.
 need('min(max(Int(option("--limit", in: args) ?? "30") ?? 30, 1), 30)  // the server and the bridge both cap at 30' in helper,

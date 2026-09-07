@@ -1,3 +1,29 @@
+## 0.5.191 (build 229)
+
+The Memories tab is the reviewed design, on your data.
+
+- **The prototype you reviewed is now the tab.** Memories hosts the design
+  package's page itself: the hero, the summary strip, the four views, the
+  two-pane workspace with the lesson list on the left and its timeline on the
+  right (source, proposed change with the expected-effect rungs, later use,
+  evidence), Copy context with a preview, the Learning settings and activity
+  log dialogs, and Knowledge with the Sync card grid, source records, and the
+  D3 explorer with its legend, recency, edge-strength, layouts, pinning,
+  path tracing, inspector, passages, and Explore from here. Every number is
+  live through the same helper commands the native panes used; the page
+  never holds the server token, and the only ops it may post are read
+  commands, the index-build kickoff, and one review decision.
+- **Dismiss and Restore proposal work.** They write a review-ledger row
+  through server 6.44.7; To review moves on the next read. Accept and Edit
+  are present and disabled with the reason: a skill version is a later
+  release. Merge, rename and remove open their sheets and say the curation
+  engine is a later release; nothing is changed.
+- Entity types are hue-separated on the graph (person gold, organization
+  sky, artifact mint, and so on), not shades of one brown.
+- The native panes remain as the fallback if the page bundle is ever
+  missing from the app.
+- Needs server 6.44.5 for the tab, 6.44.6 for To review, 6.44.7 for Dismiss.
+
 ## 0.5.190 (build 228)
 
 Memories learns to say what it learned, and the knowledge graph gets a front door.

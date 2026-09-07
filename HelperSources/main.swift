@@ -518,6 +518,7 @@ final class COSControlHelper {
         case "context-threads-search": try emitContextSearch(kind: "thread", args: args)
         case "context-learning": try emitContextLearning(args: args)
         case "context-learning-status": try emitContextLearningStatus()
+        case "context-learning-decide": try emitContextLearningDecide(args: args)
         case "context-graph-status": try emitContextGraphStatus()
         case "context-graph-search": try emitContextGraphSearch(args: args)
         case "context-graph-entity": try emitContextGraphEntity(args: args)
@@ -7167,6 +7168,8 @@ final class COSControlHelper {
     static let learningNeeds = "6.44.5"
     /// The server version that ships /api/context/learning/review (the strict To review set).
     static let reviewNeeds = "6.44.6"
+    /// The server version that ships POST /api/context/learning/:id/review (Dismiss and Restore).
+    static let decideNeeds = "6.44.7"
     /// The 503 classes that mean "no pipeline", as the server spells them
     /// (pythonBridgeState and the file tier), rather than a passing fault.
     static let notConfiguredErrorClasses: Set<String> = ["pipeline_missing", "bridge_missing", "cos_pipeline_not_configured"]
@@ -7215,7 +7218,8 @@ final class COSControlHelper {
         method: String = "POST",
         body: String? = nil,
         timeout: Int = 20,
-        needs: String = COSControlHelper.learningNeeds
+        needs: String = COSControlHelper.learningNeeds,
+        accepted: Set<Int> = [202]
     ) throws -> [String: Any] {
         guard request("/api/health", timeout: 5)?.status == 200 else {
             throw HelperError.message("Server stopped")
@@ -7237,7 +7241,7 @@ final class COSControlHelper {
         if response.status == 409 || response.status == 423 {
             throw HelperError.message("The server refused this (\(Self.bridgeErrorClass(response.body) ?? "refused")).")
         }
-        guard response.status == 202 else {
+        guard accepted.contains(response.status) else {
             throw HelperError.message("The server did not accept this (HTTP \(response.status)).")
         }
         // A bare 202 with no body is still an accepted kickoff.
@@ -7302,6 +7306,24 @@ final class COSControlHelper {
             "coverage": listing["coverage"] ?? [:],
             "days": days,
         ])
+    }
+
+    /// Dismiss or restore a proposal: the one learning WRITE, through the
+    /// server's review route (6.44.7). The lesson id is a store id (siq_…,
+    /// ptn_…), never an event id; the decision vocabulary is the ledger's.
+    private func emitContextLearningDecide(args: [String]) throws {
+        guard let lessonID = option("--id", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines), Self.validEntityID(lessonID) else {
+            throw HelperError.message("--id must be a lesson id of at most 200 characters")
+        }
+        guard let decision = option("--decision", in: args), decision == "dismissed" || decision == "reopened" else {
+            throw HelperError.message("--decision must be dismissed or reopened")
+        }
+        let note = String((option("--note", in: args) ?? "").prefix(400))
+        let payload = try JSONSerialization.data(withJSONObject: ["decision": decision, "note": note])
+        let body = try contextMutateResponse(
+            "/api/context/learning/\(queryEscape(lessonID))/review",
+            body: String(decoding: payload, as: UTF8.self), needs: Self.decideNeeds, accepted: [200])
+        emit(ok: true, message: decision == "dismissed" ? "Proposal dismissed" : "Proposal restored", details: body)
     }
 
     private func emitContextLearningStatus() throws {
