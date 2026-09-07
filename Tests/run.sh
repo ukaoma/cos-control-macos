@@ -4039,6 +4039,10 @@ need('static let setupNeeds = "6.44.9"' in helper and "case 404 where klass == n
 for command in ("context-graph-setup", "context-graph-setup-sources", "context-graph-setup-owner", "context-graph-ingest-sample", "context-graph-ask", "context-graph-schedule"):
     need(f'case "{command}":' in helper, f"helper dispatch lost {command}")
 setup_page = (root / "Resources/memories/memories-app.js").read_text()
+need('"graph.progress": { _ in ["context-graph-ingest-progress"] }' in ops and 'case "context-graph-ingest-progress":' in helper
+     and 'static let progressNeeds = "6.44.10"' in helper, "the progress op and command must exist and name 6.44.10")
+need("function progressBlock(" in (root / "Resources/memories/memories-app.js").read_text() and "'graph.progress'" in (root / "Resources/memories/memories-app.js").read_text(),
+     "the page must render progress from the graph.progress op")
 need("function setupDetail(" in setup_page and "'graph.setup'" in setup_page and "'pick.folder'" in setup_page and "'graph.ask'" in setup_page,
      "the page must render the setup path from the graph.setup op with the folder picker and the question")
 

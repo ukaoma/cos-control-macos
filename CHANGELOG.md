@@ -1,3 +1,17 @@
+## 0.5.195 (build 233)
+
+Watch an index run as it happens (server 6.44.10).
+
+- **Progress on the Sync card and in the setup path.** While the ingest lock
+  is held, the card reads the run every five seconds and shows how many of
+  the run's documents are indexed, which one is in flight and about how many
+  calls it will cost, the last few outcomes with their seconds, the budget
+  line, the queue's pending count, and a Show log disclosure with the last
+  lines. A run started somewhere else (a Claude session) shows as "from
+  another session" with the counts, since it writes no log here. When the lock
+  frees, the card says what the run indexed and what is still queued. Index
+  now and the sample step both feed this.
+
 ## 0.5.194 (build 232)
 
 Knowledge from zero: a guided setup path in the Knowledge tab (server 6.44.9).

@@ -531,6 +531,7 @@ final class COSControlHelper {
         case "context-graph-ingest-sample": try emitContextGraphIngestSample(args: args)
         case "context-graph-ask": try emitContextGraphAsk(args: args)
         case "context-graph-schedule": try emitContextGraphSchedule(args: args)
+        case "context-graph-ingest-progress": try emitContextGraphIngestProgress()
         case "activity-signals": try emitActivitySignals()
         case "meetings": try emitMeetings(args: args)
         case "meetings-library": try emitMeetingsLibrary(args: args)
@@ -7184,6 +7185,8 @@ final class COSControlHelper {
     static let ingestNeeds = "6.44.8"
     /// The Knowledge setup path (checklist, sources, owner, sample, ask, schedule).
     static let setupNeeds = "6.44.9"
+    /// The read-only ingest progress route.
+    static let progressNeeds = "6.44.10"
     /// The 503 classes that mean "no pipeline", as the server spells them
     /// (pythonBridgeState and the file tier), rather than a passing fault.
     static let notConfiguredErrorClasses: Set<String> = ["pipeline_missing", "bridge_missing", "cos_pipeline_not_configured"]
@@ -7537,6 +7540,22 @@ final class COSControlHelper {
         let body = try setupRequest("/api/context/graph/setup/schedule", body: try setupJSON(["enabled": enabled == "true", "interval_s": interval]), timeout: 25)
         let installed = body["installed"] as? Bool == true
         emit(ok: true, message: installed ? "Scheduled batches on, every \(interval / 60) minutes" : "Scheduled batches off", details: body)
+    }
+
+    /// `context-graph-ingest-progress`: where the current or last Control-started
+    /// run stands (server 6.44.10). Read-only; the page polls it every 5 s while
+    /// the ingest lock is held.
+    private func emitContextGraphIngestProgress() throws {
+        let body = try learningRoute("/api/context/graph/ingest/progress", timeout: 15, needs: Self.progressNeeds)
+        let running = body["running"] as? Bool == true
+        let external = body["external"] as? Bool == true
+        let done = body["done"] as? Int ?? 0
+        let total = body["total"] as? Int
+        let message: String
+        if running { message = external ? "Indexing now from another session" : "Indexing \(done)\(total.map { " of \($0)" } ?? "")" }
+        else if total != nil { message = "Last run here: \(done) indexed" }
+        else { message = "No run recorded here" }
+        emit(ok: true, message: message, details: body)
     }
 
     // ── Activity signals (0.5.190) ────────────────────────────────

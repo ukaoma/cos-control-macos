@@ -4376,6 +4376,7 @@ struct MemoriesWebView: NSViewRepresentable {
         "graph.setup.owner": { _ in ["context-graph-setup-owner"] },
         "graph.sample": { a in ["context-graph-ingest-sample", "--limit", MemoriesWebView.bounded(a["limit"], 3, 1, 3)] },
         "graph.ask": { a in ["context-graph-ask", "--q", MemoriesWebView.text(a["q"], 400)] },
+        "graph.progress": { _ in ["context-graph-ingest-progress"] },
         "graph.schedule": { a in ["context-graph-schedule", "--enabled", (a["enabled"] as? Bool) == true ? "true" : "false", "--interval-s", MemoriesWebView.bounded(a["intervalS"], 3600, 900, 86_400)] },
     ]
 

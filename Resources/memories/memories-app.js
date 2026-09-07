@@ -43,7 +43,7 @@
     memoryQuery: '', memoryHits: null, coverage: {},
     detail: {}, memoryDetail: {}, passages: {}, loading: {}, errors: {},
     graphFocus: 'COS', graphFocusChosen: false, ingesting: null, ingestLimit: 10, ingestWatch: null, graphQuery: '',
-    setup: null, setupLoading: false, setupError: null, setupBusy: null, armed: null, askQ: '', askAnswer: null, askBusy: false, knowledgeTabChosen: false, graphController: null, copyId: null, copyOptions: { sources: true, graph: false }
+    progress: null, setup: null, setupLoading: false, setupError: null, setupBusy: null, armed: null, askQ: '', askAnswer: null, askBusy: false, knowledgeTabChosen: false, graphController: null, copyId: null, copyOptions: { sources: true, graph: false }
   };
 
   // ── loading ─────────────────────────────────────────────────────
@@ -76,26 +76,55 @@
       if (pick && !state.graphFocusChosen) { state.graphFocus = pick.id; if (state.view === 'knowledge' && state.knowledgeTab === 'graph') render(); }
     }, function () {});
   }
-  // While the ingest lock is held, re-read the Sync card every 15 s (four hours
-  // at most) and say what changed when it frees: pending before vs after.
+  // While the ingest lock is held, read the run's progress every 5 s (and the
+  // Sync card every 15 s), four hours at most; when the lock frees, say what
+  // the run indexed and what is still queued. A run started elsewhere holds
+  // the lock but writes no log here, so it shows as external with the counts.
   function watchIngest() {
     if (state.ingestWatch) return;
     var before = state.graphStatus && state.graphStatus.queue ? Number(state.graphStatus.queue.pending) : null, ticks = 0;
-    state.ingestWatch = setInterval(function () {
-      ticks++;
+    function finish() {
+      clearInterval(state.ingestWatch); state.ingestWatch = null;
+      var pr = state.progress || {};
       loadGraphStatus().then(function () {
-        var g = state.graphStatus || {}, lk = g.lock || {}, after = g.queue ? Number(g.queue.pending) : null;
-        var held = lk.state === 'exclusive' || lk.state === 'shared';
-        if (!held || ticks > 960) {
-          clearInterval(state.ingestWatch); state.ingestWatch = null;
-          var done = before != null && after != null && before > after ? fmt(before - after) + ' indexed' : 'Indexing finished';
-          state.ingesting = held ? null : { note: done + (after != null ? ' · ' + fmt(after) + ' still queued' : '') };
-          if (state.knowledgeTab === 'setup') loadSetup();
-          setTimeout(function () { state.ingesting = null; if (state.view === 'knowledge') render(); }, 60000);
-        }
+        var g = state.graphStatus || {}, after = g.queue ? Number(g.queue.pending) : null;
+        var done = pr.done ? fmt(pr.done) + ' indexed' + (pr.failed ? ', ' + fmt(pr.failed) + ' failed' : '') : (before != null && after != null && before > after ? fmt(before - after) + ' indexed' : 'Indexing finished');
+        state.ingesting = { note: done + (after != null ? ' · ' + fmt(after) + ' still queued' : '') };
+        if (state.knowledgeTab === 'setup') loadSetup();
+        setTimeout(function () { state.ingesting = null; if (state.view === 'knowledge') render(); }, 60000);
         if (state.view === 'knowledge') render();
-      }, function () {});
-    }, 15000);
+      });
+    }
+    function tick() {
+      ticks++;
+      var reads = [call('graph.progress').then(function (d) { state.progress = d; }, function () {})];
+      if (ticks % 3 === 0) reads.push(loadGraphStatus());
+      Promise.all(reads).then(function () {
+        var pr = state.progress || {}, g = state.graphStatus || {}, lk = pr.lock || g.lock || {};
+        var held = pr.running === true || lk.state === 'exclusive' || lk.state === 'shared';
+        if (!held || ticks > 2880) return finish();
+        if (state.view === 'knowledge') render();
+      });
+    }
+    state.ingestWatch = setInterval(tick, 5000); tick();
+  }
+  // The run as it stands: the Sync card and the setup's sample step both show it.
+  function progressBlock() {
+    var pr = state.progress, g = state.graphStatus || {}, lk = (pr && pr.lock) || g.lock || {};
+    var held = (pr && pr.running === true) || lk.state === 'exclusive' || lk.state === 'shared';
+    if (!held) return '';
+    if (!pr) return '<div class="ingest-progress"><b>Indexing now</b><span class="muted"> · reading progress…</span></div>';
+    var head, body = '';
+    if (pr.external) head = '<b>Indexing now from another session</b>' + (pr.pid ? ' (pid ' + esc(pr.pid) + ')' : '') + ' · ' + fmt(pr.pending || 0) + ' pending · progress detail shows for runs started here';
+    else {
+      var seen = pr.done + pr.failed + (pr.current ? 1 : 0);
+      head = '<b>Indexing ' + (pr.total != null ? fmt(Math.min(seen, pr.total)) + ' of ' + fmt(pr.total) : 'now') + '</b>' + (pr.pid ? ' (pid ' + esc(pr.pid) + ')' : '') + ' · ' + fmt(pr.pending || 0) + ' pending';
+      if (pr.current) body += '<div class="muted">Now: ' + esc(pr.current.id) + (pr.current.est_calls != null ? ' · about ' + fmt(pr.current.est_calls) + ' calls' : '') + '</div>';
+    }
+    if (pr.items && pr.items.length) body += '<div class="ingest-items">' + pr.items.slice(-4).map(function (it) { return '<span class="' + (it.outcome === 'indexed' ? 'ok' : it.outcome === 'failed' ? 'bad' : '') + '">' + (it.outcome === 'indexed' ? '✓ ' : it.outcome === 'failed' ? '! ' : '') + esc(it.id) + (it.seconds != null ? ' ' + Math.round(it.seconds) + ' s' : '') + '</span>'; }).join('') + '</div>';
+    if (pr.budget) body += '<div class="muted">Budget: ' + fmt(pr.budget.used) + ' of ' + fmt(pr.budget.cap) + ' calls today</div>';
+    if (pr.log_tail && pr.log_tail.length) body += '<details class="ingest-log"><summary>Show log</summary><pre>' + esc(pr.log_tail.join('\n')) + '</pre></details>';
+    return '<div class="ingest-progress" aria-live="polite"><div>' + head + '</div>' + body + '</div>';
   }
   function loadGraphStatus() {
     return call('graph.status').then(function (d) { state.graphStatus = d; state.errors.graph = null; var lk = d.lock || {}; if (lk.state === 'exclusive' || lk.state === 'shared') watchIngest(); if (d.entities == null && !state.knowledgeTabChosen) state.knowledgeTab = 'setup'; render(); }, function (e) { state.errors.graph = e.message; render(); });
@@ -333,7 +362,7 @@
     var pendingN = q.pending != null ? Number(q.pending) : 0;
     if (!air) {
       if (state.ingesting && state.ingesting.note) processor += ' · <span class="muted">' + esc(state.ingesting.note) + '</span>';
-      else if (lockHeld) processor += ' · <span class="muted">Indexing now' + (lock.owner_pid ? ' (pid ' + esc(lock.owner_pid) + ')' : '') + ', this card refreshes as it runs</span>';
+      else if (lockHeld) processor += ' · <span class="muted">Indexing now' + (lock.owner_pid ? ' (pid ' + esc(lock.owner_pid) + ')' : '') + '</span>';
       else if (src.owner_state === 'owner' && pendingN > 0) {
         var sizes = [5, 10, 25, 50].filter(function (n) { return n < pendingN; });
         var options = sizes.map(function (n) { return '<option value="' + n + '"' + (n === state.ingestLimit ? ' selected' : '') + '>the next ' + n + '</option>'; }).join('');
@@ -350,7 +379,7 @@
     return '<section class="source-card sync-card"><div class="row spread"><h3>Sync</h3><span class="row viewas"><span>View as</span><button class="quiet ' + (air ? '' : 'on') + '" onclick="cosApp.viewAs(\'m3\')">this Mac</button><button class="quiet ' + (air ? 'on' : '') + '" onclick="cosApp.viewAs(\'air\')">the Air</button></span></div>' +
       '<p class="owner">' + owner + '</p>' +
       '<dl class="sync-grid"><dt>Captured</dt><dd>' + esc(captured) + '</dd><dt>Queued</dt><dd>' + queued + '</dd><dt>Indexing</dt><dd>' + processor + '</dd><dt>Indexed</dt><dd>' + indexed + '</dd><dt>Visible</dt><dd>' + esc(visible) + '</dd><dt>Index</dt><dd>' + esc(g.index_state || 'unknown') + (g.index_built_at ? ' · built ' + esc(stamp(g.index_built_at)) : '') + (g.index_degraded ? ' · degraded' : '') + build + '</dd><dt>Budget</dt><dd>' + (b.used != null && b.cap != null ? fmt(b.used) + ' of ' + fmt(b.cap) + ' calls today' : 'unknown') + ' · lock ' + esc(lock.state || 'unknown') + (lock.owner_pid ? ' (pid ' + esc(lock.owner_pid) + ', advisory)' : '') + '</dd></dl>' +
-      '<p class="small">' + (air ? 'A preview of the copy the Air will show; values are this Mac\'s.' : 'Values from this Mac.') + ' Changes you make in the graph appear as receipts under it once curation ships.</p></section>';
+      (air ? '' : progressBlock()) + '<p class="small">' + (air ? 'A preview of the copy the Air will show; values are this Mac\'s.' : 'Values from this Mac.') + ' Changes you make in the graph appear as receipts under it once curation ships.</p></section>';
   }
   // ── Set up Knowledge (server 6.44.9): seven steps, each a live check with its own control ──
   function loadSetup() {
@@ -404,7 +433,7 @@
     var sampleBody = sampleDone ? '<p>' + ((sample.indexed || 0) >= 1 ? fmt(sample.indexed) + ' sample document' + (sample.indexed === 1 ? '' : 's') + ' indexed.' : 'Your graph already holds ' + fmt(graphN) + ' entities.') + '</p>' : '<p>The three newest documents from the folders that are on, through the same checks a meeting gets, in one bounded run.</p>';
     if (cands.length) sampleBody += cands.map(function (c) { return '<div class="setup-source"><code>' + esc(String(c.path).split('/').pop()) + '</code><span class="muted">' + (c.bytes != null ? fmt(Math.max(1, Math.round(c.bytes / 1024))) + ' KB' : '') + '</span></div>'; }).join('');
     if (state.ingesting && state.ingesting.note) sampleBody += '<p class="muted">' + esc(state.ingesting.note) + '</p>';
-    else if (lockHeld) sampleBody += '<p class="muted">Indexing now' + (lk.owner_pid ? ' (pid ' + esc(lk.owner_pid) + ')' : '') + '; this page refreshes as it runs.</p>';
+    else if (lockHeld) sampleBody += progressBlock();
     if ((sample.queued || 0) > 0 && !lockHeld) sampleBody += '<p class="muted">' + fmt(sample.queued) + ' queued and waiting for a run.</p>';
     if (cands.length && isOwner && !lockHeld) sampleBody += '<div class="setup-row"><button ' + (busy || !checksOk ? 'disabled' : '') + ' onclick="cosApp.indexSample()">' + (busy === 'sample' ? 'Queueing…' : 'Index ' + (cands.length === 1 ? 'this document' : 'these ' + cands.length)) + '</button></div>';
     else if (cands.length && !isOwner) sampleBody += '<p class="muted">Indexing runs on the owner Mac.</p>';
