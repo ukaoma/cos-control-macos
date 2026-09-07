@@ -4041,6 +4041,8 @@ for command in ("context-graph-setup", "context-graph-setup-sources", "context-g
 setup_page = (root / "Resources/memories/memories-app.js").read_text()
 need('"graph.progress": { _ in ["context-graph-ingest-progress"] }' in ops and 'case "context-graph-ingest-progress":' in helper
      and 'static let progressNeeds = "6.44.10"' in helper, "the progress op and command must exist and name 6.44.10")
+need("cosApp.viewAs" not in (root / "Resources/memories/memories-app.js").read_text() and "the Air" not in (root / "Resources/memories/memories-app.js").read_text(),
+     "the Sync card must not carry a one-desk View as toggle (0.5.197)")
 need("function progressBlock(" in (root / "Resources/memories/memories-app.js").read_text() and "'graph.progress'" in (root / "Resources/memories/memories-app.js").read_text(),
      "the page must render progress from the graph.progress op")
 need("function setupDetail(" in setup_page and "'graph.setup'" in setup_page and "'pick.folder'" in setup_page and "'graph.ask'" in setup_page,

@@ -37,7 +37,7 @@
 
   // ── state ───────────────────────────────────────────────────────
   var state = {
-    view: 'learning', filter: 'recent', selected: null, viewAs: 'm3', knowledgeTab: 'sources', knowledgeFocus: null,
+    view: 'learning', filter: 'recent', selected: null, knowledgeTab: 'sources', knowledgeFocus: null,
     status: null, learningStatus: null, graphStatus: null,
     recent: [], recentTotal: null, recentCursor: null, review: [], reviewCount: null, memories: [], memoriesTotal: null,
     memoryQuery: '', memoryHits: null, coverage: {},
@@ -348,19 +348,16 @@
     var g = state.graphStatus, s = state.status || {};
     if (state.errors.graph) return '<section class="source-card sync-card"><div class="row spread"><h3>Sync</h3></div><p class="owner">' + esc(state.errors.graph) + '</p><div class="actions"><button onclick="cosApp.refreshGraph()">Retry</button></div></section>';
     if (!g) return '<section class="source-card sync-card"><div class="row spread"><h3>Sync</h3></div><p class="owner">Loading…</p></section>';
-    var air = state.viewAs === 'air';
     var src = g.source || {}, q = g.queue || {}, b = g.budget || {}, lock = g.lock || {}, proc = g.processor || {};
     var ownerName = hostLabel(src.owner_host) || 'the owner Mac';
-    var owner = air
-      ? 'Owner: <b>' + esc(ownerName) + '</b> · that Mac reads an iCloud replica' + (g.source_updated_at ? ' updated <b>' + esc(stamp(g.source_updated_at)) + '</b>' : '')
-      : (src.owner_state === 'owner' ? 'Owner: <b>this Mac</b> (' + esc(ownerName) + ') · canonical graph' : src.owner_state === 'replica' ? 'Owner: <b>' + esc(ownerName) + '</b> · this Mac reads an iCloud replica' : 'No ingestion owner set. Run --set-owner on the Mac that processes the queue.');
-    var processor = air ? 'Processing happens on ' + esc(ownerName) : (proc.state === 'none' || !proc.state ? 'No scheduled processor on this Mac' : proc.state === 'installed-idle' ? 'Processor installed, no run recorded yet' : 'Processor ' + esc(proc.state));
+    var owner = (src.owner_state === 'owner' ? 'Owner: <b>this Mac</b> (' + esc(ownerName) + ') · canonical graph' : src.owner_state === 'replica' ? 'Owner: <b>' + esc(ownerName) + '</b> · this Mac reads an iCloud replica' : 'No ingestion owner set. Run --set-owner on the Mac that processes the queue.');
+    var processor = (proc.state === 'none' || !proc.state ? 'No scheduled processor on this Mac' : proc.state === 'installed-idle' ? 'Processor installed, no run recorded yet' : 'Processor ' + esc(proc.state));
     // Index now (server 6.44.8): one bounded run of the queue, started here on the
     // owner Mac. A held lock (a Claude session, a scheduled run, a backup) shows
     // as "Indexing now" and the card refreshes until it is free again.
     var lockHeld = lock.state === 'exclusive' || lock.state === 'shared';
     var pendingN = q.pending != null ? Number(q.pending) : 0;
-    if (!air) {
+    {
       if (state.ingesting && state.ingesting.note) processor += ' · <span class="muted">' + esc(state.ingesting.note) + '</span>';
       else if (lockHeld) processor += ' · <span class="muted">Indexing now' + (lock.owner_pid ? ' (pid ' + esc(lock.owner_pid) + ')' : '') + '</span>';
       else if (src.owner_state === 'owner' && pendingN > 0) {
@@ -376,10 +373,10 @@
     var build = state.building ? ' <span class="muted">' + esc(state.building) + '</span>' : (invites ? ' <button class="quiet" onclick="cosApp.buildIndex()">Build index (usually a few seconds)</button>' : '');
     var captured = s.meetingLibraryCount != null ? fmt(s.meetingLibraryCount) + ' meetings in the library' : 'unknown';
     var visible = state.graphController && state.graphVisible != null ? fmt(state.graphVisible) + ' entities in this view' : (state.knowledgeTab === 'graph' ? 'loading the neighborhood' : 'open the graph to load a neighborhood');
-    return '<section class="source-card sync-card"><div class="row spread"><h3>Sync</h3><span class="row viewas"><span>View as</span><button class="quiet ' + (air ? '' : 'on') + '" onclick="cosApp.viewAs(\'m3\')">this Mac</button><button class="quiet ' + (air ? 'on' : '') + '" onclick="cosApp.viewAs(\'air\')">the Air</button></span></div>' +
+    return '<section class="source-card sync-card"><div class="row spread"><h3>Sync</h3></div>' +
       '<p class="owner">' + owner + '</p>' +
       '<dl class="sync-grid"><dt>Captured</dt><dd>' + esc(captured) + '</dd><dt>Queued</dt><dd>' + queued + '</dd><dt>Indexing</dt><dd>' + processor + '</dd><dt>Indexed</dt><dd>' + indexed + '</dd><dt>Visible</dt><dd>' + esc(visible) + '</dd><dt>Index</dt><dd>' + esc(g.index_state || 'unknown') + (g.index_built_at ? ' · built ' + esc(stamp(g.index_built_at)) : '') + (g.index_degraded ? ' · degraded' : '') + build + '</dd><dt>Budget</dt><dd>' + (b.used != null && b.cap != null ? fmt(b.used) + ' of ' + fmt(b.cap) + ' calls today' : 'unknown') + ' · lock ' + esc(lock.state || 'unknown') + (lock.owner_pid ? ' (pid ' + esc(lock.owner_pid) + ', advisory)' : '') + '</dd></dl>' +
-      (air ? '' : progressBlock()) + '<p class="small">' + (air ? 'A preview of the copy the Air will show; values are this Mac\'s.' : 'Values from this Mac.') + ' Changes you make in the graph appear as receipts under it once curation ships.</p></section>';
+      progressBlock() + '<p class="small">' + 'Values from this Mac.' + ' Changes you make in the graph appear as receipts under it once curation ships.</p></section>';
   }
   // ── Set up Knowledge (server 6.44.9): seven steps, each a live check with its own control ──
   function loadSetup() {
@@ -607,7 +604,7 @@
     openKnowledge: function (id) { state.view = 'knowledge'; state.knowledgeTab = 'sources'; state.knowledgeFocus = id || null; render(); },
     setKnowledgeTab: function (t) { state.knowledgeTab = t; state.knowledgeTabChosen = true; render(); },
     backToLearning: function () { state.view = 'learning'; state.filter = 'recent'; if (state.knowledgeFocus) state.selected = state.knowledgeFocus; render(); },
-    exploreInGraph: exploreInGraph, graphSearch: graphSearch, viewAs: function (v) { state.viewAs = v; render(); },
+    exploreInGraph: exploreInGraph, graphSearch: graphSearch,
     refresh: loadAll, refreshGraph: loadGraphStatus, loadMore: loadMore, memoryQuery: memoryQuery,
     setupRefresh: function () { loadSetup(); },
     pickFolder: function () {

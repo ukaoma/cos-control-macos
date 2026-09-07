@@ -1,3 +1,12 @@
+## 0.5.197 (build 235)
+
+- The Sync card's "View as this Mac / the Air" toggle is gone. It previewed
+  one other Mac's wording and made sense on exactly one desk (Miles,
+  2026-09-07: "not pushing things into production that aren't useful for
+  the whole"). The card shows this Mac's real state: the owner line reads
+  owner or replica from the server, so a replica Mac sees the replica
+  wording without a switch.
+
 ## 0.5.196 (build 234)
 
 - Index now says how many will actually run: "Indexing all 1 queued" on a
