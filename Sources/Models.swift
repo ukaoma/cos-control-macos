@@ -982,6 +982,79 @@ struct ActivitySignals: Sendable, Equatable {
     }
 }
 
+/// A global keyboard shortcut that opens the Activity window (0.5.190, Miles
+/// 2026-09-06). Carbon flag values, so the struct stays pure and testable
+/// without HIToolbox: cmd 0x100, shift 0x200, option 0x800, control 0x1000.
+struct HotKeyCombo: Equatable, Sendable {
+    static let command: UInt32 = 0x100
+    static let shift: UInt32 = 0x200
+    static let option: UInt32 = 0x800
+    static let control: UInt32 = 0x1000
+    static let keyCodeKey = "activityHotKey.keyCode"
+    static let modifiersKey = "activityHotKey.modifiers"
+    static let enabledKey = "activityHotKey.enabled"
+    /// Control-Option-Command-A: three modifiers, so no app's own shortcut is shadowed.
+    static let defaultCombo = HotKeyCombo(keyCode: 0, modifiers: control | option | command)!
+
+    let keyCode: UInt32
+    let modifiers: UInt32
+
+    /// A shortcut with no Command, Control or Option would capture plain typing.
+    init?(keyCode: UInt32, modifiers: UInt32) {
+        guard modifiers & (Self.command | Self.control | Self.option) != 0 else { return nil }
+        self.keyCode = keyCode
+        self.modifiers = modifiers & (Self.command | Self.shift | Self.option | Self.control)
+    }
+
+    /// NSEvent modifier flags to Carbon flags (AppKit is already imported here).
+    static func carbonModifiers(from flags: NSEvent.ModifierFlags) -> UInt32 {
+        var value: UInt32 = 0
+        if flags.contains(.command) { value |= command }
+        if flags.contains(.shift) { value |= shift }
+        if flags.contains(.option) { value |= option }
+        if flags.contains(.control) { value |= control }
+        return value
+    }
+
+    /// Menu-style rendering: ⌃⌥⇧⌘ then the key.
+    var display: String {
+        var text = ""
+        if modifiers & Self.control != 0 { text += "⌃" }
+        if modifiers & Self.option != 0 { text += "⌥" }
+        if modifiers & Self.shift != 0 { text += "⇧" }
+        if modifiers & Self.command != 0 { text += "⌘" }
+        return text + Self.keyName(keyCode)
+    }
+
+    /// ANSI key codes for the US layout, the way menu shortcuts name them.
+    static func keyName(_ code: UInt32) -> String {
+        let letters: [UInt32: String] = [0: "A", 11: "B", 8: "C", 2: "D", 14: "E", 3: "F", 5: "G", 4: "H", 34: "I", 38: "J", 40: "K", 37: "L",
+                                         46: "M", 45: "N", 31: "O", 35: "P", 12: "Q", 15: "R", 1: "S", 17: "T", 32: "U", 9: "V", 13: "W",
+                                         7: "X", 16: "Y", 6: "Z", 29: "0", 18: "1", 19: "2", 20: "3", 21: "4", 23: "5", 22: "6", 26: "7",
+                                         28: "8", 25: "9", 49: "Space", 36: "Return", 48: "Tab", 53: "Esc", 51: "Delete",
+                                         123: "←", 124: "→", 125: "↓", 126: "↑", 122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5",
+                                         97: "F6", 98: "F7", 100: "F8", 101: "F9", 109: "F10", 103: "F11", 111: "F12",
+                                         27: "-", 24: "=", 33: "[", 30: "]", 42: "\\", 41: ";", 39: "'", 43: ",", 47: ".", 44: "/", 50: "`"]
+        return letters[code] ?? "Key \(code)"
+    }
+
+    /// nil when the user turned the hotkey off; the default when nothing was ever set.
+    static func load(from defaults: UserDefaults = .standard) -> HotKeyCombo? {
+        if defaults.object(forKey: enabledKey) != nil, !defaults.bool(forKey: enabledKey) { return nil }
+        guard defaults.object(forKey: keyCodeKey) != nil else { return defaultCombo }
+        return HotKeyCombo(keyCode: UInt32(clamping: defaults.integer(forKey: keyCodeKey)),
+                           modifiers: UInt32(clamping: defaults.integer(forKey: modifiersKey))) ?? defaultCombo
+    }
+
+    static func save(_ combo: HotKeyCombo?, to defaults: UserDefaults = .standard) {
+        defaults.set(combo != nil, forKey: enabledKey)
+        if let combo {
+            defaults.set(Int(combo.keyCode), forKey: keyCodeKey)
+            defaults.set(Int(combo.modifiers), forKey: modifiersKey)
+        }
+    }
+}
+
 /// A native thread COS has shut because an earlier turn may already have landed.
 ///
 /// The server addresses a fence by DIGEST and never emits the raw target key, which

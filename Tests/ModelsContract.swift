@@ -3847,7 +3847,31 @@ struct ModelsContract {
         print("COS Control: learning and knowledge models decode the wire shapes (outcome.result, epoch created_at, safe placeholder, processor states, cursor validity)")
     }
 
+    /// The Activity hotkey (0.5.190): a pure combo with Carbon flags, a menu-style
+    /// display, a modifier requirement, and a defaults round trip.
+    private static func checkHotKeyCombo() {
+        precondition(HotKeyCombo.defaultCombo.display == "⌃⌥⌘A", "default is Control-Option-Command-A")
+        precondition(HotKeyCombo(keyCode: 0, modifiers: 0) == nil && HotKeyCombo(keyCode: 0, modifiers: HotKeyCombo.shift) == nil,
+                     "a combo without Command, Control or Option would capture plain typing")
+        precondition(HotKeyCombo(keyCode: 49, modifiers: HotKeyCombo.command | HotKeyCombo.shift)?.display == "⇧⌘Space")
+        precondition(HotKeyCombo.keyName(96) == "F5" && HotKeyCombo.keyName(200) == "Key 200")
+        precondition(HotKeyCombo.carbonModifiers(from: [.command, .option]) == HotKeyCombo.command | HotKeyCombo.option)
+        precondition(HotKeyCombo.carbonModifiers(from: [.capsLock, .function]) == 0, "caps lock and fn are not shortcut modifiers")
+        let suite = "cos-control-hotkey-contract-\(ProcessInfo.processInfo.processIdentifier)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        precondition(HotKeyCombo.load(from: defaults) == HotKeyCombo.defaultCombo, "nothing set means the default")
+        let custom = HotKeyCombo(keyCode: 96, modifiers: HotKeyCombo.control | HotKeyCombo.command)!
+        HotKeyCombo.save(custom, to: defaults)
+        precondition(HotKeyCombo.load(from: defaults) == custom, "a set combo round-trips")
+        HotKeyCombo.save(nil, to: defaults)
+        precondition(HotKeyCombo.load(from: defaults) == nil, "off stays off across launches")
+        defaults.removePersistentDomain(forName: suite)
+        print("COS Control: Activity hotkey combo (display, modifier rule, defaults round trip) passed")
+    }
+
     static func main() throws {
+        checkHotKeyCombo()
         checkLearningModels()
         checkPetRowOutcome()
         checkRenameEligibility()

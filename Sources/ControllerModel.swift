@@ -65,6 +65,8 @@ final class ControllerModel: ObservableObject {
     @Published var error: String?
     @Published var meetingLibraryGuidance: String?
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
+    /// The global shortcut that opens Activity; nil when the user turned it off.
+    @Published var activityHotKey: HotKeyCombo? = HotKeyCombo.load()
     @Published var recentMessages: [GlassesTurn] = []
     @Published var recentGlassesExpanded = false
     @Published var recentGlassesStatus: RecentGlassesStatus = .idle
@@ -1172,6 +1174,13 @@ final class ControllerModel: ObservableObject {
         process.arguments = ["-e", script]
         try? process.run()
         notice = "\(normalized == "max" ? "Max" : "Balanced") setup opened in Terminal. When provisioning finishes, install or update the server if needed, then Apply that tier so Control can restart and verify it transactionally."
+    }
+
+    /// Persist and re-register in one step, so the setting and the live chord never disagree.
+    func setActivityHotKey(_ combo: HotKeyCombo?) {
+        activityHotKey = combo
+        HotKeyCombo.save(combo)
+        HotKeyCenter.shared.register(combo)
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {

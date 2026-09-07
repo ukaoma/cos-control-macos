@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Carbon.HIToolbox
 
 /// An NSColor that resolves differently in light vs dark appearance.
 private func adaptiveNSColor(light: NSColor, dark: NSColor) -> NSColor {
@@ -2044,6 +2045,7 @@ struct ControlPanel: View {
             }
             Divider()
             Toggle("Launch COS Control at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
+            HotKeyRecorderRow(model: model)
             sessionPetSettings
             DisclosureGroup("Advanced") {
                 HStack {
@@ -3689,6 +3691,118 @@ struct ChipFlowLayout: Layout {
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
         }
+    }
+}
+
+// ── Activity hotkey (0.5.190, Miles 2026-09-06) ─────────────────────
+//
+// A GLOBAL shortcut that opens the Activity window from any app. Carbon's
+// RegisterEventHotKey needs no Accessibility grant (an NSEvent global monitor
+// would), fires only for the exact chord, and delivers on the main run loop.
+// One registration at a time; re-registered whenever the combo changes.
+
+private let activityHotKeySignature: OSType = 0x434F_5348  // 'COSH'
+
+private let activityHotKeyHandler: EventHandlerUPP = { _, _, _ in
+    Task { @MainActor in HotKeyCenter.shared.fire() }
+    return noErr
+}
+
+@MainActor
+final class HotKeyCenter {
+    static let shared = HotKeyCenter()
+    var onFire: (() -> Void)?
+    private var hotKeyRef: EventHotKeyRef?
+    private var handlerRef: EventHandlerRef?
+    private(set) var registered: HotKeyCombo?
+
+    private init() {}
+
+    func register(_ combo: HotKeyCombo?) {
+        if let hotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+            self.hotKeyRef = nil
+        }
+        registered = nil
+        guard let combo else { return }
+        if handlerRef == nil {
+            var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+            InstallEventHandler(GetApplicationEventTarget(), activityHotKeyHandler, 1, &spec, nil, &handlerRef)
+        }
+        let id = EventHotKeyID(signature: activityHotKeySignature, id: 1)
+        var ref: EventHotKeyRef?
+        let status = RegisterEventHotKey(combo.keyCode, combo.modifiers, id, GetApplicationEventTarget(), 0, &ref)
+        if status == noErr, let ref {
+            hotKeyRef = ref
+            registered = combo
+        } else {
+            NSLog("[COS Control] hotkey registration failed for %@ (OSStatus %d)", combo.display, status)
+        }
+    }
+
+    func fire() { onFire?() }
+}
+
+/// "Open Activity with ⌃⌥⌘A · Record · Off". Record listens for the next
+/// chord in this panel; Escape cancels; a chord without Command, Control or
+/// Option is refused with the reason.
+struct HotKeyRecorderRow: View {
+    @ObservedObject var model: ControllerModel
+    @State private var recording = false
+    @State private var monitor: Any?
+    @State private var note: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
+                Text("Open Activity with")
+                    .font(.caption)
+                Text(recording ? "Press keys…" : (model.activityHotKey?.display ?? "Off"))
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(recording ? 0.12 : 0.06)))
+                    .accessibilityLabel("Activity hotkey \(model.activityHotKey?.display ?? "off")")
+                Button(recording ? "Cancel" : "Record") { recording ? stop() : start() }
+                    .controlSize(.mini)
+                if model.activityHotKey != nil, !recording {
+                    Button("Off") { model.setActivityHotKey(nil); note = nil }
+                        .controlSize(.mini)
+                }
+                Spacer(minLength: 0)
+            }
+            if let note {
+                Text(note).font(.caption2).foregroundStyle(COSPalette.amber)
+            }
+        }
+        .onDisappear { stop() }
+    }
+
+    private func start() {
+        recording = true
+        note = nil
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == 53 {  // Escape cancels
+                Task { @MainActor in stop() }
+                return nil
+            }
+            let combo = HotKeyCombo(keyCode: UInt32(event.keyCode), modifiers: HotKeyCombo.carbonModifiers(from: event.modifierFlags))
+            Task { @MainActor in
+                if let combo {
+                    model.setActivityHotKey(combo)
+                    stop()
+                } else {
+                    note = "Add Command, Control or Option to the key."
+                }
+            }
+            return nil
+        }
+    }
+
+    private func stop() {
+        recording = false
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
     }
 }
 

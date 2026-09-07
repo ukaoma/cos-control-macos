@@ -27,6 +27,11 @@ Memories learns to say what it learned, and the knowledge graph gets a front doo
   weight, neighbor chips that re-select, the memories that mention it, and
   where its source records stand. No web view and no explorer script in the
   bundle; merging, renaming and removing are a later gate.
+- **A hotkey opens Activity.** Control-Option-Command-A by default, from any
+  app; record your own in the panel next to Launch at login, or turn it off.
+- The Activity home tiles keep their title on one line: beside a wide count
+  like 2,346 the count drops under the title instead of the title breaking
+  mid-word.
 - **Two marks on the Activity chips.** A number means needs you (unrecognized
   speaker sessions, stranded recordings, learning to review, fenced sessions,
   tasks due today plus unseen inbox rows). A dot means something newer than

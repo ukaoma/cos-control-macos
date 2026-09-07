@@ -3902,6 +3902,7 @@ model = (root / "Sources/ControllerModel.swift").read_text()
 models = (root / "Sources/Models.swift").read_text()
 helper = (root / "HelperSources/main.swift").read_text()
 release = (root / "scripts/build-release.sh").read_text()
+app = (root / "Sources/COSControlApp.swift").read_text()
 
 def need(condition, message):
     if not condition:
@@ -4038,6 +4039,33 @@ need("syncCard" in knowledge.split("ScrollView {", 1)[1] if "ScrollView {" in kn
 need('syncRow("Topology", topologyLine(g))' in activity, "the Sync card lost its owner line")
 need('"No processor configured on this Mac"' in models and '"Processor installed, no run recorded yet"' in models,
      "the two processor sentences are gone")
+# The Activity home tile: title and metric on one line when the pair fits, the
+# metric under the title when it does not; never a mid-word break, never a
+# truncated "Meeti…". A four-column tile row is ~168 pt at the default window
+# and ~133 pt at the 760 pt minimum; "Meetings" + "2,346" need ~160 (2026-09-06).
+home_card = between(activity, "private func activityHomeCard(_ item: ActivitySection, index: Int)", "private func homeMetric(")
+need("ViewThatFits(in: .horizontal)" in home_card, "the home tile header must use ViewThatFits, not a fixed HStack")
+title_chain = home_card[home_card.index("let title = Text(item.title)"):home_card.index("let metric = Text(")]
+need(".lineLimit(1)" in title_chain and ".fixedSize()" in title_chain, "the tile title must be one whole line (lineLimit(1) + fixedSize())")
+need("minimumScaleFactor" not in title_chain and "truncationMode" not in title_chain, "the tile title must not scale or truncate; the metric drops instead")
+metric_chain = home_card[home_card.index("let metric = Text("):home_card.index("return VStack(alignment: .leading, spacing: 8)")]
+need(".lineLimit(1)" in metric_chain and ".fixedSize()" in metric_chain, "the tile metric must never shrink or wrap")
+need(home_card.count("metric\n") == 2 and home_card.count("title\n") == 2, "both ViewThatFits branches must render the same title and metric views")
+# The Activity hotkey (0.5.190): Carbon registration (no Accessibility grant),
+# wired at launch to the same presenter the chips use, persisted with the
+# combo, recorded in the panel, and never a modifier-less chord.
+need("RegisterEventHotKey(combo.keyCode, combo.modifiers" in views and "UnregisterEventHotKey(hotKeyRef)" in views,
+     "the hotkey must register through Carbon and unregister the previous chord")
+need("addGlobalMonitorForEvents" not in views, "a global NSEvent monitor would need an Accessibility grant; Carbon does not")
+need("HotKeyCenter.shared.onFire = { activityWindow.show(model: model, section: nil) }" in app
+     and "HotKeyCenter.shared.register(model.activityHotKey)" in app,
+     "the hotkey is not wired to the Activity presenter at launch")
+setter = between(model, "func setActivityHotKey(_ combo: HotKeyCombo?)", "func setLaunchAtLogin(")
+need("HotKeyCombo.save(combo)" in setter and "HotKeyCenter.shared.register(combo)" in setter,
+     "setting the hotkey must persist AND re-register in the same step")
+need("HotKeyRecorderRow(model: model)" in views, "the panel has no hotkey recorder")
+need("guard modifiers & (Self.command | Self.control | Self.option) != 0 else { return nil }" in models,
+     "a chord without Command, Control or Option must be refused")
 need('"Build index (usually a few seconds)"' in activity, "the Sync card does not offer the build (and must not quote an unmeasured 30 s)")
 need('model.graphBuildState == "unknown"' in activity, "the poll giving up must leave the Build button reachable")
 need("g.isOwner" not in activity.split('Button("Build index')[0].rsplit("if g.invitesIndexBuild", 1)[1],

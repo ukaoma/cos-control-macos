@@ -700,36 +700,53 @@ struct ActivityWindow: View {
         // anime.stagger(45) is just an index-scaled delay.
         let step = Double(index) * 0.045
 
+        let glyph = SectionGlyph(section: item)
+            .trim(from: 0, to: (reduceMotion || painted) ? 1 : 0)
+            .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+            .foregroundStyle(hot ? COSPalette.gold : Color.secondary)
+            .frame(width: 17, height: 17)
+            .animation(reduceMotion ? nil
+                       : .timingCurve(0.42, 0, 0.22, 1, duration: 0.60).delay(step + 0.14),
+                       value: painted)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.18).delay(hot ? 0.04 : 0),
+                       value: hot)
+        // One line, never a mid-word break: "Meetings" beside "2,346" rendered as
+        // "Meeting / s" in the four-column grid (Miles, 2026-09-06). At the default
+        // 920 pt window a tile row is about 168 pt and the pair needs about 160, so
+        // the one-line layout wins; at the 760 pt minimum the row is about 133 pt,
+        // and ViewThatFits drops the metric under the title instead of truncating.
+        let title = Text(item.title)
+            .font(COSType.body(14.5, weight: .semibold))
+            .foregroundStyle(hot ? COSPalette.gold : Color.primary)
+            .lineLimit(1)
+            .fixedSize()
+            .wipeIn(painted, delay: step + 0.33, reduceMotion: reduceMotion)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.18).delay(hot ? 0.07 : 0),
+                       value: hot)
+        let metric = Text(homeMetric(item).count)
+            .font(COSType.display(22, weight: .medium))
+            .monospacedDigit()
+            .foregroundStyle(hot ? COSPalette.gold : Color.primary)
+            .lineLimit(1)
+            .fixedSize()
+            .wipeIn(painted, delay: step + 0.47, reduceMotion: reduceMotion)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.18).delay(hot ? 0.10 : 0),
+                       value: hot)
         return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                SectionGlyph(section: item)
-                    .trim(from: 0, to: (reduceMotion || painted) ? 1 : 0)
-                    .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-                    .foregroundStyle(hot ? COSPalette.gold : Color.secondary)
-                    .frame(width: 17, height: 17)
-                    .animation(reduceMotion ? nil
-                               : .timingCurve(0.42, 0, 0.22, 1, duration: 0.60).delay(step + 0.14),
-                               value: painted)
-                    .animation(reduceMotion ? nil : .easeOut(duration: 0.18).delay(hot ? 0.04 : 0),
-                               value: hot)
-
-                Text(item.title)
-                    .font(COSType.body(14.5, weight: .semibold))
-                    .foregroundStyle(hot ? COSPalette.gold : Color.primary)
-                    .wipeIn(painted, delay: step + 0.33, reduceMotion: reduceMotion)
-                    .animation(reduceMotion ? nil : .easeOut(duration: 0.18).delay(hot ? 0.07 : 0),
-                               value: hot)
-
-                Spacer(minLength: 8)
-
-                Text(homeMetric(item).count)
-                    .font(COSType.display(22, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(hot ? COSPalette.gold : Color.primary)
-                    .lineLimit(1)
-                    .wipeIn(painted, delay: step + 0.47, reduceMotion: reduceMotion)
-                    .animation(reduceMotion ? nil : .easeOut(duration: 0.18).delay(hot ? 0.10 : 0),
-                               value: hot)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    glyph
+                    title
+                    Spacer(minLength: 8)
+                    metric
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        glyph
+                        title
+                    }
+                    metric
+                }
             }
 
             Text(item.summary)
