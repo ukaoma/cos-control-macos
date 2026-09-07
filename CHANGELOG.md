@@ -32,9 +32,25 @@ Memories learns to say what it learned, and the knowledge graph gets a front doo
   tasks due today plus unseen inbox rows). A dot means something newer than
   the last time you opened that section. One legend line under the chips.
   Every count is absent, not zero, when its source is.
-- Needs server 6.44.5 for Recent learning and Knowledge; on an older server
-  those tabs say Update the managed server and All memories keeps working.
-  Doctor gains one Recent learning and Knowledge line, states and counts only.
+- Needs server 6.44.5 for Recent learning and Knowledge, and 6.44.6 for To
+  review (the strict set the chip counts); on an older server those tabs say
+  Update the managed server and All memories keeps working. Doctor gains one
+  Recent learning and Knowledge line, states and counts only.
+- What /qa found before this shipped, folded the same night: the Checks row
+  read a key the wire never carries (`outcome.result` now); the graph's
+  `created_at` is epoch seconds, not a string; To review approximated its set
+  with a kind filter (121 on the chip beside "50 of 837" in the list); an
+  index build that never finished hid the Build button until Control quit;
+  the build poll trusted the previous build's receipt; Explore in graph then
+  Back left the Sync card at Loading; the chip row broke mid-word at a
+  three-digit number; a stale search answer could repopulate a cleared box;
+  a missing index read as "no matches" and as "run Doctor"; no helper call
+  had a timeout; an empty edge endpoint could crash the entity pane; the
+  activity signals ran ten calls every 12 s (now 60 s, 20 s budget) and a
+  failed call looked like "nothing needs you"; a cursor of the wrong shape
+  stuck a dot; the graph owner hostname reached the redacted report.
+  Recent learning pages with Load more; entity descriptions and lists are
+  capped with Show all; passages show under an entity.
 
 ## 0.5.189 (build 227)
 

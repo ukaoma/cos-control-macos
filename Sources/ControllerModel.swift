@@ -427,6 +427,10 @@ final class ControllerModel: ObservableObject {
         sessionSearchTask?.cancel()
         mediaPreviewTask?.cancel()
         thumbnailTasks.values.forEach { $0.cancel() }
+        learningDetailTask?.cancel()
+        graphSearchTask?.cancel()
+        graphEntityTask?.cancel()
+        graphBuildTask?.cancel()
     }
 
     func refresh(quiet: Bool = false) async {
@@ -437,7 +441,7 @@ final class ControllerModel: ObservableObject {
             status = ServerStatus(response.details)
             if !quiet { error = nil }
             await loadOrphans(quiet: true)
-            await loadActivitySignals()
+            await loadActivitySignals(force: !quiet)
         } catch {
             status.running = false
             if !quiet { self.error = error.localizedDescription }
@@ -4355,6 +4359,9 @@ final class ControllerModel: ObservableObject {
     @Published var learningError: String?
     @Published var learningHeadline = ""
     @Published var learningCoverage: [LearningCoverage] = []
+    /// The cursor for the next Recent learning page; nil when the window is exhausted.
+    @Published var learningNextCursor: (sinceTs: String, sinceEventID: String)?
+    @Published var learningLoadingMore = false
     @Published var toReviewEvents: [LearningEvent] = []
     @Published var toReviewLoading = false
     @Published var toReviewError: String?
@@ -4376,6 +4383,8 @@ final class ControllerModel: ObservableObject {
     @Published var graphQuery = ""
     @Published var graphSearchHits: [GraphEntity] = []
     @Published var graphSearchTotal: Int?
+    /// The index state the search answered with: `missing` means nothing to match against.
+    @Published var graphSearchIndexState: String?
     @Published var graphSearching = false
     @Published var graphSearchError: String?
     private var graphSearchID = UUID()
@@ -4385,11 +4394,13 @@ final class ControllerModel: ObservableObject {
     @Published var graphEntityError: String?
     @Published var graphMentions: [ContextSearchHit] = []
     @Published var graphMentionsLoading = false
+    @Published var graphPassages: [GraphPassage] = []
     private var graphEntityTask: Task<Void, Never>?
-    /// starting | running | already_running | done | failed, nil when idle.
+    /// starting | running | already_running | done | failed | unknown (the poll gave up), nil when idle.
     @Published var graphBuildState: String?
     @Published var graphBuildNote: String?
     private var graphBuildTask: Task<Void, Never>?
+    private static let helperTimeout: TimeInterval = 30
 
     var graphRouteActive: Bool {
         graphEntity != nil || graphEntityLoading || graphEntityError != nil
@@ -4405,9 +4416,10 @@ final class ControllerModel: ObservableObject {
         learningLoading = true
         defer { learningLoading = false }
         do {
-            let response = try await helper.run(["context-learning", "--limit", "50", "--days", "90"])
+            let response = try await helper.run(["context-learning", "--limit", "50", "--days", "90"], timeout: Self.helperTimeout)
             let events = (response.details["events"]?.array ?? []).compactMap { LearningEvent($0) }
             learningEvents = events
+            learningNextCursor = Self.cursor(response.details["nextCursor"])
             learningCoverage = LearningCoverage.list(response.details["coverage"])
             let shown = response.details["shown"]?.int ?? events.count
             if let total = response.details["total"]?.int, total > shown {
@@ -4423,18 +4435,44 @@ final class ControllerModel: ObservableObject {
         }
     }
 
-    /// To review: promotable patterns and self-improvement task proposals,
-    /// across the whole store (decision 4), first page of 50.
+    private static func cursor(_ value: JSONValue?) -> (sinceTs: String, sinceEventID: String)? {
+        guard let o = value?.object, let ts = o["since_ts"]?.string, let id = o["since_event_id"]?.string,
+              !ts.isEmpty, !id.isEmpty else { return nil }
+        return (ts, id)
+    }
+
+    /// The next page of Recent learning, appended. The helper flags exist for
+    /// exactly this; the first build plumbed the cursor and never read it.
+    func loadMoreLearningEvents() async {
+        guard let cursor = learningNextCursor, !learningLoadingMore else { return }
+        learningLoadingMore = true
+        defer { learningLoadingMore = false }
+        do {
+            let response = try await helper.run(["context-learning", "--limit", "50", "--days", "90",
+                                                 "--since-ts", cursor.sinceTs, "--since-event-id", cursor.sinceEventID], timeout: Self.helperTimeout)
+            let seen = Set(learningEvents.map(\.id))
+            let more = (response.details["events"]?.array ?? []).compactMap { LearningEvent($0) }.filter { !seen.contains($0.id) }
+            learningEvents.append(contentsOf: more)
+            learningNextCursor = more.isEmpty ? nil : Self.cursor(response.details["nextCursor"])
+            learningHeadline = "\(learningEvents.count) in 90 days" + (learningNextCursor == nil ? "" : " · more available")
+        } catch {
+            learningError = error.localizedDescription
+        }
+    }
+
+    /// To review: the strict set the chip counts (server 6.44.6,
+    /// `learning-to-review`), whole. 6.44.5 approximated it with a kind filter
+    /// and showed "50 of 837" beside a chip that said 121 (QA 2026-09-06).
     func loadToReviewEvents() async {
         toReviewLoading = true
         defer { toReviewLoading = false }
         do {
-            let response = try await helper.run(["context-learning", "--limit", "50", "--days", "3650", "--kind", "proposed,promotable"])
-            let events = (response.details["events"]?.array ?? []).compactMap { LearningEvent($0) }.filter(\.needsReview)
+            let response = try await helper.run(["context-learning", "--to-review", "--limit", "200"], timeout: Self.helperTimeout)
+            let events = (response.details["events"]?.array ?? []).compactMap { LearningEvent($0) }
             toReviewEvents = events
             if learningCoverage.isEmpty { learningCoverage = LearningCoverage.list(response.details["coverage"]) }
             let shown = events.count
-            if let total = response.details["total"]?.int, total > shown {
+            if let total = response.details["reviewCount"]?.int ?? response.details["total"]?.int, total > shown {
                 toReviewHeadline = "\(shown) of \(total) to review"
             } else {
                 toReviewHeadline = "\(shown) to review"
@@ -4461,9 +4499,10 @@ final class ControllerModel: ObservableObject {
         learningDetailLoading = true
         defer { if learningDetail?.id == event.id { learningDetailLoading = false } }
         do {
-            let response = try await helper.run(["context-learning", "--id", event.id])
+            let response = try await helper.run(["context-learning", "--id", event.id], timeout: Self.helperTimeout)
             guard !Task.isCancelled, learningDetail?.id == event.id else { return }
             if let full = LearningEvent(.object(response.details)) { learningDetail = full }
+            else { learningDetailError = "The server answered, but the record could not be read." }
         } catch {
             guard !Task.isCancelled, learningDetail?.id == event.id else { return }
             learningDetailError = error.localizedDescription
@@ -4512,7 +4551,7 @@ final class ControllerModel: ObservableObject {
         graphStatusLoading = true
         defer { graphStatusLoading = false }
         do {
-            let response = try await helper.run(["context-graph-status"])
+            let response = try await helper.run(["context-graph-status"], timeout: Self.helperTimeout)
             graphStatus = GraphStatus(response.details)
             graphStatusError = nil
         } catch {
@@ -4526,8 +4565,12 @@ final class ControllerModel: ObservableObject {
         graphSearchTask?.cancel()
         let trimmed = graphQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.count < 2 {
+            // A cleared box is a new generation too, or a late answer for the
+            // previous query would repopulate it (QA 2026-09-06).
+            graphSearchID = UUID()
             graphSearchHits = []
             graphSearchTotal = nil
+            graphSearchIndexState = nil
             graphSearchError = nil
             graphSearching = false
             return
@@ -4545,10 +4588,11 @@ final class ControllerModel: ObservableObject {
         graphSearching = true
         defer { if graphSearchID == id { graphSearching = false } }
         do {
-            let response = try await helper.run(["context-graph-search", "--query", query, "--limit", "30"])
-            guard graphSearchID == id else { return }
+            let response = try await helper.run(["context-graph-search", "--query", query, "--limit", "30"], timeout: Self.helperTimeout)
+            guard !Task.isCancelled, graphSearchID == id else { return }
             graphSearchHits = (response.details["items"]?.array ?? []).compactMap { GraphEntity($0) }
             graphSearchTotal = response.details["total"]?.int
+            graphSearchIndexState = response.details["indexState"]?.string
             graphSearchError = nil
         } catch is CancellationError {
             return
@@ -4566,6 +4610,7 @@ final class ControllerModel: ObservableObject {
         graphEntity = entity
         graphEntityError = nil
         graphMentions = []
+        graphPassages = []
         copyNote = nil
         graphEntityTask = Task { [weak self] in
             await self?.fetchGraphEntity(entity.id)
@@ -4573,14 +4618,16 @@ final class ControllerModel: ObservableObject {
     }
 
     func openGraphEntity(id: String) {
-        openGraphEntity(GraphEntity.placeholder(id))
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        openGraphEntity(GraphEntity.placeholder(trimmed))
     }
 
     private func fetchGraphEntity(_ id: String) async {
         graphEntityLoading = true
         defer { if graphEntity?.id == id { graphEntityLoading = false } }
         do {
-            let response = try await helper.run(["context-graph-entity", "--id", id, "--limit", "30"])
+            let response = try await helper.run(["context-graph-entity", "--id", id, "--limit", "30"], timeout: Self.helperTimeout)
             guard !Task.isCancelled, graphEntity?.id == id else { return }
             if let full = GraphEntity(.object(response.details)) { graphEntity = full }
         } catch {
@@ -4589,6 +4636,15 @@ final class ControllerModel: ObservableObject {
             return
         }
         await loadGraphMentions(id)
+        await loadGraphPassages(id)
+    }
+
+    /// Passages: the chunk excerpts behind the entity, from the index (or the
+    /// bounded JSON fallback the bridge names). Best effort.
+    private func loadGraphPassages(_ id: String) async {
+        guard let response = try? await helper.run(["context-graph-passages", "--entity", id, "--limit", "5"], timeout: Self.helperTimeout),
+              !Task.isCancelled, graphEntity?.id == id else { return }
+        graphPassages = (response.details["items"]?.array ?? []).compactMap { GraphPassage($0) }
     }
 
     /// "Memories mentioning this": the existing memory lookup, queried with
@@ -4596,7 +4652,7 @@ final class ControllerModel: ObservableObject {
     private func loadGraphMentions(_ id: String) async {
         graphMentionsLoading = true
         defer { if graphEntity?.id == id { graphMentionsLoading = false } }
-        guard let response = try? await helper.run(["context-memories-search", "--query", id, "--limit", "8"]),
+        guard let response = try? await helper.run(["context-memories-search", "--query", id, "--limit", "8"], timeout: Self.helperTimeout),
               !Task.isCancelled, graphEntity?.id == id else { return }
         graphMentions = (response.details["hits"]?.array ?? []).compactMap { ContextSearchHit(kind: "memory", $0) }
     }
@@ -4609,6 +4665,7 @@ final class ControllerModel: ObservableObject {
         graphEntityError = nil
         graphMentions = []
         graphMentionsLoading = false
+        graphPassages = []
         copyNote = nil
     }
 
@@ -4635,9 +4692,24 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    /// Stop following a build (the window closed). The build itself continues
+    /// on the server; only the 2 s poll stops.
+    func stopGraphBuildPoll() {
+        graphBuildTask?.cancel()
+        graphBuildTask = nil
+        if graphBuildState == "starting" || graphBuildState == "running" || graphBuildState == "already_running" {
+            graphBuildState = "unknown"
+            graphBuildNote = "Not following the build any more. Refresh the Sync card to see where it is."
+        }
+    }
+
     private func runGraphIndexBuild() async {
+        // The receipt at kickoff is the PREVIOUS build's until the child writes
+        // its own, so a stale `done` must not count: accept only a receipt whose
+        // build_seq is newer than the one we started from (QA 2026-09-06).
+        let baseline = graphStatus?.build?.buildSeq
         do {
-            let response = try await helper.run(["context-graph-index-build"])
+            let response = try await helper.run(["context-graph-index-build"], timeout: Self.helperTimeout)
             graphBuildState = response.details["already_running"]?.bool == true ? "already_running" : "running"
             graphBuildNote = response.message
         } catch {
@@ -4650,20 +4722,25 @@ final class ControllerModel: ObservableObject {
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
             await loadGraphStatus()
-            switch graphStatus?.build?.state {
+            guard !Task.isCancelled, let receipt = graphStatus?.build else { continue }
+            if let baseline, let seq = receipt.buildSeq, seq <= baseline { continue }
+            switch receipt.state {
             case "done":
                 graphBuildState = "done"
                 graphBuildNote = "Index rebuilt"
                 return
             case "failed":
                 graphBuildState = "failed"
-                graphBuildNote = graphStatus?.build?.error ?? "Index build failed"
+                graphBuildNote = receipt.error ?? "Index build failed"
                 return
             default:
                 continue
             }
         }
+        guard !Task.isCancelled else { return }
         if graphBuildState == "running" || graphBuildState == "already_running" {
+            // `unknown` keeps the Build button reachable; `running` forever hid it.
+            graphBuildState = "unknown"
             graphBuildNote = "Still building after 5 minutes. Refresh the Sync card later."
         }
     }
@@ -4677,29 +4754,45 @@ final class ControllerModel: ObservableObject {
 
     @Published var activitySignals: ActivitySignals?
     @Published var activitySignalsError: String?
+    private var activitySignalsLoadedAt: Date?
+    /// Sections opened before the first signals answer; their cursors advance
+    /// when it lands, so the dot never appears on the section just opened.
+    private var pendingActivityOpens: [ActivitySection] = []
     /// Bumped when a cursor moves so the chips re-render.
     @Published private(set) var activityCursorVersion = 0
     private static let activityCursorPrefix = "activityCursor."
     private static let seenInboxKey = "activitySeenInboxIDs"
 
-    func loadActivitySignals() async {
+    /// Ten HTTP calls in the helper; every 60 s in the quiet refresh loop, at
+    /// once when the panel opens (QA 2026-09-06: 12 s was unconditional).
+    func loadActivitySignals(force: Bool = false) async {
+        if !force, let last = activitySignalsLoadedAt, Date().timeIntervalSince(last) < 60 { return }
         do {
-            let response = try await helper.run(["activity-signals"])
+            let response = try await helper.run(["activity-signals"], timeout: 45)
             activitySignals = ActivitySignals(response.details)
             activitySignalsError = nil
+            activitySignalsLoadedAt = Date()
+            let pending = pendingActivityOpens
+            pendingActivityOpens = []
+            for section in pending { markActivityOpened(section) }
         } catch {
             activitySignalsError = error.localizedDescription
+            NSLog("[COS Control] activity-signals failed: %@", error.localizedDescription)
         }
     }
 
     func activityCursor(_ section: ActivitySection) -> String? {
-        UserDefaults.standard.string(forKey: Self.activityCursorPrefix + section.rawValue)
+        ActivitySignals.validCursor(UserDefaults.standard.string(forKey: Self.activityCursorPrefix + section.rawValue))
     }
 
     /// Advance the section's cursor to the newest stamp the last signals call
     /// saw, and mark the inbox tasks it listed as seen.
     func markActivityOpened(_ section: ActivitySection) {
-        guard let mark = activitySignals?.mark(section.rawValue) else { return }
+        guard let signals = activitySignals else {
+            if !pendingActivityOpens.contains(section) { pendingActivityOpens.append(section) }
+            return
+        }
+        guard let mark = signals.mark(section.rawValue) else { return }
         if let newest = mark.newest, !newest.isEmpty {
             UserDefaults.standard.set(newest, forKey: Self.activityCursorPrefix + section.rawValue)
         }

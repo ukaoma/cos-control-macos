@@ -7165,6 +7165,8 @@ final class COSControlHelper {
     static let learningNotConfiguredMessage = "Recent learning and Knowledge need the COS pipeline bridge. Plain-file memories keep working."
     /// The server version that ships /api/context/learning* and /api/context/graph/*.
     static let learningNeeds = "6.44.5"
+    /// The server version that ships /api/context/learning/review (the strict To review set).
+    static let reviewNeeds = "6.44.6"
     /// The 503 classes that mean "no pipeline", as the server spells them
     /// (pythonBridgeState and the file tier), rather than a passing fault.
     static let notConfiguredErrorClasses: Set<String> = ["pipeline_missing", "bridge_missing", "cos_pipeline_not_configured"]
@@ -7185,6 +7187,8 @@ final class COSControlHelper {
         switch errorClass {
         case "entity_not_found": return "No entity by that name in the knowledge graph."
         case "learning_event_not_found": return "That learning event is no longer there."
+        case "index_missing": return "No knowledge index on this Mac yet. Build it from the Sync card."
+        case "record_not_found": return "That record is no longer there."
         case let cls? where cls.hasSuffix("_not_found"): return "Not found (\(cls))."
         default: return "Update the managed server to \(needs) or newer to see recent learning and knowledge."
         }
@@ -7194,16 +7198,18 @@ final class COSControlHelper {
     /// classes, otherwise the server's own class so a passing fault reads as one.
     static func contextUnavailableMessage(errorClass: String?, notConfigured: String) -> String {
         guard let errorClass, !errorClass.isEmpty, !notConfiguredErrorClasses.contains(errorClass) else { return notConfigured }
-        return "Recent learning and Knowledge are temporarily unavailable (\(errorClass)). Try again, or run Doctor."
+        // No "run Doctor": Doctor probes a different command and would read ok (QA 2026-09-06).
+        return "Recent learning and Knowledge are temporarily unavailable (\(errorClass)). Try again."
     }
 
     /// POST kickoffs for the knowledge graph: the index build now, apply, revert
     /// and sync in later gates. A SIBLING of contextBrowseResponse rather than a
     /// flag on it, because the accepted statuses differ: a spawned kickoff answers
     /// 202 and nothing else, while the GET wrapper must keep rejecting 202 as
-    /// "Server stopped". 409 and 423 carry the server's own class (not_owner,
-    /// lock_held, workspace_fenced) and are surfaced with it; a 404 names the
-    /// version that ships the route, never "Server stopped".
+    /// "Server stopped". The index build answers 202 even when a build is already
+    /// running (the body says so); 409 and 423 are reserved for the curation
+    /// gates (apply, revert, sync) and surface the server's own class when they
+    /// arrive; a 404 names the version that ships the route, never "Server stopped".
     private func contextMutateResponse(
         _ route: String,
         method: String = "POST",
@@ -7231,10 +7237,11 @@ final class COSControlHelper {
         if response.status == 409 || response.status == 423 {
             throw HelperError.message("The server refused this (\(Self.bridgeErrorClass(response.body) ?? "refused")).")
         }
-        guard response.status == 202, let body = response.body else {
+        guard response.status == 202 else {
             throw HelperError.message("The server did not accept this (HTTP \(response.status)).")
         }
-        return body
+        // A bare 202 with no body is still an accepted kickoff.
+        return response.body ?? [:]
     }
 
     // ── Recent learning and Knowledge (server 6.44.5, Control 0.5.190) ──
@@ -7250,8 +7257,8 @@ final class COSControlHelper {
         return value.dropFirst(4).allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) }
     }
 
-    private func learningRoute(_ path: String, timeout: Int = 20) throws -> [String: Any] {
-        try contextBrowseResponse(path, timeout: timeout, needs: Self.learningNeeds, notConfiguredMessage: Self.learningNotConfiguredMessage)
+    private func learningRoute(_ path: String, timeout: Int = 20, needs: String = COSControlHelper.learningNeeds) throws -> [String: Any] {
+        try contextBrowseResponse(path, timeout: timeout, needs: needs, notConfiguredMessage: Self.learningNotConfiguredMessage)
     }
 
     private func emitContextLearning(args: [String]) throws {
@@ -7260,6 +7267,21 @@ final class COSControlHelper {
                 throw HelperError.message("--id must be a learning event id (evt_ plus 16 hex characters)")
             }
             emit(ok: true, message: "Learning event", details: try learningRoute("/api/context/learning/\(id)"))
+            return
+        }
+        if args.contains("--to-review") {
+            // The strict To review set, whole (server 6.44.6): the same set the chip counts.
+            let limit = min(max(Int(option("--limit", in: args) ?? "200") ?? 200, 1), 200)
+            let listing = try learningRoute("/api/context/learning/review?limit=\(limit)", needs: Self.reviewNeeds)
+            let rows = (listing["events"] as? [[String: Any]]) ?? []
+            emit(ok: true, message: rows.isEmpty ? "Nothing to review" : "\(rows.count) to review", details: [
+                "state": rows.isEmpty ? "empty" : "ready",
+                "events": rows,
+                "shown": rows.count,
+                "total": listing["total"] ?? NSNull(),
+                "reviewCount": listing["review_count"] ?? listing["total"] ?? NSNull(),
+                "coverage": listing["coverage"] ?? [:],
+            ])
             return
         }
         let limit = min(max(Int(option("--limit", in: args) ?? "50") ?? 50, 1), 50)
@@ -7322,7 +7344,7 @@ final class COSControlHelper {
         guard let id = option("--id", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines), Self.validEntityID(id) else {
             throw HelperError.message("--id must be an entity name of at most 200 characters")
         }
-        let limit = min(max(Int(option("--limit", in: args) ?? "30") ?? 30, 1), 100)
+        let limit = min(max(Int(option("--limit", in: args) ?? "30") ?? 30, 1), 30)  // the server and the bridge both cap at 30
         let offset = min(max(Int(option("--offset", in: args) ?? "0") ?? 0, 0), 100_000)
         let body = try learningRoute("/api/context/graph/entity?id=\(queryEscape(id))&offset=\(offset)&limit=\(limit)", timeout: 25)
         emit(ok: true, message: "Entity", details: body)
@@ -7370,8 +7392,11 @@ final class COSControlHelper {
         let token: String
         do { token = try readToken() }
         catch { throw HelperError.message("Unauthorized") }
+        // One wall-clock budget for the whole composition: nine sequential
+        // fetches at 12 s each would otherwise be a 108 s worst case (QA 2026-09-06).
+        let deadline = ProcessInfo.processInfo.systemUptime + 20
         func fetch(_ path: String, timeout: Int = 12) -> [String: Any]? {
-            guard let response = request(path, token: token, timeout: timeout), response.status == 200 else { return nil }
+            guard let response = request(path, token: token, timeout: timeout, deadlineUptime: deadline), response.status == 200 else { return nil }
             if let body = response.body { return body }
             if let rows = response.bodyArray { return ["items": rows] }
             return nil
@@ -7505,6 +7530,14 @@ final class COSControlHelper {
             "graphProcessorState": graph?["processor_state"] ?? NSNull(),
             "graphLockState": graph?["lock_state"] ?? NSNull(),
         ]
+    }
+
+    /// The status rows a shareable report may carry: the graph owner hostname is
+    /// an identity, masked like paths and emails are; absence stays absent.
+    static func redactedStatusDetails(_ details: [String: Any]) -> [String: Any] {
+        var copy = details
+        if let host = details["graphOwnerHost"], !(host is NSNull) { copy["graphOwnerHost"] = "<graph owner Mac>" }
+        return copy
     }
 
     /// One Doctor line for Recent learning and Knowledge: states and counts, no
@@ -12129,6 +12162,8 @@ final class COSControlHelper {
             status["contextFilesDirectory"] = redactedConfiguredPath(configuredContextFilesDirectory(), label: "configured COS Data notes folder")
             status["servicePID"] = NSNull()
             status["listenerPIDs"] = []
+            // The graph owner hostname is an identity; masked like the paths above.
+            status = Self.redactedStatusDetails(status)
         }
         return ["checks": checks, "status": status]
     }
@@ -14006,7 +14041,9 @@ final class COSControlHelper {
         // The status rows, the Doctor line, the 404 and 503 sentences, and the
         // activity-signals composition are pure functions of server bodies, so
         // they run here against the shapes 6.44.5 actually sends.
-        let learningBlock: [String: Any] = ["available": true, "state": "ready", "count": 121,
+        // `count` is deliberately NOT patterns + task_proposals, so the sum assert
+        // below cannot pass through the count fallback (QA 2026-09-06).
+        let learningBlock: [String: Any] = ["available": true, "state": "ready", "count": 999,
                                             "to_review": ["patterns": 1, "task_proposals": 120], "last_ts": "2026-08-31"]
         let graphBlock: [String: Any] = ["available": true, "state": "ready", "entities": 40359, "relationships": 88369,
                                          "index_state": "fresh", "queue_pending": 56, "owner_host": "m3", "is_owner": true,
@@ -14064,9 +14101,18 @@ final class COSControlHelper {
         try expect(signal("sessions", "needsYou") as? Int == 1, "the Sessions number counts fences")
         try expect(signal("tasks", "needsYou") as? Int == 2, "the Tasks number counts rows due today")
         try expect((signal("tasks", "inboxIDs") as? [String]) == ["t1", "t2"], "inbox ids ride along for the unseen count")
-        for section in ["messages", "speakers", "meetings", "memories", "threads", "sessions", "tasks"] {
-            try expect((signal(section, "source") as? String)?.isEmpty == false, "every mark names its source (\(section))")
+        let expectedSources = ["messages": "recent-messages", "speakers": "voice-ext-audio", "meetings": "meeting-orphans · meetings",
+                               "memories": "context-status · context-memories", "threads": "context-threads", "sessions": "fences", "tasks": "tasks"]
+        for (section, source) in expectedSources {
+            try expect(signal(section, "source") as? String == source, "every mark names its helper source (\(section))")
         }
+        try expect(Self.learningNotFoundMessage(errorClass: "index_missing", needs: "6.44.5").contains("Build it"),
+                   "a missing index points at Build index, not at an update or Doctor")
+        try expect(!Self.contextUnavailableMessage(errorClass: "graph_unavailable", notConfigured: "NC").contains("Doctor"),
+                   "an unavailable class never sends the user to a Doctor that cannot see it")
+        try expect(Self.redactedStatusDetails(["graphOwnerHost": "Ukaoma-Mac-Studio.local", "graphIsOwner": true])["graphOwnerHost"] as? String == "<graph owner Mac>"
+                   && Self.redactedStatusDetails(["graphOwnerHost": NSNull()])["graphOwnerHost"] is NSNull,
+                   "the redacted report masks the owner hostname and keeps absence")
         let quietSignals = Self.activitySignalsProjection(messages: nil, extAudio: nil, orphans: nil, meetings: nil,
                                                           context: nil, memories: nil, threads: nil, fences: nil, tasks: nil)
         func quiet(_ section: String, _ key: String) -> Any? { (quietSignals[section] as? [String: Any])?[key] }

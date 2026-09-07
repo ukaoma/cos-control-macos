@@ -33,7 +33,8 @@ enum JSONValue: Codable, Sendable {
 
     var string: String? { if case .string(let value) = self { value } else { nil } }
     var bool: Bool? { if case .bool(let value) = self { value } else { nil } }
-    var int: Int? { if case .number(let value) = self { Int(value) } else { nil } }
+    /// Truncates toward zero; nil (never a trap) when the number cannot be an Int.
+    var int: Int? { if case .number(let value) = self { Int(exactly: value.rounded(.towardZero)) } else { nil } }
     var double: Double? { if case .number(let value) = self { value } else { nil } }
     var object: [String: JSONValue]? { if case .object(let value) = self { value } else { nil } }
     var array: [JSONValue]? { if case .array(let value) = self { value } else { nil } }
@@ -503,7 +504,10 @@ struct LearningEvent: Identifiable, Sendable, Equatable {
     let appliesTo: [String]
     let sourceRefs: [LearningSourceRef]
     let priorEventID: String?
+    /// The check's verdict (`outcome.result`), and what was checked (`outcome.name`).
+    /// The wire shape is `{ name, result, evaluator, ts }` (QA 2026-09-06).
     let outcome: String?
+    let outcomeName: String?
     let provenance: String
     let ordinal: Int?
     let detail: LearningEventDetail?
@@ -535,7 +539,8 @@ struct LearningEvent: Identifiable, Sendable, Equatable {
         } ?? []
         sourceRefs = o["source_refs"]?.array?.compactMap { LearningSourceRef($0) } ?? []
         priorEventID = o["prior_event_id"]?.string
-        outcome = o["outcome"]?.string ?? o["outcome"]?.object?["state"]?.string
+        outcome = o["outcome"]?.string ?? o["outcome"]?.object?["result"]?.string
+        outcomeName = o["outcome"]?.object?["name"]?.string
         provenance = o["provenance"]?.string ?? ""
         ordinal = o["ordinal"]?.int
         detail = LearningEventDetail(o["detail"])
@@ -600,6 +605,18 @@ struct LearningEvent: Identifiable, Sendable, Equatable {
         case "capture_ledger": return "Capture ledger"
         default: return store.isEmpty ? "unknown store" : store
         }
+    }
+
+    /// A stamp that may arrive as epoch seconds (the graph's `created_at`) or as
+    /// an ISO string, as `YYYY-MM-DD HH:MM`.
+    static func stamp(_ value: JSONValue?) -> String? {
+        if let text = value?.string, !text.isEmpty { return shortStamp(text) }
+        guard let seconds = value?.double, seconds > 0 else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: Date(timeIntervalSince1970: seconds > 1e11 ? seconds / 1000 : seconds))
     }
 
     /// `2026-09-06T05:00:00.000000+00:00` reads as `2026-09-06 05:00`.
@@ -745,11 +762,16 @@ struct GraphStatus: Sendable, Equatable {
     /// What the Sync card says about the processor, by its reported state. The
     /// two sentences Miles asked for by name are pinned in ModelsContract.
     var processorLine: String {
+        // The vocabulary is graph_context.PROCESSOR_STATES; every state has its sentence.
         switch processorState {
         case nil, "none": return "No processor configured on this Mac"
         case "installed-idle": return "Processor installed, no run recorded yet"
         case "cadence_unknown": return "Processor installed; cadence not readable"
-        case "running": return "Processor running"
+        case "active": return "Processor active"
+        case "contended": return "Processor contended: another ingest holds the lock"
+        case "misconfigured": return "Processor misconfigured; check its LaunchAgent"
+        case "stale": return "Processor installed; its last run is older than its cadence"
+        case "stalled": return "Processor stalled: a run started and never finished"
         case "failed": return "Processor last run failed"
         case let state?: return "Processor \(state)"
         }
@@ -768,7 +790,8 @@ struct GraphRelationship: Identifiable, Sendable, Equatable {
     var id: String { "\(source)\u{1F}\(target)" }
 
     init?(_ value: JSONValue?) {
-        guard let o = value?.object, let source = o["source"]?.string, let target = o["target"]?.string else { return nil }
+        guard let o = value?.object, let source = o["source"]?.string, let target = o["target"]?.string,
+              !source.isEmpty, !target.isEmpty else { return nil }
         self.source = source
         self.target = target
         weight = o["weight"]?.double
@@ -821,14 +844,32 @@ struct GraphEntity: Identifiable, Sendable, Equatable {
         sourceStatus = o["source_status"]?.string
         sourceCount = o["source_count"]?.int
         sourceResolved = o["source_resolved"]?.int
-        createdAt = o["created_at"]?.string
+        // Epoch seconds on the wire (integerOrAbsent server-side), rendered as a date.
+        createdAt = LearningEvent.stamp(o["created_at"])
         firstSeenBuild = o["first_seen_build"]?.int
     }
 
-    /// A row for an entity known only by name (a neighbor chip, a lesson's
-    /// "Explore in graph"), until the entity route fills it in.
+    private init(placeholderID id: String, type: String) {
+        self.id = id
+        self.type = type
+        degree = nil
+        description = ""
+        descriptions = []
+        edges = []
+        neighbors = []
+        totalRelationships = nil
+        sourceStatus = nil
+        sourceCount = nil
+        sourceResolved = nil
+        createdAt = nil
+        firstSeenBuild = nil
+    }
+
+    /// A row for an entity known only by name (a neighbor chip), until the
+    /// entity route fills it in. Never traps: an empty name is refused upstream
+    /// and, should one arrive, becomes a row that the route answers not found.
     static func placeholder(_ id: String, type: String = "") -> GraphEntity {
-        GraphEntity(.object(["id": .string(id), "type": .string(type)]))!
+        GraphEntity(placeholderID: id.isEmpty ? "(unnamed)" : id, type: type)
     }
 
     var sourceLine: String? {
@@ -913,6 +954,23 @@ struct ActivitySignals: Sendable, Equatable {
         }
         guard let base, base > 0 else { return nil }
         return base
+    }
+
+    /// A stored cursor is trusted only in the stamp shape the helper writes
+    /// (a four-digit year first); anything else, including a future date past a
+    /// day of clock skew, reads as never opened (QA 2026-09-06).
+    static func validCursor(_ raw: String?, now: Date = Date()) -> String? {
+        // The shape is `YYYY-MM-DD…`; an epoch string also starts with digits.
+        guard let raw, raw.count >= 10 else { return nil }
+        let parts = raw.prefix(10).split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0].count == 4, parts[1].count == 2, parts[2].count == 2,
+              parts.allSatisfy({ $0.allSatisfy(\.isNumber) }) else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd"
+        let tomorrow = formatter.string(from: now.addingTimeInterval(86_400))
+        return String(raw.prefix(10)) > tomorrow ? nil : raw
     }
 
     /// A dot only when a newer item exists: no stamp, no dot; a stamp and no

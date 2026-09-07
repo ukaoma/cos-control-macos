@@ -3821,6 +3821,30 @@ struct ModelsContract {
         precondition(signals.mark("memories")?.newest == "2026-09-06" && signals.legend.hasPrefix("Number"))
         precondition(ActivitySignals.hasNewer(newest: "2026-09-06", cursor: nil) && ActivitySignals.hasNewer(newest: "2026-09-06", cursor: "2026-09-05"))
         precondition(!ActivitySignals.hasNewer(newest: "2026-09-06", cursor: "2026-09-06") && !ActivitySignals.hasNewer(newest: nil, cursor: nil))
+
+        // QA 2026-09-06 folds, each from a wire shape the server actually sends.
+        let checked = LearningEvent(.object([
+            "event_id": .string("evt_00000000000000aa"), "event_type": .string("checked"), "ts": .string("2026-09-01T00:00:00+00:00"),
+            "outcome": .object(["name": .string("daily_plus_current_workweek grade A-"), "result": .string("inconclusive"), "evaluator": .string("daily-reflect"), "ts": .string("2026-09-01T00:00:00+00:00")]),
+        ]))
+        precondition(checked?.outcome == "inconclusive" && checked?.outcomeName?.hasPrefix("daily_plus") == true,
+                     "the Checks row reads outcome.result and outcome.name, the keys the wire carries")
+        let epochEntity = GraphEntity(.object(["id": .string("COS"), "type": .string("artifact"), "created_at": .number(1_788_000_000)]))
+        precondition(epochEntity?.createdAt == "2026-08-29 10:40", "created_at arrives as epoch seconds and renders as a date")
+        precondition(GraphEntity(.object(["id": .string("COS"), "created_at": .string("2026-09-06T22:45:20+00:00")]))?.createdAt == "2026-09-06 22:45")
+        precondition(GraphEntity.placeholder("").id == "(unnamed)", "an empty placeholder id must never trap")
+        precondition(GraphRelationship(.object(["source": .string("COS"), "target": .string(""), "weight": .number(1)])) == nil,
+                     "an edge with an empty endpoint is refused, so other(than:) can never hand back an empty id")
+        precondition(GraphStatus(["processor": .object(["state": .string("active")])]).processorLine == "Processor active")
+        precondition(GraphStatus(["processor": .object(["state": .string("contended")])]).processorLine.contains("lock"))
+        precondition(GraphStatus(["processor": .object(["state": .string("stalled")])]).processorLine.contains("never finished"))
+        precondition(ActivitySignals.validCursor("2026-09-06T20:00:00Z") == "2026-09-06T20:00:00Z")
+        precondition(ActivitySignals.validCursor("1757200000") == nil && ActivitySignals.validCursor("") == nil && ActivitySignals.validCursor(nil) == nil,
+                     "an epoch or empty cursor reads as never opened")
+        precondition(ActivitySignals.validCursor("2999-01-01") == nil, "a future cursor reads as never opened")
+        precondition(JSONValue.number(1e30).int == nil && JSONValue.number(4.4).int == 4 && JSONValue.number(-2.7).int == -2,
+                     "an absurd count is nil, never a trap; fractions truncate toward zero")
+        print("COS Control: learning and knowledge models decode the wire shapes (outcome.result, epoch created_at, safe placeholder, processor states, cursor validity)")
     }
 
     static func main() throws {

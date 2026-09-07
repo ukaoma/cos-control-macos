@@ -1242,13 +1242,10 @@ struct ControlPanel: View {
             .buttonStyle(.plain)
             .help("Open Messages, Speakers, Meetings, Memories, Threads, Sessions, and Tasks in a separate window")
             VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 7) {
-                    ForEach(Array(ActivitySection.allCases.prefix(4))) { item in
-                        activityChip(item)
-                    }
-                }
-                HStack(spacing: 7) {
-                    ForEach(Array(ActivitySection.allCases.dropFirst(4))) { item in
+                // Chips WRAP: a fixed 4 + 3 split broke mid-word at 332 pt the
+                // moment one chip carried a three-digit number (QA 2026-09-06).
+                ChipFlowLayout(spacing: 7) {
+                    ForEach(ActivitySection.allCases) { item in
                         activityChip(item)
                     }
                 }
@@ -1260,6 +1257,13 @@ struct ControlPanel: View {
                         .font(.system(size: 9.5))
                         .foregroundStyle(.tertiary)
                 }
+                if let error = model.activitySignalsError {
+                    // A failed signals call must not look like "nothing needs you".
+                    Text("Marks unavailable: \(error)")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(COSPalette.amber)
+                        .lineLimit(2)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1269,8 +1273,8 @@ struct ControlPanel: View {
     }
 
     private func activityChip(_ item: ActivitySection) -> some View {
-        // Read the cursor version so a moved cursor re-renders the dot.
-        let _ = model.activityCursorVersion
+        // Re-render on a moved cursor comes from the @Published bump in
+        // markActivityOpened (activityCursorVersion), not from reading it here.
         let number = model.activityNumber(item)
         let dot = number == nil && model.activityDot(item)
         return Button {
@@ -1279,8 +1283,10 @@ struct ControlPanel: View {
             HStack(spacing: 4) {
                 Image(systemName: item.icon)
                 Text(item.title)
+                    .lineLimit(1)
+                    .fixedSize()
                 if let number {
-                    Text("\(number)")
+                    Text(number > 99 ? "99+" : "\(number)")
                         .font(.system(size: 8.5, weight: .bold, design: .rounded))
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)
@@ -3345,6 +3351,11 @@ struct LearningDetailPane: View {
                             }
                         }
                         if let version = event.targetVersion, !version.isEmpty { labelled("Version", version) }
+                        if event.detail?.truncated == true {
+                            Text("Record truncated to fit; the store holds more than shown here.")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
+                        }
                         expectedEffect(event)
                         evidence(event)
                     }
@@ -3391,7 +3402,8 @@ struct LearningDetailPane: View {
         block("Expected effect") {
             labelled("Applies to", event.appliesTo.isEmpty ? "Scope not resolved" : event.appliesTo.joined(separator: ", "))
             labelled("Preview", "Preview not available until 3.5")
-            labelled("Checks", event.outcome ?? event.detail?.status ?? "No check recorded")
+            labelled("Checks", event.outcome.map { result in event.outcomeName.map { "\(result) · \($0)" } ?? result }
+                ?? event.detail?.status ?? "No check recorded")
             if let detail = event.detail, let occurrences = detail.occurrences {
                 labelled("Repeat rate", "\(occurrences) occurrence\(occurrences == 1 ? "" : "s")"
                     + (detail.threshold.map { " (threshold \($0))" } ?? ""))
@@ -3455,13 +3467,16 @@ struct GraphEntityPane: View {
     var showsBackButton = true
     var onOpenMemory: ((ContextRecord) -> Void)? = nil
 
-    /// Lists fed by server state render OUTSIDE a full-pane scroll here, so
-    /// each is capped: inline up to the limit, then a fixed-height scroll
-    /// (the 2026-08-26 Add-a-voice rule).
+    /// Everything below sits inside the pane's own ScrollView. The lists are
+    /// still capped by COUNT so a 30-edge entity does not push Neighbors,
+    /// Mentions and Passages three screens down: the first rows show inline
+    /// and a Show all button reveals the rest in place (no nested scrolls).
     private static let graphRelInlineRowLimit = 8
-    private static let graphRelListHeight: CGFloat = 220
     private static let graphMentionInlineRowLimit = 5
-    private static let graphMentionListHeight: CGFloat = 180
+    private static let descriptionLineLimit = 4
+    @State private var showAllRelationships = false
+    @State private var showAllMentions = false
+    @State private var showAllDescriptions = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -3484,31 +3499,35 @@ struct GraphEntityPane: View {
                             .fixedSize(horizontal: false, vertical: true)
                         Text([entity.type.isEmpty ? nil : entity.type,
                               entity.degree.map { "\($0) relationships" },
-                              entity.createdAt.map { "since \(LearningEvent.shortStamp($0))" }]
+                              entity.createdAt.map { "since \($0)" }]
                             .compactMap { $0 }.joined(separator: " · "))
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                         if !entity.description.isEmpty || !entity.descriptions.isEmpty {
                             section("Descriptions") {
+                                // Length-capped too: the busiest entities carry 10-18 K
+                                // characters of merged description (QA 2026-09-06).
                                 ForEach(Array((entity.descriptions.isEmpty ? [entity.description] : entity.descriptions).prefix(6).enumerated()), id: \.offset) { _, text in
                                     Text(text)
                                         .font(.system(size: 11.5))
+                                        .lineLimit(showAllDescriptions ? nil : Self.descriptionLineLimit)
                                         .textSelection(.enabled)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
+                                Button(showAllDescriptions ? "Show less" : "Show all") { showAllDescriptions.toggle() }
+                                    .buttonStyle(.link)
+                                    .font(.system(size: 10.5))
                             }
                         }
                         if !entity.edges.isEmpty {
                             section("Relationships" + (entity.totalRelationships.map { " · \($0)" } ?? "")) {
+                                ForEach(showAllRelationships ? entity.edges : Array(entity.edges.prefix(Self.graphRelInlineRowLimit))) { edge in
+                                    relationshipRow(edge, entity: entity)
+                                }
                                 if entity.edges.count > Self.graphRelInlineRowLimit {
-                                    ScrollView {
-                                        VStack(alignment: .leading, spacing: 6) {
-                                            ForEach(entity.edges) { edge in relationshipRow(edge, entity: entity) }
-                                        }
-                                    }
-                                    .frame(height: Self.graphRelListHeight)
-                                } else {
-                                    ForEach(entity.edges) { edge in relationshipRow(edge, entity: entity) }
+                                    Button(showAllRelationships ? "Show fewer" : "Show all \(entity.edges.count)") { showAllRelationships.toggle() }
+                                        .buttonStyle(.link)
+                                        .font(.system(size: 10.5))
                                 }
                             }
                         }
@@ -3526,15 +3545,33 @@ struct GraphEntityPane: View {
                                 Text("No stored memory mentions this name.")
                                     .font(.system(size: 10.5))
                                     .foregroundStyle(.secondary)
-                            } else if model.graphMentions.count > Self.graphMentionInlineRowLimit {
-                                ScrollView {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        ForEach(model.graphMentions) { hit in mentionRow(hit) }
+                            } else {
+                                ForEach(showAllMentions ? model.graphMentions : Array(model.graphMentions.prefix(Self.graphMentionInlineRowLimit))) { hit in
+                                    mentionRow(hit)
+                                }
+                                if model.graphMentions.count > Self.graphMentionInlineRowLimit {
+                                    Button(showAllMentions ? "Show fewer" : "Show all \(model.graphMentions.count)") { showAllMentions.toggle() }
+                                        .buttonStyle(.link)
+                                        .font(.system(size: 10.5))
+                                }
+                            }
+                        }
+                        if !model.graphPassages.isEmpty {
+                            section("Passages") {
+                                ForEach(model.graphPassages) { passage in
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(passage.excerpt)
+                                            .font(.system(size: 11))
+                                            .lineLimit(4)
+                                            .textSelection(.enabled)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                        Text([passage.sourceTitle, passage.sourceDate, passage.sourceStatus == "resolved" ? nil : passage.sourceStatus]
+                                            .compactMap { $0 }.joined(separator: " · "))
+                                            .font(.system(size: 9.5))
+                                            .foregroundStyle(.tertiary)
+                                            .lineLimit(1)
                                     }
                                 }
-                                .frame(height: Self.graphMentionListHeight)
-                            } else {
-                                ForEach(model.graphMentions) { hit in mentionRow(hit) }
                             }
                         }
                         if let line = entity.sourceLine {
@@ -3614,6 +3651,44 @@ struct GraphEntityPane: View {
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// A wrapping row of chips for the 390 pt menu panel: each chip keeps its
+/// intrinsic size and the row breaks wherever the width runs out.
+struct ChipFlowLayout: Layout {
+    var spacing: CGFloat = 7
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, maxX: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+            maxX = max(maxX, x - spacing)
+        }
+        return CGSize(width: width == .infinity ? maxX : width, height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
     }
 }
 

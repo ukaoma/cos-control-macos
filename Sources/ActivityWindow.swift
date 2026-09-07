@@ -44,6 +44,7 @@ final class ActivityWindowPresenter: NSObject, ObservableObject, NSWindowDelegat
     func windowWillClose(_ notification: Notification) {
         model?.closeMediaPreview()
         model?.closeSpeakerReview()
+        model?.stopGraphBuildPoll()
         model?.closeContextDetail()
         model?.closeLibraryDetail()
         // Session chat holds a poll Task and a live binding reference; a
@@ -478,8 +479,11 @@ struct ActivityWindow: View {
             if model.learningDetailLoading { return "Loading lesson" }
         }
         if section == .memories, selectedGraphEntityID != nil {
-            if let entity = model.graphEntity, entity.id == selectedGraphEntityID { return "Graph · \(entity.id)" }
-            if model.graphEntityLoading { return "Loading entity" }
+            if let entity = model.graphEntity, entity.id == selectedGraphEntityID { return "Knowledge · \(entity.id)" }
+            if model.graphEntityLoading { return "Knowledge · loading entity" }
+        }
+        if section == .memories, memoriesSubview == .knowledge, selectedContextID == nil, selectedLearningID == nil {
+            return "Knowledge"
         }
         if (section == .memories || section == .threads),
            selectedContextID != nil,
@@ -788,6 +792,7 @@ struct ActivityWindow: View {
             if model.status.meetingLibraryCount > 0 { return (n(model.status.meetingLibraryCount), "STORED") }
             return ("—", "BY DAY")
         case .memories:
+            if let review = model.status.learningToReview, review > 0 { return (n(review), "TO REVIEW") }
             guard model.status.memoryAvailable == true else { return ("—", "SETUP NEEDED") }
             return (n(model.status.memoryCount), "STORED")
         case .threads:
@@ -815,6 +820,9 @@ struct ActivityWindow: View {
             }
             return "Browse by day"
         case .memories:
+            if let review = model.status.learningToReview, review > 0 {
+                return "\(review) to review" + (model.status.graphIndexState.map { " · index \($0)" } ?? "")
+            }
             return model.status.memoryAvailable == true
                 ? (model.memoryHeadline.isEmpty ? "Ready" : model.memoryHeadline)
                 : "Setup needed"
@@ -2216,17 +2224,21 @@ struct ActivityWindow: View {
         memoriesSubview = .allMemories
         selectedContextID = record.id
         model.openContextRecord(record, kind: "memory")
+        // The picker is unmounted while a detail shows, so its onChange never
+        // fires here; load the segment explicitly (QA 2026-09-06).
+        Task { await loadMemoriesSubview(.allMemories) }
     }
 
-    /// Carry a lesson's focus into Knowledge as an entity lookup.
+    /// Carry a lesson's focus into Knowledge as a SEARCH: the term is a
+    /// category or a few title words, rarely an exact entity, so opening an
+    /// entity pane straight away answered not-found as the normal case.
     private func exploreInGraph(_ term: String) {
         selectedLearningID = nil
         model.closeLearningDetail()
         memoriesSubview = .knowledge
         model.graphQuery = term
         model.scheduleGraphSearch()
-        selectedGraphEntityID = term
-        model.openGraphEntity(id: term)
+        Task { await loadMemoriesSubview(.knowledge) }
     }
 
     private func openMemoryFromGraph(_ record: ContextRecord) {
@@ -2235,6 +2247,7 @@ struct ActivityWindow: View {
         memoriesSubview = .allMemories
         selectedContextID = record.id
         model.openContextRecord(record, kind: "memory")
+        Task { await loadMemoriesSubview(.allMemories) }
     }
 
     private var learningCoverageLine: String? {
@@ -2271,6 +2284,16 @@ struct ActivityWindow: View {
                     }
                 }
             } else {
+                if let error, !error.hasPrefix("Nothing") {
+                    // A failed refresh must not hide behind rows that are already
+                    // on screen (QA 2026-09-06).
+                    Text(error)
+                        .font(.system(size: 11))
+                        .foregroundStyle(COSPalette.amber)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 6)
+                }
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(events) { event in
@@ -2282,6 +2305,15 @@ struct ActivityWindow: View {
                             }
                             .buttonStyle(.plain)
                             Divider().padding(.leading, 46)
+                        }
+                        if !toReview, model.learningNextCursor != nil {
+                            Button {
+                                Task { await model.loadMoreLearningEvents() }
+                            } label: {
+                                if model.learningLoadingMore { ProgressView().controlSize(.small) } else { Text("Load more") }
+                            }
+                            .controlSize(.small)
+                            .padding(.top, 12)
                         }
                         if let line = learningCoverageLine {
                             Text(line)
@@ -2415,7 +2447,9 @@ struct ActivityWindow: View {
         } else if let error = model.graphSearchError, model.graphSearchHits.isEmpty {
             emptyState(.memories, text: error)
         } else if model.graphSearchHits.isEmpty {
-            emptyState(.memories, text: "No entities match that lookup.")
+            emptyState(.memories, text: model.graphSearchIndexState == "missing" || model.graphSearchIndexState == "source_missing"
+                ? "No knowledge index on this Mac yet. Build it from the Sync card."
+                : "No entities match that lookup.")
         } else {
             ScrollView {
                 LazyVStack(spacing: 0) {
@@ -2600,9 +2634,11 @@ struct ActivityWindow: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                if g.invitesIndexBuild, g.isOwner != false,
-                   model.graphBuildState == nil || model.graphBuildState == "done" || model.graphBuildState == "failed" {
-                    Button("Build index (about 30 s)", systemImage: "hammer") { model.buildGraphIndex() }
+                // The index is per-Mac derived data, so a replica builds its own; no
+                // owner clause here. `unknown` (the poll gave up) keeps the button.
+                if g.invitesIndexBuild,
+                   model.graphBuildState == nil || model.graphBuildState == "done" || model.graphBuildState == "failed" || model.graphBuildState == "unknown" {
+                    Button("Build index (usually a few seconds)", systemImage: "hammer") { model.buildGraphIndex() }
                         .controlSize(.small)
                 }
             } else {

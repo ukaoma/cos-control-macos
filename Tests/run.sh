@@ -3948,9 +3948,15 @@ need(re.search(r"graphSearchTotal = response\.details\[\"total\"\]\?\.int$", mod
 
 # 4. Nothing this build must not ship: no Dismiss in the Memories pane, no explorer
 #    web view, no explorer assets in the release script or the resources.
-memories_pane = activity[activity.index("private func memoriesPane()"):activity.index("private func contextList(kind: String)")]
+def between(text, start, stop):
+    # An ordered slice: reordering the anchors made a bare a:b slice empty and
+    # every "not in" below pass vacuously (QA 2026-09-06).
+    a, b = text.index(start), text.index(stop)
+    need(a < b, f"anchor order: {start!r} must precede {stop!r}")
+    return text[a:b]
+memories_pane = between(activity, "private func memoriesPane()", "private func contextList(kind: String)")
 need("Dismiss" not in memories_pane and "dismiss" not in memories_pane, "0.5.190 is read-only; the Memories pane must carry no Dismiss")
-learning_pane = views[views.index("struct LearningDetailPane"):views.index("struct GraphEntityPane")]
+learning_pane = between(views, "struct LearningDetailPane", "struct GraphEntityPane")
 need("Dismiss" not in learning_pane, "the lesson detail must carry no Dismiss in 0.5.190")
 need("WKWebView" not in activity and "WKWebView" not in views and "import WebKit" not in views and "import WebKit" not in activity,
      "0.5.190 ships a native list neighborhood only; no WKWebView")
@@ -3958,13 +3964,15 @@ need("graph-explorer" not in release and "d3.min" not in release, "build-release
 for asset in ("graph-explorer.js", "graph-explorer.css", "d3.min.js"):
     need(not (root / "Resources" / asset).exists(), f"{asset} must not be in the app bundle")
 
-# 5. Every new list fed by server state outside a full-pane scroll is capped with an
-#    inline-limit / list-height pair and an explicit frame (the 2026-08-26 rule).
-for pair in ("graphRel", "graphMention"):
-    need(f"private static let {pair}InlineRowLimit" in views and f"private static let {pair}ListHeight: CGFloat" in views,
-         f"{pair} list has no inline-limit / height pair")
-    need(f".frame(height: Self.{pair}ListHeight)" in views, f"{pair} list never applies its height")
-    need(f"> Self.{pair}InlineRowLimit" in views, f"{pair} list never consults its inline limit")
+# 5. Every list fed by server state in the entity pane is capped by COUNT with a
+#    Show all button, inside the pane's one ScrollView; nested scrolls are gone.
+entity_pane = between(views, "struct GraphEntityPane", "struct ChipFlowLayout")
+for pair, toggle in (("graphRel", "showAllRelationships"), ("graphMention", "showAllMentions")):
+    need(f"private static let {pair}InlineRowLimit" in entity_pane, f"{pair} list has no inline limit")
+    need(f"prefix(Self.{pair}InlineRowLimit)" in entity_pane and f"{toggle}.toggle()" in entity_pane,
+         f"{pair} list is not capped by count with a Show all toggle")
+need(entity_pane.count("ScrollView {") == 1, "the entity pane must have exactly one ScrollView (no nested scrolls)")
+need("lineLimit(showAllDescriptions ? nil : Self.descriptionLineLimit)" in entity_pane, "descriptions are not length-capped")
 
 # 6. Helper: the GET wrapper takes `needs:` and its 404 branch passes it into the
 #    message that interpolates it; the GET wrapper still maps 202 to "Server
@@ -3979,8 +3987,12 @@ need('default: return "Update the managed server to \\(needs) or newer to see re
 need('guard response.status == 200 else { throw HelperError.message("Server stopped") }' in browse,
      "the GET wrapper no longer rejects 202 as Server stopped")
 mutate = helper[helper.index("private func contextMutateResponse("):helper.index("// ── Recent learning and Knowledge (server 6.44.5")]
-need("guard response.status == 202, let body = response.body else" in mutate, "contextMutateResponse does not accept exactly 202")
+need("guard response.status == 202 else" in mutate, "contextMutateResponse does not accept exactly 202")
 need('"Server stopped"' not in mutate.split("if response.status == 404")[1], "the mutate wrapper says Server stopped after a 404 or a refusal")
+need('throw HelperError.message("Update the managed server to \\(needs) or newer for this (\\(route) is not there).")' in mutate,
+     "the mutate wrapper's own 404 does not name the version that ships the route")
+need("guard response.status == 202 else" in mutate and "return response.body ?? [:]" in mutate,
+     "a bare 202 with no body must still count as accepted")
 need('static let contextNotConfiguredMessage = "Memory and Threads are not set up yet. Use Create Folders."' in helper
      and "notConfiguredMessage: String = COSControlHelper.contextNotConfiguredMessage" in browse,
      "the memory/threads 503 sentence changed")
@@ -3989,8 +4001,18 @@ for command in ("context-learning", "context-learning-status", "context-graph-st
     need(f'case "{command}":' in helper, f"helper dispatch lost {command}")
 need("details.merge(Self.learningStatusDetails(context))" in helper, "status details lost the learning rows")
 need('add("Recent learning and Knowledge", line.state, line.detail)' in helper, "Doctor (and so redactedReport) lost the learning line")
+redacted_block = between(helper, "        var status = details\n        if redacted {", '        return ["checks": checks, "status": status]')
+need("status = Self.redactedStatusDetails(status)" in redacted_block, "the redacted report does not mask the graph owner hostname")
+need('case "index_missing": return "No knowledge index on this Mac yet. Build it from the Sync card."' in helper,
+     "a missing index must point at Build index")
+need('or run Doctor' not in helper.split("static func contextUnavailableMessage")[1].split("}")[0],
+     "an unavailable class must not send the user to Doctor")
+need('if args.contains("--to-review")' in helper and 'needs: Self.reviewNeeds' in helper and 'static let reviewNeeds = "6.44.6"' in helper,
+     "To review must come from the strict-set route, naming 6.44.6")
 # Quoted argv literals, so a comment naming the flag cannot trip this and a real
 # execute(python, [..., "--build-index"]) cannot hide from it.
+need('min(max(Int(option("--limit", in: args) ?? "30") ?? 30, 1), 30)  // the server and the bridge both cap at 30' in helper,
+     "the helper's graph-entity limit must match the server's 30")
 need("emitContextGraphIndexBuild" in helper and '"--build-index"' not in helper and '"--apply-curation"' not in helper
      and '"--process-queue"' not in helper,
      "the helper must only ask the server to spawn a build, never run the pipeline")
@@ -3999,18 +4021,27 @@ need("emitContextGraphIndexBuild" in helper and '"--build-index"' not in helper 
 #    source (self-tested in the helper), the chip reads number then dot, and opening
 #    a section advances its cursor.
 need("model.activitySignals?.legend" in views, "the chip legend is not rendered")
+need("ChipFlowLayout(spacing: 7) {" in views and "struct ChipFlowLayout: Layout" in views, "the chips must wrap, not sit in two fixed rows")
+need('Text(number > 99 ? "99+" : "\\(number)")' in views, "a chip number is not clamped to 99+")
+need("model.activitySignalsError" in views, "a failed signals call is invisible")
 need("model.activityNumber(item)" in views and "model.activityDot(item)" in views, "chips do not read the two marks")
-need(re.search(r"private func select\(_ next: ActivitySection\) \{.*?model\.markActivityOpened\(next\).*?\n    \}", activity, re.S) is not None,
-     "opening a section does not advance its cursor")
+select_fn = between(activity, "private func select(_ next: ActivitySection)", "private func goHome()")
+need("model.markActivityOpened(next)" in select_fn, "opening a section does not advance its cursor")
+need("pendingActivityOpens" in model and "for section in pending { markActivityOpened(section) }" in model,
+     "a section opened before the first signals answer must advance its cursor when it lands")
 need('"legend": activitySignalsLegend' in helper and "Number = needs you" in helper, "the helper does not ship the legend")
 
 # 8. The Sync card renders inside a ScrollView and carries the owner line.
-knowledge = activity[activity.index("private func knowledgePane()"):activity.index("private var graphSearchBar")]
-need("ScrollView {" in knowledge and "syncCard" in knowledge, "the Sync card is not inside a ScrollView")
+knowledge = between(activity, "private func knowledgePane()", "private var graphSearchBar")
+need("syncCard" in knowledge.split("ScrollView {", 1)[1] if "ScrollView {" in knowledge else False,
+     "the Sync card is not inside a ScrollView")
 need('syncRow("Topology", topologyLine(g))' in activity, "the Sync card lost its owner line")
 need('"No processor configured on this Mac"' in models and '"Processor installed, no run recorded yet"' in models,
      "the two processor sentences are gone")
-need('"Build index (about 30 s)"' in activity, "the Sync card does not offer the build")
+need('"Build index (usually a few seconds)"' in activity, "the Sync card does not offer the build (and must not quote an unmeasured 30 s)")
+need('model.graphBuildState == "unknown"' in activity, "the poll giving up must leave the Build button reachable")
+need("g.isOwner" not in activity.split('Button("Build index')[0].rsplit("if g.invitesIndexBuild", 1)[1],
+     "a replica builds its own per-Mac index; the button must not be owner-gated")
 LEARNCHK
 
 
