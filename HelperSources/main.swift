@@ -7434,7 +7434,12 @@ final class COSControlHelper {
         let started = body["started"] as? Bool == true
         let pending = (body["pending"] as? Int).map { "\($0)" } ?? "?"
         let message: String
-        if started { message = "Indexing the next \(body["limit"] as? Int ?? limit) of \(pending) queued" }
+        if started {
+            // "the next 5 of 1 queued" read wrong on a short queue (2026-09-07): say how many will actually run.
+            let queued = body["pending"] as? Int ?? 0
+            let batch = min(body["limit"] as? Int ?? limit, max(queued, 1))
+            message = queued <= batch ? "Indexing all \(queued) queued" : "Indexing the next \(batch) of \(pending) queued"
+        }
         else if body["already_running"] as? Bool == true { message = "Indexing is already running" }
         else if body["nothing_pending"] as? Bool == true { message = "Nothing is queued" }
         else if body["budget_exhausted"] as? Bool == true { message = "Today's LightRAG budget is used up" }

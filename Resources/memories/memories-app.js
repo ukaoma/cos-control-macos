@@ -646,7 +646,7 @@
       var sel = document.querySelector('#ingestLimit'); var limit = sel ? (Number(sel.value) || 10) : 10; state.ingestLimit = limit;
       state.ingesting = { note: 'Starting…' }; render();
       call('graph.ingest', { limit: limit }).then(function (d) {
-        if (d.started) { state.ingesting = { pid: d.pid, limit: d.limit, startedAt: Date.now(), note: 'Indexing the next ' + fmt(d.limit) + ' of ' + fmt(d.pending) + ' queued (pid ' + esc(d.pid) + ')' }; watchIngest(); }
+        if (d.started) { var batch = Math.min(d.limit || 0, d.pending || 0); state.ingesting = { pid: d.pid, limit: d.limit, startedAt: Date.now(), note: (d.pending <= batch ? 'Indexing all ' + fmt(d.pending) + ' queued' : 'Indexing the next ' + fmt(batch) + ' of ' + fmt(d.pending) + ' queued') + ' (pid ' + esc(d.pid) + ')' }; watchIngest(); }
         else if (d.already_running) { state.ingesting = null; toast('Indexing is already running' + (d.lock && d.lock.owner_pid ? ' (pid ' + d.lock.owner_pid + ')' : '') + '. This card refreshes as it runs.'); watchIngest(); }
         else if (d.nothing_pending) { state.ingesting = null; toast('Nothing is queued.'); }
         else if (d.budget_exhausted) { state.ingesting = null; toast('Today\'s LightRAG budget is used up' + (d.budget ? ' (' + fmt(d.budget.used) + ' of ' + fmt(d.budget.cap) + ' calls)' : '') + '. It resets tomorrow.'); }

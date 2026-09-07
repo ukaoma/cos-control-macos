@@ -1,3 +1,9 @@
+## 0.5.196 (build 234)
+
+- Index now says how many will actually run: "Indexing all 1 queued" on a
+  short queue, "Indexing the next 5 of 36 queued" on a long one. 0.5.195 read
+  "the next 5 of 1 queued" on the first real run.
+
 ## 0.5.195 (build 233)
 
 Watch an index run as it happens (server 6.44.10).
