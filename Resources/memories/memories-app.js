@@ -42,13 +42,13 @@
     recent: [], recentTotal: null, recentCursor: null, review: [], reviewCount: null, memories: [], memoriesTotal: null,
     memoryQuery: '', memoryHits: null, coverage: {},
     detail: {}, memoryDetail: {}, passages: {}, loading: {}, errors: {},
-    graphFocus: 'COS', graphQuery: '', graphController: null, copyId: null, copyOptions: { sources: true, graph: false }
+    graphFocus: 'COS', graphFocusChosen: false, ingesting: null, ingestLimit: 10, ingestWatch: null, graphQuery: '', graphController: null, copyId: null, copyOptions: { sources: true, graph: false }
   };
 
   // ── loading ─────────────────────────────────────────────────────
   function loadAll() {
     state.errors = {};
-    call('status').then(function (d) { state.status = d; render(); }, function (e) { state.errors.status = e.message; render(); });
+    call('status').then(function (d) { state.status = d; chooseDefaultFocus(); render(); }, function (e) { state.errors.status = e.message; render(); });
     call('learning.list', { days: 90, limit: 50 }).then(function (d) {
       state.recent = (d.events || []); state.recentTotal = d.total; state.recentCursor = d.nextCursor || null; state.coverage = d.coverage || {}; render();
     }, function (e) { state.errors.recent = e.message; render(); });
@@ -61,8 +61,42 @@
     call('learning.status').then(function (d) { state.learningStatus = d; render(); }, function () {});
     loadGraphStatus();
   }
+  // The graph opens on the person this COS is about (the profile's owner_name,
+  // resolved through a search so the entity's exact spelling wins), not on "COS".
+  // A focus the user picks or recenters on is never overridden.
+  function chooseDefaultFocus() {
+    var name = state.status && state.status.ownerName;
+    if (!name || state.graphFocusChosen || state.graphFocusResolved) return;
+    state.graphFocusResolved = true;
+    call('graph.search', { q: name, limit: 5 }).then(function (d) {
+      var items = d.items || [];
+      var exact = items.find(function (it) { return String(it.id).toLowerCase() === String(name).toLowerCase(); });
+      var pick = exact || items.find(function (it) { return String(it.type || '').toLowerCase() === 'person'; }) || items[0];
+      if (pick && !state.graphFocusChosen) { state.graphFocus = pick.id; if (state.view === 'knowledge' && state.knowledgeTab === 'graph') render(); }
+    }, function () {});
+  }
+  // While the ingest lock is held, re-read the Sync card every 15 s (four hours
+  // at most) and say what changed when it frees: pending before vs after.
+  function watchIngest() {
+    if (state.ingestWatch) return;
+    var before = state.graphStatus && state.graphStatus.queue ? Number(state.graphStatus.queue.pending) : null, ticks = 0;
+    state.ingestWatch = setInterval(function () {
+      ticks++;
+      loadGraphStatus().then(function () {
+        var g = state.graphStatus || {}, lk = g.lock || {}, after = g.queue ? Number(g.queue.pending) : null;
+        var held = lk.state === 'exclusive' || lk.state === 'shared';
+        if (!held || ticks > 960) {
+          clearInterval(state.ingestWatch); state.ingestWatch = null;
+          var done = before != null && after != null && before > after ? fmt(before - after) + ' indexed' : 'Indexing finished';
+          state.ingesting = held ? null : { note: done + (after != null ? ' · ' + fmt(after) + ' still queued' : '') };
+          setTimeout(function () { state.ingesting = null; if (state.view === 'knowledge') render(); }, 60000);
+        }
+        if (state.view === 'knowledge') render();
+      }, function () {});
+    }, 15000);
+  }
   function loadGraphStatus() {
-    return call('graph.status').then(function (d) { state.graphStatus = d; state.errors.graph = null; render(); }, function (e) { state.errors.graph = e.message; render(); });
+    return call('graph.status').then(function (d) { state.graphStatus = d; state.errors.graph = null; var lk = d.lock || {}; if (lk.state === 'exclusive' || lk.state === 'shared') watchIngest(); render(); }, function (e) { state.errors.graph = e.message; render(); });
   }
   function loadMore() {
     if (!state.recentCursor) return;
@@ -288,7 +322,22 @@
     var owner = air
       ? 'Owner: <b>' + esc(ownerName) + '</b> · that Mac reads an iCloud replica' + (g.source_updated_at ? ' updated <b>' + esc(stamp(g.source_updated_at)) + '</b>' : '')
       : (src.owner_state === 'owner' ? 'Owner: <b>this Mac</b> (' + esc(ownerName) + ') · canonical graph' : src.owner_state === 'replica' ? 'Owner: <b>' + esc(ownerName) + '</b> · this Mac reads an iCloud replica' : 'No ingestion owner set. Run --set-owner on the Mac that processes the queue.');
-    var processor = air ? 'Processing happens on ' + esc(ownerName) : (proc.state === 'none' || !proc.state ? 'No processor configured on this Mac' : proc.state === 'installed-idle' ? 'Processor installed, no run recorded yet' : 'Processor ' + esc(proc.state));
+    var processor = air ? 'Processing happens on ' + esc(ownerName) : (proc.state === 'none' || !proc.state ? 'No scheduled processor on this Mac' : proc.state === 'installed-idle' ? 'Processor installed, no run recorded yet' : 'Processor ' + esc(proc.state));
+    // Index now (server 6.44.8): one bounded run of the queue, started here on the
+    // owner Mac. A held lock (a Claude session, a scheduled run, a backup) shows
+    // as "Indexing now" and the card refreshes until it is free again.
+    var lockHeld = lock.state === 'exclusive' || lock.state === 'shared';
+    var pendingN = q.pending != null ? Number(q.pending) : 0;
+    if (!air) {
+      if (state.ingesting && state.ingesting.note) processor += ' · <span class="muted">' + esc(state.ingesting.note) + '</span>';
+      else if (lockHeld) processor += ' · <span class="muted">Indexing now' + (lock.owner_pid ? ' (pid ' + esc(lock.owner_pid) + ')' : '') + ', this card refreshes as it runs</span>';
+      else if (src.owner_state === 'owner' && pendingN > 0) {
+        var sizes = [5, 10, 25, 50].filter(function (n) { return n < pendingN; });
+        var options = sizes.map(function (n) { return '<option value="' + n + '"' + (n === state.ingestLimit ? ' selected' : '') + '>the next ' + n + '</option>'; }).join('');
+        if (pendingN <= 50) options += '<option value="' + pendingN + '"' + (sizes.indexOf(state.ingestLimit) === -1 ? ' selected' : '') + '>all ' + fmt(pendingN) + '</option>';
+        processor += ' <span class="ingest-control"><label class="sr-only" for="ingestLimit">How many queued meetings to index</label><select id="ingestLimit">' + options + '</select><button class="quiet" onclick="cosApp.startIngest()">Index now</button></span>';
+      }
+    }
     var queued = (q.pending != null ? fmt(q.pending) + ' pending' : 'unknown') + (q.oldest_pending_at ? ' · oldest ' + esc(dateOnly(q.oldest_pending_at)) : '') + (q.missing_sources != null ? ' · ' + fmt(q.missing_sources) + ' missing sources' : '') + (q.conflict_copies != null ? ' · ' + fmt(q.conflict_copies) + ' conflict copies' : '');
     var indexed = (g.entities != null ? fmt(g.entities) + ' entities' : 'no graph') + (g.relationships != null ? ' · ' + fmt(g.relationships) + ' relationships' : '') + (g.source_updated_at ? ' · graph updated ' + esc(stamp(g.source_updated_at)) : '');
     var invites = g.index_state === 'missing' || g.index_state === 'stale';
@@ -325,7 +374,7 @@
       (cards.length ? cards.map(function (x) { return '<article class="source-card"><div class="row spread"><h3>' + esc(x.title) + '</h3><span class="badge">' + esc(x.kind) + '</span></div>' + (x.text ? '<div class="quote">' + esc(x.text) + '</div>' : '') + (x.note ? '<p>' + esc(x.note) + '</p>' : '') + (x.event ? '<div class="actions"><button class="link" onclick="cosApp.select(\'' + esc(x.event) + '\');cosApp.setFilter(\'recent\')">Inspect learning →</button></div>' : '') + '</article>'; }).join('') : '<div class="empty"><div><h3>No source records yet.</h3><p>Your first saved lesson will bring its source here.</p></div></div>');
   }
   function graphDetail() {
-    return '<div class="row spread actual-header"><h2>Knowledge graph</h2><span class="row"><span class="badge green">Your LightRAG data</span><span class="meta">focus: ' + esc(state.graphFocus) + '</span></span></div><p class="intro">' + esc(state.graphFocus) + ' and its strongest neighbors from your graph, read through COS Control. Click an entity to inspect it; Explore from here loads that entity\'s own neighborhood.</p><div class="graph-search row"><input type="search" id="graphQuery" placeholder="Find an entity to focus…" value="' + esc(state.graphQuery) + '" aria-label="Find an entity"><button onclick="cosApp.graphSearch()">Focus</button><span id="graphSearchStatus" class="muted"></span></div><div id="graphMount" class="cgx-host"></div>';
+    return '<div class="row spread actual-header"><h2>Knowledge graph</h2><span class="row"><span class="badge green">Your LightRAG data</span><span class="meta">focus: ' + esc(state.graphFocus) + '</span></span></div><p class="intro">' + esc(state.graphFocus) + (state.status && state.status.ownerName && state.graphFocus === state.status.ownerName ? ' (you)' : '') + ' and its strongest neighbors from your graph, read through COS Control. Click an entity to inspect it; Explore from here loads that entity\'s own neighborhood.</p><div class="graph-search row"><input type="search" id="graphQuery" placeholder="Find an entity to focus…" value="' + esc(state.graphQuery) + '" aria-label="Find an entity"><button onclick="cosApp.graphSearch()">Focus</button><span id="graphSearchStatus" class="muted"></span></div><div id="graphMount" class="cgx-host"></div>';
   }
   function nodeFromEntity(en) { return { id: en.id, group: en.type || 'unknown', descs: en.descriptions && en.descriptions.length ? en.descriptions : (en.description ? [en.description] : []), ts: en.created_at || null, totalDegree: en.degree || 0 }; }
   function neighborhood(focus) {
@@ -351,7 +400,7 @@
       memoriesFor: function (id) { var hits = state.graphMemories[id]; if (hits === undefined) { state.graphMemories[id] = null; call('memories.search', { q: id, limit: 5 }).then(function (d) { state.graphMemories[id] = (d.hits || []).map(function (h) { return { id: h.id, title: h.summary || h.content || h.id }; }); if (state.graphController && state.graphController.select) state.graphController.select(id); }, function () { state.graphMemories[id] = []; }); } return hits || []; },
       onOpenMemory: function (memoryId) { state.view = 'learning'; state.filter = 'memories'; state.selectedMemory = memoryId; render(); },
       onCopy: function (text, label) { call('copy', { text: text, label: label }).then(function () { toast('Copied as grounded context'); }, function (e) { toast(e.message); }); },
-      onRecenter: function (id) { state.graphFocus = id; state.graphQuery = ''; render(); },
+      onRecenter: function (id) { state.graphFocus = id; state.graphFocusChosen = true; state.graphQuery = ''; render(); },
       onPassages: function (id) { call('graph.passages', { entity: id, limit: 5 }).then(function (d) { openPassages(id, d); }, function (e) { toast(e.message); }); },
       curation: { ownerLabel: hostLabel(state.graphStatus && state.graphStatus.source && state.graphStatus.source.owner_host) || 'the owner Mac', isOwner: !!(state.graphStatus && state.graphStatus.source && state.graphStatus.source.is_owner) },
       onCuration: function () { toast('Merging, renaming and removing arrive with the curation engine in a later release. Nothing was changed.'); return false; }
@@ -372,14 +421,14 @@
     call('graph.search', { q: q, limit: 5 }).then(function (d) {
       var items = d.items || [];
       if (!items.length) { if (status) status.textContent = d.indexState === 'missing' ? 'No knowledge index on this Mac yet. Build it above.' : 'No entities match that lookup.'; return; }
-      state.graphFocus = items[0].id; if (status) status.textContent = (d.total > 1 ? fmt(d.total) + ' matches · focusing ' : 'Focusing ') + items[0].id; render();
+      state.graphFocus = items[0].id; state.graphFocusChosen = true; if (status) status.textContent = (d.total > 1 ? fmt(d.total) + ' matches · focusing ' : 'Focusing ') + items[0].id; render();
     }, function (e) { if (status) status.textContent = e.message; });
   }
   function exploreTerm(e) { if (e.category && e.category !== e.scope && e.category !== 'unknown') return e.category; return String(e.title || '').split(' ').slice(0, 4).join(' ') || 'COS'; }
   function exploreInGraph(id) {
     var e = findEvent(id); if (!e) return;
     state.knowledgeFocus = id; state.view = 'knowledge'; state.knowledgeTab = 'graph'; state.graphQuery = exploreTerm(e); render();
-    call('graph.search', { q: state.graphQuery, limit: 3 }).then(function (d) { var items = d.items || []; if (items.length) { state.graphFocus = items[0].id; render(); } else toast('No entity in the graph matches "' + state.graphQuery + '". Showing ' + state.graphFocus + '.'); }, function (er) { toast(er.message); });
+    call('graph.search', { q: state.graphQuery, limit: 3 }).then(function (d) { var items = d.items || []; if (items.length) { state.graphFocus = items[0].id; state.graphFocusChosen = true; render(); } else toast('No entity in the graph matches "' + state.graphQuery + '". Showing ' + state.graphFocus + '.'); }, function (er) { toast(er.message); });
   }
   function findEvent(id) { return state.recent.concat(state.review).find(function (x) { return x.event_id === id; }); }
 
@@ -455,6 +504,18 @@
     backToLearning: function () { state.view = 'learning'; state.filter = 'recent'; if (state.knowledgeFocus) state.selected = state.knowledgeFocus; render(); },
     exploreInGraph: exploreInGraph, graphSearch: graphSearch, viewAs: function (v) { state.viewAs = v; render(); },
     refresh: loadAll, refreshGraph: loadGraphStatus, loadMore: loadMore, memoryQuery: memoryQuery,
+    startIngest: function () {
+      var sel = document.querySelector('#ingestLimit'); var limit = sel ? (Number(sel.value) || 10) : 10; state.ingestLimit = limit;
+      state.ingesting = { note: 'Starting…' }; render();
+      call('graph.ingest', { limit: limit }).then(function (d) {
+        if (d.started) { state.ingesting = { pid: d.pid, limit: d.limit, startedAt: Date.now(), note: 'Indexing the next ' + fmt(d.limit) + ' of ' + fmt(d.pending) + ' queued (pid ' + esc(d.pid) + ')' }; watchIngest(); }
+        else if (d.already_running) { state.ingesting = null; toast('Indexing is already running' + (d.lock && d.lock.owner_pid ? ' (pid ' + d.lock.owner_pid + ')' : '') + '. This card refreshes as it runs.'); watchIngest(); }
+        else if (d.nothing_pending) { state.ingesting = null; toast('Nothing is queued.'); }
+        else if (d.budget_exhausted) { state.ingesting = null; toast('Today\'s LightRAG budget is used up' + (d.budget ? ' (' + fmt(d.budget.used) + ' of ' + fmt(d.budget.cap) + ' calls)' : '') + '. It resets tomorrow.'); }
+        else { state.ingesting = null; toast('Nothing started.'); }
+        render();
+      }, function (e) { state.ingesting = null; toast(e.message); render(); });
+    },
     buildIndex: function () { state.building = 'Starting…'; render(); call('graph.build').then(function (d) { state.building = d.already_running ? 'A build is already running' : 'Building…'; render(); var tries = 0; var poll = setInterval(function () { tries++; loadGraphStatus().then(function () { var b = state.graphStatus && state.graphStatus.build; if (b && (b.state === 'done' || b.state === 'failed')) { state.building = b.state === 'done' ? 'Index rebuilt' : ('Build failed: ' + (b.error || '')); clearInterval(poll); render(); } else if (tries > 150) { state.building = 'Still building after 5 minutes. Refresh later.'; clearInterval(poll); render(); } }); }, 2000); }, function (e) { state.building = null; toast(e.message); render(); }); },
     decide: decide, openMemoryRecord: function (id) { state.view = 'learning'; state.filter = 'memories'; state.selectedMemory = id; state.memoryQuery = ''; state.memoryHits = null; if (!state.memories.some(function (m) { return m.id === id; })) state.memories.unshift({ id: id, summary: 'Memory ' + id }); render(); },
     reveal: function (id) { call('memory.reveal', { id: id }).then(function () {}, function (e) { toast(e.message); }); },

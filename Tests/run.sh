@@ -3980,9 +3980,29 @@ for forbidden in ("install", "update", "rollback", "reconcile", "adopt", "set-",
     pass
 for verb in ('"install"', '"update"', '"rollback"', '"reconcile"', '"adopt"', '"set-', '"task-', '"fence-release"', '"meeting-'):
     need(verb not in ops, f"the page op table must never reach {verb}")
-need('"graph.build": { _ in ["context-graph-index-build"] }' in ops, "the only write op is the index-build kickoff")
+need('"graph.build": { _ in ["context-graph-index-build"] }' in ops, "the index-build kickoff op is gone")
+# The two kickoffs are the only writes besides a review decision: the ingest op
+# is bounded to the server's 50 and reaches nothing but its own helper command.
+need('"graph.ingest": { a in ["context-graph-ingest", "--limit", MemoriesWebView.bounded(a["limit"], 10, 1, 50)] }' in ops,
+     "the queue-ingest kickoff must be a bounded op")
+need(ops.count("context-graph-ingest") == 1 and ops.count("context-graph-index-build") == 1, "each kickoff command appears once in the op table")
+need('case "context-graph-ingest": try emitContextGraphIngest(args: args)' in helper and 'static let ingestNeeds = "6.44.8"' in helper
+     and 'needs: Self.ingestNeeds, accepted: [202]' in helper and 'where text.contains("not_owner")' in helper,
+     "the ingest command must name 6.44.8, accept only 202, and turn not_owner into a sentence")
+need("cosApp.startIngest()" in (root / "Resources/memories/memories-app.js").read_text() and "'graph.ingest'" in (root / "Resources/memories/memories-app.js").read_text(),
+     "the Sync card must offer Index now through the graph.ingest op")
 need('"learning.decide": { a in ["context-learning-decide"' in ops, "Dismiss must go through the decide command")
 need('reply(id, ok: false, message: "This page cannot ask for \\(op).", details: [:])' in activity, "an unknown op must be refused")
+# The graph opens on the person this COS is about: status carries the profile's
+# owner_name (masked in the redacted report), and the page resolves it through a
+# search before falling back to COS; a focus the user picks is never overridden.
+need('details["ownerName"] = profileOwnerName() ?? NSNull()' in helper and 'static func ownerName(fromProfileJSON data: Data) -> String?' in helper,
+     "status must carry the profile owner name")
+need('copy["ownerName"] = "<owner>"' in helper, "the redacted report must mask the owner name")
+page = (root / "Resources/memories/memories-app.js").read_text()
+need("function chooseDefaultFocus()" in page and "state.status.ownerName" in page and "graphFocusChosen" in page,
+     "the page must default the graph focus to the owner and keep a chosen focus")
+need(page.count("state.graphFocusChosen = true") >= 3, "recenter, Focus and Explore in graph must all mark the focus as chosen")
 
 # 5. Every list fed by server state in the entity pane is capped by COUNT with a
 #    Show all button, inside the pane's one ScrollView; nested scrolls are gone.
@@ -4018,7 +4038,7 @@ need('static let contextNotConfiguredMessage = "Memory and Threads are not set u
      and "notConfiguredMessage: String = COSControlHelper.contextNotConfiguredMessage" in browse,
      "the memory/threads 503 sentence changed")
 for command in ("context-learning", "context-learning-status", "context-graph-status", "context-graph-search",
-                "context-graph-entity", "context-graph-passages", "context-graph-index-build", "activity-signals"):
+                "context-graph-entity", "context-graph-passages", "context-graph-index-build", "context-graph-ingest", "activity-signals"):
     need(f'case "{command}":' in helper, f"helper dispatch lost {command}")
 need("details.merge(Self.learningStatusDetails(context))" in helper, "status details lost the learning rows")
 need('add("Recent learning and Knowledge", line.state, line.detail)' in helper, "Doctor (and so redactedReport) lost the learning line")

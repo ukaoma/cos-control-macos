@@ -1,3 +1,20 @@
+## 0.5.192 (build 230)
+
+Knowledge opens on you, and the queue can be indexed from the Sync card.
+
+- **The graph opens on the person this COS is about.** The helper's status
+  carries the profile's owner name (masked in the redacted report), and the
+  page resolves it through a graph search before falling back to COS. A focus
+  you pick, recenter on, or explore from is never overridden.
+- **Index now (server 6.44.8).** On the owner Mac the Sync card's Indexing row
+  offers one bounded run of the queue (the next 5, 10, 25 or 50, or all of a
+  short queue) through the new `context-graph-ingest` command, which is the
+  page's second and last kickoff op. A run started anywhere else shows as
+  "Indexing now" with its pid, and the card refreshes every 15 s until the
+  ingest lock frees, then says how many were indexed and how many are still
+  queued. Nothing pending, a spent daily budget, or a replica are each refused
+  with a sentence; nothing is forced, and the child stops on its own limit.
+
 ## 0.5.191 (build 229)
 
 The Memories tab is the reviewed design, on your data.

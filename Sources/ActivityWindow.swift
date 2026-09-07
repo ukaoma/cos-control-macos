@@ -4296,6 +4296,7 @@ struct MemoriesWebView: NSViewRepresentable {
         "graph.entity": { a in ["context-graph-entity", "--id", MemoriesWebView.text(a["id"], 200), "--limit", MemoriesWebView.bounded(a["limit"], 30, 1, 30)] },
         "graph.passages": { a in ["context-graph-passages", "--entity", MemoriesWebView.text(a["entity"], 200), "--limit", MemoriesWebView.bounded(a["limit"], 5, 1, 5)] },
         "graph.build": { _ in ["context-graph-index-build"] },
+        "graph.ingest": { a in ["context-graph-ingest", "--limit", MemoriesWebView.bounded(a["limit"], 10, 1, 50)] },
     ]
 
     static func bounded(_ value: Any?, _ fallback: Int, _ low: Int, _ high: Int) -> String {

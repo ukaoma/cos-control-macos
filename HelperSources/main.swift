@@ -524,6 +524,7 @@ final class COSControlHelper {
         case "context-graph-entity": try emitContextGraphEntity(args: args)
         case "context-graph-passages": try emitContextGraphPassages(args: args)
         case "context-graph-index-build": try emitContextGraphIndexBuild()
+        case "context-graph-ingest": try emitContextGraphIngest(args: args)
         case "activity-signals": try emitActivitySignals()
         case "meetings": try emitMeetings(args: args)
         case "meetings-library": try emitMeetingsLibrary(args: args)
@@ -2488,6 +2489,9 @@ final class COSControlHelper {
         }
         // Recent learning and Knowledge (server 6.44.5): NSNull rows when absent.
         details.merge(Self.learningStatusDetails(context)) { _, new in new }
+        // The person this COS is about (profile owner_name), so the Knowledge
+        // graph opens on them rather than on "COS" (Miles, 2026-09-06 22:23).
+        details["ownerName"] = profileOwnerName() ?? NSNull()
         return details
     }
 
@@ -7170,6 +7174,8 @@ final class COSControlHelper {
     static let reviewNeeds = "6.44.6"
     /// The server version that ships POST /api/context/learning/:id/review (Dismiss and Restore).
     static let decideNeeds = "6.44.7"
+    /// The queue-ingest kickoff route shipped in this server version.
+    static let ingestNeeds = "6.44.8"
     /// The 503 classes that mean "no pipeline", as the server spells them
     /// (pythonBridgeState and the file tier), rather than a passing fault.
     static let notConfiguredErrorClasses: Set<String> = ["pipeline_missing", "bridge_missing", "cos_pipeline_not_configured"]
@@ -7400,6 +7406,31 @@ final class COSControlHelper {
         emit(ok: true, message: already ? "An index build is already running" : "Index build started", details: body)
     }
 
+    /// `context-graph-ingest [--limit N]`: start ONE bounded, detached queue
+    /// ingest on the ingestion owner (server 6.44.8). A 202 that did not start
+    /// is still ok:true with the reason in its flags; only a refusal (replica,
+    /// stopped server, older server) is ok:false with a sentence.
+    private func emitContextGraphIngest(args: [String]) throws {
+        let limit = min(max(Int(option("--limit", in: args) ?? "10") ?? 10, 1), 50)  // the server and the bridge both cap at 50
+        let payload = try JSONSerialization.data(withJSONObject: ["limit": limit])
+        let body: [String: Any]
+        do {
+            body = try contextMutateResponse("/api/context/graph/ingest", body: String(decoding: payload, as: UTF8.self),
+                                             needs: Self.ingestNeeds, accepted: [202])
+        } catch HelperError.message(let text) where text.contains("not_owner") {
+            throw HelperError.message("Only the ingestion owner Mac can index the queue. Open COS Control there, or make this Mac the owner with lightrag_indexer.py --set-owner.")
+        }
+        let started = body["started"] as? Bool == true
+        let pending = (body["pending"] as? Int).map { "\($0)" } ?? "?"
+        let message: String
+        if started { message = "Indexing the next \(body["limit"] as? Int ?? limit) of \(pending) queued" }
+        else if body["already_running"] as? Bool == true { message = "Indexing is already running" }
+        else if body["nothing_pending"] as? Bool == true { message = "Nothing is queued" }
+        else if body["budget_exhausted"] as? Bool == true { message = "Today's LightRAG budget is used up" }
+        else { message = "Nothing started" }
+        emit(ok: true, message: message, details: body)
+    }
+
     // ── Activity signals (0.5.190) ────────────────────────────────
     //
     // One call composes what each Activity chip may mark. A NUMBER means needs
@@ -7554,11 +7585,30 @@ final class COSControlHelper {
         ]
     }
 
+    /// The wearer's name from `.cos-profile.json` (`owner_name`), honoring a
+    /// managed COS_PROFILE_PATH; nil for a placeholder or a missing profile.
+    private func profileOwnerName() -> String? {
+        let configured = loadedEnvironmentValue("COS_PROFILE_PATH").map { URL(fileURLWithPath: $0) }
+        let url = configured ?? home.appendingPathComponent(".cos-glasses/.cos-profile.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return Self.ownerName(fromProfileJSON: data)
+    }
+
+    static let placeholderOwnerNames: Set<String> = ["", "user", "me", "your name", "owner", "wearer"]
+
+    static func ownerName(fromProfileJSON data: Data) -> String? {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let raw = object["owner_name"] as? String else { return nil }
+        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return placeholderOwnerNames.contains(name.lowercased()) || name.count > 120 ? nil : name
+    }
+
     /// The status rows a shareable report may carry: the graph owner hostname is
     /// an identity, masked like paths and emails are; absence stays absent.
     static func redactedStatusDetails(_ details: [String: Any]) -> [String: Any] {
         var copy = details
         if let host = details["graphOwnerHost"], !(host is NSNull) { copy["graphOwnerHost"] = "<graph owner Mac>" }
+        if let name = details["ownerName"], !(name is NSNull) { copy["ownerName"] = "<owner>" }
         return copy
     }
 
@@ -14135,6 +14185,13 @@ final class COSControlHelper {
         try expect(Self.redactedStatusDetails(["graphOwnerHost": "Ukaoma-Mac-Studio.local", "graphIsOwner": true])["graphOwnerHost"] as? String == "<graph owner Mac>"
                    && Self.redactedStatusDetails(["graphOwnerHost": NSNull()])["graphOwnerHost"] is NSNull,
                    "the redacted report masks the owner hostname and keeps absence")
+        try expect(Self.redactedStatusDetails(["ownerName": "Miles Ukaoma"])["ownerName"] as? String == "<owner>",
+                   "the redacted report masks the owner name")
+        try expect(Self.ownerName(fromProfileJSON: Data("{\"owner_name\": \" Miles Ukaoma \"}".utf8)) == "Miles Ukaoma", "owner_name is trimmed")
+        try expect(Self.ownerName(fromProfileJSON: Data("{\"owner_name\": \"User\"}".utf8)) == nil
+                   && Self.ownerName(fromProfileJSON: Data("{\"owner_name\": \"\"}".utf8)) == nil
+                   && Self.ownerName(fromProfileJSON: Data("{}".utf8)) == nil && Self.ownerName(fromProfileJSON: Data("nope".utf8)) == nil,
+                   "a placeholder, empty, missing or unreadable owner_name is nil, never a name")
         let quietSignals = Self.activitySignalsProjection(messages: nil, extAudio: nil, orphans: nil, meetings: nil,
                                                           context: nil, memories: nil, threads: nil, fences: nil, tasks: nil)
         func quiet(_ section: String, _ key: String) -> Any? { (quietSignals[section] as? [String: Any])?[key] }
