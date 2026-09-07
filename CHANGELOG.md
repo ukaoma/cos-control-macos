@@ -1,3 +1,22 @@
+## 0.5.194 (build 232)
+
+Knowledge from zero: a guided setup path in the Knowledge tab (server 6.44.9).
+
+- **Set up Knowledge** is the third route beside Source records and the
+  graph: seven steps, each one a live check with its own control. Enable
+  (the LightRAG SDK, the model backend, the embedding key); Choose sources
+  (a real folder picker, folders on and off); Owner Mac (make this Mac the
+  one that indexes); Validate (backend, embeddings, today's budget, and what
+  leaves the Mac); Index three sample documents (the three newest documents
+  from the chosen folders through the indexer's own dedup, one bounded run,
+  the card refreshing until it finishes); Ask one question (the answer, with
+  its time); Scheduled batches (the `com.cos.lightrag-ingest` agent, on or
+  off, every 15 minutes to a day). Every write is owner-only, and a replica
+  says so in a sentence. Each person's graph, queue, owner file and sources
+  stay on their own Mac by construction.
+- The page's op table gains six bounded ops for the path and one native
+  affordance, the folder picker; nothing else new can be reached from it.
+
 ## 0.5.193 (build 231)
 
 The other tabs speak the Memories tab's language.

@@ -3985,7 +3985,7 @@ need('"graph.build": { _ in ["context-graph-index-build"] }' in ops, "the index-
 # is bounded to the server's 50 and reaches nothing but its own helper command.
 need('"graph.ingest": { a in ["context-graph-ingest", "--limit", MemoriesWebView.bounded(a["limit"], 10, 1, 50)] }' in ops,
      "the queue-ingest kickoff must be a bounded op")
-need(ops.count("context-graph-ingest") == 1 and ops.count("context-graph-index-build") == 1, "each kickoff command appears once in the op table")
+need(ops.count('"context-graph-ingest"') == 1 and ops.count('"context-graph-index-build"') == 1, "each kickoff command appears once in the op table")
 need('case "context-graph-ingest": try emitContextGraphIngest(args: args)' in helper and 'static let ingestNeeds = "6.44.8"' in helper
      and 'needs: Self.ingestNeeds, accepted: [202]' in helper and 'where text.contains("not_owner")' in helper,
      "the ingest command must name 6.44.8, accept only 202, and turn not_owner into a sentence")
@@ -4023,6 +4023,24 @@ meetings_src = (root / "Sources/ActivityMeetings.swift").read_text()
 need(meetings_src.count(".cosRowCard()") == 2 and "List(" not in meetings_src, "the meeting rows must be cards in the shared scroll list, not a List")
 need("COSType.display(22, weight: .medium)" in meetings_src and "COSType.display(15, weight: .medium)" in meetings_src, "the meeting detail title and the calendar month must be Fraunces")
 need("Search topics, ideas" in meetings_src, "the meetings search placeholder changed")
+# 0.5.194: the Knowledge setup path. Six bounded ops plus one native folder
+# picker; the helper names 6.44.9 and turns a not_owner refusal into a sentence.
+for op in ('"graph.setup": { _ in ["context-graph-setup"] }',
+           '"graph.setup.sources": { a in ["context-graph-setup-sources", "--action", MemoriesWebView.text(a["action"], 8), "--path", MemoriesWebView.text(a["path"], 1000)] }',
+           '"graph.setup.owner": { _ in ["context-graph-setup-owner"] }',
+           '"graph.sample": { a in ["context-graph-ingest-sample", "--limit", MemoriesWebView.bounded(a["limit"], 3, 1, 3)] }',
+           '"graph.ask": { a in ["context-graph-ask", "--q", MemoriesWebView.text(a["q"], 400)] }',
+           '"graph.schedule": { a in ["context-graph-schedule", "--enabled"'):
+    need(op in ops, f"the setup op table lost {op[:24]}")
+need('case "pick.folder":' in activity and "panel.canChooseFiles = false" in activity and "panel.allowsMultipleSelection = false" in activity,
+     "the folder picker must pick one folder and never a file")
+need('static let setupNeeds = "6.44.9"' in helper and "case 404 where klass == nil:" in helper and "klass == \"not_owner\" ? Self.setupOwnerMessage" in helper,
+     "the setup requests must name 6.44.9, keep a classed 404 apart from a missing route, and word not_owner")
+for command in ("context-graph-setup", "context-graph-setup-sources", "context-graph-setup-owner", "context-graph-ingest-sample", "context-graph-ask", "context-graph-schedule"):
+    need(f'case "{command}":' in helper, f"helper dispatch lost {command}")
+setup_page = (root / "Resources/memories/memories-app.js").read_text()
+need("function setupDetail(" in setup_page and "'graph.setup'" in setup_page and "'pick.folder'" in setup_page and "'graph.ask'" in setup_page,
+     "the page must render the setup path from the graph.setup op with the folder picker and the question")
 
 # 5. Every list fed by server state in the entity pane is capped by COUNT with a
 #    Show all button, inside the pane's one ScrollView; nested scrolls are gone.

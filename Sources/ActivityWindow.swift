@@ -4370,7 +4370,27 @@ struct MemoriesWebView: NSViewRepresentable {
         "graph.passages": { a in ["context-graph-passages", "--entity", MemoriesWebView.text(a["entity"], 200), "--limit", MemoriesWebView.bounded(a["limit"], 5, 1, 5)] },
         "graph.build": { _ in ["context-graph-index-build"] },
         "graph.ingest": { a in ["context-graph-ingest", "--limit", MemoriesWebView.bounded(a["limit"], 10, 1, 50)] },
+        // Knowledge setup (0.5.194): six more ops, each bounded like the server.
+        "graph.setup": { _ in ["context-graph-setup"] },
+        "graph.setup.sources": { a in ["context-graph-setup-sources", "--action", MemoriesWebView.text(a["action"], 8), "--path", MemoriesWebView.text(a["path"], 1000)] },
+        "graph.setup.owner": { _ in ["context-graph-setup-owner"] },
+        "graph.sample": { a in ["context-graph-ingest-sample", "--limit", MemoriesWebView.bounded(a["limit"], 3, 1, 3)] },
+        "graph.ask": { a in ["context-graph-ask", "--q", MemoriesWebView.text(a["q"], 400)] },
+        "graph.schedule": { a in ["context-graph-schedule", "--enabled", (a["enabled"] as? Bool) == true ? "true" : "false", "--interval-s", MemoriesWebView.bounded(a["intervalS"], 3600, 900, 86_400)] },
     ]
+
+    /// How long the page may wait on each op: the graph question runs two
+    /// model calls (the server bounds it at 150 s), the sample ingest runs the
+    /// indexer's dedup as a child per document, a build is a few seconds.
+    static func timeout(for op: String) -> TimeInterval {
+        switch op {
+        case "graph.ask": 170
+        case "graph.sample": 110
+        case "graph.build": 45
+        case "graph.setup": 35
+        default: 30
+        }
+    }
 
     static func bounded(_ value: Any?, _ fallback: Int, _ low: Int, _ high: Int) -> String {
         let n = (value as? Int) ?? (value as? Double).map { Int($0) } ?? fallback
@@ -4454,13 +4474,28 @@ struct MemoriesWebView: NSViewRepresentable {
                 } else {
                     reply(id, ok: false, message: "Unknown section.", details: [:])
                 }
+            case "pick.folder":
+                // The one native affordance the setup path needs: a real folder
+                // picker, so nobody types a path. Folders only, one at a time.
+                let panel = NSOpenPanel()
+                panel.canChooseDirectories = true
+                panel.canChooseFiles = false
+                panel.allowsMultipleSelection = false
+                panel.message = "Choose a folder of notes or documents for Knowledge to index"
+                panel.prompt = "Use this folder"
+                let outcome = await panel.begin()
+                if outcome == .OK, let url = panel.url {
+                    reply(id, ok: true, message: "Chosen", details: ["path": .string(url.path)])
+                } else {
+                    reply(id, ok: false, message: "No folder chosen.", details: [:])
+                }
             default:
                 guard let build = MemoriesWebView.helperOps[op] else {
                     reply(id, ok: false, message: "This page cannot ask for \(op).", details: [:])
                     return
                 }
                 do {
-                    let response = try await model.runHelper(build(args), timeout: op == "graph.build" ? 45 : 30)
+                    let response = try await model.runHelper(build(args), timeout: MemoriesWebView.timeout(for: op))
                     reply(id, ok: response.ok, message: response.message, details: response.details)
                 } catch {
                     reply(id, ok: false, message: error.localizedDescription, details: [:])

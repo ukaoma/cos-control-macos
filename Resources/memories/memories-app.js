@@ -42,7 +42,8 @@
     recent: [], recentTotal: null, recentCursor: null, review: [], reviewCount: null, memories: [], memoriesTotal: null,
     memoryQuery: '', memoryHits: null, coverage: {},
     detail: {}, memoryDetail: {}, passages: {}, loading: {}, errors: {},
-    graphFocus: 'COS', graphFocusChosen: false, ingesting: null, ingestLimit: 10, ingestWatch: null, graphQuery: '', graphController: null, copyId: null, copyOptions: { sources: true, graph: false }
+    graphFocus: 'COS', graphFocusChosen: false, ingesting: null, ingestLimit: 10, ingestWatch: null, graphQuery: '',
+    setup: null, setupLoading: false, setupError: null, setupBusy: null, armed: null, askQ: '', askAnswer: null, askBusy: false, knowledgeTabChosen: false, graphController: null, copyId: null, copyOptions: { sources: true, graph: false }
   };
 
   // ── loading ─────────────────────────────────────────────────────
@@ -89,6 +90,7 @@
           clearInterval(state.ingestWatch); state.ingestWatch = null;
           var done = before != null && after != null && before > after ? fmt(before - after) + ' indexed' : 'Indexing finished';
           state.ingesting = held ? null : { note: done + (after != null ? ' · ' + fmt(after) + ' still queued' : '') };
+          if (state.knowledgeTab === 'setup') loadSetup();
           setTimeout(function () { state.ingesting = null; if (state.view === 'knowledge') render(); }, 60000);
         }
         if (state.view === 'knowledge') render();
@@ -96,7 +98,7 @@
     }, 15000);
   }
   function loadGraphStatus() {
-    return call('graph.status').then(function (d) { state.graphStatus = d; state.errors.graph = null; var lk = d.lock || {}; if (lk.state === 'exclusive' || lk.state === 'shared') watchIngest(); render(); }, function (e) { state.errors.graph = e.message; render(); });
+    return call('graph.status').then(function (d) { state.graphStatus = d; state.errors.graph = null; var lk = d.lock || {}; if (lk.state === 'exclusive' || lk.state === 'shared') watchIngest(); if (d.entities == null && !state.knowledgeTabChosen) state.knowledgeTab = 'setup'; render(); }, function (e) { state.errors.graph = e.message; render(); });
   }
   function loadMore() {
     if (!state.recentCursor) return;
@@ -309,6 +311,7 @@
     return '<div class="knowledge-label">EXPLORE KNOWLEDGE</div>' +
       '<button class="knowledge-route ' + (state.knowledgeTab === 'sources' ? 'active' : '') + '" aria-pressed="' + (state.knowledgeTab === 'sources') + '" onclick="cosApp.setKnowledgeTab(\'sources\')"><span>Source records</span><small>What was actually said</small></button>' +
       '<button class="knowledge-route ' + (state.knowledgeTab === 'graph' ? 'active' : '') + '" aria-pressed="' + (state.knowledgeTab === 'graph') + '" onclick="cosApp.setKnowledgeTab(\'graph\')"><span>Knowledge graph</span><small>Relationships · LightRAG</small></button>' +
+      '<button class="knowledge-route ' + (state.knowledgeTab === 'setup' ? 'active' : '') + '" aria-pressed="' + (state.knowledgeTab === 'setup') + '" onclick="cosApp.setKnowledgeTab(\'setup\')"><span>Set up Knowledge</span><small>Sources, owner, first index</small></button>' +
       '<div class="knowledge-note"><h3>' + (focus ? 'Related to: ' + esc(focus.title) : 'Better context. Traceable learning.') + '</h3><p>Sources explain a memory. Relationships add context. Run evidence shows whether a change helped.</p><button class="link" onclick="cosApp.backToLearning()">← Back to recent learning</button></div>';
   }
   function hostLabel(h) { return String(h || '').replace(/\.local$/, '').replace(/-/g, ' '); }
@@ -349,11 +352,84 @@
       '<dl class="sync-grid"><dt>Captured</dt><dd>' + esc(captured) + '</dd><dt>Queued</dt><dd>' + queued + '</dd><dt>Indexing</dt><dd>' + processor + '</dd><dt>Indexed</dt><dd>' + indexed + '</dd><dt>Visible</dt><dd>' + esc(visible) + '</dd><dt>Index</dt><dd>' + esc(g.index_state || 'unknown') + (g.index_built_at ? ' · built ' + esc(stamp(g.index_built_at)) : '') + (g.index_degraded ? ' · degraded' : '') + build + '</dd><dt>Budget</dt><dd>' + (b.used != null && b.cap != null ? fmt(b.used) + ' of ' + fmt(b.cap) + ' calls today' : 'unknown') + ' · lock ' + esc(lock.state || 'unknown') + (lock.owner_pid ? ' (pid ' + esc(lock.owner_pid) + ', advisory)' : '') + '</dd></dl>' +
       '<p class="small">' + (air ? 'A preview of the copy the Air will show; values are this Mac\'s.' : 'Values from this Mac.') + ' Changes you make in the graph appear as receipts under it once curation ships.</p></section>';
   }
+  // ── Set up Knowledge (server 6.44.9): seven steps, each a live check with its own control ──
+  function loadSetup() {
+    state.setupLoading = true; state.setupError = null; if (state.view === 'knowledge') render();
+    return call('graph.setup').then(function (d) { state.setup = d; state.setupLoading = false; render(); }, function (e) { state.setupError = e.message; state.setupLoading = false; render(); });
+  }
+  function setupAction(name, op, args, onDone) {
+    state.setupBusy = name; state.armed = null; render();
+    return call(op, args).then(function (d) { state.setupBusy = null; if (onDone) onDone(d); return loadSetup(); }, function (e) { state.setupBusy = null; toast(e.message); render(); });
+  }
+  function setupStep(n, done, title, body, cls) {
+    return '<div class="setup-step ' + (done ? 'done' : (cls || 'todo')) + '"><div class="setup-mark">' + (done ? '✓' : n) + '</div><div class="setup-body"><h4>' + title + '</h4>' + body + '</div></div>';
+  }
+  function shortPath(p) { return String(p || '').replace(/^\/Users\/[^/]+/, '~'); }
+  function attr(v) { return JSON.stringify(String(v)).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+  function setupDetail() {
+    var s = state.setup;
+    if (state.setupError) return '<section class="source-card setup-card"><h3>Set up Knowledge</h3><p class="owner">' + esc(state.setupError) + '</p><div class="actions"><button onclick="cosApp.setupRefresh()">Retry</button></div></section>';
+    if (!s) return '<section class="source-card setup-card"><h3>Set up Knowledge</h3><p class="owner">Checking this Mac…</p></section>';
+    var checks = s.checks || [], checksOk = checks.length > 0 && checks.every(function (c) { return c.ok; });
+    var sources = s.sources || [], enabledWithFiles = sources.filter(function (r) { return r.enabled && r.exists && (r.files || 0) > 0; });
+    var owner = s.owner || {}, isOwner = owner.is_owner === true, budget = s.budget || {}, sample = s.sample || {}, cands = sample.candidates || [];
+    var graphN = (s.graph || {}).entities, hasGraph = graphN != null && graphN > 0, schedule = s.schedule || {}, lk = s.lock || {};
+    var lockHeld = lk.state === 'exclusive' || lk.state === 'shared';
+    var busy = state.setupBusy;
+    var steps = [];
+    steps.push(setupStep(1, checksOk, 'Enable Knowledge',
+      '<p>What indexing needs on this Mac.</p>' + checks.map(function (c) { return '<div class="setup-source"><span class="' + (c.ok ? 'ok' : 'bad') + '">' + (c.ok ? '✓' : '!') + '</span><span>' + esc(c.detail) + '</span></div>'; }).join(''),
+      checks.length && !checksOk ? 'blocked' : 'todo'));
+    var sourceRows = sources.map(function (r) {
+      return '<div class="setup-source"><code>' + esc(shortPath(r.path)) + '</code><span class="muted">' + (r.exists ? (r.files != null ? fmt(r.files) + ' document' + (r.files === 1 ? '' : 's') : '') : 'missing') + '</span>' +
+        '<button class="quiet" ' + (busy ? 'disabled' : '') + ' onclick="cosApp.sourceToggle(' + attr(r.path) + ', ' + (!r.enabled) + ')">' + (r.enabled ? 'On' : 'Off') + '</button>' +
+        '<button class="quiet" ' + (busy ? 'disabled' : '') + ' onclick="cosApp.sourceRemove(' + attr(r.path) + ')" aria-label="Remove this folder">×</button></div>';
+    }).join('');
+    steps.push(setupStep(2, enabledWithFiles.length > 0, 'Choose sources',
+      '<p>Folders of notes or documents (Markdown and text). Only files in these folders are read.</p>' + sourceRows +
+      '<div class="setup-row"><button ' + (busy ? 'disabled' : '') + ' onclick="cosApp.pickFolder()">' + (busy === 'add' ? 'Adding…' : 'Add a folder…') + '</button>' + (sources.length && !enabledWithFiles.length ? '<span class="muted">No documents found in the folders that are on.</span>' : '') + '</div>'));
+    var ownerBody = isOwner ? '<p>This Mac (' + esc(hostLabel(owner.this_host)) + ') indexes the queue. Its graph, queue and sources stay here.</p>'
+      : owner.owner_host ? '<p><b>' + esc(hostLabel(owner.owner_host)) + '</b> indexes the queue; this Mac reads a replica. Make this Mac the owner only if that Mac stops indexing.</p>'
+      : '<p>No Mac is set to index yet.</p>';
+    if (!isOwner) ownerBody += '<div class="setup-row"><button ' + (busy ? 'disabled' : '') + ' onclick="cosApp.claimOwner()">' + (state.armed === 'owner' ? 'Click again to make this Mac the owner' : busy === 'owner' ? 'Setting…' : 'Make this Mac the owner') + '</button></div>';
+    steps.push(setupStep(3, isOwner, 'Owner Mac', ownerBody));
+    var llm = checks.find(function (c) { return c.id === 'llm'; }) || {}, emb = checks.find(function (c) { return c.id === 'embeddings'; }) || {};
+    var budgetOk = budget.used != null && budget.cap != null && budget.used < budget.cap;
+    steps.push(setupStep(4, checksOk && budgetOk, 'Validate provider, budget and privacy',
+      '<div class="setup-source"><span>' + esc(llm.detail || 'Model backend unknown') + '</span></div>' +
+      '<div class="setup-source"><span>' + esc(emb.detail || 'Embeddings unknown') + '</span></div>' +
+      '<div class="setup-source"><span>Budget today: ' + (budget.used != null ? fmt(budget.used) + ' of ' + fmt(budget.cap) + ' calls' : 'unknown') + (budgetOk ? '' : ' (used up until tomorrow)') + '</span></div>' +
+      '<p>What leaves this Mac: each document\'s text goes to the model backend for entity extraction and to OpenAI for embeddings. The graph, the queue and this list of folders never leave it.</p>'));
+    var sampleDone = (sample.indexed || 0) >= 1 || hasGraph;
+    var sampleBody = sampleDone ? '<p>' + ((sample.indexed || 0) >= 1 ? fmt(sample.indexed) + ' sample document' + (sample.indexed === 1 ? '' : 's') + ' indexed.' : 'Your graph already holds ' + fmt(graphN) + ' entities.') + '</p>' : '<p>The three newest documents from the folders that are on, through the same checks a meeting gets, in one bounded run.</p>';
+    if (cands.length) sampleBody += cands.map(function (c) { return '<div class="setup-source"><code>' + esc(String(c.path).split('/').pop()) + '</code><span class="muted">' + (c.bytes != null ? fmt(Math.max(1, Math.round(c.bytes / 1024))) + ' KB' : '') + '</span></div>'; }).join('');
+    if (state.ingesting && state.ingesting.note) sampleBody += '<p class="muted">' + esc(state.ingesting.note) + '</p>';
+    else if (lockHeld) sampleBody += '<p class="muted">Indexing now' + (lk.owner_pid ? ' (pid ' + esc(lk.owner_pid) + ')' : '') + '; this page refreshes as it runs.</p>';
+    if ((sample.queued || 0) > 0 && !lockHeld) sampleBody += '<p class="muted">' + fmt(sample.queued) + ' queued and waiting for a run.</p>';
+    if (cands.length && isOwner && !lockHeld) sampleBody += '<div class="setup-row"><button ' + (busy || !checksOk ? 'disabled' : '') + ' onclick="cosApp.indexSample()">' + (busy === 'sample' ? 'Queueing…' : 'Index ' + (cands.length === 1 ? 'this document' : 'these ' + cands.length)) + '</button></div>';
+    else if (cands.length && !isOwner) sampleBody += '<p class="muted">Indexing runs on the owner Mac.</p>';
+    steps.push(setupStep(5, sampleDone, 'Index three sample documents', sampleBody, checksOk ? 'todo' : 'blocked'));
+    var askBody = '<p>One question, answered from the graph. About a minute; two model calls under today\'s budget.</p>' +
+      '<div class="setup-row"><input id="askQ" placeholder="' + (hasGraph ? 'Who do I work with most?' : 'Index something first') + '" value="' + esc(state.askQ) + '" ' + (s.ask_ready ? '' : 'disabled') + ' onkeydown="if(event.key===\'Enter\')cosApp.askGraph()"><button ' + (s.ask_ready && !state.askBusy ? '' : 'disabled') + ' onclick="cosApp.askGraph()">' + (state.askBusy ? 'Asking…' : 'Ask') + '</button></div>' +
+      (state.askAnswer ? '<div class="setup-answer">' + esc(state.askAnswer.answer) + '</div><p class="muted">' + (state.askAnswer.elapsed_s != null ? Math.round(state.askAnswer.elapsed_s) + ' s, ' : '') + esc(state.askAnswer.mode || 'hybrid') + ' mode</p>' : '');
+    steps.push(setupStep(6, !!state.askAnswer, 'Ask one question', askBody, s.ask_ready ? 'todo' : 'blocked'));
+    var scheduleBody = schedule.installed ? '<p>On: a batch of up to 4 queued documents every ' + (schedule.interval_s ? fmt(Math.round(schedule.interval_s / 60)) + ' minutes' : 'interval') + ', logged under ~/Library/Logs/COS.</p>' : '<p>Off. Turn it on and this Mac indexes what is queued on a schedule, in bounded batches of 4, under the daily budget.</p>';
+    if (isOwner) scheduleBody += schedule.installed
+      ? '<div class="setup-row"><button class="quiet" ' + (busy ? 'disabled' : '') + ' onclick="cosApp.scheduleSet(false)">' + (busy === 'schedule' ? 'Working…' : 'Turn off') + '</button></div>'
+      : '<div class="setup-row"><select id="scheduleInterval"><option value="900">every 15 minutes</option><option value="3600" selected>every hour</option><option value="14400">every 4 hours</option><option value="86400">once a day</option></select><button ' + (busy ? 'disabled' : '') + ' onclick="cosApp.scheduleSet(true)">' + (busy === 'schedule' ? 'Working…' : 'Turn on') + '</button></div>';
+    else scheduleBody += '<p class="muted">Schedules live on the owner Mac.</p>';
+    steps.push(setupStep(7, schedule.installed === true, 'Scheduled batches', scheduleBody));
+    var done = [checksOk, enabledWithFiles.length > 0, isOwner, checksOk && budgetOk, sampleDone, !!state.askAnswer, schedule.installed === true].filter(Boolean).length;
+    return '<section class="source-card setup-card"><div class="row spread"><h3>Set up Knowledge</h3><span class="setup-progress">' + done + ' OF 7 DONE' + (state.setupLoading ? ' · REFRESHING' : '') + '</span></div>' +
+      '<p class="owner">From zero to a first index on this Mac. Each step is a live check; do them in order.</p><div class="setup-steps">' + steps.join('') + '</div>' +
+      '<div class="actions"><button class="quiet" onclick="cosApp.setupRefresh()">Refresh checks</button></div></section>';
+  }
   function renderKnowledge() {
     document.querySelector('#workspace').style.gridTemplateColumns = ''; document.querySelector('#inbox').classList.remove('hidden');
     document.querySelector('#inbox').innerHTML = knowledgeAside();
-    document.querySelector('#detail').innerHTML = syncCard() + (state.knowledgeTab === 'graph' ? graphDetail() : knowledgeSources());
+    document.querySelector('#detail').innerHTML = syncCard() + (state.knowledgeTab === 'graph' ? graphDetail() : state.knowledgeTab === 'setup' ? setupDetail() : knowledgeSources());
     if (state.knowledgeTab === 'graph') mountKnowledgeGraph();
+    if (state.knowledgeTab === 'setup' && !state.setup && !state.setupLoading && !state.setupError) loadSetup();
   }
   function knowledgeSources() {
     var focus = state.knowledgeFocus && findEvent(state.knowledgeFocus);
@@ -500,10 +576,43 @@
     selectMemory: function (id) { state.selectedMemory = id; render(); },
     setFilter: function (f) { state.view = 'learning'; state.filter = f; render(); },
     openKnowledge: function (id) { state.view = 'knowledge'; state.knowledgeTab = 'sources'; state.knowledgeFocus = id || null; render(); },
-    setKnowledgeTab: function (t) { state.knowledgeTab = t; render(); },
+    setKnowledgeTab: function (t) { state.knowledgeTab = t; state.knowledgeTabChosen = true; render(); },
     backToLearning: function () { state.view = 'learning'; state.filter = 'recent'; if (state.knowledgeFocus) state.selected = state.knowledgeFocus; render(); },
     exploreInGraph: exploreInGraph, graphSearch: graphSearch, viewAs: function (v) { state.viewAs = v; render(); },
     refresh: loadAll, refreshGraph: loadGraphStatus, loadMore: loadMore, memoryQuery: memoryQuery,
+    setupRefresh: function () { loadSetup(); },
+    pickFolder: function () {
+      call('pick.folder').then(function (d) {
+        if (!d || !d.path) return;
+        setupAction('add', 'graph.setup.sources', { action: 'add', path: d.path }, function () { toast('Folder added.'); });
+      }, function (e) { if (e.message !== 'No folder chosen.') toast(e.message); });
+    },
+    sourceToggle: function (path, enabled) { setupAction('toggle', 'graph.setup.sources', { action: enabled ? 'enable' : 'disable', path: path }); },
+    sourceRemove: function (path) { setupAction('remove', 'graph.setup.sources', { action: 'remove', path: path }, function () { toast('Folder removed.'); }); },
+    claimOwner: function () {
+      if (state.armed !== 'owner') { state.armed = 'owner'; render(); setTimeout(function () { if (state.armed === 'owner') { state.armed = null; render(); } }, 6000); return; }
+      setupAction('owner', 'graph.setup.owner', {}, function () { toast('This Mac is now the ingestion owner.'); });
+    },
+    indexSample: function () {
+      setupAction('sample', 'graph.sample', { limit: 3 }, function (d) {
+        var q = (d.queued || []).length;
+        if (d.started) { state.ingesting = { pid: d.pid, note: 'Indexing ' + fmt(q) + ' sample document' + (q === 1 ? '' : 's') + ' (pid ' + esc(d.pid) + ')' }; watchIngest(); }
+        else if (d.already_running) { toast((q ? fmt(q) + ' queued. ' : '') + 'Indexing is already running; this page refreshes as it runs.'); watchIngest(); }
+        else if (d.nothing_pending) toast('Nothing new to index in the folders that are on.');
+        else if (d.budget_exhausted) toast('Today\'s LightRAG budget is used up. It resets tomorrow.');
+        if ((d.skipped || []).length) toast(fmt(d.skipped.length) + ' skipped: ' + d.skipped.map(function (x) { return x.reason; }).join(', '));
+      });
+    },
+    askGraph: function () {
+      var input = document.querySelector('#askQ'); var q = input ? input.value.trim() : state.askQ;
+      if (q.length < 3) { toast('Ask a fuller question.'); return; }
+      state.askQ = q; state.askBusy = true; state.askAnswer = null; render();
+      call('graph.ask', { q: q }).then(function (d) { state.askBusy = false; state.askAnswer = d; render(); }, function (e) { state.askBusy = false; toast(e.message); render(); });
+    },
+    scheduleSet: function (enabled) {
+      var sel = document.querySelector('#scheduleInterval'); var interval = sel ? Number(sel.value) || 3600 : 3600;
+      setupAction('schedule', 'graph.schedule', { enabled: enabled, intervalS: interval }, function (d) { toast(d.installed ? 'Scheduled batches on.' : 'Scheduled batches off.'); });
+    },
     startIngest: function () {
       var sel = document.querySelector('#ingestLimit'); var limit = sel ? (Number(sel.value) || 10) : 10; state.ingestLimit = limit;
       state.ingesting = { note: 'Starting…' }; render();

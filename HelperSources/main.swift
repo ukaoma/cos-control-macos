@@ -525,6 +525,12 @@ final class COSControlHelper {
         case "context-graph-passages": try emitContextGraphPassages(args: args)
         case "context-graph-index-build": try emitContextGraphIndexBuild()
         case "context-graph-ingest": try emitContextGraphIngest(args: args)
+        case "context-graph-setup": try emitContextGraphSetup()
+        case "context-graph-setup-sources": try emitContextGraphSetupSources(args: args)
+        case "context-graph-setup-owner": try emitContextGraphSetupOwner()
+        case "context-graph-ingest-sample": try emitContextGraphIngestSample(args: args)
+        case "context-graph-ask": try emitContextGraphAsk(args: args)
+        case "context-graph-schedule": try emitContextGraphSchedule(args: args)
         case "activity-signals": try emitActivitySignals()
         case "meetings": try emitMeetings(args: args)
         case "meetings-library": try emitMeetingsLibrary(args: args)
@@ -7176,6 +7182,8 @@ final class COSControlHelper {
     static let decideNeeds = "6.44.7"
     /// The queue-ingest kickoff route shipped in this server version.
     static let ingestNeeds = "6.44.8"
+    /// The Knowledge setup path (checklist, sources, owner, sample, ask, schedule).
+    static let setupNeeds = "6.44.9"
     /// The 503 classes that mean "no pipeline", as the server spells them
     /// (pythonBridgeState and the file tier), rather than a passing fault.
     static let notConfiguredErrorClasses: Set<String> = ["pipeline_missing", "bridge_missing", "cos_pipeline_not_configured"]
@@ -7429,6 +7437,106 @@ final class COSControlHelper {
         else if body["budget_exhausted"] as? Bool == true { message = "Today's LightRAG budget is used up" }
         else { message = "Nothing started" }
         emit(ok: true, message: message, details: body)
+    }
+
+    // ── Knowledge setup (server 6.44.9, Control 0.5.194) ─────────
+    //
+    // From zero to a first index: the readiness checklist, the source folders,
+    // the owner Mac, three sample documents, one question, scheduled batches.
+    // Each command bounds its own argv; every server refusal becomes a
+    // sentence here, and a 404 that carries a bridge class (a missing folder)
+    // is not mistaken for a missing route.
+
+    private func setupJSON(_ object: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: object)
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    static let setupOwnerMessage = "Only the ingestion owner Mac can do this. Make this Mac the owner first, or open COS Control on the owner."
+
+    private func setupRequest(_ route: String, method: String = "POST", body: String? = nil, timeout: Int = 20,
+                              accepted: Set<Int> = [200]) throws -> [String: Any] {
+        guard request("/api/health", timeout: 5)?.status == 200 else { throw HelperError.message("Server stopped") }
+        let token: String
+        do { token = try readToken() } catch { throw HelperError.message("Unauthorized") }
+        guard let response = request(route, method: method, token: token, body: body, timeout: timeout) else {
+            throw HelperError.message("Server stopped")
+        }
+        let klass = Self.bridgeErrorClass(response.body)
+        let detail = response.body?["message"] as? String
+        switch response.status {
+        case 401, 403: throw HelperError.message("Unauthorized")
+        case 404 where klass == nil:
+            throw HelperError.message("Update the managed server to \(Self.setupNeeds) or newer for this (\(route) is not there).")
+        case 404: throw HelperError.message(detail ?? "Not found (\(klass ?? "not_found")).")
+        case 400: throw HelperError.message(detail ?? "The server did not accept this (\(klass ?? "invalid")).")
+        case 409: throw HelperError.message(klass == "not_owner" ? Self.setupOwnerMessage : (detail ?? "The server refused this (\(klass ?? "refused")))."))
+        case 503:
+            throw HelperError.message(Self.contextUnavailableMessage(errorClass: klass, notConfigured: Self.learningNotConfiguredMessage))
+        default: break
+        }
+        guard accepted.contains(response.status) else {
+            throw HelperError.message("The server did not accept this (HTTP \(response.status)).")
+        }
+        return response.body ?? [:]
+    }
+
+    private func emitContextGraphSetup() throws {
+        let body = try setupRequest("/api/context/graph/setup", method: "GET", timeout: 30)
+        let ready = body["ready"] as? Bool == true
+        emit(ok: true, message: ready ? "Knowledge is ready to index" : "Knowledge setup has steps left", details: body)
+    }
+
+    private func emitContextGraphSetupSources(args: [String]) throws {
+        let action = option("--action", in: args) ?? ""
+        guard ["add", "remove", "enable", "disable"].contains(action) else {
+            throw HelperError.message("--action must be add, remove, enable or disable")
+        }
+        guard let path = option("--path", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty, path.count <= 1000 else {
+            throw HelperError.message("--path must be 1 to 1000 characters")
+        }
+        let body = try setupRequest("/api/context/graph/setup/sources", body: try setupJSON(["action": action, "path": path]))
+        let count = (body["sources"] as? [[String: Any]])?.count ?? 0
+        let message = action == "add" ? "Source folder added (\(count) in all)" : action == "remove" ? "Source folder removed (\(count) left)" : "Source folder \(action)d"
+        emit(ok: true, message: message, details: body)
+    }
+
+    private func emitContextGraphSetupOwner() throws {
+        let body = try setupRequest("/api/context/graph/setup/owner", body: "{}")
+        emit(ok: true, message: "This Mac is now the ingestion owner", details: body)
+    }
+
+    private func emitContextGraphIngestSample(args: [String]) throws {
+        let limit = min(max(Int(option("--limit", in: args) ?? "3") ?? 3, 1), 3)  // the server and the bridge both cap at 3
+        let body = try setupRequest("/api/context/graph/setup/sample", body: try setupJSON(["limit": limit]), timeout: 100, accepted: [202])
+        let queued = (body["queued"] as? [[String: Any]])?.count ?? 0
+        let message: String
+        if body["started"] as? Bool == true { message = "Indexing \(queued) sample document\(queued == 1 ? "" : "s")" }
+        else if body["already_running"] as? Bool == true { message = queued > 0 ? "\(queued) queued; indexing is already running" : "Indexing is already running" }
+        else if body["nothing_pending"] as? Bool == true { message = "No new documents to index in the chosen folders" }
+        else if body["budget_exhausted"] as? Bool == true { message = "Today's LightRAG budget is used up" }
+        else { message = "Nothing started" }
+        emit(ok: true, message: message, details: body)
+    }
+
+    private func emitContextGraphAsk(args: [String]) throws {
+        guard let question = option("--q", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              question.count >= 3, question.count <= 400 else {
+            throw HelperError.message("--q must be 3 to 400 characters")
+        }
+        let body = try setupRequest("/api/context/graph/ask", body: try setupJSON(["q": question]), timeout: 165)
+        let elapsed = (body["elapsed_s"] as? Double).map { String(format: "%.0f s", $0) } ?? "done"
+        emit(ok: true, message: "Answered in \(elapsed)", details: body)
+    }
+
+    private func emitContextGraphSchedule(args: [String]) throws {
+        guard let enabled = option("--enabled", in: args), enabled == "true" || enabled == "false" else {
+            throw HelperError.message("--enabled must be true or false")
+        }
+        let interval = min(max(Int(option("--interval-s", in: args) ?? "3600") ?? 3600, 900), 86_400)
+        let body = try setupRequest("/api/context/graph/setup/schedule", body: try setupJSON(["enabled": enabled == "true", "interval_s": interval]), timeout: 25)
+        let installed = body["installed"] as? Bool == true
+        emit(ok: true, message: installed ? "Scheduled batches on, every \(interval / 60) minutes" : "Scheduled batches off", details: body)
     }
 
     // ── Activity signals (0.5.190) ────────────────────────────────
