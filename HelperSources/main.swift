@@ -532,6 +532,8 @@ final class COSControlHelper {
         case "context-graph-ask": try emitContextGraphAsk(args: args)
         case "context-graph-schedule": try emitContextGraphSchedule(args: args)
         case "context-graph-ingest-progress": try emitContextGraphIngestProgress()
+        case "context-graph-setup-embedding": try emitContextGraphSetupEmbedding(args: args)
+        case "context-graph-setup-extraction": try emitContextGraphSetupExtraction(args: args)
         case "activity-signals": try emitActivitySignals()
         case "meetings": try emitMeetings(args: args)
         case "meetings-library": try emitMeetingsLibrary(args: args)
@@ -7187,6 +7189,8 @@ final class COSControlHelper {
     static let setupNeeds = "6.44.9"
     /// The read-only ingest progress route.
     static let progressNeeds = "6.44.10"
+    /// The embedding and extraction choices.
+    static let choiceNeeds = "6.44.11"
     /// The 503 classes that mean "no pipeline", as the server spells them
     /// (pythonBridgeState and the file tier), rather than a passing fault.
     static let notConfiguredErrorClasses: Set<String> = ["pipeline_missing", "bridge_missing", "cos_pipeline_not_configured"]
@@ -7561,6 +7565,40 @@ final class COSControlHelper {
         else if total != nil { message = "Last run here: \(done) indexed" }
         else { message = "No run recorded here" }
         emit(ok: true, message: message, details: body)
+    }
+
+    static let embeddingProviders: Set<String> = ["openai-large", "openai-small", "ollama", "onnx"]
+    static let extractionTiers: Set<String> = ["haiku", "sonnet", "opus"]
+
+    /// `context-graph-setup-embedding --provider P [--model M] [--fetch]` (server 6.44.11):
+    /// the embedding for every knowledge store; a graph built with another one refuses.
+    private func emitContextGraphSetupEmbedding(args: [String]) throws {
+        guard let provider = option("--provider", in: args), Self.embeddingProviders.contains(provider) else {
+            throw HelperError.message("--provider must be openai-large, openai-small, ollama or onnx")
+        }
+        var payload: [String: Any] = ["provider": provider]
+        if let model = option("--model", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
+            guard model.count <= 120 else { throw HelperError.message("--model must be at most 120 characters") }
+            payload["model"] = model
+        }
+        if args.contains("--fetch") { payload["fetch"] = true }
+        let body = try setupRequest("/api/context/graph/setup/embedding", body: try setupJSON(payload), timeout: 100, accepted: [200])
+        let label = (body["embedding"] as? [String: Any])?["label"] as? String ?? provider
+        let fetch = body["fetch"] as? [String: Any]
+        let message = fetch?["started"] as? Bool == true ? "Embeddings set to \(label); fetching the model"
+            : fetch?["already_running"] as? Bool == true ? "Embeddings set to \(label); a fetch is already running"
+            : "Embeddings set to \(label)"
+        emit(ok: true, message: message, details: body)
+    }
+
+    /// `context-graph-setup-extraction --tier haiku|sonnet|opus`.
+    private func emitContextGraphSetupExtraction(args: [String]) throws {
+        guard let tier = option("--tier", in: args), Self.extractionTiers.contains(tier) else {
+            throw HelperError.message("--tier must be haiku, sonnet or opus")
+        }
+        let body = try setupRequest("/api/context/graph/setup/extraction", body: try setupJSON(["tier": tier]), timeout: 20, accepted: [200])
+        let label = (body["extraction"] as? [String: Any])?["label"] as? String ?? tier
+        emit(ok: true, message: "Extraction set to \(label)", details: body)
     }
 
     // ── Activity signals (0.5.190) ────────────────────────────────

@@ -43,7 +43,7 @@
     memoryQuery: '', memoryHits: null, coverage: {},
     detail: {}, memoryDetail: {}, passages: {}, loading: {}, errors: {},
     graphFocus: 'COS', graphFocusChosen: false, ingesting: null, ingestLimit: 10, ingestWatch: null, graphQuery: '',
-    progress: null, setup: null, setupLoading: false, setupError: null, setupBusy: null, armed: null, askQ: '', askAnswer: null, askBusy: false, knowledgeTabChosen: false, graphController: null, copyId: null, copyOptions: { sources: true, graph: false }
+    progress: null, fetchWatch: null, setup: null, setupLoading: false, setupError: null, setupBusy: null, armed: null, askQ: '', askAnswer: null, askBusy: false, knowledgeTabChosen: false, graphController: null, copyId: null, copyOptions: { sources: true, graph: false }
   };
 
   // ── loading ─────────────────────────────────────────────────────
@@ -392,6 +392,42 @@
   }
   function shortPath(p) { return String(p || '').replace(/^\/Users\/[^/]+/, '~'); }
   function attr(v) { return JSON.stringify(String(v)).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+  // The two pickers of step 4. A card is a radio: choosing posts the op and refreshes the checklist.
+  function extractionCards(ext, busy) {
+    var tiers = ext.tiers || [];
+    if (!tiers.length) return '<p class="muted">Indexing tiers need server 6.44.11.</p>';
+    return '<div class="pick-grid">' + tiers.map(function (tr) {
+      return '<label class="pick-card ' + (tr.selected ? 'on' : '') + '"><input type="radio" name="extractionTier" ' + (tr.selected ? 'checked' : '') + (busy ? ' disabled' : '') + ' onchange="cosApp.chooseExtraction(' + attr(tr.id) + ')"><div><b>' + esc(tr.label) + '</b><p>' + esc(tr.detail) + '</p></div></label>';
+    }).join('') + '</div>';
+  }
+  function embeddingCards(emb, busy) {
+    var rows = emb.providers || [];
+    if (!rows.length) return '<p class="muted">Embedding choices need server 6.44.11.</p>';
+    var fetch = emb.fetch || null;
+    var cards = rows.map(function (r) {
+      var canPick = !emb.locked || r.selected;
+      var fetching = fetch && fetch.state === 'running' && fetch.provider === r.id;
+      var fetchFailed = fetch && fetch.state === 'failed' && fetch.provider === r.id;
+      var offline = r.id === 'ollama' && /not running/.test(r.detail || '');
+      var fetchBtn = r.kind === 'local' && !r.ready && !offline ? '<button class="quiet" ' + (busy || fetching ? 'disabled' : '') + ' onclick="cosApp.fetchEmbedding(' + attr(r.id) + ')">' + (fetching ? 'Fetching…' : 'Fetch model') + '</button>' : '';
+      return '<label class="pick-card ' + (r.selected ? 'on' : '') + (canPick ? '' : ' off') + '"><input type="radio" name="embeddingProvider" ' + (r.selected ? 'checked' : '') + (canPick && !busy ? '' : ' disabled') + ' onchange="cosApp.chooseEmbedding(' + attr(r.id) + ')"><div><b>' + esc(r.label) + '</b> <span class="muted">' + esc(r.model) + (r.dimensions != null ? ' · ' + fmt(r.dimensions) + ' dims' : '') + '</span><p>' + esc(r.cost) + '</p><p class="' + (r.ready ? 'ok' : '') + '">' + (r.ready ? '✓ ' : '') + esc(r.detail) + '</p>' + (fetching ? '<p class="muted">Fetching ' + esc(fetch.model) + '… this page refreshes as it runs.</p>' : fetchFailed ? '<p class="bad">Fetch failed: ' + esc(fetch.error || 'unknown') + '</p>' : '') + fetchBtn + '</div></label>';
+    }).join('');
+    var note = '';
+    if (emb.mismatch && emb.manifest) note = '<p class="pick-note bad">This graph was built with ' + esc(emb.manifest.provider) + ' (' + esc(emb.manifest.model) + ', ' + fmt(emb.manifest.dimensions) + ' dims) but ' + esc(emb.provider) + ' is chosen. Choose the one it was built with; Index now is blocked until then.</p>';
+    else if (emb.locked) note = '<p class="pick-note">This graph was built with ' + esc(emb.label || emb.provider) + '. Changing the embedding means rebuilding the graph, and that path is not built yet.</p>';
+    return '<div class="pick-grid">' + cards + '</div>' + note;
+  }
+  function watchFetch() {
+    if (state.fetchWatch) return;
+    var ticks = 0;
+    state.fetchWatch = setInterval(function () {
+      ticks++;
+      loadSetup().then(function () {
+        var f = state.setup && state.setup.embedding && state.setup.embedding.fetch;
+        if (!f || f.state !== 'running' || ticks > 360) { clearInterval(state.fetchWatch); state.fetchWatch = null; if (f && f.state === 'done') toast('Model fetched.'); else if (f && f.state === 'failed') toast('Fetch failed: ' + (f.error || 'unknown')); }
+      });
+    }, 10000);
+  }
   function setupDetail() {
     var s = state.setup;
     if (state.setupError) return '<section class="source-card setup-card"><h3>Set up Knowledge</h3><p class="owner">' + esc(state.setupError) + '</p><div class="actions"><button onclick="cosApp.setupRefresh()">Retry</button></div></section>';
@@ -419,13 +455,15 @@
       : '<p>No Mac is set to index yet.</p>';
     if (!isOwner) ownerBody += '<div class="setup-row"><button ' + (busy ? 'disabled' : '') + ' onclick="cosApp.claimOwner()">' + (state.armed === 'owner' ? 'Click again to make this Mac the owner' : busy === 'owner' ? 'Setting…' : 'Make this Mac the owner') + '</button></div>';
     steps.push(setupStep(3, isOwner, 'Owner Mac', ownerBody));
-    var llm = checks.find(function (c) { return c.id === 'llm'; }) || {}, emb = checks.find(function (c) { return c.id === 'embeddings'; }) || {};
     var budgetOk = budget.used != null && budget.cap != null && budget.used < budget.cap;
-    steps.push(setupStep(4, checksOk && budgetOk, 'Validate provider, budget and privacy',
-      '<div class="setup-source"><span>' + esc(llm.detail || 'Model backend unknown') + '</span></div>' +
-      '<div class="setup-source"><span>' + esc(emb.detail || 'Embeddings unknown') + '</span></div>' +
-      '<div class="setup-source"><span>Budget today: ' + (budget.used != null ? fmt(budget.used) + ' of ' + fmt(budget.cap) + ' calls' : 'unknown') + (budgetOk ? '' : ' (used up until tomorrow)') + '</span></div>' +
-      '<p>What leaves this Mac: each document\'s text goes to the model backend for entity extraction and to OpenAI for embeddings. The graph, the queue and this list of folders never leave it.</p>'));
+    var embBlock = s.embedding || {}, extBlock = s.extraction || {};
+    var localEmb = embBlock.kind === 'local';
+    steps.push(setupStep(4, checksOk && budgetOk && !embBlock.mismatch, 'Choose how it indexes',
+      '<p>Indexing tier for entity extraction. Under a Claude subscription the cost is time and the daily budget, not dollars. Takes effect on the next run.</p>' + extractionCards(extBlock, busy) +
+      '<p style="margin-top:12px">Embeddings for search, one choice for the knowledge graph and every meeting index. A graph keeps the embedding it was built with.</p>' + embeddingCards(embBlock, busy) +
+      '<div class="setup-source" style="margin-top:10px"><span>Budget today: ' + (budget.used != null ? fmt(budget.used) + ' of ' + fmt(budget.cap) + ' calls' : 'unknown') + (budgetOk ? '' : ' (used up until tomorrow)') + '</span></div>' +
+      '<p>What leaves this Mac: each document\'s text goes to the model backend for entity extraction' + (localEmb ? '; embeddings are computed on this Mac' : ' and to OpenAI for embeddings') + '. The graph, the queue and this list of folders never leave it.</p>',
+      embBlock.mismatch ? 'blocked' : 'todo'));
     var sampleDone = (sample.indexed || 0) >= 1 || hasGraph;
     var sampleBody = sampleDone ? '<p>' + ((sample.indexed || 0) >= 1 ? fmt(sample.indexed) + ' sample document' + (sample.indexed === 1 ? '' : 's') + ' indexed.' : 'Your graph already holds ' + fmt(graphN) + ' entities.') + '</p>' : '<p>The three newest documents from the folders that are on, through the same checks a meeting gets, in one bounded run.</p>';
     if (cands.length) sampleBody += cands.map(function (c) { return '<div class="setup-source"><code>' + esc(String(c.path).split('/').pop()) + '</code><span class="muted">' + (c.bytes != null ? fmt(Math.max(1, Math.round(c.bytes / 1024))) + ' KB' : '') + '</span></div>'; }).join('');
@@ -607,6 +645,9 @@
     exploreInGraph: exploreInGraph, graphSearch: graphSearch,
     refresh: loadAll, refreshGraph: loadGraphStatus, loadMore: loadMore, memoryQuery: memoryQuery,
     setupRefresh: function () { loadSetup(); },
+    chooseExtraction: function (tier) { setupAction('extraction', 'graph.setup.extraction', { tier: tier }, function (d) { toast('Indexing set to ' + ((d.extraction || {}).label || tier) + '.'); }); },
+    chooseEmbedding: function (provider) { setupAction('embedding', 'graph.setup.embedding', { provider: provider }, function (d) { toast('Embeddings set to ' + ((d.embedding || {}).label || provider) + '.'); }); },
+    fetchEmbedding: function (provider) { setupAction('fetch', 'graph.setup.embedding', { provider: provider, fetch: true }, function (d) { var f = d.fetch || {}; toast(f.started ? 'Fetching the model in the background.' : f.already_running ? 'A fetch is already running.' : 'Nothing to fetch.'); watchFetch(); }); },
     pickFolder: function () {
       call('pick.folder').then(function (d) {
         if (!d || !d.path) return;

@@ -1,3 +1,20 @@
+## 0.5.198 (build 236)
+
+Choose how Knowledge indexes (server 6.44.11).
+
+- **Step 4 of Set up Knowledge is now a choice, not a description.** Two
+  pickers. Embeddings: OpenAI large (the default), OpenAI small, Local
+  premium through Ollama, Local light through fastembed/ONNX; each card says
+  what it costs, what it needs, and whether this Mac is ready for it, with a
+  Fetch model button for a local one that is not. Indexing: Fast (Haiku),
+  Balanced (Sonnet), Deep (Opus); under a Claude subscription the cost is
+  time and the daily budget, and it takes effect on the next run. The
+  embedding serves LightRAG and every Qdrant collection alike. A graph
+  already built with one embedding says so and keeps the others off until
+  a rebuild path exists; a mismatch is named in red and blocks Index now.
+  The privacy line follows the choice: a local embedding keeps every vector
+  on this Mac.
+
 ## 0.5.197 (build 235)
 
 - The Sync card's "View as this Mac / the Air" toggle is gone. It previewed

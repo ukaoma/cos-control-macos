@@ -4377,6 +4377,13 @@ struct MemoriesWebView: NSViewRepresentable {
         "graph.sample": { a in ["context-graph-ingest-sample", "--limit", MemoriesWebView.bounded(a["limit"], 3, 1, 3)] },
         "graph.ask": { a in ["context-graph-ask", "--q", MemoriesWebView.text(a["q"], 400)] },
         "graph.progress": { _ in ["context-graph-ingest-progress"] },
+        "graph.setup.embedding": { a in
+            var cmd = ["context-graph-setup-embedding", "--provider", MemoriesWebView.text(a["provider"], 24)]
+            if let model = a["model"] as? String, !model.isEmpty { cmd += ["--model", MemoriesWebView.text(model, 120)] }
+            if (a["fetch"] as? Bool) == true { cmd.append("--fetch") }
+            return cmd
+        },
+        "graph.setup.extraction": { a in ["context-graph-setup-extraction", "--tier", MemoriesWebView.text(a["tier"], 8)] },
         "graph.schedule": { a in ["context-graph-schedule", "--enabled", (a["enabled"] as? Bool) == true ? "true" : "false", "--interval-s", MemoriesWebView.bounded(a["intervalS"], 3600, 900, 86_400)] },
     ]
 
@@ -4386,6 +4393,7 @@ struct MemoriesWebView: NSViewRepresentable {
     static func timeout(for op: String) -> TimeInterval {
         switch op {
         case "graph.ask": 170
+        case "graph.setup.embedding": 110
         case "graph.sample": 110
         case "graph.build": 45
         case "graph.setup": 35

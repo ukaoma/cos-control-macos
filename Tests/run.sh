@@ -4043,6 +4043,12 @@ need('"graph.progress": { _ in ["context-graph-ingest-progress"] }' in ops and '
      and 'static let progressNeeds = "6.44.10"' in helper, "the progress op and command must exist and name 6.44.10")
 need("cosApp.viewAs" not in (root / "Resources/memories/memories-app.js").read_text() and "the Air" not in (root / "Resources/memories/memories-app.js").read_text(),
      "the Sync card must not carry a one-desk View as toggle (0.5.197)")
+need('"graph.setup.embedding": { a in' in ops and '"graph.setup.extraction": { a in ["context-graph-setup-extraction", "--tier", MemoriesWebView.text(a["tier"], 8)] }' in ops
+     and 'case "context-graph-setup-embedding":' in helper and 'case "context-graph-setup-extraction":' in helper and 'static let choiceNeeds = "6.44.11"' in helper,
+     "the embedding and extraction ops and commands must exist and name 6.44.11")
+need("function embeddingCards(" in (root / "Resources/memories/memories-app.js").read_text() and "'graph.setup.embedding'" in (root / "Resources/memories/memories-app.js").read_text()
+     and "'graph.setup.extraction'" in (root / "Resources/memories/memories-app.js").read_text(),
+     "the page must render the embedding and extraction pickers")
 need("function progressBlock(" in (root / "Resources/memories/memories-app.js").read_text() and "'graph.progress'" in (root / "Resources/memories/memories-app.js").read_text(),
      "the page must render progress from the graph.progress op")
 need("function setupDetail(" in setup_page and "'graph.setup'" in setup_page and "'pick.folder'" in setup_page and "'graph.ask'" in setup_page,
