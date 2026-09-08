@@ -4061,6 +4061,11 @@ need("function whenLabel(" in mem_page and "n < 1e11 ? n * 1000 : n" in mem_page
 need("function memoryActions(" in mem_page and "'memory.review'" in mem_page and "function guardrailsSection(" in mem_page and "'memory.guardrails.run'" in mem_page,
      "the page must offer Accept and Prune on a captured memory and the guardrails in settings")
 explorer_src = (root / "Resources/memories/graph-explorer.js").read_text()
+# 0.5.206: the helper names skipped review rows with their source; Control composes the reason from them.
+need('"skippedRows": skippedRows,' in helper and 'static func isG2Source(_ source: String) -> Bool' in helper, "the meetings command must report skipped rows and their source")
+model_src = (root / "Sources/ControllerModel.swift").read_text()
+need('static func skippedReviewSentence(skipped: Int, rows: [[String: JSONValue]]) -> String' in model_src and 'skippedRows: skippedRows' in model_src
+     and 'have no session id and cannot be reviewed' not in model_src, "the empty state must name skipped meetings by source and title, never the bare no-session-id sentence")
 # 0.5.205: the Manage sheet's merge runs for real behind a second, owner-Mac preview and a polled receipt; duplicates only propose.
 need('"graph.merge.preview": { a in' in ops and '"graph.merge": { a in' in ops and 'if (a["confirm"] as? Bool) == true { cmd.append("--confirm") }' in ops
      and '"graph.merge.status": { _ in ["context-graph-merge-status"] }' in ops and '"graph.duplicates": { a in' in ops,

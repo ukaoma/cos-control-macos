@@ -1235,7 +1235,32 @@ final class ControllerModel: ObservableObject {
     /// have run. Only on the empty path, so the normal case costs nothing. If
     /// the count cannot be established we say the honest thing instead of
     /// guessing — an unanswered probe is not evidence of zero.
-    private func emptyReviewReason(skipped: Int) async -> String? {
+    /// One sentence per class of skipped row, with the rows named. A meeting from
+    /// Fireflies or Granola has no G2 audio and was never reviewable here; a G2
+    /// recording with no session id was saved without its speaker sidecar, which
+    /// is a fault to report, not a version to update. Names go in the message so
+    /// the user can say which file rather than "3 recent meetings".
+    static func skippedReviewSentence(skipped: Int, rows: [[String: JSONValue]]) -> String {
+        let label: ([String: JSONValue]) -> String = { row in
+            let title = row["title"]?.string ?? "Untitled meeting"
+            let date = row["date"]?.string ?? ""
+            return date.isEmpty ? "\"\(title)\"" : "\"\(title)\" (\(date))"
+        }
+        let g2 = rows.filter { $0["isG2"]?.bool == true }
+        let other = rows.filter { $0["isG2"]?.bool != true }
+        var parts: [String] = []
+        if !other.isEmpty {
+            let sources = Set(other.compactMap { $0["source"]?.string }.filter { !$0.isEmpty }).sorted().joined(separator: ", ")
+            parts.append("\(other.count) came from \(sources.isEmpty ? "another source" : sources) and have no G2 audio to review")
+        }
+        if !g2.isEmpty {
+            parts.append("\(g2.count) G2 recording\(g2.count == 1 ? "" : "s") \(g2.count == 1 ? "was" : "were") saved without a speaker sidecar, so identity review is not available: \(g2.map(label).joined(separator: "; ")). Send the meeting's filename and date to support; this is not a server version problem")
+        }
+        if parts.isEmpty { return "\(skipped) recent meeting(s) cannot be reviewed here. This is not a server version problem." }
+        return "\(skipped) recent meeting(s) cannot be reviewed here: " + parts.joined(separator: "; ") + "."
+    }
+
+    private func emptyReviewReason(skipped: Int, skippedRows: [[String: JSONValue]] = []) async -> String? {
         var enrolled: Int? = nil
         if let r = try? await helper.run(["voice-directory"]),
            (r.details["state"]?.string ?? "ready") != "route_absent" {
@@ -1246,7 +1271,7 @@ final class ControllerModel: ObservableObject {
             return "No voices are enrolled yet, so every speaker is recorded as Ext and there is nothing to review. Say \"enroll my voice\" on the glasses to record a 30-second sample."
         }
         if skipped > 0 {
-            return "\(skipped) recent meeting(s) have no session id and cannot be reviewed. This is not a server version problem."
+            return Self.skippedReviewSentence(skipped: skipped, rows: skippedRows)
         }
         return nil
     }
@@ -1269,8 +1294,9 @@ final class ControllerModel: ObservableObject {
             // review is keyed on the session. Say so rather than showing an empty
             // list that looks like "no meetings".
             let skipped = response.details["skipped"]?.int ?? 0
+            let skippedRows = (response.details["skippedRows"]?.array ?? []).compactMap { $0.object }
             reviewError = reviewableMeetings.isEmpty
-                ? await emptyReviewReason(skipped: skipped)
+                ? await emptyReviewReason(skipped: skipped, skippedRows: skippedRows)
                 : nil
         } catch {
             reviewableMeetings = []

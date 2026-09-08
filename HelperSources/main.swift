@@ -10030,6 +10030,12 @@ final class COSControlHelper {
         return fields
     }
 
+    /// The server's `source` for a glasses capture is "G2 Glasses"; anything else
+    /// (Fireflies, Granola, an import) has no G2 audio to review.
+    static func isG2Source(_ source: String) -> Bool {
+        source.lowercased().contains("g2") || source.lowercased().contains("glasses")
+    }
+
     static func meetingRowProjection(_ row: [String: Any]) -> [String: Any]? {
         guard let sessionId = row["sessionId"] as? String, !sessionId.isEmpty else { return nil }
         var fields = meetingRowFields(row)
@@ -10068,11 +10074,25 @@ final class COSControlHelper {
         let body = try speakerReviewBody("/api/meetings?limit=\(limit)")
         let raw = (body["meetings"] as? [[String: Any]]) ?? []
         let rows: [[String: Any]] = raw.compactMap(Self.meetingRowProjection)
+        // 0.5.206: say WHICH rows were skipped and where they came from. A Fireflies
+        // or Granola meeting has no G2 audio and was never reviewable; a G2 recording
+        // with no session id was saved without its chunk sidecar, which is a fault
+        // worth naming (Chelsie and Queen, 2026-09-08: "3 recent meetings have no
+        // session id" read as a server-version problem and was not one).
+        let skippedRows: [[String: Any]] = raw.filter { Self.meetingRowProjection($0) == nil }.prefix(10).map { row in
+            [
+                "title": row["title"] as? String ?? "Untitled meeting",
+                "date": row["date"] as? String ?? "",
+                "source": row["source"] as? String ?? "",
+                "isG2": Self.isG2Source(row["source"] as? String ?? ""),
+            ]
+        }
         emit(ok: true, message: rows.isEmpty ? "No reviewable meetings" : "Meetings ready", details: [
             "state": rows.isEmpty ? "empty" : "ready",
             "meetings": rows,
             "count": rows.count,
             "skipped": raw.count - rows.count,
+            "skippedRows": skippedRows,
         ])
     }
 

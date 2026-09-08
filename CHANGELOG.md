@@ -1,3 +1,16 @@
+## 0.5.206 (build 244)
+
+The Speakers empty state names the meetings it cannot review and why.
+
+- Chelsie and Queen, 2026-09-08: "Meetings to review is empty, and it says 3
+  recent meetings have no session id and can't be reviewed. Is that expected
+  for recordings from before 6.44?" It was not a version problem, and the
+  sentence gave nothing to act on. The helper now reports the skipped rows with
+  their source, and the empty state says how many came from Fireflies or
+  another source (no G2 audio to review) and names any G2 recording that was
+  saved without its speaker sidecar, with the file title and date, so the user
+  can report exactly which one.
+
 ## 0.5.205 (build 243)
 
 Merge from the Manage sheet, with a preview from the owner Mac and a receipt, and a
