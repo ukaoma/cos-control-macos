@@ -4060,6 +4060,25 @@ need("var lines = esc(md || '').split(" in mem_page, "the answer renderer must e
 need("function whenLabel(" in mem_page and "n < 1e11 ? n * 1000 : n" in mem_page, "the card must turn epoch seconds into a date")
 need("function memoryActions(" in mem_page and "'memory.review'" in mem_page and "function guardrailsSection(" in mem_page and "'memory.guardrails.run'" in mem_page,
      "the page must offer Accept and Prune on a captured memory and the guardrails in settings")
+explorer_src = (root / "Resources/memories/graph-explorer.js").read_text()
+# 0.5.205: the Manage sheet's merge runs for real behind a second, owner-Mac preview and a polled receipt; duplicates only propose.
+need('"graph.merge.preview": { a in' in ops and '"graph.merge": { a in' in ops and 'if (a["confirm"] as? Bool) == true { cmd.append("--confirm") }' in ops
+     and '"graph.merge.status": { _ in ["context-graph-merge-status"] }' in ops and '"graph.duplicates": { a in' in ops,
+     "the merge preview, merge, merge status and duplicates ops must exist and pass confirm only as a boolean")
+for command in ("context-graph-merge-preview", "context-graph-merge", "context-graph-merge-status", "context-graph-duplicates"):
+    need(f'case "{command}":' in helper, f"helper dispatch lost {command}")
+need('static let mergeNeeds = "6.44.14"' in helper and helper.count("needs: Self.mergeNeeds)") == 4
+     and 'guard args.contains("--confirm") else { throw HelperError.message("--confirm is required' in helper,
+     "the four merge commands must name 6.44.14 and the helper must refuse a merge without --confirm")
+need("function mergeFlow(" in mem_page and "'graph.merge.preview'" in mem_page and "'graph.merge'" in mem_page and "confirm: true" in mem_page
+     and "'graph.merge.status'" in mem_page and "function pollMerge(" in mem_page and "if (pv.blocked) { finishMerge(false" in mem_page,
+     "the page must preview, confirm, start and poll a merge, and undo a blocked one")
+need("return mergeFlow(change.source, change.target" in mem_page and "if (change.op !== 'merge')" in mem_page,
+     "the explorer's Manage sheet must hand a merge to the page and refuse rename and remove")
+need("function duplicatesCard(" in mem_page and "'graph.duplicates'" in mem_page and "cosApp.mergeFrom(" in mem_page,
+     "the page must offer the duplicates scan with Preview merge per member")
+need("if (verdict === false) { undoChange(change); change.status = 'refused'" in explorer_src and "verdict.then(function (ok) { if (ok === false) { undoChange(change)" in explorer_src,
+     "the explorer must undo a change the host refuses or fails")
 need("function embeddingCards(" in (root / "Resources/memories/memories-app.js").read_text() and "'graph.setup.embedding'" in (root / "Resources/memories/memories-app.js").read_text()
      and "'graph.setup.extraction'" in (root / "Resources/memories/memories-app.js").read_text(),
      "the page must render the embedding and extraction pickers")

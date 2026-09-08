@@ -4396,6 +4396,16 @@ struct MemoriesWebView: NSViewRepresentable {
         },
         "memory.guardrails": { _ in ["context-memory-guardrails"] },
         "memory.guardrails.set": { a in ["context-memory-guardrails", "--json", MemoriesWebView.text(a["patch"], 16_000)] },
+        // Curation (0.5.205, server 6.44.14): the Manage sheet's merge with a preview, its receipt, and the duplicates scan.
+        "graph.merge.preview": { a in ["context-graph-merge-preview", "--source", MemoriesWebView.text(a["source"], 200), "--target", MemoriesWebView.text(a["target"], 200)] },
+        "graph.merge": { a in
+            var cmd = ["context-graph-merge", "--source", MemoriesWebView.text(a["source"], 200), "--target", MemoriesWebView.text(a["target"], 200)]
+            if (a["confirm"] as? Bool) == true { cmd.append("--confirm") }
+            if let rule = a["rule"] as? [String: Any], let data = try? JSONSerialization.data(withJSONObject: rule), let json = String(data: data, encoding: .utf8) { cmd += ["--rule", MemoriesWebView.text(json, 1000)] }
+            return cmd
+        },
+        "graph.merge.status": { _ in ["context-graph-merge-status"] },
+        "graph.duplicates": { a in ["context-graph-duplicates", "--limit", MemoriesWebView.bounded(a["limit"], 25, 1, 100)] },
         "memory.guardrails.run": { a in
             var cmd = ["context-memory-guardrails-run", "--days", MemoriesWebView.bounded(a["days"], 30, 1, 3650)]
             if (a["apply"] as? Bool) == true { cmd.append("--apply") }
@@ -4411,6 +4421,9 @@ struct MemoriesWebView: NSViewRepresentable {
     static func timeout(for op: String) -> TimeInterval {
         switch op {
         case "graph.ask": 170
+        case "graph.merge.preview": 30
+        case "graph.merge": 30
+        case "graph.duplicates": 50
         case "graph.setup.embedding": 110
         case "memory.guardrails.run": 430
         case "graph.sample": 110

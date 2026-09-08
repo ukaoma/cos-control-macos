@@ -1,3 +1,30 @@
+## 0.5.205 (build 243)
+
+Merge from the Manage sheet, with a preview from the owner Mac and a receipt, and a
+Possible duplicates card that proposes and never merges (server 6.44.14).
+
+- Miles 2026-09-08: "Build the Manage merge path with the preview" and "address any of
+  the obvious duplicates like the miels and queen example from above without clobbering
+  entities."
+- Merge into… in the explorer's Manage panel now runs for real: after the explorer's
+  own comparison, a second sheet shows the owner Mac's preview (both entities as the
+  index knows them, shared neighbors, relationships moved and collapsed, texts re-embedded,
+  about how long, and every warning), then one more click starts the merge. The page
+  polls the receipt every three seconds, shows each step (snapshot, merging, rebuilding
+  the index, exporting), and re-reads the graph around the surviving entity when it is
+  done. A pair the graph knows to be different people (Miles Ukaoma and Miles Mallard,
+  Manoj Bisht and Manoj Kumar, the Kyles, the Jacobuses) is refused with the reason and
+  the explorer's local change is undone. Rename and Remove still say they are not built.
+- Possible duplicates: a card under the graph lists person entities whose names look like
+  one person, grouped under the full name with the most connections, with each member's
+  connections, shared neighbors and why it was grouped. Preview merge on a member opens
+  the same two-step sheet. Nothing merges on its own.
+- Explorer: the host now decides whether a change applied. A refused or failed change is
+  undone in the view and its row says refused; the "Changes" list is named for this session
+  and no longer offers the prototype's Revert on real data.
+- Helper: `context-graph-merge-preview`, `context-graph-merge --confirm`,
+  `context-graph-merge-status`, `context-graph-duplicates`, gated on 6.44.14.
+
 ## 0.5.204 (build 242)
 
 - An entity card's "first indexed" is a date; 0.5.203 printed the index's epoch seconds.

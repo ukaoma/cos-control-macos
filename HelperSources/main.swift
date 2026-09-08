@@ -537,6 +537,10 @@ final class COSControlHelper {
         case "context-memory-review": try emitContextMemoryReview(args: args)
         case "context-memory-guardrails": try emitContextMemoryGuardrails(args: args)
         case "context-memory-guardrails-run": try emitContextMemoryGuardrailsRun(args: args)
+        case "context-graph-merge-preview": try emitContextGraphMergePreview(args: args)
+        case "context-graph-merge": try emitContextGraphMerge(args: args)
+        case "context-graph-merge-status": try emitContextGraphMergeStatus()
+        case "context-graph-duplicates": try emitContextGraphDuplicates(args: args)
         case "activity-signals": try emitActivitySignals()
         case "meetings": try emitMeetings(args: args)
         case "meetings-library": try emitMeetingsLibrary(args: args)
@@ -7198,6 +7202,8 @@ final class COSControlHelper {
     static let preferenceNeeds = "6.44.12"
     /// Memory review (accept, prune) and the guardrails.
     static let guardrailNeeds = "6.44.13"
+    /// 6.44.14: the Manage sheet's merge (preview, worker, receipt) and the duplicates scan.
+    static let mergeNeeds = "6.44.14"
     /// The 503 classes that mean "no pipeline", as the server spells them
     /// (pythonBridgeState and the file tier), rather than a passing fault.
     static let notConfiguredErrorClasses: Set<String> = ["pipeline_missing", "bridge_missing", "cos_pipeline_not_configured"]
@@ -7653,6 +7659,60 @@ final class COSControlHelper {
         let body = try setupRequest("/api/context/memory/\(queryEscape(memoryID))/review", body: try setupJSON(["decision": decision, "note": note]),
                                     timeout: 30, accepted: [200], needs: Self.guardrailNeeds)
         emit(ok: true, message: decision == "prune" ? "Memory pruned" : "Memory accepted", details: body)
+    }
+
+    // ── Curation (server 6.44.14): the Manage sheet's merge and the duplicates scan ──
+
+    /// `--source A --target B`, each an entity id of at most 200 printable characters.
+    private func mergeNames(_ args: [String]) throws -> (String, String) {
+        guard let source = option("--source", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines), Self.validEntityID(source),
+              let target = option("--target", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines), Self.validEntityID(target) else {
+            throw HelperError.message("--source and --target must be entity ids of at most 200 characters")
+        }
+        return (source, target)
+    }
+
+    /// `context-graph-merge-preview --source A --target B`: what the merge would do, read from this Mac's index.
+    /// A pair the graph knows to be different people comes back ok with `blocked` and its reason.
+    private func emitContextGraphMergePreview(args: [String]) throws {
+        let (source, target) = try mergeNames(args)
+        let body = try setupRequest("/api/context/graph/merge/preview", body: try setupJSON(["source": source, "target": target]),
+                                    timeout: 25, accepted: [200], needs: Self.mergeNeeds)
+        let blocked = body["blocked"] as? Bool == true
+        emit(ok: true, message: blocked ? (body["block_reason"] as? String ?? "Refused") : "Preview ready", details: body)
+    }
+
+    /// `context-graph-merge --source A --target B --confirm [--rule JSON]`: start the merge worker on the owner
+    /// Mac; the server answers 202 with a ticket and the receipt. The helper refuses without --confirm so a
+    /// page fault can never start one; the server refuses again (400 confirmation_required).
+    private func emitContextGraphMerge(args: [String]) throws {
+        let (source, target) = try mergeNames(args)
+        guard args.contains("--confirm") else { throw HelperError.message("--confirm is required: review the preview first") }
+        var payload: [String: Any] = ["source": source, "target": target, "confirm": true]
+        if let raw = option("--rule", in: args), let data = raw.data(using: .utf8),
+           let rule = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            payload["rule"] = rule
+        }
+        let body = try setupRequest("/api/context/graph/merge", body: try setupJSON(payload), timeout: 25, accepted: [202], needs: Self.mergeNeeds)
+        let seconds = body["estimated_seconds"] as? Int
+        emit(ok: true, message: "Merging \(source) into \(target)" + (seconds.map { ", about \($0 / 60) minute\($0 >= 120 ? "s" : "")" } ?? ""), details: body)
+    }
+
+    /// `context-graph-merge-status`: the current or last merge's receipt with the worker's log tail.
+    private func emitContextGraphMergeStatus() throws {
+        let body = try learningRoute("/api/context/graph/merge", timeout: 15, needs: Self.mergeNeeds)
+        let receipt = body["receipt"] as? [String: Any]
+        let state = receipt?["state"] as? String
+        let message = state.map { "Merge \($0)" } ?? "No merge recorded here"
+        emit(ok: true, message: message, details: body)
+    }
+
+    /// `context-graph-duplicates [--limit N]`: person entities whose names look like one person. Proposals only.
+    private func emitContextGraphDuplicates(args: [String]) throws {
+        let limit = min(max(Int(option("--limit", in: args) ?? "25") ?? 25, 1), 100)
+        let body = try learningRoute("/api/context/graph/duplicates?limit=\(limit)", timeout: 45, needs: Self.mergeNeeds)
+        let n = (body["groups"] as? [[String: Any]])?.count ?? 0
+        emit(ok: true, message: n == 0 ? "No possible duplicates" : "\(n) possible duplicate group\(n == 1 ? "" : "s")", details: body)
     }
 
     /// `context-memory-guardrails [--json PATCH]`: read, or set from a small JSON object.

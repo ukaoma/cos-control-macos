@@ -38,6 +38,20 @@ body{overflow:hidden}
 .event:before{content:"";position:absolute;left:-27px;top:5px;width:9px;height:9px;border-radius:50%;background:var(--line);border:1px solid var(--bg)}
 .effect-list li b{display:block;font-size:10.5px;color:var(--muted);margin-bottom:2px}
 .sync-card dd button{margin-left:6px}
+
+    /* Curation (0.5.205): the merge sheet and the duplicates card */
+    .merge-cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 10px 0; }
+    .merge-col { border: 1px solid var(--line, rgba(255,255,255,.12)); border-radius: 10px; padding: 10px 12px; }
+    .merge-col.keep { border-color: var(--accent, #F0C36A); box-shadow: inset 0 0 0 1px rgba(240,195,106,.25); }
+    .merge-col h4 { margin: 0 0 4px; }
+    .merge-col p { margin: 6px 0; font-size: 13px; }
+    .merge-steps { margin: 8px 0; padding-left: 18px; }
+    .merge-steps li { opacity: .55; margin: 2px 0; }
+    .merge-steps li.done { opacity: .8; text-decoration: line-through; }
+    .merge-steps li.now { opacity: 1; font-weight: 600; }
+    .merge-log { font-size: 11px; white-space: pre-wrap; opacity: .8; max-height: 90px; overflow: auto; }
+    .dup-group { border-top: 1px solid var(--line, rgba(255,255,255,.1)); padding: 8px 0 4px; }
+    .dup-member { align-items: flex-start; }
 </style>
 </head><body>
 <section class="window" id="app" aria-label="COS Control Memories">

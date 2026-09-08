@@ -543,7 +543,7 @@
       (cards.length ? cards.map(function (x) { return '<article class="source-card"><div class="row spread"><h3>' + esc(x.title) + '</h3><span class="badge">' + esc(x.kind) + '</span></div>' + (x.text ? '<div class="quote">' + esc(x.text) + '</div>' : '') + (x.note ? '<p>' + esc(x.note) + '</p>' : '') + (x.event ? '<div class="actions"><button class="link" onclick="cosApp.select(\'' + esc(x.event) + '\');cosApp.setFilter(\'recent\')">Inspect learning →</button></div>' : '') + '</article>'; }).join('') : '<div class="empty"><div><h3>No source records yet.</h3><p>Your first saved lesson will bring its source here.</p></div></div>');
   }
   function graphDetail() {
-    return '<div class="row spread actual-header"><h2>Knowledge graph</h2><span class="row"><span class="badge green">Your LightRAG data</span><span class="meta">focus: ' + esc(state.graphFocus) + '</span></span></div><p class="intro">' + esc(state.graphFocus) + (state.status && state.status.ownerName && state.graphFocus === state.status.ownerName ? ' (you)' : '') + ' and its strongest neighbors from your graph, read through COS Control. Click an entity to inspect it; Explore from here loads that entity\'s own neighborhood.</p><div class="graph-search row"><input type="search" id="graphQuery" placeholder="Find an entity to focus…" value="' + esc(state.graphQuery) + '" aria-label="Find an entity"><button onclick="cosApp.graphSearch()">Focus</button><span id="graphSearchStatus" class="muted"></span></div><div id="graphMount" class="cgx-host"></div>' + '<div id="graphAsk">' + askBlockInner() + '</div>';
+    return '<div class="row spread actual-header"><h2>Knowledge graph</h2><span class="row"><span class="badge green">Your LightRAG data</span><span class="meta">focus: ' + esc(state.graphFocus) + '</span></span></div><p class="intro">' + esc(state.graphFocus) + (state.status && state.status.ownerName && state.graphFocus === state.status.ownerName ? ' (you)' : '') + ' and its strongest neighbors from your graph, read through COS Control. Click an entity to inspect it; Explore from here loads that entity\'s own neighborhood.</p><div class="graph-search row"><input type="search" id="graphQuery" placeholder="Find an entity to focus…" value="' + esc(state.graphQuery) + '" aria-label="Find an entity"><button onclick="cosApp.graphSearch()">Focus</button><span id="graphSearchStatus" class="muted"></span></div><div id="graphMount" class="cgx-host"></div>' + '<div id="graphAsk">' + askBlockInner() + '</div>' + '<div id="graphDups">' + duplicatesCard() + '</div>';
   }
   // Ask the graph in plain language from the focus (Miles 2026-09-07: "Show me the
   // relation between Queen and Ukaoma"). The question runs the same hybrid query
@@ -651,6 +651,126 @@
         description_scope: 'the ' + focus + ' neighborhood', selection_description: focus + ' and up to 30 direct neighbors, read live from this Mac\'s index' };
     });
   }
+  // ── Curation (0.5.205, server 6.44.14): merge with a preview and a receipt; duplicates that only propose ──
+  // Miles 2026-09-08: "Build the Manage merge path with the preview" and "address any of the obvious
+  // duplicates like the miels and queen example from above without clobbering entities."
+  state.merge = null;   // { source, target, rule, preview, phase: loading|preview|starting|running|failed, receipt, logTail, armed, resolve }
+  state.dups = { busy: false, data: null, error: null };
+  var MERGE_POLL_MS = 3000;
+  function mergeFlow(source, target, rule) {
+    return new Promise(function (resolve) {
+      if (state.merge && (state.merge.phase === 'running' || state.merge.phase === 'starting')) { toast('A merge is already running. Wait for its receipt.'); resolve(false); return; }
+      state.merge = { source: source, target: target, rule: rule || null, preview: null, phase: 'loading', receipt: null, logTail: [], armed: false, resolve: resolve, startedAt: null };
+      renderMerge(true);
+      call('graph.merge.preview', { source: source, target: target }).then(function (pv) {
+        var m = state.merge; if (!m || m.resolve !== resolve) return;
+        m.preview = pv;
+        if (pv.blocked) { finishMerge(false, pv.block_reason || 'Refused.'); return; }
+        if (!pv.source || !pv.source.found || !pv.target || !pv.target.found) { finishMerge(false, 'No entity named ' + (pv.source && pv.source.found ? target : source) + ' in this Mac\'s index. Rebuild the index and try again.'); return; }
+        m.phase = 'preview'; renderMerge(true);
+      }, function (e) { finishMerge(false, e.message); });
+    });
+  }
+  function finishMerge(ok, message) {
+    var m = state.merge; if (!m) return;
+    state.merge = null;
+    if (state.modalOpen === 'merge') closeModal();
+    if (message) toast(message);
+    if (m.resolve) m.resolve(ok);
+  }
+  // Updates the open sheet in place; opens it only when asked (a poll must never reopen a sheet the user closed).
+  function renderMerge(open) {
+    var m = state.merge; if (!m) return;
+    var body = document.querySelector('#mergeBody');
+    if (body && state.modalOpen === 'merge') { body.innerHTML = mergeSheetInner(); return; }
+    if (!open) return;
+    state.modalOpen = 'merge';
+    modal('Merge ' + esc(m.source) + ' into ' + esc(m.target), '<div id="mergeBody">' + mergeSheetInner() + '</div>');
+  }
+  function mergeCard(en, keep) {
+    var descs = (en.descriptions && en.descriptions.length) ? en.descriptions.map(function (d) { return '<p>' + esc(d) + '</p>'; }).join('') : '<p class="muted">No description extracted.</p>';
+    var more = en.description_count > (en.descriptions || []).length ? '<p class="muted small">' + fmt(en.description_count - en.descriptions.length) + ' more description' + (en.description_count - en.descriptions.length === 1 ? '' : 's') + ' not shown</p>' : '';
+    return '<div class="merge-col' + (keep ? ' keep' : '') + '"><h4>' + esc(en.id) + '</h4><div class="meta">' + (keep ? 'survives · ' : 'folds in · ') + esc(en.type || 'entity') + ' · ' + fmt(en.degree || 0) + ' connection' + (en.degree === 1 ? '' : 's') + (en.created_at ? ' · first indexed ' + esc(whenLabel(en.created_at)) : '') + '</div>' + descs + more + '</div>';
+  }
+  function mergeSteps(step) {
+    var order = ['starting', 'locking', 'snapshot', 'merging', 'indexing', 'exporting', 'done'];
+    var labels = { starting: 'Starting the worker', locking: 'Taking the ingest lock', snapshot: 'Copying the graph aside', merging: 'Merging in LightRAG (re-embeds the merged texts)', indexing: 'Rebuilding this Mac\'s index', exporting: 'Refreshing the Observatory export', done: 'Done' };
+    var at = Math.max(0, order.indexOf(step || 'starting'));
+    return '<ol class="merge-steps">' + order.slice(0, 6).map(function (s, i) { return '<li class="' + (i < at ? 'done' : i === at ? 'now' : '') + '">' + esc(labels[s]) + '</li>'; }).join('') + '</ol>';
+  }
+  function mergeSheetInner() {
+    var m = state.merge; if (!m) return '';
+    if (m.phase === 'loading') return '<p class="muted">Asking this Mac what the merge would do…</p>';
+    var pv = m.preview || {}, eff = pv.effect || {}, r = m.receipt || {};
+    if (m.phase === 'preview' || m.phase === 'starting') {
+      var big = (pv.warnings || []).some(function (w) { return w.code === 'large_merge'; });
+      var warn = (pv.warnings || []).map(function (w) { return '<p class="' + (w.code === 'large_merge' || w.code === 'nothing_links_them' ? 'bad' : 'muted') + '">' + esc(w.text) + '</p>'; }).join('');
+      var mins = eff.estimated_seconds ? Math.max(1, Math.round(eff.estimated_seconds / 60)) : null;
+      return '<p>Read both before merging. ' + (pv.name_signal ? '<span class="badge green">' + esc(pv.name_signal) + '</span>' : '<span class="badge">no name similarity</span>') + '</p>' +
+        '<div class="merge-cmp">' + mergeCard(pv.target, true) + mergeCard(pv.source, false) + '</div>' +
+        '<p class="muted">' + (pv.shared_count ? 'Shared neighbors: ' + esc((pv.shared_neighbors || []).join(', ')) + (pv.shared_count > (pv.shared_neighbors || []).length ? ' and ' + fmt(pv.shared_count - pv.shared_neighbors.length) + ' more' : '') : 'No shared neighbors.') + (pv.adjacent ? ' They are directly connected; that edge collapses.' : '') + '</p>' +
+        '<p><b>Effect:</b> ' + fmt(eff.moved || 0) + ' relationship' + (eff.moved === 1 ? '' : 's') + ' move to ' + esc(m.target) + ', ' + fmt(eff.collapsed || 0) + ' fold into ones it already has, ' + fmt(eff.embeddings || 0) + ' text' + (eff.embeddings === 1 ? '' : 's') + ' re-embedded' + (mins ? ', about ' + mins + ' minute' + (mins === 1 ? '' : 's') : '') + '. The descriptions concatenate; nothing is deleted from the sources. A copy of the graph is kept first.</p>' + warn +
+        (m.rule ? '<p class="muted small">Rule recorded with the receipt: ' + esc(m.rule.scope || '') + ' "' + esc(m.rule.pattern || '') + '" → "' + esc(m.rule.replacement || '') + '".</p>' : '') +
+        '<div class="setup-row"><button class="quiet" onclick="cosApp.mergeCancel()" ' + (m.phase === 'starting' ? 'disabled' : '') + '>Cancel</button><button onclick="cosApp.mergeGo()" ' + (m.phase === 'starting' ? 'disabled' : '') + '>' + (m.phase === 'starting' ? 'Starting…' : (big && !m.armed ? 'Merge ' + fmt(pv.source.degree) + ' relationships…' : (m.armed ? 'Yes, merge ' + fmt(pv.source.degree) + ' relationships' : 'Merge on this Mac'))) + '</button></div>' +
+        (big && m.armed ? '<p class="bad">Click again to confirm. This re-embeds ' + fmt(eff.embeddings || 0) + ' texts and rewrites the vector stores.</p>' : '');
+    }
+    if (m.phase === 'running') {
+      var secs = m.startedAt ? Math.round((Date.now() - m.startedAt) / 1000) : 0;
+      return '<p>Running on this Mac' + (r.ticket ? ' · ticket ' + esc(r.ticket) : '') + ' · ' + secs + ' s' + (eff.estimated_seconds ? ' of about ' + eff.estimated_seconds : '') + '</p>' + mergeSteps(r.step) +
+        (m.logTail && m.logTail.length ? '<pre class="merge-log">' + esc(m.logTail.slice(-4).join('\n')) + '</pre>' : '') +
+        '<p class="muted small">Runs in the background; you can close this and come back. The graph reloads around ' + esc(m.target) + ' when it is done.</p><div class="setup-row"><button class="quiet" onclick="cosApp.mergeHide()">Close</button></div>';
+    }
+    if (m.phase === 'failed') {
+      return '<p class="bad">' + esc(r.error || 'The merge did not finish.') + '</p>' + mergeSteps(r.step) + (r.snapshot ? '<p class="muted small">The pre-merge copy of the graph is intact: ' + esc(r.snapshot) + '</p>' : '') +
+        '<div class="setup-row"><button class="quiet" onclick="cosApp.mergeCancel()">Close</button></div>';
+    }
+    return '';
+  }
+  function pollMerge() {
+    var m = state.merge; if (!m || m.phase !== 'running') return;
+    setTimeout(function () {
+      if (state.merge !== m || m.phase !== 'running') return;
+      call('graph.merge.status').then(function (d) {
+        if (state.merge !== m) return;
+        m.receipt = d.receipt || m.receipt; m.logTail = d.log_tail || [];
+        var st = m.receipt && m.receipt.state;
+        if (st === 'done') { mergeDone(); return; }
+        if (st === 'failed' || (!d.running && st !== 'done')) { m.phase = 'failed'; renderMerge(); if (state.modalOpen !== 'merge') toast('Merge of ' + m.source + ' failed: ' + ((m.receipt && m.receipt.error) || 'no detail')); return; }
+        renderMerge(); pollMerge();
+      }, function () { renderMerge(); pollMerge(); });
+    }, MERGE_POLL_MS);
+  }
+  function mergeDone() {
+    var m = state.merge; if (!m) return;
+    var r = m.receipt || {}, after = r.after || {};
+    finishMerge(true, 'Merged ' + m.source + ' into ' + m.target + (after.target != null ? ' · ' + fmt(after.target) + ' connections now' : '') + (r.embedded_texts != null ? ' · ' + fmt(r.embedded_texts) + ' texts re-embedded' : '') + '.');
+    state.graphFocus = m.target; state.graphFocusChosen = true; state.graphQuery = '';
+    state.graphMemories = {};
+    loadGraphStatus().then(function () { render(); }, function () { render(); });
+    if (state.dups.data) cosApp.duplicatesScan();
+  }
+  function dupGroup(g) {
+    var t = g.members[0] || {};
+    return '<div class="dup-group"><div class="row spread"><b>' + esc(g.target) + '</b><span class="meta">' + fmt(t.degree || 0) + ' connections · <span class="badge' + (g.confidence === 'high' ? ' green' : '') + '">' + esc(g.confidence) + '</span></span></div>' +
+      (t.description ? '<p class="muted small">' + esc(t.description) + '</p>' : '') +
+      g.members.slice(1).map(function (m) {
+        return '<div class="setup-source dup-member"><span><b>' + esc(m.id) + '</b> <span class="muted">' + fmt(m.degree) + ' connection' + (m.degree === 1 ? '' : 's') + ' · ' + fmt(m.shared_neighbors) + ' shared' + (m.why ? ' · ' + esc(m.why) : '') + '</span>' + (m.description ? '<br><span class="muted small">' + esc(m.description) + '</span>' : '') + '</span><button class="quiet" onclick="cosApp.mergeFrom(' + attr(m.id) + ', ' + attr(g.target) + ')">Preview merge</button></div>';
+      }).join('') + '</div>';
+  }
+  function duplicatesCard() {
+    var d = state.dups;
+    var head = '<div class="row spread"><h3>Possible duplicates</h3><span class="meta">people whose names look like one person · proposals only</span></div>';
+    var rescan = '<div class="setup-row"><button class="quiet" onclick="cosApp.duplicatesScan()">Scan again</button></div>';
+    var wrap = function (inner) { return '<section class="source-card dups-card">' + head + inner + '</section>'; };
+    if (d.error) return wrap('<p class="bad">' + esc(d.error) + '</p>' + rescan);
+    if (d.busy) return wrap('<p class="muted">Scanning this Mac\'s index…</p>');
+    if (!d.data) return wrap('<p class="muted">Groups person entities whose names are variants of one another: a bare first name that matches one full name, a surname within two letters, one name spelling out the other. People the graph knows to be different never share a group. Nothing merges on its own; each row opens the same two-step preview as Manage.</p><div class="setup-row"><button class="quiet" onclick="cosApp.duplicatesScan()">Find possible duplicates</button></div>');
+    var groups = d.data.groups || [];
+    if (!groups.length) return wrap('<p class="muted">No name variants among ' + fmt(d.data.scanned || 0) + ' people' + (d.data.available === false ? ' (no index on this Mac yet)' : '') + '.</p>' + rescan);
+    return wrap('<p class="muted">' + fmt(d.data.total_groups || groups.length) + ' group' + (d.data.total_groups === 1 ? '' : 's') + ' among ' + fmt(d.data.scanned || 0) + ' people' + (groups.length < (d.data.total_groups || 0) ? ', showing the first ' + groups.length : '') + '. Read both descriptions before merging: a merge is reviewed twice and refused for people the graph knows apart.</p>' + groups.map(dupGroup).join('') + rescan);
+  }
+  function paintDups() { var host = document.querySelector('#graphDups'); if (host) host.innerHTML = duplicatesCard(); }
+
   function mountKnowledgeGraph() {
     var host = document.querySelector('#graphMount'); if (!host) return;
     if (state.graphController) { try { state.graphController.destroy(); } catch (e) {} state.graphController = null; }
@@ -665,7 +785,13 @@
       onRecenter: function (id) { state.graphFocus = id; state.graphFocusChosen = true; state.graphQuery = ''; render(); },
       onPassages: function (id) { call('graph.passages', { entity: id, limit: 5 }).then(function (d) { openPassages(id, d); }, function (e) { toast(e.message); }); },
       curation: { ownerLabel: hostLabel(state.graphStatus && state.graphStatus.source && state.graphStatus.source.owner_host) || 'the owner Mac', isOwner: !!(state.graphStatus && state.graphStatus.source && state.graphStatus.source.is_owner) },
-      onCuration: function () { toast('Merging, renaming and removing arrive with the curation engine in a later release. Nothing was changed.'); return false; }
+      // 0.5.205: Merge into… runs for real (server 6.44.14). The explorer's own comparison is
+      // step one; the owner Mac's preview is step two; the receipt is polled until it settles.
+      // The promise keeps the explorer's row "pending" and undoes it on a refusal or failure.
+      onCuration: function (change) {
+        if (change.op !== 'merge') { toast('Rename and remove arrive in a later release. Nothing was changed.'); return false; }
+        return mergeFlow(change.source, change.target, change.rule && change.rule.pattern ? change.rule : null);
+      }
     });
     // "Visible" in the Sync card counts what the neighborhood returned.
     setTimeout(function () { var dd = document.querySelector('.sync-grid'); if (dd && state.graphVisible != null) { var cells = dd.querySelectorAll('dd'); if (cells[4]) cells[4].textContent = fmt(state.graphVisible) + ' entities in this view'; } }, 1500);
@@ -737,6 +863,7 @@
     var first = document.querySelector('.modal button'); if (first) first.focus();
   }
   function closeModal() {
+    if (state.modalOpen === 'merge' && state.merge && (state.merge.phase === 'preview' || state.merge.phase === 'loading')) { var pending = state.merge; state.merge = null; if (pending.resolve) pending.resolve(false); toast('Nothing was changed.'); }
     state.modalOpen = null; var existed = !!document.querySelector('.modal'); document.querySelector('#modalRoot').innerHTML = ''; if (existed && window.previousFocus && window.previousFocus.isConnected && ['BODY', 'HTML'].indexOf(window.previousFocus.tagName) < 0) window.previousFocus.focus(); }
   // Guardrails (0.5.201): the user's own rules for what a captured memory must
   // be, an optional model pass against the philosophy, and a review-now run.
@@ -814,6 +941,24 @@
         function (e) { state.graphAsk = { q: q, busy: false, answer: null, error: e.message, cards: [], cardsBusy: false }; var h = document.querySelector('#graphAsk'); if (h) h.innerHTML = askBlockInner(); });
     },
     focusEntity: function (id) { state.graphFocus = id; state.graphFocusChosen = true; state.graphQuery = ''; render(); },
+    mergeGo: function () {
+      var m = state.merge; if (!m || m.phase !== 'preview') return;
+      var big = ((m.preview || {}).warnings || []).some(function (w) { return w.code === 'large_merge'; });
+      if (big && !m.armed) { m.armed = true; renderMerge(); return; }
+      m.phase = 'starting'; renderMerge();
+      call('graph.merge', { source: m.source, target: m.target, confirm: true, rule: m.rule || undefined }).then(function (d) {
+        if (state.merge !== m) return;
+        m.phase = 'running'; m.receipt = d.receipt || null; m.ticket = d.ticket || null; m.startedAt = Date.now(); renderMerge(); pollMerge();
+      }, function (e) { if (state.merge !== m) return; m.phase = 'preview'; m.armed = false; renderMerge(); toast(e.message); });
+    },
+    mergeCancel: function () { finishMerge(false, 'Nothing was changed.'); },
+    mergeHide: function () { closeModal(); },
+    mergeFrom: function (source, target) { mergeFlow(source, target, null); },
+    duplicatesScan: function () {
+      if (state.dups.busy) return;
+      state.dups = { busy: true, data: null, error: null }; paintDups();
+      call('graph.duplicates', { limit: 25 }).then(function (d) { state.dups = { busy: false, data: d, error: null }; paintDups(); }, function (e) { state.dups = { busy: false, data: null, error: e.message }; paintDups(); });
+    },
     copyAsk: function (withContext) {
       var a = state.graphAsk; if (!a.answer) return;
       var text = 'Question: ' + a.q + '\n\nAnswer (synthesized from the COS knowledge graph, ' + (a.answer.mode || 'hybrid') + ' mode):\n' + a.answer.answer;
