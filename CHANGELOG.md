@@ -1,3 +1,7 @@
+## 0.5.204 (build 242)
+
+- An entity card's "first indexed" is a date; 0.5.203 printed the index's epoch seconds.
+
 ## 0.5.203 (build 241)
 
 The graph's answer reads as a page, copies, and hands back the entities it names.

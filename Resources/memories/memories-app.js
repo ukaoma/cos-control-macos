@@ -601,6 +601,14 @@
       var h = document.querySelector('#graphAsk'); if (h) h.innerHTML = askBlockInner();
     });
   }
+  // The index stamps first_seen as epoch seconds; the inspector renders it as
+  // an age, the card as a date. Accept seconds, milliseconds or ISO.
+  function whenLabel(v) {
+    if (v == null || v === '') return '';
+    var n = typeof v === 'number' ? v : (/^\d{9,13}$/.test(String(v)) ? Number(v) : NaN);
+    var d = isNaN(n) ? new Date(String(v)) : new Date(n < 1e11 ? n * 1000 : n);
+    return isNaN(d.getTime()) ? String(v) : d.toISOString().slice(0, 10);
+  }
   function entityCardText(en) {
     var desc = (en.descriptions && en.descriptions.length ? en.descriptions : (en.description ? [en.description] : [])).join('\n');
     var rels = (en.edges || []).slice(0, 6).map(function (e) { var other = e.source === en.id ? e.target : e.source; return '- ' + other + (e.description ? ': ' + e.description : ''); }).join('\n');
@@ -610,7 +618,7 @@
     var inView = state.graphFocus === en.id || (state.graphNeighbors || []).indexOf(en.id) !== -1;
     var desc = (en.descriptions && en.descriptions.length ? en.descriptions[0] : en.description) || '';
     var rels = (en.edges || []).slice(0, 3).map(function (e) { var other = e.source === en.id ? e.target : e.source; return '<div class="setup-source"><b>' + esc(other) + '</b><span class="muted">' + esc((e.description || '').slice(0, 140)) + '</span></div>'; }).join('');
-    return '<section class="ask-entity"><div class="row spread"><h4>' + esc(en.id) + '</h4><span class="meta">' + esc(en.type || 'entity') + ' · ' + fmt(en.degree || 0) + ' connections' + (en.first_seen_build || en.created_at ? ' · first indexed ' + esc(dateOnly(en.created_at || en.first_seen_build)) : '') + (inView ? ' · in view' : '') + '</span></div>' +
+    return '<section class="ask-entity"><div class="row spread"><h4>' + esc(en.id) + '</h4><span class="meta">' + esc(en.type || 'entity') + ' · ' + fmt(en.degree || 0) + ' connections' + (en.created_at || en.first_seen_build ? ' · first indexed ' + esc(whenLabel(en.created_at || en.first_seen_build)) : '') + (inView ? ' · in view' : '') + '</span></div>' +
       (desc ? '<p>' + esc(desc.length > 320 ? desc.slice(0, 320) + '…' : desc) + '</p>' : '<p class="muted">No description stored.</p>') + rels +
       '<div class="setup-row"><button class="quiet" onclick="cosApp.copyAskEntity(' + attr(en.id) + ')">Copy context</button><button class="quiet" onclick="cosApp.askEntityPassages(' + attr(en.id) + ')">Show passages</button><button class="quiet" onclick="cosApp.focusEntity(' + attr(en.id) + ')">' + (inView ? 'Explore from here' : 'Explore from here (loads its neighborhood)') + '</button></div></section>';
   }

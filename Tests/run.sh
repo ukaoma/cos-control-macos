@@ -4057,6 +4057,7 @@ need("function askBlockInner(" in mem_page and "cosApp.askGraphGo()" in mem_page
 need("function renderMarkdown(" in mem_page and "function askEntityCard(" in mem_page and "cosApp.copyAsk(" in mem_page and "askEntityPassages(" in mem_page,
      "the answer must render, copy, and hand back entity cards with passages")
 need("var lines = esc(md || '').split(" in mem_page, "the answer renderer must escape before it marks up")
+need("function whenLabel(" in mem_page and "n < 1e11 ? n * 1000 : n" in mem_page, "the card must turn epoch seconds into a date")
 need("function memoryActions(" in mem_page and "'memory.review'" in mem_page and "function guardrailsSection(" in mem_page and "'memory.guardrails.run'" in mem_page,
      "the page must offer Accept and Prune on a captured memory and the guardrails in settings")
 need("function embeddingCards(" in (root / "Resources/memories/memories-app.js").read_text() and "'graph.setup.embedding'" in (root / "Resources/memories/memories-app.js").read_text()
