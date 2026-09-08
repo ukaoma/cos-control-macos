@@ -1,3 +1,20 @@
+## 0.5.203 (build 241)
+
+The graph's answer reads as a page, copies, and hands back the entities it names.
+
+- **Rendered, not raw.** The answer's headings, bold, lists and tables render
+  in the page's own type instead of Markdown marks (Miles, 2026-09-07).
+- **Copy answer** puts the question and answer on the clipboard; **Copy with
+  context** adds the entity cards under it, so a pasted block carries what the
+  graph knows.
+- **The entities the answer names come back as cards**, the same card the
+  inspector shows: type, connections, first indexed, the description, the
+  strongest relationships, with Copy context, Show passages and Explore from
+  here. Headings and bold names are looked up in the index; an exact id wins,
+  then a person. A card says "in view" when its entity is in the neighborhood
+  above, and Explore from here loads the rest, so the two containers work as
+  one reading of the graph.
+
 ## 0.5.202 (build 240)
 
 Ask the graph in plain language, from the focus.

@@ -43,7 +43,7 @@
     memoryQuery: '', memoryHits: null, coverage: {},
     detail: {}, memoryDetail: {}, passages: {}, loading: {}, errors: {},
     graphFocus: 'COS', graphFocusChosen: false, ingesting: null, ingestLimit: 10, ingestWatch: null, graphQuery: '',
-    progress: null, fetchWatch: null, modalOpen: null, graphAsk: { q: '', busy: false, answer: null, error: null }, graphNeighbors: [], guardrails: null, guardrailsRun: null, guardrailsBusy: null, guardrailsLoading: false, guardrailsError: null, guardrailsRubricLines: 0, memoryReviewBusy: null, setup: null, setupLoading: false, setupError: null, setupBusy: null, armed: null, askQ: '', askAnswer: null, askBusy: false, knowledgeTabChosen: false, graphController: null, copyId: null, copyOptions: { sources: true, graph: false }
+    progress: null, fetchWatch: null, modalOpen: null, graphAsk: { q: '', busy: false, answer: null, error: null, cards: [], cardsBusy: false }, graphNeighbors: [], guardrails: null, guardrailsRun: null, guardrailsBusy: null, guardrailsLoading: false, guardrailsError: null, guardrailsRubricLines: 0, memoryReviewBusy: null, setup: null, setupLoading: false, setupError: null, setupBusy: null, armed: null, askQ: '', askAnswer: null, askBusy: false, knowledgeTabChosen: false, graphController: null, copyId: null, copyOptions: { sources: true, graph: false }
   };
 
   // ── loading ─────────────────────────────────────────────────────
@@ -549,6 +549,71 @@
   // relation between Queen and Ukaoma"). The question runs the same hybrid query
   // the setup step uses; the answer renders here, with the names it mentions as
   // focus buttons. About a minute; two model calls under the subscription.
+  // A safe Markdown subset for a model answer: escape first, then headings,
+  // bold, inline code, bullet lists, pipe tables and paragraphs. Nothing else.
+  function renderMarkdown(md) {
+    var lines = esc(md || '').split('\n'), out = [], list = null, table = null;
+    function inline(s) { return s.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/\[(\d+)\]/g, '<sup class="ref">[$1]</sup>'); }
+    function flush() { if (list) { out.push('<ul>' + list.join('') + '</ul>'); list = null; } if (table) { out.push('<table>' + table.join('') + '</table>'); table = null; } }
+    lines.forEach(function (raw) {
+      var line = raw.replace(/\s+$/, '');
+      if (!line.trim()) { flush(); return; }
+      var h = line.match(/^(#{1,4})\s+(.*)$/);
+      if (h) { flush(); out.push('<h' + Math.min(h[1].length + 3, 6) + '>' + inline(h[2]) + '</h' + Math.min(h[1].length + 3, 6) + '>'); return; }
+      var li = line.match(/^\s*[-*•]\s+(.*)$/);
+      if (li) { if (table) flush(); list = list || []; list.push('<li>' + inline(li[1]) + '</li>'); return; }
+      if (/^\s*\|.*\|\s*$/.test(line)) {
+        if (/^\s*\|[\s:|-]+\|\s*$/.test(line)) return;
+        if (list) flush();
+        var cells = line.trim().replace(/^\||\|$/g, '').split('|').map(function (c) { return inline(c.trim()); });
+        var tag = table ? 'td' : 'th'; table = table || [];
+        table.push('<tr>' + cells.map(function (c) { return '<' + tag + '>' + c + '</' + tag + '>'; }).join('') + '</tr>'); return;
+      }
+      flush(); out.push('<p>' + inline(line) + '</p>');
+    });
+    flush();
+    return out.join('');
+  }
+  // The entities an answer names, as the same card the inspector shows: headings
+  // and bold names are looked up in the index; an exact id wins, then a person.
+  function askEntityCandidates(answer, q) {
+    var names = [];
+    function add(n) { n = String(n || '').replace(/\s*\(.*?\)\s*$/, '').replace(/[*_#`]/g, '').trim(); if (n.length >= 3 && n.length <= 60 && /[A-Za-z]/.test(n) && names.indexOf(n) === -1) names.push(n); }
+    (answer.match(/^#{1,4}\s+(.+)$/gm) || []).forEach(function (h) { add(h.replace(/^#+\s+/, '').replace(/^(Relationship|Relationships|References|Key Context|Summary|Overview)\s*:?\s*/i, '')); });
+    (answer.match(/\*\*([^*]{3,60})\*\*/g) || []).forEach(function (b) { var n = b.replace(/\*\*/g, ''); if (/^[A-Z][\w'.-]*(\s+[A-Z][\w'.-]*){0,3}$/.test(n)) add(n); });
+    var m = q.match(/between\s+(.+?)\s+and\s+(.+?)\??$/i); if (m) { add(m[1]); add(m[2]); }
+    return names.filter(function (n) { return !/^(Primary Relationship|Role|Current Focus|Completion|Birthday|Children|Attribute|Detail|Regular syncs|Family management|Shared parenthood)$/i.test(n); }).slice(0, 8);
+  }
+  function loadAskCards(answer, q) {
+    var names = askEntityCandidates(answer, q);
+    state.graphAsk.cards = []; state.graphAsk.cardsBusy = names.length > 0;
+    var host = document.querySelector('#graphAsk'); if (host) host.innerHTML = askBlockInner();
+    var seen = {};
+    Promise.all(names.map(function (n) {
+      return call('graph.search', { q: n, limit: 3 }).then(function (d) {
+        var items = d.items || [];
+        var hit = items.find(function (it) { return String(it.id).toLowerCase() === n.toLowerCase(); }) || items.find(function (it) { return String(it.type || '').toLowerCase() === 'person' && String(it.id).toLowerCase().indexOf(n.toLowerCase()) === 0; });
+        if (!hit || seen[hit.id]) return null; seen[hit.id] = 1;
+        return call('graph.entity', { id: hit.id, limit: 6 }).then(function (en) { return en.found === false ? null : en; }, function () { return null; });
+      }, function () { return null; });
+    })).then(function (ents) {
+      state.graphAsk.cards = ents.filter(Boolean); state.graphAsk.cardsBusy = false;
+      var h = document.querySelector('#graphAsk'); if (h) h.innerHTML = askBlockInner();
+    });
+  }
+  function entityCardText(en) {
+    var desc = (en.descriptions && en.descriptions.length ? en.descriptions : (en.description ? [en.description] : [])).join('\n');
+    var rels = (en.edges || []).slice(0, 6).map(function (e) { var other = e.source === en.id ? e.target : e.source; return '- ' + other + (e.description ? ': ' + e.description : ''); }).join('\n');
+    return en.id + ' (' + (en.type || 'entity') + ', ' + fmt(en.degree || 0) + ' connections)\n' + desc + (rels ? '\nRelationships:\n' + rels : '');
+  }
+  function askEntityCard(en) {
+    var inView = state.graphFocus === en.id || (state.graphNeighbors || []).indexOf(en.id) !== -1;
+    var desc = (en.descriptions && en.descriptions.length ? en.descriptions[0] : en.description) || '';
+    var rels = (en.edges || []).slice(0, 3).map(function (e) { var other = e.source === en.id ? e.target : e.source; return '<div class="setup-source"><b>' + esc(other) + '</b><span class="muted">' + esc((e.description || '').slice(0, 140)) + '</span></div>'; }).join('');
+    return '<section class="ask-entity"><div class="row spread"><h4>' + esc(en.id) + '</h4><span class="meta">' + esc(en.type || 'entity') + ' · ' + fmt(en.degree || 0) + ' connections' + (en.first_seen_build || en.created_at ? ' · first indexed ' + esc(dateOnly(en.created_at || en.first_seen_build)) : '') + (inView ? ' · in view' : '') + '</span></div>' +
+      (desc ? '<p>' + esc(desc.length > 320 ? desc.slice(0, 320) + '…' : desc) + '</p>' : '<p class="muted">No description stored.</p>') + rels +
+      '<div class="setup-row"><button class="quiet" onclick="cosApp.copyAskEntity(' + attr(en.id) + ')">Copy context</button><button class="quiet" onclick="cosApp.askEntityPassages(' + attr(en.id) + ')">Show passages</button><button class="quiet" onclick="cosApp.focusEntity(' + attr(en.id) + ')">' + (inView ? 'Explore from here' : 'Explore from here (loads its neighborhood)') + '</button></div></section>';
+  }
   function askBlockInner() {
     var a = state.graphAsk, focus = state.graphFocus, nbrs = state.graphNeighbors || [];
     var suggested = nbrs.length ? 'Show me the relation between ' + focus + ' and ' + nbrs[0] : 'What does the graph know about ' + focus + '?';
@@ -559,8 +624,8 @@
       '<div class="setup-row"><input id="graphAskQ" value="' + esc(a.q) + '" placeholder="' + esc(suggested) + '" ' + (a.busy ? 'disabled' : '') + ' onkeydown="if(event.key===\'Enter\')cosApp.askGraphGo()"><button ' + (a.busy ? 'disabled' : '') + ' onclick="cosApp.askGraphGo()">' + (a.busy ? 'Asking…' : 'Ask') + '</button></div>' +
       (chips ? '<div class="setup-row chips">' + chips + '</div>' : '') +
       (a.error ? '<p class="bad">' + esc(a.error) + '</p>' : '') +
-      (a.answer ? '<div class="setup-answer">' + esc(a.answer.answer) + '</div><p class="muted">' + (a.answer.elapsed_s != null ? Math.round(a.answer.elapsed_s) + ' s · ' : '') + esc(a.answer.mode || 'hybrid') + ' mode · an answer synthesized from the graph, not a quote' +
-        (names.length ? ' · focus: ' + names.map(function (n) { return '<button class="link" onclick="cosApp.focusEntity(' + attr(n) + ')">' + esc(n) + '</button>'; }).join(' ') : '') + '</p>' : '') +
+      (a.answer ? '<div class="setup-answer prose">' + renderMarkdown(a.answer.answer) + '</div><div class="row spread"><p class="muted">' + (a.answer.elapsed_s != null ? Math.round(a.answer.elapsed_s) + ' s · ' : '') + esc(a.answer.mode || 'hybrid') + ' mode · synthesized from the graph, not a quote</p><span class="row"><button class="quiet" onclick="cosApp.copyAsk(false)">Copy answer</button><button class="quiet" onclick="cosApp.copyAsk(true)">Copy with context</button></span></div>' +
+        (a.cardsBusy ? '<p class="muted">Looking up the entities it names…</p>' : (a.cards && a.cards.length ? '<h4 class="ask-cards-title">In the graph</h4><div class="ask-cards">' + a.cards.map(askEntityCard).join('') + '</div>' : '')) : '') +
       '</section>';
   }
   function nodeFromEntity(en) { return { id: en.id, group: en.type || 'unknown', descs: en.descriptions && en.descriptions.length ? en.descriptions : (en.description ? [en.description] : []), ts: en.created_at || null, totalDegree: en.degree || 0 }; }
@@ -735,12 +800,20 @@
     askGraphGo: function () {
       var input = document.querySelector('#graphAskQ'); var q = (input ? input.value.trim() : '') || state.graphAsk.q || (input ? input.placeholder : '');
       if (!q || q.length < 3) { toast('Ask a fuller question.'); return; }
-      state.graphAsk = { q: q, busy: true, answer: null, error: null };
+      state.graphAsk = { q: q, busy: true, answer: null, error: null, cards: [], cardsBusy: false };
       var host = document.querySelector('#graphAsk'); if (host) host.innerHTML = askBlockInner();
-      call('graph.ask', { q: q }).then(function (d) { state.graphAsk = { q: q, busy: false, answer: d, error: null }; var h = document.querySelector('#graphAsk'); if (h) h.innerHTML = askBlockInner(); },
-        function (e) { state.graphAsk = { q: q, busy: false, answer: null, error: e.message }; var h = document.querySelector('#graphAsk'); if (h) h.innerHTML = askBlockInner(); });
+      call('graph.ask', { q: q }).then(function (d) { state.graphAsk = { q: q, busy: false, answer: d, error: null, cards: [], cardsBusy: false }; var h = document.querySelector('#graphAsk'); if (h) h.innerHTML = askBlockInner(); loadAskCards(d.answer || '', q); },
+        function (e) { state.graphAsk = { q: q, busy: false, answer: null, error: e.message, cards: [], cardsBusy: false }; var h = document.querySelector('#graphAsk'); if (h) h.innerHTML = askBlockInner(); });
     },
     focusEntity: function (id) { state.graphFocus = id; state.graphFocusChosen = true; state.graphQuery = ''; render(); },
+    copyAsk: function (withContext) {
+      var a = state.graphAsk; if (!a.answer) return;
+      var text = 'Question: ' + a.q + '\n\nAnswer (synthesized from the COS knowledge graph, ' + (a.answer.mode || 'hybrid') + ' mode):\n' + a.answer.answer;
+      if (withContext && a.cards && a.cards.length) text += '\n\nEntities in the graph:\n\n' + a.cards.map(entityCardText).join('\n\n');
+      call('copy', { text: text }).then(function () { toast(withContext ? 'Copied the answer with its entity context.' : 'Copied the answer.'); }, function (e) { toast(e.message); });
+    },
+    copyAskEntity: function (id) { var en = (state.graphAsk.cards || []).find(function (c) { return c.id === id; }); if (!en) return; call('copy', { text: entityCardText(en) }).then(function () { toast('Copied ' + id + ' as context.'); }, function (e) { toast(e.message); }); },
+    askEntityPassages: function (id) { call('graph.passages', { entity: id, limit: 5 }).then(function (d) { openPassages(id, d); }, function (e) { toast(e.message); }); },
     reviewMemory: function (id, decision) {
       if (decision === 'prune' && state.armed !== 'prune:' + id) { state.armed = 'prune:' + id; render(); setTimeout(function () { if (state.armed === 'prune:' + id) { state.armed = null; render(); } }, 6000); return; }
       state.armed = null; state.memoryReviewBusy = id; render();

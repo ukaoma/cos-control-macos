@@ -4054,6 +4054,9 @@ for command in ("context-memory-review", "context-memory-guardrails", "context-m
     need(f'case "{command}":' in helper, f"helper dispatch lost {command}")
 need('static let guardrailNeeds = "6.44.13"' in helper and 'decision == "accept" || decision == "prune"' in helper, "memory review must name 6.44.13 and refuse any other decision")
 need("function askBlockInner(" in mem_page and "cosApp.askGraphGo()" in mem_page and "askGraphAbout(" in mem_page, "the graph pane must offer a plain-language ask from the focus")
+need("function renderMarkdown(" in mem_page and "function askEntityCard(" in mem_page and "cosApp.copyAsk(" in mem_page and "askEntityPassages(" in mem_page,
+     "the answer must render, copy, and hand back entity cards with passages")
+need("var lines = esc(md || '').split(" in mem_page, "the answer renderer must escape before it marks up")
 need("function memoryActions(" in mem_page and "'memory.review'" in mem_page and "function guardrailsSection(" in mem_page and "'memory.guardrails.run'" in mem_page,
      "the page must offer Accept and Prune on a captured memory and the guardrails in settings")
 need("function embeddingCards(" in (root / "Resources/memories/memories-app.js").read_text() and "'graph.setup.embedding'" in (root / "Resources/memories/memories-app.js").read_text()
