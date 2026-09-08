@@ -1,3 +1,15 @@
+## 0.5.202 (build 240)
+
+Ask the graph in plain language, from the focus.
+
+- Under the Knowledge graph there is a question box prefilled from the focus
+  and its strongest neighbor ("Show me the relation between Queen and Miles
+  Ukaoma"), with one-click pairs for the nearest neighbors. Enter runs the
+  same hybrid graph query the setup step uses (about a minute, two model
+  calls under the subscription); the answer renders in place, marked as a
+  synthesis rather than a quote, and the names it mentions become focus
+  buttons. Nothing new reaches the helper: it is the existing graph.ask op.
+
 ## 0.5.201 (build 239)
 
 Prune or accept a captured memory, and guardrails that prune nonsense for you (server 6.44.13).

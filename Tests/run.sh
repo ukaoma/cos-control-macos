@@ -4053,6 +4053,7 @@ need('"memory.review": { a in' in ops and '"memory.guardrails": { _ in ["context
 for command in ("context-memory-review", "context-memory-guardrails", "context-memory-guardrails-run"):
     need(f'case "{command}":' in helper, f"helper dispatch lost {command}")
 need('static let guardrailNeeds = "6.44.13"' in helper and 'decision == "accept" || decision == "prune"' in helper, "memory review must name 6.44.13 and refuse any other decision")
+need("function askBlockInner(" in mem_page and "cosApp.askGraphGo()" in mem_page and "askGraphAbout(" in mem_page, "the graph pane must offer a plain-language ask from the focus")
 need("function memoryActions(" in mem_page and "'memory.review'" in mem_page and "function guardrailsSection(" in mem_page and "'memory.guardrails.run'" in mem_page,
      "the page must offer Accept and Prune on a captured memory and the guardrails in settings")
 need("function embeddingCards(" in (root / "Resources/memories/memories-app.js").read_text() and "'graph.setup.embedding'" in (root / "Resources/memories/memories-app.js").read_text()

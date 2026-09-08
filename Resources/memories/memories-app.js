@@ -43,7 +43,7 @@
     memoryQuery: '', memoryHits: null, coverage: {},
     detail: {}, memoryDetail: {}, passages: {}, loading: {}, errors: {},
     graphFocus: 'COS', graphFocusChosen: false, ingesting: null, ingestLimit: 10, ingestWatch: null, graphQuery: '',
-    progress: null, fetchWatch: null, modalOpen: null, guardrails: null, guardrailsRun: null, guardrailsBusy: null, guardrailsLoading: false, guardrailsError: null, guardrailsRubricLines: 0, memoryReviewBusy: null, setup: null, setupLoading: false, setupError: null, setupBusy: null, armed: null, askQ: '', askAnswer: null, askBusy: false, knowledgeTabChosen: false, graphController: null, copyId: null, copyOptions: { sources: true, graph: false }
+    progress: null, fetchWatch: null, modalOpen: null, graphAsk: { q: '', busy: false, answer: null, error: null }, graphNeighbors: [], guardrails: null, guardrailsRun: null, guardrailsBusy: null, guardrailsLoading: false, guardrailsError: null, guardrailsRubricLines: 0, memoryReviewBusy: null, setup: null, setupLoading: false, setupError: null, setupBusy: null, armed: null, askQ: '', askAnswer: null, askBusy: false, knowledgeTabChosen: false, graphController: null, copyId: null, copyOptions: { sources: true, graph: false }
   };
 
   // ── loading ─────────────────────────────────────────────────────
@@ -543,7 +543,25 @@
       (cards.length ? cards.map(function (x) { return '<article class="source-card"><div class="row spread"><h3>' + esc(x.title) + '</h3><span class="badge">' + esc(x.kind) + '</span></div>' + (x.text ? '<div class="quote">' + esc(x.text) + '</div>' : '') + (x.note ? '<p>' + esc(x.note) + '</p>' : '') + (x.event ? '<div class="actions"><button class="link" onclick="cosApp.select(\'' + esc(x.event) + '\');cosApp.setFilter(\'recent\')">Inspect learning →</button></div>' : '') + '</article>'; }).join('') : '<div class="empty"><div><h3>No source records yet.</h3><p>Your first saved lesson will bring its source here.</p></div></div>');
   }
   function graphDetail() {
-    return '<div class="row spread actual-header"><h2>Knowledge graph</h2><span class="row"><span class="badge green">Your LightRAG data</span><span class="meta">focus: ' + esc(state.graphFocus) + '</span></span></div><p class="intro">' + esc(state.graphFocus) + (state.status && state.status.ownerName && state.graphFocus === state.status.ownerName ? ' (you)' : '') + ' and its strongest neighbors from your graph, read through COS Control. Click an entity to inspect it; Explore from here loads that entity\'s own neighborhood.</p><div class="graph-search row"><input type="search" id="graphQuery" placeholder="Find an entity to focus…" value="' + esc(state.graphQuery) + '" aria-label="Find an entity"><button onclick="cosApp.graphSearch()">Focus</button><span id="graphSearchStatus" class="muted"></span></div><div id="graphMount" class="cgx-host"></div>';
+    return '<div class="row spread actual-header"><h2>Knowledge graph</h2><span class="row"><span class="badge green">Your LightRAG data</span><span class="meta">focus: ' + esc(state.graphFocus) + '</span></span></div><p class="intro">' + esc(state.graphFocus) + (state.status && state.status.ownerName && state.graphFocus === state.status.ownerName ? ' (you)' : '') + ' and its strongest neighbors from your graph, read through COS Control. Click an entity to inspect it; Explore from here loads that entity\'s own neighborhood.</p><div class="graph-search row"><input type="search" id="graphQuery" placeholder="Find an entity to focus…" value="' + esc(state.graphQuery) + '" aria-label="Find an entity"><button onclick="cosApp.graphSearch()">Focus</button><span id="graphSearchStatus" class="muted"></span></div><div id="graphMount" class="cgx-host"></div>' + '<div id="graphAsk">' + askBlockInner() + '</div>';
+  }
+  // Ask the graph in plain language from the focus (Miles 2026-09-07: "Show me the
+  // relation between Queen and Ukaoma"). The question runs the same hybrid query
+  // the setup step uses; the answer renders here, with the names it mentions as
+  // focus buttons. About a minute; two model calls under the subscription.
+  function askBlockInner() {
+    var a = state.graphAsk, focus = state.graphFocus, nbrs = state.graphNeighbors || [];
+    var suggested = nbrs.length ? 'Show me the relation between ' + focus + ' and ' + nbrs[0] : 'What does the graph know about ' + focus + '?';
+    var chips = nbrs.slice(0, 4).map(function (n) { return '<button class="quiet chip" ' + (a.busy ? 'disabled' : '') + ' onclick="cosApp.askGraphAbout(' + attr(focus) + ', ' + attr(n) + ')">' + esc(focus) + ' ↔ ' + esc(n) + '</button>'; }).join('');
+    var names = [];
+    if (a.answer) { [focus].concat(nbrs).forEach(function (n) { if (n && a.answer.answer.indexOf(n) !== -1 && names.indexOf(n) === -1) names.push(n); }); }
+    return '<section class="source-card ask-card"><div class="row spread"><h3>Ask the graph</h3><span class="meta">plain language · about a minute</span></div>' +
+      '<div class="setup-row"><input id="graphAskQ" value="' + esc(a.q) + '" placeholder="' + esc(suggested) + '" ' + (a.busy ? 'disabled' : '') + ' onkeydown="if(event.key===\'Enter\')cosApp.askGraphGo()"><button ' + (a.busy ? 'disabled' : '') + ' onclick="cosApp.askGraphGo()">' + (a.busy ? 'Asking…' : 'Ask') + '</button></div>' +
+      (chips ? '<div class="setup-row chips">' + chips + '</div>' : '') +
+      (a.error ? '<p class="bad">' + esc(a.error) + '</p>' : '') +
+      (a.answer ? '<div class="setup-answer">' + esc(a.answer.answer) + '</div><p class="muted">' + (a.answer.elapsed_s != null ? Math.round(a.answer.elapsed_s) + ' s · ' : '') + esc(a.answer.mode || 'hybrid') + ' mode · an answer synthesized from the graph, not a quote' +
+        (names.length ? ' · focus: ' + names.map(function (n) { return '<button class="link" onclick="cosApp.focusEntity(' + attr(n) + ')">' + esc(n) + '</button>'; }).join(' ') : '') + '</p>' : '') +
+      '</section>';
   }
   function nodeFromEntity(en) { return { id: en.id, group: en.type || 'unknown', descs: en.descriptions && en.descriptions.length ? en.descriptions : (en.description ? [en.description] : []), ts: en.created_at || null, totalDegree: en.degree || 0 }; }
   function neighborhood(focus) {
@@ -554,6 +572,8 @@
       var links = (en.edges || []).filter(function (e) { return seen[e.source] && seen[e.target]; }).map(function (e) { return { source: e.source, target: e.target, weight: e.weight || 1, desc: e.description || '' }; });
       var g = state.graphStatus || {};
       state.graphVisible = nodes.length;
+      state.graphNeighbors = links.slice().sort(function (a, b) { return (b.weight || 0) - (a.weight || 0); }).map(function (l) { return l.source === focus ? l.target : l.source; }).filter(function (id, i, arr) { return id !== focus && arr.indexOf(id) === i; }).slice(0, 6);
+      setTimeout(function () { var host = document.querySelector('#graphAsk'); if (host && !state.graphAsk.busy) host.innerHTML = askBlockInner(); }, 0);
       return { nodes: nodes, links: links, corpus_total_nodes: g.entities || nodes.length, corpus_total_edges: g.relationships || links.length, generated_at: g.index_built_at || null,
         description_scope: 'the ' + focus + ' neighborhood', selection_description: focus + ' and up to 30 direct neighbors, read live from this Mac\'s index' };
     });
@@ -711,6 +731,16 @@
     exploreInGraph: exploreInGraph, graphSearch: graphSearch,
     refresh: loadAll, refreshGraph: loadGraphStatus, loadMore: loadMore, memoryQuery: memoryQuery,
     setupRefresh: function () { loadSetup(); },
+    askGraphAbout: function (a, b) { state.graphAsk.q = 'Show me the relation between ' + a + ' and ' + b; cosApp.askGraphGo(); },
+    askGraphGo: function () {
+      var input = document.querySelector('#graphAskQ'); var q = (input ? input.value.trim() : '') || state.graphAsk.q || (input ? input.placeholder : '');
+      if (!q || q.length < 3) { toast('Ask a fuller question.'); return; }
+      state.graphAsk = { q: q, busy: true, answer: null, error: null };
+      var host = document.querySelector('#graphAsk'); if (host) host.innerHTML = askBlockInner();
+      call('graph.ask', { q: q }).then(function (d) { state.graphAsk = { q: q, busy: false, answer: d, error: null }; var h = document.querySelector('#graphAsk'); if (h) h.innerHTML = askBlockInner(); },
+        function (e) { state.graphAsk = { q: q, busy: false, answer: null, error: e.message }; var h = document.querySelector('#graphAsk'); if (h) h.innerHTML = askBlockInner(); });
+    },
+    focusEntity: function (id) { state.graphFocus = id; state.graphFocusChosen = true; state.graphQuery = ''; render(); },
     reviewMemory: function (id, decision) {
       if (decision === 'prune' && state.armed !== 'prune:' + id) { state.armed = 'prune:' + id; render(); setTimeout(function () { if (state.armed === 'prune:' + id) { state.armed = null; render(); } }, 6000); return; }
       state.armed = null; state.memoryReviewBusy = id; render();
