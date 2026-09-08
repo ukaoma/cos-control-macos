@@ -1,3 +1,20 @@
+## 0.5.201 (build 239)
+
+Prune or accept a captured memory, and guardrails that prune nonsense for you (server 6.44.13).
+
+- **Accept and Prune on a captured memory.** A "COS captured this" card in the
+  lesson timeline now carries Accept (keeps it and marks it reviewed) and
+  Prune (two clicks; deletes it from bot memory). Both become timeline events,
+  and a pruned memory leaves the lists at once.
+- **Guardrails in Memory settings.** Your own rules for what a captured
+  memory must be: minimum words, distinct characters, a repeat-ratio ceiling,
+  banned patterns; and an optional model pass that judges what survives
+  against the COS philosophy principles, on the tier you choose, at most N
+  per run. The same rules refuse nonsense at capture time.
+- **Review captured memories now.** Runs the guardrails over the last 30 days
+  and shows every flagged memory with its reasons; nothing is deleted until
+  you press Prune the flagged. A memory you accepted is never flagged.
+
 ## 0.5.200 (build 238)
 
 The Knowledge down-select (server 6.44.12).

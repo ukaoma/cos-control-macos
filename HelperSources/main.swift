@@ -534,6 +534,9 @@ final class COSControlHelper {
         case "context-graph-ingest-progress": try emitContextGraphIngestProgress()
         case "context-graph-setup-embedding": try emitContextGraphSetupEmbedding(args: args)
         case "context-graph-setup-extraction": try emitContextGraphSetupExtraction(args: args)
+        case "context-memory-review": try emitContextMemoryReview(args: args)
+        case "context-memory-guardrails": try emitContextMemoryGuardrails(args: args)
+        case "context-memory-guardrails-run": try emitContextMemoryGuardrailsRun(args: args)
         case "activity-signals": try emitActivitySignals()
         case "meetings": try emitMeetings(args: args)
         case "meetings-library": try emitMeetingsLibrary(args: args)
@@ -7193,6 +7196,8 @@ final class COSControlHelper {
     static let choiceNeeds = "6.44.11"
     /// `local_only` on the embedding route (the down-select) landed in 6.44.12.
     static let preferenceNeeds = "6.44.12"
+    /// Memory review (accept, prune) and the guardrails.
+    static let guardrailNeeds = "6.44.13"
     /// The 503 classes that mean "no pipeline", as the server spells them
     /// (pythonBridgeState and the file tier), rather than a passing fault.
     static let notConfiguredErrorClasses: Set<String> = ["pipeline_missing", "bridge_missing", "cos_pipeline_not_configured"]
@@ -7632,6 +7637,53 @@ final class COSControlHelper {
         let body = try setupRequest("/api/context/graph/setup/extraction", body: try setupJSON(["tier": tier]), timeout: 20, accepted: [200], needs: Self.choiceNeeds)
         let label = (body["extraction"] as? [String: Any])?["label"] as? String ?? tier
         emit(ok: true, message: "Extraction set to \(label)", details: body)
+    }
+
+    // ── Memory review and guardrails (server 6.44.13, Control 0.5.201) ──
+
+    /// `context-memory-review --id M --decision accept|prune [--note]`.
+    private func emitContextMemoryReview(args: [String]) throws {
+        guard let memoryID = option("--id", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines), Self.validEntityID(memoryID) else {
+            throw HelperError.message("--id must be a memory id of at most 200 characters")
+        }
+        guard let decision = option("--decision", in: args), decision == "accept" || decision == "prune" else {
+            throw HelperError.message("--decision must be accept or prune")
+        }
+        let note = String((option("--note", in: args) ?? "").prefix(400))
+        let body = try setupRequest("/api/context/memory/\(queryEscape(memoryID))/review", body: try setupJSON(["decision": decision, "note": note]),
+                                    timeout: 30, accepted: [200], needs: Self.guardrailNeeds)
+        emit(ok: true, message: decision == "prune" ? "Memory pruned" : "Memory accepted", details: body)
+    }
+
+    /// `context-memory-guardrails [--json PATCH]`: read, or set from a small JSON object.
+    private func emitContextMemoryGuardrails(args: [String]) throws {
+        if let patch = option("--json", in: args) {
+            guard patch.utf8.count <= 16_000, (try? JSONSerialization.jsonObject(with: Data(patch.utf8))) as? [String: Any] != nil else {
+                throw HelperError.message("--json must be a JSON object of at most 16 KB")
+            }
+            let body = try setupRequest("/api/context/memory-guardrails", method: "PUT", body: patch, timeout: 25, accepted: [200], needs: Self.guardrailNeeds)
+            emit(ok: true, message: "Guardrails saved", details: body)
+            return
+        }
+        let body = try setupRequest("/api/context/memory-guardrails", method: "GET", timeout: 25, accepted: [200], needs: Self.guardrailNeeds)
+        emit(ok: true, message: "Guardrails", details: body)
+    }
+
+    /// `context-memory-guardrails-run [--days N] [--apply] [--llm true|false]`.
+    private func emitContextMemoryGuardrailsRun(args: [String]) throws {
+        let days = min(max(Int(option("--days", in: args) ?? "30") ?? 30, 1), 3650)
+        var payload: [String: Any] = ["days": days]
+        if args.contains("--apply") { payload["apply"] = true }
+        if let llm = option("--llm", in: args) {
+            guard llm == "true" || llm == "false" else { throw HelperError.message("--llm must be true or false") }
+            payload["llm"] = llm == "true"
+        }
+        let body = try setupRequest("/api/context/memory-guardrails/run", body: try setupJSON(payload), timeout: payload["llm"] as? Bool == false ? 90 : 420,
+                                    accepted: [200], needs: Self.guardrailNeeds)
+        let run = body["run"] as? [String: Any] ?? [:]
+        let flagged = run["flagged"] as? Int ?? 0, pruned = run["pruned"] as? Int ?? 0, scanned = run["scanned"] as? Int ?? 0
+        let message = run["applied"] as? Bool == true ? "Pruned \(pruned) of \(scanned) captured memories" : "\(flagged) of \(scanned) captured memories flagged"
+        emit(ok: true, message: message, details: body)
     }
 
     // ── Activity signals (0.5.190) ────────────────────────────────

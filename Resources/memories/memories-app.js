@@ -43,7 +43,7 @@
     memoryQuery: '', memoryHits: null, coverage: {},
     detail: {}, memoryDetail: {}, passages: {}, loading: {}, errors: {},
     graphFocus: 'COS', graphFocusChosen: false, ingesting: null, ingestLimit: 10, ingestWatch: null, graphQuery: '',
-    progress: null, fetchWatch: null, setup: null, setupLoading: false, setupError: null, setupBusy: null, armed: null, askQ: '', askAnswer: null, askBusy: false, knowledgeTabChosen: false, graphController: null, copyId: null, copyOptions: { sources: true, graph: false }
+    progress: null, fetchWatch: null, modalOpen: null, guardrails: null, guardrailsRun: null, guardrailsBusy: null, guardrailsLoading: false, guardrailsError: null, guardrailsRubricLines: 0, memoryReviewBusy: null, setup: null, setupLoading: false, setupError: null, setupBusy: null, armed: null, askQ: '', askAnswer: null, askBusy: false, knowledgeTabChosen: false, graphController: null, copyId: null, copyOptions: { sources: true, graph: false }
   };
 
   // ── loading ─────────────────────────────────────────────────────
@@ -149,7 +149,7 @@
   }
 
   // ── rows ────────────────────────────────────────────────────────
-  var KIND = { captured: 'Captured', proposed: 'Proposed', promotable: 'Promotable pattern', saved: 'Saved', retrieved: 'Retrieved', used: 'Used', checked: 'Checked', dismissed: 'Dismissed', reverted: 'Reverted', reopened: 'Reopened', consolidated: 'Consolidated', previewed: 'Previewed' };
+  var KIND = { captured: 'Captured', proposed: 'Proposed', promotable: 'Promotable pattern', saved: 'Saved', retrieved: 'Retrieved', used: 'Used', checked: 'Checked', dismissed: 'Dismissed', reverted: 'Reverted', reopened: 'Reopened', consolidated: 'Consolidated', previewed: 'Previewed', accepted: 'Accepted', pruned: 'Pruned' };
   var STORE = { self_improvement_queue: 'Self-improvement queue', correction_journal: 'Correction journal', bot_memory: 'Bot memory', review_ledger: 'Review ledger', git_versions: 'Skill versions', eval_scores: 'Eval scores', reflect_log: 'Reflect log', capture_ledger: 'Capture ledger' };
   function isProposal(e) { return e && e.target && e.target.kind === 'task-proposal'; }
   function isPattern(e) { return e && (e.event_type === 'promotable' || (e.target && e.target.kind === 'pattern')); }
@@ -241,7 +241,20 @@
     var quote = ref.excerpt || d.content || (d.bodies || [])[0] || '';
     var title = e.store === 'correction_journal' ? 'You corrected COS' : e.store === 'self_improvement_queue' ? 'A task proposed a change' : e.store === 'bot_memory' ? 'COS captured this' : e.store === 'eval_scores' || e.store === 'reflect_log' ? 'A run was checked' : 'Captured';
     var open = e.store === 'bot_memory' && e.lesson_id ? '<button class="link" onclick="cosApp.openMemoryRecord(\'' + esc(e.lesson_id) + '\')">Open source record</button>' : (ref.id ? '<span class="meta">' + esc(ref.kind || '') + ' · ' + esc(ref.id) + '</span>' : '');
-    return event(title, esc(stamp(e.ts) || 'Source'), (quote ? '<div class="quote">' + esc(quote) + '</div>' : '<p>No excerpt was stored with this record.</p>') + open);
+    return event(title, esc(stamp(e.ts) || 'Source'), (quote ? '<div class="quote">' + esc(quote) + '</div>' : '<p>No excerpt was stored with this record.</p>') + open + memoryActions(e));
+  }
+  // Accept keeps a captured memory and marks it reviewed; Prune deletes it (two clicks).
+  // Both become timeline events; nothing else in the store is touched (0.5.201).
+  function memoryActions(e) {
+    if (e.store !== 'bot_memory' || !e.lesson_id || e.event_type !== 'captured') return '';
+    var decision = latestDecisionFor(e);
+    if (decision === 'pruned') return '<p class="muted">Pruned from bot memory.</p>';
+    var busy = state.memoryReviewBusy === e.lesson_id;
+    var armed = state.armed === 'prune:' + e.lesson_id;
+    return '<div class="actions">' +
+      (decision === 'accepted' ? '<span class="pill ok">Accepted</span>' : '<button ' + (busy ? 'disabled' : '') + ' onclick="cosApp.reviewMemory(' + attr(e.lesson_id) + ', \'accept\')">' + (busy ? 'Working…' : 'Accept') + '</button>') +
+      '<button class="quiet" ' + (busy ? 'disabled' : '') + ' onclick="cosApp.reviewMemory(' + attr(e.lesson_id) + ', \'prune\')">' + (armed ? 'Click again to prune' : 'Prune') + '</button>' +
+      '</div>';
   }
   function changeEvent(e, full) {
     var d = e.detail || {};
@@ -630,8 +643,45 @@
     document.querySelector('#modalRoot').innerHTML = '<div class="modal-backdrop" onclick="if(event.target===this)cosApp.closeModal()"><section class="modal" role="dialog" aria-modal="true" aria-label="' + esc(title) + '"><div class="row spread"><h2>' + title + '</h2><button class="quiet" aria-label="Close dialog" onclick="cosApp.closeModal()">✕</button></div>' + body + '</section></div>';
     var first = document.querySelector('.modal button'); if (first) first.focus();
   }
-  function closeModal() { var existed = !!document.querySelector('.modal'); document.querySelector('#modalRoot').innerHTML = ''; if (existed && window.previousFocus && window.previousFocus.isConnected && ['BODY', 'HTML'].indexOf(window.previousFocus.tagName) < 0) window.previousFocus.focus(); }
-  function openSettings() {
+  function closeModal() {
+    state.modalOpen = null; var existed = !!document.querySelector('.modal'); document.querySelector('#modalRoot').innerHTML = ''; if (existed && window.previousFocus && window.previousFocus.isConnected && ['BODY', 'HTML'].indexOf(window.previousFocus.tagName) < 0) window.previousFocus.focus(); }
+  // Guardrails (0.5.201): the user's own rules for what a captured memory must
+  // be, an optional model pass against the philosophy, and a review-now run.
+  function loadGuardrails() {
+    if (state.guardrailsLoading) return;
+    state.guardrailsLoading = true;
+    call('memory.guardrails').then(function (d) { state.guardrails = d.guardrails; state.guardrailsRubricLines = d.philosophy_rubric_lines; state.guardrailsError = null; state.guardrailsLoading = false; renderModalIfOpen(); },
+      function (e) { state.guardrailsError = e.message; state.guardrailsLoading = false; renderModalIfOpen(); });
+  }
+  function renderModalIfOpen() { if (state.modalOpen === 'settings') openSettings(true); }
+  function guardrailsSection() {
+    var g = state.guardrails, busy = state.guardrailsBusy;
+    if (state.guardrailsError) return '<section class="settings-block"><h3>Guardrails</h3><p class="muted">' + esc(state.guardrailsError) + '</p><button class="quiet" onclick="cosApp.guardrailsLoad()">Retry</button></section>';
+    if (!g) { if (!state.guardrailsLoading) loadGuardrails(); return '<section class="settings-block"><h3>Guardrails</h3><p class="muted">Loading…</p></section>'; }
+    var llm = g.llm_review || {};
+    var run = state.guardrailsRun, verdicts = run ? (run.verdicts || []) : [];
+    var flagged = verdicts.filter(function (v) { return v.verdict === 'prune'; }), review = verdicts.filter(function (v) { return v.verdict === 'review'; });
+    var rows = flagged.concat(review).slice(0, 60).map(function (v) {
+      return '<div class="setup-source"><span class="' + (v.verdict === 'prune' ? 'bad' : '') + '">' + (v.verdict === 'prune' ? (v.applied ? '✓ pruned' : 'prune') : 'for you') + '</span><code>' + esc(v.excerpt || v.id) + '</code><span class="muted">' + esc((v.reasons || []).join('; ')) + (v.by === 'model' ? ' (model)' : '') + '</span></div>';
+    }).join('');
+    return '<section class="settings-block"><h3>Guardrails</h3>' +
+      '<p class="muted">What a captured memory must be to stay. The same rules refuse nonsense at capture time; a run applies them to what already landed.</p>' +
+      '<div class="setup-row"><label>Min words <input id="grMinWords" type="number" min="0" max="200" value="' + esc(g.min_words) + '"></label>' +
+      '<label>Min distinct chars <input id="grDistinct" type="number" min="0" max="100" value="' + esc(g.min_distinct_chars) + '"></label>' +
+      '<label>Max repeat ratio <input id="grRepeat" type="number" min="0.1" max="1" step="0.05" value="' + esc(g.max_repeat_ratio) + '"></label></div>' +
+      '<label class="muted">Banned patterns, one per line (regular expressions)</label><textarea id="grBanned" rows="3">' + esc((g.banned_patterns || []).join('\n')) + '</textarea>' +
+      '<div class="setup-row"><label><input id="grLlm" type="checkbox" ' + (llm.enabled ? 'checked' : '') + '> Model pass against the COS philosophy (' + fmt(state.guardrailsRubricLines || 0) + ' principles)</label>' +
+      '<select id="grModel">' + ['haiku', 'sonnet', 'opus'].map(function (m) { return '<option value="' + m + '"' + (llm.model === m ? ' selected' : '') + '>' + ({ haiku: 'Fast (Haiku)', sonnet: 'Balanced (Sonnet)', opus: 'Deep (Opus)' })[m] + '</option>'; }).join('') + '</select>' +
+      '<label>at most <input id="grMax" type="number" min="1" max="100" value="' + esc(llm.max_per_run || 20) + '"> per run</label></div>' +
+      '<p class="muted">The model pass costs two calls per memory under your subscription and stops at the cap. Off by default.</p>' +
+      '<div class="setup-row"><button ' + (busy ? 'disabled' : '') + ' onclick="cosApp.guardrailsSave()">' + (busy === 'save' ? 'Saving…' : 'Save guardrails') + '</button>' +
+      '<button class="quiet" ' + (busy ? 'disabled' : '') + ' onclick="cosApp.guardrailsRun(false)">' + (busy === 'run' ? 'Reviewing…' : 'Review captured memories now') + '</button>' +
+      (flagged.length && !run.run.applied ? '<button class="quiet" ' + (busy ? 'disabled' : '') + ' onclick="cosApp.guardrailsRun(true)">' + (busy === 'apply' ? 'Pruning…' : 'Prune the ' + fmt(flagged.length) + ' flagged') + '</button>' : '') + '</div>' +
+      (run ? '<p class="muted">Last run: ' + fmt(run.run.scanned) + ' scanned in ' + fmt(run.run.days) + ' days, ' + fmt(run.run.flagged) + ' flagged, ' + fmt(run.run.kept) + ' kept' + (run.run.review ? ', ' + fmt(run.run.review) + ' for you' : '') + (run.run.llm_reviewed ? ', ' + fmt(run.run.llm_reviewed) + ' judged by the model' : '') + (run.run.applied ? ', ' + fmt(run.run.pruned) + ' pruned' : '') + '.</p>' + rows : '') +
+      '</section>';
+  }
+  function openSettings(rerender) {
+    state.modalOpen = 'settings';
     var s = state.status || {};
     var tier = s.contextScriptsDirectory ? 'COS Data bridge (vector store + files)' : s.contextFilesDirectory ? 'Plain files' : 'Not configured';
     function row(title, sub, on, reason) { return '<div class="setting row spread"><div><h3>' + title + '</h3><small>' + sub + '</small></div><button class="switch ' + (on ? 'on' : '') + '" role="switch" aria-checked="' + on + '" aria-label="' + title + '" disabled title="' + esc(reason) + '"><span></span></button></div>'; }
@@ -640,7 +690,7 @@
       row('Review skill changes first', 'Read the change before it affects future work.', true, 'Always on until skill versioning ships; nothing is applied without you.') +
       row('Review memory additions', 'Confirm new memories before they are kept.', false, 'Arrives with the learning-settings route in a later release.') +
       '<div class="setting row spread"><div><h3>Current storage source</h3><small>' + esc(tier) + (s.contextResolvedRoot ? ' · ' + esc(s.contextResolvedRoot) : '') + '</small></div></div>' +
-      '<p class="muted">Changing the source is done from the menu-bar panel (COS Data); this page never migrates files or activates the bridge.</p>');
+      '<p class="muted">Changing the source is done from the menu-bar panel (COS Data); this page never migrates files or activates the bridge.</p>' + guardrailsSection());
   }
   function openLog() {
     var ls = state.learningStatus || {};
@@ -661,6 +711,35 @@
     exploreInGraph: exploreInGraph, graphSearch: graphSearch,
     refresh: loadAll, refreshGraph: loadGraphStatus, loadMore: loadMore, memoryQuery: memoryQuery,
     setupRefresh: function () { loadSetup(); },
+    reviewMemory: function (id, decision) {
+      if (decision === 'prune' && state.armed !== 'prune:' + id) { state.armed = 'prune:' + id; render(); setTimeout(function () { if (state.armed === 'prune:' + id) { state.armed = null; render(); } }, 6000); return; }
+      state.armed = null; state.memoryReviewBusy = id; render();
+      call('memory.review', { id: id, decision: decision }).then(function (d) {
+        state.memoryReviewBusy = null;
+        var row = d.decision || {};
+        state.decisions = state.decisions || {}; state.decisions[id] = row.decision || (decision === 'prune' ? 'pruned' : 'accepted');
+        if (decision === 'prune') { state.memories = (state.memories || []).filter(function (m) { return m.id !== id; }); if (state.selectedMemory === id) state.selectedMemory = null; }
+        toast(decision === 'prune' ? 'Memory pruned.' : 'Memory accepted.'); render();
+      }, function (e) { state.memoryReviewBusy = null; toast(e.message); render(); });
+    },
+    guardrailsLoad: function () { loadGuardrails(); },
+    guardrailsSave: function () {
+      var f = function (id) { var el = document.querySelector('#' + id); return el ? el.value : null; };
+      var patch = { min_words: Number(f('grMinWords')), min_distinct_chars: Number(f('grDistinct')), max_repeat_ratio: Number(f('grRepeat')),
+        banned_patterns: String(f('grBanned') || '').split('\n').map(function (s) { return s.trim(); }).filter(Boolean),
+        llm_review: { enabled: !!(document.querySelector('#grLlm') || {}).checked, model: f('grModel') || 'haiku', max_per_run: Number(f('grMax')) || 20 } };
+      state.guardrailsBusy = 'save'; renderModalIfOpen();
+      call('memory.guardrails.set', { patch: JSON.stringify(patch) }).then(function (d) { state.guardrails = d.guardrails; state.guardrailsBusy = null; toast('Guardrails saved.'); renderModalIfOpen(); }, function (e) { state.guardrailsBusy = null; toast(e.message); renderModalIfOpen(); });
+    },
+    guardrailsRun: function (apply) {
+      state.guardrailsBusy = apply ? 'apply' : 'run'; renderModalIfOpen();
+      call('memory.guardrails.run', { days: 30, apply: apply === true }).then(function (d) {
+        state.guardrailsRun = d; state.guardrailsBusy = null;
+        if (apply) { var ids = (d.verdicts || []).filter(function (v) { return v.applied; }).map(function (v) { return v.id; }); state.memories = (state.memories || []).filter(function (m) { return ids.indexOf(m.id) === -1; }); state.decisions = state.decisions || {}; ids.forEach(function (id) { state.decisions[id] = 'pruned'; }); toast('Pruned ' + fmt(d.run.pruned) + '.'); }
+        else toast(fmt(d.run.flagged) + ' flagged, ' + fmt(d.run.kept) + ' kept' + (d.run.review ? ', ' + fmt(d.run.review) + ' for you' : '') + '.');
+        renderModalIfOpen(); render();
+      }, function (e) { state.guardrailsBusy = null; toast(e.message); renderModalIfOpen(); });
+    },
     chooseExtraction: function (tier) { setupAction('extraction', 'graph.setup.extraction', { tier: tier }, function (d) { toast('Indexing set to ' + ((d.extraction || {}).label || tier) + '.'); }); },
     chooseEmbedding: function (provider) { setupAction('embedding', 'graph.setup.embedding', { provider: provider }, function (d) { toast('Embeddings set to ' + ((d.embedding || {}).label || provider) + '.'); }); },
     answerLocalOnly: function (localOnly) { setupAction('preference', 'graph.setup.embedding', { local_only: localOnly === true }, function (d) { var rec = (d.embedding || {}).recommended; toast(rec ? 'Recommended: ' + rec.label + '.' : 'Preference saved.'); }); },

@@ -4388,6 +4388,20 @@ struct MemoriesWebView: NSViewRepresentable {
             return cmd
         },
         "graph.setup.extraction": { a in ["context-graph-setup-extraction", "--tier", MemoriesWebView.text(a["tier"], 8)] },
+        // Memory review and guardrails (0.5.201): accept or prune one memory; read, set, run the rules.
+        "memory.review": { a in
+            var cmd = ["context-memory-review", "--id", MemoriesWebView.text(a["id"], 200), "--decision", MemoriesWebView.text(a["decision"], 8)]
+            if let note = a["note"] as? String, !note.isEmpty { cmd += ["--note", MemoriesWebView.text(note, 400)] }
+            return cmd
+        },
+        "memory.guardrails": { _ in ["context-memory-guardrails"] },
+        "memory.guardrails.set": { a in ["context-memory-guardrails", "--json", MemoriesWebView.text(a["patch"], 16_000)] },
+        "memory.guardrails.run": { a in
+            var cmd = ["context-memory-guardrails-run", "--days", MemoriesWebView.bounded(a["days"], 30, 1, 3650)]
+            if (a["apply"] as? Bool) == true { cmd.append("--apply") }
+            if let llm = a["llm"] as? Bool { cmd += ["--llm", llm ? "true" : "false"] }
+            return cmd
+        },
         "graph.schedule": { a in ["context-graph-schedule", "--enabled", (a["enabled"] as? Bool) == true ? "true" : "false", "--interval-s", MemoriesWebView.bounded(a["intervalS"], 3600, 900, 86_400)] },
     ]
 
@@ -4398,6 +4412,7 @@ struct MemoriesWebView: NSViewRepresentable {
         switch op {
         case "graph.ask": 170
         case "graph.setup.embedding": 110
+        case "memory.guardrails.run": 430
         case "graph.sample": 110
         case "graph.build": 45
         case "graph.setup": 35

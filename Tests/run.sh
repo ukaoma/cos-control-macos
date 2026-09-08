@@ -4047,6 +4047,14 @@ need('"graph.setup.embedding": { a in' in ops and '"graph.setup.extraction": { a
      and 'case "context-graph-setup-embedding":' in helper and 'case "context-graph-setup-extraction":' in helper and 'static let choiceNeeds = "6.44.11"' in helper
      and helper.count("needs: Self.choiceNeeds)") == 1 and helper.count("needs: localOnly == nil ? Self.choiceNeeds : Self.preferenceNeeds)") == 1,
      "the embedding and extraction ops and commands must exist and name 6.44.11 (the embedding call gates on 6.44.12 only when local_only rides)")
+mem_page = (root / "Resources/memories/memories-app.js").read_text()
+need('"memory.review": { a in' in ops and '"memory.guardrails": { _ in ["context-memory-guardrails"] }' in ops and '"memory.guardrails.set": { a in' in ops and '"memory.guardrails.run": { a in' in ops,
+     "the memory review and guardrails ops must exist")
+for command in ("context-memory-review", "context-memory-guardrails", "context-memory-guardrails-run"):
+    need(f'case "{command}":' in helper, f"helper dispatch lost {command}")
+need('static let guardrailNeeds = "6.44.13"' in helper and 'decision == "accept" || decision == "prune"' in helper, "memory review must name 6.44.13 and refuse any other decision")
+need("function memoryActions(" in mem_page and "'memory.review'" in mem_page and "function guardrailsSection(" in mem_page and "'memory.guardrails.run'" in mem_page,
+     "the page must offer Accept and Prune on a captured memory and the guardrails in settings")
 need("function embeddingCards(" in (root / "Resources/memories/memories-app.js").read_text() and "'graph.setup.embedding'" in (root / "Resources/memories/memories-app.js").read_text()
      and "'graph.setup.extraction'" in (root / "Resources/memories/memories-app.js").read_text(),
      "the page must render the embedding and extraction pickers")
