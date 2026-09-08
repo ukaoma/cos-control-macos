@@ -4045,11 +4045,30 @@ need("cosApp.viewAs" not in (root / "Resources/memories/memories-app.js").read_t
      "the Sync card must not carry a one-desk View as toggle (0.5.197)")
 need('"graph.setup.embedding": { a in' in ops and '"graph.setup.extraction": { a in ["context-graph-setup-extraction", "--tier", MemoriesWebView.text(a["tier"], 8)] }' in ops
      and 'case "context-graph-setup-embedding":' in helper and 'case "context-graph-setup-extraction":' in helper and 'static let choiceNeeds = "6.44.11"' in helper
-     and helper.count("needs: Self.choiceNeeds)") == 2,
-     "the embedding and extraction ops and commands must exist and name 6.44.11")
+     and helper.count("needs: Self.choiceNeeds)") == 1 and helper.count("needs: localOnly == nil ? Self.choiceNeeds : Self.preferenceNeeds)") == 1,
+     "the embedding and extraction ops and commands must exist and name 6.44.11 (the embedding call gates on 6.44.12 only when local_only rides)")
 need("function embeddingCards(" in (root / "Resources/memories/memories-app.js").read_text() and "'graph.setup.embedding'" in (root / "Resources/memories/memories-app.js").read_text()
      and "'graph.setup.extraction'" in (root / "Resources/memories/memories-app.js").read_text(),
      "the page must render the embedding and extraction pickers")
+# 0.5.200: the down-select. The op passes local_only alone, the helper names 6.44.12 for it, the page asks the one
+# question, marks Recommended, and the Index button fails closed with the fix when the chosen embedding is not ready.
+need('if let localOnly = a["local_only"] as? Bool { cmd += ["--local-only", localOnly ? "true" : "false"] }' in ops
+     and 'if let provider = a["provider"] as? String, !provider.isEmpty { cmd += ["--provider"' in ops,
+     "the embedding op must pass local_only and treat provider as optional (0.5.200)")
+need('static let preferenceNeeds = "6.44.12"' in helper and 'needs: localOnly == nil ? Self.choiceNeeds : Self.preferenceNeeds' in helper
+     and 'throw HelperError.message("--provider and/or --local-only true|false is required")' in helper
+     and 'where preferenceOnly && text.hasPrefix("provider must be one of")' in helper,
+     "the helper must name 6.44.12 for local_only, refuse a call with neither flag, and translate a 6.44.11 server's 400")
+need("function localOnlyStrip(" in setup_page and "cosApp.answerLocalOnly(" in setup_page and "answerLocalOnly: function (localOnly)" in setup_page
+     and "{ local_only: localOnly === true }" in setup_page and "May your text leave this Mac for embeddings?" in setup_page
+     and 'pick-badge">Recommended<' in setup_page and "Recommended: ' + esc(rec.label)" in setup_page
+     and "localOnlyStrip(embBlock, busy) + embeddingCards(embBlock, busy)" in setup_page,
+     "the page must ask the one question, post local_only alone, and mark the Recommended card")
+need("var embNotReady = embBlock.ready === false;" in setup_page and "busy || !checksOk || embNotReady ? 'disabled' : ''" in setup_page
+     and "Blocked: ' + esc(embBlock.label || embBlock.provider) + ' is not ready. ' + esc(embBlock.fix || '')" in setup_page
+     and "embBlock.mismatch || embNotReady ? 'blocked' : 'todo'" in setup_page and "is chosen but not ready on this Mac. ' + esc(emb.fix || '')" in setup_page,
+     "a not-ready embedding must block Index with the fix named, in step 4 and on the button")
+need("The recommendation needs server 6.44.12." in setup_page, "an older server must be named, never a blank strip")
 need("function progressBlock(" in (root / "Resources/memories/memories-app.js").read_text() and "'graph.progress'" in (root / "Resources/memories/memories-app.js").read_text(),
      "the page must render progress from the graph.progress op")
 need("function setupDetail(" in setup_page and "'graph.setup'" in setup_page and "'pick.folder'" in setup_page and "'graph.ask'" in setup_page,

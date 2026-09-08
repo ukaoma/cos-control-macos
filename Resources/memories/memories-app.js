@@ -400,21 +400,35 @@
       return '<label class="pick-card ' + (tr.selected ? 'on' : '') + '"><input type="radio" name="extractionTier" ' + (tr.selected ? 'checked' : '') + (busy ? ' disabled' : '') + ' onchange="cosApp.chooseExtraction(' + attr(tr.id) + ')"><div><b>' + esc(tr.label) + '</b><p>' + esc(tr.detail) + '</p></div></label>';
     }).join('') + '</div>';
   }
+  // The down-select (0.5.200, server 6.44.12). One question the user answers, may
+  // text leave this Mac; one fact detected, an OpenAI key; Ollama running picks
+  // premium over light. The answer moves the Recommended mark, never the choice.
+  function localOnlyStrip(emb, busy) {
+    if (!emb.preference) return '<p class="muted">The recommendation needs server 6.44.12.</p>';
+    var v = emb.preference.local_only, rec = emb.recommended || null;
+    function btn(value, text) { return '<button class="quiet' + (v === value ? ' on' : '') + '" ' + (busy ? 'disabled' : '') + ' onclick="cosApp.answerLocalOnly(' + value + ')">' + text + '</button>'; }
+    return '<div class="setup-row ask-strip"><span>May your text leave this Mac for embeddings?</span>' + btn(false, 'Cloud is fine') + btn(true, 'Stays on this Mac') + '</div>' +
+      (rec ? '<p class="pick-note"><b>Recommended: ' + esc(rec.label) + '.</b> ' + esc(rec.reason) + '</p>' : '');
+  }
   function embeddingCards(emb, busy) {
     var rows = emb.providers || [];
     if (!rows.length) return '<p class="muted">Embedding choices need server 6.44.11.</p>';
     var fetch = emb.fetch || null;
+    var recId = emb.recommended ? emb.recommended.id : null;
     var cards = rows.map(function (r) {
       var canPick = !emb.locked || r.selected;
       var fetching = fetch && fetch.state === 'running' && fetch.provider === r.id;
       var fetchFailed = fetch && fetch.state === 'failed' && fetch.provider === r.id;
       var offline = r.id === 'ollama' && /not running/.test(r.detail || '');
       var fetchBtn = r.kind === 'local' && !r.ready && !offline ? '<button class="quiet" ' + (busy || fetching ? 'disabled' : '') + ' onclick="cosApp.fetchEmbedding(' + attr(r.id) + ')">' + (fetching ? 'Fetching…' : 'Fetch model') + '</button>' : '';
-      return '<label class="pick-card ' + (r.selected ? 'on' : '') + (canPick ? '' : ' off') + '"><input type="radio" name="embeddingProvider" ' + (r.selected ? 'checked' : '') + (canPick && !busy ? '' : ' disabled') + ' onchange="cosApp.chooseEmbedding(' + attr(r.id) + ')"><div><b>' + esc(r.label) + '</b> <span class="muted">' + esc(r.model) + (r.dimensions != null ? ' · ' + fmt(r.dimensions) + ' dims' : '') + '</span><p>' + esc(r.cost) + '</p><p class="' + (r.ready ? 'ok' : '') + '">' + (r.ready ? '✓ ' : '') + esc(r.detail) + '</p>' + (fetching ? '<p class="muted">Fetching ' + esc(fetch.model) + '… this page refreshes as it runs.</p>' : fetchFailed ? '<p class="bad">Fetch failed: ' + esc(fetch.error || 'unknown') + '</p>' : '') + fetchBtn + '</div></label>';
+      var badge = r.id === recId ? '<span class="pick-badge">Recommended</span>' : '';
+      var fixLine = r.selected && !r.ready && r.fix ? '<p class="bad">' + esc(r.fix) + '</p>' : '';
+      return '<label class="pick-card ' + (r.selected ? 'on' : '') + (canPick ? '' : ' off') + (r.id === recId ? ' rec' : '') + '"><input type="radio" name="embeddingProvider" ' + (r.selected ? 'checked' : '') + (canPick && !busy ? '' : ' disabled') + ' onchange="cosApp.chooseEmbedding(' + attr(r.id) + ')"><div><b>' + esc(r.label) + '</b> <span class="muted">' + esc(r.model) + (r.dimensions != null ? ' · ' + fmt(r.dimensions) + ' dims' : '') + '</span>' + badge + '<p>' + esc(r.cost) + '</p><p class="' + (r.ready ? 'ok' : '') + '">' + (r.ready ? '✓ ' : '') + esc(r.detail) + '</p>' + fixLine + (fetching ? '<p class="muted">Fetching ' + esc(fetch.model) + '… this page refreshes as it runs.</p>' : fetchFailed ? '<p class="bad">Fetch failed: ' + esc(fetch.error || 'unknown') + '</p>' : '') + fetchBtn + '</div></label>';
     }).join('');
     var note = '';
     if (emb.mismatch && emb.manifest) note = '<p class="pick-note bad">This graph was built with ' + esc(emb.manifest.provider) + ' (' + esc(emb.manifest.model) + ', ' + fmt(emb.manifest.dimensions) + ' dims) but ' + esc(emb.provider) + ' is chosen. Choose the one it was built with; Index now is blocked until then.</p>';
     else if (emb.locked) note = '<p class="pick-note">This graph was built with ' + esc(emb.label || emb.provider) + '. Changing the embedding means rebuilding the graph, and that path is not built yet.</p>';
+    else if (emb.ready === false) note = '<p class="pick-note bad">' + esc(emb.label || emb.provider) + ' is chosen but not ready on this Mac. ' + esc(emb.fix || '') + ' Indexing is blocked until then.</p>';
     return '<div class="pick-grid">' + cards + '</div>' + note;
   }
   function watchFetch() {
@@ -458,19 +472,21 @@
     var budgetOk = budget.used != null && budget.cap != null && budget.used < budget.cap;
     var embBlock = s.embedding || {}, extBlock = s.extraction || {};
     var localEmb = embBlock.kind === 'local';
-    steps.push(setupStep(4, checksOk && budgetOk && !embBlock.mismatch, 'Choose how it indexes',
+    var embNotReady = embBlock.ready === false;
+    steps.push(setupStep(4, checksOk && budgetOk && !embBlock.mismatch && !embNotReady, 'Choose how it indexes',
       '<p>Indexing tier for entity extraction. Under a Claude subscription the cost is time and the daily budget, not dollars. Takes effect on the next run.</p>' + extractionCards(extBlock, busy) +
-      '<p style="margin-top:12px">Embeddings for search, one choice for the knowledge graph and every meeting index. A graph keeps the embedding it was built with.</p>' + embeddingCards(embBlock, busy) +
+      '<p style="margin-top:12px">Embeddings for search, one choice for the knowledge graph and every meeting index. A graph keeps the embedding it was built with.</p>' + localOnlyStrip(embBlock, busy) + embeddingCards(embBlock, busy) +
       '<div class="setup-source" style="margin-top:10px"><span>Budget today: ' + (budget.used != null ? fmt(budget.used) + ' of ' + fmt(budget.cap) + ' calls' : 'unknown') + (budgetOk ? '' : ' (used up until tomorrow)') + '</span></div>' +
       '<p>What leaves this Mac: each document\'s text goes to the model backend for entity extraction' + (localEmb ? '; embeddings are computed on this Mac' : ' and to OpenAI for embeddings') + '. The graph, the queue and this list of folders never leave it.</p>',
-      embBlock.mismatch ? 'blocked' : 'todo'));
+      embBlock.mismatch || embNotReady ? 'blocked' : 'todo'));
     var sampleDone = (sample.indexed || 0) >= 1 || hasGraph;
     var sampleBody = sampleDone ? '<p>' + ((sample.indexed || 0) >= 1 ? fmt(sample.indexed) + ' sample document' + (sample.indexed === 1 ? '' : 's') + ' indexed.' : 'Your graph already holds ' + fmt(graphN) + ' entities.') + '</p>' : '<p>The three newest documents from the folders that are on, through the same checks a meeting gets, in one bounded run.</p>';
     if (cands.length) sampleBody += cands.map(function (c) { return '<div class="setup-source"><code>' + esc(String(c.path).split('/').pop()) + '</code><span class="muted">' + (c.bytes != null ? fmt(Math.max(1, Math.round(c.bytes / 1024))) + ' KB' : '') + '</span></div>'; }).join('');
     if (state.ingesting && state.ingesting.note) sampleBody += '<p class="muted">' + esc(state.ingesting.note) + '</p>';
     else if (lockHeld) sampleBody += progressBlock();
     if ((sample.queued || 0) > 0 && !lockHeld) sampleBody += '<p class="muted">' + fmt(sample.queued) + ' queued and waiting for a run.</p>';
-    if (cands.length && isOwner && !lockHeld) sampleBody += '<div class="setup-row"><button ' + (busy || !checksOk ? 'disabled' : '') + ' onclick="cosApp.indexSample()">' + (busy === 'sample' ? 'Queueing…' : 'Index ' + (cands.length === 1 ? 'this document' : 'these ' + cands.length)) + '</button></div>';
+    if (cands.length && isOwner && !lockHeld) sampleBody += '<div class="setup-row"><button ' + (busy || !checksOk || embNotReady ? 'disabled' : '') + ' onclick="cosApp.indexSample()">' + (busy === 'sample' ? 'Queueing…' : 'Index ' + (cands.length === 1 ? 'this document' : 'these ' + cands.length)) + '</button>' +
+      (embNotReady ? '<span class="muted">Blocked: ' + esc(embBlock.label || embBlock.provider) + ' is not ready. ' + esc(embBlock.fix || '') + '</span>' : '') + '</div>';
     else if (cands.length && !isOwner) sampleBody += '<p class="muted">Indexing runs on the owner Mac.</p>';
     steps.push(setupStep(5, sampleDone, 'Index three sample documents', sampleBody, checksOk ? 'todo' : 'blocked'));
     var askBody = '<p>One question, answered from the graph. About a minute; two model calls under today\'s budget.</p>' +
@@ -647,6 +663,7 @@
     setupRefresh: function () { loadSetup(); },
     chooseExtraction: function (tier) { setupAction('extraction', 'graph.setup.extraction', { tier: tier }, function (d) { toast('Indexing set to ' + ((d.extraction || {}).label || tier) + '.'); }); },
     chooseEmbedding: function (provider) { setupAction('embedding', 'graph.setup.embedding', { provider: provider }, function (d) { toast('Embeddings set to ' + ((d.embedding || {}).label || provider) + '.'); }); },
+    answerLocalOnly: function (localOnly) { setupAction('preference', 'graph.setup.embedding', { local_only: localOnly === true }, function (d) { var rec = (d.embedding || {}).recommended; toast(rec ? 'Recommended: ' + rec.label + '.' : 'Preference saved.'); }); },
     fetchEmbedding: function (provider) { setupAction('fetch', 'graph.setup.embedding', { provider: provider, fetch: true }, function (d) { var f = d.fetch || {}; toast(f.started ? 'Fetching the model in the background.' : f.already_running ? 'A fetch is already running.' : 'Nothing to fetch.'); watchFetch(); }); },
     pickFolder: function () {
       call('pick.folder').then(function (d) {

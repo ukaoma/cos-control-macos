@@ -1,3 +1,34 @@
+## 0.5.200 (build 238)
+
+The Knowledge down-select (server 6.44.12).
+
+- **Step 4 asks one question before the four embedding cards: may your
+  text leave this Mac for embeddings?** Miles 2026-09-07: the local
+  embeddings are the free path for people who run COS without an OpenAI
+  key, and the setup's job is to help each person down-select. Two
+  buttons, Cloud is fine and Stays on this Mac. The answer, plus what this
+  Mac already has (an OpenAI key, Ollama running), moves a Recommended
+  mark onto one of the four cards with the reason in a sentence: a key and
+  the cloud allowed recommends OpenAI large; stay local recommends Local
+  premium when Ollama is running here, else Local light; no key recommends
+  the free local path and says how to get OpenAI large. All four stay real
+  selectable cards; the answer never changes the choice.
+- **A chosen embedding that is not ready blocks indexing, with the fix
+  named.** The card shows the one sentence that makes it ready (start
+  Ollama, pull bge-m3, fetch the 130 MB Local light model, add the key),
+  step 4 reads blocked, and step 5's Index button is disabled with that
+  reason beside it. The server refuses the kickoff the same way (409
+  `embedding_not_ready`), so nothing spawns an indexer that dies in its log.
+- Against a 6.44.11 server the strip says the recommendation needs 6.44.12
+  and the pickers keep working; the helper translates that server's 400 on
+  a preference-only call into the update line.
+- Coverage: the page is checked by source-shape assertions in `Tests/run.sh`
+  (no DOM harness runs `memories-app.js`); the behaviour behind it is
+  execution-tested in the server (`context-browser.test.ts`) and the bridge
+  (`test_learning_bridge.py`, `test_embedding_settings.py`), plus an opt-in
+  real Local light smoke (`test_embedding_onnx_smoke.py`) that fetched the
+  model and embedded 384 dims in a scratch interpreter on 2026-09-07.
+
 ## 0.5.199 (build 237)
 
 - The two choice commands name 6.44.11 when their route is missing, not 6.44.9.

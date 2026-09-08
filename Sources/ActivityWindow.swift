@@ -4378,7 +4378,11 @@ struct MemoriesWebView: NSViewRepresentable {
         "graph.ask": { a in ["context-graph-ask", "--q", MemoriesWebView.text(a["q"], 400)] },
         "graph.progress": { _ in ["context-graph-ingest-progress"] },
         "graph.setup.embedding": { a in
-            var cmd = ["context-graph-setup-embedding", "--provider", MemoriesWebView.text(a["provider"], 24)]
+            // 0.5.200: `provider` is optional when `local_only` (the down-select's one
+            // question) rides alone; the helper refuses a call with neither.
+            var cmd = ["context-graph-setup-embedding"]
+            if let provider = a["provider"] as? String, !provider.isEmpty { cmd += ["--provider", MemoriesWebView.text(provider, 24)] }
+            if let localOnly = a["local_only"] as? Bool { cmd += ["--local-only", localOnly ? "true" : "false"] }
             if let model = a["model"] as? String, !model.isEmpty { cmd += ["--model", MemoriesWebView.text(model, 120)] }
             if (a["fetch"] as? Bool) == true { cmd.append("--fetch") }
             return cmd

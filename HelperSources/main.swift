@@ -7191,6 +7191,8 @@ final class COSControlHelper {
     static let progressNeeds = "6.44.10"
     /// The embedding and extraction choices.
     static let choiceNeeds = "6.44.11"
+    /// `local_only` on the embedding route (the down-select) landed in 6.44.12.
+    static let preferenceNeeds = "6.44.12"
     /// The 503 classes that mean "no pipeline", as the server spells them
     /// (pythonBridgeState and the file tier), rather than a passing fault.
     static let notConfiguredErrorClasses: Set<String> = ["pipeline_missing", "bridge_missing", "cos_pipeline_not_configured"]
@@ -7572,22 +7574,53 @@ final class COSControlHelper {
 
     /// `context-graph-setup-embedding --provider P [--model M] [--fetch]` (server 6.44.11):
     /// the embedding for every knowledge store; a graph built with another one refuses.
+    /// `context-graph-setup-embedding [--provider P] [--model M] [--fetch] [--local-only true|false]`.
+    /// 0.5.200: `--local-only` is the down-select's one question (may text leave this
+    /// Mac?); alone it moves the Recommended mark and changes no choice. One of
+    /// `--provider` or `--local-only` is required.
     private func emitContextGraphSetupEmbedding(args: [String]) throws {
-        guard let provider = option("--provider", in: args), Self.embeddingProviders.contains(provider) else {
+        let provider = option("--provider", in: args)
+        if let provider, !Self.embeddingProviders.contains(provider) {
             throw HelperError.message("--provider must be openai-large, openai-small, ollama or onnx")
         }
-        var payload: [String: Any] = ["provider": provider]
+        let localOnly = option("--local-only", in: args)
+        if let localOnly, localOnly != "true" && localOnly != "false" {
+            throw HelperError.message("--local-only must be true or false")
+        }
+        guard provider != nil || localOnly != nil else {
+            throw HelperError.message("--provider and/or --local-only true|false is required")
+        }
+        var payload: [String: Any] = [:]
+        if let provider { payload["provider"] = provider }
+        if let localOnly { payload["local_only"] = localOnly == "true" }
         if let model = option("--model", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
             guard model.count <= 120 else { throw HelperError.message("--model must be at most 120 characters") }
             payload["model"] = model
         }
         if args.contains("--fetch") { payload["fetch"] = true }
-        let body = try setupRequest("/api/context/graph/setup/embedding", body: try setupJSON(payload), timeout: 100, accepted: [200], needs: Self.choiceNeeds)
-        let label = (body["embedding"] as? [String: Any])?["label"] as? String ?? provider
+        let preferenceOnly = provider == nil
+        let body: [String: Any]
+        do {
+            body = try setupRequest("/api/context/graph/setup/embedding", body: try setupJSON(payload), timeout: 100, accepted: [200],
+                                    needs: localOnly == nil ? Self.choiceNeeds : Self.preferenceNeeds)
+        } catch HelperError.message(let text) where preferenceOnly && text.hasPrefix("provider must be one of") {
+            // A 6.44.11 server has the route but not `local_only`: it answers 400 invalid_provider. Name the update, not the field.
+            throw HelperError.message("Update the managed server to \(Self.preferenceNeeds) or newer for the down-select (this one wants a provider).")
+        }
+        let embedding = body["embedding"] as? [String: Any]
+        let label = embedding?["label"] as? String ?? provider ?? "the current choice"
         let fetch = body["fetch"] as? [String: Any]
-        let message = fetch?["started"] as? Bool == true ? "Embeddings set to \(label); fetching the model"
-            : fetch?["already_running"] as? Bool == true ? "Embeddings set to \(label); a fetch is already running"
-            : "Embeddings set to \(label)"
+        let message: String
+        if preferenceOnly {
+            let recommended = (embedding?["recommended"] as? [String: Any])?["label"] as? String
+            message = recommended.map { "Recommended: \($0)" } ?? "Preference saved"
+        } else if fetch?["started"] as? Bool == true {
+            message = "Embeddings set to \(label); fetching the model"
+        } else if fetch?["already_running"] as? Bool == true {
+            message = "Embeddings set to \(label); a fetch is already running"
+        } else {
+            message = "Embeddings set to \(label)"
+        }
         emit(ok: true, message: message, details: body)
     }
 
