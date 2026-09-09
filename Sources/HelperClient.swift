@@ -1,17 +1,24 @@
 import Foundation
+import Darwin
 
 enum HelperClientError: LocalizedError {
     case helperMissing
     case invalidResponse(String)
     case commandFailed(String)
     case timedOut
+    case outputLimitExceeded
+    case progressLimitExceeded
+    case streamDidNotClose
 
     var errorDescription: String? {
         switch self {
         case .helperMissing: "COS Control helper is missing from the app bundle."
         case .invalidResponse(let value): "The helper returned an invalid response: \(value)"
         case .commandFailed(let value): value
-        case .timedOut: "Session lookup took too long."
+        case .timedOut: "The COS operation took too long."
+        case .outputLimitExceeded: "The helper response exceeded the supported size. Narrow the request and retry."
+        case .progressLimitExceeded: "The helper progress output exceeded the supported size."
+        case .streamDidNotClose: "The helper finished without closing its output streams."
         }
     }
 }
@@ -25,7 +32,7 @@ private final class ProgressLineCollector: @unchecked Sendable {
         self.callback = callback
     }
 
-    func consume(_ data: Data) {
+    func consume(_ data: Data) throws {
         guard !data.isEmpty else { return }
         lock.lock()
         pending.append(data)
@@ -40,7 +47,11 @@ private final class ProgressLineCollector: @unchecked Sendable {
             start = index + 1
         }
         pending = start < bytes.count ? Data(bytes[start...]) : Data()
+        let withinLimit = pending.count <= HelperClient.maximumProgressLineBytes
         lock.unlock()
+        guard withinLimit else {
+            throw HelperClientError.progressLimitExceeded
+        }
         lines.forEach(callback)
     }
 
@@ -100,24 +111,36 @@ private final class HelperProcessCancellation: @unchecked Sendable {
     }
 }
 
-private func waitForProcessExit(
-    _ process: Process,
-    timeout: TimeInterval,
-    cancellation: HelperProcessCancellation
-) throws {
-    let deadline = Date().addingTimeInterval(timeout)
-    while process.isRunning && Date() < deadline {
-        Thread.sleep(forTimeInterval: 0.05)
-        try cancellation.checkCancellation()
+// Nonblocking reads let one loop supervise stdout, progress, stdin and process
+// lifetime. Neither output pipe can fill while the parent waits for exit.
+private func stopHelper(_ process: Process) {
+    guard process.isRunning else { return }
+    process.terminate()
+    let end = ProcessInfo.processInfo.systemUptime + 0.5
+    while process.isRunning && ProcessInfo.processInfo.systemUptime < end {
+        Thread.sleep(forTimeInterval: 0.01)
     }
-    if process.isRunning {
-        process.terminate()
-        throw HelperClientError.timedOut
+    if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+    let reapEnd = ProcessInfo.processInfo.systemUptime + 1
+    while process.isRunning && ProcessInfo.processInfo.systemUptime < reapEnd {
+        Thread.sleep(forTimeInterval: 0.01)
     }
 }
 
 actor HelperClient {
+    nonisolated static let maximumOutputBytes = 64 * 1024 * 1024
+    nonisolated static let maximumProgressBytes = 8 * 1024 * 1024
+    nonisolated static let maximumProgressLineBytes = 256 * 1024
+    private let executableOverride: URL?
+    private let outputLimit: Int
+
+    init(executableOverride: URL? = nil, outputLimit: Int = HelperClient.maximumOutputBytes) {
+        self.executableOverride = executableOverride
+        self.outputLimit = outputLimit
+    }
+
     private func helperURL(preferStable: Bool = false) throws -> URL {
+        if let executableOverride { return executableOverride }
         let stable = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/COS Control/bin/cos-control-helper")
         if preferStable, FileManager.default.isExecutableFile(atPath: stable.path) {
@@ -140,6 +163,7 @@ actor HelperClient {
     ) async throws -> HelperResponse {
         let executable = try helperURL(preferStable: preferStable)
         let cancellation = HelperProcessCancellation()
+        let outputLimit = self.outputLimit
         return try await withTaskCancellationHandler {
             try await Task.detached(priority: .userInitiated) {
                 try Task.checkCancellation()
@@ -153,36 +177,91 @@ actor HelperClient {
                 process.arguments = arguments
                 process.standardOutput = outputPipe
                 process.standardError = progressPipe
-                // Free text (a chat prompt) travels over stdin, never argv:
-                // argv is world-readable through `ps` for every process on the
-                // box. Wired only when a command opts in, so the other 40+
-                // call sites keep inheriting the app's stdin untouched.
-                let inputPipe: Pipe? = stdinData.map { data in
-                    let pipe = Pipe()
-                    process.standardInput = pipe
-                    let handle = pipe.fileHandleForWriting
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        try? handle.write(contentsOf: data)
-                        try? handle.close()
-                    }
-                    return pipe
-                }
-                _ = inputPipe
-                progressPipe.fileHandleForReading.readabilityHandler = { handle in
-                    collector.consume(handle.availableData)
+                let inputPipe = stdinData == nil ? nil : Pipe()
+                if let inputPipe { process.standardInput = inputPipe }
+                let outputHandle = outputPipe.fileHandleForReading
+                let progressHandle = progressPipe.fileHandleForReading
+                let inputHandle = inputPipe?.fileHandleForWriting
+                defer {
+                    stopHelper(process)
+                    try? outputHandle.close()
+                    try? progressHandle.close()
+                    try? inputHandle?.close()
+                    collector.finish()
                 }
                 try cancellation.launch(process)
-                if let timeout {
-                    try waitForProcessExit(process, timeout: timeout, cancellation: cancellation)
+                // Close our copies of the child's ends so EOF is observable.
+                try? outputPipe.fileHandleForWriting.close()
+                try? progressPipe.fileHandleForWriting.close()
+                try? inputPipe?.fileHandleForReading.close()
+                for handle in [outputHandle, progressHandle, inputHandle].compactMap({ $0 }) {
+                    let fd = handle.fileDescriptor
+                    _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
                 }
-                let data = try outputPipe.fileHandleForReading.readToEnd() ?? Data()
-                process.waitUntilExit()
-                progressPipe.fileHandleForReading.readabilityHandler = nil
-                collector.consume(progressPipe.fileHandleForReading.availableData)
-                collector.finish()
+                if let inputHandle { _ = fcntl(inputHandle.fileDescriptor, F_SETNOSIGPIPE, 1) }
+                let started = ProcessInfo.processInfo.systemUptime
+                var exitedAt: TimeInterval?
+                var outputEOF = false
+                var progressEOF = false
+                var inputClosed = inputHandle == nil
+                var inputOffset = 0
+                var progressBytes = 0
+                var data = Data()
+                var buffer = [UInt8](repeating: 0, count: 65536)
+                while true {
+                    try cancellation.checkCancellation()
+                    let now = ProcessInfo.processInfo.systemUptime
+                    if let timeout, now - started >= timeout { throw HelperClientError.timedOut }
+                    if !process.isRunning {
+                        if exitedAt == nil { exitedAt = now }
+                        if outputEOF && progressEOF { break }
+                        if now - (exitedAt ?? now) > 1 { throw HelperClientError.streamDidNotClose }
+                    }
+                    var descriptors = [
+                        pollfd(fd: outputEOF ? -1 : outputHandle.fileDescriptor, events: Int16(POLLIN), revents: 0),
+                        pollfd(fd: progressEOF ? -1 : progressHandle.fileDescriptor, events: Int16(POLLIN), revents: 0),
+                        pollfd(fd: inputClosed ? -1 : (inputHandle?.fileDescriptor ?? -1), events: Int16(POLLOUT), revents: 0)
+                    ]
+                    let ready = poll(&descriptors, nfds_t(descriptors.count), 25)
+                    if ready < 0 && errno != EINTR { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+                    for i in 0..<2 where descriptors[i].revents != 0 {
+                        let n = Darwin.read(descriptors[i].fd, &buffer, buffer.count)
+                        if n > 0 {
+                            let chunk = Data(buffer.prefix(n))
+                            if i == 0 {
+                                guard data.count <= outputLimit - n else { throw HelperClientError.outputLimitExceeded }
+                                data.append(chunk)
+                            } else {
+                                progressBytes += n
+                                guard progressBytes <= Self.maximumProgressBytes else { throw HelperClientError.progressLimitExceeded }
+                                try collector.consume(chunk)
+                            }
+                        } else if n == 0 {
+                            if i == 0 { outputEOF = true } else { progressEOF = true }
+                        } else if errno != EAGAIN && errno != EINTR {
+                            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                        }
+                    }
+                    if !inputClosed, let inputHandle, let stdinData {
+                        if descriptors[2].revents != 0 && inputOffset < stdinData.count {
+                            let n = stdinData.withUnsafeBytes { bytes in
+                                Darwin.write(inputHandle.fileDescriptor, bytes.baseAddress!.advanced(by: inputOffset), min(65536, stdinData.count - inputOffset))
+                            }
+                            if n > 0 { inputOffset += n }
+                            else if n < 0 && errno != EAGAIN && errno != EINTR {
+                                try? inputHandle.close()
+                                inputClosed = true
+                            }
+                        }
+                        if inputOffset == stdinData.count || !process.isRunning {
+                            try? inputHandle.close()
+                            inputClosed = true
+                        }
+                    }
+                }
                 try cancellation.checkCancellation()
                 guard let response = try? JSONDecoder().decode(HelperResponse.self, from: data) else {
-                    throw HelperClientError.invalidResponse(String(decoding: data, as: UTF8.self))
+                    throw HelperClientError.invalidResponse(String(decoding: data.prefix(2048), as: UTF8.self))
                 }
                 guard process.terminationStatus == 0, response.ok else {
                     throw HelperClientError.commandFailed(response.message)

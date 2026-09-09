@@ -8,6 +8,8 @@ trap 'rm -rf "$TMP"' EXIT
 
 mkdir -p "$TMP/home"
 
+node "$ROOT/Tests/MemoryWorkspaceStartup.cjs"
+
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/HelperSources/main.swift" \
   -framework Security \
@@ -62,6 +64,10 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/Tests/ModelsContract.swift" \
   -framework AppKit \
   -o "$TMP/models-contract"
+swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+  "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Tests/HelperTransportContract.swift" \
+  -framework AppKit -o "$TMP/helper-transport-contract"
+"$TMP/helper-transport-contract"
 "$TMP/models-contract"
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediUpgradeContract.swift" \
@@ -1274,10 +1280,10 @@ done
 # for "meeting-relabel" anywhere in the file is not enough: it also appears in
 # confirmCorrection, so pointing the preview branch at the global merge left the
 # guard green while restoring exactly the 0.4.x behaviour this release removes.
-/usr/bin/grep -A1 'scope == .thisMeeting$' "$ROOT/Sources/ControllerModel.swift" | /usr/bin/grep -q 'meeting-relabel'
+/usr/bin/grep -A1 'scope == .thisMeeting$' "$ROOT/Sources/ControllerModel.swift" | /usr/bin/grep 'meeting-relabel' >/dev/null
 # And confirming must route the same way, or the preview would describe one thing
 # and the save would do another.
-/usr/bin/grep -A2 'correction.scope == .thisMeeting {' "$ROOT/Sources/ControllerModel.swift" | /usr/bin/grep -q 'meeting-relabel'
+/usr/bin/grep -A2 'correction.scope == .thisMeeting {' "$ROOT/Sources/ControllerModel.swift" | /usr/bin/grep 'meeting-relabel' >/dev/null
 
 # The assertion decision is READ from the server, never re-derived here, so the
 # lens, the phone and this panel cannot disagree about who was identified.
@@ -1367,7 +1373,7 @@ done
 /usr/bin/grep -q 'chunkIndex = o\["chunkIndex"\]' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'func playPhrase' "$ROOT/Sources/ControllerModel.swift"
 # A button only appears where the server still HOLDS that chunk.
-/usr/bin/grep -A4 'func canPlay' "$ROOT/Sources/ControllerModel.swift" | /usr/bin/grep -q 'retainedAudioChunks.contains'
+/usr/bin/grep -A4 'func canPlay' "$ROOT/Sources/ControllerModel.swift" | /usr/bin/grep 'retainedAudioChunks.contains' >/dev/null
 /usr/bin/grep -q 'model.canPlay(phrase)' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'review-audio-list' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'case "review-audio-list"' "$ROOT/HelperSources/main.swift"
@@ -1394,7 +1400,7 @@ done
 /usr/bin/grep -q 'note.voice == voice.label' "$ROOT/Sources/Views.swift"
 # Closing the panel stops audio and resets scope. Audio kept playing after close,
 # and a sticky "Every meeting" is the irreversible global fold this release removes.
-/usr/bin/grep -A12 'func closeSpeakerReview' "$ROOT/Sources/ControllerModel.swift" | /usr/bin/grep -q 'stopPlayback()'
+/usr/bin/grep -A12 'func closeSpeakerReview' "$ROOT/Sources/ControllerModel.swift" | /usr/bin/grep 'stopPlayback()' >/dev/null
 # COUNTED rather than pinned to a line offset: scope must be reset on open, on
 # close, on cancel and after a successful save. A `grep -A8` guard broke the
 # moment a comment moved the line, which is the wrong thing to be sensitive to.
@@ -1962,8 +1968,8 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   -o "$TMP/COS Control"
 
-/usr/bin/vtool -show-build "$TMP/cos-control-helper" | /usr/bin/grep -q 'minos 14.0'
-/usr/bin/vtool -show-build "$TMP/COS Control" | /usr/bin/grep -q 'minos 14.0'
+/usr/bin/vtool -show-build "$TMP/cos-control-helper" | /usr/bin/grep 'minos 14.0' >/dev/null
+/usr/bin/vtool -show-build "$TMP/COS Control" | /usr/bin/grep 'minos 14.0' >/dev/null
 
 # Bundled still characters share the importer contract: exact canvas, real alpha,
 # and one state map. This catches the painted-checkerboard and cross-pose sizing

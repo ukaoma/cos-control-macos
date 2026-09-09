@@ -254,8 +254,8 @@ final class ControllerModel: ObservableObject {
 
     /// The Memories web host runs the same helper commands the native panes do,
     /// through this one door, so the page cannot reach the client directly.
-    func runHelper(_ arguments: [String], timeout: TimeInterval) async throws -> HelperResponse {
-        try await helper.run(arguments, timeout: timeout)
+    func runHelper(_ arguments: [String], timeout: TimeInterval, stdinData: Data? = nil) async throws -> HelperResponse {
+        try await helper.run(arguments, timeout: timeout, stdinData: stdinData)
     }
     private let mediaFetchGate = MediaFetchGate()
     private var refreshTask: Task<Void, Never>?
@@ -1548,6 +1548,7 @@ final class ControllerModel: ObservableObject {
     /// appears exactly where the instruction does.
     @Published var chatForkAvailable = false
     @Published var chatForking = false
+    private var chatForkOperation = UUID()
     private var chatPendingTurn: SessionChatPendingTurn?
     private var chatPollTask: Task<Void, Never>?
     private var chatDidReattach = false
@@ -3613,9 +3614,10 @@ final class ControllerModel: ObservableObject {
     }
 
     private func fetchClaudeSessionDetail(_ session: ClaudeSession) async {
+        guard !Task.isCancelled else { return }
         claudeSessionDetailLoading = true
         defer {
-            if openClaudeRow?.id == session.id { claudeSessionDetailLoading = false }
+            if !Task.isCancelled, openClaudeRow?.id == session.id { claudeSessionDetailLoading = false }
         }
         do {
             let response = try await helper.run([
@@ -3699,6 +3701,7 @@ final class ControllerModel: ObservableObject {
         chatCautionPending = false
         chatRetryAvailable = false
         chatForkAvailable = false
+        chatForkOperation = UUID()
         chatForking = false
         chatPendingTurn = nil
         chatDidReattach = false
@@ -3856,8 +3859,8 @@ final class ControllerModel: ObservableObject {
     /// Fork: run the message in a COPY of this thread, leaving the original
     /// byte-identical. This is the action the refusal copy recommends — the
     /// server spawns the provider CLI seeded with the thread's history, runs
-    /// the prompt there, and withholds the new thread's id (forkRef is a
-    /// digest), so the way to the fork is the refreshed Sessions list.
+    /// the prompt there. The helper matches its opaque reference to the exact
+    /// local child, so identical titles and pinned list order cannot misdirect it.
     func forkChatThread() {
         guard let session = openClaudeRow, !chatForking, !chatSending else { return }
         let prompt = chatForkPrompt
@@ -3866,29 +3869,31 @@ final class ControllerModel: ObservableObject {
             chatRefusal = "That message is too long for one turn (32,000 characters max)."
             return
         }
+        let operation = UUID()
+        chatForkOperation = operation
         chatForking = true
         chatRefusal = nil
         chatSupplement = nil
         Task { [weak self] in
-            await self?.performChatFork(session, prompt: prompt)
+            await self?.performChatFork(session, prompt: prompt, operation: operation)
         }
     }
 
-    private func performChatFork(_ session: ClaudeSession, prompt: String) async {
-        defer { chatForking = false }
+    private func performChatFork(_ session: ClaudeSession, prompt: String, operation: UUID) async {
+        defer { if chatForkOperation == operation { chatForking = false } }
         do {
             let response = try await helper.run([
                 "session-chat-fork",
                 "--provider", session.provider,
                 "--thread-id", session.sessionId,
             ], timeout: 310, stdinData: Data(prompt.utf8))
-            guard openClaudeRow?.id == session.id else { return }
+            guard chatForkOperation == operation, openClaudeRow?.id == session.id else { return }
             switch response.details["state"]?.string ?? "" {
             case "forked":
                 let copy = response.details["reasonCopy"]?.string ?? "Copied into a new thread. Your original is untouched."
-                chatMessages.append(SessionChatMessage(role: .user, text: prompt))
-                chatMessages.append(SessionChatMessage(
-                    role: .status, text: copy + " It is at the top of the Sessions list."))
+                let fork = ClaudeSession(response.details["forkSession"])
+                chatMessages.append(SessionChatMessage(role: .status,
+                    text: copy + (fork == nil ? " The child transcript is not available on this Mac yet. Refresh Sessions to check again." : " Opening the new session.")))
                 // The original's pending turn is abandoned by choice — the
                 // message went to the fork instead.
                 chatPollTask?.cancel()
@@ -3898,6 +3903,10 @@ final class ControllerModel: ObservableObject {
                 clearPendingTurn()
                 chatDraft = ""
                 await loadClaudeSessions()
+                guard chatForkOperation == operation, openClaudeRow?.id == session.id else { return }
+                if let fork, fork.provider == session.provider, fork.id != session.id {
+                    openClaudeSession(fork)
+                }
             case "route_absent":
                 chatRefusal = "Fork needs a newer COS server."
             default:
@@ -3912,7 +3921,7 @@ final class ControllerModel: ObservableObject {
                 }
             }
         } catch {
-            guard openClaudeRow?.id == session.id else { return }
+            guard chatForkOperation == operation, openClaudeRow?.id == session.id else { return }
             chatRefusal = error.localizedDescription
         }
     }

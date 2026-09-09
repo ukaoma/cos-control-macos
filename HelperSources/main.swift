@@ -534,6 +534,7 @@ final class COSControlHelper {
         case "context-graph-ingest-progress": try emitContextGraphIngestProgress()
         case "context-graph-setup-embedding": try emitContextGraphSetupEmbedding(args: args)
         case "context-graph-setup-extraction": try emitContextGraphSetupExtraction(args: args)
+        case "context-memory-workspace": try emitContextMemoryWorkspace()
         case "context-memory-review": try emitContextMemoryReview(args: args)
         case "context-memory-guardrails": try emitContextMemoryGuardrails(args: args)
         case "context-memory-guardrails-run": try emitContextMemoryGuardrailsRun(args: args)
@@ -1834,6 +1835,16 @@ final class COSControlHelper {
         }
     }
 
+    /// An isolated QA home may talk to an isolated loopback server. Production
+    /// ignores the override; tests cannot target the live service ports.
+    static func loopbackAPIPort(environment: [String: String]) -> Int {
+        guard let home = environment["COS_CONTROL_TEST_HOME"], home.hasPrefix("/tmp/"),
+              let raw = environment["COS_CONTROL_TEST_API_PORT"],
+              let port = Int(raw), (1024...65535).contains(port),
+              port != 3141, port != 3143 else { return 3141 }
+        return port
+    }
+
     private func request(
         _ path: String,
         method: String = "GET",
@@ -1846,7 +1857,8 @@ final class COSControlHelper {
         timeout: Int = 5,
         deadlineUptime: TimeInterval? = nil
     ) -> HTTPResponse? {
-        guard let url = URL(string: "http://127.0.0.1:3141\(path)") else { return nil }
+        let port = Self.loopbackAPIPort(environment: ProcessInfo.processInfo.environment)
+        guard let url = URL(string: "http://127.0.0.1:\(port)\(path)") else { return nil }
         let now = ProcessInfo.processInfo.systemUptime
         let remaining = deadlineUptime.map { $0 - now }
         if let remaining, remaining <= 0 { return nil }
@@ -1895,7 +1907,8 @@ final class COSControlHelper {
         timeout: Int,
         maximumBytes: Int
     ) -> HTTPResponse? {
-        guard let url = URL(string: "http://127.0.0.1:3141\(path)") else { return nil }
+        let port = Self.loopbackAPIPort(environment: ProcessInfo.processInfo.environment)
+        guard let url = URL(string: "http://127.0.0.1:\(port)\(path)") else { return nil }
         var request = URLRequest(url: url, timeoutInterval: TimeInterval(timeout))
         request.setValue(token, forHTTPHeaderField: "X-COS-Token")
         let delegate = BoundedMediaRequestDelegate(maximumBytes: maximumBytes)
@@ -7647,6 +7660,21 @@ final class COSControlHelper {
 
     // ── Memory review and guardrails (server 6.44.13, Control 0.5.201) ──
 
+    private func emitContextMemoryWorkspace() throws {
+        var data = Data()
+        while let chunk = try FileHandle.standardInput.read(upToCount: min(65536, 512 * 1024 + 1 - data.count)), !chunk.isEmpty {
+            data.append(chunk)
+            if data.count > 512 * 1024 { throw HelperError.message("Workspace request exceeds 512 KiB") }
+        }
+        guard data.count <= 512 * 1024,
+              let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw HelperError.message("Invalid workspace request")
+        }
+        let body = try setupRequest("/api/context/memory/workspace", body: try setupJSON(payload), timeout: 25,
+                                    accepted: [200], needs: "Memory workspace requires the matching COS server and pipeline.")
+        emit(ok: true, message: "Memory workspace", details: body)
+    }
+
     /// `context-memory-review --id M --decision accept|prune [--note]`.
     private func emitContextMemoryReview(args: [String]) throws {
         guard let memoryID = option("--id", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines), Self.validEntityID(memoryID) else {
@@ -8435,29 +8463,45 @@ final class COSControlHelper {
     static let claudeKickstartMaxChars = 100_000
     static let claudeTurnMaxChars = 8_000
 
-    static func findClaudeSessionFile(sessionId: String, projectsRoot: URL) -> URL? {
-        let needle = sessionId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    static func findClaudeSessionFile(sessionId: String, projectsRoot: URL, desktopSessionsRoot: URL? = nil) -> URL? {
+        let needle = normalizeClaudeSessionId(sessionId)
         guard needle.count >= 8,
-              needle.allSatisfy({ $0.isHexDigit || $0 == "-" }),
-              !needle.contains(".."),
-              !needle.contains("/") else { return nil }
-        guard let dirs = try? FileManager.default.contentsOfDirectory(
-            at: projectsRoot,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) else { return nil }
-        var prefixMatch: URL?
-        for dir in dirs {
-            let isDir = (try? dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-            guard isDir else { continue }
-            guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { continue }
-            for file in files where file.pathExtension == "jsonl" {
-                let name = file.deletingPathExtension().lastPathComponent.lowercased()
-                if name == needle { return file }
-                if prefixMatch == nil, name.hasPrefix(needle) { prefixMatch = file }
+              needle.allSatisfy({ $0.isHexDigit || $0 == "-" }) else { return nil }
+        let fm = FileManager.default
+        var files: [String: [URL]] = [:]
+        for dir in (try? fm.contentsOfDirectory(at: projectsRoot, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? [] {
+            guard (try? dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { continue }
+            for file in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isRegularFileKey])) ?? [] {
+                let id = file.deletingPathExtension().lastPathComponent.lowercased()
+                guard file.pathExtension == "jsonl", UUID(uuidString: id) != nil,
+                      (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                files[id, default: []].append(file)
             }
         }
-        return prefixMatch
+        // Read-only identity resolution. Never infer lineage from titles or use
+        // a parent's transcript when the explicit child/alias target is missing.
+        var aliases: [String: Set<String>] = [:]
+        if let root = desktopSessionsRoot, let walker = fm.enumerator(at: root,
+            includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) {
+            for case let file as URL in walker {
+                let name = file.lastPathComponent
+                guard name.hasPrefix("local_"), name.hasSuffix(".json"),
+                      (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                let id = normalizeClaudeSessionId(String(name.dropLast(5)))
+                guard UUID(uuidString: id) != nil else { continue }
+                let cli = peekClaudeDesktopHead(in: file).cliSessionId
+                // A malformed explicit alias remains unresolvable.
+                aliases[id, default: []].insert(cli.isEmpty ? id : cli)
+            }
+        }
+        let exact = files[needle] != nil || aliases[needle] != nil
+        var ids = Set<String>()
+        for (id, targets) in aliases where exact ? id == needle : id.hasPrefix(needle) {
+            ids.formUnion(targets)
+        }
+        for id in files.keys where exact ? id == needle : id.hasPrefix(needle) { ids.insert(id) }
+        guard ids.count == 1, let id = ids.first, let matches = files[id], matches.count == 1 else { return nil }
+        return matches.first
     }
 
     static func redactSecrets(_ text: String) -> String {
@@ -8757,20 +8801,75 @@ final class COSControlHelper {
         return Set(list.compactMap { ($0 as? String).map(normalizeClaudeSessionId) }.filter { !$0.isEmpty })
     }
 
-    static func peekClaudeDesktopHead(in file: URL) -> (title: String, cwd: String, cliSessionId: String) {
-        guard let handle = try? FileHandle(forReadingFrom: file) else { return ("", "", "") }
-        defer { try? handle.close() }
-        let text = String(data: handle.readData(ofLength: 8 * 1024), encoding: .utf8) ?? ""
-        func capture(_ key: String) -> String {
-            guard let re = try? NSRegularExpression(pattern: "\"\(key)\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"") else { return "" }
-            let range = NSRange(text.startIndex..<text.endIndex, in: text)
-            guard let match = re.firstMatch(in: text, range: range),
-                  let inner = Range(match.range(at: 1), in: text) else { return "" }
-            return text[inner]
-                .replacingOccurrences(of: "\\\"", with: "\"")
-                .replacingOccurrences(of: "\\\\", with: "\\")
+    static let claudeDesktopMetadataBytes = 256 * 1024
+
+    static func desktopMetadataPrefix(_ data: Data) -> (fields: [String: Any], complete: Bool) {
+        let bytes = Array(data)
+        var fields: [String: Any] = [:], i = 0
+        func space() { while i < bytes.count && [9, 10, 13, 32].contains(bytes[i]) { i += 1 } }
+        func string() -> String? {
+            let start = i
+            guard i < bytes.count, bytes[i] == 34 else { return nil }
+            i += 1
+            var escaped = false
+            while i < bytes.count {
+                let ch = bytes[i]; i += 1
+                if !escaped && ch == 34 {
+                    return (try? JSONSerialization.jsonObject(with: Data(bytes[start..<i]), options: [.fragmentsAllowed])) as? String
+                }
+                if !escaped && ch == 92 { escaped = true } else { escaped = false }
+            }
+            return nil
         }
-        return (String(capture("title").prefix(120)), capture("cwd"), normalizeClaudeSessionId(capture("cliSessionId")))
+        space()
+        guard i < bytes.count, bytes[i] == 123 else { return (fields, false) }
+        i += 1
+        while i < bytes.count {
+            space()
+            if i < bytes.count, bytes[i] == 125 { return (fields, true) }
+            guard let key = string() else { break }
+            space()
+            guard i < bytes.count, bytes[i] == 58 else { break }
+            i += 1; space()
+            var value: Any = NSNull()
+            if i < bytes.count, bytes[i] == 34 {
+                guard let parsed = string() else { break }
+                value = parsed
+            } else {
+                var depth = 0, inString = false, escaped = false
+                while i < bytes.count {
+                    let ch = bytes[i]
+                    if !inString && depth == 0 && (ch == 44 || ch == 125) { break }
+                    i += 1
+                    if inString {
+                        if !escaped && ch == 34 { inString = false }
+                        if !escaped && ch == 92 { escaped = true } else { escaped = false }
+                    } else if ch == 34 { inString = true }
+                    else if ch == 123 || ch == 91 { depth += 1 }
+                    else if ch == 125 || ch == 93 { depth -= 1 }
+                }
+                if i == bytes.count { break }
+            }
+            fields[key] = fields[key] == nil ? value : NSNull()
+            space()
+            if i < bytes.count, bytes[i] == 125 { return (fields, true) }
+            guard i < bytes.count, bytes[i] == 44 else { break }
+            i += 1
+        }
+        return (fields, false)
+    }
+
+    static func peekClaudeDesktopHead(in file: URL) -> (title: String, cwd: String, cliSessionId: String) {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return ("", "", "!unreadable") }
+        defer { try? handle.close() }
+        let parsed = desktopMetadataPrefix(handle.readData(ofLength: claudeDesktopMetadataBytes))
+        let raw = parsed.fields["cliSessionId"] as? String ?? ""
+        let cli = normalizeClaudeSessionId(raw)
+        let identity = parsed.fields["cliSessionId"] != nil
+            ? (UUID(uuidString: cli) == nil ? "!invalid" : cli)
+            : (parsed.complete ? "" : "!unreadable")
+        return (String((parsed.fields["title"] as? String ?? "").prefix(120)),
+                parsed.fields["cwd"] as? String ?? "", identity)
     }
 
     struct ClaudeDesktopSession {
@@ -8812,7 +8911,7 @@ final class COSControlHelper {
             )
             if let existing = byFull[id], existing.mtime >= mtime { continue }
             byFull[id] = row
-            if !head.cliSessionId.isEmpty, head.cliSessionId != id {
+            if UUID(uuidString: head.cliSessionId) != nil, head.cliSessionId != id {
                 if let existing = byFull[head.cliSessionId], existing.mtime >= mtime { continue }
                 byFull[head.cliSessionId] = row
             }
@@ -9742,7 +9841,8 @@ final class COSControlHelper {
         default:
             guard let found = Self.findClaudeSessionFile(
                 sessionId: sessionId,
-                projectsRoot: home.appendingPathComponent(".claude/projects", isDirectory: true)
+                projectsRoot: home.appendingPathComponent(".claude/projects", isDirectory: true),
+                desktopSessionsRoot: home.appendingPathComponent("Library/Application Support/Claude/claude-code-sessions", isDirectory: true)
             ) else { throw HelperError.message("No local transcript for this session.") }
             file = found
             parsed = Self.parseClaudeTranscript(in: found)
@@ -11262,6 +11362,50 @@ final class COSControlHelper {
         ])
     }
 
+    static func sessionForkReference(provider: String, threadId: String) -> String {
+        let key = sessionChatTargetKey(provider: provider, threadId: threadId)
+        return String(SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined().prefix(32))
+    }
+
+    /// The server returns only an opaque reference. Match it to one local
+    /// transcript, independent of list caps, pins, titles and sort order.
+    static func localForkSession(provider: String, reference: String, home: URL) -> [String: Any]? {
+        guard ["claude", "codex"].contains(provider), reference.count == 32,
+              reference.allSatisfy({ $0.isHexDigit }) else { return nil }
+        let fm = FileManager.default
+        var ids: [String] = []
+        if provider == "claude" {
+            let projects = home.appendingPathComponent(".claude/projects", isDirectory: true)
+            for dir in (try? fm.contentsOfDirectory(at: projects, includingPropertiesForKeys: [.isDirectoryKey])) ?? [] {
+                guard (try? dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { continue }
+                for file in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] where file.pathExtension == "jsonl" {
+                    let id = file.deletingPathExtension().lastPathComponent.lowercased()
+                    if UUID(uuidString: id) != nil { ids.append(id) }
+                }
+            }
+        } else {
+            for file in listCodexJsonlFiles(sessionsRoot: home.appendingPathComponent(".codex/sessions", isDirectory: true)) {
+                let name = file.deletingPathExtension().lastPathComponent
+                let id = String(name.suffix(36)).lowercased()
+                if UUID(uuidString: id) != nil { ids.append(id) }
+            }
+        }
+        let matches = ids.filter { sessionForkReference(provider: provider, threadId: $0) == reference }
+        guard matches.count == 1, let id = matches.first else { return nil }
+        // Re-open through the ordinary read resolver; missing/duplicated data is
+        // still unavailable rather than an invented session row.
+        let file = provider == "claude"
+            ? findClaudeSessionFile(sessionId: id, projectsRoot: home.appendingPathComponent(".claude/projects", isDirectory: true))
+            : findCodexSessionFile(sessionId: id, sessionsRoot: home.appendingPathComponent(".codex/sessions", isDirectory: true))
+        guard let file else { return nil }
+        let parsed = provider == "claude" ? parseClaudeTranscript(in: file) : parseCodexTranscript(in: file)
+        let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .creationDateKey])
+        return ["id": id, "provider": provider, "name": parsed.title.isEmpty ? "Forked session" : parsed.title,
+                "workspace": workspaceLabel(parsed.cwd), "state": "recent", "alive": false,
+                "createdAt": isoString(from: values?.creationDate ?? .distantPast),
+                "updatedAt": isoString(from: values?.contentModificationDate ?? .distantPast)]
+    }
+
     private func emitSessionChatFork(args: [String]) throws {
         let (provider, threadId) = try sessionChatIds(args: args)
         // The fork PROMPT is a prompt: stdin, never argv, same rule as send.
@@ -11292,6 +11436,10 @@ final class COSControlHelper {
         if body["forked"] as? Bool == true {
             emit(ok: true, message: "Forked", details: [
                 "state": "forked",
+                "forkRef": body["forkRef"] as? String ?? "",
+                "forkSession": Self.localForkSession(provider: provider,
+                    reference: body["forkRef"] as? String ?? "",
+                    home: FileManager.default.homeDirectoryForCurrentUser) as Any? ?? NSNull(),
                 "reasonCopy": body["reasonCopy"] as? String ?? "",
                 "sourceIntegrity": body["sourceIntegrity"] as? String ?? "",
             ])
@@ -12599,6 +12747,13 @@ final class COSControlHelper {
             guard condition() else { throw HelperError.message("self-test failed: \(message)") }
             passed += 1
         }
+
+        try expect(Self.loopbackAPIPort(environment: ["COS_CONTROL_TEST_API_PORT": "13141"]) == 3141,
+                   "production ignores test server override")
+        try expect(Self.loopbackAPIPort(environment: ["COS_CONTROL_TEST_HOME": "/tmp/cos-qa/home", "COS_CONTROL_TEST_API_PORT": "13141"]) == 13141,
+                   "isolated helper can reach isolated loopback server")
+        try expect(Self.loopbackAPIPort(environment: ["COS_CONTROL_TEST_HOME": "/tmp/cos-qa/home", "COS_CONTROL_TEST_API_PORT": "70000"]) == 3141,
+                   "invalid test port is rejected")
 
         try ensureDirectories()
 
@@ -14017,6 +14172,53 @@ final class COSControlHelper {
             ) == "POS complexity and competitive challenges",
             "live overlay follows cliSessionId to the Desktop title"
         )
+        try expect(Self.findClaudeSessionFile(sessionId: deskId, projectsRoot: tmp, desktopSessionsRoot: desktopRoot)?.lastPathComponent == "\(cliId).jsonl",
+                   "Desktop alias resolves its explicit CLI transcript")
+        let forkId = "c5ec6a69-aaaa-bbbb-cccc-111111111111"
+        let forkFile = project.appendingPathComponent("\(forkId).jsonl")
+        try Data("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Only the fork continued\"}}\n".utf8).write(to: forkFile)
+        try expect(Self.findClaudeSessionFile(sessionId: forkId, projectsRoot: tmp, desktopSessionsRoot: desktopRoot)?.resolvingSymlinksInPath() == forkFile.resolvingSymlinksInPath(),
+                   "a real fork resolves its own continuation")
+        try expect(Self.findClaudeSessionFile(sessionId: "c5ec6a69", projectsRoot: tmp, desktopSessionsRoot: desktopRoot) == nil,
+                   "ambiguous short IDs never select the first transcript")
+        let duplicateDir = tmp.appendingPathComponent("duplicate-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: duplicateDir, withIntermediateDirectories: true)
+        let duplicateFile = duplicateDir.appendingPathComponent("\(cliId).jsonl")
+        try Data("{}\n".utf8).write(to: duplicateFile)
+        try expect(Self.findClaudeSessionFile(sessionId: deskId, projectsRoot: tmp, desktopSessionsRoot: desktopRoot) == nil,
+                   "duplicate CLI files make alias resolution unavailable")
+        try FileManager.default.removeItem(at: duplicateFile)
+        let conflictDir = desktopRoot.appendingPathComponent("other-account/workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: conflictDir, withIntermediateDirectories: true)
+        let conflict = conflictDir.appendingPathComponent("local_\(deskId).json")
+        try Data("{\"cliSessionId\":\"\(forkId)\"}\n".utf8).write(to: conflict)
+        try expect(Self.findClaudeSessionFile(sessionId: deskId, projectsRoot: tmp, desktopSessionsRoot: desktopRoot) == nil,
+                   "conflicting Desktop aliases cannot choose a transcript")
+        try FileManager.default.removeItem(at: conflict)
+        try FileManager.default.removeItem(at: project.appendingPathComponent("\(cliId).jsonl"))
+        try expect(Self.findClaudeSessionFile(sessionId: deskId, projectsRoot: tmp, desktopSessionsRoot: desktopRoot) == nil,
+                   "a missing alias target never substitutes a same-prefix fork")
+        let prefixData = try JSONSerialization.data(withJSONObject: ["settings": ["cliSessionId": forkId], "cliSessionId": cliId, "padding": String(repeating: "x", count: 12 * 1024)], options: [.sortedKeys])
+        let topLevel = Self.desktopMetadataPrefix(prefixData)
+        try expect(topLevel.fields["cliSessionId"] as? String == cliId,
+                   "nested transcript metadata cannot override top-level identity")
+        let lateMetadata = Data(("{\"padding\":\"" + String(repeating: "x", count: 12 * 1024) + "\",\"cliSessionId\":\"" + cliId + "\"}").utf8)
+        let lateFile = desktopDir.appendingPathComponent("local_\(deskId).json")
+        try lateMetadata.write(to: lateFile)
+        try expect(Self.peekClaudeDesktopHead(in: lateFile).cliSessionId == cliId,
+                   "metadata beyond the old eight-KiB window remains readable")
+        try Data("{\"cliSessionId\":7}".utf8).write(to: lateFile)
+        try expect(Self.peekClaudeDesktopHead(in: lateFile).cliSessionId == "!invalid",
+                   "a non-string explicit alias never becomes an implicit identity")
+        let forkHome = tmp.appendingPathComponent("fork-home", isDirectory: true)
+        let forkProject = forkHome.appendingPathComponent(".claude/projects/test", isDirectory: true)
+        try FileManager.default.createDirectory(at: forkProject, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: forkFile, to: forkProject.appendingPathComponent(forkFile.lastPathComponent))
+        let forkRef = Self.sessionForkReference(provider: "claude", threadId: forkId)
+        try expect(Self.localForkSession(provider: "claude", reference: forkRef, home: forkHome)?["id"] as? String == forkId,
+                   "opaque fork reference selects the exact child outside list ordering")
+        try expect(Self.localForkSession(provider: "claude", reference: String(repeating: "0", count: 32), home: forkHome) == nil,
+                   "an unknown fork reference cannot select a session")
         let cursorCopy = Self.claudeKickstartCopy(
             title: cursorParsed.title,
             cwd: cursorParsed.cwd,

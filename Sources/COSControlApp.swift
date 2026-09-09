@@ -20,6 +20,15 @@ struct COSControlApp: App {
         _model = StateObject(wrappedValue: model)
         _activityWindow = StateObject(wrappedValue: activityWindow)
         _sessionPet = StateObject(wrappedValue: sessionPet)
+        // Reproducible native QA without competing for the live menu-bar
+        // hotkey. This opens the same presenter and WebView as the UI chips.
+        let environment = ProcessInfo.processInfo.environment
+        if environment["COS_CONTROL_TEST_HOME"]?.hasPrefix("/tmp/") == true,
+           environment["COS_CONTROL_TEST_OPEN_MEMORY"] == "1" {
+            DispatchQueue.main.async {
+                activityWindow.show(model: model, section: .memories)
+            }
+        }
     }
 
     var body: some Scene {

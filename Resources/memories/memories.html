@@ -52,6 +52,11 @@ body{overflow:hidden}
     .merge-log { font-size: 11px; white-space: pre-wrap; opacity: .8; max-height: 90px; overflow: auto; }
     .dup-group { border-top: 1px solid var(--line, rgba(255,255,255,.1)); padding: 8px 0 4px; }
     .dup-member { align-items: flex-start; }
+.memory-investigation .source-card>.row{flex-wrap:wrap;gap:8px;margin-bottom:8px}
+.memory-investigation .source-card button{flex-shrink:0;white-space:nowrap;overflow-wrap:normal}
+.memory-investigation .source-card input{flex:1 1 170px;min-width:0;max-width:100%}
+.memory-investigation .source-card label{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+.memory-investigation .source-card select{max-width:100%}
 </style>
 </head><body>
 <section class="window" id="app" aria-label="COS Control Memories">
@@ -61,5 +66,6 @@ body{overflow:hidden}
 <footer class="foot"><span id="storage">Stored on this Mac</span><span id="footnote"></span></footer>
 </section>
 <div id="modalRoot"></div><div id="toast" class="toast hidden" role="status"></div>
-<script src="d3.min.js"></script><script src="graph-explorer.js"></script><script src="memories-app.js"></script>
+<script src="d3.min.js"></script><script src="graph-explorer.js"></script><script src="memory-workspace.js"></script>
+<script src="memory-stewardship.js"></script><script src="memories-app.js"></script>
 </body></html>

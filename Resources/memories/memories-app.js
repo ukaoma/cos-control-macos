@@ -31,7 +31,7 @@
 
   var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]; }); };
   var fmt = function (n) { return Number(n || 0).toLocaleString(); };
-  function stamp(iso) { if (!iso) return ''; var s = String(iso); return s.length >= 16 ? s.slice(0, 16).replace('T', ' ') : s; }
+  function stamp(iso) { if (!iso) return ''; var d=new Date(iso); return isNaN(d.getTime()) ? String(iso) : d.toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'})+' '+Intl.DateTimeFormat().resolvedOptions().timeZone; }
   function dateOnly(iso) { return iso ? String(iso).slice(0, 10) : ''; }
   function toast(text) { var el = document.querySelector('#toast'); el.textContent = text; el.classList.remove('hidden'); clearTimeout(window.toastTimer); window.toastTimer = setTimeout(function () { el.classList.add('hidden'); }, 3400); }
 
@@ -40,9 +40,9 @@
     view: 'learning', filter: 'recent', selected: null, knowledgeTab: 'sources', knowledgeFocus: null,
     status: null, learningStatus: null, graphStatus: null,
     recent: [], recentTotal: null, recentCursor: null, review: [], reviewCount: null, memories: [], memoriesTotal: null,
-    memoryQuery: '', memoryHits: null, coverage: {},
+    memoryQuery: '', memoryHits: null, memoryCursor:null, memorySearchCursor:null, memoryPageCapable:false, coverage: {},
     detail: {}, memoryDetail: {}, passages: {}, loading: {}, errors: {},
-    graphFocus: 'COS', graphFocusChosen: false, ingesting: null, ingestLimit: 10, ingestWatch: null, graphQuery: '',
+    graphFocus: null, graphFocusChosen: false, ingesting: null, ingestLimit: 10, ingestWatch: null, graphQuery: '',
     progress: null, fetchWatch: null, modalOpen: null, graphAsk: { q: '', busy: false, answer: null, error: null, cards: [], cardsBusy: false }, graphNeighbors: [], guardrails: null, guardrailsRun: null, guardrailsBusy: null, guardrailsLoading: false, guardrailsError: null, guardrailsRubricLines: 0, memoryReviewBusy: null, setup: null, setupLoading: false, setupError: null, setupBusy: null, armed: null, askQ: '', askAnswer: null, askBusy: false, knowledgeTabChosen: false, graphController: null, copyId: null, copyOptions: { sources: true, graph: false }
   };
 
@@ -50,17 +50,34 @@
   function loadAll() {
     state.errors = {};
     call('status').then(function (d) { state.status = d; chooseDefaultFocus(); render(); }, function (e) { state.errors.status = e.message; render(); });
-    call('learning.list', { days: 90, limit: 50 }).then(function (d) {
-      state.recent = (d.events || []); state.recentTotal = d.total; state.recentCursor = d.nextCursor || null; state.coverage = d.coverage || {}; render();
-    }, function (e) { state.errors.recent = e.message; render(); });
-    call('learning.review', { limit: 200 }).then(function (d) {
-      state.review = d.events || []; state.reviewCount = d.reviewCount != null ? d.reviewCount : d.total; render();
-    }, function (e) { state.errors.review = e.message; render(); });
-    call('memories.list', { limit: 50 }).then(function (d) {
-      state.memories = d.memories || []; state.memoriesTotal = d.total; render();
-    }, function (e) { state.errors.memories = e.message; render(); });
-    call('learning.status').then(function (d) { state.learningStatus = d; render(); }, function () {});
+    loadLearning(false);
+    loadReview(false);
+    loadMemoryPage(false);
+
     loadGraphStatus();
+  }
+  var memoryRequestSerial=0,learningRequestSerial=0,policyRequestSerial=0;
+  function loadMemoryPage(more) {
+    if(more&&state.memoryPageLoading)return Promise.resolve();
+    var serial=++memoryRequestSerial;state.memoryPageLoading=true;
+    var q=state.memoryQuery.trim(),cursor=more?(q?state.memorySearchCursor:state.memoryCursor):null;
+    return call('workspace.request',{action:'memory_page',q:q,limit:25,cursor:cursor}).then(function(d){
+      if(serial!==memoryRequestSerial||state.memoryQuery.trim()!==q)return;
+      if(d.protocol!==1||!Array.isArray(d.items))throw new Error('Paged memory is unavailable in this version.');
+      state.memoryPageCapable=true;
+      if(q){state.memoryHits=more?(state.memoryHits||[]).concat(d.items):d.items;state.memorySearchCursor=d.next_cursor;}
+      else{state.memoryHits=null;state.memories=more?state.memories.concat(d.items):d.items;state.memoriesTotal=d.matched_total;state.memoryCursor=d.next_cursor;}
+      render();
+    }).catch(function(error){
+      if(serial!==memoryRequestSerial||state.memoryQuery.trim()!==q)return;
+      if(more){toast(error.message+' Restart this lookup to refresh its snapshot.');return;}
+      state.memoryPageCapable=false;
+      return call(q?'memories.search':'memories.list',q?{q:q,limit:20}:{limit:50}).then(function(d){
+        if(serial!==memoryRequestSerial||state.memoryQuery.trim()!==q)return;
+        if(q)state.memoryHits=d.hits||[];else{state.memoryHits=null;state.memories=d.memories||[];state.memoriesTotal=d.total;}
+        render();
+      },function(e){if(serial!==memoryRequestSerial)return;state.errors.memories=e.message;render();});
+    }).finally(function(){if(serial===memoryRequestSerial)state.memoryPageLoading=false;});
   }
   // The graph opens on the person this COS is about (the profile's owner_name,
   // resolved through a search so the entity's exact spelling wins), not on "COS".
@@ -129,17 +146,60 @@
   function loadGraphStatus() {
     return call('graph.status').then(function (d) { state.graphStatus = d; state.errors.graph = null; var lk = d.lock || {}; if (lk.state === 'exclusive' || lk.state === 'shared') watchIngest(); if (d.entities == null && !state.knowledgeTabChosen) state.knowledgeTab = 'setup'; render(); }, function (e) { state.errors.graph = e.message; render(); });
   }
-  function loadMore() {
-    if (!state.recentCursor) return;
-    call('learning.list', { days: 90, limit: 50, sinceTs: state.recentCursor.since_ts, sinceEventId: state.recentCursor.since_event_id }).then(function (d) {
-      var seen = {}; state.recent.forEach(function (e) { seen[e.event_id] = 1; });
-      (d.events || []).forEach(function (e) { if (!seen[e.event_id]) state.recent.push(e); });
-      state.recentCursor = (d.events || []).length ? (d.nextCursor || null) : null; render();
-    }, function (e) { toast(e.message); });
+  function loadLearning(more) {
+    if(more&&state.learningPageLoading)return Promise.resolve();
+    var serial=++learningRequestSerial;state.learningPageLoading=true;
+    return call('workspace.request',{action:'learning_page',days:90,limit:50,cursor:more?state.recentCursor:null}).then(function(d){
+      if(serial!==learningRequestSerial)return;
+      if(d.protocol!==1||!Array.isArray(d.items))throw new Error('Snapshot browsing unavailable in this version.');
+      state.learningPageCapable=true;state.recent=more?state.recent.concat(d.items):d.items;
+      state.recentTotal=d.matched_total;state.recentCursor=d.next_cursor;state.coverage=d.coverage||{};
+      state.learningStatus=d;render();
+    }).catch(function(error){
+      if(serial!==learningRequestSerial)return;
+      if(more&&state.learningPageCapable){toast(error.message+' Refresh recent learning to start a new snapshot.');return;}
+      state.learningPageCapable=false;
+      var args={days:90,limit:50};if(more){args.sinceTs=state.recentCursor.since_ts;args.sinceEventId=state.recentCursor.since_event_id;}
+      return call('learning.list',args).then(function(d){
+        if(serial!==learningRequestSerial)return;
+        state.recent=more?state.recent.concat(d.events||[]):d.events||[];state.recentTotal=d.total;
+        state.recentCursor=d.nextCursor;state.coverage=d.coverage||{};
+        state.learningStatus={counts_by_type:{},stores:{},complete:false,notice:'Activity totals unavailable in this server version. The list uses a 90-day window.'};render();
+      },function(e){if(serial!==learningRequestSerial)return;state.errors.recent=e.message;render();});
+    }).finally(function(){if(serial===learningRequestSerial)state.learningPageLoading=false;});
+  }
+  function loadMore() {if(state.recentCursor)loadLearning(true);}
+  var reviewRequestSerial=0;
+  function loadReview(more){
+    if(more&&state.reviewLoading)return;var serial=++reviewRequestSerial;state.reviewLoading=true;
+    return call('workspace.request',{action:'review_page',limit:25,cursor:more?state.reviewCursor:null}).then(function(d){
+      if(serial!==reviewRequestSerial)return;
+      state.review=more?state.review.concat(d.items):d.items;state.reviewCount=d.matched_total;state.reviewCursor=d.next_cursor;render();
+    }).catch(function(e){
+      if(serial!==reviewRequestSerial)return;if(more){toast(e.message+' Refresh review to start a new snapshot.');return;}
+      return call('learning.review',{limit:200}).then(function(d){if(serial!==reviewRequestSerial)return;state.review=d.events||[];state.reviewCount=d.reviewCount!=null?d.reviewCount:d.total;render();},function(error){state.errors.review=error.message;render();});
+    }).finally(function(){if(serial===reviewRequestSerial)state.reviewLoading=false;});
+  }
+  function reviewGoverned(id,decision){
+    if(state.memoryReviewBusy)return;
+    var row=state.review.concat(state.recent).find(function(e){return e.lesson_id===id&&e.governance;}),intent=state.reviewIntent;
+    if(row&&state.detail[row.event_id]&&state.detail[row.event_id].journal_revision)row=Object.assign({},row,state.detail[row.event_id]);
+    if(!row)throw new Error('Refresh the review list before changing this memory.');
+    if(decision==='forget'&&state.armed!=='forget:'+id){state.armed='forget:'+id;toast('Click Forget permanently again. Searchable content will be removed; external sources and protected backups are reported separately.');render();return;}
+    if(!intent)intent=state.reviewIntent={action:'review_memory',id:id,decision:decision,expected_revision:row.journal_revision,idempotency_key:'review_'+crypto.randomUUID()};
+    if(intent.id!==id||intent.decision!==decision){toast('Retry the pending review action before starting another.');return;}
+    state.memoryReviewBusy=id;render();
+    call('workspace.request',intent).then(function(d){
+      state.memoryReviewBusy=null;state.reviewIntent=null;state.armed=null;state.detail={};state.memoryDetail={};
+      toast(d.status==='deletion_pending_projection'?'Forgotten content is suppressed; projection cleanup is pending.':decision==='forget'?'Searchable memory removed. External sources and protected backups remain.':'Memory '+(d.state||d.status)+'.');
+      loadReview(false);loadLearning(false);loadMemoryPage(false);
+    },function(e){state.memoryReviewBusy=null;if(/revision_conflict|idempotency_conflict|memory_not_found/.test(e.message)){state.reviewIntent=null;state.detail={};state.memoryDetail={};loadReview(false);loadLearning(false);loadMemoryPage(false);}toast(e.message);render();});
   }
   function ensureDetail(id) {
     if (!id || state.detail[id] || state.loading[id]) return;
     state.loading[id] = true;
+    var governed=state.review.concat(state.recent).find(function(e){return e.event_id===id&&e.governance;});
+    if(governed){call('workspace.request',{action:'get_memory',id:governed.lesson_id}).then(function(d){state.detail[id]={detail:{content:d.item.payload.content},governance:d.item.state,journal_revision:d.item.revision};delete state.loading[id];render();},function(e){state.detail[id]={_error:e.message};delete state.loading[id];render();});return;}
     call('learning.event', { id: id }).then(function (d) { state.detail[id] = d; delete state.loading[id]; render(); }, function (e) { state.detail[id] = { _error: e.message }; delete state.loading[id]; render(); });
   }
   function ensureMemoryDetail(id) {
@@ -149,7 +209,7 @@
   }
 
   // ── rows ────────────────────────────────────────────────────────
-  var KIND = { captured: 'Captured', proposed: 'Proposed', promotable: 'Promotable pattern', saved: 'Saved', retrieved: 'Retrieved', used: 'Used', checked: 'Checked', dismissed: 'Dismissed', reverted: 'Reverted', reopened: 'Reopened', consolidated: 'Consolidated', previewed: 'Previewed', accepted: 'Accepted', pruned: 'Pruned' };
+  var KIND = { captured: 'Captured', proposed: 'Proposed', promotable: 'Promotable pattern', saved: 'Saved', retrieved: 'Retrieved', used: 'Application recorded', included:'Included in context', applied:'Application evidence', checked: 'Checked', dismissed: 'Dismissed', reverted: 'Reverted', reopened: 'Reopened', consolidated: 'Consolidated', previewed: 'Previewed', accepted: 'Accepted', pruned: 'Pruned' };
   var STORE = { self_improvement_queue: 'Self-improvement queue', correction_journal: 'Correction journal', bot_memory: 'Bot memory', review_ledger: 'Review ledger', git_versions: 'Skill versions', eval_scores: 'Eval scores', reflect_log: 'Reflect log', capture_ledger: 'Capture ledger' };
   function isProposal(e) { return e && e.target && e.target.kind === 'task-proposal'; }
   function isPattern(e) { return e && (e.event_type === 'promotable' || (e.target && e.target.kind === 'pattern')); }
@@ -157,10 +217,12 @@
   function outcomeText(e) { var o = e && e.outcome; if (!o) return null; if (typeof o === 'string') return o; return o.result ? (o.result + (o.name ? ' · ' + o.name : '')) : null; }
   function rowStatus(e) {
     var o = outcomeText(e);
-    if (o) return { text: 'Result checked', color: 'green' };
+    if (o) { var result=typeof e.outcome==='object'?e.outcome.result:e.outcome; return { text:'Checked: '+o, color: /^(pass|passed|success)$/.test(result)?'green':/^(fail|failed)$/.test(result)?'bad':'' }; }
     if (isProposal(e) || isPattern(e)) return { text: 'Needs your review', color: '' };
     if (e.event_type === 'dismissed') return { text: 'Dismissed', color: '' };
-    if (e.event_type === 'used' || e.event_type === 'retrieved') return { text: 'Used later', color: 'green' };
+    if (e.event_type === 'retrieved') return {text:'Retrieved · application unverified',color:''};
+    if (e.event_type === 'included') return {text:'Included in context · application unverified',color:''};
+    if (e.event_type === 'applied' || e.event_type === 'used') return {text:'Application evidence recorded',color:''};
     return { text: 'Saved · No later use', color: '' };
   }
   function lessonRow(e, selected) {
@@ -190,7 +252,7 @@
     if (review != null) parts.push('<span><strong>' + fmt(review) + ' change' + (review === 1 ? '' : 's') + '</strong> to review</span>');
     if (state.recentTotal != null) parts.push('<span><strong>' + fmt(state.recentTotal) + ' event' + (state.recentTotal === 1 ? '' : 's') + '</strong> in 90 days</span>');
     parts.push('<span><strong>' + fmt(checked) + ' result' + (checked === 1 ? '' : 's') + '</strong> checked on this page</span>');
-    parts.push('<span>Learning on · <button class="link" onclick="cosApp.openLog()">View activity log</button></span>');
+    parts.push('<span>Capture status in settings · <button class="link" onclick="cosApp.openLog()">View activity log</button></span>');
     document.querySelector('#summary').innerHTML = parts.join('');
     var s = state.status || {};
     var bridge = s.contextScriptsDirectory || (s.contextState === 'bridge');
@@ -214,7 +276,7 @@
       (loading ? '<div class="host-state">Loading…</div>' : '') +
       rows.map(function (e) { return lessonRow(e, e.event_id === state.selected); }).join('') +
       (state.filter === 'recent' && state.recentCursor ? '<div class="actions"><button class="quiet" onclick="cosApp.loadMore()">Load more</button></div>' : '') +
-      coverageNote();
+      (state.filter==='review'&&state.reviewCursor?'<button onclick="cosApp.loadMoreReview()">Load more review items</button>':'')+coverageNote();
     if (!rows.length) {
       detail.innerHTML = loading ? '<div class="host-state">Loading…</div>' : (err ? '' : '<div class="empty"><div><h2>You’re up to date.</h2><p>' + (state.filter === 'review' ? 'No proposed changes are waiting for review.' : 'Nothing learned in the last 90 days.') + '</p>' + (state.filter === 'review' ? '<button onclick="cosApp.setFilter(\'recent\')">View recent learning</button>' : '') + '</div></div>');
       return;
@@ -243,12 +305,19 @@
     var open = e.store === 'bot_memory' && e.lesson_id ? '<button class="link" onclick="cosApp.openMemoryRecord(\'' + esc(e.lesson_id) + '\')">Open source record</button>' : (ref.id ? '<span class="meta">' + esc(ref.kind || '') + ' · ' + esc(ref.id) + '</span>' : '');
     return event(title, esc(stamp(e.ts) || 'Source'), (quote ? '<div class="quote">' + esc(quote) + '</div>' : '<p>No excerpt was stored with this record.</p>') + open + memoryActions(e));
   }
-  // Accept keeps a captured memory and marks it reviewed; Prune deletes it (two clicks).
+  // Accept activates; quality quarantine retains content. Forget is a separate explicit action.
   // Both become timeline events; nothing else in the store is touched (0.5.201).
   function memoryActions(e) {
+    if(e.governance){var busy=state.memoryReviewBusy===e.lesson_id;
+      return '<p>State: '+esc(e.governance)+' · revision '+esc(e.journal_revision)+'</p><div class="row">'+
+        [['accept','Accept for recall'],['quarantine','Quarantine'],['restore','Restore to recall'],['forget','Forget permanently']].map(function(pair){
+          if(pair[0]==='accept'&&e.governance!=='candidate'||pair[0]==='restore'&&e.governance!=='quarantined'||pair[0]==='quarantine'&&e.governance==='quarantined')return '';
+          return '<button '+(busy?'disabled':'')+' onclick="cosApp.reviewGoverned('+attr(e.lesson_id)+','+attr(pair[0])+')">'+pair[1]+'</button>';
+        }).join('')+'</div>';
+    }
     if (e.store !== 'bot_memory' || !e.lesson_id || e.event_type !== 'captured') return '';
     var decision = latestDecisionFor(e);
-    if (decision === 'pruned') return '<p class="muted">Pruned from bot memory.</p>';
+    if (decision === 'pruned') return '<p class="muted">Quarantined from active recall. Content is retained for review.</p>';
     var busy = state.memoryReviewBusy === e.lesson_id;
     var armed = state.armed === 'prune:' + e.lesson_id;
     return '<div class="actions">' +
@@ -280,7 +349,7 @@
     if (proposal || pattern) {
       var dismissed = decision === 'dismissed';
       actions = '<div class="actions">' +
-        '<button class="primary" disabled title="Accepting a change writes a skill version; that arrives with skill versioning in a later release.">Accept change</button>' +
+        '<button class="primary" onclick="cosApp.openStewardship()">Review rule versions</button>' +
         '<button disabled title="Editing a proposed instruction arrives with skill versioning.">Edit</button>' +
         (dismissed
           ? '<button onclick="cosApp.decide(\'' + esc(e.event_id) + '\',\'reopened\')">Restore proposal</button>'
@@ -297,14 +366,14 @@
     var repeat = d.occurrences != null ? (fmt(d.occurrences) + ' occurrence' + (d.occurrences === 1 ? '' : 's') + (d.threshold ? ' (threshold ' + d.threshold + ')' : '')) : d.logged_times ? ('logged ' + fmt(d.logged_times) + ' time' + (d.logged_times === 1 ? '' : 's')) : 'No repeat data';
     return '<div class="effect"><div class="row spread"><label>Expected effect</label><span class="badge">Real data · projected rows are not observed</span></div><ul class="effect-list">' +
       '<li><b>Where it applies</b>' + (applies.length ? esc(applies.join(', ')) : 'Scope not resolved on this Mac') + '</li>' +
-      '<li><b>Preview</b>Preview not available until 3.5</li>' +
+      '<li><b>Preview</b>Versioned rule previews and evaluation evidence are in Memory settings.</li>' +
       '<li><b>Checks</b>' + (o ? esc(o) : (d.status ? esc(d.status) : 'No check recorded')) + '</li>' +
       '<li><b>Repeat rate</b>' + esc(repeat) + '</li></ul></div>';
   }
   function useEvent(e) {
     var o = outcomeText(e);
-    if (o) return event('A later result was checked', esc(e.outcome && e.outcome.evaluator ? e.outcome.evaluator : 'Checked'), '<div class="check">✓ ' + esc(o) + '</div><p>One recorded check. Evidence for that run, not a guarantee about every future answer.</p>');
-    if (e.event_type === 'used' || e.event_type === 'retrieved') return event('Used in a later session', esc(e.engine || ''), '<p>This record was ' + esc(e.event_type) + ' by ' + esc(e.engine || 'an engine') + '.</p>');
+    if (o) return event('A later result was checked', esc(e.outcome && e.outcome.evaluator ? e.outcome.evaluator : 'Checked'), '<div class="check">' + esc(o) + '</div><p>One recorded check. Evidence for that run, not a guarantee about every future answer.</p>');
+    if (e.event_type === 'used' || e.event_type === 'retrieved') return event(e.event_type === 'retrieved' ? 'Retrieved in a later session' : 'Recorded use in a later session', esc(e.engine || ''), '<p>This record was ' + esc(e.event_type) + ' by ' + esc(e.engine || 'an engine') + '.</p>');
     return event('Next use', 'Pending evidence', '<p>No later retrieval, use, or result has been recorded for this lesson.</p>', false);
   }
   function evidenceEvent(e) {
@@ -313,7 +382,7 @@
   }
   function lessonDetail(e, full) {
     var o = outcomeText(e);
-    var badge = o ? '<span class="badge green">Result checked</span>' : isProposal(e) ? '<span class="badge">Task proposal</span>' : isPattern(e) ? '<span class="badge">Promotable pattern</span>' : e.event_type === 'retrieved' || e.event_type === 'used' ? '<span class="badge purple">Retrieved in a later session</span>' : '<span class="badge">' + esc(kindLabel(e)) + '</span>';
+    var badge = o ? '<span class="badge">Checked: '+esc(o)+'</span>' : isProposal(e) ? '<span class="badge">Task proposal</span>' : isPattern(e) ? '<span class="badge">Promotable pattern</span>' : e.event_type === 'retrieved' || e.event_type === 'used' ? '<span class="badge purple">Retrieved in a later session</span>' : '<span class="badge">' + esc(kindLabel(e)) + '</span>';
     var head = '<div class="row spread">' + badge + '<span class="meta">' + esc(e.event_id) + '</span></div><h2 style="margin-top:12px">' + esc(e.title || '(untitled)') + '</h2><p class="intro">' + esc([STORE[e.store] || e.store, e.scope !== 'unknown' ? e.scope : null, e.engine !== e.scope && e.engine !== 'unknown' ? e.engine : null].filter(Boolean).join(' · ')) + '</p>';
     var note = full && full._error ? '<div class="notice">' + esc(full._error) + '</div>' : (!full ? '<p class="muted" style="font-size:11px">Loading the record…</p>' : '');
     if (e.detail && e.detail.truncated) note += '<div class="notice">Record truncated to fit; the store holds more than shown here.</div>';
@@ -322,12 +391,16 @@
 
   // ── all memories ────────────────────────────────────────────────
   function renderMemories(inbox, detail) {
+    var focusInput=inbox.querySelector('input[aria-label="Search memories"]');
+    var hadFocus=focusInput && document.activeElement===focusInput;
+    var selection=hadFocus?[focusInput.selectionStart,focusInput.selectionEnd]:null;
     var rows = state.memoryHits != null ? state.memoryHits : state.memories;
     if (rows.length && !rows.some(function (x) { return x.id === state.selectedMemory; })) state.selectedMemory = rows[0].id;
     inbox.innerHTML = '<div class="date">SAVED MEMORIES' + (state.memoriesTotal != null ? ' · ' + fmt(state.memoriesTotal) + ' STORED' : '') + '</div>' +
       '<div class="search"><input type="search" placeholder="Search topics, ideas…" value="' + esc(state.memoryQuery) + '" oninput="cosApp.memoryQuery(this.value)" aria-label="Search memories"></div>' +
       (state.errors.memories ? '<div class="host-state"><div><h3>Not available</h3><p>' + esc(state.errors.memories) + '</p></div></div>' : '') +
-      rows.map(function (m) { return memoryRow(m, m.id === state.selectedMemory); }).join('');
+      rows.map(function (m) { return memoryRow(m, m.id === state.selectedMemory); }).join('') + ((state.memoryQuery?state.memorySearchCursor:state.memoryCursor)?'<button onclick="cosApp.loadMoreMemories()">Load more memories</button>':'') + (!state.memoryPageCapable?'<p class="muted">Bounded browsing on this server version.</p>':'');
+    if(hadFocus) {var replacement=inbox.querySelector('input[aria-label="Search memories"]'); replacement.focus(); try{replacement.setSelectionRange(selection[0],selection[1]);}catch(ignore){} }
     if (!rows.length) { detail.innerHTML = '<div class="empty"><div><h2>' + (state.memoryQuery ? 'No memories match that lookup.' : 'No memories yet.') + '</h2><p>Drop markdown into memory/, or configure a bridge for the vector store.</p></div></div>'; return; }
     var m = rows.find(function (x) { return x.id === state.selectedMemory; });
     ensureMemoryDetail(m.id);
@@ -336,15 +409,13 @@
     detail.innerHTML = '<div class="context-actions row spread"><span class="eyebrow">MEMORY</span><div class="row">' + (record.filePath ? '<button class="quiet" onclick="cosApp.reveal(\'' + esc(m.id) + '\')">Reveal in Finder</button>' : '') + '<button onclick="cosApp.copyMemory(\'' + esc(m.id) + '\')">Copy context</button></div></div>' +
       '<span class="badge green">Saved memory</span><h2 style="margin-top:12px">' + esc(record.summary || 'Memory') + '</h2><p class="intro">' + esc([record.type, dateOnly(record.created_at), record.source].filter(Boolean).join(' · ')) + '</p>' +
       (full._error ? '<div class="notice">' + esc(full._error) + '</div>' : '') +
-      '<div class="timeline">' + event('What you asked COS to remember', esc(record.type || 'Memory'), '<div class="quote">' + esc(record.content || record.summary || '') + '</div>') + event('Available for recall', record.filePath ? 'Plain files' : 'Vector store', '<p>Saved memories are available to every session. Later retrieval, use, or result appears under Recent learning when it is recorded.</p>', false, true) + '</div>';
+      '<div class="timeline">' + event('Captured memory', esc(record.type || 'Memory'), '<div class="quote">' + esc(record.content || record.summary || '') + '</div>') + event('Available for recall', record.filePath ? 'Plain files' : 'Memory store', '<p>Active memories are available to authorized sessions. Later retrieval, use, or result appears under Recent learning when it is recorded.</p>', false, true) + '</div>';
   }
   var memorySearchTimer = null;
   function memoryQuery(q) {
-    state.memoryQuery = q; clearTimeout(memorySearchTimer);
-    if (q.trim().length < 2) { state.memoryHits = null; render(); return; }
-    memorySearchTimer = setTimeout(function () {
-      call('memories.search', { q: q.trim(), limit: 20 }).then(function (d) { state.memoryHits = (d.hits || []); render(); }, function (e) { toast(e.message); });
-    }, 350);
+    state.memoryQuery=q;clearTimeout(memorySearchTimer);
+    if(q.trim().length===1)return;
+    memorySearchTimer=setTimeout(function(){loadMemoryPage(false);},q?350:0);
   }
 
   // ── knowledge ───────────────────────────────────────────────────
@@ -352,15 +423,17 @@
     var focus = state.knowledgeFocus && findEvent(state.knowledgeFocus);
     return '<div class="knowledge-label">EXPLORE KNOWLEDGE</div>' +
       '<button class="knowledge-route ' + (state.knowledgeTab === 'sources' ? 'active' : '') + '" aria-pressed="' + (state.knowledgeTab === 'sources') + '" onclick="cosApp.setKnowledgeTab(\'sources\')"><span>Source records</span><small>What was actually said</small></button>' +
-      '<button class="knowledge-route ' + (state.knowledgeTab === 'graph' ? 'active' : '') + '" aria-pressed="' + (state.knowledgeTab === 'graph') + '" onclick="cosApp.setKnowledgeTab(\'graph\')"><span>Knowledge graph</span><small>Relationships · LightRAG</small></button>' +
+      '<button class="knowledge-route ' + (state.knowledgeTab === 'graph' ? 'active' : '') + '" aria-pressed="' + (state.knowledgeTab === 'graph') + '" onclick="cosApp.setKnowledgeTab(\'graph\')"><span>Knowledge graph</span><small>Relationships · ' + (state.graphStatus&&state.graphStatus.engine==='explicit_document_links'?'Document links':'LightRAG') + '</small></button>' +
       '<button class="knowledge-route ' + (state.knowledgeTab === 'setup' ? 'active' : '') + '" aria-pressed="' + (state.knowledgeTab === 'setup') + '" onclick="cosApp.setKnowledgeTab(\'setup\')"><span>Set up Knowledge</span><small>Sources, owner, first index</small></button>' +
       '<div class="knowledge-note"><h3>' + (focus ? 'Related to: ' + esc(focus.title) : 'Better context. Traceable learning.') + '</h3><p>Sources explain a memory. Relationships add context. Run evidence shows whether a change helped.</p><button class="link" onclick="cosApp.backToLearning()">← Back to recent learning</button></div>';
   }
   function hostLabel(h) { return String(h || '').replace(/\.local$/, '').replace(/-/g, ' '); }
+  function fileGraph() { return !!(state.graphStatus && state.graphStatus.engine === 'explicit_document_links'); }
   function syncCard() {
     var g = state.graphStatus, s = state.status || {};
     if (state.errors.graph) return '<section class="source-card sync-card"><div class="row spread"><h3>Sync</h3></div><p class="owner">' + esc(state.errors.graph) + '</p><div class="actions"><button onclick="cosApp.refreshGraph()">Retry</button></div></section>';
     if (!g) return '<section class="source-card sync-card"><div class="row spread"><h3>Sync</h3></div><p class="owner">Loading…</p></section>';
+    if (fileGraph()) return '<section class="source-card sync-card"><h3>Document links</h3><p>Granted documents and your assertions build this local graph. Links describe associations; they do not establish causation.</p><dl class="sync-grid"><dt>Indexed</dt><dd>' + fmt(g.entities || 0) + ' points · ' + fmt(g.relationships || 0) + ' links</dd><dt>Index</dt><dd>' + esc(g.index_state || 'unknown') + '</dd><dt>Visible</dt><dd data-role="graph-visible">' + (state.graphVisible == null ? 'Open the graph to load points' : fmt(state.graphVisible) + ' points') + '</dd></dl><p>Refresh granted documents in Memory stewardship to update their evidence and links.</p><button onclick="cosApp.openStewardship()">Current sources and rules</button></section>';
     var src = g.source || {}, q = g.queue || {}, b = g.budget || {}, lock = g.lock || {}, proc = g.processor || {};
     var ownerName = hostLabel(src.owner_host) || 'the owner Mac';
     var owner = (src.owner_state === 'owner' ? 'Owner: <b>this Mac</b> (' + esc(ownerName) + ') · canonical graph' : src.owner_state === 'replica' ? 'Owner: <b>' + esc(ownerName) + '</b> · this Mac reads an iCloud replica' : 'No ingestion owner set. Run --set-owner on the Mac that processes the queue.');
@@ -388,11 +461,14 @@
     var visible = state.graphController && state.graphVisible != null ? fmt(state.graphVisible) + ' entities in this view' : (state.knowledgeTab === 'graph' ? 'loading the neighborhood' : 'open the graph to load a neighborhood');
     return '<section class="source-card sync-card"><div class="row spread"><h3>Sync</h3></div>' +
       '<p class="owner">' + owner + '</p>' +
-      '<dl class="sync-grid"><dt>Captured</dt><dd>' + esc(captured) + '</dd><dt>Queued</dt><dd>' + queued + '</dd><dt>Indexing</dt><dd>' + processor + '</dd><dt>Indexed</dt><dd>' + indexed + '</dd><dt>Visible</dt><dd>' + esc(visible) + '</dd><dt>Index</dt><dd>' + esc(g.index_state || 'unknown') + (g.index_built_at ? ' · built ' + esc(stamp(g.index_built_at)) : '') + (g.index_degraded ? ' · degraded' : '') + build + '</dd><dt>Budget</dt><dd>' + (b.used != null && b.cap != null ? fmt(b.used) + ' of ' + fmt(b.cap) + ' calls today' : 'unknown') + ' · lock ' + esc(lock.state || 'unknown') + (lock.owner_pid ? ' (pid ' + esc(lock.owner_pid) + ', advisory)' : '') + '</dd></dl>' +
-      progressBlock() + '<p class="small">' + 'Values from this Mac.' + ' Changes you make in the graph appear as receipts under it once curation ships.</p></section>';
+      '<dl class="sync-grid"><dt>Captured</dt><dd>' + esc(captured) + '</dd><dt>Queued</dt><dd>' + queued + '</dd><dt>Indexing</dt><dd>' + processor + '</dd><dt>Indexed</dt><dd>' + indexed + '</dd><dt>Visible</dt><dd data-role="graph-visible">' + esc(visible) + '</dd><dt>Index</dt><dd>' + esc(g.index_state || 'unknown') + (g.index_built_at ? ' · built ' + esc(stamp(g.index_built_at)) : '') + (g.index_degraded ? ' · degraded' : '') + build + '</dd><dt>Budget</dt><dd>' + (b.used != null && b.cap != null ? fmt(b.used) + ' of ' + fmt(b.cap) + ' calls today' : 'unknown') + ' · lock ' + esc(lock.state || 'unknown') + (lock.owner_pid ? ' (pid ' + esc(lock.owner_pid) + ', advisory)' : '') + '</dd></dl>' +
+      progressBlock() + '<p class="small">' + 'Values from this Mac.' + ' Saved investigations and assertions show their operation receipts in the workspace.</p></section>';
   }
   // ── Set up Knowledge (server 6.44.9): seven steps, each a live check with its own control ──
   function loadSetup() {
+    if (!state.graphStatus && !state.errors.graph) return loadGraphStatus().then(function(){ return loadSetup(); });
+    if (!state.graphStatus) { state.setupLoading=false; state.setupError=state.errors.graph || 'Graph capability is unavailable. Refresh the graph status before setup.'; return Promise.resolve(null); }
+    if (fileGraph()) { state.setupLoading=false; state.setupError=null; state.setup={engine:'explicit_document_links'}; if(state.view==='knowledge')render(); return Promise.resolve(state.setup); }
     state.setupLoading = true; state.setupError = null; if (state.view === 'knowledge') render();
     return call('graph.setup').then(function (d) { state.setup = d; state.setupLoading = false; render(); }, function (e) { state.setupError = e.message; state.setupLoading = false; render(); });
   }
@@ -456,6 +532,7 @@
     }, 10000);
   }
   function setupDetail() {
+    if (fileGraph()) return '<section class="source-card setup-card"><h3>Set up document links</h3><p>This runtime indexes Markdown and text documents explicitly granted by the instance owner. Use the installed runtime’s <code>manage.py grant</code> command to add a document. Write links as <code>[[Document title]]</code> to connect ideas.</p><p>Open Current sources to inspect or refresh granted documents. In the graph, select two points, add waypoints and find paths up to seven hops. Save a hypothesis separately from your asserted relationship.</p><p>Model extraction and embeddings are not configured in this file runtime. Keyword search and explicit document links are available.</p><button onclick="cosApp.openStewardship()">Current sources and rules</button></section>';
     var s = state.setup;
     if (state.setupError) return '<section class="source-card setup-card"><h3>Set up Knowledge</h3><p class="owner">' + esc(state.setupError) + '</p><div class="actions"><button onclick="cosApp.setupRefresh()">Retry</button></div></section>';
     if (!s) return '<section class="source-card setup-card"><h3>Set up Knowledge</h3><p class="owner">Checking this Mac…</p></section>';
@@ -487,7 +564,7 @@
     var localEmb = embBlock.kind === 'local';
     var embNotReady = embBlock.ready === false;
     steps.push(setupStep(4, checksOk && budgetOk && !embBlock.mismatch && !embNotReady, 'Choose how it indexes',
-      '<p>Indexing tier for entity extraction. Under a Claude subscription the cost is time and the daily budget, not dollars. Takes effect on the next run.</p>' + extractionCards(extBlock, busy) +
+      '<p>Extraction quality intent for the next run. Effective execution: ' + esc(extBlock.execution ? [extBlock.execution.provider,extBlock.execution.requested_model,extBlock.execution.reasoning_effort].filter(Boolean).join(' · ') : 'unavailable in this version') + '. Actual model identity: ' + esc((extBlock.execution || {}).actual_identity || 'unverified') + '.</p>' + extractionCards(extBlock, busy) +
       '<p style="margin-top:12px">Embeddings for search, one choice for the knowledge graph and every meeting index. A graph keeps the embedding it was built with.</p>' + localOnlyStrip(embBlock, busy) + embeddingCards(embBlock, busy) +
       '<div class="setup-source" style="margin-top:10px"><span>Budget today: ' + (budget.used != null ? fmt(budget.used) + ' of ' + fmt(budget.cap) + ' calls' : 'unknown') + (budgetOk ? '' : ' (used up until tomorrow)') + '</span></div>' +
       '<p>What leaves this Mac: each document\'s text goes to the model backend for entity extraction' + (localEmb ? '; embeddings are computed on this Mac' : ' and to OpenAI for embeddings') + '. The graph, the queue and this list of folders never leave it.</p>',
@@ -543,7 +620,8 @@
       (cards.length ? cards.map(function (x) { return '<article class="source-card"><div class="row spread"><h3>' + esc(x.title) + '</h3><span class="badge">' + esc(x.kind) + '</span></div>' + (x.text ? '<div class="quote">' + esc(x.text) + '</div>' : '') + (x.note ? '<p>' + esc(x.note) + '</p>' : '') + (x.event ? '<div class="actions"><button class="link" onclick="cosApp.select(\'' + esc(x.event) + '\');cosApp.setFilter(\'recent\')">Inspect learning →</button></div>' : '') + '</article>'; }).join('') : '<div class="empty"><div><h3>No source records yet.</h3><p>Your first saved lesson will bring its source here.</p></div></div>');
   }
   function graphDetail() {
-    return '<div class="row spread actual-header"><h2>Knowledge graph</h2><span class="row"><span class="badge green">Your LightRAG data</span><span class="meta">focus: ' + esc(state.graphFocus) + '</span></span></div><p class="intro">' + esc(state.graphFocus) + (state.status && state.status.ownerName && state.graphFocus === state.status.ownerName ? ' (you)' : '') + ' and its strongest neighbors from your graph, read through COS Control. Click an entity to inspect it; Explore from here loads that entity\'s own neighborhood.</p><div class="graph-search row"><input type="search" id="graphQuery" placeholder="Find an entity to focus…" value="' + esc(state.graphQuery) + '" aria-label="Find an entity"><button onclick="cosApp.graphSearch()">Focus</button><span id="graphSearchStatus" class="muted"></span></div><div id="graphMount" class="cgx-host"></div>' + '<div id="graphAsk">' + askBlockInner() + '</div>' + '<div id="graphDups">' + duplicatesCard() + '</div>';
+    var intro = state.graphFocus ? esc(state.graphFocus) + (state.status && state.graphFocus === state.status.ownerName ? ' (you)' : '') + ' and its strongest neighbors from your graph. Click a point to inspect it; expand it to add neighbors.' : 'Find a person or idea to start an investigation, or open a saved investigation below. Search uses your full knowledge index.';
+    return '<div class="row spread actual-header"><h2>Knowledge graph</h2><span class="row"><span class="badge green">' + (state.graphStatus && state.graphStatus.engine==='explicit_document_links'?'Your document links':'Your LightRAG data') + '</span>' + (state.graphFocus ? '<span class="meta">focus: ' + esc(state.graphFocus) + '</span>' : '') + '</span></div><p class="intro">' + intro + '</p><div class="graph-search row"><input type="search" id="graphQuery" placeholder="Find an entity to add…" value="' + esc(state.graphQuery) + '" aria-label="Find an entity"><button onclick="cosApp.graphSearch()">Find points</button><span id="graphSearchStatus" class="muted"></span></div><div id="graphMount" class="cgx-host"></div>' + '<div id="graphAsk">' + askBlockInner() + '</div>' + '<div id="graphDups">' + duplicatesCard() + '</div>';
   }
   // Ask the graph in plain language from the focus (Miles 2026-09-07: "Show me the
   // relation between Queen and Ukaoma"). The question runs the same hybrid query
@@ -623,8 +701,10 @@
       '<div class="setup-row"><button class="quiet" onclick="cosApp.copyAskEntity(' + attr(en.id) + ')">Copy context</button><button class="quiet" onclick="cosApp.askEntityPassages(' + attr(en.id) + ')">Show passages</button><button class="quiet" onclick="cosApp.focusEntity(' + attr(en.id) + ')">' + (inView ? 'Explore from here' : 'Explore from here (loads its neighborhood)') + '</button></div></section>';
   }
   function askBlockInner() {
+    if(state.graphStatus && state.graphStatus.engine==='explicit_document_links')return '<p class="muted">This runtime indexes explicit document links. Model-assisted graph answers require a configured advanced pipeline.</p>';
+
     var a = state.graphAsk, focus = state.graphFocus, nbrs = state.graphNeighbors || [];
-    var suggested = nbrs.length ? 'Show me the relation between ' + focus + ' and ' + nbrs[0] : 'What does the graph know about ' + focus + '?';
+    var suggested = !focus ? 'Ask about people, ideas, or their connections' : nbrs.length ? 'Show me the relation between ' + focus + ' and ' + nbrs[0] : 'What does the graph know about ' + focus + '?';
     var chips = nbrs.slice(0, 4).map(function (n) { return '<button class="quiet chip" ' + (a.busy ? 'disabled' : '') + ' onclick="cosApp.askGraphAbout(' + attr(focus) + ', ' + attr(n) + ')">' + esc(focus) + ' ↔ ' + esc(n) + '</button>'; }).join('');
     var names = [];
     if (a.answer) { [focus].concat(nbrs).forEach(function (n) { if (n && a.answer.answer.indexOf(n) !== -1 && names.indexOf(n) === -1) names.push(n); }); }
@@ -668,6 +748,9 @@
         if (pv.blocked) { finishMerge(false, pv.block_reason || 'Refused.'); return; }
         if (!pv.source || !pv.source.found || !pv.target || !pv.target.found) { finishMerge(false, 'No entity named ' + (pv.source && pv.source.found ? target : source) + ' in this Mac\'s index. Rebuild the index and try again.'); return; }
         m.phase = 'preview'; renderMerge(true);
+        call('workspace.request',{action:'identity_status',source:source,target:target}).then(function(d){
+          if(state.merge!==m)return;m.identity=d;renderMerge();
+        },function(e){if(state.merge!==m)return;m.identityError=e.message;renderMerge();});
       }, function (e) { finishMerge(false, e.message); });
     });
   }
@@ -693,10 +776,10 @@
     return '<div class="merge-col' + (keep ? ' keep' : '') + '"><h4>' + esc(en.id) + '</h4><div class="meta">' + (keep ? 'survives · ' : 'folds in · ') + esc(en.type || 'entity') + ' · ' + fmt(en.degree || 0) + ' connection' + (en.degree === 1 ? '' : 's') + (en.created_at ? ' · first indexed ' + esc(whenLabel(en.created_at)) : '') + '</div>' + descs + more + '</div>';
   }
   function mergeSteps(step) {
-    var order = ['starting', 'locking', 'snapshot', 'merging', 'indexing', 'exporting', 'done'];
-    var labels = { starting: 'Starting the worker', locking: 'Taking the ingest lock', snapshot: 'Copying the graph aside', merging: 'Merging in LightRAG (re-embeds the merged texts)', indexing: 'Rebuilding this Mac\'s index', exporting: 'Refreshing the Observatory export', done: 'Done' };
+    var order = ['starting', 'locking', 'staging', 'snapshot', 'merging', 'indexing', 'exporting', 'done'];
+    var labels = { starting: 'Starting the worker', locking: 'Taking the ingest lock', staging: 'Preparing an isolated copy of all graph stores', snapshot: 'Copying the graph aside', merging: 'Merging in LightRAG (re-embeds the merged texts)', indexing: 'Rebuilding this Mac\'s index', exporting: 'Refreshing the Observatory export', done: 'Done' };
     var at = Math.max(0, order.indexOf(step || 'starting'));
-    return '<ol class="merge-steps">' + order.slice(0, 6).map(function (s, i) { return '<li class="' + (i < at ? 'done' : i === at ? 'now' : '') + '">' + esc(labels[s]) + '</li>'; }).join('') + '</ol>';
+    return '<ol class="merge-steps">' + order.slice(0, -1).map(function (s, i) { return '<li class="' + (i < at ? 'done' : i === at ? 'now' : '') + '">' + esc(labels[s]) + '</li>'; }).join('') + '</ol>';
   }
   function mergeSheetInner() {
     var m = state.merge; if (!m) return '';
@@ -704,14 +787,17 @@
     var pv = m.preview || {}, eff = pv.effect || {}, r = m.receipt || {};
     if (m.phase === 'preview' || m.phase === 'starting') {
       var big = (pv.warnings || []).some(function (w) { return w.code === 'large_merge'; });
+      var unavailable = (pv.warnings || []).some(function (w) { return w.code === 'physical_merge_unavailable'; });
       var warn = (pv.warnings || []).map(function (w) { return '<p class="' + (w.code === 'large_merge' || w.code === 'nothing_links_them' ? 'bad' : 'muted') + '">' + esc(w.text) + '</p>'; }).join('');
       var mins = eff.estimated_seconds ? Math.max(1, Math.round(eff.estimated_seconds / 60)) : null;
       return '<p>Read both before merging. ' + (pv.name_signal ? '<span class="badge green">' + esc(pv.name_signal) + '</span>' : '<span class="badge">no name similarity</span>') + '</p>' +
         '<div class="merge-cmp">' + mergeCard(pv.target, true) + mergeCard(pv.source, false) + '</div>' +
         '<p class="muted">' + (pv.shared_count ? 'Shared neighbors: ' + esc((pv.shared_neighbors || []).join(', ')) + (pv.shared_count > (pv.shared_neighbors || []).length ? ' and ' + fmt(pv.shared_count - pv.shared_neighbors.length) + ' more' : '') : 'No shared neighbors.') + (pv.adjacent ? ' They are directly connected; that edge collapses.' : '') + '</p>' +
-        '<p><b>Effect:</b> ' + fmt(eff.moved || 0) + ' relationship' + (eff.moved === 1 ? '' : 's') + ' move to ' + esc(m.target) + ', ' + fmt(eff.collapsed || 0) + ' fold into ones it already has, ' + fmt(eff.embeddings || 0) + ' text' + (eff.embeddings === 1 ? '' : 's') + ' re-embedded' + (mins ? ', about ' + mins + ' minute' + (mins === 1 ? '' : 's') : '') + '. The descriptions concatenate; nothing is deleted from the sources. A copy of the graph is kept first.</p>' + warn +
+        '<p><b>Proposed effect:</b> ' + fmt(eff.moved || 0) + ' relationship' + (eff.moved === 1 ? '' : 's') + ' move to ' + esc(m.target) + ', ' + fmt(eff.collapsed || 0) + ' fold into ones it already has, ' + fmt(eff.embeddings || 0) + ' text' + (eff.embeddings === 1 ? '' : 's') + ' re-embedded' + (mins ? ', about ' + mins + ' minute' + (mins === 1 ? '' : 's') : '') + '. Original source documents remain unchanged. A graph-only copy does not restore every affected store.</p>' + warn +
         (m.rule ? '<p class="muted small">Rule recorded with the receipt: ' + esc(m.rule.scope || '') + ' "' + esc(m.rule.pattern || '') + '" → "' + esc(m.rule.replacement || '') + '".</p>' : '') +
-        '<div class="setup-row"><button class="quiet" onclick="cosApp.mergeCancel()" ' + (m.phase === 'starting' ? 'disabled' : '') + '>Cancel</button><button onclick="cosApp.mergeGo()" ' + (m.phase === 'starting' ? 'disabled' : '') + '>' + (m.phase === 'starting' ? 'Starting…' : (big && !m.armed ? 'Merge ' + fmt(pv.source.degree) + ' relationships…' : (m.armed ? 'Yes, merge ' + fmt(pv.source.degree) + ' relationships' : 'Merge on this Mac'))) + '</button></div>' +
+        (m.identity && m.identity.writable && !m.identity.same_identity ? '<p class="small">If these are different people or ideas, keep them separate to block future merges of these alias groups.</p><button class="quiet" onclick="cosApp.keepApart()" ' + (m.phase === 'starting' ? 'disabled' : '') + '>Keep these separate</button>' : '') +
+        (m.identityError ? '<p class="small muted">Identity constraints: ' + esc(m.identityError) + '</p>' : '') +
+        '<div class="setup-row"><button class="quiet" onclick="cosApp.mergeCancel()" ' + (m.phase === 'starting' ? 'disabled' : '') + '>Cancel</button><button onclick="cosApp.mergeGo()" ' + (m.phase === 'starting' || unavailable ? 'disabled' : '') + '>' + (unavailable ? 'Merge unavailable' : m.phase === 'starting' ? 'Starting…' : (big && !m.armed ? 'Merge ' + fmt(pv.source.degree) + ' relationships…' : (m.armed ? 'Yes, merge ' + fmt(pv.source.degree) + ' relationships' : 'Merge on this Mac'))) + '</button></div>' +
         (big && m.armed ? '<p class="bad">Click again to confirm. This re-embeds ' + fmt(eff.embeddings || 0) + ' texts and rewrites the vector stores.</p>' : '');
     }
     if (m.phase === 'running') {
@@ -758,6 +844,8 @@
       }).join('') + '</div>';
   }
   function duplicatesCard() {
+    if(state.graphStatus && state.graphStatus.engine==='explicit_document_links')return '';
+
     var d = state.dups;
     var head = '<div class="row spread"><h3>Possible duplicates</h3><span class="meta">people whose names look like one person · proposals only</span></div>';
     var rescan = '<div class="setup-row"><button class="quiet" onclick="cosApp.duplicatesScan()">Scan again</button></div>';
@@ -773,8 +861,20 @@
 
   function mountKnowledgeGraph() {
     var host = document.querySelector('#graphMount'); if (!host) return;
+    if(window.COSMemoryWorkspace) {
+      if(!state.workspace) state.workspace=window.COSMemoryWorkspace.create({call:call,toast:toast,openPassages:openPassages,onUserIntent:function(){state.graphFocusChosen=true;},onController:function(c){state.graphController=c;state.graphVisible=c.snapshot().nodes.length;var label=document.querySelector('[data-role="graph-visible"]');if(label)label.textContent=fmt(state.graphVisible)+' entities in this view';},graphOptions:{
+        labels:{graphName:state.graphStatus && state.graphStatus.engine==='explicit_document_links'?'Your document links':'Your LightRAG data'},
+        onCopy:function(text,label){call('copy',{text:text,label:label}).then(function(){toast('Copied as grounded context');},function(e){toast(e.message);});},
+        memoriesFor:function(id){var hits=state.graphMemories[id];if(hits===undefined){state.graphMemories[id]=null;call('memories.search',{q:id,limit:5}).then(function(d){state.graphMemories[id]=(d.hits||[]).map(function(h){return {id:h.id,title:h.summary||h.content||h.id};});if(state.graphController)state.graphController.select(id);},function(){state.graphMemories[id]=[];});}return hits||[];},
+        onOpenMemory:function(memoryId){state.view='learning';state.filter='memories';state.selectedMemory=memoryId;render();},
+        curation:{enabled:!(state.graphStatus && state.graphStatus.engine==='explicit_document_links'),ownerLabel:hostLabel(state.graphStatus&&state.graphStatus.source&&state.graphStatus.source.owner_host)||'the owner Mac',isOwner:!!(state.graphStatus&&state.graphStatus.source&&state.graphStatus.source.is_owner)},
+        onCuration:function(change){if(change.op!=='merge'){toast('Rename and remove are unavailable. Nothing was changed.');return false;}return mergeFlow(change.source,change.target,change.rule&&change.rule.pattern?change.rule:null);}
+      }});
+      state.workspace.attach(host,state.graphFocus); return;
+    }
     if (state.graphController) { try { state.graphController.destroy(); } catch (e) {} state.graphController = null; }
     var focus = state.graphFocus;
+    if (!focus) { host.textContent = 'Find a point above to explore its connections.'; return; }
     state.graphController = COSGraphExplorer.mount(host, {
       scope: 'actual', status: 'ready', focus: focus, endpoint: '',
       request: function (path) { if (path.indexOf('/api/graph') === 0) return neighborhood(focus); return Promise.reject(Object.assign(new Error('Not served by this host'), { status: 404 })); },
@@ -805,11 +905,13 @@
     var q = (document.querySelector('#graphQuery') || {}).value || ''; q = q.trim(); state.graphQuery = q;
     var status = document.querySelector('#graphSearchStatus');
     if (q.length < 2) { if (status) status.textContent = 'Type at least two characters.'; return; }
+    state.graphFocusChosen = true;
     if (status) status.textContent = 'Looking up…';
     call('graph.search', { q: q, limit: 5 }).then(function (d) {
       var items = d.items || [];
       if (!items.length) { if (status) status.textContent = d.indexState === 'missing' ? 'No knowledge index on this Mac yet. Build it above.' : 'No entities match that lookup.'; return; }
-      state.graphFocus = items[0].id; state.graphFocusChosen = true; if (status) status.textContent = (d.total > 1 ? fmt(d.total) + ' matches · focusing ' : 'Focusing ') + items[0].id; render();
+      if(state.workspace) { state.workspace.showMatches(items); if(status) status.textContent=items.length+' matches · select a point below'; return; }
+      state.graphFocus = items[0].id; state.graphFocusChosen = true; render();
     }, function (e) { if (status) status.textContent = e.message; });
   }
   function exploreTerm(e) { if (e.category && e.category !== e.scope && e.category !== 'unknown') return e.category; return String(e.title || '').split(' ').slice(0, 4).join(' ') || 'COS'; }
@@ -863,6 +965,7 @@
     var first = document.querySelector('.modal button'); if (first) first.focus();
   }
   function closeModal() {
+    if(state.modalOpen==='stewardship'&&state.stewardship)state.stewardship.close();
     if (state.modalOpen === 'merge' && state.merge && (state.merge.phase === 'preview' || state.merge.phase === 'loading')) { var pending = state.merge; state.merge = null; if (pending.resolve) pending.resolve(false); toast('Nothing was changed.'); }
     state.modalOpen = null; var existed = !!document.querySelector('.modal'); document.querySelector('#modalRoot').innerHTML = ''; if (existed && window.previousFocus && window.previousFocus.isConnected && ['BODY', 'HTML'].indexOf(window.previousFocus.tagName) < 0) window.previousFocus.focus(); }
   // Guardrails (0.5.201): the user's own rules for what a captured memory must
@@ -882,7 +985,7 @@
     var run = state.guardrailsRun, verdicts = run ? (run.verdicts || []) : [];
     var flagged = verdicts.filter(function (v) { return v.verdict === 'prune'; }), review = verdicts.filter(function (v) { return v.verdict === 'review'; });
     var rows = flagged.concat(review).slice(0, 60).map(function (v) {
-      return '<div class="setup-source"><span class="' + (v.verdict === 'prune' ? 'bad' : '') + '">' + (v.verdict === 'prune' ? (v.applied ? '✓ pruned' : 'prune') : 'for you') + '</span><code>' + esc(v.excerpt || v.id) + '</code><span class="muted">' + esc((v.reasons || []).join('; ')) + (v.by === 'model' ? ' (model)' : '') + '</span></div>';
+      return '<div class="setup-source"><span class="' + (v.verdict === 'prune' ? 'bad' : '') + '">' + (v.verdict === 'prune' ? (v.applied ? 'quarantined' : 'prune') : 'for you') + '</span><code>' + esc(v.excerpt || v.id) + '</code><span class="muted">' + esc((v.reasons || []).join('; ')) + (v.by === 'model' ? ' (model)' : '') + '</span></div>';
     }).join('');
     return '<section class="settings-block"><h3>Guardrails</h3>' +
       '<p class="muted">What a captured memory must be to stay. The same rules refuse nonsense at capture time; a run applies them to what already landed.</p>' +
@@ -890,38 +993,62 @@
       '<label>Min distinct chars <input id="grDistinct" type="number" min="0" max="100" value="' + esc(g.min_distinct_chars) + '"></label>' +
       '<label>Max repeat ratio <input id="grRepeat" type="number" min="0.1" max="1" step="0.05" value="' + esc(g.max_repeat_ratio) + '"></label></div>' +
       '<label class="muted">Banned patterns, one per line (regular expressions)</label><textarea id="grBanned" rows="3">' + esc((g.banned_patterns || []).join('\n')) + '</textarea>' +
-      '<div class="setup-row"><label><input id="grLlm" type="checkbox" ' + (llm.enabled ? 'checked' : '') + '> Model pass against the COS philosophy (' + fmt(state.guardrailsRubricLines || 0) + ' principles)</label>' +
+      (llm.supported===false ? '<p class="muted">This runtime applies deterministic admission rules. A model review provider is not configured.</p>' : '<div class="setup-row"><label><input id="grLlm" type="checkbox" ' + (llm.enabled ? 'checked' : '') + '> Model pass against the COS philosophy (' + fmt(state.guardrailsRubricLines || 0) + ' principles)</label>' +
       '<select id="grModel">' + ['haiku', 'sonnet', 'opus'].map(function (m) { return '<option value="' + m + '"' + (llm.model === m ? ' selected' : '') + '>' + ({ haiku: 'Fast (Haiku)', sonnet: 'Balanced (Sonnet)', opus: 'Deep (Opus)' })[m] + '</option>'; }).join('') + '</select>' +
       '<label>at most <input id="grMax" type="number" min="1" max="100" value="' + esc(llm.max_per_run || 20) + '"> per run</label></div>' +
-      '<p class="muted">The model pass costs two calls per memory under your subscription and stops at the cap. Off by default.</p>' +
+      '<p class="muted">The model pass makes one bounded provider request per reviewed memory and stops at the configured cap. Off by default.</p>') +
       '<div class="setup-row"><button ' + (busy ? 'disabled' : '') + ' onclick="cosApp.guardrailsSave()">' + (busy === 'save' ? 'Saving…' : 'Save guardrails') + '</button>' +
       '<button class="quiet" ' + (busy ? 'disabled' : '') + ' onclick="cosApp.guardrailsRun(false)">' + (busy === 'run' ? 'Reviewing…' : 'Review captured memories now') + '</button>' +
-      (flagged.length && !run.run.applied ? '<button class="quiet" ' + (busy ? 'disabled' : '') + ' onclick="cosApp.guardrailsRun(true)">' + (busy === 'apply' ? 'Pruning…' : 'Prune the ' + fmt(flagged.length) + ' flagged') + '</button>' : '') + '</div>' +
-      (run ? '<p class="muted">Last run: ' + fmt(run.run.scanned) + ' scanned in ' + fmt(run.run.days) + ' days, ' + fmt(run.run.flagged) + ' flagged, ' + fmt(run.run.kept) + ' kept' + (run.run.review ? ', ' + fmt(run.run.review) + ' for you' : '') + (run.run.llm_reviewed ? ', ' + fmt(run.run.llm_reviewed) + ' judged by the model' : '') + (run.run.applied ? ', ' + fmt(run.run.pruned) + ' pruned' : '') + '.</p>' + rows : '') +
+      (flagged.length && !run.run.applied ? '<button class="quiet" ' + (busy ? 'disabled' : '') + ' onclick="cosApp.guardrailsRun(true)">' + (busy === 'apply' ? 'Pruning…' : 'Review next batch and quarantine matches') + '</button>' : '') + '</div>' +
+      (run ? '<p class="muted">Last run: ' + fmt(run.run.scanned) + ' scanned in ' + fmt(run.run.days) + ' days, ' + fmt(run.run.flagged) + ' flagged, ' + fmt(run.run.kept) + ' kept' + (run.run.review ? ', ' + fmt(run.run.review) + ' for you' : '') + (run.run.llm_reviewed ? ', ' + fmt(run.run.llm_reviewed) + ' judged by the model' : '') + (run.run.applied ? ', ' + fmt(run.run.pruned) + ' quarantined' : '') + (run.run.coverage?', '+fmt(run.run.coverage.remaining_after_page)+' remain in this pass':'') + '.</p>' + rows : '') +
       '</section>';
   }
+  function loadPolicy() {
+    if(state.policyLoading||state.policyBusy)return;state.policyLoading=true;var serial=++policyRequestSerial;
+    call('workspace.request',{action:'policy_get'}).then(function(d){if(serial!==policyRequestSerial)return;state.policyData=d;state.policyError=null;state.policyLoading=false;renderModalIfOpen();},function(e){if(serial!==policyRequestSerial)return;state.policyError=e.message;state.policyLoading=false;renderModalIfOpen();});
+  }
+  function policySet(key,value) {
+    if(state.policyBusy)return;
+    if(!state.policyIntent){
+      var changes={};changes[key]=value;
+      state.policyIntent={action:'policy_set',changes:changes,expected_revision:state.policyData.policy.revision,
+        idempotency_key:'policy_'+crypto.randomUUID()};
+    }
+    policyRequestSerial++;state.policyLoading=false;state.policyBusy=true;state.policyError=null;renderModalIfOpen();
+    call('workspace.request',state.policyIntent).then(function(d){
+      state.policyData={policy:d.policy,writable:true,state:'available'};state.policyIntent=null;state.policyBusy=false;
+      toast('Memory policy saved.');renderModalIfOpen();
+    },function(e){state.policyBusy=false;state.policyError=e.message;
+      if(/revision_conflict|idempotency_conflict|unknown_policy|invalid_policy/.test(e.message)){state.policyIntent=null;state.policyError='Policy changed or request was refused. Reload settings, review the current value, then choose again.';}
+      renderModalIfOpen();});
+  }
   function openSettings(rerender) {
-    state.modalOpen = 'settings';
-    var s = state.status || {};
-    var tier = s.contextScriptsDirectory ? 'COS Data bridge (vector store + files)' : s.contextFilesDirectory ? 'Plain files' : 'Not configured';
-    function row(title, sub, on, reason) { return '<div class="setting row spread"><div><h3>' + title + '</h3><small>' + sub + '</small></div><button class="switch ' + (on ? 'on' : '') + '" role="switch" aria-checked="' + on + '" aria-label="' + title + '" disabled title="' + esc(reason) + '"><span></span></button></div>'; }
-    modal('Learning settings', '<p>Control what COS saves and how changes become active.</p>' +
-      row('Learn from completed sessions', 'Capture useful lessons after a session ends.', true, 'Pause and resume arrive with the learning-settings route in a later release.') +
-      row('Review skill changes first', 'Read the change before it affects future work.', true, 'Always on until skill versioning ships; nothing is applied without you.') +
-      row('Review memory additions', 'Confirm new memories before they are kept.', false, 'Arrives with the learning-settings route in a later release.') +
-      '<div class="setting row spread"><div><h3>Current storage source</h3><small>' + esc(tier) + (s.contextResolvedRoot ? ' · ' + esc(s.contextResolvedRoot) : '') + '</small></div></div>' +
-      '<p class="muted">Changing the source is done from the menu-bar panel (COS Data); this page never migrates files or activates the bridge.</p>' + guardrailsSection());
+    state.modalOpen='settings';if(!rerender){loadPolicy();loadGuardrails();}
+    var s=state.status||{},d=state.policyData,p=d&&d.policy;
+    var tier=s.contextScriptsDirectory?'COS Data bridge (vector store + files)':s.contextFilesDirectory?'Plain files':'Not configured';
+    function row(key,title,sub){var on=p&&p[key],disabled=!d||!d.writable||state.policyBusy||state.policyIntent;
+      return '<div class="setting row spread"><div><h3>'+title+'</h3><small>'+sub+'</small></div><button class="switch '+(on?'on':'')+'" role="switch" aria-checked="'+!!on+'" aria-label="'+title+'" '+(disabled?'disabled':'')+' onclick="cosApp.policySet('+attr(key)+','+!on+')"><span></span></button></div>';}
+    var policyBlock=p?row('capture_enabled','Capture completed sessions','Pausing affects new automatic captures. Existing knowledge remains readable.')+
+      row('review_required','Review new memories before active recall','Captured candidates wait for your acceptance. Existing accepted memories remain active.')+
+      '<p class="muted">Policy revision '+esc(p.revision)+'. Instance owner only. Skill changes require a reviewed, evaluated version.</p>':'<p>Loading effective memory policy…</p>';
+    if(d&&!d.writable)policyBlock+='<p>Memory policy is read-only: '+esc(d.state)+'.</p>';
+    if(state.policyError)policyBlock+='<p class="bad">'+esc(state.policyError)+'</p><button onclick="cosApp.'+(state.policyIntent?'policyRetry':'policyLoad')+'()">Retry</button>';
+    modal('Learning settings','<p>Control capture and activation. Retrieval treats source text as evidence, never as instructions.</p>'+policyBlock+
+      '<div class="actions"><button onclick="cosApp.openStewardship()">Rules, current sources and outcome evidence</button></div><div class="setting"><h3>Current storage source</h3><small>'+esc(tier)+(s.contextResolvedRoot?' · '+esc(s.contextResolvedRoot):'')+'</small></div>'+guardrailsSection());
   }
   function openLog() {
     var ls = state.learningStatus || {};
     var counts = ls.counts_by_type || {};
     var rows = Object.keys(counts).sort().map(function (k) { return '<div class="logrow">' + esc(KIND[k] || k) + '<small>' + fmt(counts[k]) + ' in the window</small></div>'; }).join('');
     var stores = Object.keys(ls.stores || {}).map(function (k) { var st = ls.stores[k]; return '<div class="logrow">' + esc(STORE[k] || k) + '<small>' + (st.readable ? 'readable · ' + fmt(st.count || 0) + (st.last_ts ? ' · last ' + esc(stamp(st.last_ts)) : '') : 'not readable (' + esc(st.state || '') + ')') + '</small></div>'; }).join('');
-    modal('Recent learning activity', '<p>Counts by event type in the reporting window, then every store this Mac can read.</p>' + (rows || '<p>No events counted.</p>') + '<h3 style="margin-top:14px">Stores</h3>' + stores);
+    modal('Recent learning activity', '<p>' + esc(ls.notice || ('Snapshot from '+stamp(ls.generated_at)+'. Window: '+stamp(ls.window_start)+' to '+stamp(ls.window_end)+'. Coverage: '+(ls.complete?'complete':'partial')+'.')) + '</p>' + (rows || '<p>No events counted.</p>') + '<h3 style="margin-top:14px">Stores</h3>' + stores);
   }
 
   // ── public surface for inline handlers ──────────────────────────
   window.cosApp = {
+    openStewardship:function(){if(!state.stewardship)state.stewardship=createMemoryStewardship({call:call,esc:esc,modal:modal,toast:toast});state.modalOpen='stewardship';state.stewardship.open();},
+    reviewGoverned:reviewGoverned,loadMoreReview:function(){loadReview(true);},
+    policySet:policySet,policyRetry:function(){policySet();},policyLoad:loadPolicy,
     select: function (id) { state.selected = id; render(); },
     selectMemory: function (id) { state.selectedMemory = id; render(); },
     setFilter: function (f) { state.view = 'learning'; state.filter = f; render(); },
@@ -929,7 +1056,7 @@
     setKnowledgeTab: function (t) { state.knowledgeTab = t; state.knowledgeTabChosen = true; render(); },
     backToLearning: function () { state.view = 'learning'; state.filter = 'recent'; if (state.knowledgeFocus) state.selected = state.knowledgeFocus; render(); },
     exploreInGraph: exploreInGraph, graphSearch: graphSearch,
-    refresh: loadAll, refreshGraph: loadGraphStatus, loadMore: loadMore, memoryQuery: memoryQuery,
+    refresh: loadAll, loadMoreMemories:function(){loadMemoryPage(true);}, refreshGraph: loadGraphStatus, loadMore: loadMore, memoryQuery: memoryQuery,
     setupRefresh: function () { loadSetup(); },
     askGraphAbout: function (a, b) { state.graphAsk.q = 'Show me the relation between ' + a + ' and ' + b; cosApp.askGraphGo(); },
     askGraphGo: function () {
@@ -941,8 +1068,21 @@
         function (e) { state.graphAsk = { q: q, busy: false, answer: null, error: e.message, cards: [], cardsBusy: false }; var h = document.querySelector('#graphAsk'); if (h) h.innerHTML = askBlockInner(); });
     },
     focusEntity: function (id) { state.graphFocus = id; state.graphFocusChosen = true; state.graphQuery = ''; render(); },
+    keepApart: function () {
+      var m=state.merge;if(!m || m.phase!=='preview' || !m.identity || !m.identity.writable)return;
+      if(!m.constraintIntent)m.constraintIntent={action:'identity_keep_apart',source:m.source,target:m.target,
+        expected_revision:m.identity.revision,idempotency_key:'keep-apart:'+crypto.randomUUID()};
+      m.phase='starting';renderMerge();
+      call('workspace.request',m.constraintIntent).then(function(){
+        if(state.merge!==m)return;finishMerge(false,'Saved. These identities will be kept separate.');loadGraphStatus();
+      },function(e){if(state.merge!==m)return;m.phase='preview';renderMerge();toast(e.message);
+        if(/revision_conflict|identity_split_required|idempotency_conflict/.test(e.message)){m.constraintIntent=null;call('workspace.request',{action:'identity_status',source:m.source,target:m.target}).then(function(d){if(state.merge===m){m.identity=d;renderMerge();}},function(){});}
+      });
+    },
     mergeGo: function () {
       var m = state.merge; if (!m || m.phase !== 'preview') return;
+      var unavailable = ((m.preview || {}).warnings || []).find(function (w) { return w.code === 'physical_merge_unavailable'; });
+      if (unavailable) { toast(unavailable.text); return; }
       var big = ((m.preview || {}).warnings || []).some(function (w) { return w.code === 'large_merge'; });
       if (big && !m.armed) { m.armed = true; renderMerge(); return; }
       m.phase = 'starting'; renderMerge();
@@ -975,7 +1115,7 @@
         var row = d.decision || {};
         state.decisions = state.decisions || {}; state.decisions[id] = row.decision || (decision === 'prune' ? 'pruned' : 'accepted');
         if (decision === 'prune') { state.memories = (state.memories || []).filter(function (m) { return m.id !== id; }); if (state.selectedMemory === id) state.selectedMemory = null; }
-        toast(decision === 'prune' ? 'Memory pruned.' : 'Memory accepted.'); render();
+        toast(decision === 'prune' ? 'Memory quarantined.' : 'Memory accepted.'); render();
       }, function (e) { state.memoryReviewBusy = null; toast(e.message); render(); });
     },
     guardrailsLoad: function () { loadGuardrails(); },
@@ -984,6 +1124,7 @@
       var patch = { min_words: Number(f('grMinWords')), min_distinct_chars: Number(f('grDistinct')), max_repeat_ratio: Number(f('grRepeat')),
         banned_patterns: String(f('grBanned') || '').split('\n').map(function (s) { return s.trim(); }).filter(Boolean),
         llm_review: { enabled: !!(document.querySelector('#grLlm') || {}).checked, model: f('grModel') || 'haiku', max_per_run: Number(f('grMax')) || 20 } };
+      if(state.guardrails && state.guardrails.llm_review && state.guardrails.llm_review.supported===false)delete patch.llm_review;
       state.guardrailsBusy = 'save'; renderModalIfOpen();
       call('memory.guardrails.set', { patch: JSON.stringify(patch) }).then(function (d) { state.guardrails = d.guardrails; state.guardrailsBusy = null; toast('Guardrails saved.'); renderModalIfOpen(); }, function (e) { state.guardrailsBusy = null; toast(e.message); renderModalIfOpen(); });
     },
@@ -991,7 +1132,7 @@
       state.guardrailsBusy = apply ? 'apply' : 'run'; renderModalIfOpen();
       call('memory.guardrails.run', { days: 30, apply: apply === true }).then(function (d) {
         state.guardrailsRun = d; state.guardrailsBusy = null;
-        if (apply) { var ids = (d.verdicts || []).filter(function (v) { return v.applied; }).map(function (v) { return v.id; }); state.memories = (state.memories || []).filter(function (m) { return ids.indexOf(m.id) === -1; }); state.decisions = state.decisions || {}; ids.forEach(function (id) { state.decisions[id] = 'pruned'; }); toast('Pruned ' + fmt(d.run.pruned) + '.'); }
+        if (apply) { var ids = (d.verdicts || []).filter(function (v) { return v.applied; }).map(function (v) { return v.id; }); state.memories = (state.memories || []).filter(function (m) { return ids.indexOf(m.id) === -1; }); state.decisions = state.decisions || {}; ids.forEach(function (id) { state.decisions[id] = 'pruned'; }); toast('Quarantined ' + fmt(d.run.pruned) + '.'); }
         else toast(fmt(d.run.flagged) + ' flagged, ' + fmt(d.run.kept) + ' kept' + (d.run.review ? ', ' + fmt(d.run.review) + ' for you' : '') + '.');
         renderModalIfOpen(); render();
       }, function (e) { state.guardrailsBusy = null; toast(e.message); renderModalIfOpen(); });

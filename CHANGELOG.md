@@ -1,3 +1,21 @@
+## 0.5.207 (build 245)
+
+Memory review, relationship exploration, and reliable fork transcripts (server 6.45.0).
+
+- Stop timed-out helpers from leaving closed-pipe monitors spinning in the
+  background. Helper output, progress, cancellation and pipe cleanup now share
+  one bounded transport; repeated failures cannot accumulate EOF callbacks.
+- Explore connections between two anchors, add waypoints, expand bounded hops,
+  inspect source passages, and save a path. Association is labeled separately
+  from causal evidence. Keep anchors separate records a reviewed identity rule.
+- Memory review distinguishes captured, proposed, saved, used, and checked
+  evidence. Changes carry revisions, receipts, and explicit stale-data handling.
+- Resolve Claude Desktop sessions through their explicit CLI identifier so an
+  alias opens its local transcript. Same-title forks remain separate; ambiguous
+  or missing mappings fail closed.
+- Continuing in a fork opens the exact child returned by the helper. Navigation
+  during a fork cannot append its prompt to the parent or replace another session.
+
 ## 0.5.206 (build 244)
 
 The Speakers empty state names the meetings it cannot review and why.

@@ -10,7 +10,7 @@ if [ "$VERSION" != "$PLIST_VERSION" ]; then
 fi
 TARGET="arm64-apple-macosx14.0"
 BUILD_DIR="$(mktemp -d /tmp/cos-control-release.XXXXXX)"
-DIST_DIR="$ROOT/dist"
+DIST_DIR="${COS_BUILD_DIST_DIR:-$ROOT/dist}"
 APP="$BUILD_DIR/COS Control.app"
 ZIP="$DIST_DIR/COS-Control-macOS-arm64-$VERSION.zip"
 STAGED_ZIP="$BUILD_DIR/COS-Control-macOS-arm64-$VERSION.zip"
@@ -52,7 +52,7 @@ cp "$ROOT/Resources/Fonts/"*.ttf "$APP/Contents/Resources/Fonts/"
 # The shipped character, already processed. A fresh install seeds it once.
 # The Memories tab hosts the reviewed prototype on live data (0.5.191).
 mkdir -p "$APP/Contents/Resources/memories"
-cp "$ROOT/Resources/memories/memories.html" "$ROOT/Resources/memories/memories-app.js" "$ROOT/Resources/memories/graph-explorer.js" "$ROOT/Resources/memories/graph-explorer.css" "$ROOT/Resources/memories/d3.min.js" "$APP/Contents/Resources/memories/"
+cp "$ROOT/Resources/memories/memories.html" "$ROOT/Resources/memories/memories-app.js" "$ROOT/Resources/memories/memory-workspace.js" "$ROOT/Resources/memories/memory-stewardship.js" "$ROOT/Resources/memories/graph-explorer.js" "$ROOT/Resources/memories/graph-explorer.css" "$ROOT/Resources/memories/d3.min.js" "$APP/Contents/Resources/memories/"
 mkdir -p "$APP/Contents/Resources/DefaultPet"
 cp "$ROOT/Resources/DefaultPet/"*.png "$ROOT/Resources/DefaultPet/"*.json "$APP/Contents/Resources/DefaultPet/"
 # Additional processed characters live under one copied resource root. The

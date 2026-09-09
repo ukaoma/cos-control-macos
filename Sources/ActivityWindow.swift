@@ -4366,8 +4366,14 @@ struct MemoriesWebView: NSViewRepresentable {
         "memory.detail": { a in ["context-memories", "--id", MemoriesWebView.text(a["id"], 200)] },
         "graph.status": { _ in ["context-graph-status"] },
         "graph.search": { a in ["context-graph-search", "--query", MemoriesWebView.text(a["q"], 160), "--limit", MemoriesWebView.bounded(a["limit"], 30, 1, 30)] },
-        "graph.entity": { a in ["context-graph-entity", "--id", MemoriesWebView.text(a["id"], 200), "--limit", MemoriesWebView.bounded(a["limit"], 30, 1, 30)] },
-        "graph.passages": { a in ["context-graph-passages", "--entity", MemoriesWebView.text(a["entity"], 200), "--limit", MemoriesWebView.bounded(a["limit"], 5, 1, 5)] },
+        "graph.entity": { a in ["context-graph-entity", "--id", MemoriesWebView.text(a["id"], 200), "--limit", MemoriesWebView.bounded(a["limit"], 30, 1, 30), "--offset", MemoriesWebView.bounded(a["offset"], 0, 0, 100000)] },
+        "graph.passages": { a in
+            var command = ["context-graph-passages", "--limit", MemoriesWebView.bounded(a["limit"], 5, 1, 5)]
+            if let source = a["source"] as? String, let target = a["target"] as? String {
+                command += ["--relation-a", MemoriesWebView.text(source, 200), "--relation-b", MemoriesWebView.text(target, 200)]
+            } else { command += ["--entity", MemoriesWebView.text(a["entity"], 200)] }
+            return command
+        },
         "graph.build": { _ in ["context-graph-index-build"] },
         "graph.ingest": { a in ["context-graph-ingest", "--limit", MemoriesWebView.bounded(a["limit"], 10, 1, 50)] },
         // Knowledge setup (0.5.194): six more ops, each bounded like the server.
@@ -4495,6 +4501,15 @@ struct MemoriesWebView: NSViewRepresentable {
                 NSPasteboard.general.setString(text, forType: .string)
                 model.copyNote = "Copied as grounded context"
                 reply(id, ok: true, message: "Copied", details: [:])
+            case "workspace.request":
+                do {
+                    let data = try JSONSerialization.data(withJSONObject: args)
+                    guard data.count <= 512 * 1024 else { throw HelperClientError.outputLimitExceeded }
+                    let response = try await model.runHelper(["context-memory-workspace"], timeout: 30, stdinData: data)
+                    reply(id, ok: response.ok, message: response.message, details: response.details)
+                } catch {
+                    reply(id, ok: false, message: error.localizedDescription, details: [:])
+                }
             case "memory.reveal":
                 let recordID = MemoriesWebView.text(args["id"], 200)
                 do {
