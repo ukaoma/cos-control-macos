@@ -1,3 +1,11 @@
+## 0.5.210 (build 248)
+
+Knowledge Ask progress, clean graph-rail labels, and a truthful Meeting sync row on server 6.45.1.
+
+- Graph rail labels (Layout, Edge strength, First indexed, Entity types, Keys) no longer ghost through backdrop blur.
+- Ask the graph shows a spinner and elapsed status while the question runs, including the Setup ask step.
+- If HQ polish reports Idle during library handoff or a live recording, Meeting sync names the real work and keeps Update/Restart blocked.
+
 ## 0.5.209 (build 247)
 
 - Drain internal command output while the child runs. A blocked launchctl write could make a healthy managed server appear orphaned and prevent updates; status and update now capture output without waiting for process exit first.

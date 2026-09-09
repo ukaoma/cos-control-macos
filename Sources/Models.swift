@@ -205,6 +205,32 @@ struct ServerStatus: Sendable {
     var meetingFinalizationFailed = 0
     var meetingFinalizationLastError: String?
     var meetingFinalizationMalformed = 0
+
+    /// HQ polish can report Idle while library handoff or a live recording still
+    /// holds the restart gate. Keep this in lockstep with
+    /// `COSControlHelper.overlayIdleMeetingWork`.
+    var displayedMeetingSync: (active: Bool, label: String, blocksRestart: Bool) {
+        let trimmed = meetingSyncLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let idle = !meetingSyncActive && (trimmed.isEmpty || trimmed == "Idle" || trimmed.hasPrefix("Idle"))
+        guard idle else {
+            return (meetingSyncActive, trimmed.isEmpty ? (meetingSyncActive ? "Syncing…" : "Idle") : trimmed, meetingSyncBlocksRestart)
+        }
+        if meetingFinalizationPending > 0 {
+            return (true, "Saving to meeting library", true)
+        }
+        if (activeTranscriptionSessions ?? 0) > 0 {
+            return (false, "Recording in progress", true)
+        }
+        return (false, trimmed.isEmpty ? "Idle" : trimmed, false)
+    }
+
+    var meetingWorkBlockingRestart: Bool {
+        meetingSyncActive
+            || meetingSyncBlocksRestart
+            || meetingFinalizationPending > 0
+            || (activeTranscriptionSessions ?? 0) > 0
+            || displayedMeetingSync.blocksRestart
+    }
     /// Quarantined unsaved meeting captures (server 6.19.0+). 0 on older
     /// servers — the key is simply absent from health.
     var unsavedCaptures = 0

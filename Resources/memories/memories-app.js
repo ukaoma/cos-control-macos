@@ -580,7 +580,8 @@
     else if (cands.length && !isOwner) sampleBody += '<p class="muted">Indexing runs on the owner Mac.</p>';
     steps.push(setupStep(5, sampleDone, 'Index three sample documents', sampleBody, checksOk ? 'todo' : 'blocked'));
     var askBody = '<p>One question, answered from the graph. About a minute; two model calls under today\'s budget.</p>' +
-      '<div class="setup-row"><input id="askQ" placeholder="' + (hasGraph ? 'Who do I work with most?' : 'Index something first') + '" value="' + esc(state.askQ) + '" ' + (s.ask_ready ? '' : 'disabled') + ' onkeydown="if(event.key===\'Enter\')cosApp.askGraph()"><button ' + (s.ask_ready && !state.askBusy ? '' : 'disabled') + ' onclick="cosApp.askGraph()">' + (state.askBusy ? 'Asking…' : 'Ask') + '</button></div>' +
+      '<div class="setup-row"><input id="askQ" placeholder="' + (hasGraph ? 'Who do I work with most?' : 'Index something first') + '" value="' + esc(state.askQ) + '" ' + (s.ask_ready && !state.askBusy ? '' : 'disabled') + ' onkeydown="if(event.key===\'Enter\')cosApp.askGraph()"><button ' + (s.ask_ready && !state.askBusy ? '' : 'disabled') + ' onclick="cosApp.askGraph()">' + (state.askBusy ? '<span class="ask-spin" aria-hidden="true"></span>Asking…' : 'Ask') + '</button></div>' +
+      (state.askBusy ? askProgressHtml(state.askStartedAt) : '') +
       (state.askAnswer ? '<div class="setup-answer">' + esc(state.askAnswer.answer) + '</div><p class="muted">' + (state.askAnswer.elapsed_s != null ? Math.round(state.askAnswer.elapsed_s) + ' s, ' : '') + esc(state.askAnswer.mode || 'hybrid') + ' mode</p>' : '');
     steps.push(setupStep(6, !!state.askAnswer, 'Ask one question', askBody, s.ask_ready ? 'todo' : 'blocked'));
     var scheduleBody = schedule.installed ? '<p>On: a batch of up to 4 queued documents every ' + (schedule.interval_s ? fmt(Math.round(schedule.interval_s / 60)) + ' minutes' : 'interval') + ', logged under ~/Library/Logs/COS.</p>' : '<p>Off. Turn it on and this Mac indexes what is queued on a schedule, in bounded batches of 4, under the daily budget.</p>';
@@ -701,6 +702,26 @@
       '<div class="setup-row"><button class="quiet" onclick="cosApp.copyAskEntity(' + attr(en.id) + ')">Copy context</button><button class="quiet" onclick="cosApp.askEntityPassages(' + attr(en.id) + ')">Show passages</button><button class="quiet" onclick="cosApp.focusEntity(' + attr(en.id) + ')">' + (inView ? 'Explore from here' : 'Explore from here (loads its neighborhood)') + '</button></div></section>';
   }
   var graphQuestionSerial=0;
+  var askTickTimer=null;
+  function askElapsed(startedAt){return startedAt?Math.max(0,Math.floor((Date.now()-startedAt)/1000)):0;}
+  function askBusyCopy(secs){
+    var phase = secs < 8 ? 'Searching the graph' : secs < 25 ? 'Choosing the relevant points' : 'Still working';
+    return phase + ' · ' + secs + 's · usually about a minute';
+  }
+  function askProgressHtml(startedAt){
+    return '<div class="ask-progress" role="status" aria-live="polite"><span class="ask-spin" aria-hidden="true"></span><span data-role="ask-progress-copy">' + esc(askBusyCopy(askElapsed(startedAt))) + '</span></div>';
+  }
+  function stopAskTick(){if(state.graphAsk.busy||state.askBusy)return;if(askTickTimer){clearInterval(askTickTimer);askTickTimer=null;}}
+  function tickAskProgress(){
+    if(!state.graphAsk.busy && !state.askBusy){stopAskTick();return;}
+    var secs = state.graphAsk.busy ? askElapsed(state.graphAsk.startedAt) : askElapsed(state.askStartedAt);
+    var copy = askBusyCopy(secs);
+    var nodes = document.querySelectorAll('[data-role="ask-progress-copy"]');
+    for (var i = 0; i < nodes.length; i++) nodes[i].textContent = copy;
+    var meta = document.querySelector('[data-role="ask-busy-meta"]');
+    if (meta) meta.textContent = 'working · ' + secs + 's';
+  }
+  function startAskTick(){if(askTickTimer){clearInterval(askTickTimer);askTickTimer=null;}askTickTimer=setInterval(tickAskProgress,1000);}
   function paintAsk(){var host=document.querySelector('#graphAsk');if(host)host.innerHTML=askBlockInner();}
   function askBlockInner() {
     if(fileGraph())return '<section class="source-card ask-card"><h3>Ask the graph</h3><p>Model answers need an advanced graph pipeline. Explore your document links below or configure Knowledge in settings.</p></section>';
@@ -710,9 +731,10 @@
     var chips = nbrs.slice(0, 4).map(function (n) { return '<button class="quiet chip" ' + (a.busy ? 'disabled' : '') + ' onclick="cosApp.askGraphAbout(' + attr(focus) + ', ' + attr(n) + ')">' + esc(focus) + ' ↔ ' + esc(n) + '</button>'; }).join('');
     var names = [];
     if (a.answer) { [focus].concat(nbrs).forEach(function (n) { if (n && a.answer.answer.indexOf(n) !== -1 && names.indexOf(n) === -1) names.push(n); }); }
-    return '<section class="source-card ask-card"><div class="row spread"><h3>Ask the graph</h3><span class="meta">plain language · about a minute</span></div><p>Ask about a person, an idea, or how things connect. COS will choose the points and trace their connections.</p>' +
-      '<div class="setup-row"><input aria-label="Ask the graph" id="graphAskQ" oninput="cosApp.questionDraft(this.value)" value="' + esc(a.q) + '" placeholder="' + esc(suggested) + '" ' + (a.busy ? 'disabled' : '') + ' onkeydown="if(event.key===\'Enter\')cosApp.askGraphGo()"><button ' + (a.busy ? 'disabled' : '') + ' onclick="cosApp.askGraphGo()">' + (a.busy ? 'Asking…' : 'Ask') + '</button></div>' +
+    return '<section class="source-card ask-card"' + (a.busy ? ' aria-busy="true"' : '') + '><div class="row spread"><h3>Ask the graph</h3><span class="meta"' + (a.busy ? ' data-role="ask-busy-meta"' : '') + '>' + (a.busy ? 'working · ' + askElapsed(a.startedAt) + 's' : 'plain language · about a minute') + '</span></div><p>Ask about a person, an idea, or how things connect. COS will choose the points and trace their connections.</p>' +
+      '<div class="setup-row"><input aria-label="Ask the graph" id="graphAskQ" oninput="cosApp.questionDraft(this.value)" value="' + esc(a.q) + '" placeholder="' + esc(suggested) + '" ' + (a.busy ? 'disabled' : '') + ' onkeydown="if(event.key===\'Enter\')cosApp.askGraphGo()"><button ' + (a.busy ? 'disabled' : '') + ' onclick="cosApp.askGraphGo()">' + (a.busy ? '<span class="ask-spin" aria-hidden="true"></span>Asking…' : 'Ask') + '</button></div>' +
       (chips ? '<div class="setup-row chips">' + chips + '</div>' : '') +
+      (a.busy ? askProgressHtml(a.startedAt) : '') +
       (a.graphMessage ? '<p class="graph-question-status" role="status">' + esc(a.graphMessage) + '</p>' : '') +
       (a.error ? '<p class="bad">' + esc(a.error) + '</p>' : '') +
       (a.answer ? '<div class="setup-answer prose">' + renderMarkdown(a.answer.answer) + '</div><div class="row spread"><p class="muted">' + (a.answer.elapsed_s != null ? Math.round(a.answer.elapsed_s) + ' s · ' : '') + esc(a.answer.mode || 'hybrid') + ' mode · synthesized from the graph, not a quote</p><span class="row"><button class="quiet" onclick="cosApp.copyAsk(false)">Copy answer</button><button class="quiet" onclick="cosApp.copyAsk(true)">Copy with context</button></span></div>' +
@@ -1093,15 +1115,15 @@
       if(q.length>400){toast('Keep the question under 400 characters.');return;}
       var serial=++graphQuestionSerial,workspace=state.workspace,token=workspace&&workspace.questionToken();
       state.graphFocusChosen=true;
-      state.graphAsk={q:q,busy:true,answer:null,error:null,cards:[],cardsBusy:false};paintAsk();
+      state.graphAsk={q:q,busy:true,answer:null,error:null,cards:[],cardsBusy:false,startedAt:Date.now()};paintAsk();startAskTick();
       call('graph.ask',{q:q}).then(function(d){
         if(serial!==graphQuestionSerial)return;
         var message=d.investigation&&d.investigation.message;
         if(d.investigation&&d.investigation.status==='ready'&&workspace){
           message=workspace.applyQuestion(d.investigation,token)?'The graph now shows the points and connections chosen for your question.':'Your graph edits were kept. Ask again when you are ready to update the view.';
         }else if(!message)message='This answer has no verified graph plan. Use Advanced investigation to choose points.';
-        state.graphAsk={q:q,busy:false,answer:d,error:null,cards:[],cardsBusy:false,graphMessage:message};paintAsk();loadAskCards(d.answer||'',q,serial);
-      },function(e){if(serial!==graphQuestionSerial)return;state.graphAsk={q:q,busy:false,answer:null,error:e.message,cards:[],cardsBusy:false};paintAsk();});
+        state.graphAsk={q:q,busy:false,answer:d,error:null,cards:[],cardsBusy:false,graphMessage:message};stopAskTick();paintAsk();loadAskCards(d.answer||'',q,serial);
+      },function(e){if(serial!==graphQuestionSerial)return;state.graphAsk={q:q,busy:false,answer:null,error:e.message,cards:[],cardsBusy:false};stopAskTick();paintAsk();});
     },
     focusEntity: function (id) { state.graphFocus = id; state.graphFocusChosen = true; state.graphQuery = ''; render(); },
     keepApart: function () {
@@ -1200,10 +1222,11 @@
       });
     },
     askGraph: function () {
+      if (state.askBusy) return;
       var input = document.querySelector('#askQ'); var q = input ? input.value.trim() : state.askQ;
       if (q.length < 3) { toast('Ask a fuller question.'); return; }
-      state.askQ = q; state.askBusy = true; state.askAnswer = null; render();
-      call('graph.ask', { q: q }).then(function (d) { state.askBusy = false; state.askAnswer = d; render(); }, function (e) { state.askBusy = false; toast(e.message); render(); });
+      state.askQ = q; state.askBusy = true; state.askAnswer = null; state.askStartedAt = Date.now(); render(); startAskTick();
+      call('graph.ask', { q: q }).then(function (d) { state.askBusy = false; state.askStartedAt = null; stopAskTick(); state.askAnswer = d; render(); }, function (e) { state.askBusy = false; state.askStartedAt = null; stopAskTick(); toast(e.message); render(); });
     },
     scheduleSet: function (enabled) {
       var sel = document.querySelector('#scheduleInterval'); var interval = sel ? Number(sel.value) || 3600 : 3600;

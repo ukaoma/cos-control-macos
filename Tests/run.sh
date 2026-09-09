@@ -3974,7 +3974,7 @@ need("import WebKit" in activity and "import WebKit" not in views, "the web view
 need("struct MemoriesWebView: NSViewRepresentable" in activity and "case .memories: memoriesSurface()" in activity,
      "Memories must mount the reviewed page")
 need("if MemoriesWebView.bundleURL != nil {" in activity and "memoriesPane()" in activity, "the native panes must remain the fallback")
-for asset in ("memories.html", "memories-app.js", "graph-explorer.js", "graph-explorer.css", "d3.min.js"):
+for asset in ("memories.html", "memories-app.js", "graph-explorer.js", "graph-explorer.css", "memories-theme.css", "d3.min.js"):
     need((root / "Resources/memories" / asset).exists(), f"Resources/memories/{asset} is missing")
     need(f'"$ROOT/Resources/memories/{asset}"' in release, f"build-release.sh does not copy {asset}")
 bundle = "".join((root / "Resources/memories" / a).read_text(errors="ignore") for a in ("memories.html", "memories-app.js", "graph-explorer.js"))
@@ -4061,6 +4061,25 @@ for command in ("context-memory-review", "context-memory-guardrails", "context-m
     need(f'case "{command}":' in helper, f"helper dispatch lost {command}")
 need('static let guardrailNeeds = "6.44.13"' in helper and 'decision == "accept" || decision == "prune"' in helper, "memory review must name 6.44.13 and refuse any other decision")
 need("function askBlockInner(" in mem_page and "cosApp.askGraphGo()" in mem_page and "askGraphAbout(" in mem_page, "the graph pane must offer a plain-language ask from the focus")
+need("function askProgressHtml(" in mem_page and "startAskTick" in mem_page and 'data-role="ask-progress-copy"' in mem_page
+     and "function askBusyCopy(" in mem_page and "Searching the graph" in mem_page and "if (state.askBusy) return;" in mem_page,
+     "Ask must show a live spinner and elapsed status while the graph question runs")
+need(".cgx-panel{isolation:isolate" in (root / "Resources/memories/graph-explorer.css").read_text()
+     and "backdrop-filter:none;-webkit-backdrop-filter:none" in (root / "Resources/memories/graph-explorer.css").read_text(),
+     "graph rail labels must not use backdrop blur")
+need('href="graph-explorer.css"' in (root / "Resources/memories/memories.html").read_text()
+     and 'href="memories-theme.css"' in (root / "Resources/memories/memories.html").read_text()
+     and ".ask-progress" in (root / "Resources/memories/memories-theme.css").read_text()
+     and ".ask-spin" in (root / "Resources/memories/memories-theme.css").read_text(),
+     "Ask progress styles must load from the Memories theme")
+need("func overlayIdleMeetingWork(" in helper and "applyIdleMeetingWorkOverlay" in helper
+     and "Self.jsonInt(details[\"meetingFinalizationPending\"])" in helper
+     and "displayedMeetingSync" in (root / "Sources/Models.swift").read_text()
+     and "meetingWorkBlockingRestart" in (root / "Sources/Models.swift").read_text()
+     and 'Button("Update Server")' in (root / "Sources/Views.swift").read_text()
+     and "|| model.status.meetingWorkBlockingRestart" in (root / "Sources/Views.swift").read_text()
+     and "applyIdleMeetingWorkOverlay(&fields)" in helper,
+     "Idle meeting work must overlay library handoff, block Restart/Update, and refuse sync-now")
 need("function renderMarkdown(" in mem_page and "function askEntityCard(" in mem_page and "cosApp.copyAsk(" in mem_page and "askEntityPassages(" in mem_page,
      "the answer must render, copy, and hand back entity cards with passages")
 need("var lines = esc(md || '').split(" in mem_page, "the answer renderer must escape before it marks up")

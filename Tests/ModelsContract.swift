@@ -4004,6 +4004,33 @@ struct ModelsContract {
         precondition(status.threadAttachProviders == ["claude", "codex"])
         precondition(status.tasksGate == "ready")
 
+        let idleHandoff = ServerStatus([
+            "meetingSyncActive": .bool(false),
+            "meetingSyncLabel": .string("Idle"),
+            "meetingSyncBlocksRestart": .bool(false),
+            "meetingFinalizationPending": .number(1),
+            "activeTranscriptionSessions": .number(0),
+        ])
+        precondition(idleHandoff.displayedMeetingSync.label == "Saving to meeting library")
+        precondition(idleHandoff.displayedMeetingSync.blocksRestart)
+        precondition(idleHandoff.meetingWorkBlockingRestart)
+        let liveRecording = ServerStatus([
+            "meetingSyncActive": .bool(false),
+            "meetingSyncLabel": .string("Idle"),
+            "meetingSyncBlocksRestart": .bool(false),
+            "meetingFinalizationPending": .number(0),
+            "activeTranscriptionSessions": .number(1),
+        ])
+        precondition(liveRecording.displayedMeetingSync.label == "Recording in progress")
+        precondition(liveRecording.meetingWorkBlockingRestart)
+        let hqPolish = ServerStatus([
+            "meetingSyncActive": .bool(true),
+            "meetingSyncLabel": .string("HQ polish 40% (2/5)"),
+            "meetingSyncBlocksRestart": .bool(true),
+            "meetingFinalizationPending": .number(1),
+        ])
+        precondition(hqPolish.displayedMeetingSync.label.contains("HQ polish"))
+
         // A server that predates the capability contract sends none of these
         // fields. Absent MUST resolve to off, never to "probably on" — the same
         // fail-closed posture the server's own contract mandates for clients.

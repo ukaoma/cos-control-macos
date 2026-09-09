@@ -818,17 +818,15 @@ struct ControlPanel: View {
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
-            statusRow("Meeting sync", value: meetingSyncLabel, good: !model.status.meetingSyncActive)
+            statusRow("Meeting sync", value: model.status.displayedMeetingSync.label, good: !model.status.meetingWorkBlockingRestart)
             HStack {
                 Spacer()
                 Button("Run sync now") { model.perform("meeting-sync-now") }
                     .controlSize(.small)
-                    .disabled(model.busy || model.status.meetingSyncActive)
+                    .disabled(model.busy || model.status.meetingWorkBlockingRestart)
             }
-            if model.status.meetingSyncActive {
-                Text(model.status.meetingSyncBlocksRestart
-                     ? "Blocks Update / Restart until HQ polish finishes."
-                     : "Meeting polish in progress.")
+            if model.status.meetingWorkBlockingRestart {
+                Text(meetingWorkBlockCaption)
                     .font(.caption2)
                     .foregroundStyle(COSPalette.amber)
                     .frame(maxWidth: .infinity, alignment: .trailing)
@@ -893,15 +891,16 @@ struct ControlPanel: View {
                 }
             }
             if model.status.meetingFinalizationPending > 0 || model.status.meetingFinalizationMalformed > 0 {
+                let recovering = model.status.meetingFinalizationFailed > 0
+                    || model.status.meetingFinalizationMalformed > 0
                 statusRow(
-                    "Finalization recovery",
+                    recovering ? "Finalization recovery" : "Library save",
                     value: model.status.meetingFinalizationMalformed > 0
                         ? "Repair required"
                         : model.status.meetingFinalizationFailed > 0
                         ? "\(model.status.meetingFinalizationFailed) retrying"
                         : "\(model.status.meetingFinalizationPending) pending",
-                    good: model.status.meetingFinalizationFailed == 0
-                        && model.status.meetingFinalizationMalformed == 0
+                    good: !recovering
                 )
                 if let error = model.status.meetingFinalizationLastError {
                     Text(error)
@@ -1139,7 +1138,8 @@ struct ControlPanel: View {
                         }
                     }
                         .disabled((model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0
-                                  || model.status.transactionPending)
+                                  || model.status.transactionPending
+                                  || model.status.meetingWorkBlockingRestart)
                     Button("Stop", systemImage: "stop.fill", role: .destructive) { model.perform("stop") }
                         .disabled(model.status.runtimeState == "managedInPlace" && !model.status.safeToRestart)
                 } else if model.status.runtimeState == "stopped" {
@@ -1148,6 +1148,7 @@ struct ControlPanel: View {
                 Spacer()
                 if model.status.installed && model.status.managedContract && model.status.ownershipVerified {
                     Button("Update Server") { model.perform("update") }
+                        .disabled(model.status.meetingWorkBlockingRestart)
                 } else if !model.status.installed && model.status.runtimeState == "notInstalled" {
                     Button("Install Server") { model.installCurrentRelease() }.buttonStyle(.borderedProminent)
                 }
@@ -2289,10 +2290,17 @@ struct ControlPanel: View {
         }
     }
 
-    private var meetingSyncLabel: String {
-        let raw = model.status.meetingSyncLabel.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !raw.isEmpty { return raw }
-        return model.status.meetingSyncActive ? "Syncing…" : "Idle"
+    private var meetingWorkBlockCaption: String {
+        if model.status.meetingFinalizationPending > 0 {
+            return "Blocks Update / Restart until the meeting is in the library."
+        }
+        if (model.status.activeTranscriptionSessions ?? 0) > 0, !model.status.meetingSyncActive {
+            return "Blocks Update / Restart until this recording is saved."
+        }
+        if model.status.meetingSyncBlocksRestart {
+            return "Blocks Update / Restart until meeting work finishes."
+        }
+        return "Meeting work in progress."
     }
 
     private var unsavedCapturesLabel: String {

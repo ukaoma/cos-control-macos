@@ -2546,6 +2546,7 @@ final class COSControlHelper {
         for (key, value) in meetingLifecycleStatusFields(health: health) {
             details[key] = value
         }
+        applyIdleMeetingWorkOverlay(&details)
         // Server 6.19.0+ quarantines unsaved meeting audio and reports it on
         // health. Absent key (older server) reads as zero — no fallback scan.
         details["unsavedCaptures"] =
@@ -2617,6 +2618,45 @@ final class COSControlHelper {
             ]
         }
         return meetingSyncStatusFromPendingBatch()
+    }
+
+    /// HQ polish can report Idle while library handoff or a live recording still
+    /// holds the restart gate. Control then showed a green Idle row (2026-09-09
+    /// local 6.45.1 rollout). Overlay only when the sync label is still idle.
+    static func overlayIdleMeetingWork(
+        meetingSyncActive: Bool,
+        meetingSyncLabel: String,
+        meetingSyncBlocksRestart: Bool,
+        meetingFinalizationPending: Int,
+        activeTranscriptionSessions: Int
+    ) -> (active: Bool, label: String, blocksRestart: Bool) {
+        let trimmed = meetingSyncLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let idle = !meetingSyncActive && (trimmed.isEmpty || trimmed == "Idle" || trimmed.hasPrefix("Idle"))
+        guard idle else {
+            return (meetingSyncActive, trimmed.isEmpty ? (meetingSyncActive ? "Syncing…" : "Idle") : trimmed, meetingSyncBlocksRestart)
+        }
+        if meetingFinalizationPending > 0 {
+            return (true, "Saving to meeting library", true)
+        }
+        if activeTranscriptionSessions > 0 {
+            return (false, "Recording in progress", true)
+        }
+        return (false, trimmed.isEmpty ? "Idle" : trimmed, false)
+    }
+
+    private func applyIdleMeetingWorkOverlay(_ details: inout [String: Any]) {
+        let pending = Self.jsonInt(details["meetingFinalizationPending"]) ?? 0
+        let recordings = Self.jsonInt(details["activeTranscriptionSessions"]) ?? 0
+        let overlaid = Self.overlayIdleMeetingWork(
+            meetingSyncActive: details["meetingSyncActive"] as? Bool ?? false,
+            meetingSyncLabel: details["meetingSyncLabel"] as? String ?? "Idle",
+            meetingSyncBlocksRestart: details["meetingSyncBlocksRestart"] as? Bool ?? false,
+            meetingFinalizationPending: pending,
+            activeTranscriptionSessions: recordings
+        )
+        details["meetingSyncActive"] = overlaid.active
+        details["meetingSyncLabel"] = overlaid.label
+        details["meetingSyncBlocksRestart"] = overlaid.blocksRestart
     }
 
     private func meetingLifecycleStatusFields(health: [String: Any]?) -> [String: Any] {
@@ -9970,9 +10010,13 @@ final class COSControlHelper {
 
     private func emitMeetingSyncNow() throws {
         let health = request("/api/health", timeout: 8)?.body
-        let fields = meetingSyncStatusFields(health: health)
-        if fields["meetingSyncActive"] as? Bool == true {
-            throw HelperError.message("Meeting polish is in progress. Wait until Meeting sync is idle.")
+        var fields = meetingSyncStatusFields(health: health)
+        for (key, value) in meetingLifecycleStatusFields(health: health) {
+            fields[key] = value
+        }
+        applyIdleMeetingWorkOverlay(&fields)
+        if fields["meetingSyncActive"] as? Bool == true || fields["meetingSyncBlocksRestart"] as? Bool == true {
+            throw HelperError.message("Meeting work is in progress. Wait until Meeting sync is idle.")
         }
         let liveScripts = loadedEnvironmentValue("COS_SCRIPTS_DIR")
             ?? serverEnvironment()["COS_SCRIPTS_DIR"]
@@ -13573,6 +13617,33 @@ final class COSControlHelper {
         )
         try expect(scored.score > 0, "session keyword hits a first prompt the sidebar title does not use")
         try expect(scored.snippet.lowercased().contains("jewelry"), "session keyword snippet comes from the prompt")
+
+        // Idle HQ polish must not hide library handoff or a live recording.
+        let handoff = Self.overlayIdleMeetingWork(
+            meetingSyncActive: false, meetingSyncLabel: "Idle", meetingSyncBlocksRestart: false,
+            meetingFinalizationPending: 1, activeTranscriptionSessions: 0)
+        try expect(handoff.active && handoff.blocksRestart && handoff.label.contains("Saving"),
+                   "library handoff overlays Idle")
+        let recording = Self.overlayIdleMeetingWork(
+            meetingSyncActive: false, meetingSyncLabel: "Idle", meetingSyncBlocksRestart: false,
+            meetingFinalizationPending: 0, activeTranscriptionSessions: 1)
+        try expect(!recording.active && recording.blocksRestart && recording.label.contains("Recording"),
+                   "a live recording overlays Idle without claiming HQ polish")
+        let polish = Self.overlayIdleMeetingWork(
+            meetingSyncActive: true, meetingSyncLabel: "HQ polish 40% (2/5)", meetingSyncBlocksRestart: true,
+            meetingFinalizationPending: 1, activeTranscriptionSessions: 0)
+        try expect(polish.label.contains("HQ polish"), "an active HQ label is preserved")
+        var jsonHandoff: [String: Any] = [
+            "meetingSyncActive": false,
+            "meetingSyncLabel": "Idle",
+            "meetingSyncBlocksRestart": false,
+            "meetingFinalizationPending": NSNumber(value: 1),
+            "activeTranscriptionSessions": NSNumber(value: 0),
+        ]
+        applyIdleMeetingWorkOverlay(&jsonHandoff)
+        try expect(jsonHandoff["meetingSyncLabel"] as? String == "Saving to meeting library"
+                   && jsonHandoff["meetingSyncBlocksRestart"] as? Bool == true,
+                   "JSON pending overlays Idle through jsonInt")
 
         // --- restart blockers must NAME the cause ---------------------------
         // The 2026-08-12 lockout in one fixture: activeByKind EMPTY, everything
