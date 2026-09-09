@@ -1,3 +1,8 @@
+## 0.5.209 (build 247)
+
+- Drain internal command output while the child runs. A blocked launchctl write could make a healthy managed server appear orphaned and prevent updates; status and update now capture output without waiting for process exit first.
+- Bound captured output, timeout cleanup, and pipes held by descendants. Preserve the prior EOF/CPU repair and all 208 Knowledge, owner, appearance and retained-capture improvements.
+
 ## 0.5.208 (build 246)
 
 A simpler Knowledge view and truthful capture recovery (server 6.45.1).

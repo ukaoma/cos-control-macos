@@ -785,37 +785,76 @@ final class COSControlHelper {
             process.standardError = pipe
         }
 
-        try process.run()
-        let timedOut: Bool
-        if heartbeat == nil {
-            timedOut = completion.wait(timeout: .now() + timeout) == .timedOut
-        } else {
-            let deadline = Date().addingTimeInterval(timeout)
-            var expired = false
-            while true {
-                let remaining = deadline.timeIntervalSinceNow
-                if remaining <= 0 {
-                    expired = true
-                    break
+        // Drain captured output while the child runs. Waiting before reading can
+        // deadlock even launchctl on a Mac with small/full pipe buffers.
+        let reader = pipe.fileHandleForReading
+        defer {
+            if process.isRunning {
+                process.terminate()
+                if completion.wait(timeout: .now() + 2) == .timedOut {
+                    kill(process.processIdentifier, SIGKILL)
+                    _ = completion.wait(timeout: .now() + 2)
                 }
-                if completion.wait(timeout: .now() + min(heartbeatInterval, remaining)) == .success {
-                    break
-                }
-                if let heartbeat { progress(heartbeat) }
             }
-            timedOut = expired
-        }
-        if timedOut {
-            process.terminate()
-            if completion.wait(timeout: .now() + 2) == .timedOut {
-                kill(process.processIdentifier, SIGKILL)
-                _ = completion.wait(timeout: .now() + 2)
-            }
+            try? reader.close()
+            try? pipe.fileHandleForWriting.close()
             try? logHandle?.close()
-            throw HelperError.message("Command timed out: \(URL(fileURLWithPath: executable).lastPathComponent)")
         }
-        try? logHandle?.close()
-        let data = log ? Data() : (try pipe.fileHandleForReading.readToEnd() ?? Data())
+        if !log {
+            let fd = reader.fileDescriptor
+            guard fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) != -1 else {
+                throw HelperError.message("Could not prepare command output capture.")
+            }
+        }
+        try process.run()
+        try? pipe.fileHandleForWriting.close()
+        let started = ProcessInfo.processInfo.systemUptime
+        var nextHeartbeat = started + max(0.1, heartbeatInterval)
+        var exitedAt: TimeInterval?
+        var eof = log
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 65536)
+        let outputLimit = 64 * 1024 * 1024
+        while true {
+            let now = ProcessInfo.processInfo.systemUptime
+            if !process.isRunning {
+                if exitedAt == nil { exitedAt = now }
+                if eof { break }
+                if now - (exitedAt ?? now) > 1 {
+                    throw HelperError.message("Command output did not close: \(URL(fileURLWithPath: executable).lastPathComponent)")
+                }
+            }
+            guard now - started < timeout else {
+                throw HelperError.message("Command timed out: \(URL(fileURLWithPath: executable).lastPathComponent)")
+            }
+            if let heartbeat, now >= nextHeartbeat {
+                progress(heartbeat)
+                nextHeartbeat = now + max(0.1, heartbeatInterval)
+            }
+            if eof {
+                _ = completion.wait(timeout: .now() + 0.025)
+                continue
+            }
+            var descriptor = pollfd(fd: reader.fileDescriptor, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&descriptor, 1, 25)
+            if ready < 0 {
+                if errno == EINTR { continue }
+                throw HelperError.message("Command output polling failed.")
+            }
+            if ready > 0 {
+                let count = Darwin.read(reader.fileDescriptor, &buffer, buffer.count)
+                if count > 0 {
+                    guard data.count <= outputLimit - count else {
+                        throw HelperError.message("Command output exceeded the 64 MiB capture limit.")
+                    }
+                    data.append(contentsOf: buffer.prefix(count))
+                } else if count == 0 {
+                    eof = true
+                } else if errno != EAGAIN && errno != EINTR {
+                    throw HelperError.message("Command output capture failed.")
+                }
+            }
+        }
         return CommandResult(
             code: process.terminationStatus,
             output: String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -12762,6 +12801,26 @@ final class COSControlHelper {
             guard condition() else { throw HelperError.message("self-test failed: \(message)") }
             passed += 1
         }
+
+        // Executable regressions: these exceed pipe capacity, preserve stderr
+        // and nonzero exit codes, and bound timeout/descendant-held descriptors.
+        let burst = try execute("/bin/sh", ["-c", "head -c 262144 /dev/zero; printf END >&2; exit 7"], timeout: 5)
+        try expect(burst.code == 7 && burst.output.utf8.count == 262147 && burst.output.hasSuffix("END"),
+                   "large child output drains before exit without losing stderr")
+        let earlyEOF = try execute("/bin/sh", ["-c", "exec 1>&- 2>&-; sleep 0.1"], timeout: 2)
+        try expect(earlyEOF.code == 0 && earlyEOF.output.isEmpty, "output EOF before child exit does not spin or hang")
+        let heldStart = ProcessInfo.processInfo.systemUptime
+        var heldRefused = false
+        do { _ = try execute("/bin/sh", ["-c", "sleep 3 & exit 0"], timeout: 5) }
+        catch { heldRefused = String(describing: error).contains("output did not close") }
+        try expect(heldRefused && ProcessInfo.processInfo.systemUptime - heldStart < 2.5,
+                   "descendant-held output is refused within bounded drain grace")
+        let timeoutStart = ProcessInfo.processInfo.systemUptime
+        var timedOut = false
+        do { _ = try execute("/bin/sh", ["-c", "trap '' TERM; while :; do sleep 0.1; done"], timeout: 0.1) }
+        catch { timedOut = String(describing: error).contains("timed out") }
+        try expect(timedOut && ProcessInfo.processInfo.systemUptime - timeoutStart < 5,
+                   "TERM-resistant direct child is killed within bounded cleanup")
 
         try expect(Self.loopbackAPIPort(environment: ["COS_CONTROL_TEST_API_PORT": "13141"]) == 3141,
                    "production ignores test server override")
