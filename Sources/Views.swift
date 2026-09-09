@@ -916,11 +916,11 @@ struct ControlPanel: View {
             // meeting is the failure this exists to end. Row hides at zero.
             if model.status.unsavedCaptures > 0 || !model.recoverableOrphans.isEmpty || !model.strandedCaptures.isEmpty {
                 statusRow(
-                    "Unsaved captures",
+                    "Retained captures",
                     value: unsavedCapturesLabel,
                     good: false
                 )
-                Text("Meeting audio was captured but never saved. Recover here before retention expires, or open COS on the phone to let a deferred save land.")
+                Text("Retained captures on this Mac. Save available transcripts or recover quarantined audio before retention expires.")
                     .font(.caption2)
                     .foregroundStyle(COSPalette.amber)
                     .lineLimit(3)
@@ -960,29 +960,27 @@ struct ControlPanel: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
                 }
                 if !model.strandedCaptures.isEmpty {
-                    Text("Still live — phone never saved. Save here; do not wait for Recover all.")
+                    Text("A retained server session does not mean the phone has a pending meeting. Save is available only when a transcript exists.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                     VStack(alignment: .trailing, spacing: 6) {
-                        Button(model.strandedCaptures.count == 1 ? "Save" : "Save all") {
-                            if model.strandedCaptures.count > 1 {
-                                confirmSaveAllStranded = true
-                            } else if let only = model.strandedCaptures.first {
-                                model.saveStranded(only.sessionId)
-                            }
+                        if model.strandedCaptures.filter({ $0.canSave }).count > 1 {
+                            Button("Save all") { confirmSaveAllStranded = true }
+                                .controlSize(.small)
+                                .disabled(model.busy || model.orphanBusy)
                         }
-                        .controlSize(.small)
-                        .disabled(model.busy || model.orphanBusy)
                         ForEach(model.strandedCaptures) { capture in
                             HStack(spacing: 8) {
                                 Text(capture.label)
                                     .font(.caption2)
                                     .foregroundStyle(.tertiary)
                                     .lineLimit(1)
-                                Button("Save") { model.saveStranded(capture.sessionId) }
-                                    .controlSize(.mini)
-                                    .disabled(model.busy || model.orphanBusy)
+                                if capture.canSave {
+                                    Button("Save") { model.saveStranded(capture.sessionId) }
+                                        .controlSize(.mini)
+                                        .disabled(model.busy || model.orphanBusy)
+                                }
                             }
                             .frame(maxWidth: .infinity, alignment: .trailing)
                         }
@@ -2301,7 +2299,7 @@ struct ControlPanel: View {
         let recoverable = model.recoverableOrphans.count
         if recoverable > 0 { return "\(recoverable) recoverable" }
         if model.status.unsavedCaptures > 0 { return "\(model.status.unsavedCaptures) recoverable" }
-        if !model.strandedCaptures.isEmpty { return "\(model.strandedCaptures.count) still live" }
+        if !model.strandedCaptures.isEmpty { return "\(model.strandedCaptures.count) retained" }
         return "None"
     }
 

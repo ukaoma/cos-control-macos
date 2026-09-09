@@ -37,7 +37,7 @@
 
   // ── state ───────────────────────────────────────────────────────
   var state = {
-    view: 'learning', filter: 'recent', selected: null, knowledgeTab: 'sources', knowledgeFocus: null,
+    view: 'learning', filter: 'recent', selected: null, knowledgeTab: 'graph', knowledgeFocus: null,
     status: null, learningStatus: null, graphStatus: null,
     recent: [], recentTotal: null, recentCursor: null, review: [], reviewCount: null, memories: [], memoriesTotal: null,
     memoryQuery: '', memoryHits: null, memoryCursor:null, memorySearchCursor:null, memoryPageCapable:false, coverage: {},
@@ -90,7 +90,7 @@
       var items = d.items || [];
       var exact = items.find(function (it) { return String(it.id).toLowerCase() === String(name).toLowerCase(); });
       var pick = exact || items.find(function (it) { return String(it.type || '').toLowerCase() === 'person'; }) || items[0];
-      if (pick && !state.graphFocusChosen) { state.graphFocus = pick.id; if (state.view === 'knowledge' && state.knowledgeTab === 'graph') render(); }
+      if (pick && !state.graphFocusChosen && state.status && state.status.ownerName === name) { state.graphFocus = pick.id; if (state.view === 'knowledge' && state.knowledgeTab === 'graph') render(); }
     }, function () {});
   }
   // While the ingest lock is held, read the run's progress every 5 s (and the
@@ -422,8 +422,8 @@
   function knowledgeAside() {
     var focus = state.knowledgeFocus && findEvent(state.knowledgeFocus);
     return '<div class="knowledge-label">EXPLORE KNOWLEDGE</div>' +
+      '<button class="knowledge-route ' + (state.knowledgeTab === 'graph' ? 'active' : '') + '" aria-pressed="' + (state.knowledgeTab === 'graph') + '" onclick="cosApp.setKnowledgeTab(\'graph\')"><span>Ask the graph</span><small>Explore connections · ' + (state.graphStatus&&state.graphStatus.engine==='explicit_document_links'?'Document links':'LightRAG') + '</small></button>' +
       '<button class="knowledge-route ' + (state.knowledgeTab === 'sources' ? 'active' : '') + '" aria-pressed="' + (state.knowledgeTab === 'sources') + '" onclick="cosApp.setKnowledgeTab(\'sources\')"><span>Source records</span><small>What was actually said</small></button>' +
-      '<button class="knowledge-route ' + (state.knowledgeTab === 'graph' ? 'active' : '') + '" aria-pressed="' + (state.knowledgeTab === 'graph') + '" onclick="cosApp.setKnowledgeTab(\'graph\')"><span>Knowledge graph</span><small>Relationships · ' + (state.graphStatus&&state.graphStatus.engine==='explicit_document_links'?'Document links':'LightRAG') + '</small></button>' +
       '<button class="knowledge-route ' + (state.knowledgeTab === 'setup' ? 'active' : '') + '" aria-pressed="' + (state.knowledgeTab === 'setup') + '" onclick="cosApp.setKnowledgeTab(\'setup\')"><span>Set up Knowledge</span><small>Sources, owner, first index</small></button>' +
       '<div class="knowledge-note"><h3>' + (focus ? 'Related to: ' + esc(focus.title) : 'Better context. Traceable learning.') + '</h3><p>Sources explain a memory. Relationships add context. Run evidence shows whether a change helped.</p><button class="link" onclick="cosApp.backToLearning()">← Back to recent learning</button></div>';
   }
@@ -597,7 +597,7 @@
   function renderKnowledge() {
     document.querySelector('#workspace').style.gridTemplateColumns = ''; document.querySelector('#inbox').classList.remove('hidden');
     document.querySelector('#inbox').innerHTML = knowledgeAside();
-    document.querySelector('#detail').innerHTML = syncCard() + (state.knowledgeTab === 'graph' ? graphDetail() : state.knowledgeTab === 'setup' ? setupDetail() : knowledgeSources());
+    document.querySelector('#detail').innerHTML = state.knowledgeTab === 'graph' ? graphDetail() + '<details class="knowledge-health"><summary>Knowledge status and maintenance</summary>' + syncCard() + '<div id="graphDups">' + duplicatesCard() + '</div></details>' : syncCard() + (state.knowledgeTab === 'setup' ? setupDetail() : knowledgeSources());
     if (state.knowledgeTab === 'graph') mountKnowledgeGraph();
     if (state.knowledgeTab === 'setup' && !state.setup && !state.setupLoading && !state.setupError) loadSetup();
   }
@@ -620,8 +620,7 @@
       (cards.length ? cards.map(function (x) { return '<article class="source-card"><div class="row spread"><h3>' + esc(x.title) + '</h3><span class="badge">' + esc(x.kind) + '</span></div>' + (x.text ? '<div class="quote">' + esc(x.text) + '</div>' : '') + (x.note ? '<p>' + esc(x.note) + '</p>' : '') + (x.event ? '<div class="actions"><button class="link" onclick="cosApp.select(\'' + esc(x.event) + '\');cosApp.setFilter(\'recent\')">Inspect learning →</button></div>' : '') + '</article>'; }).join('') : '<div class="empty"><div><h3>No source records yet.</h3><p>Your first saved lesson will bring its source here.</p></div></div>');
   }
   function graphDetail() {
-    var intro = state.graphFocus ? esc(state.graphFocus) + (state.status && state.graphFocus === state.status.ownerName ? ' (you)' : '') + ' and its strongest neighbors from your graph. Click a point to inspect it; expand it to add neighbors.' : 'Find a person or idea to start an investigation, or open a saved investigation below. Search uses your full knowledge index.';
-    return '<div class="row spread actual-header"><h2>Knowledge graph</h2><span class="row"><span class="badge green">' + (state.graphStatus && state.graphStatus.engine==='explicit_document_links'?'Your document links':'Your LightRAG data') + '</span>' + (state.graphFocus ? '<span class="meta">focus: ' + esc(state.graphFocus) + '</span>' : '') + '</span></div><p class="intro">' + intro + '</p><div class="graph-search row"><input type="search" id="graphQuery" placeholder="Find an entity to add…" value="' + esc(state.graphQuery) + '" aria-label="Find an entity"><button onclick="cosApp.graphSearch()">Find points</button><span id="graphSearchStatus" class="muted"></span></div><div id="graphMount" class="cgx-host"></div>' + '<div id="graphAsk">' + askBlockInner() + '</div>' + '<div id="graphDups">' + duplicatesCard() + '</div>';
+    return '<div id="graphAsk">' + askBlockInner() + '</div><section class="knowledge-visual"><div class="row spread actual-header"><h2>Your knowledge</h2><span class="badge green">' + (fileGraph() ? 'Your document links' : 'Your LightRAG data') + '</span></div><p class="intro">Explore connected people and ideas. Ask a question above to trace the connections that matter.</p><div id="graphMount" class="cgx-host"></div></section>';
   }
   // Ask the graph in plain language from the focus (Miles 2026-09-07: "Show me the
   // relation between Queen and Ukaoma"). The question runs the same hybrid query
@@ -662,7 +661,7 @@
     var m = q.match(/between\s+(.+?)\s+and\s+(.+?)\??$/i); if (m) { add(m[1]); add(m[2]); }
     return names.filter(function (n) { return !/^(Primary Relationship|Role|Current Focus|Completion|Birthday|Children|Attribute|Detail|Regular syncs|Family management|Shared parenthood)$/i.test(n); }).slice(0, 8);
   }
-  function loadAskCards(answer, q) {
+  function loadAskCards(answer, q, serial) {
     var names = askEntityCandidates(answer, q);
     state.graphAsk.cards = []; state.graphAsk.cardsBusy = names.length > 0;
     var host = document.querySelector('#graphAsk'); if (host) host.innerHTML = askBlockInner();
@@ -675,6 +674,7 @@
         return call('graph.entity', { id: hit.id, limit: 6 }).then(function (en) { return en.found === false ? null : en; }, function () { return null; });
       }, function () { return null; });
     })).then(function (ents) {
+      if(serial!==graphQuestionSerial)return;
       state.graphAsk.cards = ents.filter(Boolean); state.graphAsk.cardsBusy = false;
       var h = document.querySelector('#graphAsk'); if (h) h.innerHTML = askBlockInner();
     });
@@ -700,17 +700,20 @@
       (desc ? '<p>' + esc(desc.length > 320 ? desc.slice(0, 320) + '…' : desc) + '</p>' : '<p class="muted">No description stored.</p>') + rels +
       '<div class="setup-row"><button class="quiet" onclick="cosApp.copyAskEntity(' + attr(en.id) + ')">Copy context</button><button class="quiet" onclick="cosApp.askEntityPassages(' + attr(en.id) + ')">Show passages</button><button class="quiet" onclick="cosApp.focusEntity(' + attr(en.id) + ')">' + (inView ? 'Explore from here' : 'Explore from here (loads its neighborhood)') + '</button></div></section>';
   }
+  var graphQuestionSerial=0;
+  function paintAsk(){var host=document.querySelector('#graphAsk');if(host)host.innerHTML=askBlockInner();}
   function askBlockInner() {
-    if(state.graphStatus && state.graphStatus.engine==='explicit_document_links')return '<p class="muted">This runtime indexes explicit document links. Model-assisted graph answers require a configured advanced pipeline.</p>';
+    if(fileGraph())return '<section class="source-card ask-card"><h3>Ask the graph</h3><p>Model answers need an advanced graph pipeline. Explore your document links below or configure Knowledge in settings.</p></section>';
 
     var a = state.graphAsk, focus = state.graphFocus, nbrs = state.graphNeighbors || [];
     var suggested = !focus ? 'Ask about people, ideas, or their connections' : nbrs.length ? 'Show me the relation between ' + focus + ' and ' + nbrs[0] : 'What does the graph know about ' + focus + '?';
     var chips = nbrs.slice(0, 4).map(function (n) { return '<button class="quiet chip" ' + (a.busy ? 'disabled' : '') + ' onclick="cosApp.askGraphAbout(' + attr(focus) + ', ' + attr(n) + ')">' + esc(focus) + ' ↔ ' + esc(n) + '</button>'; }).join('');
     var names = [];
     if (a.answer) { [focus].concat(nbrs).forEach(function (n) { if (n && a.answer.answer.indexOf(n) !== -1 && names.indexOf(n) === -1) names.push(n); }); }
-    return '<section class="source-card ask-card"><div class="row spread"><h3>Ask the graph</h3><span class="meta">plain language · about a minute</span></div>' +
-      '<div class="setup-row"><input id="graphAskQ" value="' + esc(a.q) + '" placeholder="' + esc(suggested) + '" ' + (a.busy ? 'disabled' : '') + ' onkeydown="if(event.key===\'Enter\')cosApp.askGraphGo()"><button ' + (a.busy ? 'disabled' : '') + ' onclick="cosApp.askGraphGo()">' + (a.busy ? 'Asking…' : 'Ask') + '</button></div>' +
+    return '<section class="source-card ask-card"><div class="row spread"><h3>Ask the graph</h3><span class="meta">plain language · about a minute</span></div><p>Ask about a person, an idea, or how things connect. COS will choose the points and trace their connections.</p>' +
+      '<div class="setup-row"><input aria-label="Ask the graph" id="graphAskQ" oninput="cosApp.questionDraft(this.value)" value="' + esc(a.q) + '" placeholder="' + esc(suggested) + '" ' + (a.busy ? 'disabled' : '') + ' onkeydown="if(event.key===\'Enter\')cosApp.askGraphGo()"><button ' + (a.busy ? 'disabled' : '') + ' onclick="cosApp.askGraphGo()">' + (a.busy ? 'Asking…' : 'Ask') + '</button></div>' +
       (chips ? '<div class="setup-row chips">' + chips + '</div>' : '') +
+      (a.graphMessage ? '<p class="graph-question-status" role="status">' + esc(a.graphMessage) + '</p>' : '') +
       (a.error ? '<p class="bad">' + esc(a.error) + '</p>' : '') +
       (a.answer ? '<div class="setup-answer prose">' + renderMarkdown(a.answer.answer) + '</div><div class="row spread"><p class="muted">' + (a.answer.elapsed_s != null ? Math.round(a.answer.elapsed_s) + ' s · ' : '') + esc(a.answer.mode || 'hybrid') + ' mode · synthesized from the graph, not a quote</p><span class="row"><button class="quiet" onclick="cosApp.copyAsk(false)">Copy answer</button><button class="quiet" onclick="cosApp.copyAsk(true)">Copy with context</button></span></div>' +
         (a.cardsBusy ? '<p class="muted">Looking up the entities it names…</p>' : (a.cards && a.cards.length ? '<h4 class="ask-cards-title">In the graph</h4><div class="ask-cards">' + a.cards.map(askEntityCard).join('') + '</div>' : '')) : '') +
@@ -1022,8 +1025,19 @@
       if(/revision_conflict|idempotency_conflict|unknown_policy|invalid_policy/.test(e.message)){state.policyIntent=null;state.policyError='Policy changed or request was refused. Reload settings, review the current value, then choose again.';}
       renderModalIfOpen();});
   }
+  function ownerCard(){
+    var name=state.ownerDraft!=null?state.ownerDraft:(state.ownerProfile&&state.ownerProfile.owner_name)||'';
+    return '<section class="setting owner-card"><h3>Who is COS for?</h3><p>Your name personalizes COS and the graph’s starting point. It does not change the indexing Mac or transfer memory ownership.</p><div class="row"><input id="ownerName" aria-label="Owner name" placeholder="Your full name" maxlength="120" value="'+esc(name)+'" oninput="cosApp.ownerDraft(this.value)"><button '+(!state.ownerProfile||state.ownerBusy?'disabled':'')+' onclick="cosApp.saveOwner()">'+(state.ownerBusy?'Saving…':'Save name')+'</button></div>'+(state.ownerError?'<p class="bad">'+esc(state.ownerError)+'</p><button onclick="cosApp.loadOwner()">Retry</button>':'')+'</section>';
+  }
+  var ownerReadSerial=0,ownerDraftRevision=0;
+  function loadOwner(){
+    if(state.ownerBusy)return;
+    var serial=++ownerReadSerial;
+    state.ownerError=null;
+    call('profile.owner',{}).then(function(d){if(serial!==ownerReadSerial)return;state.ownerProfile=d;if(state.ownerDraft==null)state.ownerDraft=d.owner_name||'';renderModalIfOpen();},function(e){if(serial!==ownerReadSerial)return;state.ownerError=e.message;renderModalIfOpen();});
+  }
   function openSettings(rerender) {
-    state.modalOpen='settings';if(!rerender){loadPolicy();loadGuardrails();}
+    state.modalOpen='settings';if(!rerender){loadPolicy();loadGuardrails();loadOwner();}
     var s=state.status||{},d=state.policyData,p=d&&d.policy;
     var tier=s.contextScriptsDirectory?'COS Data bridge (vector store + files)':s.contextFilesDirectory?'Plain files':'Not configured';
     function row(key,title,sub){var on=p&&p[key],disabled=!d||!d.writable||state.policyBusy||state.policyIntent;
@@ -1033,7 +1047,7 @@
       '<p class="muted">Policy revision '+esc(p.revision)+'. Instance owner only. Skill changes require a reviewed, evaluated version.</p>':'<p>Loading effective memory policy…</p>';
     if(d&&!d.writable)policyBlock+='<p>Memory policy is read-only: '+esc(d.state)+'.</p>';
     if(state.policyError)policyBlock+='<p class="bad">'+esc(state.policyError)+'</p><button onclick="cosApp.'+(state.policyIntent?'policyRetry':'policyLoad')+'()">Retry</button>';
-    modal('Learning settings','<p>Control capture and activation. Retrieval treats source text as evidence, never as instructions.</p>'+policyBlock+
+    modal('Memory settings',ownerCard()+'<p>Control capture and activation. Retrieval treats source text as evidence, never as instructions.</p>'+policyBlock+
       '<div class="actions"><button onclick="cosApp.openStewardship()">Rules, current sources and outcome evidence</button></div><div class="setting"><h3>Current storage source</h3><small>'+esc(tier)+(s.contextResolvedRoot?' · '+esc(s.contextResolvedRoot):'')+'</small></div>'+guardrailsSection());
   }
   function openLog() {
@@ -1046,26 +1060,48 @@
 
   // ── public surface for inline handlers ──────────────────────────
   window.cosApp = {
+    ownerDraft:function(value){ownerDraftRevision++;state.ownerDraft=value;},
+    loadOwner:loadOwner,
+    saveOwner:function(){
+      if(state.ownerBusy||!state.ownerProfile)return;
+      var name=(state.ownerDraft||'').trim();if(!name){state.ownerError='Enter your name.';renderModalIfOpen();return;}
+      ownerReadSerial++;var draftRevision=ownerDraftRevision;
+      state.ownerBusy=true;state.ownerError=null;renderModalIfOpen();
+      call('profile.owner.set',{name:name,expected:state.ownerProfile.owner_name||''}).then(function(d){
+        state.ownerBusy=false;state.ownerProfile=d;if(draftRevision===ownerDraftRevision)state.ownerDraft=d.owner_name;state.status=state.status||{};state.status.ownerName=d.owner_name;
+        state.graphFocusResolved=false;chooseDefaultFocus();renderModalIfOpen();toast('Owner name saved.');
+      },function(e){state.ownerBusy=false;state.ownerError=e.message;renderModalIfOpen();});
+    },
     openStewardship:function(){if(!state.stewardship)state.stewardship=createMemoryStewardship({call:call,esc:esc,modal:modal,toast:toast});state.modalOpen='stewardship';state.stewardship.open();},
     reviewGoverned:reviewGoverned,loadMoreReview:function(){loadReview(true);},
     policySet:policySet,policyRetry:function(){policySet();},policyLoad:loadPolicy,
     select: function (id) { state.selected = id; render(); },
     selectMemory: function (id) { state.selectedMemory = id; render(); },
     setFilter: function (f) { state.view = 'learning'; state.filter = f; render(); },
-    openKnowledge: function (id) { state.view = 'knowledge'; state.knowledgeTab = 'sources'; state.knowledgeFocus = id || null; render(); },
+    openKnowledge: function (id) { state.view = 'knowledge'; state.knowledgeTab = id ? 'sources' : 'graph'; state.knowledgeFocus = id || null; render(); },
     setKnowledgeTab: function (t) { state.knowledgeTab = t; state.knowledgeTabChosen = true; render(); },
     backToLearning: function () { state.view = 'learning'; state.filter = 'recent'; if (state.knowledgeFocus) state.selected = state.knowledgeFocus; render(); },
     exploreInGraph: exploreInGraph, graphSearch: graphSearch,
     refresh: loadAll, loadMoreMemories:function(){loadMemoryPage(true);}, refreshGraph: loadGraphStatus, loadMore: loadMore, memoryQuery: memoryQuery,
     setupRefresh: function () { loadSetup(); },
-    askGraphAbout: function (a, b) { state.graphAsk.q = 'Show me the relation between ' + a + ' and ' + b; cosApp.askGraphGo(); },
-    askGraphGo: function () {
-      var input = document.querySelector('#graphAskQ'); var q = (input ? input.value.trim() : '') || state.graphAsk.q || (input ? input.placeholder : '');
-      if (!q || q.length < 3) { toast('Ask a fuller question.'); return; }
-      state.graphAsk = { q: q, busy: true, answer: null, error: null, cards: [], cardsBusy: false };
-      var host = document.querySelector('#graphAsk'); if (host) host.innerHTML = askBlockInner();
-      call('graph.ask', { q: q }).then(function (d) { state.graphAsk = { q: q, busy: false, answer: d, error: null, cards: [], cardsBusy: false }; var h = document.querySelector('#graphAsk'); if (h) h.innerHTML = askBlockInner(); loadAskCards(d.answer || '', q); },
-        function (e) { state.graphAsk = { q: q, busy: false, answer: null, error: e.message, cards: [], cardsBusy: false }; var h = document.querySelector('#graphAsk'); if (h) h.innerHTML = askBlockInner(); });
+    questionDraft:function(value){state.graphAsk.q=value;},
+    askGraphAbout: function (a, b) { cosApp.askGraphGo('Show me the relation between ' + a + ' and ' + b); },
+    askGraphGo: function (question) {
+      if(state.graphAsk.busy)return;
+      var input=document.querySelector('#graphAskQ'),q=typeof question==='string'?question:(input?input.value.trim():'');
+      if(!q||q.length<3){toast('Ask a fuller question.');return;}
+      if(q.length>400){toast('Keep the question under 400 characters.');return;}
+      var serial=++graphQuestionSerial,workspace=state.workspace,token=workspace&&workspace.questionToken();
+      state.graphFocusChosen=true;
+      state.graphAsk={q:q,busy:true,answer:null,error:null,cards:[],cardsBusy:false};paintAsk();
+      call('graph.ask',{q:q}).then(function(d){
+        if(serial!==graphQuestionSerial)return;
+        var message=d.investigation&&d.investigation.message;
+        if(d.investigation&&d.investigation.status==='ready'&&workspace){
+          message=workspace.applyQuestion(d.investigation,token)?'The graph now shows the points and connections chosen for your question.':'Your graph edits were kept. Ask again when you are ready to update the view.';
+        }else if(!message)message='This answer has no verified graph plan. Use Advanced investigation to choose points.';
+        state.graphAsk={q:q,busy:false,answer:d,error:null,cards:[],cardsBusy:false,graphMessage:message};paintAsk();loadAskCards(d.answer||'',q,serial);
+      },function(e){if(serial!==graphQuestionSerial)return;state.graphAsk={q:q,busy:false,answer:null,error:e.message,cards:[],cardsBusy:false};paintAsk();});
     },
     focusEntity: function (id) { state.graphFocus = id; state.graphFocusChosen = true; state.graphQuery = ''; render(); },
     keepApart: function () {

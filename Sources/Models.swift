@@ -1145,12 +1145,16 @@ struct StrandedCapture: Identifiable, Sendable {
     let idleMinutes: Int
     let capturedMinutes: Int
     let chunks: Int
+    let canSave: Bool
+    let transcriptState: String
 
     var id: String { sessionId }
 
     var label: String {
         let idle = idleMinutes == 1 ? "1 min idle" : "\(idleMinutes) min idle"
-        return "\(shortId) · \(idle) · still live"
+        if transcriptState == "no_speech" { return "\(shortId) · No usable speech detected; audio retained" }
+        if !canSave { return "\(shortId) · Transcript unavailable; audio retained" }
+        return "\(shortId) · \(idle) · ready to save"
     }
 
     var shortId: String {
@@ -1163,6 +1167,8 @@ struct StrandedCapture: Identifiable, Sendable {
         idleMinutes = o["idleMinutes"]?.int ?? Int(o["idleMinutes"]?.string ?? "") ?? 0
         capturedMinutes = o["capturedMinutes"]?.int ?? Int(o["capturedMinutes"]?.string ?? "") ?? 0
         chunks = o["chunks"]?.int ?? Int(o["chunks"]?.string ?? "") ?? 0
+        canSave = o["canSave"]?.bool ?? (chunks > 0)
+        transcriptState = o["transcriptState"]?.string ?? (chunks > 0 ? "ready" : "unknown")
     }
 }
 

@@ -2597,7 +2597,11 @@ struct ModelsContract {
             "capturedMinutes": .number(18),
             "chunks": .number(90),
         ]))
-        precondition(stranded?.label.contains("still live") == true)
+        precondition(stranded?.label.contains("ready to save") == true && stranded?.canSave == true)
+        let silent = StrandedCapture(.object(["sessionId": .string("silent"), "chunks": .number(0), "canSave": .bool(false), "transcriptState": .string("no_speech")]))
+        precondition(silent?.canSave == false && silent?.label.contains("No usable speech detected") == true)
+        let legacyEmpty = StrandedCapture(.object(["sessionId": .string("empty"), "chunks": .number(0)]))
+        precondition(legacyEmpty?.canSave == false && legacyEmpty?.label.contains("Transcript unavailable") == true)
         precondition(stranded?.label.contains("Meetings to review") == false,
                      "stranded copy must never collide with Speakers review")
     }

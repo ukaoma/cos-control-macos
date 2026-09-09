@@ -20,7 +20,7 @@ function element() {
     querySelector(selector){const key=selector.match(/data-role="([^"]+)/)[1];return this.roles[key] ||= element();}
   };
 }
-function fixture({statusFails=false, missing=false, onUserIntent}={}) {
+function fixture({statusFails=false, missing=false, onUserIntent,overview=false}={}) {
   const calls=[], toasts=[], elements=[];
   const context={window:{},crypto,document:{createElement(){const el=element();elements.push(el);return el;}},
     COSGraphExplorer:{mount(_host,opts){let data=opts.data;return {snapshot:()=>data,replaceData(d){data=d;}};}}};
@@ -28,7 +28,8 @@ function fixture({statusFails=false, missing=false, onUserIntent}={}) {
   const workspace=context.window.COSMemoryWorkspace.create({onUserIntent,toast:m=>toasts.push(m),call:async(route,args)=>{
     calls.push({route,...args});
     if(route==='graph.entity')return {found:true,id:args.id,neighbors:[],edges:[]};
-    if(args.action==='status'){if(statusFails)throw new Error('old server');return {protocol:1};}
+    if(args.action==='status'){if(statusFails)throw new Error('old server');return {protocol:1,capabilities:overview?['graph_overview']:[]};}
+    if(args.action==='graph_overview')return {protocol:1,nodes:[{id:'Real indexed point'}],links:[],generation:'fixture'};
     if(missing)return {protocol:1,error:{code:'entity_not_found'}};
     return {protocol:1,nodes:[{id:args.id}],links:[],generation:'fixture',next_offset:null};
   }});
@@ -38,7 +39,7 @@ async function main(){
   assert.equal(initialFocus,null,'First visit must not invent an entity');
   let f=fixture();f.workspace.attach(element(),initialFocus);await flush();
   assert.deepEqual(f.calls.map(c=>c.action),['status']);
-  assert.match(f.el.roles.status.textContent,/Find a point/);
+  assert.match(f.el.roles['overview-status'].textContent,/Update the server/);
   f.workspace.attach(element(),'Chosen point');await flush();
   assert.deepEqual(f.calls.map(c=>c.action),['status','graph_expand']);
   assert.equal(f.workspace.snapshot().nodes[0].id,'Chosen point');
@@ -74,6 +75,17 @@ async function main(){
   const state={status:{ownerName:'Owner'},graphFocus:initialFocus,graphFocusChosen:false,view:'knowledge',knowledgeTab:'graph'};
   vm.runInNewContext(focusFunction+';chooseDefaultFocus();',{state,call:async()=>({items:[{id:'Owner',type:'person'}]}),render(){}});
   await flush();assert.equal(state.graphFocus,'Owner','Owner default remains available before user interaction');
+  f=fixture({overview:true});f.workspace.attach(element(),null);await flush();
+  assert.equal(f.workspace.snapshot().nodes[0].id,'Real indexed point','Ownerless first visit loads actual index data');
+  assert.equal(f.calls.filter(c=>c.action==='graph_overview').length,1);
+  f.workspace.attach(element(),null);await flush();assert.equal(f.calls.filter(c=>c.action==='graph_overview').length,1,'Rerenders reuse overview');
+  const token=f.workspace.questionToken();
+  const plan={nodes:[{id:'Answer point'}],links:[],anchors:['Answer point'],generation:'fixture',filters:{hops:3,direction:'undirected',avoid:[]}};
+  assert.equal(f.workspace.applyQuestion(plan,token),true);
+  assert.equal(f.workspace.snapshot().anchors[0],'Answer point');
+  assert.equal(f.workspace.applyQuestion(plan,token),false,'A stale question cannot overwrite newer canvas state');
+  const intentToken=f.workspace.questionToken();f.el.listeners.input[0]({});
+  assert.equal(f.workspace.applyQuestion(plan,intentToken),false,'Manual input fences delayed graph answers');
   console.log('Memory workspace startup, protocol fallback and late-owner intent tests passed');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

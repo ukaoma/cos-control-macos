@@ -19,7 +19,7 @@
     campaign: '#F2A65A', project: '#D6B27C', decision: '#C9A86E', topic: '#C3B0E7', meeting: '#92C6A1',
     unknown: '#A89E92'
   };
-  var GOLD = '#C9A86E', GREEN = '#92C6A1', BG = '#14100c';
+  var GOLD = 'var(--cgx-gold)', GREEN = 'var(--cgx-green)', BG = 'var(--cgx-bg)';
   var REDUCED = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   function hashHue(s) { var h = 0; for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h % 360; }
@@ -193,7 +193,7 @@
         n.color = typeColor(n.group);
         n.radius = small ? Math.max(9, Math.min(30, 7 + Math.sqrt(n.degree) * 3)) : Math.max(5.5, Math.min(34, 4 + Math.sqrt(n.degree) * 2.6));
         n.isCenter = n.id === vip.center; n.isVip = n.isCenter || vip.ring.indexOf(n.id) >= 0;
-        if (n.isCenter) { n.color = GOLD; n.radius = small ? 34 : 44; }
+        if (n.isCenter) { n.color = '#C9A86E'; n.radius = small ? 34 : 44; }
         n.age = n.ts ? (opts.now - n.ts) : Infinity; n.fresh48 = n.age < D48; n.fresh7 = n.age < D7;
         n.short = trunc(n.id, 28);
       });
@@ -272,7 +272,7 @@
         .attr('stroke-width', function (d) { return Math.max(0.7, Math.sqrt(d.weight) * 0.6); });
       var vipRings = g.append('g').selectAll('circle').data(nodes.filter(function (n) { return n.isVip; })).join('circle')
         .attr('r', function (d) { return d.isCenter ? d.radius + 7 : d.radius + 4.5; }).attr('fill', 'none')
-        .attr('stroke', function (d) { return d.isCenter ? GOLD : 'rgba(245,240,230,0.5)'; })
+        .attr('stroke', function (d) { return d.isCenter ? GOLD : 'var(--cgx-muted)'; })
         .attr('stroke-width', function (d) { return d.isCenter ? 2 : 1.4; })
         .attr('stroke-opacity', function (d) { return d.isCenter ? 0.75 : 0.35; })
         .attr('stroke-dasharray', function (d) { return d.isCenter ? null : '1 4'; }).attr('stroke-linecap', 'round');
@@ -290,7 +290,7 @@
       var label = g.append('g').selectAll('text').data(nodes).join('text').attr('class', 'nl').text(function (d) { return d.short; })
         .attr('dx', function (d) { return d.radius + 6; }).attr('dy', 3.5)
         .style('font-size', function (d) { return d.isCenter ? '15px' : d.degree > 60 ? '13px' : d.degree > 30 ? '11.5px' : d.degree > 12 ? '10.5px' : '10px'; })
-        .style('fill', function (d) { return d.isCenter ? GOLD : d.degree > 30 ? '#E8DFCF' : '#BBAE9A'; })
+        .style('fill', function (d) { return d.isCenter ? GOLD : d.degree > 30 ? 'var(--cgx-fg)' : 'var(--cgx-muted)'; })
         .style('font-weight', function (d) { return d.isCenter ? '700' : d.degree > 30 ? '600' : '500'; })
         .style('opacity', REDUCED ? 1 : 0);
       if (!REDUCED) label.transition().delay(function (d, i) { return 250 + i * 3; }).duration(600).style('opacity', 1);
@@ -320,7 +320,7 @@
         node.transition(t).attr('opacity', function (d) { var s = shown(d); if (s === 'off') return 0.06; if (!focus(d)) return 0.06; return s === 'dim' ? 0.35 : 1; });
         node.attr('filter', function (d) { return (active && d.id === active) || (onPath && (d.id === state.pathA || d.id === state.pathB)) ? 'url(#cgx-glow)' : null; });
         label.transition(t).style('opacity', function (d) { var s = shown(d); if (s === 'off' || !focus(d)) return 0.04; return s === 'dim' ? 0.4 : 1; })
-          .style('fill', function (d) { if (onPath && onPath[d.id]) return d.isCenter ? GOLD : '#EBD4A6'; if (my && d.id === active) return d.isCenter ? GOLD : '#F5F0E6'; return d.isCenter ? GOLD : d.degree > 30 ? '#E8DFCF' : '#BBAE9A'; });
+          .style('fill', function (d) { if (onPath && onPath[d.id]) return d.isCenter ? GOLD : 'var(--cgx-fg)'; if (my && d.id === active) return d.isCenter ? GOLD : 'var(--cgx-fg)'; return d.isCenter ? GOLD : d.degree > 30 ? 'var(--cgx-fg)' : 'var(--cgx-muted)'; });
         label.text(function (d) { return state.alias[d.id] ? trunc(state.alias[d.id], 28) : d.short; });
         label.style('display', function (d) { if (state.merged[d.id] || state.removed[d.id]) return 'none'; if (my && (d.id === active || my[d.id])) return null; if (onPath && onPath[d.id]) return null; return lodVisible(d, state.k) ? null : 'none'; });
         link.attr('class', function (l) { var s = l.source.id, tg = l.target.id; if (pairs && pairs[s + '|' + tg]) return 'edge flow'; if (my && (s === active || tg === active)) return 'edge flow'; return 'edge'; })
@@ -354,9 +354,9 @@
       // Drag: a still click must not pin.
       var dragDist = 0, dragStart = null;
       node.call(d3.drag().clickDistance(4)
-        .on('start', function (e, d) { if (!e.active) sim.alphaTarget(0.08).restart(); dragDist = 0; dragStart = [e.x, e.y]; d.fx = d.x; d.fy = d.y; })
+        .on('start', function (e, d) { if (opts.onUserIntent) opts.onUserIntent(); if (!e.active) sim.alphaTarget(0.08).restart(); dragDist = 0; dragStart = [e.x, e.y]; d.fx = d.x; d.fy = d.y; })
         .on('drag', function (e, d) { d.fx = e.x; d.fy = e.y; dragDist = Math.hypot(e.x - dragStart[0], e.y - dragStart[1]); })
-        .on('end', function (e, d) { if (!e.active) sim.alphaTarget(0); if (dragDist > 4) { state.anchored[d.id] = 'user'; updateAnchors(); } else if (!state.anchored[d.id]) { d.fx = null; d.fy = null; } }));
+        .on('end', function (e, d) { if (!e.active) sim.alphaTarget(0); if (dragDist > 4) { if (opts.onUserIntent) opts.onUserIntent(); state.anchored[d.id] = 'user'; updateAnchors(); } else if (!state.anchored[d.id]) { d.fx = null; d.fy = null; } }));
       function updateAnchors() {
         pins.style('display', function (d) { return state.anchored[d.id] ? 'block' : 'none'; });
         var user = Object.keys(state.anchored).filter(function (id) { return state.anchored[id] === 'user'; });
@@ -366,7 +366,7 @@
 
       // Click, double-click, keyboard on nodes.
       node.on('click', function (e, d) { e.stopPropagation(); if (e.shiftKey && state.pathEndA && state.pathEndA !== d.id) { tracePath(state.pathEndA, d.id); return; } state.pathEndA = d.id; select(d); });
-      node.on('dblclick', function (e, d) { e.stopPropagation(); d.fx = null; d.fy = null; delete state.anchored[d.id]; updateAnchors(); sim.alphaTarget(0.05).restart(); setTimeout(function () { sim.alphaTarget(0); }, 600); });
+      node.on('dblclick', function (e, d) { e.stopPropagation(); if (opts.onUserIntent) opts.onUserIntent(); d.fx = null; d.fy = null; delete state.anchored[d.id]; updateAnchors(); sim.alphaTarget(0.05).restart(); setTimeout(function () { sim.alphaTarget(0); }, 600); });
       node.on('keydown', function (e, d) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); state.pathEndA = d.id; select(d, true); } });
 
       // Hover tip.

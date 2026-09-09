@@ -1,0 +1,25 @@
+/* Match the native COS tabs. WebKit follows the host appearance; browser previews follow the OS. */
+:root{--sidebar:#1d1711;--success-bg:#27271b;--graph-bg:#14100c}
+@media(prefers-color-scheme:light){
+  :root{--bg:#f5f0e6;--card:#ffffff;--raised:#eee8dd;--sidebar:#f0ece3;--fg:#30312e;--muted:#74726d;--line:#ded6c8;--accent:#89662d;--green:#2f7952;--purple:#7355a0;--red:#a54732;--success-bg:#e8eee4;--graph-bg:#faf8f3;color-scheme:light}
+  .cgx-result{border-bottom-color:var(--line)}
+  
+}
+@media(prefers-color-scheme:dark){:root{color-scheme:dark}}
+input,textarea,select{color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:6px}
+.ask-card{margin-top:0;padding:20px}
+.ask-card h3{font:500 23px/1.25 var(--display)}
+.ask-card .setup-row input{background:var(--card);font-size:14px;padding:12px;min-width:160px}
+.ask-card .setup-row button{font-size:13px;padding:11px 18px}
+.ask-card .setup-answer{max-height:360px;overflow:auto;background:var(--bg)}
+.ask-card .ask-cards-title,.ask-card .ask-cards{display:none}
+.knowledge-health{margin-top:18px}
+.knowledge-health>summary,.investigation-tools>summary{cursor:pointer;font-size:13px;font-weight:600;padding:14px 0;color:var(--fg)}
+.memory-investigation>[data-role=canvas]{margin-top:8px}
+.memory-investigation>.investigation-tools{border-top:1px solid var(--line);margin-top:12px}
+.memory-investigation .source-card{margin-top:0}
+.memory-investigation .graph-search{flex-wrap:wrap;margin-bottom:12px}
+.graph-question-status{font-size:12px;color:var(--muted);margin-top:8px}
+.owner-card input{flex:1;min-width:120px;padding:8px 10px}
+.owner-card p{margin:8px 0}
+@media(max-width:700px){.ask-card{padding:14px}.actual-header{flex-wrap:wrap}.ask-card .setup-row input{min-width:140px}.summary{flex-wrap:wrap;gap:5px 12px}}

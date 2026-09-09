@@ -52,7 +52,7 @@ cp "$ROOT/Resources/Fonts/"*.ttf "$APP/Contents/Resources/Fonts/"
 # The shipped character, already processed. A fresh install seeds it once.
 # The Memories tab hosts the reviewed prototype on live data (0.5.191).
 mkdir -p "$APP/Contents/Resources/memories"
-cp "$ROOT/Resources/memories/memories.html" "$ROOT/Resources/memories/memories-app.js" "$ROOT/Resources/memories/memory-workspace.js" "$ROOT/Resources/memories/memory-stewardship.js" "$ROOT/Resources/memories/graph-explorer.js" "$ROOT/Resources/memories/graph-explorer.css" "$ROOT/Resources/memories/d3.min.js" "$APP/Contents/Resources/memories/"
+cp "$ROOT/Resources/memories/memories.html" "$ROOT/Resources/memories/memories-app.js" "$ROOT/Resources/memories/memory-workspace.js" "$ROOT/Resources/memories/memory-stewardship.js" "$ROOT/Resources/memories/graph-explorer.js" "$ROOT/Resources/memories/memories-theme.css" "$ROOT/Resources/memories/graph-explorer.css" "$ROOT/Resources/memories/d3.min.js" "$APP/Contents/Resources/memories/"
 mkdir -p "$APP/Contents/Resources/DefaultPet"
 cp "$ROOT/Resources/DefaultPet/"*.png "$ROOT/Resources/DefaultPet/"*.json "$APP/Contents/Resources/DefaultPet/"
 # Additional processed characters live under one copied resource root. The

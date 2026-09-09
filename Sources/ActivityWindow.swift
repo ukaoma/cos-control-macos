@@ -4340,6 +4340,7 @@ struct MeetingStatusPills: View {
 /// action) and resolves the page's promise with `{ok, message, details}`.
 struct MemoriesWebView: NSViewRepresentable {
     @ObservedObject var model: ControllerModel
+    @Environment(\.colorScheme) private var colorScheme
     var openSection: (ActivitySection) -> Void
 
     static var bundleURL: URL? {
@@ -4365,6 +4366,8 @@ struct MemoriesWebView: NSViewRepresentable {
         "memories.search": { a in ["context-memories-search", "--query", MemoriesWebView.text(a["q"], 160), "--limit", MemoriesWebView.bounded(a["limit"], 20, 1, 50)] },
         "memory.detail": { a in ["context-memories", "--id", MemoriesWebView.text(a["id"], 200)] },
         "graph.status": { _ in ["context-graph-status"] },
+        "profile.owner": { _ in ["context-profile-owner"] },
+        "profile.owner.set": { a in ["context-profile-owner", "--name", MemoriesWebView.text(a["name"], 120), "--expected", MemoriesWebView.text(a["expected"], 120)] },
         "graph.search": { a in ["context-graph-search", "--query", MemoriesWebView.text(a["q"], 160), "--limit", MemoriesWebView.bounded(a["limit"], 30, 1, 30)] },
         "graph.entity": { a in ["context-graph-entity", "--id", MemoriesWebView.text(a["id"], 200), "--limit", MemoriesWebView.bounded(a["limit"], 30, 1, 30), "--offset", MemoriesWebView.bounded(a["offset"], 0, 0, 100000)] },
         "graph.passages": { a in
@@ -4454,6 +4457,7 @@ struct MemoriesWebView: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.userContentController.add(context.coordinator, name: "cos")
         let view = WKWebView(frame: .zero, configuration: configuration)
+        view.appearance = NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)
         view.setValue(false, forKey: "drawsBackground")
         context.coordinator.webView = view
         if let url = Self.bundleURL {
@@ -4463,6 +4467,7 @@ struct MemoriesWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ view: WKWebView, context: Context) {
+        view.appearance = NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)
         context.coordinator.model = model
         context.coordinator.openSection = openSection
     }

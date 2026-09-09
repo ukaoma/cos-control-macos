@@ -520,6 +520,7 @@ final class COSControlHelper {
         case "context-learning-status": try emitContextLearningStatus()
         case "context-learning-decide": try emitContextLearningDecide(args: args)
         case "context-graph-status": try emitContextGraphStatus()
+        case "context-profile-owner": try emitProfileOwner(args: args)
         case "context-graph-search": try emitContextGraphSearch(args: args)
         case "context-graph-entity": try emitContextGraphEntity(args: args)
         case "context-graph-passages": try emitContextGraphPassages(args: args)
@@ -7937,6 +7938,18 @@ final class COSControlHelper {
         return Self.ownerName(fromProfileJSON: data)
     }
 
+    private func emitProfileOwner(args: [String]) throws {
+        let body: [String: Any]
+        if let name = option("--name", in: args) {
+            guard !name.isEmpty, name.count <= 120 else { throw HelperError.message("Enter a name of 1 to 120 characters.") }
+            let expected: Any = option("--expected", in: args).flatMap { $0.isEmpty ? nil : $0 } ?? NSNull()
+            body = try setupRequest("/api/context/profile/owner", body: try setupJSON(["owner_name": name, "expected_owner": expected]), needs: "6.45.1")
+        } else {
+            body = try setupRequest("/api/context/profile/owner", method: "GET", needs: "6.45.1")
+        }
+        emit(ok: true, message: "Owner profile", details: body)
+    }
+
     static let placeholderOwnerNames: Set<String> = ["", "user", "me", "your name", "owner", "wearer"]
 
     static func ownerName(fromProfileJSON data: Data) -> String? {
@@ -10294,6 +10307,8 @@ final class COSControlHelper {
             "idleMinutes": Self.meetingCount(row["idleMinutes"]),
             "capturedMinutes": Self.meetingCount(row["capturedMinutes"]),
             "chunks": Self.meetingCount(row["chunks"]),
+            "canSave": row["canSave"] as? Bool ?? (Self.meetingCount(row["chunks"]) > 0),
+            "transcriptState": row["transcriptState"] as? String ?? (Self.meetingCount(row["chunks"]) > 0 ? "ready" : "unknown"),
             "promotesAt": row["promotesAt"] as? String ?? "",
         ]
     }
@@ -10512,7 +10527,7 @@ final class COSControlHelper {
     private func emitMeetingStrandedSaveAll() throws {
         let body = try meetingOrphansBody()
         let stranded = ((body["stranded"] as? [[String: Any]]) ?? []).compactMap(Self.strandedItemProjection)
-        let ids = stranded.compactMap { $0["sessionId"] as? String }
+        let ids = stranded.filter { $0["canSave"] as? Bool == true }.compactMap { $0["sessionId"] as? String }
         if ids.isEmpty {
             emit(ok: true, message: "No still-live captures", details: [
                 "saved": 0, "failed": [] as [String],

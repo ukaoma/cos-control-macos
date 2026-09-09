@@ -1,3 +1,13 @@
+## 0.5.208 (build 246)
+
+A simpler Knowledge view and truthful capture recovery (server 6.45.1).
+
+- Memories follows the app’s light or dark appearance, including graph inspectors and tooltips.
+- Ask the graph is the primary Knowledge interaction. A populated, bounded graph opens below it; manual controls remain under Advanced investigation.
+- Verified answers can choose anchors and waypoints. Late answers preserve manual edits, dragging, pins and owner changes; saving remains explicit.
+- Set the person COS serves in Memory settings. Changes preserve other profile fields and do not transfer indexing or memory authority.
+- A single retained meeting has one Save action. Captures without a usable transcript show their state and retain their audio without offering a Save that cannot succeed.
+
 ## 0.5.207 (build 245)
 
 Memory review, relationship exploration, and reliable fork transcripts (server 6.45.0).

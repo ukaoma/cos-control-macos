@@ -9,6 +9,7 @@ trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/home"
 
 node "$ROOT/Tests/MemoryWorkspaceStartup.cjs"
+node "$ROOT/Tests/MemoryOwnerRaces.cjs"
 
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/HelperSources/main.swift" \

@@ -17,15 +17,15 @@
     var el=document.createElement('section');el.className='memory-investigation';
     var state={id:id(),revision:0,title:'Untitled investigation',nodes:[],links:[],anchors:[],waypoints:[],filters:{hops:3,direction:'undirected',avoid:[]},generation:null,paths:[]};
     var queuedFocus=null,editEpoch=0,lastFocus=null,selected=null,offsets={},history=[],controller=null,started=false,busy=false,requestSerial=0,saveIntents={},assertionIntent=null,separationIntent=null;
-    el.innerHTML='<div class="source-card"><div class="row"><input data-role="title" aria-label="Investigation title" placeholder="Investigation title"><button data-action="save">Save investigation</button><button data-action="open">Open saved</button><button data-action="new">New</button></div>'+
+    el.innerHTML='<div data-role="canvas" class="cgx-host"></div><p data-role="overview-status" class="muted" role="status"></p><details class="investigation-tools" data-role="advanced"><summary>Advanced investigation</summary><div class="graph-search row"><input type="search" id="graphQuery" aria-label="Find an entity" placeholder="Find a person or idea…"><button onclick="cosApp.graphSearch()">Find points</button><span id="graphSearchStatus" class="muted"></span></div><div class="source-card"><div class="row"><input data-role="title" aria-label="Investigation title" placeholder="Investigation title"><button data-action="save">Save investigation</button><button data-action="open">Open saved</button><button data-action="new">New</button></div>'+
       '<p data-role="receipt" class="muted">Draft · saved separately from standing knowledge.</p><div data-role="matches" class="row"></div>'+
       '<div class="row"><b data-role="selected">Select a point</b><button data-action="start">Set start</button><button data-action="target">Set target</button><button data-action="waypoint">Add waypoint</button><button data-action="expand">Expand point</button><button data-action="avoid">Avoid point</button><button data-action="hide">Hide point</button><button data-action="undo">Undo canvas edit</button></div>'+
       '<p data-role="anchors"></p><div data-role="waypoints" class="row"></div><div class="row"><label>Total hops <select data-role="hops" aria-label="Total hop limit"><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option></select></label><label>Traversal <select data-role="direction" aria-label="Relationship direction"><option value="undirected">Undirected discovery</option><option value="directed">Known direction only</option></select></label><label>Known valid on <input data-role="valid" aria-label="Known valid on" type="date"></label><button data-action="paths">Find connections</button><button data-action="refresh">Review generation changes</button><button data-action="separate">Keep anchors separate</button></div>'+
       '<p class="muted">Searches the full index. Up to 3 alternatives, 25 neighbors per expansion. Legacy connections have unknown direction and validity. Paths show associations; they do not establish correlation or causation.</p>'+
       '<div class="row"><input data-role="point" aria-label="New idea name" placeholder="Add your own idea"><button data-action="point">Add idea</button><input data-role="rationale" aria-label="Association rationale" placeholder="Why might start and target relate?"><button data-action="hypothesis">Add draft hypothesis</button><button data-action="assertion">Save as my assertion</button></div>'+
-      '<p data-role="status" role="status" aria-live="polite"></p><div data-role="paths"></div><div data-role="saved"></div></div><div data-role="canvas" class="cgx-host"></div>';
+      '<p data-role="status" role="status" aria-live="polite"></p><div data-role="paths"></div><div data-role="saved"></div></div></details>';
     function role(name){return el.querySelector('[data-role="'+name+'"]');}
-    function userIntent(){if(options.onUserIntent)options.onUserIntent();}
+    function userIntent(){editEpoch++;if(options.onUserIntent)options.onUserIntent();}
     var legacyMode=false;
     function status(text){role('status').textContent=text;}
     function snapshot(){
@@ -48,10 +48,10 @@
         [['↑',-1],['↓',1],['Remove',0]].forEach(function(pair){var b=document.createElement('button');b.textContent=pair[0];b.setAttribute('aria-label',pair[0]+' waypoint '+point);b.onclick=function(){remember();if(!pair[1])state.waypoints.splice(index,1);else{var target=index+pair[1];if(target<0||target>=state.waypoints.length)return;var temp=state.waypoints[target];state.waypoints[target]=point;state.waypoints[index]=temp;}draw();};label.appendChild(b);});
       });
       if(controller)controller.replaceData(state);
-      else controller=COSGraphExplorer.mount(role('canvas'),Object.assign({},options.graphOptions||{},{scope:'actual',data:state,status:'ready',onSelect:function(value){userIntent();selectedChanged(value);},
+      else controller=COSGraphExplorer.mount(role('canvas'),Object.assign({},options.graphOptions||{},{scope:'actual',data:state,status:'ready',focus:state.focus||state.anchors[0],onUserIntent:userIntent,onSelect:function(value){userIntent();selectedChanged(value);},
         onRecenter:function(value){userIntent();selectedChanged(value);run(function(){return expand(value);});},
         onPassages:function(value){run(async function(){options.openPassages(value,await options.call('graph.passages',{entity:value,limit:5}));});},
-        labels:Object.assign({},options.graphOptions&&options.graphOptions.labels,{sourceStatus:'Draft ideas and hypotheses stay in this investigation until explicitly saved as assertions.',emptyTitle:'Choose a starting point',emptyMessage:'Find a person or idea above, add your own idea, or open a saved investigation.'})}));
+        labels:Object.assign({},options.graphOptions&&options.graphOptions.labels,{sourceStatus:'Draft ideas and hypotheses stay in this investigation until explicitly saved as assertions.',emptyTitle:'No points to show yet',emptyMessage:'Ask a question or open Advanced investigation to find a point. An empty knowledge index needs documents first.'})}));
       if(options.onController)options.onController(controller);
       drawPaths();
     }
@@ -93,6 +93,7 @@
       draw();status('Legacy graph browsing. Reload after updating the server and memory pipeline to use advanced actions.');
     }
     function showMatches(items){
+      role('advanced').open=true;
       role('matches').replaceChildren();
       items.forEach(function(item){var b=document.createElement('button');b.textContent=item.id+' · '+(item.type||'unknown');b.onclick=function(){selectedChanged(item.id);run(function(){return expand(item.id);});};role('matches').appendChild(b);});
     }
@@ -181,23 +182,35 @@
       if(!started){
         started=true;lastFocus=focus;draw();
         run(async function(){
-          try{await rpc('status');}
-          catch(error){
-            legacyMode=true;
-            if(!focus){status('Advanced workspace unavailable: '+error.message+' Find a point above to try graph browsing.');return;}
-            return expandLegacy(focus);
-          }
-          // Missing focus is a normal first visit. Expansion errors do not
-          // mean the negotiated workspace protocol is unavailable.
-          if(focus)await expand(focus);
-          else status('Find a point above, add an idea, or open a saved investigation to begin.');
+          var capabilities;
+          try{capabilities=await rpc('status');}
+          catch(error){legacyMode=true;role('overview-status').textContent='Advanced workspace unavailable. Update the server to enable automatic overview.';if(focus)return expandLegacy(focus);return;}
+          if((capabilities.capabilities||[]).includes('graph_overview')){
+            var epoch=editEpoch;
+            role('overview-status').textContent='Loading your knowledge…';
+            try{
+              var overview=await rpc('graph_overview',{focus:focus||null});
+              if(epoch!==editEpoch)return;
+              state.nodes=overview.nodes;state.links=overview.links;state.generation=overview.generation;state.focus=overview.focus;
+              draw();role('overview-status').textContent=state.nodes.length?'Overview · '+state.nodes.length+' people and ideas. Click a point to inspect it.':'No indexed points yet. Open Knowledge setup to add documents.';
+            }catch(error){role('overview-status').textContent='Could not load the overview: '+error.message;throw error;}
+          }else if(focus)await expand(focus);
+          else role('overview-status').textContent='Update the server to preload your graph. Advanced investigation remains available.';
         });
       }else if(focus&&focus!==lastFocus){
         if(busy){queuedFocus=focus;return;}
         lastFocus=focus;selectedChanged(focus);run(function(){return expand(focus);});
       }
     }
-    return {attach:attach,showMatches:showMatches,snapshot:snapshot};
+    return {attach:attach,showMatches:showMatches,snapshot:snapshot,
+      questionToken:function(){return {id:state.id,epoch:editEpoch};},
+      applyQuestion:function(result,token){
+        if(!token||token.id!==state.id||token.epoch!==editEpoch||busy)return false;
+        if(!Array.isArray(result.nodes)||!Array.isArray(result.links))return false;
+        var canvas=mergeCanvas({nodes:[],links:[]},result);remember();
+        state.nodes=canvas.nodes;state.links=canvas.links;state.anchors=result.anchors||[];state.waypoints=result.waypoints||[];state.filters=result.filters||{hops:3,direction:'undirected',avoid:[]};state.generation=result.generation;state.paths=result.paths||[];state.focus=state.anchors[0];state.positions={};offsets={};selected=null;
+        role('overview-status').textContent=result.message||'Question investigation';draw();return true;
+      }};
   }
   window.COSMemoryWorkspace={create:create,mergeCanvas:mergeCanvas,limits:{nodes:MAX_NODES,edges:MAX_EDGES}};
 })();
