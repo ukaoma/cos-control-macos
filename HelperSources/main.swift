@@ -360,6 +360,8 @@ final class COSControlHelper {
     private lazy var mutationLockURL = runtimeRoot.appendingPathComponent("operation.lock")
     private lazy var clipboardReceiptURL = support.appendingPathComponent("clipboard-receipt.json")
     private lazy var cursorProbeCacheURL = support.appendingPathComponent("cursor-probe-cache.json")
+    private lazy var sessionListCacheURL = support.appendingPathComponent("session-list-cache.json")
+    private lazy var needsYouCacheURL = support.appendingPathComponent(Self.needsYouCacheName)
     private lazy var openPetsCatalogCacheURL = support.appendingPathComponent("openpets-catalog.json")
     private lazy var openPetsThumbsDir = support.appendingPathComponent("openpets-thumbs", isDirectory: true)
     private lazy var controlCache = home.appendingPathComponent("Library/Caches/com.gotcos.COSControl", isDirectory: true)
@@ -459,6 +461,7 @@ final class COSControlHelper {
         case "task-set-text": try withMutationLock { try emitTaskSetText(args: args) }
         case "task-set-stage": try withMutationLock { try emitTaskSetStage(args: args) }
         case "task-set-done-when": try withMutationLock { try emitTaskSetDoneWhen(args: args) }
+        case "task-check": try withMutationLock { try emitTaskCheck(args: args) }
         case "task-capture": try emitTaskCapture(args: args)
         case "task-schedule": try emitTaskSchedule(args: args)
         case "task-move": try emitTaskMove(args: args)
@@ -489,7 +492,7 @@ final class COSControlHelper {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing Continue agent threads setting") }
             try setThreadAttach(value)
         }
-        case "claude-sessions": try emitClaudeSessions()
+        case "claude-sessions": try emitClaudeSessions(args: args)
         case "session-pet-live": try emitClaudeSessions(liveOnly: true)
         case "claude-sessions-search": try emitClaudeSessionsSearch(args: args)
         case "claude-session-detail": try emitClaudeSessionDetail(args: args)
@@ -2558,7 +2561,9 @@ final class COSControlHelper {
             details[key] = value
         }
         // Recent learning and Knowledge (server 6.44.5): NSNull rows when absent.
-        details.merge(Self.learningStatusDetails(context)) { _, new in new }
+        // Server 6.45.1 strips `needs_you` from /api/context/status; overlay the
+        // projector CLI so the Memories chip is the gated list, not the SIQ dump.
+        details.merge(Self.learningStatusDetails(enrichLearningWithNeedsYou(context))) { _, new in new }
         // The person this COS is about (profile owner_name), so the Knowledge
         // graph opens on them rather than on "COS" (Miles, 2026-09-06 22:23).
         details["ownerName"] = profileOwnerName() ?? NSNull()
@@ -4440,6 +4445,23 @@ final class COSControlHelper {
                 response, fallback: "The server could not set the finish line (HTTP \(response.status))."))
         }
         emit(ok: true, message: doneWhen.isEmpty ? "Finish line cleared" : "Finish line set", details: ["id": id])
+    }
+
+    /// Done / Reopen. The app already sends this; missing it surfaces as
+    /// `unknown command: task-check` on the Tasks pane.
+    private func emitTaskCheck(args: [String]) throws {
+        let (domain, id) = try emitTaskStageArgs(args: args)
+        let checked = !args.contains("--uncheck")
+        let response = try taskRequest(
+            "/api/tasks/\(queryEscape(id))",
+            method: "PATCH",
+            body: try jsonObject(["domain": domain, "checked": checked])
+        )
+        guard response.status == 200 else {
+            throw HelperError.message(taskErrorMessage(
+                response, fallback: "The server could not update the task (HTTP \(response.status))."))
+        }
+        emit(ok: true, message: checked ? "Task marked done" : "Task reopened", details: ["id": id, "checked": checked])
     }
 
     private func emitTaskCapture(args: [String]) throws {
@@ -7882,7 +7904,7 @@ final class COSControlHelper {
             extAudio: fetch("/api/voice/ext-audio"),
             orphans: fetch("/api/meeting/orphans"),
             meetings: fetch("/api/meetings?limit=20"),
-            context: fetch("/api/context/status"),
+            context: enrichLearningWithNeedsYou(fetch("/api/context/status")),
             memories: fetch("/api/memory?limit=50"),
             threads: fetch("/api/threads?limit=50"),
             fences: fetch("/api/agent-sessions/fences"),
@@ -7969,13 +7991,115 @@ final class COSControlHelper {
         }.max()
     }
 
-    /// Patterns plus task proposals from the status block's `to_review` split,
-    /// falling back to the block's `count`. nil with no block at all.
+    /// Gated Needs-you count (cap 7). Never `to_review` patterns + SIQ proposals.
+    /// Server 6.45.1 still ships that dump as `to_review`; the badge must not.
     static func learningToReview(_ learning: [String: Any]?) -> Int? {
+        needsYouCount(from: learning)
+    }
+
+    /// `needs_you.count` / `needsYou` items, capped by `limit` when present.
+    static func needsYouCount(from learning: [String: Any]?) -> Int? {
         guard let learning else { return nil }
-        let review = learning["to_review"] as? [String: Any]
-        if let patterns = review?["patterns"] as? Int, let proposals = review?["task_proposals"] as? Int { return patterns + proposals }
-        return learning["count"] as? Int
+        if let block = learning["needs_you"] as? [String: Any] { return needsYouCount(fromBlock: block) }
+        if let items = learning["needsYou"] as? [Any] { return items.count }
+        if let n = learning["needsYou"] as? Int { return n }
+        return nil
+    }
+
+    static func needsYouCount(fromBlock block: [String: Any]) -> Int? {
+        if let items = block["items"] as? [Any] { return items.count }
+        guard let n = block["count"] as? Int else { return nil }
+        if let cap = block["limit"] as? Int { return min(n, max(0, cap)) }
+        return n
+    }
+
+    static let needsYouCacheTTL: TimeInterval = 90
+    static let needsYouCacheName = "needs-you-cache.json"
+
+    /// Inject projector `needs_you` when the glasses-server status block omitted it.
+    private func enrichLearningWithNeedsYou(_ context: [String: Any]?) -> [String: Any]? {
+        var context = context ?? [:]
+        var learning = (context["learning"] as? [String: Any]) ?? [:]
+        if Self.needsYouCount(from: learning) != nil {
+            return context.isEmpty ? nil : context
+        }
+        // Keep a present context as-is when the CLI cannot answer; never fill SIQ.
+        guard let block = fetchNeedsYouBlock() else { return context.isEmpty ? nil : context }
+        learning["needs_you"] = block
+        context["learning"] = learning
+        return context
+    }
+
+    private func fetchNeedsYouBlock() -> [String: Any]? {
+        if let cached = readNeedsYouCache(), Date().timeIntervalSince(cached.at) < Self.needsYouCacheTTL {
+            return cached.block
+        }
+        if let fresh = runNeedsYouCLI() {
+            writeNeedsYouCache(fresh)
+            return fresh
+        }
+        return readNeedsYouCache()?.block
+    }
+
+    private func readNeedsYouCache() -> (at: Date, block: [String: Any])? {
+        guard let data = try? Data(contentsOf: needsYouCacheURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let block = object["needs_you"] as? [String: Any] else { return nil }
+        let at: Date
+        if let stamp = object["fetched_at"] as? String, let parsed = ISO8601DateFormatter().date(from: stamp) {
+            at = parsed
+        } else if let interval = object["fetched_at"] as? TimeInterval {
+            at = Date(timeIntervalSince1970: interval)
+        } else {
+            return nil
+        }
+        return (at, block)
+    }
+
+    private func writeNeedsYouCache(_ block: [String: Any]) {
+        try? fm.createDirectory(at: support, withIntermediateDirectories: true)
+        let payload: [String: Any] = [
+            "fetched_at": ISO8601DateFormatter().string(from: Date()),
+            "needs_you": block,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else { return }
+        try? data.write(to: needsYouCacheURL, options: .atomic)
+    }
+
+    private func runNeedsYouCLI() -> [String: Any]? {
+        let liveScripts = loadedEnvironmentValue("COS_SCRIPTS_DIR") ?? serverEnvironment()["COS_SCRIPTS_DIR"]
+        let trimmed = liveScripts?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return nil }
+        let root = URL(fileURLWithPath: trimmed, isDirectory: true)
+        let python = root.appendingPathComponent("cos_python").path
+        let script = root.appendingPathComponent("learning_events.py").path
+        guard fm.isExecutableFile(atPath: python), fm.fileExists(atPath: script) else { return nil }
+        let environment = Self.meetingSyncChildEnvironment(
+            base: ProcessInfo.processInfo.environment,
+            launchAgent: serverEnvironment(),
+            liveScriptsDir: trimmed
+        )
+        guard let result = try? execute(python, [script, "needs-you"], environment: environment, timeout: 10),
+              result.code == 0 else { return nil }
+        guard let payload = Self.parseJSONObject(result.output),
+              payload["count"] != nil || payload["items"] != nil else { return nil }
+        var block: [String: Any] = [:]
+        for key in ["count", "gates", "system_backlog", "window_days", "limit", "partial", "not_implemented", "items", "overflow"] {
+            if let value = payload[key] { block[key] = value }
+        }
+        return block.isEmpty ? nil : block
+    }
+
+    static func parseJSONObject(_ output: String) -> [String: Any]? {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let data = trimmed.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return object
+        }
+        guard let start = trimmed.firstIndex(of: "{"),
+              let data = String(trimmed[start...]).data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return object
     }
 
     /// The learning and graph rows of `status`. Every value is NSNull when its
@@ -8856,6 +8980,231 @@ final class COSControlHelper {
     /// more — the head exists for metadata, not for history.
     static let transcriptHeadBytes = 64 * 1024
     static let agentSessionMaxAge: TimeInterval = 7 * 24 * 3600
+    static let sessionListCacheName = "session-list-cache.json"
+    static let sessionListCacheMaxAge: TimeInterval = agentSessionMaxAge
+    static let agentSessionOverallLimit = 80
+
+    struct AgentSessionIndexRecord {
+        var id: String
+        var provider: String
+        var workspace: String
+        var mtime: Date
+        var size: Int
+        var pinned: Bool
+    }
+
+    /// Cap/older/oversized from mtime, size, pin, and provider. Does not open
+    /// transcript bodies. Hidden rows are counted here, not parsed.
+    static func agentSessionIndexSelection(
+        _ records: [AgentSessionIndexRecord],
+        now: Date = Date(),
+        window: TimeInterval = agentSessionMaxAge,
+        perProviderLimit: Int = agentSessionListLimit,
+        listLimit: Int = agentSessionOverallLimit,
+        maxFileBytes: Int = agentSessionMaxFileBytes
+    ) -> (kept: [AgentSessionIndexRecord], dropped: [String: Int]) {
+        var age = 0, limit = 0, oversized = 0
+        var candidates: [AgentSessionIndexRecord] = []
+        for record in records {
+            if !record.pinned && record.provider == "cursor" && record.size > maxFileBytes {
+                oversized += 1
+                continue
+            }
+            if !record.pinned && now.timeIntervalSince(record.mtime) > window {
+                age += 1
+                continue
+            }
+            candidates.append(record)
+        }
+        var kept: [AgentSessionIndexRecord] = []
+        let groups = Dictionary(grouping: candidates, by: \.provider)
+        for rows in groups.values {
+            let pins = rows.filter(\.pinned).sorted { $0.mtime > $1.mtime }
+            let recent = rows.filter { !$0.pinned }.sorted { $0.mtime > $1.mtime }
+            kept.append(contentsOf: pins)
+            kept.append(contentsOf: recent.prefix(perProviderLimit))
+            if recent.count > perProviderLimit {
+                limit += recent.count - perProviderLimit
+            }
+        }
+        kept.sort { $0.mtime > $1.mtime }
+        if kept.count > listLimit {
+            limit += kept.count - listLimit
+            kept = Array(kept.prefix(listLimit))
+        }
+        return (kept, ["age": age, "limit": limit, "oversized": oversized])
+    }
+
+    static func agentSessionIndexDropped(
+        _ records: [AgentSessionIndexRecord],
+        now: Date = Date(),
+        window: TimeInterval = agentSessionMaxAge,
+        perProviderLimit: Int = agentSessionListLimit,
+        listLimit: Int = agentSessionOverallLimit,
+        maxFileBytes: Int = agentSessionMaxFileBytes
+    ) -> [String: Int] {
+        agentSessionIndexSelection(
+            records, now: now, window: window, perProviderLimit: perProviderLimit,
+            listLimit: listLimit, maxFileBytes: maxFileBytes
+        ).dropped
+    }
+
+    static func agentSessionIndexRow(
+        _ record: AgentSessionIndexRecord,
+        title: String
+    ) -> [String: Any] {
+        [
+            "id": record.id,
+            "provider": record.provider,
+            "name": title,
+            "workspace": record.workspace,
+            "state": "recent",
+            "status": "",
+            "waitingFor": "",
+            "alive": false,
+            "reachable": false,
+            "createdAt": isoString(from: record.mtime),
+            "updatedAt": isoString(from: record.mtime),
+            "pinned": record.pinned,
+            "discussion_summary": "",
+        ]
+    }
+
+    /// Directory walk + stat only. Does not open transcript bodies.
+    static func collectAgentSessionIndex(
+        home: URL,
+        now: Date = Date(),
+        composerNames: [String: String] = [:],
+        claudeStarred: Set<String> = [],
+        codexPinned: Set<String> = []
+    ) -> (rows: [[String: Any]], dropped: [String: Int]) {
+        var records: [AgentSessionIndexRecord] = []
+        let uuidName = try? NSRegularExpression(
+            pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.jsonl$"
+        )
+        let claudeProjects = home.appendingPathComponent(".claude/projects", isDirectory: true)
+        let claudeDirs = (try? FileManager.default.contentsOfDirectory(
+            at: claudeProjects,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        for dir in claudeDirs {
+            let isDir = (try? dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard isDir else { continue }
+            guard let files = try? FileManager.default.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for file in files {
+                let name = file.lastPathComponent
+                let whole = NSRange(name.startIndex..<name.endIndex, in: name)
+                guard uuidName?.firstMatch(in: name, range: whole) != nil else { continue }
+                let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                let sessionId = String(name.dropLast(6))
+                records.append(AgentSessionIndexRecord(
+                    id: sessionId,
+                    provider: "claude",
+                    workspace: workspaceLabel(dir.lastPathComponent),
+                    mtime: values?.contentModificationDate ?? .distantPast,
+                    size: values?.fileSize ?? 0,
+                    pinned: claudeStarred.contains(sessionId.lowercased())
+                ))
+            }
+        }
+        for file in listCodexJsonlFiles(sessionsRoot: home.appendingPathComponent(".codex/sessions", isDirectory: true)) {
+            let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            let fileId = idFromCodexFilename(file.lastPathComponent) ?? file.deletingPathExtension().lastPathComponent
+            records.append(AgentSessionIndexRecord(
+                id: fileId,
+                provider: "codex",
+                workspace: "",
+                mtime: values?.contentModificationDate ?? .distantPast,
+                size: values?.fileSize ?? 0,
+                pinned: codexPinned.contains(fileId.lowercased())
+            ))
+        }
+        let cursorProjects = home.appendingPathComponent(".cursor/projects", isDirectory: true)
+        let projects = (try? FileManager.default.contentsOfDirectory(
+            at: cursorProjects,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        var cursorById: [String: AgentSessionIndexRecord] = [:]
+        for project in projects {
+            let isDir = (try? project.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard isDir else { continue }
+            let folder = project.lastPathComponent
+            if folder.contains("var-folders") || folder.contains("private-var") { continue }
+            let transcripts = project.appendingPathComponent("agent-transcripts", isDirectory: true)
+            guard let sessions = try? FileManager.default.contentsOfDirectory(
+                at: transcripts,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for sessionDir in sessions {
+                if sessionDir.lastPathComponent == "subagents" { continue }
+                if folder == "empty-window" { continue }
+                let nativeId = sessionDir.lastPathComponent
+                let file = sessionDir.appendingPathComponent("\(nativeId).jsonl")
+                let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey])
+                guard values?.isRegularFile == true else { continue }
+                let next = AgentSessionIndexRecord(
+                    id: nativeId,
+                    provider: "cursor",
+                    workspace: workspaceLabel(folder),
+                    mtime: values?.contentModificationDate ?? .distantPast,
+                    size: values?.fileSize ?? 0,
+                    pinned: false
+                )
+                if let existing = cursorById[nativeId], existing.mtime >= next.mtime { continue }
+                cursorById[nativeId] = next
+            }
+        }
+        records.append(contentsOf: cursorById.values)
+        let selected = agentSessionIndexSelection(records, now: now)
+        let rows = selected.kept.map { record in
+            let title: String
+            if record.provider == "cursor", let named = composerNames[record.id], !named.isEmpty {
+                title = named
+            } else if record.provider == "cursor" {
+                title = "Cursor session"
+            } else if record.provider == "codex" {
+                title = "Codex session"
+            } else {
+                title = record.workspace.isEmpty ? "Claude session" : record.workspace
+            }
+            return agentSessionIndexRow(record, title: title)
+        }
+        return (rows, selected.dropped)
+    }
+
+    static func readSessionListCache(from url: URL, now: Date = Date()) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let savedText = object["savedAt"] as? String,
+              let savedAt = parseISODate(savedText),
+              now.timeIntervalSince(savedAt) <= sessionListCacheMaxAge else { return nil }
+        return object
+    }
+
+    static func sessionListCachePayload(
+        sessions: [[String: Any]],
+        dropped: [String: Int],
+        enabled: Bool,
+        reason: String,
+        partial: Bool,
+        savedAt: Date = Date()
+    ) -> [String: Any] {
+        [
+            "savedAt": isoString(from: savedAt),
+            "enabled": enabled,
+            "reason": reason,
+            "partial": partial,
+            "dropped": dropped,
+            "sessions": sessions,
+        ]
+    }
 
     static func isoString(from date: Date) -> String {
         ISO8601DateFormatter().string(from: date)
@@ -9707,16 +10056,101 @@ final class COSControlHelper {
         return (title, workspaceLabel(cwd), "", sessionId, turns, omittedTools, 0)
     }
 
-    private func emitClaudeSessions(liveOnly: Bool = false) throws {
-        var enabled = false
-        var reason = ""
-        var peers: [[String: Any]] = []
-        var counts: Any = ["alive": 0, "reachable": 0, "stale": 0]
-        var liveIds: Set<String> = []
+    private func emitClaudeSessions(liveOnly: Bool = false, args: [String] = []) throws {
+        let fresh = args.contains("--fresh")
+        let quick = args.contains("--quick")
         let home = FileManager.default.homeDirectoryForCurrentUser
         let composerMeta = Self.loadCursorComposerMeta(
             from: home.appendingPathComponent("Library/Application Support/Cursor/User/globalStorage/state.vscdb")
         )
+        if liveOnly {
+            try emitLiveClaudeSessions(home: home, composerMeta: composerMeta)
+            return
+        }
+        if quick && !fresh {
+            try emitQuickClaudeSessions(home: home, composerMeta: composerMeta)
+            return
+        }
+        try emitFreshClaudeSessions(home: home, composerMeta: composerMeta)
+    }
+
+    private func emitLiveClaudeSessions(home _: URL, composerMeta: CursorComposerMeta) throws {
+        var enabled = false
+        var reason = ""
+        var live: [[String: Any]] = []
+        var counts: Any = ["alive": 0, "reachable": 0, "stale": 0]
+        var peers: [[String: Any]] = []
+        var dropped: [String: Int] = ["age": 0, "limit": 0, "oversized": 0]
+        var cached = false
+        if let payload = Self.readSessionListCache(from: sessionListCacheURL) {
+            peers = payload["sessions"] as? [[String: Any]] ?? []
+            dropped = Self.agentSessionDroppedProjection(payload)
+            enabled = payload["enabled"] as? Bool ?? true
+            reason = payload["reason"] as? String ?? ""
+            cached = true
+        }
+        if let token = try? speakerReviewToken(),
+           let response = request("/api/claude-sessions", token: token, timeout: 12),
+           response.status == 200,
+           let body = response.body {
+            enabled = body["enabled"] as? Bool ?? enabled
+            reason = body["reason"] as? String ?? reason
+            counts = body["counts"] ?? counts
+            if enabled {
+                live = ((body["peers"] as? [[String: Any]]) ?? []).compactMap(Self.claudePeerProjection)
+            }
+        }
+        peers = Self.overlayLiveState(onto: peers, live: live)
+        peers = Self.applyLiveWorkingState(peers, composerActivity: composerMeta.activity)
+        peers.removeAll { Self.isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
+        peers = peers.filter { Self.isPetLiveRow($0) }
+        emitSessionList(
+            peers, liveOnly: true, enabled: enabled, reason: reason, counts: counts,
+            dropped: dropped, cached: cached, partial: false
+        )
+    }
+
+    private func emitQuickClaudeSessions(home: URL, composerMeta: CursorComposerMeta) throws {
+        if let payload = Self.readSessionListCache(from: sessionListCacheURL),
+           let cachedRows = payload["sessions"] as? [[String: Any]], !cachedRows.isEmpty {
+            var peers = Self.applyLiveWorkingState(cachedRows, composerActivity: composerMeta.activity)
+            peers.removeAll { Self.isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
+            emitSessionList(
+                peers, liveOnly: false,
+                enabled: payload["enabled"] as? Bool ?? true,
+                reason: payload["reason"] as? String ?? "",
+                counts: ["alive": 0, "reachable": 0, "stale": 0],
+                dropped: Self.agentSessionDroppedProjection(payload),
+                cached: true, partial: false
+            )
+            return
+        }
+        let claudeStarred = Self.loadClaudeStarredIds(
+            from: home.appendingPathComponent("Library/Application Support/Claude/claude_desktop_config.json")
+        )
+        let codexPinned = Self.loadCodexPinnedIds(
+            sessionsRoot: home.appendingPathComponent(".codex/sessions", isDirectory: true)
+        )
+        let indexed = Self.collectAgentSessionIndex(
+            home: home,
+            composerNames: composerMeta.names,
+            claudeStarred: claudeStarred,
+            codexPinned: codexPinned
+        )
+        var peers = Self.applyLiveWorkingState(indexed.rows, composerActivity: composerMeta.activity)
+        peers.removeAll { Self.isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
+        emitSessionList(
+            peers, liveOnly: false, enabled: true, reason: "",
+            counts: ["alive": 0, "reachable": 0, "stale": 0],
+            dropped: indexed.dropped, cached: false, partial: true
+        )
+    }
+
+    private func emitFreshClaudeSessions(home: URL, composerMeta: CursorComposerMeta) throws {
+        var enabled = false
+        var reason = ""
+        var peers: [[String: Any]] = []
+        var counts: Any = ["alive": 0, "reachable": 0, "stale": 0]
         let claudeProjects = home.appendingPathComponent(".claude/projects", isDirectory: true)
         let claudeStarred = Self.loadClaudeStarredIds(
             from: home.appendingPathComponent("Library/Application Support/Claude/claude_desktop_config.json")
@@ -9725,7 +10159,6 @@ final class COSControlHelper {
             "Library/Application Support/Claude/claude-code-sessions",
             isDirectory: true
         )
-        let desktopIndex = Self.loadClaudeDesktopIndex(from: claudeDesktop)
         if let token = try? speakerReviewToken(),
            let response = request("/api/claude-sessions", token: token, timeout: 12),
            response.status == 200,
@@ -9734,6 +10167,7 @@ final class COSControlHelper {
             reason = body["reason"] as? String ?? ""
             counts = body["counts"] ?? counts
             if enabled {
+                let desktopIndex = Self.loadClaudeDesktopIndex(from: claudeDesktop)
                 peers = ((body["peers"] as? [[String: Any]]) ?? []).compactMap(Self.claudePeerProjection)
                 for index in peers.indices {
                     let id = peers[index]["id"] as? String ?? ""
@@ -9748,7 +10182,6 @@ final class COSControlHelper {
                     peers[index]["workspace"] = Self.workspaceLabel(peers[index]["workspace"] as? String ?? "")
                     peers[index]["pinned"] = claudeStarred.contains(Self.normalizeClaudeSessionId(id))
                 }
-                liveIds = Set(peers.compactMap { $0["id"] as? String })
             }
         }
         // THE LIST COMES FROM THE SERVER.
@@ -9775,35 +10208,28 @@ final class COSControlHelper {
         }
 
         if serverRows.isEmpty {
-            // Degraded path, not the intended one: it cannot see Desktop-only sessions and
-            // its Claude pins are unreliable. Better than an empty window when the server
-            // is down or predates the route.
-            peers.append(contentsOf: Self.recentClaudeConversations(
-                liveIds: liveIds,
-                projectsRoot: claudeProjects,
-                starredIds: claudeStarred,
-                desktopSessionsRoot: claudeDesktop,
-                desktopIndex: desktopIndex
-            ))
-            peers.append(contentsOf: Self.recentCodexConversations(
-                sessionsRoot: home.appendingPathComponent(".codex/sessions", isDirectory: true)
-            ))
-            peers.append(contentsOf: Self.recentCursorConversations(
-                projectsRoot: home.appendingPathComponent(".cursor/projects", isDirectory: true),
-                composerNames: composerMeta.names,
-                composerActivity: composerMeta.activity,
-                pinnedIds: Self.loadCursorPinnedIds(
-                    from: home.appendingPathComponent("Library/Application Support/Cursor/User/workspaceStorage")
+            if let payload = Self.readSessionListCache(from: sessionListCacheURL),
+               let cachedRows = payload["sessions"] as? [[String: Any]], !cachedRows.isEmpty {
+                serverRows = cachedRows
+                dropped = Self.agentSessionDroppedProjection(payload)
+            } else {
+                let indexed = Self.collectAgentSessionIndex(
+                    home: home,
+                    composerNames: composerMeta.names,
+                    claudeStarred: claudeStarred,
+                    codexPinned: Self.loadCodexPinnedIds(
+                        sessionsRoot: home.appendingPathComponent(".codex/sessions", isDirectory: true)
+                    )
                 )
-            ))
+                serverRows = indexed.rows
+                dropped = indexed.dropped
+            }
+            peers = Self.overlayLiveState(onto: serverRows, live: peers)
         } else {
             peers = Self.overlayLiveState(onto: serverRows, live: peers)
         }
         peers = Self.applyLiveWorkingState(peers, composerActivity: composerMeta.activity)
         peers.removeAll { Self.isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
-        if liveOnly {
-            peers = peers.filter { Self.isPetLiveRow($0) }
-        }
         peers.sort { a, b in
             let aLive = a["alive"] as? Bool == true
             let bLive = b["alive"] as? Bool == true
@@ -9813,20 +10239,60 @@ final class COSControlHelper {
             if aPin != bPin { return aPin && !bPin }
             return (a["updatedAt"] as? String ?? "") > (b["updatedAt"] as? String ?? "")
         }
+        saveSessionListCache(sessions: peers, dropped: dropped, enabled: true, reason: reason)
+        emitSessionList(
+            peers, liveOnly: false, enabled: true, reason: reason, counts: counts,
+            dropped: dropped, cached: false, partial: false
+        )
+    }
+
+    private func emitSessionList(
+        _ peers: [[String: Any]],
+        liveOnly: Bool,
+        enabled: Bool,
+        reason: String,
+        counts: Any,
+        dropped: [String: Int],
+        cached: Bool,
+        partial: Bool
+    ) {
+        var rows = peers
+        if liveOnly {
+            rows.sort { a, b in
+                (a["updatedAt"] as? String ?? "") > (b["updatedAt"] as? String ?? "")
+            }
+        }
         let message: String
-        if peers.isEmpty {
+        if rows.isEmpty {
             message = liveOnly ? "No live sessions" : (enabled ? "No sessions" : "No Codex or Cursor sessions")
         } else {
-            message = liveOnly ? "\(peers.count) live session(s)" : "\(peers.count) session(s)"
+            message = liveOnly ? "\(rows.count) live session(s)" : "\(rows.count) session(s)"
         }
         emit(ok: true, message: message, details: [
             "enabled": true,
             "reason": reason,
-            "sessions": peers,
+            "sessions": rows,
             "counts": counts,
             "claudeLiveEnabled": enabled,
             "dropped": dropped,
+            "cached": cached,
+            "partial": partial,
         ])
+    }
+
+    private func saveSessionListCache(
+        sessions: [[String: Any]],
+        dropped: [String: Int],
+        enabled: Bool,
+        reason: String
+    ) {
+        let payload = Self.sessionListCachePayload(
+            sessions: sessions, dropped: dropped, enabled: enabled, reason: reason, partial: false
+        )
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else { return }
+        try? ensureDirectories()
+        try? atomicWriteData(data, to: sessionListCacheURL, permissions: 0o600)
     }
 
     private func emitSessionReveal(args: [String]) throws {
@@ -13608,6 +14074,34 @@ final class COSControlHelper {
         try expect(negative["limit"] == 2, "numeric dropped counts coerce")
         try expect(negative["oversized"] == 3, "string dropped counts coerce")
 
+        let indexNow = Date()
+        let indexed = Self.agentSessionIndexDropped([
+            .init(id: "old", provider: "claude", workspace: "MU", mtime: indexNow.addingTimeInterval(-8 * 24 * 3600), size: 100, pinned: false),
+            .init(id: "old-pin", provider: "claude", workspace: "MU", mtime: indexNow.addingTimeInterval(-30 * 24 * 3600), size: 100, pinned: true),
+            .init(id: "fresh-a", provider: "cursor", workspace: "MU", mtime: indexNow.addingTimeInterval(-3600), size: 100, pinned: false),
+            .init(id: "fresh-b", provider: "cursor", workspace: "MU", mtime: indexNow.addingTimeInterval(-7200), size: 100, pinned: false),
+            .init(id: "huge", provider: "cursor", workspace: "MU", mtime: indexNow.addingTimeInterval(-60), size: 33 * 1024 * 1024, pinned: false),
+        ], now: indexNow, window: 7 * 24 * 3600, perProviderLimit: 1, listLimit: 80, maxFileBytes: 32 * 1024 * 1024)
+        try expect(indexed["age"] == 1, "index dropped.age counts old unpinned rows without opening a body")
+        try expect(indexed["limit"] == 1, "index dropped.limit counts over-cap rows without opening a body")
+        try expect(indexed["oversized"] == 1, "index dropped.oversized uses size, not transcript bytes")
+        try ensureDirectories()
+        let cacheURL = support.appendingPathComponent("session-list-cache.json")
+        let cachePayload = Self.sessionListCachePayload(
+            sessions: [["id": "cached-1", "provider": "cursor", "name": "Cached row", "workspace": "MU",
+                        "state": "recent", "status": "", "waitingFor": "", "alive": false, "reachable": false,
+                        "createdAt": Self.isoString(from: indexNow), "updatedAt": Self.isoString(from: indexNow),
+                        "pinned": false, "discussion_summary": ""]],
+            dropped: ["age": 1691, "limit": 88, "oversized": 0],
+            enabled: true, reason: "", partial: false, savedAt: indexNow
+        )
+        try atomicWriteData(try JSONSerialization.data(withJSONObject: cachePayload), to: cacheURL, permissions: 0o600)
+        let loadedCache = Self.readSessionListCache(from: cacheURL, now: indexNow)
+        try expect((loadedCache?["sessions"] as? [[String: Any]])?.count == 1, "session list cache round-trips rows")
+        try expect(Self.agentSessionDroppedProjection(loadedCache ?? [:])["age"] == 1691, "session list cache keeps dropped.age")
+        try expect(Self.readSessionListCache(from: cacheURL, now: indexNow.addingTimeInterval(8 * 24 * 3600)) == nil,
+                   "session list cache older than 7 days is ignored")
+
         try expect(Self.tokenizeSessionQuery("Toast in grocery vs Clover") == ["toast", "grocery", "clover"],
                    "session search drops stopwords")
         let scored = Self.scoreSessionKeyword(
@@ -14798,12 +15292,16 @@ final class COSControlHelper {
         // `count` is deliberately NOT patterns + task_proposals, so the sum assert
         // below cannot pass through the count fallback (QA 2026-09-06).
         let learningBlock: [String: Any] = ["available": true, "state": "ready", "count": 999,
-                                            "to_review": ["patterns": 1, "task_proposals": 120], "last_ts": "2026-08-31"]
+                                            "to_review": ["patterns": 1, "task_proposals": 120],
+                                            "needs_you": ["count": 5, "limit": 7, "items": [["gate": "attribution"], ["gate": "attribution"],
+                                                                                            ["gate": "attribution"], ["gate": "attribution"],
+                                                                                            ["gate": "low_confidence"]]],
+                                            "last_ts": "2026-08-31"]
         let graphBlock: [String: Any] = ["available": true, "state": "ready", "entities": 40359, "relationships": 88369,
                                          "index_state": "fresh", "queue_pending": 56, "owner_host": "m3", "is_owner": true,
                                          "replica": false, "processor_state": "none", "lock_state": "free"]
         let fullStatus = Self.learningStatusDetails(["learning": learningBlock, "graph": graphBlock])
-        try expect(fullStatus["learningToReview"] as? Int == 121, "to-review sums patterns and task proposals")
+        try expect(fullStatus["learningToReview"] as? Int == 5, "the Memories number is needs_you, not the SIQ dump")
         try expect(fullStatus["graphEntities"] as? Int == 40359 && fullStatus["graphRelationships"] as? Int == 88369,
                    "graph counts pass through")
         try expect(fullStatus["graphOwnerHost"] as? String == "m3" && fullStatus["graphIsOwner"] as? Bool == true,
@@ -14813,11 +15311,15 @@ final class COSControlHelper {
                    "absent blocks are NSNull, never zero")
         try expect(absentStatus["learningState"] is NSNull && absentStatus["graphIndexState"] is NSNull,
                    "absent states are NSNull")
-        try expect(Self.learningToReview(["count": 7]) == 7, "to-review falls back to count when the split is missing")
+        try expect(Self.learningToReview(["to_review": ["patterns": 1, "task_proposals": 120], "count": 121]) == nil,
+                   "SIQ to_review and bare count are not the Memories badge")
+        try expect(Self.learningToReview(["count": 7]) == nil, "bare count is not a Needs-you number")
         try expect(Self.learningToReview(nil) == nil, "no learning block, no to-review number")
+        try expect(Self.learningToReview(["needs_you": ["count": 20, "limit": 7]]) == 7,
+                   "an uncapped needs_you count still respects the cap")
         try expect(Self.learningDoctorLine(absentStatus) == nil, "Doctor says nothing about learning on an older server")
         let doctorLine = Self.learningDoctorLine(fullStatus)
-        try expect(doctorLine?.state == "ok" && doctorLine?.detail.contains("121 to review") == true,
+        try expect(doctorLine?.state == "ok" && doctorLine?.detail.contains("5 to review") == true,
                    "the Doctor line carries states and counts")
         try expect(doctorLine?.detail.contains("/") == false, "the Doctor line carries no path")
         try expect(Self.validLearningEventID("evt_0123456789abcdef") && !Self.validLearningEventID("evt_xyz")
@@ -14848,7 +15350,7 @@ final class COSControlHelper {
         try expect(signal("speakers", "needsYou") as? Int == 2, "the Speakers number counts unrecognized sessions")
         try expect(signal("meetings", "needsYou") as? Int == 3, "the Meetings number is the stranded count")
         try expect(signal("meetings", "newest") as? String == "2026-09-06T09:30", "the Meetings stamp is the latest date and time")
-        try expect(signal("memories", "needsYou") as? Int == 121, "the Memories number is learning to review")
+        try expect(signal("memories", "needsYou") as? Int == 5, "the Memories number is needs_you, not the SIQ dump")
         try expect(signal("memories", "newest") as? String == "2026-09-04T00:00:00Z", "the Memories stamp is the latest created_at")
         try expect(signal("messages", "newest") as? String == "2026-08-29T10:40:00Z", "the Messages stamp converts epoch milliseconds")
         try expect(signal("threads", "newest") as? String == "2026-09-02", "the Threads stamp is the latest last_seen")
@@ -14874,6 +15376,12 @@ final class COSControlHelper {
                    && Self.ownerName(fromProfileJSON: Data("{\"owner_name\": \"\"}".utf8)) == nil
                    && Self.ownerName(fromProfileJSON: Data("{}".utf8)) == nil && Self.ownerName(fromProfileJSON: Data("nope".utf8)) == nil,
                    "a placeholder, empty, missing or unreadable owner_name is nil, never a name")
+        let siqSignals = Self.activitySignalsProjection(messages: nil, extAudio: nil, orphans: nil, meetings: nil,
+                                                        context: ["learning": ["available": true, "count": 121,
+                                                                              "to_review": ["patterns": 1, "task_proposals": 120]]],
+                                                        memories: nil, threads: nil, fences: nil, tasks: nil)
+        try expect((siqSignals["memories"] as? [String: Any])?["needsYou"] is NSNull,
+                   "SIQ to_review must not become the Memories chip")
         let quietSignals = Self.activitySignalsProjection(messages: nil, extAudio: nil, orphans: nil, meetings: nil,
                                                           context: nil, memories: nil, threads: nil, fences: nil, tasks: nil)
         func quiet(_ section: String, _ key: String) -> Any? { (quietSignals[section] as? [String: Any])?[key] }

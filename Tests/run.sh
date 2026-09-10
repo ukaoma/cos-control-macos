@@ -1196,6 +1196,8 @@ need('doneWhen = o["doneWhen"]?.string ?? ""' in models, "TaskRow does not decod
 
 need('case "task-set-stage"' in helper, "the helper cannot set a stage")
 need('case "task-set-done-when"' in helper, "the helper cannot set a finish line")
+need('case "task-check"' in helper and 'jsonObject(["domain": domain, "checked": checked])' in helper,
+     "Done/Reopen must send task-check instead of unknown command")
 # planning|active|review and nothing else reaches the server.
 need('["planning", "active", "review"].contains(stage)' in helper,
      "the helper does not validate the stage value")
@@ -1212,9 +1214,32 @@ need('task.agentState == "running" || task.doneWhen.isEmpty' in detail,
 need("}, closeOnSuccess: false)" in detail,
      "setting the finish line closes the sheet it just unblocked")
 need('ForEach(["planning", "active", "review"]' in detail, "the detail view has no stage moves")
+
+# 0.5.212: Run at is not a board-level orphan. Capture files to inbox.
+# Schedule owns the timestamp. Every row can Done without opening the overlay.
+need('Text("Run at")' not in activity, "Run at is still a board-level orphan")
+capture_fn = activity[activity.index("private func captureTask"):]
+capture_fn = capture_fn[:capture_fn.index("\n    private func scheduleTask")]
+need("runAt" not in capture_fn, "capture still stamps every new task with a run-at")
+need("try await model.captureTask(domain: taskDomain, text: text)" in capture_fn,
+     "capture no longer posts the text")
+row = activity[activity.index("private func taskRow"):]
+row = row[:row.index("\n    /// Keeps `taskDomain`")]
+need('task.checked ? "Reopen" : "Done"' in row, "the row has no Done/Reopen CTA")
+need("await checkTask(task)" in row, "the row Done CTA does not complete the task")
+need(".popover(" in row, "Schedule on the row has no timestamp picker")
+need("private func taskSchedulePopover" in activity, "the Schedule popover is gone")
+need('Text("Schedule for")' in detail, "the overlay Schedule action has no timestamp")
+need("DatePicker" in detail, "the overlay lost its schedule DatePicker")
+overlay = activity[activity.index("// Inline overlay"):]
+overlay = overlay[:overlay.index("private var tasksStatus")]
+need(".shadow(" not in overlay, "the task overlay still has a drop shadow")
+need("COSPalette.card" in overlay and "COSPalette.line" in overlay,
+     "the task overlay is not the board's card/hairline")
 print("Stage, finish line, and the run gate are wired")
 print("Task detail and Domains settings are wired")
 print("Tasks pane keeps every open row; domain picker is server-resolved")
+print("Task rows carry Schedule, Run now, and Done; overlay has no drop shadow")
 PY
 /usr/bin/grep -q 'ActivityWindowPresenter' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'activityWindow.show(model: model, section: section)' "$ROOT/Sources/COSControlApp.swift"
@@ -1564,17 +1589,33 @@ PY
 import re, sys
 helper = open(sys.argv[1]).read()
 
-fn = helper[helper.index("private func emitClaudeSessions"):]
-fn = fn[:fn.index("\n    private func ", 10)]
+dispatch = helper[helper.index("private func emitClaudeSessions"):]
+dispatch = dispatch[:dispatch.index("\n    private func emitLiveClaudeSessions")]
+assert "emitQuickClaudeSessions" in dispatch
+assert "emitLiveClaudeSessions" in dispatch
+assert '"--quick"' in dispatch
+assert '"--fresh"' in dispatch
 
-assert '"/api/agent-sessions?limit=80"' in fn, \
+fresh = helper[helper.index("private func emitFreshClaudeSessions"):]
+fresh = fresh[:fresh.index("\n    private func saveSessionListCache")]
+assert '"/api/agent-sessions?limit=80"' in fresh, \
     "the list must come from the server, not a second local scanner"
+assert "if serverRows.isEmpty {" in fresh, "local scan must be gated on the server failing"
+assert fresh.index("serverRows = raw.compactMap") < fresh.index("collectAgentSessionIndex"), \
+    "the server must be consulted BEFORE the local index"
+assert "recentClaudeConversations(" not in fresh, \
+    "full-list fallback must not open transcript bodies"
 
-# The local scan is the FALLBACK. If it runs unconditionally the divergent copy is back.
-assert "if serverRows.isEmpty {" in fn, "local scan must be gated on the server failing"
-assert fn.index("serverRows = raw.compactMap") < fn.index("recentClaudeConversations"), \
-    "the server must be consulted BEFORE the local scan"
-assert fn.count("recentClaudeConversations") == 1, "local scan must appear once, in the fallback"
+assert "session-list-cache.json" in helper
+assert "agentSessionIndexDropped" in helper
+assert "readSessionListCache" in helper
+assert "collectAgentSessionIndex" in helper
+# Live pet must not wait for the 7-day /api/agent-sessions walk.
+live = helper[helper.index("private func emitLiveClaudeSessions"):]
+live = live[:live.index("\n    private func emitQuickClaudeSessions")]
+assert "/api/agent-sessions?limit=80" not in live, \
+    "session-pet-live must not wait for the 7-day agent-sessions walk"
+assert "readSessionListCache" in live
 
 proj = helper[helper.index("static func agentSessionRowProjection"):]
 proj = proj[:proj.index("\n    /// Live status")]
@@ -1620,10 +1661,13 @@ drop = drop[:drop.index("\n    /// Live status")]
 for key in ('"age"', '"limit"', '"oversized"'):
     assert key in drop, f"dropped projection missing {key}"
 
-fn = helper[helper.index("private func emitClaudeSessions"):]
-fn = fn[:fn.index("\n    private func ", 10)]
+fn = helper[helper.index("private func emitFreshClaudeSessions"):]
+fn = fn[:fn.index("\n    private func emitSessionList")]
 assert "agentSessionDroppedProjection(body)" in fn
-assert '"dropped": dropped' in fn
+assert "dropped: dropped" in fn
+emit = helper[helper.index("private func emitSessionList"):]
+emit = emit[:emit.index("\n    private func saveSessionListCache")]
+assert '"dropped": dropped' in emit
 
 assert "sessionListDropped.summary" in ui
 assert "Last 7 days" in ui
@@ -4067,11 +4111,40 @@ need("function askProgressHtml(" in mem_page and "startAskTick" in mem_page and 
 need(".cgx-panel{isolation:isolate" in (root / "Resources/memories/graph-explorer.css").read_text()
      and "backdrop-filter:none;-webkit-backdrop-filter:none" in (root / "Resources/memories/graph-explorer.css").read_text(),
      "graph rail labels must not use backdrop blur")
+theme_css = (root / "Resources/memories/memories-theme.css").read_text()
 need('href="graph-explorer.css"' in (root / "Resources/memories/memories.html").read_text()
      and 'href="memories-theme.css"' in (root / "Resources/memories/memories.html").read_text()
-     and ".ask-progress" in (root / "Resources/memories/memories-theme.css").read_text()
-     and ".ask-spin" in (root / "Resources/memories/memories-theme.css").read_text(),
+     and ".ask-progress" in theme_css
+     and ".ask-spin" in theme_css
+     and ".ask-refs" in theme_css,
      "Ask progress styles must load from the Memories theme")
+# 0.5.213: Recent learning modal above graph rail; Index now hairline; Real records navigates.
+need("#modalRoot{position:relative;z-index:300}" in theme_css
+     and ".modal-backdrop{position:fixed;inset:0;z-index:300;background:rgba(16,12,9,.84)" in theme_css
+     and ".cgx-stage{isolation:isolate}" in theme_css
+     and "body.modal-open .cgx-rail" in theme_css
+     and "body:has(#modalRoot .modal-backdrop) .cgx-rail" in theme_css,
+     "the learning modal must stack above the graph rail with an opaque backdrop")
+need("document.body.classList.add('modal-open')" in mem_page
+     and "document.body.classList.remove('modal-open')" in mem_page,
+     "opening a modal must mark the body so graph chrome can hide")
+need("'the next ' + n" not in mem_page
+     and 'label for="ingestLimit">Batch size</label>' in mem_page
+     and 'class="ingest-pending">' in mem_page
+     and "fmt(pendingN) + ' pending</span>" in mem_page
+     and 'class="hairline" onclick="cosApp.startIngest()"' in mem_page
+     and 'button class="quiet" onclick="cosApp.startIngest()"' not in mem_page,
+     "INDEXING must name pending count and batch size, not 'the next N'")
+need("button.hairline{background:var(--card);border:1px solid var(--line)" in theme_css
+     and ".sync-card .ingest-control button.hairline" in theme_css,
+     "Index now must carry a --line hairline on the white Sync card")
+need("function openSourceRecords()" in mem_page
+     and "state.knowledgeTab = 'sources'" in mem_page
+     and 'data-role="real-records"' in mem_page
+     and "cosApp.openSourceRecords()" in mem_page
+     and 'id="sourceRecords"' in mem_page
+     and "openSourceRecords: openSourceRecords" in mem_page,
+     "Real records must navigate to the source records surface")
 need("func overlayIdleMeetingWork(" in helper and "applyIdleMeetingWorkOverlay" in helper
      and "Self.jsonInt(details[\"meetingFinalizationPending\"])" in helper
      and "displayedMeetingSync" in (root / "Sources/Models.swift").read_text()
@@ -4082,6 +4155,9 @@ need("func overlayIdleMeetingWork(" in helper and "applyIdleMeetingWorkOverlay" 
      "Idle meeting work must overlay library handoff, block Restart/Update, and refuse sync-now")
 need("function renderMarkdown(" in mem_page and "function askEntityCard(" in mem_page and "cosApp.copyAsk(" in mem_page and "askEntityPassages(" in mem_page,
      "the answer must render, copy, and hand back entity cards with passages")
+need("function parseAskAnswer(" in mem_page and "ask-ref-" in mem_page and "Evidence references:" in mem_page
+     and r"/\[(S?\d+)\]/g" in mem_page,
+     "Ask must turn [S#] into source links and render the evidence footer as a Sources list")
 need("var lines = esc(md || '').split(" in mem_page, "the answer renderer must escape before it marks up")
 need("function whenLabel(" in mem_page and "n < 1e11 ? n * 1000 : n" in mem_page, "the card must turn epoch seconds into a date")
 need("function memoryActions(" in mem_page and "'memory.review'" in mem_page and "function guardrailsSection(" in mem_page and "'memory.guardrails.run'" in mem_page,
@@ -4173,7 +4249,7 @@ need('static let contextNotConfiguredMessage = "Memory and Threads are not set u
 for command in ("context-learning", "context-learning-status", "context-graph-status", "context-graph-search",
                 "context-graph-entity", "context-graph-passages", "context-graph-index-build", "context-graph-ingest", "activity-signals"):
     need(f'case "{command}":' in helper, f"helper dispatch lost {command}")
-need("details.merge(Self.learningStatusDetails(context))" in helper, "status details lost the learning rows")
+need("details.merge(Self.learningStatusDetails(enrichLearningWithNeedsYou(context)))" in helper, "status details lost the learning rows")
 need('add("Recent learning and Knowledge", line.state, line.detail)' in helper, "Doctor (and so redactedReport) lost the learning line")
 redacted_block = between(helper, "        var status = details\n        if redacted {", '        return ["checks": checks, "status": status]')
 need("status = Self.redactedStatusDetails(status)" in redacted_block, "the redacted report does not mask the graph owner hostname")
@@ -4249,5 +4325,98 @@ need("g.isOwner" not in activity.split('Button("Build index')[0].rsplit("if g.in
      "a replica builds its own per-Mac index; the button must not be owner-gated")
 LEARNCHK
 
+# --- 0.5.214 Sessions first paint: cache + mtime index, no week-scan gate ---
+/usr/bin/python3 - "$ROOT" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+helper = (root / "HelperSources/main.swift").read_text()
+model = (root / "Sources/ControllerModel.swift").read_text()
+activity = (root / "Sources/ActivityWindow.swift").read_text()
+models = (root / "Sources/Models.swift").read_text()
+contract = (root / "Tests/ModelsContract.swift").read_text()
+
+def fail(msg):
+    sys.exit(msg)
+
+if "struct SessionListCache" not in models:
+    fail("SessionListCache is missing")
+if "static func indexDropped(" not in models:
+    fail("cap/older counts must be computed from mtime/size, not transcript bodies")
+if "FileHandle" in models[models.index("struct SessionListCache"):models.index("enum SessionClock")]:
+    fail("SessionListCache must not open session bodies")
+if "hydrateClaudeSessionsFromCache()" not in model:
+    fail("ControllerModel must hydrate Sessions from cache before helper RPC")
+init = model[model.index("init() {"):model.index("func checkForAppUpdate(")]
+if "hydrateClaudeSessionsFromCache()" not in init:
+    fail("first paint must read the session cache in init, not after the week scan")
+load = model[model.index("func loadClaudeSessions"):model.index("private func fetchClaudeSessions")]
+if '["claude-sessions", "--quick"]' not in model:
+    fail("empty first paint must use --quick, not wait for --fresh")
+if '["claude-sessions", "--fresh"]' not in model:
+    fail("Refresh / background fill must still run --fresh")
+non_force = load[load.index("if claudeSessions.isEmpty"):]
+gate = non_force.split("if claudeSessionsLoadInFlight")[0]
+if "await fetchClaudeSessions(quick: false)" in gate:
+    fail("non-force loadClaudeSessions must not await the full enumeration before returning")
+if "claudeSessionsLoadInFlight == nil" not in load:
+    fail("full week scan must be scheduled, not blocking first paint")
+if "SessionListCache.staleAfter" not in load:
+    fail("repeat visits must skip the week scan when the cache is still fresh")
+if "checkSessionListCache()" not in contract:
+    fail("ModelsContract must execute the cache and index-dropped contract")
+if '"Refreshing…"' not in activity:
+    fail("cached rows must show Refreshing, not freeze as a finished list")
+if "loadClaudeSessions(force: true)" not in activity:
+    fail("Sessions Refresh must force a fresh walk")
+if "async let sessions" not in activity:
+    fail("overview must start Sessions without waiting on the rest of the waterfall")
+if "emitLiveClaudeSessions" not in helper or "/api/agent-sessions?limit=80" in helper[helper.index("private func emitLiveClaudeSessions"):helper.index("private func emitQuickClaudeSessions")]:
+    fail("session-pet-live must not walk /api/agent-sessions")
+if "FileHandle" in helper[helper.index("static func collectAgentSessionIndex"):helper.index("static func readSessionListCache")]:
+    fail("the mtime index must not open transcript bodies")
+print("COS Control: Sessions lazy cache + mtime index contract pinned")
+PY
+
+# --- 0.5.215 Memories chrome: needs_you chip, hide unobserved evidence ------
+/usr/bin/python3 - "$ROOT" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+helper = (root / "HelperSources/main.swift").read_text()
+page = (root / "Resources/memories/memories-app.js").read_text()
+
+def fail(msg):
+    sys.exit(msg)
+
+fn = helper[helper.index("static func learningToReview"):helper.index("static func needsYouCount(from learning")]
+body = fn.split("{", 1)[1]
+if "to_review" in body or "task_proposals" in body or "patterns" in body:
+    fail("learningToReview must not read the SIQ to_review split")
+if "needsYouCount" not in body:
+    fail("learningToReview must delegate to needsYouCount")
+if 'learningToReview(["count": 7]) == 7' in helper:
+    fail("bare count must not be a Needs-you number")
+if 'fullStatus["learningToReview"] as? Int == 121' in helper or 'signal("memories", "needsYou") as? Int == 121' in helper:
+    fail("helper self-test still pins the SIQ dump as the Memories number")
+if "SIQ to_review must not become the Memories chip" not in helper:
+    fail("helper self-test must refuse a SIQ-only learning block")
+if "enrichLearningWithNeedsYou" not in helper or "learning_events.py" not in helper or '"needs-you"' not in helper:
+    fail("status must overlay projector needs-you when the server strips it")
+
+if "function needsYouCount()" not in page:
+    fail("WK To review (N) must read needsYouCount")
+if "state.reviewCount != null ? state.reviewCount" in page:
+    fail("To review (N) must not prefer review_page matched_total / SIQ dump")
+if "projected rows are not observed" in page:
+    fail("empty evidence chrome must not ship the always-on unobserved badge")
+if "No later retrieval, use, or result has been recorded" in page or "Next use" in page:
+    fail("unobserved Next use must be hidden, not hardcoded empty")
+if "function relatedUseRows(" not in page or "function useEventBody(" not in page:
+    fail("captured card must render used/checked rows from the same lesson")
+if "No check recorded" in page or "No repeat data" in page or "Scope not resolved on this Mac" in page:
+    fail("unobserved Expected effect / Checks / Repeat rows must stay hidden")
+print("COS Control: Memories needs-you chip + captured-card evidence contract pinned")
+PY
 
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"

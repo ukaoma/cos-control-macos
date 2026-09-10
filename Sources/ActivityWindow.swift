@@ -221,7 +221,11 @@ struct ActivityWindow: View {
     @State private var taskDoneWhenDraft = ""
     @State private var taskDetailBusy = false
     @State private var taskDetailError = ""
+    /// Stamp used only by Schedule. Capture files to inbox with no time.
     @State private var taskRunAt = Date()
+    /// Which row's Schedule popover is open. The picker used to sit above the
+    /// list as a board-level "Run at", which read as a filter it was not.
+    @State private var schedulePopoverID: String?
     @State private var taskBusy = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Drives the gateway paint-in. Flips once on appear; every tile reads it with its
@@ -927,7 +931,7 @@ struct ActivityWindow: View {
                 section: .sessions,
                 title: "Sessions",
                 detail: sessionsStatus,
-                refresh: { Task { await model.loadClaudeSessions() } },
+                refresh: { Task { await model.loadClaudeSessions(force: true) } },
                 refreshDisabled: model.claudeSessionsLoading,
                 stats: sessionsStats,
                 accessory: {
@@ -1003,11 +1007,6 @@ struct ActivityWindow: View {
                     .buttonStyle(COSPrimaryButtonStyle())
                     .disabled(taskCapture.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || taskBusy)
                 }
-                HStack(spacing: 8) {
-                    Text("Run at").font(COSType.body(11)).foregroundStyle(.secondary)
-                    DatePicker("Run at", selection: $taskRunAt, displayedComponents: [.date, .hourAndMinute])
-                        .labelsHidden()
-                }
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 12)
@@ -1035,12 +1034,18 @@ struct ActivityWindow: View {
         .overlay {
             if let task = taskDetail {
                 ZStack {
-                    Color.black.opacity(0.28).ignoresSafeArea()
+                    Color.black.opacity(0.16).ignoresSafeArea()
                         .onTapGesture { if !taskDetailBusy { closeTaskDetail() } }
                     taskDetailSheet(task)
-                        .background(RoundedRectangle(cornerRadius: 12).fill(.background))
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.secondary.opacity(0.25)))
-                        .shadow(radius: 18)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(COSPalette.card)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(COSPalette.line, lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
             }
         }
@@ -1088,12 +1093,24 @@ struct ActivityWindow: View {
             if task.missed == true { Text("Missed").font(COSType.body(10.5, weight: .semibold)).foregroundStyle(COSPalette.amber) }
             if task.failed == true { Text("Failed").font(COSType.body(10.5, weight: .semibold)).foregroundStyle(.red) }
             Button("Schedule") {
-                Task { await scheduleTask(task) }
+                prepareSchedule(from: task)
+                schedulePopoverID = task.id
             }
             .buttonStyle(COSQuietButtonStyle())
             .disabled(taskBusy)
+            .popover(isPresented: Binding(
+                get: { schedulePopoverID == task.id },
+                set: { if !$0 { schedulePopoverID = nil } }
+            )) {
+                taskSchedulePopover(task)
+            }
             Button("Run now") {
                 Task { await runTask(task) }
+            }
+            .buttonStyle(COSQuietButtonStyle())
+            .disabled(taskBusy)
+            Button(task.checked ? "Reopen" : "Done") {
+                Task { await checkTask(task) }
             }
             .buttonStyle(COSQuietButtonStyle())
             .disabled(taskBusy)
@@ -1120,6 +1137,7 @@ struct ActivityWindow: View {
         taskDetailDraft = task.text.isEmpty ? task.title : task.text
         taskDoneWhenDraft = task.doneWhen
         taskDetailError = ""
+        prepareSchedule(from: task)
     }
 
     private func closeTaskDetail() {
@@ -1156,7 +1174,7 @@ struct ActivityWindow: View {
             TextEditor(text: $taskDetailDraft)
                 .font(COSType.body(13.5))
                 .frame(minHeight: 72, maxHeight: 140)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.secondary.opacity(0.35)))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(COSPalette.line))
             VStack(alignment: .leading, spacing: 5) {
                 Text("DONE WHEN").font(COSType.body(10)).foregroundStyle(
                     task.doneWhen.isEmpty ? Color.orange : Color.secondary)
@@ -1213,6 +1231,12 @@ struct ActivityWindow: View {
                     runDetailAction { try await model.moveTask(id: task.id, domain: task.domain, section: "inbox") }
                 }
                 .disabled(taskDetailBusy || task.section == "inbox")
+                Spacer()
+            }
+            HStack(spacing: 8) {
+                Text("Schedule for").font(COSType.body(11)).foregroundStyle(.secondary)
+                DatePicker("Schedule for", selection: $taskRunAt, displayedComponents: [.date, .hourAndMinute])
+                    .labelsHidden()
                 Button("Schedule") {
                     runDetailAction { try await model.scheduleTask(id: task.id, domain: task.domain, runAt: taskRunAtStamp()) }
                 }
@@ -1236,6 +1260,7 @@ struct ActivityWindow: View {
         }
         .padding(20)
         .frame(width: 520)
+        .buttonStyle(COSQuietButtonStyle())
     }
 
     private func detailLine(_ label: String, _ value: String) -> some View {
@@ -1253,13 +1278,40 @@ struct ActivityWindow: View {
         return formatter.string(from: taskRunAt)
     }
 
+    /// Prefill Schedule from the row's existing stamp, otherwise now.
+    private func prepareSchedule(from task: TaskRow) {
+        taskRunAt = task.runAtDate ?? Date()
+    }
+
+    @ViewBuilder
+    private func taskSchedulePopover(_ task: TaskRow) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Schedule for")
+                .font(COSType.body(11))
+                .foregroundStyle(.secondary)
+            DatePicker("Schedule for", selection: $taskRunAt, displayedComponents: [.date, .hourAndMinute])
+                .labelsHidden()
+                .datePickerStyle(.compact)
+            Button("Set") {
+                Task {
+                    await scheduleTask(task)
+                    schedulePopoverID = nil
+                }
+            }
+            .buttonStyle(COSPrimaryButtonStyle())
+            .disabled(taskBusy)
+        }
+        .padding(12)
+        .frame(minWidth: 220)
+    }
+
     private func captureTask() async {
         let text = taskCapture.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         taskBusy = true
         defer { taskBusy = false }
         do {
-            try await model.captureTask(domain: taskDomain, text: text, runAt: taskRunAtStamp())
+            try await model.captureTask(domain: taskDomain, text: text)
             taskCapture = ""
         } catch {
             model.tasksError = error.localizedDescription
@@ -1281,6 +1333,16 @@ struct ActivityWindow: View {
         defer { taskBusy = false }
         do {
             try await model.runTask(id: task.id, domain: task.domain)
+        } catch {
+            model.tasksError = error.localizedDescription
+        }
+    }
+
+    private func checkTask(_ task: TaskRow) async {
+        taskBusy = true
+        defer { taskBusy = false }
+        do {
+            try await model.setTaskChecked(id: task.id, domain: task.domain, checked: !task.checked)
         } catch {
             model.tasksError = error.localizedDescription
         }
@@ -1523,7 +1585,7 @@ struct ActivityWindow: View {
             if model.sessionSearching { return "Looking up…" }
             return "Lookup across Claude, Codex, and Cursor"
         }
-        if model.claudeSessionsLoading { return "Loading…" }
+        if model.claudeSessionsLoading { return visibleSessions.isEmpty ? "Loading…" : "Refreshing…" }
         if let error = model.claudeSessionsError { return error }
         if visibleSessions.isEmpty { return "No sessions" }
         switch model.sessionClock {
@@ -3922,6 +3984,7 @@ struct ActivityWindow: View {
         // Prove the server here instead of inheriting the model's initial
         // `running = false` placeholder from the unopened menu-bar panel.
         await model.refresh(quiet: true)
+        async let sessions: Void = model.loadClaudeSessions()
         if model.recentMessages.isEmpty { await model.refreshRecentMessages(quiet: true) }
         if model.reviewableMeetings.isEmpty { await model.loadReviewableMeetings() }
         if model.voiceDirectory.isEmpty { await model.loadVoiceDirectory() }
@@ -3932,7 +3995,7 @@ struct ActivityWindow: View {
         if model.status.threadsAvailable == true, model.threadRecords.isEmpty {
             await model.loadContextRecords(kind: "thread")
         }
-        if model.claudeSessions.isEmpty { await model.loadClaudeSessions() }
+        await sessions
         if model.tasks.isEmpty { await model.loadTasks(force: true) }
         await model.loadDomains()
         reconcileTaskDomain()

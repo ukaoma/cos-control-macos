@@ -297,6 +297,7 @@ final class ControllerModel: ObservableObject {
         loadPetDismissals()
         loadPetCompletions()
         loadPetSprite()
+        hydrateClaudeSessionsFromCache()
     }
 
     /// P1 check. Silent on helper crash. The helper itself returns ok:true with
@@ -1733,18 +1734,68 @@ final class ControllerModel: ObservableObject {
         }
     }
 
-    func loadClaudeSessions() async {
+    func hydrateClaudeSessionsFromCache() {
+        guard claudeSessions.isEmpty else { return }
+        guard let cache = SessionListCache.load() else { return }
+        claudeSessionsEnabled = cache.enabled
+        claudeSessionsReason = cache.reason
+        claudeSessions = cache.sessions
+        sessionListDropped = cache.dropped
+        claudeSessionsCacheSavedAt = cache.savedAt
+        claudeSessionsError = nil
+    }
+
+    func loadClaudeSessions(force: Bool = false) async {
+        hydrateClaudeSessionsFromCache()
+        if force {
+            if let inflight = claudeSessionsLoadInFlight {
+                await inflight.value
+            }
+            await fetchClaudeSessions(quick: false)
+            return
+        }
+        if claudeSessions.isEmpty {
+            await fetchClaudeSessions(quick: true)
+        }
+        if claudeSessionsLoadInFlight == nil, sessionListNeedsFreshWalk {
+            let work = Task { @MainActor [weak self] in
+                await self?.fetchClaudeSessions(quick: false)
+                self?.claudeSessionsLoadInFlight = nil
+            }
+            claudeSessionsLoadInFlight = work
+        }
+    }
+
+    private var sessionListNeedsFreshWalk: Bool {
+        guard let saved = claudeSessionsCacheSavedAt else { return true }
+        return Date().timeIntervalSince(saved) > SessionListCache.staleAfter
+    }
+
+    private func fetchClaudeSessions(quick: Bool) async {
         claudeSessionsLoading = true
         defer { claudeSessionsLoading = false }
+        let args = quick ? ["claude-sessions", "--quick"] : ["claude-sessions", "--fresh"]
+        let timeout = quick ? Self.claudeSessionsQuickTimeout : Self.claudeSessionsFreshTimeout
         do {
-            let response = try await helper.run(["claude-sessions"])
-            claudeSessionsEnabled = response.details["enabled"]?.bool ?? false
-            claudeSessionsReason = response.details["reason"]?.string ?? ""
-            claudeSessions = (response.details["sessions"]?.array ?? []).compactMap(ClaudeSession.init)
-            sessionListDropped = SessionListDropped(response.details["dropped"])
+            let response = try await helper.run(args, timeout: timeout)
+            let next = (response.details["sessions"]?.array ?? []).compactMap(ClaudeSession.init)
+            let partial = response.details["partial"]?.bool ?? false
+            if !next.isEmpty || !partial {
+                claudeSessionsEnabled = response.details["enabled"]?.bool ?? claudeSessionsEnabled
+                claudeSessionsReason = response.details["reason"]?.string ?? claudeSessionsReason
+                claudeSessions = next
+                sessionListDropped = SessionListDropped(response.details["dropped"])
+                if !quick, !partial {
+                    claudeSessionsCacheSavedAt = Date()
+                }
+            }
             claudeSessionsError = nil
+        } catch is CancellationError {
+            return
         } catch {
-            claudeSessionsError = error.localizedDescription
+            if claudeSessions.isEmpty {
+                claudeSessionsError = error.localizedDescription
+            }
         }
     }
 
@@ -1902,9 +1953,13 @@ final class ControllerModel: ObservableObject {
         }
     }
 
-    /// Helper `session-pet-live` waits `/api/claude-sessions` (timeout+2) then
-    /// `/api/agent-sessions` (timeout+2). 12+2+15+2 = 31s worst case.
-    private static let petLiveHelperTimeout: TimeInterval = 12 + 2 + 15 + 2 + 5
+    /// Helper `session-pet-live` reads the session-list cache and overlays
+    /// `/api/claude-sessions` (timeout+2). It no longer waits on the 7-day walk.
+    private static let petLiveHelperTimeout: TimeInterval = 12 + 2 + 5
+    private static let claudeSessionsQuickTimeout: TimeInterval = 8
+    private static let claudeSessionsFreshTimeout: TimeInterval = 60
+    private var claudeSessionsLoadInFlight: Task<Void, Never>?
+    private var claudeSessionsCacheSavedAt: Date?
 
     /// Whether the pet's jump-to-session can work right now. Published so the
     /// toggle can say so BEFORE a click fails rather than after.
@@ -3902,7 +3957,7 @@ final class ControllerModel: ObservableObject {
                 chatForkAvailable = false
                 clearPendingTurn()
                 chatDraft = ""
-                await loadClaudeSessions()
+                await loadClaudeSessions(force: true)
                 guard chatForkOperation == operation, openClaudeRow?.id == session.id else { return }
                 if let fork, fork.provider == session.provider, fork.id != session.id {
                     openClaudeSession(fork)
@@ -3917,7 +3972,7 @@ final class ControllerModel: ObservableObject {
                 // ran. Refresh the list so a maybe-created fork is visible
                 // rather than narrated.
                 if response.details["orphanPossible"]?.bool == true {
-                    await loadClaudeSessions()
+                    await loadClaudeSessions(force: true)
                 }
             }
         } catch {

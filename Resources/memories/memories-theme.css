@@ -13,6 +13,11 @@ input,textarea,select{color:var(--fg);background:var(--card);border:1px solid va
 .ask-card .setup-row button{font-size:13px;padding:11px 18px}
 .ask-card .setup-answer{max-height:360px;overflow:auto;background:var(--bg)}
 .ask-card .ask-cards-title,.ask-card .ask-cards{display:none}
+.ask-card .ask-refs{margin-top:12px;padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:var(--raised)}
+.ask-card .ask-refs h4{margin:0 0 8px;font:600 13px/1.3 var(--ui,system-ui)}
+.ask-card .ask-refs ol{margin:0;padding-left:1.3em}
+.ask-card .ask-refs li{margin:0 0 6px;font-size:13px;line-height:1.4}
+.ask-card a.ref,.ask-card .ask-refs .ref{color:var(--accent);text-decoration:none;font-variant-numeric:tabular-nums}
 .knowledge-health{margin-top:18px}
 .knowledge-health>summary,.investigation-tools>summary{cursor:pointer;font-size:13px;font-weight:600;padding:14px 0;color:var(--fg)}
 .memory-investigation>[data-role=canvas]{margin-top:8px}
@@ -29,3 +34,27 @@ input,textarea,select{color:var(--fg);background:var(--card);border:1px solid va
 .owner-card input{flex:1;min-width:120px;padding:8px 10px}
 .owner-card p{margin:8px 0}
 @media(max-width:700px){.ask-card{padding:14px}.actual-header{flex-wrap:wrap}.ask-card .setup-row input{min-width:140px}.summary{flex-wrap:wrap;gap:5px 12px}}
+
+/* Learning modal sits above graph rail (z 15–50). Stage isolation keeps rail z-index inside the graph. */
+.cgx-stage{isolation:isolate}
+#modalRoot{position:relative;z-index:300}
+.modal-backdrop{position:fixed;inset:0;z-index:300;background:rgba(16,12,9,.84);-webkit-backdrop-filter:none;backdrop-filter:none;display:flex;align-items:center;justify-content:center;padding:20px}
+.modal{position:relative;z-index:1;background:var(--card);isolation:isolate}
+body.modal-open .cgx-rail,
+body.modal-open .cgx-railtoggle,
+body.modal-open .cgx-pinned,
+body.modal-open .cgx-dp,
+body.modal-open .cgx-tip,
+body.modal-open .cgx-hint,
+body:has(#modalRoot .modal-backdrop) .cgx-rail,
+body:has(#modalRoot .modal-backdrop) .cgx-railtoggle,
+body:has(#modalRoot .modal-backdrop) .cgx-pinned,
+body:has(#modalRoot .modal-backdrop) .cgx-dp,
+body:has(#modalRoot .modal-backdrop) .cgx-tip,
+body:has(#modalRoot .modal-backdrop) .cgx-hint{visibility:hidden;pointer-events:none}
+
+button.hairline{background:var(--card);border:1px solid var(--line);color:var(--fg)}
+.sync-card .ingest-control{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center;margin-left:6px;vertical-align:middle}
+.sync-card .ingest-pending{font-weight:650;color:var(--fg)}
+.sync-card .ingest-control label{font-size:10px;color:var(--muted);letter-spacing:.03em}
+.sync-card .ingest-control button.hairline{font-size:10px;padding:3px 8px;border:1px solid var(--line);background:var(--card)}

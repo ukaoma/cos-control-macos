@@ -1,3 +1,43 @@
+## 0.5.215 (build 253)
+
+Memories chrome reads real projector data: Needs you, not the SIQ dump.
+
+- Home chip, activity number, and To review(N) use `needs_you` (gated, cap 7). They no longer sum `to_review` patterns + task proposals.
+- Server 6.45.1 still strips that field; the helper overlays `learning_events.py needs-you` (90s cache).
+- Captured cards render `used` / `checked` / `retrieved` rows from the same lesson. Empty Expected effect / Checks / Repeat / Next use stay hidden when unobserved.
+
+## 0.5.214 (build 252)
+
+Sessions opens from cache. The 7-day walk no longer blocks first paint.
+
+- First paint reads `session-list-cache.json` (last successful list plus dropped counts). Header shows Refreshing while the full walk runs.
+- No cache: a mtime/size index paints pinned and recent rows without opening hidden transcripts. Totals (older / over cap) come from that index, then the server walk replaces them.
+- `session-pet-live` uses the cache plus live Claude peers. It does not wait on `/api/agent-sessions`.
+- Refresh still forces a fresh walk. Search and Recency still filter the in-memory list.
+
+## 0.5.213 (build 251)
+
+Knowledge modal sits above the graph rail. Sync Indexing names pending vs batch size. Real records opens source records.
+
+- Recent learning overlay uses an opaque backdrop at z-index 300. Graph Layout/Keys chrome stays behind or hides while the modal is open.
+- INDEXING shows the live pending count. Batch size is a labeled picker (10, 25, all), not "the next 10". Index now has a --line hairline on the white card.
+- Real records is a button. It opens Source records ("What was actually said") and scrolls to that heading.
+
+## 0.5.212 (build 250)
+
+Tasks: Done on every row. Schedule owns its timestamp. Overlay is a paper card, not a drop shadow.
+
+- Run at is no longer a board-level orphan. Capture files to inbox. Schedule opens a date picker.
+- Each row has Schedule, Run now, and Done.
+- Task overlay uses the same card/hairline as the board. No drop shadow.
+
+## 0.5.211 (build 249)
+
+Done actually completes a task. Ask the graph shows source titles and dates next to [S#] citations.
+
+- `task-check` reaches the server, so Done / Reopen no longer print `unknown command: task-check`.
+- Ask citations `[S1]` are links. Evidence references render as a Sources list with meeting title and date, outside the answer scroll.
+
 ## 0.5.210 (build 248)
 
 Knowledge Ask progress, clean graph-rail labels, and a truthful Meeting sync row on server 6.45.1.

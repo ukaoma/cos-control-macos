@@ -519,10 +519,68 @@ struct ModelsContract {
         precondition(row?.late == false)
         precondition(row?.carriedOver == true)
         precondition(row?.runAtDate != nil, "ISO runAt must parse")
+        let posix = TaskRow(.object([
+            "id": .string("posix-runat"),
+            "runAt": .string("2026-09-09 18:17"),
+        ]))
+        precondition(posix?.runAtDate != nil, "Control stamp runAt must parse")
         let older = ServerStatus(["morningBriefGate": .string("ready")])
         precondition(older.tasksGate == nil, "absent tasksGate must stay nil")
         let stamped = ServerStatus(["tasksGate": .string("ready")])
         precondition(stamped.tasksGate == "ready")
+    }
+
+    private static func checkSessionListCache() {
+        let now = Date()
+        let dropped = SessionListCache.indexDropped([
+            .init(provider: "claude", mtime: now.addingTimeInterval(-8 * 24 * 3600), size: 100, pinned: false),
+            .init(provider: "claude", mtime: now.addingTimeInterval(-30 * 24 * 3600), size: 100, pinned: true),
+            .init(provider: "cursor", mtime: now.addingTimeInterval(-3600), size: 100, pinned: false),
+            .init(provider: "cursor", mtime: now.addingTimeInterval(-7200), size: 100, pinned: false),
+            .init(provider: "cursor", mtime: now.addingTimeInterval(-60), size: 33 * 1024 * 1024, pinned: false),
+        ], now: now, window: 7 * 24 * 3600, perProviderCap: 1, listCap: 80, maxFileBytes: 32 * 1024 * 1024)
+        precondition(dropped.age == 1, "older-than-window counts must not open a transcript")
+        precondition(dropped.limit == 1, "over-cap counts must not open a transcript")
+        precondition(dropped.oversized == 1, "oversized counts use size, not body bytes")
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cos-session-cache-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = SessionListCache.fileURL(support: directory)
+        let savedAt = now.addingTimeInterval(-10)
+        let payload: [String: Any] = [
+            "savedAt": ISO8601DateFormatter().string(from: savedAt),
+            "enabled": true,
+            "reason": "",
+            "partial": false,
+            "dropped": ["age": 1691, "limit": 88, "oversized": 0],
+            "sessions": [[
+                "id": "cached-row",
+                "provider": "cursor",
+                "name": "Investigation controls enhancement",
+                "workspace": "MU-Chief-Staff",
+                "state": "recent",
+                "alive": false,
+                "pinned": false,
+                "createdAt": "2026-09-09T18:40:00Z",
+                "updatedAt": "2026-09-09T18:40:00Z",
+            ]],
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: payload) {
+            try? data.write(to: file, options: .atomic)
+        }
+        let cache = SessionListCache.load(from: file, now: now)
+        precondition(cache?.sessions.count == 1, "cache read path must hydrate list rows")
+        precondition(cache?.sessions.first?.title == "Investigation controls enhancement")
+        precondition(cache?.dropped.age == 1691)
+        precondition(cache?.dropped.limit == 88)
+        precondition(cache?.isStale(now: now) == false, "a 10s cache is still fresh for first paint")
+        precondition(cache?.isStale(now: now.addingTimeInterval(60)) == true, "stale after 45s still paints, then refreshes")
+        precondition(SessionListCache.load(from: file, now: now.addingTimeInterval(8 * 24 * 3600)) == nil,
+                     "cache older than 7 days must not block first paint with fossils")
+        precondition(SessionListCache.staleAfter == 45)
+        precondition(SessionListCache.fileName == "session-list-cache.json")
     }
 
     private static func checkClaudeSession() {
@@ -642,6 +700,7 @@ struct ModelsContract {
         precondition(dropped.total == 419)
         precondition(dropped.summary == "412 older than 7 days · 6 over the cap · 1 too large not shown")
         precondition(SessionListDropped().summary == nil)
+        checkSessionListCache()
         precondition(ClaudeSession.isKeepWarmSessionTitle("ready"))
         precondition(ClaudeSession.isKeepWarmSessionTitle("This is an automated local readiness check. Do not use tools. Reply with exactly"))
         precondition(ClaudeSession.isKeepWarmSessionTitle("ready") && !ClaudeSession.isKeepWarmSessionTitle("Fireflies meeting sync"))

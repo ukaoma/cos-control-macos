@@ -237,8 +237,19 @@
   }
 
   // ── summary and nav ─────────────────────────────────────────────
+  // Needs-you (gated, cap 7). Never review_page matched_total / SIQ to_review.
+  function needsYouCount() {
+    var s = state.status || {}, ls = state.learningStatus || {}, ny = ls.needs_you || s.needs_you;
+    if (Array.isArray(state.needsYou)) return state.needsYou.length;
+    if (Array.isArray(s.needsYou)) return s.needsYou.length;
+    if (ny && Array.isArray(ny.items)) return ny.items.length;
+    if (ny && ny.count != null) return ny.limit != null ? Math.min(Number(ny.count), Number(ny.limit)) : Number(ny.count);
+    if (s.learningNeedsYou != null) return s.learningNeedsYou;
+    if (s.learningToReview != null) return s.learningToReview;
+    return null;
+  }
   function memoryNav() {
-    var review = state.reviewCount != null ? state.reviewCount : (state.status && state.status.learningToReview) || 0;
+    var review = needsYouCount();
     document.querySelector('#workspace').classList.toggle('knowledge', state.view === 'knowledge');
     document.querySelector('#memoryNav').innerHTML = [['recent', 'Recent learning'], ['memories', 'All memories'], ['review', 'To review' + (review ? ' (' + fmt(review) + ')' : '')]].map(function (p) {
       var on = state.view !== 'knowledge' && state.filter === p[0];
@@ -246,10 +257,10 @@
     }).join('') + '<button class="' + (state.view === 'knowledge' ? 'active' : '') + '" aria-pressed="' + (state.view === 'knowledge') + '" onclick="cosApp.openKnowledge()">Knowledge</button>';
   }
   function summary() {
-    var review = state.reviewCount != null ? state.reviewCount : (state.status && state.status.learningToReview);
+    var review = needsYouCount();
     var checked = state.recent.filter(function (e) { return outcomeText(e); }).length;
     var parts = [];
-    if (review != null) parts.push('<span><strong>' + fmt(review) + ' change' + (review === 1 ? '' : 's') + '</strong> to review</span>');
+    if (review) parts.push('<span><strong>' + fmt(review) + ' change' + (review === 1 ? '' : 's') + '</strong> to review</span>');
     if (state.recentTotal != null) parts.push('<span><strong>' + fmt(state.recentTotal) + ' event' + (state.recentTotal === 1 ? '' : 's') + '</strong> in 90 days</span>');
     parts.push('<span><strong>' + fmt(checked) + ' result' + (checked === 1 ? '' : 's') + '</strong> checked on this page</span>');
     parts.push('<span>Capture status in settings · <button class="link" onclick="cosApp.openLog()">View activity log</button></span>');
@@ -360,21 +371,50 @@
     return event(title, proposal ? 'Instruction' : esc(e.engine || e.scope || ''), body + actions);
   }
   function latestDecisionFor(e) { return state.decisions && state.decisions[e.lesson_id]; }
+  function isUseType(e) {
+    return e && (e.event_type === 'used' || e.event_type === 'checked' || e.event_type === 'retrieved' || e.event_type === 'included' || e.event_type === 'applied');
+  }
+  function relatedUseRows(e) {
+    var id = e && e.lesson_id, rows = [], seen = {};
+    function take(row) {
+      if (!row || seen[row.event_id] || !isUseType(row)) return;
+      if (id && row.lesson_id === id) { seen[row.event_id] = true; rows.push(row); }
+    }
+    (state.recent || []).forEach(take);
+    (state.review || []).forEach(take);
+    if (isUseType(e) && !seen[e.event_id]) rows.push(e);
+    rows.sort(function (a, b) { return String(a.ts || '').localeCompare(String(b.ts || '')); });
+    return rows;
+  }
   function effectBlock(e, applies) {
-    var d = e.detail || {};
-    var o = outcomeText(e);
-    var repeat = d.occurrences != null ? (fmt(d.occurrences) + ' occurrence' + (d.occurrences === 1 ? '' : 's') + (d.threshold ? ' (threshold ' + d.threshold + ')' : '')) : d.logged_times ? ('logged ' + fmt(d.logged_times) + ' time' + (d.logged_times === 1 ? '' : 's')) : 'No repeat data';
-    return '<div class="effect"><div class="row spread"><label>Expected effect</label><span class="badge">Real data · projected rows are not observed</span></div><ul class="effect-list">' +
-      '<li><b>Where it applies</b>' + (applies.length ? esc(applies.join(', ')) : 'Scope not resolved on this Mac') + '</li>' +
-      '<li><b>Preview</b>Versioned rule previews and evaluation evidence are in Memory settings.</li>' +
-      '<li><b>Checks</b>' + (o ? esc(o) : (d.status ? esc(d.status) : 'No check recorded')) + '</li>' +
-      '<li><b>Repeat rate</b>' + esc(repeat) + '</li></ul></div>';
+    var d = e.detail || {}, o = outcomeText(e), rows = [];
+    var repeat = d.occurrences != null
+      ? (fmt(d.occurrences) + ' occurrence' + (d.occurrences === 1 ? '' : 's') + (d.threshold ? ' (threshold ' + d.threshold + ')' : ''))
+      : (d.logged_times ? ('logged ' + fmt(d.logged_times) + ' time' + (d.logged_times === 1 ? '' : 's')) : null);
+    if (applies.length) rows.push('<li><b>Where it applies</b>' + esc(applies.join(', ')) + '</li>');
+    if (o || d.status) rows.push('<li><b>Checks</b>' + esc(o || d.status) + '</li>');
+    if (repeat) rows.push('<li><b>Repeat rate</b>' + esc(repeat) + '</li>');
+    if (!rows.length) return '';
+    return '<div class="effect"><div class="row spread"><label>Expected effect</label></div><ul class="effect-list">' + rows.join('') + '</ul></div>';
+  }
+  function useEventBody(row) {
+    var o = outcomeText(row);
+    var stage = (row.detail && row.detail.stage) || row.event_type;
+    var meta = esc(row.engine || (row.outcome && row.outcome.evaluator) || stage || '');
+    if (o || row.event_type === 'checked' || stage === 'checked') {
+      return event('A later result was checked', row.outcome && row.outcome.evaluator ? esc(row.outcome.evaluator) : 'Checked', '<div class="check">' + esc(o || row.title || 'Checked') + '</div><p>One recorded check. Evidence for that run, not a guarantee about every future answer.</p>');
+    }
+    if (row.event_type === 'used' || stage === 'applied') {
+      var excerpt = ((row.source_refs || [])[0] || {}).excerpt || (row.detail && row.detail.excerpts && row.detail.excerpts[0]) || '';
+      return event('Recorded use in a later session', meta, (excerpt ? '<div class="quote">' + esc(excerpt) + '</div>' : '') + '<p>This record was used by ' + esc(row.engine || 'an engine') + (row.detail && row.detail.count ? ' · ' + fmt(row.detail.count) + ' time' + (row.detail.count === 1 ? '' : 's') : '') + '.</p>');
+    }
+    var title = stage === 'included' ? 'Included in a later session' : 'Retrieved in a later session';
+    return event(title, meta, '<p>This record was ' + esc(stage || row.event_type) + ' by ' + esc(row.engine || 'an engine') + (row.detail && row.detail.count ? ' · ' + fmt(row.detail.count) + ' time' + (row.detail.count === 1 ? '' : 's') : '') + '.</p>');
   }
   function useEvent(e) {
-    var o = outcomeText(e);
-    if (o) return event('A later result was checked', esc(e.outcome && e.outcome.evaluator ? e.outcome.evaluator : 'Checked'), '<div class="check">' + esc(o) + '</div><p>One recorded check. Evidence for that run, not a guarantee about every future answer.</p>');
-    if (e.event_type === 'used' || e.event_type === 'retrieved') return event(e.event_type === 'retrieved' ? 'Retrieved in a later session' : 'Recorded use in a later session', esc(e.engine || ''), '<p>This record was ' + esc(e.event_type) + ' by ' + esc(e.engine || 'an engine') + '.</p>');
-    return event('Next use', 'Pending evidence', '<p>No later retrieval, use, or result has been recorded for this lesson.</p>', false);
+    var rows = relatedUseRows(e);
+    if (!rows.length) return '';
+    return rows.map(useEventBody).join('');
   }
   function evidenceEvent(e) {
     var n = (e.source_refs || []).length;
@@ -448,9 +488,9 @@
       else if (lockHeld) processor += ' · <span class="muted">Indexing now' + (lock.owner_pid ? ' (pid ' + esc(lock.owner_pid) + ')' : '') + '</span>';
       else if (src.owner_state === 'owner' && pendingN > 0) {
         var sizes = [5, 10, 25, 50].filter(function (n) { return n < pendingN; });
-        var options = sizes.map(function (n) { return '<option value="' + n + '"' + (n === state.ingestLimit ? ' selected' : '') + '>the next ' + n + '</option>'; }).join('');
-        if (pendingN <= 50) options += '<option value="' + pendingN + '"' + (sizes.indexOf(state.ingestLimit) === -1 ? ' selected' : '') + '>all ' + fmt(pendingN) + '</option>';
-        processor += ' <span class="ingest-control"><label class="sr-only" for="ingestLimit">How many queued meetings to index</label><select id="ingestLimit">' + options + '</select><button class="quiet" onclick="cosApp.startIngest()">Index now</button></span>';
+        var options = sizes.map(function (n) { return '<option value="' + n + '"' + (n === state.ingestLimit ? ' selected' : '') + '>' + n + '</option>'; }).join('');
+        if (pendingN <= 50) options += '<option value="' + pendingN + '"' + (sizes.indexOf(state.ingestLimit) === -1 ? ' selected' : '') + '>' + fmt(pendingN) + ' (all)</option>';
+        processor += ' <span class="ingest-control"><span class="ingest-pending">' + fmt(pendingN) + ' pending</span><label for="ingestLimit">Batch size</label><select id="ingestLimit" aria-label="Index batch size">' + options + '</select><button type="button" class="hairline" onclick="cosApp.startIngest()">Index now</button></span>';
       }
     }
     var queued = (q.pending != null ? fmt(q.pending) + ' pending' : 'unknown') + (q.oldest_pending_at ? ' · oldest ' + esc(dateOnly(q.oldest_pending_at)) : '') + (q.missing_sources != null ? ' · ' + fmt(q.missing_sources) + ' missing sources' : '') + (q.conflict_copies != null ? ' · ' + fmt(q.conflict_copies) + ' conflict copies' : '');
@@ -593,7 +633,7 @@
     var done = [checksOk, enabledWithFiles.length > 0, isOwner, checksOk && budgetOk, sampleDone, !!state.askAnswer, schedule.installed === true].filter(Boolean).length;
     return '<section class="source-card setup-card"><div class="row spread"><h3>Set up Knowledge</h3><span class="setup-progress">' + done + ' OF 7 DONE' + (state.setupLoading ? ' · REFRESHING' : '') + '</span></div>' +
       '<p class="owner">From zero to a first index on this Mac. Each step is a live check; do them in order.</p><div class="setup-steps">' + steps.join('') + '</div>' +
-      '<div class="actions"><button class="quiet" onclick="cosApp.setupRefresh()">Refresh checks</button></div></section>';
+      '<div class="actions"><button class="quiet" onclick="cosApp.setupRefresh()">Refresh checks</button><button type="button" class="hairline" data-role="real-records" onclick="cosApp.openSourceRecords()">Real records</button></div></section>';
   }
   function renderKnowledge() {
     document.querySelector('#workspace').style.gridTemplateColumns = ''; document.querySelector('#inbox').classList.remove('hidden');
@@ -617,7 +657,7 @@
     } else {
       cards = state.recent.slice(0, 8).filter(function (e) { return (e.source_refs || []).length; }).map(function (e) { var r = e.source_refs[0]; return { title: e.title, kind: STORE[r.kind] || r.kind || 'Source', id: e.event_id, text: r.excerpt || '', note: stamp(e.ts), event: e.event_id }; });
     }
-    return '<div class="row spread"><span class="eyebrow">MEMORIES / KNOWLEDGE / SOURCES</span><span class="badge">' + (cards.length ? 'Real records' : 'No records') + '</span></div><h2 style="margin-top:12px">The context behind the lesson.</h2><p class="intro">Open the original evidence before reusing an interpretation.</p>' +
+    return '<div class="row spread" id="sourceRecords"><span class="eyebrow">MEMORIES / KNOWLEDGE / SOURCES</span>' + (cards.length ? '<button type="button" class="hairline" data-role="real-records" onclick="cosApp.openSourceRecords()">Real records</button>' : '<span class="badge">No records</span>') + '</div><h2 style="margin-top:12px">The context behind the lesson.</h2><p class="intro">Open the original evidence before reusing an interpretation.</p>' +
       (cards.length ? cards.map(function (x) { return '<article class="source-card"><div class="row spread"><h3>' + esc(x.title) + '</h3><span class="badge">' + esc(x.kind) + '</span></div>' + (x.text ? '<div class="quote">' + esc(x.text) + '</div>' : '') + (x.note ? '<p>' + esc(x.note) + '</p>' : '') + (x.event ? '<div class="actions"><button class="link" onclick="cosApp.select(\'' + esc(x.event) + '\');cosApp.setFilter(\'recent\')">Inspect learning →</button></div>' : '') + '</article>'; }).join('') : '<div class="empty"><div><h3>No source records yet.</h3><p>Your first saved lesson will bring its source here.</p></div></div>');
   }
   function graphDetail() {
@@ -631,7 +671,7 @@
   // bold, inline code, bullet lists, pipe tables and paragraphs. Nothing else.
   function renderMarkdown(md) {
     var lines = esc(md || '').split('\n'), out = [], list = null, table = null;
-    function inline(s) { return s.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/\[(\d+)\]/g, '<sup class="ref">[$1]</sup>'); }
+    function inline(s) { return s.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/\[(S?\d+)\]/g, function (_, n) { var id = n.charAt(0) === 'S' ? n : 'S' + n; return '<a class="ref" href="#ask-ref-' + id + '">[' + n + ']</a>'; }); }
     function flush() { if (list) { out.push('<ul>' + list.join('') + '</ul>'); list = null; } if (table) { out.push('<table>' + table.join('') + '</table>'); table = null; } }
     lines.forEach(function (raw) {
       var line = raw.replace(/\s+$/, '');
@@ -651,6 +691,34 @@
     });
     flush();
     return out.join('');
+  }
+  function parseAskAnswer(answer) {
+    var text = String(answer || '');
+    var marker = '\n\nEvidence references:\n';
+    var i = text.indexOf(marker);
+    var prose = i < 0 ? text : text.slice(0, i);
+    var refs = [];
+    if (i >= 0) {
+      text.slice(i + marker.length).split('\n').forEach(function (line) {
+        var m = line.match(/^\[(S\d+)\]\s+(.*)$/);
+        if (!m) return;
+        var parts = m[2].split(' · ');
+        refs.push({ id: m[1], source: (parts[0] || '').trim() || 'Original passage', date: restTrim(parts[1], 'date unknown'), location: parts[2] || '', status: parts[3] || '' });
+      });
+    }
+    return { prose: prose, refs: refs };
+  }
+  function restTrim(value, empty) {
+    var s = String(value || '').trim();
+    return !s || s === empty ? '' : s;
+  }
+  function askRefsHtml(refs) {
+    if (!refs.length) return '';
+    return '<div class="ask-refs"><h4>Sources</h4><ol>' + refs.map(function (r) {
+      var note = r.status === 'source_unresolved' ? 'not linked to a meeting file' : '';
+      var meta = [r.date, note].filter(Boolean).join(' · ');
+      return '<li id="ask-ref-' + esc(r.id) + '"><span class="ref">[' + esc(r.id) + ']</span> ' + esc(r.source) + (meta ? '<span class="muted"> · ' + esc(meta) + '</span>' : '') + '</li>';
+    }).join('') + '</ol></div>';
   }
   // The entities an answer names, as the same card the inspector shows: headings
   // and bold names are looked up in the index; an exact id wins, then a person.
@@ -731,13 +799,14 @@
     var chips = nbrs.slice(0, 4).map(function (n) { return '<button class="quiet chip" ' + (a.busy ? 'disabled' : '') + ' onclick="cosApp.askGraphAbout(' + attr(focus) + ', ' + attr(n) + ')">' + esc(focus) + ' ↔ ' + esc(n) + '</button>'; }).join('');
     var names = [];
     if (a.answer) { [focus].concat(nbrs).forEach(function (n) { if (n && a.answer.answer.indexOf(n) !== -1 && names.indexOf(n) === -1) names.push(n); }); }
+    var parsed = a.answer ? parseAskAnswer(a.answer.answer) : { prose: '', refs: [] };
     return '<section class="source-card ask-card"' + (a.busy ? ' aria-busy="true"' : '') + '><div class="row spread"><h3>Ask the graph</h3><span class="meta"' + (a.busy ? ' data-role="ask-busy-meta"' : '') + '>' + (a.busy ? 'working · ' + askElapsed(a.startedAt) + 's' : 'plain language · about a minute') + '</span></div><p>Ask about a person, an idea, or how things connect. COS will choose the points and trace their connections.</p>' +
       '<div class="setup-row"><input aria-label="Ask the graph" id="graphAskQ" oninput="cosApp.questionDraft(this.value)" value="' + esc(a.q) + '" placeholder="' + esc(suggested) + '" ' + (a.busy ? 'disabled' : '') + ' onkeydown="if(event.key===\'Enter\')cosApp.askGraphGo()"><button ' + (a.busy ? 'disabled' : '') + ' onclick="cosApp.askGraphGo()">' + (a.busy ? '<span class="ask-spin" aria-hidden="true"></span>Asking…' : 'Ask') + '</button></div>' +
       (chips ? '<div class="setup-row chips">' + chips + '</div>' : '') +
       (a.busy ? askProgressHtml(a.startedAt) : '') +
       (a.graphMessage ? '<p class="graph-question-status" role="status">' + esc(a.graphMessage) + '</p>' : '') +
       (a.error ? '<p class="bad">' + esc(a.error) + '</p>' : '') +
-      (a.answer ? '<div class="setup-answer prose">' + renderMarkdown(a.answer.answer) + '</div><div class="row spread"><p class="muted">' + (a.answer.elapsed_s != null ? Math.round(a.answer.elapsed_s) + ' s · ' : '') + esc(a.answer.mode || 'hybrid') + ' mode · synthesized from the graph, not a quote</p><span class="row"><button class="quiet" onclick="cosApp.copyAsk(false)">Copy answer</button><button class="quiet" onclick="cosApp.copyAsk(true)">Copy with context</button></span></div>' +
+      (a.answer ? '<div class="setup-answer prose">' + renderMarkdown(parsed.prose) + '</div>' + askRefsHtml(parsed.refs) + '<div class="row spread"><p class="muted">' + (a.answer.elapsed_s != null ? Math.round(a.answer.elapsed_s) + ' s · ' : '') + esc(a.answer.mode || 'hybrid') + ' mode · synthesized from the graph, not a quote</p><span class="row"><button class="quiet" onclick="cosApp.copyAsk(false)">Copy answer</button><button class="quiet" onclick="cosApp.copyAsk(true)">Copy with context</button></span></div>' +
         (a.cardsBusy ? '<p class="muted">Looking up the entities it names…</p>' : (a.cards && a.cards.length ? '<h4 class="ask-cards-title">In the graph</h4><div class="ask-cards">' + a.cards.map(askEntityCard).join('') + '</div>' : '')) : '') +
       '</section>';
   }
@@ -986,13 +1055,18 @@
   // ── modals ──────────────────────────────────────────────────────
   function modal(title, body) {
     if (!document.querySelector('.modal')) window.previousFocus = document.activeElement;
+    document.body.classList.add('modal-open');
     document.querySelector('#modalRoot').innerHTML = '<div class="modal-backdrop" onclick="if(event.target===this)cosApp.closeModal()"><section class="modal" role="dialog" aria-modal="true" aria-label="' + esc(title) + '"><div class="row spread"><h2>' + title + '</h2><button class="quiet" aria-label="Close dialog" onclick="cosApp.closeModal()">✕</button></div>' + body + '</section></div>';
     var first = document.querySelector('.modal button'); if (first) first.focus();
   }
   function closeModal() {
     if(state.modalOpen==='stewardship'&&state.stewardship)state.stewardship.close();
     if (state.modalOpen === 'merge' && state.merge && (state.merge.phase === 'preview' || state.merge.phase === 'loading')) { var pending = state.merge; state.merge = null; if (pending.resolve) pending.resolve(false); toast('Nothing was changed.'); }
-    state.modalOpen = null; var existed = !!document.querySelector('.modal'); document.querySelector('#modalRoot').innerHTML = ''; if (existed && window.previousFocus && window.previousFocus.isConnected && ['BODY', 'HTML'].indexOf(window.previousFocus.tagName) < 0) window.previousFocus.focus(); }
+    state.modalOpen = null; document.body.classList.remove('modal-open'); var existed = !!document.querySelector('.modal'); document.querySelector('#modalRoot').innerHTML = ''; if (existed && window.previousFocus && window.previousFocus.isConnected && ['BODY', 'HTML'].indexOf(window.previousFocus.tagName) < 0) window.previousFocus.focus(); }
+  function openSourceRecords() {
+    state.view = 'knowledge'; state.knowledgeTab = 'sources'; state.knowledgeTabChosen = true; render();
+    var el = document.querySelector('#sourceRecords'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'start' });
+  }
   // Guardrails (0.5.201): the user's own rules for what a captured memory must
   // be, an optional model pass against the philosophy, and a review-now run.
   function loadGuardrails() {
@@ -1102,6 +1176,7 @@
     setFilter: function (f) { state.view = 'learning'; state.filter = f; render(); },
     openKnowledge: function (id) { state.view = 'knowledge'; state.knowledgeTab = id ? 'sources' : 'graph'; state.knowledgeFocus = id || null; render(); },
     setKnowledgeTab: function (t) { state.knowledgeTab = t; state.knowledgeTabChosen = true; render(); },
+    openSourceRecords: openSourceRecords,
     backToLearning: function () { state.view = 'learning'; state.filter = 'recent'; if (state.knowledgeFocus) state.selected = state.knowledgeFocus; render(); },
     exploreInGraph: exploreInGraph, graphSearch: graphSearch,
     refresh: loadAll, loadMoreMemories:function(){loadMemoryPage(true);}, refreshGraph: loadGraphStatus, loadMore: loadMore, memoryQuery: memoryQuery,

@@ -1560,7 +1560,12 @@ struct TaskRow: Identifiable, Sendable {
         if let date = withFraction.date(from: trimmed) { return date }
         let basic = ISO8601DateFormatter()
         basic.formatOptions = [.withInternetDateTime]
-        return basic.date(from: trimmed)
+        if let date = basic.date(from: trimmed) { return date }
+        // Control Schedule writes `yyyy-MM-dd HH:mm`, not ISO-8601.
+        let local = DateFormatter()
+        local.locale = Locale(identifier: "en_US_POSIX")
+        local.dateFormat = "yyyy-MM-dd HH:mm"
+        return local.date(from: trimmed)
     }
 
     init?(_ value: JSONValue?) {
@@ -2128,6 +2133,124 @@ struct SessionListDropped: Sendable, Equatable {
         if limit > 0 { parts.append("\(limit) over the cap") }
         if oversized > 0 { parts.append("\(oversized) too large") }
         return parts.joined(separator: " · ") + " not shown"
+    }
+}
+
+/// Last successful Sessions list. First paint reads this file; the helper
+/// refreshes it after a full walk. Counts come from mtime/size/name, never
+/// from opening hidden transcript bodies.
+struct SessionListCache: Sendable {
+    static let fileName = "session-list-cache.json"
+    static let staleAfter: TimeInterval = 45
+    static let maxAge: TimeInterval = 7 * 24 * 3600
+    static let listCap = 80
+    static let perProviderCap = 20
+    static let maxFileBytes = 32 * 1024 * 1024
+    static let window: TimeInterval = 7 * 24 * 3600
+
+    struct IndexRecord: Sendable {
+        var provider: String
+        var mtime: Date
+        var size: Int
+        var pinned: Bool
+    }
+
+    var savedAt: Date
+    var enabled: Bool
+    var reason: String
+    var dropped: SessionListDropped
+    var sessions: [ClaudeSession]
+    var partial: Bool
+
+    var isStale: Bool { isStale(now: Date()) }
+    func isStale(now: Date) -> Bool { now.timeIntervalSince(savedAt) > Self.staleAfter }
+
+    static func fileURL(support: URL = PetSpriteStore.supportDirectory()) -> URL {
+        support.appendingPathComponent(fileName)
+    }
+
+    static func load(from url: URL? = nil, now: Date = Date()) -> SessionListCache? {
+        let file = url ?? fileURL()
+        guard let data = try? Data(contentsOf: file),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let savedText = object["savedAt"] as? String,
+              let savedAt = SearchRecency.parseStamp(savedText),
+              now.timeIntervalSince(savedAt) <= maxAge else { return nil }
+        let dropped = SessionListDropped(
+            age: intValue(object["dropped"], key: "age"),
+            limit: intValue(object["dropped"], key: "limit"),
+            oversized: intValue(object["dropped"], key: "oversized")
+        )
+        let rows = (object["sessions"] as? [[String: Any]] ?? []).compactMap { row -> ClaudeSession? in
+            ClaudeSession(.object(jsonObject(row)))
+        }
+        return SessionListCache(
+            savedAt: savedAt,
+            enabled: object["enabled"] as? Bool ?? true,
+            reason: object["reason"] as? String ?? "",
+            dropped: dropped,
+            sessions: rows,
+            partial: object["partial"] as? Bool ?? false
+        )
+    }
+
+    /// Cap/older/oversized from mtime, size, pin, and provider. No file body.
+    static func indexDropped(
+        _ records: [IndexRecord],
+        now: Date = Date(),
+        window: TimeInterval = window,
+        perProviderCap: Int = perProviderCap,
+        listCap: Int = listCap,
+        maxFileBytes: Int = maxFileBytes
+    ) -> SessionListDropped {
+        var age = 0, limit = 0, oversized = 0
+        var candidates: [IndexRecord] = []
+        for record in records {
+            if !record.pinned && record.provider == "cursor" && record.size > maxFileBytes {
+                oversized += 1
+                continue
+            }
+            if !record.pinned && now.timeIntervalSince(record.mtime) > window {
+                age += 1
+                continue
+            }
+            candidates.append(record)
+        }
+        var kept: [IndexRecord] = []
+        let groups = Dictionary(grouping: candidates, by: \.provider)
+        for rows in groups.values {
+            let pins = rows.filter(\.pinned).sorted { $0.mtime > $1.mtime }
+            let recent = rows.filter { !$0.pinned }.sorted { $0.mtime > $1.mtime }
+            kept.append(contentsOf: pins)
+            kept.append(contentsOf: recent.prefix(perProviderCap))
+            if recent.count > perProviderCap {
+                limit += recent.count - perProviderCap
+            }
+        }
+        kept.sort { $0.mtime > $1.mtime }
+        if kept.count > listCap {
+            limit += kept.count - listCap
+        }
+        return SessionListDropped(age: age, limit: limit, oversized: oversized)
+    }
+
+    private static func intValue(_ raw: Any?, key: String) -> Int {
+        let object = raw as? [String: Any] ?? [:]
+        if let n = object[key] as? Int { return max(0, n) }
+        if let n = object[key] as? Double { return max(0, Int(n)) }
+        if let s = object[key] as? String, let n = Int(s) { return max(0, n) }
+        return 0
+    }
+
+    private static func jsonObject(_ row: [String: Any]) -> [String: JSONValue] {
+        var out: [String: JSONValue] = [:]
+        for (key, value) in row {
+            if let text = value as? String { out[key] = .string(text) }
+            else if let flag = value as? Bool { out[key] = .bool(flag) }
+            else if let number = value as? Int { out[key] = .number(Double(number)) }
+            else if let number = value as? Double { out[key] = .number(number) }
+        }
+        return out
     }
 }
 
