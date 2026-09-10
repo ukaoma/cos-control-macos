@@ -41,6 +41,7 @@
     status: null, learningStatus: null, graphStatus: null,
     recent: [], recentTotal: null, recentCursor: null, review: [], reviewCount: null, memories: [], memoriesTotal: null,
     memoryQuery: '', memoryHits: null, memoryCursor:null, memorySearchCursor:null, memoryPageCapable:false, coverage: {},
+    applied: [], appliedTotal: null, appliedCursor: null, appliedDays: 7, appliedCoverage: {}, appliedLoaded: false, appliedLoading: false,
     detail: {}, memoryDetail: {}, passages: {}, loading: {}, errors: {},
     graphFocus: null, graphFocusChosen: false, ingesting: null, ingestLimit: 10, ingestWatch: null, graphQuery: '',
     progress: null, fetchWatch: null, modalOpen: null, graphAsk: { q: '', busy: false, answer: null, error: null, cards: [], cardsBusy: false }, graphNeighbors: [], guardrails: null, guardrailsRun: null, guardrailsBusy: null, guardrailsLoading: false, guardrailsError: null, guardrailsRubricLines: 0, memoryReviewBusy: null, setup: null, setupLoading: false, setupError: null, setupBusy: null, armed: null, askQ: '', askAnswer: null, askBusy: false, knowledgeTabChosen: false, graphController: null, copyId: null, copyOptions: { sources: true, graph: false }
@@ -53,6 +54,7 @@
     loadLearning(false);
     loadReview(false);
     loadMemoryPage(false);
+    loadApplied(false);
 
     loadGraphStatus();
   }
@@ -169,6 +171,31 @@
     }).finally(function(){if(serial===learningRequestSerial)state.learningPageLoading=false;});
   }
   function loadMore() {if(state.recentCursor)loadLearning(true);}
+  // ── Applied this week (0.5.216) ─────────────────────────────────
+  // The helper's `--kind used` window, never the first Recent page filtered
+  // in JS: a use that is not on page 1 must still be listed. Fails closed:
+  // an error or an unreadable trace leaves the list empty with its reason.
+  var appliedRequestSerial=0;
+  function loadApplied(more){
+    if(more&&(state.appliedLoading||!state.appliedCursor))return Promise.resolve();
+    var serial=++appliedRequestSerial;state.appliedLoading=true;
+    var args={kind:'used',days:state.appliedDays,limit:50};
+    if(more){args.sinceTs=state.appliedCursor.since_ts;args.sinceEventId=state.appliedCursor.since_event_id;}
+    return call('learning.list',args).then(function(d){
+      if(serial!==appliedRequestSerial)return;
+      var events=d.events||[];
+      // Fail closed: a server that ignored `kind` returns the whole window. Never label that Applied.
+      if(events.some(function(e){return e.event_type!=='used';})){state.applied=[];state.appliedTotal=null;state.appliedCursor=null;state.appliedLoaded=true;state.errors.applied='This server returned unfiltered learning rows. Applied stays empty rather than mislabel them.';render();return;}
+      var seen={};state.applied.forEach(function(e){seen[e.event_id]=true;});
+      var rows=events.filter(function(e){if(seen[e.event_id])return false;seen[e.event_id]=true;return true;});
+      state.applied=more?state.applied.concat(rows):rows;state.appliedTotal=d.total;state.appliedCursor=d.nextCursor;
+      state.appliedCoverage=d.coverage||{};state.appliedLoaded=true;state.errors.applied=null;
+      state.applied.forEach(function(e){if(e.lesson_id)ensureMemoryDetail(e.lesson_id);});
+      render();
+    },function(e){if(serial!==appliedRequestSerial)return;state.errors.applied=e.message;state.appliedLoaded=true;render();})
+    .finally(function(){if(serial===appliedRequestSerial)state.appliedLoading=false;});
+  }
+  function setAppliedDays(days){state.appliedDays=days===90?90:7;state.applied=[];state.appliedCursor=null;state.appliedTotal=null;state.appliedLoaded=false;loadApplied(false);render();}
   var reviewRequestSerial=0;
   function loadReview(more){
     if(more&&state.reviewLoading)return;var serial=++reviewRequestSerial;state.reviewLoading=true;
@@ -248,10 +275,27 @@
     if (s.learningToReview != null) return s.learningToReview;
     return null;
   }
+  // Reward is a ranking tiebreaker inside the startup hook. The page may say a
+  // lesson moved ranking only on the projector's literal flag, and never a number.
+  function rewardEnabled() { var s = state.status || {}; return s.learningRewardEnabled === true; }
+  // One sentence, one place. Present tense, no magnitude: the hook applies a bounded
+  // tiebreaker, not an observed reorder, so the page never says a rank 'moved'.
+  function rankingSentence() { return rewardEnabled() ? '<p>This lesson now ranks ahead of unused memories like it in later recall.</p>' : ''; }
+  // The parsed count travels in the projector title (list rows carry no detail block).
+  function appliedCountFromTitle(e) { var m = /Applied\s+([\d,]+)\s+time/.exec(String((e && e.title) || '')); return m ? Number(m[1].replace(/,/g, '')) : null; }
+  function bridgeConnected() { var s = state.status || {}; return !!s.contextScriptsDirectory; }
+  // The memory path this install chose. Only the COS Data bridge (vector store)
+  // has an `applied` detector; files, document links, and Knowledge do not.
+  function memoryPath() {
+    var s = state.status || {}, g = state.graphStatus || {};
+    if (bridgeConnected()) return 'bridge';
+    if (g.entities != null || g.engine) return 'knowledge';
+    return 'files';
+  }
   function memoryNav() {
     var review = needsYouCount();
     document.querySelector('#workspace').classList.toggle('knowledge', state.view === 'knowledge');
-    document.querySelector('#memoryNav').innerHTML = [['recent', 'Recent learning'], ['memories', 'All memories'], ['review', 'To review' + (review ? ' (' + fmt(review) + ')' : '')]].map(function (p) {
+    document.querySelector('#memoryNav').innerHTML = [['recent', 'Recent learning'], ['applied', 'Applied this week'], ['memories', 'All memories'], ['review', 'To review' + (review ? ' (' + fmt(review) + ')' : '')]].map(function (p) {
       var on = state.view !== 'knowledge' && state.filter === p[0];
       return '<button class="' + (on ? 'active' : '') + '" aria-pressed="' + on + '" onclick="cosApp.setFilter(\'' + p[0] + '\')">' + p[1] + '</button>';
     }).join('') + '<button class="' + (state.view === 'knowledge' ? 'active' : '') + '" aria-pressed="' + (state.view === 'knowledge') + '" onclick="cosApp.openKnowledge()">Knowledge</button>';
@@ -266,8 +310,7 @@
     parts.push('<span>Capture status in settings · <button class="link" onclick="cosApp.openLog()">View activity log</button></span>');
     document.querySelector('#summary').innerHTML = parts.join('');
     var s = state.status || {};
-    var bridge = s.contextScriptsDirectory || (s.contextState === 'bridge');
-    document.querySelector('#storage').textContent = 'Stored on this Mac · ' + (bridge ? 'Advanced search connected' : 'Plain files');
+    document.querySelector('#storage').textContent = state.status ? ('Stored on this Mac · ' + (bridgeConnected() ? 'Advanced search connected' : 'Plain files')) : 'Stored on this Mac';
     document.querySelector('#footnote').textContent = state.status ? ('Server ' + (s.installedVersion || '') + ' · ' + (s.runtimeState || '')).trim() : '';
   }
 
@@ -278,6 +321,7 @@
     var inbox = document.querySelector('#inbox'), detail = document.querySelector('#detail');
     document.querySelector('#workspace').style.gridTemplateColumns = ''; inbox.classList.remove('hidden');
     if (state.filter === 'memories') { renderMemories(inbox, detail); return; }
+    if (state.filter === 'applied') { renderApplied(inbox, detail); return; }
     var rows = state.filter === 'review' ? state.review : state.recent;
     var err = state.filter === 'review' ? state.errors.review : state.errors.recent;
     var loading = state.filter === 'review' ? (state.reviewCount == null && !err) : (state.recentTotal == null && !err);
@@ -406,7 +450,8 @@
     }
     if (row.event_type === 'used' || stage === 'applied') {
       var excerpt = ((row.source_refs || [])[0] || {}).excerpt || (row.detail && row.detail.excerpts && row.detail.excerpts[0]) || '';
-      return event('Recorded use in a later session', meta, (excerpt ? '<div class="quote">' + esc(excerpt) + '</div>' : '') + '<p>This record was used by ' + esc(row.engine || 'an engine') + (row.detail && row.detail.count ? ' · ' + fmt(row.detail.count) + ' time' + (row.detail.count === 1 ? '' : 's') : '') + '.</p>');
+      return event('Recorded use in a later session', meta, (excerpt ? '<div class="quote">' + esc(excerpt) + '</div>' : '') + '<p>This record was used by ' + esc(row.engine || 'an engine') + (row.detail && row.detail.count ? ' · ' + fmt(row.detail.count) + ' time' + (row.detail.count === 1 ? '' : 's') : '') + '.</p>'
+        + rankingSentence());
     }
     var title = stage === 'included' ? 'Included in a later session' : 'Retrieved in a later session';
     return event(title, meta, '<p>This record was ' + esc(stage || row.event_type) + ' by ' + esc(row.engine || 'an engine') + (row.detail && row.detail.count ? ' · ' + fmt(row.detail.count) + ' time' + (row.detail.count === 1 ? '' : 's') : '') + '.</p>');
@@ -430,6 +475,65 @@
   }
 
   // ── all memories ────────────────────────────────────────────────
+  // ── applied this week ───────────────────────────────────────────
+  function appliedExcerpt(e) { return ((e.source_refs || [])[0] || {}).excerpt || (e.detail && e.detail.excerpts && e.detail.excerpts[0]) || ''; }
+  function lessonText(id) { var m = id && state.memoryDetail[id]; if (!m || m._error) return ''; return m.content || m.summary || ''; }
+  function lessonError(id) { var m = id && state.memoryDetail[id]; return m && m._error ? String(m._error) : ''; }
+  function clip(text, n) { text = String(text || ''); return text.length > n ? text.slice(0, n - 1).replace(/\s+\S*$/, '') + '…' : text; }
+  function appliedRow(e, selected) {
+    var lesson = lessonText(e.lesson_id) || e.lesson_id || '(lesson)';
+    var meta = [e.engine && e.engine !== 'unknown' ? e.engine : null, stamp(e.ts)].filter(Boolean).join(' · ');
+    return '<button class="lesson ' + (selected ? 'selected' : '') + '" onclick="cosApp.select(\'' + esc(e.event_id) + '\')" aria-pressed="' + (selected ? 'true' : 'false') + '"><div class="kind">' + esc(KIND.used) + '</div><span class="title">' + esc(clip(lesson, 140)) + '</span><div class="meta">' + esc(meta) + '</div><span class="status green excerpt">' + esc(clip(appliedExcerpt(e), 120) || 'A later answer used this lesson') + '</span></button>';
+  }
+  // Empty copy by path. The bridge can detect use and simply saw none; the other
+  // paths cannot detect it at all, and the list must not be filled from elsewhere.
+  function appliedEmptyCopy() {
+    var cov = (state.appliedCoverage && state.appliedCoverage.used) || (state.coverage && state.coverage.used) || {};
+    if (state.errors.applied) return { h: 'Applied is not available right now.', p: state.errors.applied };
+    // No path verdict before COS Control has answered: a pending or failed status must
+    // never read as 'the bridge is off' on a Mac where it is on.
+    if (!state.status) return state.errors.status
+      ? { h: 'Could not read this Mac\'s status.', p: 'Applied says nothing about the memory path until COS Control answers. ' + state.errors.status }
+      : { h: 'Checking this install\'s memory path…', p: 'Applied says nothing about use until COS Control has answered.' };
+    var path = memoryPath();
+    if (path === 'files') return { h: 'This memory path cannot detect use.', p: 'Applied stays empty until the COS Data bridge (vector store) is on. Plain-file memories keep working.' };
+    if (path === 'knowledge') return { h: 'Knowledge citations are not lesson reward.', p: 'Applied is for bot-memory lessons. Turn on the COS Data bridge to detect when a later answer uses one.' };
+    if (cov.state === 'unavailable') return { h: 'The use trace could not be read on this Mac.', p: 'Nothing is invented here. Check the trace file under COS Data and refresh.' };
+    if (cov.state !== 'ok' && cov.state !== 'legacy') return { h: 'Use has not been recorded on this Mac yet.', p: 'The applied detector has not written to the trace. Nothing here is a measurement of zero.' };
+    return { h: 'No later answer has used a lesson ' + (state.appliedDays === 90 ? 'in 90 days' : 'this week') + '.', p: 'Retrieval without acknowledgment is not use. A lesson lands here when a later answer visibly applied it.' };
+  }
+  function appliedDetail(e) {
+    var lesson = lessonText(e.lesson_id), lessonErr = lessonError(e.lesson_id), excerpt = appliedExcerpt(e), d = e.detail || {};
+    var n = appliedCountFromTitle(e);
+    var count = n != null ? ('Recorded ' + fmt(n) + ' time' + (n === 1 ? '' : 's') + ' since first use') : 'Recorded';
+    var head = '<div class="row spread"><span class="badge green">' + esc(KIND.used) + '</span><span class="meta">' + esc(e.lesson_id || '') + '</span></div>' +
+      '<h2 style="margin-top:12px">' + esc(lesson ? clip(lesson, 200) : 'Lesson') + '</h2>' +
+      '<p class="intro">' + esc([e.engine && e.engine !== 'unknown' ? e.engine : null, d.sessions ? fmt(d.sessions) + ' session' + (d.sessions === 1 ? '' : 's') : null, stamp(e.ts)].filter(Boolean).join(' · ')) + '</p>';
+    var lessonBody = lesson ? '<div class="quote">' + esc(lesson) + '</div>' : lessonErr ? '<div class="notice">This lesson\'s record could not be read (' + esc(lessonErr) + '). The use below is still recorded.</div>' : '<p class="muted">Loading the record…</p>';
+    var timeline = event('The lesson', 'Bot memory', lessonBody + (e.lesson_id ? '<button class="link" onclick="cosApp.openMemoryRecord(\'' + esc(e.lesson_id) + '\')">Open source record</button>' : ''));
+    timeline += event('A later answer used it', esc(stamp(e.ts)), (excerpt ? '<div class="quote">' + esc(excerpt) + '</div>' : '') + '<p>' + esc(count) + ' from the assistant\'s own words. An acknowledgment is evidence for that answer, not a guarantee about every future one.</p>');
+    if (rewardEnabled()) timeline += event('Ranking', 'Reward on', rankingSentence(), true, true);
+    return head + '<div class="timeline">' + timeline + '</div>';
+  }
+  function renderApplied(inbox, detail) {
+    var rows = state.applied, err = state.errors.applied, loading = !state.appliedLoaded && !err;
+    if (rows.length && !rows.some(function (x) { return x.event_id === state.selected; })) state.selected = rows[0].event_id;
+    var toggle = '<button class="link" onclick="cosApp.appliedDays(' + (state.appliedDays === 90 ? 7 : 90) + ')">' + (state.appliedDays === 90 ? 'Show this week' : 'Show 90 days') + '</button>';
+    inbox.innerHTML = '<div class="date row spread"><span>APPLIED · ' + (state.appliedDays === 90 ? '90 DAYS' : 'THIS WEEK') + (state.appliedTotal != null ? ' · ' + fmt(state.appliedTotal) : '') + '</span>' + toggle + '</div>' +
+      (err ? '<div class="host-state"><div><h3>Not available</h3><p>' + esc(err) + '</p><button onclick="cosApp.retryApplied()">Retry</button></div></div>' : '') +
+      (loading ? '<div class="host-state">Loading…</div>' : '') +
+      rows.map(function (e) { return appliedRow(e, e.event_id === state.selected); }).join('') +
+      (state.appliedCursor ? '<div class="actions"><button class="quiet" onclick="cosApp.loadMoreApplied()">Load more</button></div>' : '') +
+      coverageNote();
+    if (!rows.length) {
+      var copy = appliedEmptyCopy();
+      detail.innerHTML = loading ? '<div class="host-state">Loading…</div>' : '<div class="empty"><div><h2>' + esc(copy.h) + '</h2><p>' + esc(copy.p) + '</p>' + (err ? '<button onclick="cosApp.retryApplied()">Retry</button>' : '') + '</div></div>';
+      return;
+    }
+    var e = rows.find(function (x) { return x.event_id === state.selected; });
+    if (e.lesson_id) ensureMemoryDetail(e.lesson_id);
+    detail.innerHTML = '<div class="context-actions row spread"><span class="eyebrow">Applied this week</span><div class="row">' + (e.lesson_id ? '<button class="quiet" onclick="cosApp.openMemoryRecord(\'' + esc(e.lesson_id) + '\')">Open source record</button>' : '') + '</div></div>' + appliedDetail(e);
+  }
   function renderMemories(inbox, detail) {
     var focusInput=inbox.querySelector('input[aria-label="Search memories"]');
     var hadFocus=focusInput && document.activeElement===focusInput;
@@ -1150,8 +1254,15 @@
     var ls = state.learningStatus || {};
     var counts = ls.counts_by_type || {};
     var rows = Object.keys(counts).sort().map(function (k) { return '<div class="logrow">' + esc(KIND[k] || k) + '<small>' + fmt(counts[k]) + ' in the window</small></div>'; }).join('');
-    var stores = Object.keys(ls.stores || {}).map(function (k) { var st = ls.stores[k]; return '<div class="logrow">' + esc(STORE[k] || k) + '<small>' + (st.readable ? 'readable · ' + fmt(st.count || 0) + (st.last_ts ? ' · last ' + esc(stamp(st.last_ts)) : '') : 'not readable (' + esc(st.state || '') + ')') + '</small></div>'; }).join('');
-    modal('Recent learning activity', '<p>' + esc(ls.notice || ('Snapshot from '+stamp(ls.generated_at)+'. Window: '+stamp(ls.window_start)+' to '+stamp(ls.window_end)+'. Coverage: '+(ls.complete?'complete':'partial')+'.')) + '</p>' + (rows || '<p>No events counted.</p>') + '<h3 style="margin-top:14px">Stores</h3>' + stores);
+    var stores = Object.keys(ls.stores || {}).map(function (k) { var st = ls.stores[k]; return '<div class="logrow">' + esc(STORE[k] || k) + '<small>' + (st.readable || st.state === 'legacy' ? 'readable' + (st.state === 'legacy' ? ' (legacy sink)' : '') + ' · ' + fmt(st.count || 0) + (st.last_ts ? ' · last ' + esc(stamp(st.last_ts)) : '') : 'not readable (' + esc(st.state || '') + ')') + '</small></div>'; }).join('');
+    // 0.5.216: name the lessons a later answer used in the Applied window, not just
+    // type counts. Capped; overflow points at the Applied filter. Never a score.
+    var used = state.applied || [], cap = 10;
+    var usedRows = used.slice(0, cap).map(function (e) { var l = lessonText(e.lesson_id) || e.lesson_id || ''; var x = appliedExcerpt(e); return '<div class="logrow">' + esc(String(l).slice(0, 90)) + '<small>' + esc(String(x).slice(0, 110) || 'used by a later answer') + '</small></div>'; }).join('');
+    var usedHead = '<h3 style="margin-top:14px">Applied ' + (state.appliedDays === 90 ? 'in 90 days' : 'this week') + '</h3>';
+    var windowTotal = Math.max(state.appliedTotal != null ? Number(state.appliedTotal) : 0, used.length);
+    var usedBody = used.length ? usedRows + (windowTotal > cap ? '<p class="muted">and ' + fmt(windowTotal - cap) + ' more in Applied ' + (state.appliedDays === 90 ? 'in 90 days' : 'this week') + '.</p>' : '') : '<p class="muted">' + esc(appliedEmptyCopy().h) + '</p>';
+    modal('Recent learning activity', '<p>' + esc(ls.notice || ('Snapshot from '+stamp(ls.generated_at)+'. Window: '+stamp(ls.window_start)+' to '+stamp(ls.window_end)+'. Coverage: '+(ls.complete?'complete':'partial')+'.')) + '</p>' + usedHead + usedBody + '<h3 style="margin-top:14px">Event counts</h3>' + (rows || '<p>No events counted.</p>') + '<h3 style="margin-top:14px">Stores</h3>' + stores);
   }
 
   // ── public surface for inline handlers ──────────────────────────
@@ -1173,7 +1284,8 @@
     policySet:policySet,policyRetry:function(){policySet();},policyLoad:loadPolicy,
     select: function (id) { state.selected = id; render(); },
     selectMemory: function (id) { state.selectedMemory = id; render(); },
-    setFilter: function (f) { state.view = 'learning'; state.filter = f; render(); },
+    setFilter: function (f) { state.view = 'learning'; state.filter = f; if (f === 'applied' && !state.appliedLoaded && !state.appliedLoading) loadApplied(false); render(); },
+    appliedDays: setAppliedDays, loadMoreApplied: function () { loadApplied(true); }, retryApplied: function () { state.errors.applied = null; state.appliedLoaded = false; loadApplied(false); render(); },
     openKnowledge: function (id) { state.view = 'knowledge'; state.knowledgeTab = id ? 'sources' : 'graph'; state.knowledgeFocus = id || null; render(); },
     setKnowledgeTab: function (t) { state.knowledgeTab = t; state.knowledgeTabChosen = true; render(); },
     openSourceRecords: openSourceRecords,

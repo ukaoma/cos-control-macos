@@ -1,0 +1,114 @@
+{
+ "coverage": {
+  "bot_memory": {
+   "count": 120,
+   "state": "ok"
+  },
+  "capture_ledger": {
+   "count": 1531,
+   "detail": "coverage only",
+   "state": "ok"
+  },
+  "correction_journal": {
+   "count": 907,
+   "state": "ok"
+  },
+  "eval_scores": {
+   "count": 78,
+   "state": "ok"
+  },
+  "git_versions": {
+   "count": 112,
+   "state": "ok"
+  },
+  "memory_trace": {
+   "count": 124,
+   "state": "legacy"
+  },
+  "reflect_log": {
+   "count": 130,
+   "detail": "36 linked to patterns; 0 malformed rows skipped",
+   "state": "ok"
+  },
+  "retrieval_log": {
+   "count": 28,
+   "state": "ok"
+  },
+  "review_ledger": {
+   "count": 110,
+   "state": "ok"
+  },
+  "self_improvement_queue": {
+   "count": 121,
+   "state": "ok"
+  },
+  "used": {
+   "count": 1,
+   "detail": "Application evidence is distinct from retrieval; rates require eligible checked runs",
+   "state": "legacy"
+  }
+ },
+ "days": 90,
+ "events": [
+  {
+   "applies_to": [],
+   "category": "unknown",
+   "engine": "unknown",
+   "event_id": "evt_0ce7d0889646b9f1",
+   "event_type": "used",
+   "lesson_id": "mem_20260616_203905_258554",
+   "ordinal": 1,
+   "outcome": null,
+   "prior_event_id": null,
+   "provenance": "complete",
+   "scope": "unknown",
+   "source_refs": [
+    {
+     "excerpt": "From past sessions: we decided to read on-page A/B tests on conversion rate, not HubSpot closed customers, because BDRs qualify leads blind to which variant produced them, so per-arm customer and opp counts are variant-blind downstream nois",
+     "id": "[local path hidden]",
+     "kind": "assistant_turn"
+    }
+   ],
+   "store": "memory_trace",
+   "target": {
+    "id": "mem_20260616_203905_258554",
+    "kind": "memory",
+    "version": null
+   },
+   "title": "Applied 1 time \u00b7 deterministic_check",
+   "ts": "2026-09-10T02:05:28.000000+00:00"
+  },
+  {
+   "applies_to": [],
+   "category": "unknown",
+   "engine": "unknown",
+   "event_id": "evt_older_used",
+   "event_type": "used",
+   "lesson_id": "mem_20260526_173126_989235",
+   "ordinal": 1,
+   "outcome": null,
+   "prior_event_id": null,
+   "provenance": "complete",
+   "scope": "unknown",
+   "source_refs": [
+    {
+     "kind": "assistant_turn",
+     "id": "[local path hidden]",
+     "excerpt": "From past sessions: keep the Store IQ guardrail in marketing's voice, never product's, because the thread reads as volunteering pricing power."
+    }
+   ],
+   "store": "memory_trace",
+   "target": {
+    "id": "mem_20260616_203905_258554",
+    "kind": "memory",
+    "version": null
+   },
+   "title": "Applied 3 times \u00b7 deterministic_check",
+   "ts": "2026-08-20T15:00:00+00:00"
+  }
+ ],
+ "nextCursor": null,
+ "shown": 2,
+ "state": "ready",
+ "total": 2
+}

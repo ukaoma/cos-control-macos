@@ -1499,7 +1499,7 @@ struct ActivityWindow: View {
                 model.openClaudeSession(session)
             } label: {
                 HStack(spacing: 13) {
-                    providerGlyph(session.provider)
+                    providerGlyph(session)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(session.title)
                             .font(COSType.body(13.5, weight: .semibold))
@@ -1618,18 +1618,30 @@ struct ActivityWindow: View {
         }
     }
 
-    private func providerGlyph(_ provider: String) -> some View {
-        let symbol = provider == "codex" ? "chevron.left.forwardslash.chevron.right"
-            : provider == "cursor" ? "macwindow"
-            : "text.bubble"
+    private func providerGlyph(_ session: ClaudeSession) -> some View {
+        let mark = session.petProviderMark
+        let tint = providerTint(session.provider)
+        let label = session.provider == "codex" ? "ChatGPT" : session.providerLabel
         return ZStack {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(providerTint(provider).opacity(0.16))
+                .fill(tint.opacity(0.16))
                 .frame(width: 28, height: 28)
-            Image(systemName: symbol)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(providerTint(provider))
+            Group {
+                switch mark {
+                case .asset(let name):
+                    Image(nsImage: COSBrand.svg(name))
+                        .renderingMode(.template)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 14, height: 14)
+                case .symbol(let name):
+                    Image(systemName: name)
+                        .font(.system(size: 12, weight: .semibold))
+                }
+            }
+            .foregroundStyle(tint)
         }
+        .accessibilityLabel(label)
     }
 
     private func providerBadge(_ session: ClaudeSession) -> some View {
@@ -4417,6 +4429,10 @@ struct MemoriesWebView: NSViewRepresentable {
         "status": { _ in ["status"] },
         "learning.list": { a in
             var cmd = ["context-learning", "--limit", MemoriesWebView.bounded(a["limit"], 50, 1, 50), "--days", MemoriesWebView.bounded(a["days"], 90, 1, 3650)]
+            // 0.5.216: the page may ask for one projector event kind (Applied this week
+            // is `used`). Only the closed vocabulary is forwarded; anything else is
+            // dropped, and the page fails closed when the rows come back unfiltered.
+            if let kind = MemoriesWebView.learningKind(a["kind"]) { cmd += ["--kind", kind] }
             if let ts = a["sinceTs"] as? String, !ts.isEmpty { cmd += ["--since-ts", ts] }
             if let id = a["sinceEventId"] as? String, !id.isEmpty { cmd += ["--since-event-id", id] }
             return cmd
@@ -4512,6 +4528,21 @@ struct MemoriesWebView: NSViewRepresentable {
 
     static func text(_ value: Any?, _ limit: Int) -> String {
         String((value as? String ?? "").prefix(limit)).replacingOccurrences(of: "\n", with: " ")
+    }
+
+    /// The projector's event vocabulary (learning_events.EVENT_TYPES). A page
+    /// may ask for a comma-joined subset; any other token drops the whole
+    /// filter so the helper lists the full window instead of erroring.
+    static let learningKinds: Set<String> = [
+        "captured", "proposed", "promotable", "saved", "retrieved", "used", "checked",
+        "dismissed", "reverted", "consolidated", "previewed", "accepted", "pruned",
+    ]
+
+    static func learningKind(_ value: Any?) -> String? {
+        guard let raw = value as? String, !raw.isEmpty, raw.count <= 160 else { return nil }
+        let parts = raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard !parts.isEmpty, parts.allSatisfy({ learningKinds.contains($0) }) else { return nil }
+        return parts.joined(separator: ",")
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(model: model, openSection: openSection) }

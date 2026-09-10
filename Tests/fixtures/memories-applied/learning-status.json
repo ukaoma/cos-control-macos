@@ -1,0 +1,79 @@
+{
+ "counts_by_type": {
+  "checked": 83,
+  "dismissed": 110,
+  "proposed": 106,
+  "retrieved": 120,
+  "saved": 17,
+  "used": 1
+ },
+ "engines": [
+  "task",
+  "unknown"
+ ],
+ "no_store_active": false,
+ "orphan_decisions": 0,
+ "stores": {
+  "bot_memory": {
+   "count": 0,
+   "readable": false,
+   "state": "skipped"
+  },
+  "capture_ledger": {
+   "count": 1531,
+   "readable": true,
+   "state": "ok"
+  },
+  "correction_journal": {
+   "count": 907,
+   "last_ts": "2026-09-09T15:06:03.280889+00:00",
+   "readable": true,
+   "state": "ok"
+  },
+  "eval_scores": {
+   "count": 78,
+   "last_ts": "2026-08-31T22:39:30.197863+00:00",
+   "readable": true,
+   "state": "ok"
+  },
+  "git_versions": {
+   "count": 112,
+   "readable": true,
+   "state": "ok"
+  },
+  "memory_trace": {
+   "count": 124,
+   "last_ts": "2026-09-10T03:27:54.000000+00:00",
+   "readable": false,
+   "state": "legacy"
+  },
+  "reflect_log": {
+   "count": 130,
+   "last_ts": "2026-09-08T22:37:03.327243+00:00",
+   "readable": true,
+   "state": "ok"
+  },
+  "review_ledger": {
+   "count": 110,
+   "last_ts": "2026-09-10T02:20:45.125354+00:00",
+   "readable": true,
+   "state": "ok"
+  },
+  "self_improvement_queue": {
+   "count": 121,
+   "last_ts": "2026-09-08T05:00:00.000000+00:00",
+   "readable": true,
+   "state": "ok"
+  },
+  "used": {
+   "count": 1,
+   "readable": false,
+   "state": "legacy"
+  }
+ },
+ "to_review": {
+  "count": 12,
+  "pattern": 1,
+  "task-proposal": 11
+ }
+}

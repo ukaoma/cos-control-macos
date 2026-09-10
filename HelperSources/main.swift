@@ -6955,6 +6955,14 @@ final class COSControlHelper {
         }
     }
 
+    /// Version and build strings from a bundle's Info.plist, or nil when unreadable.
+    private func bundleVersionStrings(_ app: URL) -> (version: String, build: String)? {
+        guard let plist = NSDictionary(contentsOf: app.appendingPathComponent("Contents/Info.plist")),
+              let version = plist["CFBundleShortVersionString"] as? String,
+              let build = plist["CFBundleVersion"] as? String else { return nil }
+        return (version, build)
+    }
+
     private func verifyStagedControlApp(_ app: URL, version: String, build: Int) throws {
         let verify = try execute("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path], timeout: 30)
         guard verify.code == 0 else {
@@ -7197,8 +7205,18 @@ final class COSControlHelper {
         try ensurePrivateDirectory(updatesPrevious)
         let previousApp = updatesPrevious.appendingPathComponent("COS Control.app")
         if fm.fileExists(atPath: live.path) {
-            if fm.fileExists(atPath: previousApp.path) { try fm.removeItem(at: previousApp) }
-            try fm.copyItem(at: live, to: previousApp)
+            // 0.5.217: back up the live bundle only when it is a different build. A second
+            // apply of the same build (the relaunched app re-ran the swap on 2026-09-09)
+            // must not replace the genuine rollback copy with the build being installed.
+            let liveBuild = Int(bundleVersionStrings(live)?.build ?? "") ?? -1
+            if liveBuild != build {
+                if fm.fileExists(atPath: previousApp.path) { try fm.removeItem(at: previousApp) }
+                try fm.copyItem(at: live, to: previousApp)
+                try? writeAppUpdateJSON(updatesPrevious.appendingPathComponent("version.json"), [
+                    "version": bundleVersionStrings(live)?.version ?? "", "build": liveBuild,
+                    "backedUpAt": ISO8601DateFormatter().string(from: Date()),
+                ])
+            }
             _ = try fm.replaceItemAt(live, withItemAt: staged)
         } else {
             try fm.copyItem(at: staged, to: live)
@@ -8006,6 +8024,17 @@ final class COSControlHelper {
         return nil
     }
 
+    /// The projector's `reward_enabled` (COS_MEMORY_REWARD), carried inside the
+    /// needs-you block by the overlay, or at the learning root should a future
+    /// server stop stripping it (6.45.1 strips both). A JSON boolean counts
+    /// (JSON 0/1 also decode as Bool); a string never does; absence stays nil.
+    static func learningRewardEnabled(_ learning: [String: Any]?) -> Bool? {
+        guard let learning else { return nil }
+        if let block = learning["needs_you"] as? [String: Any], let flag = block["reward_enabled"] as? Bool { return flag }
+        if let flag = learning["reward_enabled"] as? Bool { return flag }
+        return nil
+    }
+
     static func needsYouCount(fromBlock block: [String: Any]) -> Int? {
         if let items = block["items"] as? [Any] { return items.count }
         guard let n = block["count"] as? Int else { return nil }
@@ -8014,6 +8043,7 @@ final class COSControlHelper {
     }
 
     static let needsYouCacheTTL: TimeInterval = 90
+    static let needsYouStaleFlagLimit: TimeInterval = 3600
     static let needsYouCacheName = "needs-you-cache.json"
 
     /// Inject projector `needs_you` when the glasses-server status block omitted it.
@@ -8038,7 +8068,12 @@ final class COSControlHelper {
             writeNeedsYouCache(fresh)
             return fresh
         }
-        return readNeedsYouCache()?.block
+        // Stale fallback: the count is still worth showing, but a config flag older
+        // than an hour must not keep the ranking sentence alive on its own.
+        guard let stale = readNeedsYouCache() else { return nil }
+        var block = stale.block
+        if Date().timeIntervalSince(stale.at) > Self.needsYouStaleFlagLimit { block.removeValue(forKey: "reward_enabled") }
+        return block
     }
 
     private func readNeedsYouCache() -> (at: Date, block: [String: Any])? {
@@ -8084,7 +8119,9 @@ final class COSControlHelper {
         guard let payload = Self.parseJSONObject(result.output),
               payload["count"] != nil || payload["items"] != nil else { return nil }
         var block: [String: Any] = [:]
-        for key in ["count", "gates", "system_backlog", "window_days", "limit", "partial", "not_implemented", "items", "overflow"] {
+        // `reward_enabled` (0.5.216) is the projector's read of COS_MEMORY_REWARD; the
+        // Memories card says a lesson "moved later recall ranking" only when it is true.
+        for key in ["count", "gates", "system_backlog", "window_days", "limit", "partial", "not_implemented", "items", "overflow", "reward_enabled"] {
             if let value = payload[key] { block[key] = value }
         }
         return block.isEmpty ? nil : block
@@ -8117,6 +8154,10 @@ final class COSControlHelper {
             "learningPatterns": review?["patterns"] ?? NSNull(),
             "learningTaskProposals": review?["task_proposals"] ?? NSNull(),
             "learningLastTs": learning?["last_ts"] ?? NSNull(),
+            // 0.5.216: true only when the projector says the trace reward term is on.
+            // NSNull otherwise, so the page never claims ranking moved on a server
+            // that cannot say. The magnitude never leaves the hook.
+            "learningRewardEnabled": learningRewardEnabled(learning) ?? NSNull(),
             "graphAvailable": graph?["available"] ?? NSNull(),
             "graphState": graph?["state"] ?? NSNull(),
             "graphEntities": graph?["entities"] ?? NSNull(),
@@ -15309,6 +15350,18 @@ final class COSControlHelper {
         let absentStatus = Self.learningStatusDetails(["memory": ["available": true]])
         try expect(absentStatus["learningToReview"] is NSNull && absentStatus["graphEntities"] is NSNull,
                    "absent blocks are NSNull, never zero")
+        // 0.5.216: the ranking sentence is gated on a literal projector flag. A block
+        // without it is NSNull (the page stays silent), never an inferred true.
+        try expect(fullStatus["learningRewardEnabled"] is NSNull, "no reward flag means NSNull, not true")
+        var rewardedBlock = learningBlock
+        rewardedBlock["needs_you"] = ["count": 5, "limit": 7, "reward_enabled": true]
+        try expect(Self.learningStatusDetails(["learning": rewardedBlock])["learningRewardEnabled"] as? Bool == true,
+                   "reward_enabled inside the needs-you overlay passes through")
+        rewardedBlock["needs_you"] = ["count": 5, "limit": 7, "reward_enabled": false]
+        try expect(Self.learningStatusDetails(["learning": rewardedBlock])["learningRewardEnabled"] as? Bool == false,
+                   "a switched-off reward is false, not absent")
+        try expect(Self.learningRewardEnabled(["reward_enabled": "yes"]) == nil, "only a literal boolean counts")
+        try expect(Self.learningRewardEnabled(["reward_enabled": true]) == true, "a newer server may carry the flag at the root")
         try expect(absentStatus["learningState"] is NSNull && absentStatus["graphIndexState"] is NSNull,
                    "absent states are NSNull")
         try expect(Self.learningToReview(["to_review": ["patterns": 1, "task_proposals": 120], "count": 121]) == nil,

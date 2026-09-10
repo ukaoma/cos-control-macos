@@ -10,6 +10,7 @@ mkdir -p "$TMP/home"
 
 node "$ROOT/Tests/MemoryWorkspaceStartup.cjs"
 node "$ROOT/Tests/MemoryOwnerRaces.cjs"
+node "$ROOT/Tests/MemoriesAppliedCanary.cjs"
 
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/HelperSources/main.swift" \
@@ -4417,6 +4418,127 @@ if "function relatedUseRows(" not in page or "function useEventBody(" not in pag
 if "No check recorded" in page or "No repeat data" in page or "Scope not resolved on this Mac" in page:
     fail("unobserved Expected effect / Checks / Repeat rows must stay hidden")
 print("COS Control: Memories needs-you chip + captured-card evidence contract pinned")
+PY
+
+# --- 0.5.216/0.5.217 reward chrome: Applied this week, kind passthrough, gated ranking sentence, path-aware empties ------
+/usr/bin/python3 - "$ROOT" <<'PY'
+from pathlib import Path
+import re, sys
+root = Path(sys.argv[1])
+helper = (root / "HelperSources/main.swift").read_text()
+page = (root / "Resources/memories/memories-app.js").read_text()
+host = (root / "Sources/ActivityWindow.swift").read_text()
+
+def fail(msg):
+    sys.exit(msg)
+
+# 1. The page can ask the helper for one projector kind; the host forwards only the closed vocabulary.
+ops = host[host.index('"learning.list": { a in'):host.index('"learning.review"')]
+if 'MemoriesWebView.learningKind(a["kind"])' not in ops or '"--kind"' not in ops:
+    fail("helperOps learning.list must forward kind through learningKind")
+if "static func learningKind(" not in host or 'learningKinds.contains' not in host:
+    fail("learningKind must validate against the projector vocabulary")
+if not re.search(r'static let learningKinds: Set<String> = \[[^\]]*"used"[^\]]*"checked"', host, re.S):
+    fail("learningKinds must include used and checked")
+
+# 2. Applied this week is its own helper window, never the first Recent page filtered in JS.
+if "function loadApplied(" not in page or "{kind:'used',days:state.appliedDays" not in page:
+    fail("Applied must call learning.list with kind used and its own day window")
+applied_code = page[page.index("function loadApplied("):page.index("function setAppliedDays(")] + page[page.index("function renderApplied("):page.index("function renderMemories(")]
+if "state.recent" in applied_code:
+    fail("Applied must not read the loaded Recent page")
+if page.count("state.applied=more?state.applied.concat(rows):rows") != 1 or "state.applied =" in page.replace("state.applied=more", ""):
+    fail("loadApplied must be the only writer of state.applied")
+if "['applied', 'Applied this week']" not in page or "function renderApplied(" not in page:
+    fail("Applied this week must be a learning filter with its own renderer")
+if "appliedDays: 7" not in page:
+    fail("Applied defaults to a 7-day window")
+
+# 3. Path-aware empties: bridge saw none; files / Knowledge cannot detect; unreadable trace invents nothing.
+for sentence in ("This memory path cannot detect use.", "Knowledge citations are not lesson reward.",
+                 "Retrieval without acknowledgment is not use.", "The use trace could not be read on this Mac.",
+                 "Use has not been recorded on this Mac yet.", "Checking this install", "Could not read this Mac"):
+    if sentence not in page:
+        fail("missing path-aware empty state: " + sentence)
+if "function memoryPath()" not in page:
+    fail("the page must resolve the install's memory path before choosing Applied copy")
+
+# 4. Reward chrome is a sentence gated on the projector flag, never a number.
+if "function rewardEnabled()" not in page or "learningRewardEnabled === true" not in page:
+    fail("the ranking sentence must be gated on the literal learningRewardEnabled flag")
+if page.count("This lesson now ranks ahead of unused memories like it in later recall.") != 1:
+    fail("the ranking sentence must live in exactly one place (rankingSentence)")
+if page.count("rankingSentence()") < 3:
+    fail("both cards must render the sentence through rankingSentence()")
+for leak in ("+0.03", "+0.05", "-0.05", "reward_term", "REWARD_PENALTY", "moved later recall", "Reward on +", "rank behind"):
+    if leak in page:
+        fail("ranking magnitudes must never reach the page: " + leak)
+if "static func learningRewardEnabled(" not in helper or '"learningRewardEnabled": learningRewardEnabled(learning) ?? NSNull()' not in helper:
+    fail("helper status must expose learningRewardEnabled as a literal or NSNull")
+overlay = helper[helper.index("private func runNeedsYouCLI()"):helper.index("static func parseJSONObject")]
+if '"reward_enabled"' not in overlay:
+    fail("the needs-you overlay key list must carry reward_enabled")
+if 'helper.run(["status"], timeout:' not in (root / "Sources/ControllerModel.swift").read_text():
+    fail("status refresh must carry a deadline so a blocked helper errors instead of hanging")
+swap = helper[helper.index("private func swapStagedApp"):helper.index("private func swapStagedApp") + 4000]
+if "liveBuild != build" not in swap or "version.json" not in swap:
+    fail("the updater must not overwrite the rollback copy with the same build, and must name it")
+if "needsYouStaleFlagLimit" not in helper:
+    fail("a stale needs-you cache must drop the reward flag")
+
+# 5. The activity log names lessons; the Home chip stays Needs you (0.5.215 pins above still hold).
+if "Applied ' + (state.appliedDays === 90 ? 'in 90 days' : 'this week') + '</h3>'" not in page:
+    fail("the activity log must list the lessons a later answer used")
+nav = page[page.index("function memoryNav()"):page.index("function summary()")]
+if "applied" in nav and "needsYouCount" in nav and "state.applied" in nav:
+    fail("the Applied count must never feed the To review number or the Home chip")
+if "'1 time'" in page:
+    fail("the Applied card must not fabricate a count")
+if "function appliedCountFromTitle(" not in page:
+    fail("the count comes from the projector title or is omitted")
+print("COS Control: reward chrome contract pinned (Applied this week, kind passthrough, gated ranking sentence, path-aware empties, honest count)")
+PY
+
+# --- 0.5.216 Sessions rows wear Claude / Cursor / ChatGPT marks -------------
+# The list used SF Symbol bubbles. Codex must read as ChatGPT (bundled OpenAI
+# blossom), Cursor as the bundled cube, Claude as the bundled spark. Do not
+# scrape vendor logos; these three SVGs already ship for the pet.
+/usr/bin/python3 - "$ROOT" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+activity = (root / "Sources/ActivityWindow.swift").read_text()
+models = (root / "Sources/Models.swift").read_text()
+
+def fail(msg):
+    sys.exit(msg)
+
+glyph = activity[activity.index("private func providerGlyph(_ session: ClaudeSession)"):]
+glyph = glyph[:glyph.index("private func providerBadge")]
+if "session.petProviderMark" not in glyph:
+    fail("Sessions rows must resolve marks through ClaudeSession.petProviderMark")
+if "COSBrand.svg(name)" not in glyph:
+    fail("Sessions rows must render the bundled brand SVG, not an SF bubble")
+if "text.bubble" in glyph or "macwindow" in glyph or "chevron.left.forwardslash" in glyph:
+    fail("generic SF Symbols must not stand in for Claude / Cursor / ChatGPT")
+if '"ChatGPT"' not in glyph:
+    fail("Codex rows must be announced as ChatGPT")
+if "providerGlyph(session)" not in activity:
+    fail("the session row must pass the whole session into providerGlyph")
+if "providerGlyph(session.provider)" in activity:
+    fail("providerGlyph must not take a raw provider string; that path drew bubbles")
+if ".asset(\"mark-codex\")" not in models or ".asset(\"mark-cursor\")" not in models or ".asset(\"mark-claude\")" not in models:
+    fail("PetProvider.mark lost a platform asset")
+for asset in ("mark-claude", "mark-codex", "mark-cursor"):
+    svg = (root / f"Resources/{asset}.svg").read_text()
+    if "<svg" not in svg or len(svg) < 80:
+        fail(f"Resources/{asset}.svg is empty or missing")
+codex = (root / "Resources/mark-codex.svg").read_text()
+if "OpenAI" not in codex:
+    fail("mark-codex.svg must remain the ChatGPT/OpenAI blossom, not a Codex wordmark")
+if "Codex" in codex:
+    fail("mark-codex.svg picked up a Codex wordmark")
+print("COS Control: Sessions provider marks pinned")
 PY
 
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"

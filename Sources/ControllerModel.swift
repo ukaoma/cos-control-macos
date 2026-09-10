@@ -446,7 +446,9 @@ final class ControllerModel: ObservableObject {
         if !quiet { busy = true }
         defer { if !quiet { busy = false } }
         do {
-            let response = try await helper.run(["status"])
+            // 0.5.217: a helper blocked in a TCC prompt (Documents access on the meetings
+            // library) hung this call forever and left every row at its decode default.
+            let response = try await helper.run(["status"], timeout: 45)
             status = ServerStatus(response.details)
             if !quiet { error = nil }
             await loadOrphans(quiet: true)

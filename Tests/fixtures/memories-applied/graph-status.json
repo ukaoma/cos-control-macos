@@ -1,0 +1,21 @@
+{
+ "engine": "lightrag",
+ "entities": 41025,
+ "relationships": 89609,
+ "index_state": "fresh",
+ "lock": {
+  "error": null,
+  "owner_pid": null,
+  "state": "free"
+ },
+ "queue": {
+  "conflict_copies": 0,
+  "deferred": 0,
+  "failed": 1,
+  "live_total": 39,
+  "missing_sources": 9,
+  "oldest_pending_age_s": 186948,
+  "oldest_pending_at": "2026-09-07T23:38:37+00:00",
+  "pending": 38
+ }
+}

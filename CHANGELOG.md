@@ -1,3 +1,33 @@
+## 0.5.217 (build 255)
+
+QA fixes on the 0.5.216 reward chrome, from four validators against the installed build.
+
+- Applied never asserts a path or a measurement it has not read: before status answers it says it is checking; a failed status says so; an empty trace says use has not been recorded yet rather than none this week.
+- The Applied card no longer fabricates "Recorded 1 time": the count comes from the projector title or is omitted, a lesson record that fails to load says so instead of loading forever, and the raw id appears once.
+- One ranking sentence in one place, present tense, gated on the literal flag, pinned to appear exactly once. The flag now reads `COS_MEMORY_REWARD` with the hook's own predicate, so an empty or unknown value is off on both sides.
+- Applied fails closed when a server returns unfiltered rows, dedupes Load more by event id, keeps the 7/90-day switch in the header, shows errors and coverage gaps in the list column, and clamps excerpts with ellipses.
+- The activity log counts overflow from the window total and reads the legacy trace sink as readable.
+- Status refresh has a 45-second deadline, so a helper blocked in a permission prompt errors instead of leaving every row at its default.
+- The updater backs up the live bundle only when it is a different build and names it in `updates/previous/version.json`; a same-build re-apply can no longer overwrite the rollback copy.
+- The helper is signed with an identity-based designated requirement so Documents-folder access survives updates; one more prompt on this install, then none.
+- Codex rollouts are readable by the applied detector; the ranking penalty counts only inclusions the detector actually scanned, so an unreadable engine cannot demote a lesson.
+
+## 0.5.216 (build 254)
+
+Sessions rows wear the bundled Claude, Cursor, and ChatGPT marks.
+
+- Activity list uses the same `mark-claude` / `mark-cursor` / `mark-codex` SVGs as the pet. Codex uses the ChatGPT blossom, not a Codex wordmark.
+- COSQuiet card chrome is unchanged. Claude opt-in still hides only Desktop Claude rows.
+
+Memories reward chrome, for the person who wrote the lesson: did a later answer use it.
+
+- Applied this week: a fourth learning filter that asks the helper for `used` rows over 7 days (90 as a quiet switch). Rows show the lesson, the assistant sentence that referenced it, engine and time; the card shows the lesson, the excerpt, and, only when the projector says the reward term is on, one sentence that later recall ranking moved. Never a number.
+- `helperOps` forwards `kind` on `learning.list` from the projector's closed vocabulary; the page no longer depends on the first Recent page.
+- Empty states follow the memory path this install chose: bridge saw no use; files and Knowledge cannot detect it; an unreadable trace invents nothing.
+- The activity log names the lessons a later answer used, capped at ten, before the type counts.
+- Helper status carries `learningRewardEnabled` from the projector's `reward_enabled` (COS_MEMORY_REWARD); absent is NSNull, never true.
+- Home chip stays Needs you. Applied is never badged.
+
 ## 0.5.215 (build 253)
 
 Memories chrome reads real projector data: Needs you, not the SIQ dump.

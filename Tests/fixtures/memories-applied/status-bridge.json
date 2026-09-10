@@ -1,0 +1,12 @@
+{
+ "contextState": "ready",
+ "contextScriptsDirectory": "/Users/example/MU-Chief-Staff/operations/scripts",
+ "contextAvailable": true,
+ "installedVersion": "6.45.1",
+ "runtimeState": "managedHealthy",
+ "learningToReview": 5,
+ "learningRewardEnabled": true,
+ "ownerName": "Owner",
+ "learningAvailable": true,
+ "learningState": "ready"
+}

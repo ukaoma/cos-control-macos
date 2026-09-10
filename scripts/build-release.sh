@@ -112,7 +112,22 @@ if [ -n "$SIGN_ID" ]; then
   /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP/Contents/MacOS/COS Control"
   /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP"
 elif [ -n "$LOCAL_SIGN_ID" ]; then
-  /usr/bin/codesign --force --deep --sign "$LOCAL_SIGN_ID" "$APP"
+  # 0.5.217: sign the helper with an explicit identity-based designated requirement.
+  # A --deep sign left the nested helper on a cdhash requirement, so every rebuild
+  # re-prompted for Documents access and the status probe blocked inside the prompt.
+  LOCAL_ROOT_HASH="$(/usr/bin/security find-identity -v -p codesigning 2>/dev/null | /usr/bin/grep -F "\"$LOCAL_SIGN_ID\"" | /usr/bin/awk '{print $2}' | /usr/bin/head -1)"
+  if [ -z "$LOCAL_ROOT_HASH" ]; then echo "Could not resolve the certificate hash for \"$LOCAL_SIGN_ID\"" >&2; exit 68; fi
+  # The requirement rides in a file: `-r=` treats a leading '=' as a syntax error.
+  HELPER_REQ="$(mktemp /tmp/cos-control-helper-req.XXXXXX)"
+  printf 'designated => identifier "cos-control-helper" and certificate root = H"%s"\n' "$LOCAL_ROOT_HASH" > "$HELPER_REQ"
+  /usr/bin/csreq -r "$HELPER_REQ" -t >/dev/null || { echo "helper requirement did not parse" >&2; exit 70; }
+  /usr/bin/codesign --force --sign "$LOCAL_SIGN_ID" -r "$HELPER_REQ" "$APP/Contents/Resources/cos-control-helper"
+  rm -f "$HELPER_REQ"
+  /usr/bin/codesign --force --sign "$LOCAL_SIGN_ID" "$APP/Contents/MacOS/COS Control"
+  /usr/bin/codesign --force --sign "$LOCAL_SIGN_ID" "$APP"
+  if /usr/bin/codesign -d -r- "$APP/Contents/Resources/cos-control-helper" 2>&1 | /usr/bin/grep -q 'designated => cdhash'; then
+    echo "helper designated requirement fell back to cdhash; Documents access would re-prompt on every update" >&2; exit 69
+  fi
 else
   /usr/bin/codesign --force --deep --sign - "$APP"
 fi
