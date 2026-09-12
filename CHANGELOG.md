@@ -1,3 +1,11 @@
+## 0.5.218 (build 256)
+
+Listen to a held voice before naming it.
+
+- Speakers, Voices, Add a voice: each held session now has a Listen control beside its sample count: play or stop, "sample k of N", and previous or next to step through the chunks the server still holds. Plays through the same player as the meeting review. Queen, 2026-09-12: "There is no way to listen to the voices that are here and add them from the top panel."
+- Shown only when the server reports the chunk indices (glasses-server 6.45.3); on an older server the row looks as before, so the button never appears where the click would fail.
+- Helper: `review-audio --session <id> --ext-chunk <n>` asks `GET /api/voice/ext-audio/<id>/sample?chunk=<n>`; the route choice is a pure function with self-test pins.
+
 ## 0.5.217 (build 255)
 
 QA fixes on the 0.5.216 reward chrome, from four validators against the installed build.

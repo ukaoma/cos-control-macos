@@ -12954,22 +12954,34 @@ final class COSControlHelper {
     /// --speaker fetches what a stored PROFILE sounds like (training-audio, no
     /// retention change needed). --session/--chunk fetches one segment of a
     /// meeting from the 7-day review archive.
-    private func emitReviewAudio(args: [String]) throws {
-        let route: String
+    /// Which audio a review-audio call asks for. Pure, so the self-test can pin it.
+    ///
+    /// --speaker: what a stored profile sounds like. --session --chunk: one
+    /// segment of a meeting from the review archive. --session --ext-chunk
+    /// (0.5.218, glasses-server 6.45.3): one chunk of a HELD, unnamed session,
+    /// so a voice can be heard before it is named. --session alone: the newest
+    /// held chunk, as before.
+    func reviewAudioRoute(args: [String]) throws -> String {
         if let speaker = option("--speaker", in: args), !speaker.isEmpty {
             guard let encoded = speaker.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
                 throw HelperError.message("Invalid speaker")
             }
-            route = "/api/voice/profiles/\(encoded)/sample"
-        } else if let session = option("--session", in: args), validSessionID(session) {
-            if let chunk = option("--chunk", in: args), let index = Int(chunk), index >= 0 {
-                route = "/api/meeting/\(escapedSessionID(session))/audio/\(index)"
-            } else {
-                route = "/api/voice/ext-audio/\(escapedSessionID(session))/sample"
-            }
-        } else {
-            throw HelperError.message("--speaker, or --session with an optional --chunk, is required")
+            return "/api/voice/profiles/\(encoded)/sample"
         }
+        guard let session = option("--session", in: args), validSessionID(session) else {
+            throw HelperError.message("--speaker, or --session with an optional --chunk or --ext-chunk, is required")
+        }
+        if let chunk = option("--chunk", in: args), let index = Int(chunk), index >= 0 {
+            return "/api/meeting/\(escapedSessionID(session))/audio/\(index)"
+        }
+        if let held = option("--ext-chunk", in: args), let index = Int(held), index >= 0 {
+            return "/api/voice/ext-audio/\(escapedSessionID(session))/sample?chunk=\(index)"
+        }
+        return "/api/voice/ext-audio/\(escapedSessionID(session))/sample"
+    }
+
+    private func emitReviewAudio(args: [String]) throws {
+        let route = try reviewAudioRoute(args: args)
 
         let token: String
         do { token = try readToken() }
@@ -13904,6 +13916,12 @@ final class COSControlHelper {
                 "source": "live",
             ])
         }
+        // 0.5.218 — review-audio route selection: a held session by chunk is its own route.
+        try expect((try? reviewAudioRoute(args: ["--session", "meeting_1", "--ext-chunk", "5"])) == "/api/voice/ext-audio/meeting_1/sample?chunk=5", "review-audio --ext-chunk asks for one held chunk")
+        try expect((try? reviewAudioRoute(args: ["--session", "meeting_1"])) == "/api/voice/ext-audio/meeting_1/sample", "review-audio --session alone asks for the newest held chunk")
+        try expect((try? reviewAudioRoute(args: ["--session", "meeting_1", "--chunk", "7"])) == "/api/meeting/meeting_1/audio/7", "review-audio --chunk asks the meeting archive")
+        try expect((try? reviewAudioRoute(args: ["--session", "meeting_1", "--ext-chunk", "-1"])) == "/api/voice/ext-audio/meeting_1/sample", "a negative --ext-chunk falls back to the newest held chunk")
+        try expect((try? reviewAudioRoute(args: ["--ext-chunk", "5"])) == nil, "review-audio without --session or --speaker is refused")
         let sliced = sliceRecentMessages(fixture, limit: 30)
         try expect(sliced.count == 30, "recent-messages slice enforces ≤30")
         try expect((sliced.first?["no"] as? Int) == 35 && (sliced.last?["no"] as? Int) == 6, "recent-messages newest-first")

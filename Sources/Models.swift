@@ -3892,6 +3892,10 @@ struct ExtAudioSession: Identifiable, Sendable, Hashable {
     /// Server-rendered, e.g. "68.4h". Rendered rather than computed so the
     /// countdown cannot drift from the retention the server actually enforces.
     let expiresIn: String
+    /// 0.5.218 — the chunk indices the server will play back (`?chunk=` on the
+    /// sample route; glasses-server 6.45.3). Empty on an older server, and then
+    /// the panel shows no Listen control rather than one whose click would fail.
+    let chunkIndices: [Int]
 
     var id: String { sessionId }
 
@@ -3903,6 +3907,7 @@ struct ExtAudioSession: Identifiable, Sendable, Hashable {
         chunks = o["chunks"]?.int ?? 0
         ageHours = o["ageHours"]?.double ?? 0
         expiresIn = o["expiresIn"]?.string ?? ""
+        chunkIndices = (o["chunkIndices"]?.array ?? []).compactMap { $0.int }.filter { $0 >= 0 }.sorted()
     }
 }
 

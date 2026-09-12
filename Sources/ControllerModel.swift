@@ -5945,6 +5945,19 @@ final class ControllerModel: ObservableObject {
              missing: "That segment's audio is no longer held.")
     }
 
+    /// 0.5.218 — hear one chunk of a HELD, unnamed session from the Add-a-voice
+    /// panel. Queen, 2026-09-12: "There is no way to listen to the voices that
+    /// are here and add them from the top panel." Naming a session is a guess
+    /// until you have heard it; this plays through the same player the meeting
+    /// review uses. Needs glasses-server 6.45.3 for `chunkIndices` and `?chunk=`.
+    func heldSampleKey(_ sessionId: String, chunkIndex: Int) -> String { "held:\(sessionId)#\(chunkIndex)" }
+
+    func playHeldSample(_ session: ExtAudioSession, chunkIndex: Int) {
+        play(key: heldSampleKey(session.sessionId, chunkIndex: chunkIndex), voice: "held:\(session.sessionId)",
+             args: ["review-audio", "--session", session.sessionId, "--ext-chunk", String(chunkIndex)],
+             missing: "That sample is no longer held.")
+    }
+
     /// Whether this line can be played: the server must still hold its chunk.
     func canPlay(_ phrase: SpeakerPhrase) -> Bool {
         guard let index = phrase.chunkIndex else { return false }

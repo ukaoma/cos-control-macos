@@ -207,6 +207,8 @@ struct ActivityWindow: View {
     /// Name being typed into Add a voice. Local to the view: it is transient and
     /// must not survive a tab switch.
     @State private var addVoiceName = ""
+    /// 0.5.218 — which held chunk each Add-a-voice row is positioned on.
+    @State private var heldSampleCursor: [String: Int] = [:]
     @State private var voiceSearch = ""
     @State private var voiceSort: VoiceDirectorySort = .attention
     @State private var selectedContextID: String?
@@ -2115,6 +2117,9 @@ struct ActivityWindow: View {
                     .font(.system(size: 11, weight: .medium))
                 Text("expires in \(session.expiresIn)")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
+                if !session.chunkIndices.isEmpty {
+                    heldSampleListenControl(session)
+                }
                 Spacer()
                 if model.addingVoiceSession != session.sessionId {
                     Button("Name this voice") { model.addingVoiceSession = session.sessionId }
@@ -2122,11 +2127,47 @@ struct ActivityWindow: View {
                         .disabled(model.addVoiceBusy)
                 }
             }
+            if let note = model.playbackNote, note.voice == "held:\(session.sessionId)" {
+                Text(note.text).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
             if model.addingVoiceSession == session.sessionId {
                 addVoiceNameField(session)
             }
         }
         .padding(.vertical, 4)
+    }
+
+    /// 0.5.218 — Listen before naming: play one held chunk, step through the rest.
+    /// Shown only when the server reported chunk indices, so the button never
+    /// appears where the click would fail (an older server hides it).
+    @ViewBuilder
+    private func heldSampleListenControl(_ session: ExtAudioSession) -> some View {
+        let indices = session.chunkIndices
+        let cursor = min(max(heldSampleCursor[session.sessionId] ?? 0, 0), indices.count - 1)
+        let chunkIndex = indices[cursor]
+        let key = model.heldSampleKey(session.sessionId, chunkIndex: chunkIndex)
+        HStack(spacing: 4) {
+            Button {
+                model.playHeldSample(session, chunkIndex: chunkIndex)
+            } label: {
+                Image(systemName: model.playingVoice == key ? "stop.fill" : "play.fill")
+                    .font(.system(size: 8.5))
+            }
+            .buttonStyle(.plain)
+            .help(model.playingVoice == key ? "Stop" : "Listen to this sample")
+            Text("sample \(cursor + 1) of \(indices.count)")
+                .font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit()
+            Button {
+                model.stopPlayback()
+                heldSampleCursor[session.sessionId] = (cursor - 1 + indices.count) % indices.count
+            } label: { Image(systemName: "chevron.left").font(.system(size: 8)) }
+            .buttonStyle(.plain).help("Previous sample").disabled(indices.count < 2)
+            Button {
+                model.stopPlayback()
+                heldSampleCursor[session.sessionId] = (cursor + 1) % indices.count
+            } label: { Image(systemName: "chevron.right").font(.system(size: 8)) }
+            .buttonStyle(.plain).help("Next sample").disabled(indices.count < 2)
+        }
     }
 
     @ViewBuilder

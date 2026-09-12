@@ -4541,4 +4541,30 @@ if "Codex" in codex:
 print("COS Control: Sessions provider marks pinned")
 PY
 
+# 0.5.218 — listen to a held voice before naming it (Queen, 2026-09-12).
+/usr/bin/python3 - "$ROOT" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+activity = (root / "Sources/ActivityWindow.swift").read_text()
+models = (root / "Sources/Models.swift").read_text()
+controller = (root / "Sources/ControllerModel.swift").read_text()
+helper = (root / "HelperSources/main.swift").read_text()
+
+def fail(msg):
+    sys.exit(msg)
+
+if "if !session.chunkIndices.isEmpty {" not in activity or "heldSampleListenControl(session)" not in activity:
+    fail("Add-a-voice rows must show the Listen control only when the server reported chunk indices")
+if "model.playHeldSample(session, chunkIndex: chunkIndex)" not in activity:
+    fail("the Listen control must play the held chunk through the shared player")
+if 'chunkIndices = (o["chunkIndices"]?.array ?? [])' not in models:
+    fail("ExtAudioSession must parse chunkIndices from the listing")
+if '"--ext-chunk", String(chunkIndex)' not in controller:
+    fail("playHeldSample must ask the helper for one held chunk")
+if 'sample?chunk=\\(index)' not in helper:
+    fail("the helper must map --ext-chunk to the per-chunk sample route")
+print("COS Control: held-voice Listen control pinned (0.5.218)")
+PY
+
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"
