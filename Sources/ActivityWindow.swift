@@ -209,6 +209,13 @@ struct ActivityWindow: View {
     @State private var addVoiceName = ""
     /// 0.5.218 — which held chunk each Add-a-voice row is positioned on.
     @State private var heldSampleCursor: [String: Int] = [:]
+    /// 0.5.219 — Listen cursor per held GROUP (and "loose"), the name being typed
+    /// for a group, and the armed Discard. All transient to the view.
+    @State private var heldGroupCursor: [String: Int] = [:]
+    @State private var heldGroupName = ""
+    @State private var confirmingHeldDiscard: String?
+    /// A "likely" match is added on a second click; only a "high" one is one click.
+    @State private var confirmingHeldAdd: String?
     @State private var voiceSearch = ""
     @State private var voiceSort: VoiceDirectorySort = .attention
     @State private var selectedContextID: String?
@@ -2069,11 +2076,17 @@ struct ActivityWindow: View {
                 Text(result).font(.system(size: 11)).foregroundStyle(.secondary)
             }
 
-            if model.extAudioSessions.isEmpty {
+            // 0.5.219 — a server that groups held voices (6.45.4) gets the grouped
+            // panel; an older one keeps the per-session rows below, unchanged.
+            if heldGroupsUsable {
+                heldGroupsBody
+            } else if model.extAudioSessions.isEmpty {
+                heldGroupsFallbackNote
                 Text(model.extAudioError
                      ?? "No unrecognized audio is being held. Record a meeting, then come back within 72 hours.")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             } else {
+                heldGroupsFallbackNote
                 Text(extAudioLead)
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                 // BOUNDED, ALWAYS. The server holds unrecognized audio for 72
@@ -2107,6 +2120,302 @@ struct ActivityWindow: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.06)))
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
+    }
+
+    // ── 0.5.219 — held voices grouped by who they sound like ────────────────
+    //
+    // Miles, 2026-09-12: "group those samples together… clump users together so
+    // that we're not constantly having to train… ability to throw out those
+    // samples." A row is a VOICE across meetings, not a session; a suggested
+    // name is one click; the loose samples that match nothing can be thrown out
+    // or, hearing a real person in one, named on their own.
+
+    /// Rows shown at natural height before the list starts scrolling in place.
+    private static let heldGroupInlineRowLimit = 4
+    /// Same reason as `extAudioListHeight`: this card sits outside the directory
+    /// ScrollView, so an uncapped list pushes the chrome off screen.
+    private static let heldGroupListHeight: CGFloat = 240
+
+    /// The grouped view stands in for the per-session rows only when the server
+    /// answered the route AND could actually group what it holds. With the
+    /// speaker model not loaded (or every sample still being read) the grouped
+    /// answer is empty while wavs sit on disk; then the sessions stay visible
+    /// and `heldGroupsFallbackNote` says why (QA 2026-09-12).
+    private var heldGroupsUsable: Bool {
+        model.heldGroupsState == "ready" && !(model.heldGroupsEmbedded == 0 && model.heldGroupsSamples > 0)
+    }
+
+    @ViewBuilder
+    private var heldGroupsFallbackNote: some View {
+        if model.heldGroupsState == "error", let error = model.heldGroupsError {
+            Text("Voices could not be grouped: \(error)")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+        } else if model.heldGroupsState == "ready", model.heldGroupsEmbedded == 0, model.heldGroupsSamples > 0 {
+            Text(model.heldGroupsSpeakerModel
+                 ? "\(model.heldGroupsSamples) held samples are still being read for grouping. Refresh in a moment."
+                 : "\(model.heldGroupsSamples) held samples cannot be grouped yet: the speaker model is not loaded on this Mac (Run Doctor shows it). The sessions are listed below.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+    }
+
+    private var heldGroupsLead: String {
+        let voices = model.heldGroups.count
+        let loose = model.heldLoose.count
+        let pending = model.heldGroupsPending
+        if voices == 0 && loose == 0 {
+            return pending > 0
+                ? "Reading \(pending) held sample\(pending == 1 ? "" : "s"). Refresh in a moment."
+                : "No unrecognized audio is being held. Record a meeting, then come back within 72 hours."
+        }
+        var parts: [String] = []
+        if voices > 0 { parts.append("\(voices) voice\(voices == 1 ? "" : "s") the server is holding, grouped by who they sound like across meetings.") }
+        if loose > 0 { parts.append("\(loose) loose sample\(loose == 1 ? "" : "s") match no voice.") }
+        if pending > 0 { parts.append("\(pending) still being read.") }
+        if model.heldGroupsUnusable > 0 { parts.append("\(model.heldGroupsUnusable) could not be read and will expire with the window.") }
+        // Naming needs the model on the server side; listening and discarding do not.
+        if !model.heldGroupsSpeakerModel { parts.append("The speaker model is not loaded on this Mac (Run Doctor shows it): voices can be heard and discarded, not named yet.") }
+        return parts.joined(separator: " ")
+    }
+
+    @ViewBuilder
+    private var heldGroupsBody: some View {
+        let rows = model.heldGroups.count + (model.heldLoose.isEmpty ? 0 : 1)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(heldGroupsLead).font(.system(size: 11)).foregroundStyle(.secondary)
+            if rows > Self.heldGroupInlineRowLimit {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) { heldGroupRows }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: Self.heldGroupListHeight)
+            } else {
+                heldGroupRows
+            }
+            if rows > 0 {
+                Text("Naming a group adds its samples to that person and uses up the audio. Discarding throws the audio out.")
+                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+            }
+        }
+        // After a naming or a discard the samples under every cursor are gone;
+        // start each row over rather than land on a sample nobody heard.
+        .onChange(of: model.heldGroupsGeneration) { _, _ in
+            heldGroupCursor = [:]
+            confirmingHeldDiscard = nil
+            confirmingHeldAdd = nil
+        }
+    }
+
+    @ViewBuilder
+    private var heldGroupRows: some View {
+        ForEach(model.heldGroups) { group in
+            heldGroupRow(group)
+        }
+        if !model.heldLoose.isEmpty {
+            heldLooseRow
+        }
+    }
+
+    @ViewBuilder
+    private func heldGroupRow(_ group: HeldVoiceGroup) -> some View {
+        let meetings = group.sessions.count
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text("\(group.sampleCount) sample\(group.sampleCount == 1 ? "" : "s") · \(meetings) meeting\(meetings == 1 ? "" : "s")")
+                    .font(.system(size: 11, weight: .medium))
+                heldMembersListenControl(key: group.id, members: group.playOrder, voice: "heldgroup:\(group.id)")
+                Spacer()
+            }
+            if let name = group.suggestionName {
+                // Two lines: a real name plus the metric plus a button does not fit
+                // the 346 pt content width in one (measured 384–458 pt, QA 2026-09-12).
+                Text(group.suggestionTier == "high" ? "Sounds like \(name)" : "May be \(name)")
+                    .font(.system(size: 11))
+                HStack(spacing: 6) {
+                    Text(group.suggestionOf > 0
+                         ? "\(Int((group.suggestionSimilarity * 100).rounded()))% · \(group.suggestionAgreeing) of \(group.suggestionOf) samples agree"
+                         : "\(Int((group.suggestionSimilarity * 100).rounded()))%")
+                        .font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit()
+                    Spacer()
+                    // Writing a voice into somebody's profile is the less reversible
+                    // of the two actions here, so only a "high" match (the bar the
+                    // identifier itself enrols at) is one click; "likely" arms first.
+                    if group.suggestionTier == "high" {
+                        Button("Add to \(name)") { Task { await model.nameHeld(group.members, as: name) } }
+                            .font(.system(size: 11))
+                            .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel)
+                    } else if confirmingHeldAdd == group.id {
+                        Button("Confirm") {
+                            confirmingHeldAdd = nil
+                            Task { await model.nameHeld(group.members, as: name) }
+                        }
+                        .font(.system(size: 11)).disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel)
+                        Button("Cancel") { confirmingHeldAdd = nil }
+                            .buttonStyle(.link).font(.system(size: 11))
+                    } else {
+                        Button("Add to \(name)?") { confirmingHeldAdd = group.id }
+                            .font(.system(size: 11))
+                            .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel)
+                    }
+                }
+            }
+            heldActionRow(key: group.id, members: group.members, count: group.sampleCount)
+            if let note = model.playbackNote, note.voice == "heldgroup:\(group.id)" {
+                Text(note.text).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// The samples that cohere with nothing. Listen through them; the one under
+    /// the cursor can be named on its own (a real person in a one-off) or thrown
+    /// out; the whole set can go at once.
+    @ViewBuilder
+    private var heldLooseRow: some View {
+        let loose = model.heldLoose
+        let cursor = min(max(heldGroupCursor["loose"] ?? 0, 0), loose.count - 1)
+        let current = loose[cursor]
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text("\(loose.count) loose sample\(loose.count == 1 ? "" : "s") · match no voice")
+                    .font(.system(size: 11, weight: .medium))
+                heldMembersListenControl(key: "loose", members: loose, voice: "heldloose")
+                Spacer()
+            }
+            // Which clip the cursor is on, so naming or discarding it is not blind.
+            Text(Self.heldSampleLabel(current))
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+            heldActionRow(key: "loose:\(current.sessionId)#\(current.chunkIndex)", members: [current], count: 1)
+            if loose.count > 1 && model.namingHeldGroup == nil {
+                if confirmingHeldDiscard == "loose-all" {
+                    HStack(spacing: 6) {
+                        Text("Discard all \(loose.count) loose samples?").font(.system(size: 11))
+                        Button("Discard") {
+                            confirmingHeldDiscard = nil
+                            Task { await model.discardHeld(loose) }
+                        }
+                        .font(.system(size: 11)).disabled(model.addVoiceBusy)
+                        Button("Keep") { confirmingHeldDiscard = nil }
+                            .buttonStyle(.link).font(.system(size: 11))
+                    }
+                } else {
+                    Button("Discard all \(loose.count) loose samples") { confirmingHeldDiscard = "loose-all" }
+                        .buttonStyle(.link).font(.system(size: 11)).disabled(model.addVoiceBusy)
+                }
+            }
+            if let note = model.playbackNote, note.voice == "heldloose" {
+                Text(note.text).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// Name (a new person, or an existing one by typing their name) or discard.
+    /// Discard is TWO clicks: the audio is gone for good, and the panel is 390 pt
+    /// of buttons a cursor can land on by accident.
+    @ViewBuilder
+    private func heldActionRow(key: String, members: [HeldSampleRef], count: Int) -> some View {
+        if model.namingHeldGroup == key {
+            HStack(spacing: 6) {
+                TextField("Who is this?", text: $heldGroupName)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11))
+                    .frame(maxWidth: 180)
+                    .onSubmit { commitHeldName(members) }
+                Button("Save") { commitHeldName(members) }
+                    .font(.system(size: 11))
+                    .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel
+                              || heldGroupName.trimmingCharacters(in: .whitespacesAndNewlines).count < 2)
+                Button("Cancel") {
+                    model.namingHeldGroup = nil
+                    heldGroupName = ""
+                }
+                .buttonStyle(.link).font(.system(size: 11))
+                if model.addVoiceBusy { ProgressView().controlSize(.small) }
+            }
+        } else if confirmingHeldDiscard == key {
+            HStack(spacing: 6) {
+                Text("Discard \(count) sample\(count == 1 ? "" : "s")?").font(.system(size: 11))
+                Button("Discard") {
+                    confirmingHeldDiscard = nil
+                    Task { await model.discardHeld(members) }
+                }
+                .font(.system(size: 11)).disabled(model.addVoiceBusy)
+                Button("Keep") { confirmingHeldDiscard = nil }
+                    .buttonStyle(.link).font(.system(size: 11))
+            }
+        } else {
+            HStack(spacing: 10) {
+                Button(count == 1 ? "Name this sample" : "Name this voice") {
+                    model.namingHeldGroup = key
+                    heldGroupName = ""
+                }
+                .buttonStyle(.link).font(.system(size: 11)).disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel)
+                Button("Discard") { confirmingHeldDiscard = key }
+                    .buttonStyle(.link).font(.system(size: 11)).disabled(model.addVoiceBusy)
+            }
+        }
+    }
+
+    private func commitHeldName(_ members: [HeldSampleRef]) {
+        let name = heldGroupName
+        Task {
+            await model.nameHeld(members, as: name)
+            // Keep what was typed when the server refused (a sentence for a name,
+            // a set that is not one voice): the field closes only on success.
+            if model.namingHeldGroup == nil { heldGroupName = "" }
+        }
+    }
+
+    /// "Sep 12, 3:41 PM · chunk 9" for a `meeting_<ms>_<rand>` session, else the raw id.
+    static func heldSampleLabel(_ ref: HeldSampleRef) -> String {
+        let parts = ref.sessionId.split(separator: "_")
+        if parts.count >= 2, parts[0] == "meeting", let ms = Double(parts[1]), ms > 1_000_000_000_000 {
+            let date = Date(timeIntervalSince1970: ms / 1000)
+            let f = DateFormatter()
+            f.dateFormat = "MMM d, h:mm a"
+            return "\(f.string(from: date)) · chunk \(ref.chunkIndex)"
+        }
+        return "\(ref.sessionId) · chunk \(ref.chunkIndex)"
+    }
+
+    /// The 0.5.218 Listen control over any list of held samples: a group's
+    /// members (seed first) or the loose ones. Plays through the shared player.
+    @ViewBuilder
+    private func heldMembersListenControl(key: String, members: [HeldSampleRef], voice: String) -> some View {
+        if members.isEmpty {
+            EmptyView()
+        } else {
+            heldMembersListenControlBody(key: key, members: members, voice: voice)
+        }
+    }
+
+    @ViewBuilder
+    private func heldMembersListenControlBody(key: String, members: [HeldSampleRef], voice: String) -> some View {
+        let cursor = min(max(heldGroupCursor[key] ?? 0, 0), members.count - 1)
+        let ref = members[cursor]
+        let playKey = model.heldGroupSampleKey(ref)
+        HStack(spacing: 4) {
+            Button {
+                model.playHeldGroupSample(ref, voice: voice)
+            } label: {
+                Image(systemName: model.playingVoice == playKey ? "stop.fill" : "play.fill")
+                    .font(.system(size: 8.5))
+            }
+            .buttonStyle(.plain)
+            .help(model.playingVoice == playKey ? "Stop" : "Listen to this sample")
+            Text("sample \(cursor + 1) of \(members.count)")
+                .font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit()
+            Button {
+                model.stopPlayback()
+                heldGroupCursor[key] = (cursor - 1 + members.count) % members.count
+            } label: { Image(systemName: "chevron.left").font(.system(size: 8)) }
+            .buttonStyle(.plain).help("Previous sample").disabled(members.count < 2)
+            Button {
+                model.stopPlayback()
+                heldGroupCursor[key] = (cursor + 1) % members.count
+            } label: { Image(systemName: "chevron.right").font(.system(size: 8)) }
+            .buttonStyle(.plain).help("Next sample").disabled(members.count < 2)
+        }
     }
 
     @ViewBuilder

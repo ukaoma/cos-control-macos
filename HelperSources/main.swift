@@ -565,6 +565,9 @@ final class COSControlHelper {
         case "archive-semantic": try emitArchiveSemantic(args: args)
         case "archive-chat": try emitArchiveChat(args: args)
         case "voice-enroll-ext": try emitVoiceEnrollExt(args: args)
+        case "voice-held-groups": try emitVoiceHeldGroups()
+        case "voice-held-enroll": try emitVoiceHeldEnroll(args: args)
+        case "voice-held-discard": try emitVoiceHeldDiscard(args: args)
         case "meeting-relabel": try emitMeetingRelabel(args: args)
         case "meeting-deattribute": try emitMeetingDeattribute(args: args)
         case "meeting-confirm": try emitMeetingConfirm(args: args)
@@ -12776,6 +12779,138 @@ final class COSControlHelper {
             ])
     }
 
+    // ── 0.5.219 — held voices, grouped (glasses-server 6.45.4) ──────────────
+
+    /// GET /api/voice/held-groups — every held sample, clustered by voice across
+    /// the whole window, plus the loose ones that match nothing.
+    private func emitVoiceHeldGroups() throws {
+        let token = try speakerReviewToken()
+        guard let response = request("/api/voice/held-groups", token: token, timeout: 30) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if response.status == 404 {
+            emit(ok: true, message: Self.heldGroupsUpdateMessage("group held voices"), details: [
+                "state": "route_absent", "groups": [], "loose": [], "pending": 0,
+            ])
+            return
+        }
+        guard response.status == 200, let body = response.body else {
+            throw HelperError.message("Request failed (\(response.status))")
+        }
+        let groups = (body["groups"] as? [[String: Any]]) ?? []
+        let loose = (body["loose"] as? [[String: Any]]) ?? []
+        let pending = body["pending"] as? Int ?? 0
+        emit(ok: true, message: Self.heldGroupsSummary(groups: groups.count, loose: loose.count, pending: pending), details: [
+            "state": "ready",
+            "groups": groups,
+            "loose": loose,
+            "sessions": body["sessions"] as? Int ?? 0,
+            "samples": body["samples"] as? Int ?? 0,
+            "embedded": body["embedded"] as? Int ?? 0,
+            "pending": pending,
+            "unusable": body["unusable"] as? Int ?? 0,
+        ])
+    }
+
+    /// The first server that groups held voices. A 404 message names the
+    /// route's OWN requirement, never a blanket version (Tests/run.sh records
+    /// why: a blanket 6.44.0 once told a user on 6.44.1 to update).
+    static let heldGroupsNeeds = "6.45.4"
+    static func heldGroupsUpdateMessage(_ what: String) -> String {
+        "Update the COS server to \(heldGroupsNeeds) or newer to \(what)."
+    }
+
+    static func heldGroupsSummary(groups: Int, loose: Int, pending: Int) -> String {
+        if groups == 0 && loose == 0 && pending == 0 { return "No unrecognized audio is being held." }
+        var parts: [String] = []
+        if groups > 0 { parts.append("\(groups) voice\(groups == 1 ? "" : "s")") }
+        if loose > 0 { parts.append("\(loose) loose sample\(loose == 1 ? "" : "s")") }
+        if pending > 0 { parts.append("\(pending) still being read") }
+        return parts.joined(separator: " · ")
+    }
+
+    /// `--members` is a JSON array of { sessionId, chunkIndex }. Validated here so
+    /// a malformed list never reaches the server as a request, and de-duplicated
+    /// so a sample listed twice is named once.
+    static func heldMembersPayload(_ raw: String?) throws -> [[String: Any]] {
+        guard let raw, let data = raw.data(using: .utf8),
+              let rows = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]], !rows.isEmpty else {
+            throw HelperError.message("--members must be a non-empty JSON array of { sessionId, chunkIndex }")
+        }
+        var out: [[String: Any]] = []
+        var seen = Set<String>()
+        for row in rows {
+            guard let sessionId = row["sessionId"] as? String, !sessionId.isEmpty,
+                  !sessionId.contains("/"), !sessionId.contains("\\"), !sessionId.contains(".."),
+                  let chunkIndex = row["chunkIndex"] as? Int, chunkIndex >= 0 else {
+                throw HelperError.message("each member needs a sessionId and a non-negative chunkIndex")
+            }
+            if seen.insert("\(sessionId)#\(chunkIndex)").inserted {
+                out.append(["sessionId": sessionId, "chunkIndex": chunkIndex])
+            }
+        }
+        return out
+    }
+
+    private func postHeldGroups(_ path: String, payload: [String: Any]) throws -> [String: Any] {
+        let json = String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8) ?? "{}"
+        let token = try speakerReviewToken()
+        guard let response = request(path, method: "POST", token: token, body: json, timeout: 120) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        // A bare 404 is the route missing (older server); the route's own 404
+        // carries a `reason` (nothing held any more) and is surfaced as such.
+        if response.status == 404, response.body?["reason"] == nil {
+            throw HelperError.message(Self.heldGroupsUpdateMessage("name held voices by group"))
+        }
+        guard let body = response.body else { throw HelperError.message("Server stopped") }
+        if response.status != 200 {
+            // The server's own gate — a sentence for a name, a set that is not one
+            // voice, nothing held — carries its reason. Surface it, as voice-merge does.
+            let reason = (body["error"] as? String) ?? (body["message"] as? String)
+                ?? "Request failed (\(response.status))"
+            throw HelperError.message(reason)
+        }
+        return body
+    }
+
+    /// POST /api/voice/held-groups/enroll — name held samples as ONE person. The
+    /// server re-clusters the set and writes only the coherent core; an existing
+    /// name is appended to, and only the core's audio is consumed.
+    private func emitVoiceHeldEnroll(args: [String]) throws {
+        guard let name = option("--name", in: args), name.count >= 2 else {
+            throw HelperError.message("--name is required (min 2 characters)")
+        }
+        let members = try Self.heldMembersPayload(option("--members", in: args))
+        // `confirm` is Control's own two-click gate (or the one-click "Add to X"
+        // for a high-confidence match) already having happened; the server fails
+        // closed without it, like every other destructive voice route.
+        let body = try postHeldGroups("/api/voice/held-groups/enroll", payload: ["name": name, "members": members, "confirm": true])
+        let enrolled = body["enrolled"] as? Int ?? 0
+        emit(ok: enrolled > 0, message: (body["message"] as? String) ?? "Enrolled \(name) from \(enrolled) sample(s)", details: [
+            "enrolled": enrolled,
+            "name": name,
+            "created": body["created"] as? Bool ?? false,
+            "coherent": body["coherent"] as? Int ?? 0,
+            "leftBehind": (body["leftBehind"] as? [[String: Any]]) ?? [],
+            "missing": (body["missing"] as? [[String: Any]]) ?? [],
+            "deleted": body["deleted"] as? Int ?? 0,
+        ])
+    }
+
+    /// POST /api/voice/held-groups/discard — throw held samples out unnamed.
+    private func emitVoiceHeldDiscard(args: [String]) throws {
+        let members = try Self.heldMembersPayload(option("--members", in: args))
+        let body = try postHeldGroups("/api/voice/held-groups/discard", payload: ["members": members, "confirm": true])
+        let removed = body["removed"] as? Int ?? 0
+        emit(ok: true, message: (body["message"] as? String) ?? "Discarded \(removed) held sample(s)", details: [
+            "removed": removed,
+            "missing": (body["missing"] as? [[String: Any]]) ?? [],
+        ])
+    }
+
     private func emitVoiceMerge(args: [String]) throws {
         guard let into = option("--into", in: args), !into.isEmpty,
               let from = option("--from", in: args), !from.isEmpty else {
@@ -13922,6 +14057,17 @@ final class COSControlHelper {
         try expect((try? reviewAudioRoute(args: ["--session", "meeting_1", "--chunk", "7"])) == "/api/meeting/meeting_1/audio/7", "review-audio --chunk asks the meeting archive")
         try expect((try? reviewAudioRoute(args: ["--session", "meeting_1", "--ext-chunk", "-1"])) == "/api/voice/ext-audio/meeting_1/sample", "a negative --ext-chunk falls back to the newest held chunk")
         try expect((try? reviewAudioRoute(args: ["--ext-chunk", "5"])) == nil, "review-audio without --session or --speaker is refused")
+        // 0.5.219 — held-group member lists are validated before they become a request.
+        try expect(((try? Self.heldMembersPayload(#"[{"sessionId":"meeting_1","chunkIndex":5},{"sessionId":"meeting_1","chunkIndex":5},{"sessionId":"meeting_2","chunkIndex":0}]"#))?.count) == 2, "voice-held --members parses and de-duplicates")
+        try expect((try? Self.heldMembersPayload("[]")) == nil, "voice-held --members refuses an empty list")
+        try expect((try? Self.heldMembersPayload(nil)) == nil, "voice-held --members is required")
+        try expect((try? Self.heldMembersPayload(#"[{"sessionId":"meeting_1","chunkIndex":-1}]"#)) == nil, "voice-held --members refuses a negative chunk")
+        try expect((try? Self.heldMembersPayload(#"[{"sessionId":"../etc","chunkIndex":0}]"#)) == nil, "voice-held --members refuses a path-shaped session id")
+        try expect((try? Self.heldMembersPayload(#"[{"chunkIndex":0}]"#)) == nil, "voice-held --members refuses a member without a session id")
+        try expect(Self.heldGroupsSummary(groups: 3, loose: 7, pending: 0) == "3 voices · 7 loose samples", "held-groups summary names voices and loose samples")
+        try expect(Self.heldGroupsSummary(groups: 0, loose: 0, pending: 0) == "No unrecognized audio is being held.", "held-groups summary for an empty window")
+        try expect(Self.heldGroupsSummary(groups: 0, loose: 0, pending: 12) == "12 still being read", "held-groups summary while decodes are pending")
+        try expect(Self.heldGroupsUpdateMessage("group held voices") == "Update the COS server to 6.45.4 or newer to group held voices.", "a held-groups 404 names the route's own requirement")
         let sliced = sliceRecentMessages(fixture, limit: 30)
         try expect(sliced.count == 30, "recent-messages slice enforces ≤30")
         try expect((sliced.first?["no"] as? Int) == 35 && (sliced.last?["no"] as? Int) == 6, "recent-messages newest-first")

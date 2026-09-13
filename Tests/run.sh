@@ -4567,4 +4567,85 @@ if 'sample?chunk=\\(index)' not in helper:
 print("COS Control: held-voice Listen control pinned (0.5.218)")
 PY
 
+# 0.5.219 — held voices grouped by who they sound like (Miles, 2026-09-12).
+/usr/bin/python3 - "$ROOT" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+activity = (root / "Sources/ActivityWindow.swift").read_text()
+models = (root / "Sources/Models.swift").read_text()
+controller = (root / "Sources/ControllerModel.swift").read_text()
+helper = (root / "HelperSources/main.swift").read_text()
+
+def fail(msg):
+    sys.exit(msg)
+
+for cmd, route in (('"voice-held-groups"', '"/api/voice/held-groups"'),
+                   ('"voice-held-enroll"', '"/api/voice/held-groups/enroll"'),
+                   ('"voice-held-discard"', '"/api/voice/held-groups/discard"')):
+    if f"case {cmd}:" not in helper:
+        fail(f"helper lost the {cmd} command")
+    if route not in helper:
+        fail(f"helper must call {route}")
+if helper.count('try Self.heldMembersPayload(option("--members", in: args))') != 2:
+    fail("both held-group mutations must validate --members through heldMembersPayload before any request")
+if '"state": "route_absent", "groups": []' not in helper:
+    fail("an older server must answer route_absent so the panel keeps the per-session rows")
+if 'model.heldGroupsState == "ready" && !(model.heldGroupsEmbedded == 0 && model.heldGroupsSamples > 0)' not in activity or "heldGroupsBody" not in activity:
+    fail("Add-a-voice must render the grouped view only when the server answered the held-groups route AND could group what it holds")
+if "addVoiceRow(session)" not in activity:
+    fail("the per-session rows must remain as the fallback for an older server")
+if "confirmingHeldDiscard = key" not in activity or "confirmingHeldDiscard == key" not in activity:
+    fail("Discard must be two clicks: arm, then confirm")
+if "await model.discardHeld(members)" not in activity:
+    fail("the confirmed Discard must go through the model")
+if 'Button("Add to \\(name)")' not in activity or "await model.nameHeld(group.members, as: name)" not in activity:
+    fail("a suggested group must offer one-click Add to <name>")
+if "if rows > Self.heldGroupInlineRowLimit {" not in activity or ".frame(height: Self.heldGroupListHeight)" not in activity:
+    fail("the grouped list must be capped and scroll in a fixed frame (2026-08-26 regression)")
+if 'payload: ["name": name, "members": members, "confirm": true]' not in helper or 'payload: ["members": members, "confirm": true]' not in helper:
+    fail("both held-group mutations must pass confirm to a server that fails closed")
+if 'static let heldGroupsNeeds = "6.45.4"' not in helper \
+   or 'emit(ok: true, message: Self.heldGroupsUpdateMessage("group held voices")' not in helper \
+   or 'throw HelperError.message(Self.heldGroupsUpdateMessage("name held voices by group"))' not in helper:
+    fail("a held-groups 404 must name the route's own requirement, in both places")
+if "if heldGroupsUsable {" not in activity or activity.count("\n                heldGroupsFallbackNote\n") != 2 or "private var heldGroupsFallbackNote: some View {" not in activity:
+    fail("the grouped view stands in for the sessions only when the server could group; both fallback branches must explain why")
+if 'model.heldGroupsSpeakerModel = response.details["speakerModel"]?.bool ?? true' not in controller and 'heldGroupsSpeakerModel = response.details["speakerModel"]?.bool ?? true' not in controller:
+    fail("loadHeldGroups must read whether the speaker model is loaded")
+if 'model.heldGroupsState == "error", let error = model.heldGroupsError' not in activity:
+    fail("a held-groups failure must be shown, not swallowed into the per-session rows")
+if "confirmingHeldAdd == group.id" not in activity or 'if group.suggestionTier == "high" {' not in activity:
+    fail("only a high match may be added with one click; a likely match arms first")
+if "static let heldDiscardBatchSize = 200" not in controller or "Self.heldDiscardBatchSize" not in controller:
+    fail("discard must be sent in bounded slices: a full loose set exceeds one request")
+if "heldGroupsReloadRequested = true" not in controller:
+    fail("a reload requested during a load must be queued, not dropped")
+if ".onChange(of: model.heldGroupsGeneration)" not in activity:
+    fail("cursors and armed confirmations must reset after a naming or discard")
+if "if members.isEmpty {" not in activity:
+    fail("the Listen control must guard an empty list")
+if "Self.heldSampleLabel(current)" not in activity:
+    fail("the loose row must say which clip the cursor is on")
+if activity.count("|| !model.heldGroupsSpeakerModel") < 5:
+    fail("every naming affordance must be disabled while the server has no speaker model (a click would 503)")
+if "voices can be heard and discarded, not named yet" not in activity or "model.heldGroupsUnusable > 0" not in activity:
+    fail("the lead must say why naming is unavailable and count the samples that cannot be read")
+if 'Discarded \\(removed) of \\(members.count) samples before an error' not in controller or "if removed > 0 {" not in controller:
+    fail("a discard that fails mid-way must report the partial count and refresh")
+if 'heldActionRow(key: "loose:' not in activity:
+    fail("a loose sample must be nameable on its own — sample by sample")
+if "members: group.playOrder" not in activity or "var playOrder: [HeldSampleRef] { [seed] + members.filter { $0 != seed } }" not in models:
+    fail("a group's Listen control must start on the server's seed sample")
+if "struct HeldVoiceGroup" not in models or 'suggestionTier = suggestion?["tier"]?.string' not in models:
+    fail("HeldVoiceGroup must parse the server's suggestion")
+if 'suggestionAgreeing = suggestion?["agreeing"]?.int ?? 0' not in models or "of \\(group.suggestionOf) samples agree" not in activity:
+    fail("a suggestion row must say how many of the profile's samples agree")
+if '"voice-held-enroll", "--name", trimmed, "--members", Self.heldMembersJSON(members)' not in controller:
+    fail("nameHeld must send the member list as JSON to the helper")
+if "await loadHeldGroups()" not in controller:
+    fail("loadExtAudio must refresh the grouped view alongside the sessions")
+print("COS Control: held-voice groups pinned (0.5.219)")
+PY
+
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"

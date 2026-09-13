@@ -176,6 +176,30 @@ final class ControllerModel: ObservableObject {
     @Published var extAudioError: String?
     /// The session the user is currently naming, if any. Mirrors `namingVoice`.
     @Published var addingVoiceSession: String?
+    /// 0.5.219 — held samples grouped by voice (glasses-server 6.45.4). State is
+    /// nil until the first load, "ready" on a server that has the route, and
+    /// "route_absent" on an older one — then the panel keeps the per-session rows.
+    @Published var heldGroups: [HeldVoiceGroup] = []
+    @Published var heldLoose: [HeldSampleRef] = []
+    @Published var heldGroupsState: String?
+    @Published var heldGroupsPending = 0
+    @Published var heldGroupsLoading = false
+    @Published var heldGroupsError: String?
+    /// The group (or loose sample) whose name field is open.
+    @Published var namingHeldGroup: String?
+    /// What the server holds and could group, so the panel can say "N samples
+    /// cannot be grouped yet" instead of "nothing is held" (QA 2026-09-12).
+    @Published var heldGroupsSamples = 0
+    @Published var heldGroupsEmbedded = 0
+    @Published var heldGroupsUnusable = 0
+    @Published var heldGroupsSpeakerModel = true
+    /// Bumped after every naming or discard so the panel drops its cursors and
+    /// armed confirmations, which would otherwise point at samples that are gone.
+    @Published var heldGroupsGeneration = 0
+    private var heldGroupsReloadRequested = false
+    /// A discard goes to the server in slices this size: the server caps one
+    /// request, and "discard all loose" on a busy week is hundreds of samples.
+    static let heldDiscardBatchSize = 200
     @Published var addVoiceBusy = false
 
     // MARK: Archive (0.5.72)
@@ -5376,6 +5400,114 @@ final class ControllerModel: ObservableObject {
             extAudioSessions = []
             extAudioError = error.localizedDescription
         }
+        // 0.5.219 — the grouped view rides along with every sessions refresh, so
+        // the six call sites that already reload one reload both.
+        await loadHeldGroups()
+    }
+
+    /// 0.5.219 — every held sample, grouped by who it sounds like across the
+    /// whole window, plus the loose ones. An older server answers route_absent.
+    func loadHeldGroups() async {
+        // A reload asked for while one is in flight is not dropped: the caller
+        // is usually a naming or discard that just changed what is held.
+        guard !heldGroupsLoading else { heldGroupsReloadRequested = true; return }
+        heldGroupsLoading = true
+        heldGroupsError = nil
+        do {
+            let response = try await helper.run(["voice-held-groups"])
+            heldGroupsState = response.details["state"]?.string ?? "ready"
+            heldGroups = (response.details["groups"]?.array ?? []).compactMap(HeldVoiceGroup.init)
+            heldLoose = (response.details["loose"]?.array ?? []).compactMap(HeldSampleRef.init)
+            heldGroupsPending = response.details["pending"]?.int ?? 0
+            heldGroupsSamples = response.details["samples"]?.int ?? 0
+            heldGroupsEmbedded = response.details["embedded"]?.int ?? 0
+            heldGroupsUnusable = response.details["unusable"]?.int ?? 0
+            heldGroupsSpeakerModel = response.details["speakerModel"]?.bool ?? true
+        } catch {
+            heldGroupsState = "error"
+            heldGroups = []
+            heldLoose = []
+            heldGroupsPending = 0
+            heldGroupsError = error.localizedDescription
+        }
+        heldGroupsLoading = false
+        if heldGroupsReloadRequested {
+            heldGroupsReloadRequested = false
+            await loadHeldGroups()
+        }
+    }
+
+    /// Name held samples as ONE person. A name that already has a profile is
+    /// appended to — that is how a voice that missed in a new room heals. The
+    /// server re-checks that the set is one voice and writes only that core.
+    func nameHeld(_ members: [HeldSampleRef], as name: String) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 2 else {
+            addVoiceResult = "A name needs at least two characters."
+            return
+        }
+        guard !members.isEmpty, !addVoiceBusy else { return }
+        addVoiceBusy = true
+        addVoiceResult = nil
+        defer { addVoiceBusy = false }
+        do {
+            let response = try await helper.run([
+                "voice-held-enroll", "--name", trimmed, "--members", Self.heldMembersJSON(members),
+            ])
+            addVoiceResult = response.message
+            namingHeldGroup = nil
+            heldGroupsGeneration += 1
+            stopPlayback()
+            await loadExtAudio()
+            await loadVoiceDirectory(refresh: true)
+        } catch {
+            addVoiceResult = error.localizedDescription
+        }
+    }
+
+    /// Throw held samples out unnamed — the random artifacts.
+    func discardHeld(_ members: [HeldSampleRef]) async {
+        guard !members.isEmpty, !addVoiceBusy else { return }
+        addVoiceBusy = true
+        addVoiceResult = nil
+        defer { addVoiceBusy = false }
+        var removed = 0
+        do {
+            var slice = 0
+            while slice < members.count {
+                let batch = Array(members[slice..<min(slice + Self.heldDiscardBatchSize, members.count)])
+                let response = try await helper.run(["voice-held-discard", "--members", Self.heldMembersJSON(batch)])
+                removed += response.details["removed"]?.int ?? 0
+                slice += batch.count
+            }
+            addVoiceResult = "Discarded \(removed) held sample\(removed == 1 ? "" : "s")."
+        } catch {
+            // A slice that failed after earlier slices succeeded: those samples
+            // are gone. Say how many, and refresh so the list stops showing them.
+            addVoiceResult = removed > 0
+                ? "Discarded \(removed) of \(members.count) samples before an error: \(error.localizedDescription)"
+                : error.localizedDescription
+        }
+        if removed > 0 {
+            heldGroupsGeneration += 1
+            stopPlayback()
+            await loadExtAudio()
+        }
+    }
+
+    static func heldMembersJSON(_ members: [HeldSampleRef]) -> String {
+        let rows = members.map { $0.payload }
+        guard let data = try? JSONSerialization.data(withJSONObject: rows, options: [.sortedKeys]) else { return "[]" }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    func heldGroupSampleKey(_ ref: HeldSampleRef) -> String { heldSampleKey(ref.sessionId, chunkIndex: ref.chunkIndex) }
+
+    /// Play one sample of a group (or a loose one) through the shared player.
+    func playHeldGroupSample(_ ref: HeldSampleRef, voice: String) {
+        play(key: heldGroupSampleKey(ref), voice: voice,
+             args: ["review-audio", "--session", ref.sessionId, "--ext-chunk", String(ref.chunkIndex)],
+             missing: "That sample is no longer held.")
     }
 
     /// Name one held session, creating a NEW voice profile from its audio.

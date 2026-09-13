@@ -3911,6 +3911,72 @@ struct ExtAudioSession: Identifiable, Sendable, Hashable {
     }
 }
 
+/// 0.5.219 — one held sample, addressed the way glasses-server 6.45.4 addresses it.
+struct HeldSampleRef: Sendable, Hashable {
+    let sessionId: String
+    let chunkIndex: Int
+
+    init(sessionId: String, chunkIndex: Int) {
+        self.sessionId = sessionId
+        self.chunkIndex = chunkIndex
+    }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object,
+              let sessionId = o["sessionId"]?.string, !sessionId.isEmpty,
+              let chunkIndex = o["chunkIndex"]?.int, chunkIndex >= 0 else { return nil }
+        self.sessionId = sessionId
+        self.chunkIndex = chunkIndex
+    }
+
+    var payload: [String: Any] { ["sessionId": sessionId, "chunkIndex": chunkIndex] }
+}
+
+/// 0.5.219 — held samples that sound like ONE person, across every meeting in the
+/// window (`GET /api/voice/held-groups`, glasses-server 6.45.4). The server
+/// groups at its identifier's own floor; Control only shows and names.
+struct HeldVoiceGroup: Identifiable, Sendable, Hashable {
+    let id: String
+    let members: [HeldSampleRef]
+    let sessions: [String]
+    let sampleCount: Int
+    let coherence: Double
+    /// The member closest to everyone else — the one to play first.
+    let seed: HeldSampleRef
+    /// The enrolled profile this group sounds like, when the server is willing
+    /// to say so (above its own floor). Tier is "high" (the live identifier's
+    /// auto-enrol bar) or "likely".
+    let suggestionName: String?
+    let suggestionSimilarity: Double
+    let suggestionTier: String?
+    /// How many of that profile's samples agree, out of how many — the server
+    /// vouches only with two or more, one of them from an anchored source.
+    let suggestionAgreeing: Int
+    let suggestionOf: Int
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let id = o["id"]?.string, !id.isEmpty else { return nil }
+        let members = (o["members"]?.array ?? []).compactMap(HeldSampleRef.init)
+        guard !members.isEmpty else { return nil }
+        self.id = id
+        self.members = members
+        sessions = (o["sessions"]?.array ?? []).compactMap { $0.string }
+        sampleCount = o["sampleCount"]?.int ?? members.count
+        coherence = o["coherence"]?.double ?? 0
+        seed = HeldSampleRef(o["seed"]) ?? members[0]
+        let suggestion = o["suggestion"]?.object
+        suggestionName = suggestion?["name"]?.string
+        suggestionSimilarity = suggestion?["similarity"]?.double ?? 0
+        suggestionTier = suggestion?["tier"]?.string
+        suggestionAgreeing = suggestion?["agreeing"]?.int ?? 0
+        suggestionOf = suggestion?["of"]?.int ?? 0
+    }
+
+    /// Seed first, then the rest: the Listen control starts on the sample that
+    /// best represents the voice.
+    var playOrder: [HeldSampleRef] { [seed] + members.filter { $0 != seed } }
+}
+
 struct VoiceDirectoryPerson: Identifiable, Sendable, Hashable {
     let name: String
     let isOwner: Bool
