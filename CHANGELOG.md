@@ -1,3 +1,15 @@
+## 0.5.222 (build 260)
+
+Speakers has three views, and the toolbar stays on screen.
+
+- Speakers reads Meetings to review, Samples to review, and Voices (Miles, 2026-09-13: "There's no place for us to review existing speakers"). The Add a voice card sat on top of the voice directory with a fixed-height list. It could not shrink, so in a normal window it squeezed the enrolled speakers to nothing and made the column taller than the window, and the window centered the overflow, clipping Home, Back and the breadcrumbs. An offscreen render of 0.5.221 with real data reproduces it.
+- The Activity window pins its content region under the toolbar (minimum width and height zero, top aligned) and clips it, and the window minimum is now a content size. The old minimum counted the title bar, so the content could be 28 points shorter than the view asked for.
+- Samples to review is the Add a voice card on its own. Past four rows (five sessions on an older server) its list scrolls in place and fills the view, above a floor of about one row. The line that says naming uses the audio up sits above the list, where a short window cannot clip it. Until the grouping route answers, the card says it is grouping instead of showing the per-session rows, whose Name uses enroll-ext. The card's second Refresh is gone; the view's Refresh reloads it, and a result notice clears when you change views.
+- While naming a held voice, a line says whether the name adds to an existing person (the server appends only on an exact match) or creates a new voice, with up to three near matches as one-click fills.
+- Voices lists every enrolled speaker with SAMPLES, the voiceprints stored in the profile (shown on any server), and CONFIDENCE: the share of the voice's scored speech the server rated confident, with the segment-weighted average match under it and "thin" below 10 scored segments. The detail pane uses the same name. MATCH is gone and SEGMENTS moved after MEETINGS. Sort adds Most samples and Lowest confidence, which ranks voices with enough scored speech first. Counts carry thousands separators, rows use the gotcos fonts and hairlines, the search field and sort menus use the COS styles, and a search with no match says so with Clear search.
+- An empty directory opens Samples to review in one click; a directory that failed to load offers Retry instead. The Meetings empty state and the zero-profile message also point to Samples to review.
+- A refresh asked for while the directory or the held sessions are already loading now runs after that load instead of being dropped, so SAMPLES is current after naming a voice and switching views.
+
 ## 0.5.221 (build 259)
 
 Add a voice speaks the gotcos theme, in light and dark.

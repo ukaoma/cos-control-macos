@@ -165,6 +165,9 @@ final class ControllerModel: ObservableObject {
     @Published var voiceDirectoryUnresolvedMeetings = 0
     @Published var voiceDirectoryUnresolvedSegments = 0
     @Published var voiceDirectoryTruncated = false
+    /// 0.5.222 — the last directory load FAILED (not "nothing enrolled"), so the empty
+    /// state offers Retry instead of the zero-profile guidance.
+    @Published var voiceDirectoryLoadFailed = false
     /// Which voice row has its naming field open. One at a time: two open fields
     /// invite naming the wrong row.
     @Published var namingVoice: String?
@@ -173,6 +176,8 @@ final class ControllerModel: ObservableObject {
     // Held unrecognized audio, and the in-flight state of naming one of them.
     @Published var extAudioSessions: [ExtAudioSession] = []
     @Published var extAudioLoading = false
+    /// 0.5.222 — the last held-sessions call failed, as opposed to answering "nothing held".
+    @Published var extAudioLoadFailed = false
     @Published var extAudioError: String?
     /// The session the user is currently naming, if any. Mirrors `namingVoice`.
     @Published var addingVoiceSession: String?
@@ -197,6 +202,12 @@ final class ControllerModel: ObservableObject {
     /// armed confirmations, which would otherwise point at samples that are gone.
     @Published var heldGroupsGeneration = 0
     private var heldGroupsReloadRequested = false
+    /// 0.5.222 — a refresh asked for while the directory is loading is queued, not
+    /// dropped. Switching to Voices while a naming saved used to swallow the naming's
+    /// refresh and leave SAMPLES on the old count.
+    private var voiceDirectoryRefreshQueued = false
+    /// 0.5.222 — same for the held sessions: a reload asked for mid-load runs after it.
+    private var extAudioReloadRequested = false
     /// A discard goes to the server in slices this size: the server caps one
     /// request, and "discard all loose" on a busy week is hundreds of samples.
     static let heldDiscardBatchSize = 200
@@ -1295,7 +1306,7 @@ final class ControllerModel: ObservableObject {
         }
 
         if enrolled == 0 {
-            return "No voices are enrolled yet, so every speaker is recorded as Ext and there is nothing to review. Say \"enroll my voice\" on the glasses to record a 30-second sample."
+            return "No voices are enrolled yet, so every speaker is recorded as Ext and there is nothing to review. Name a held voice under Samples to review, or say \"enroll my voice\" on the glasses to record a 30-second sample."
         }
         if skipped > 0 {
             return Self.skippedReviewSentence(skipped: skipped, rows: skippedRows)
@@ -5381,10 +5392,10 @@ final class ControllerModel: ObservableObject {
     /// training coverage, but it is never presented as meeting evidence.
     /// Held unrecognized audio: what a net-new voice can be built from.
     func loadExtAudio() async {
-        guard !extAudioLoading else { return }
+        guard !extAudioLoading else { extAudioReloadRequested = true; return }
         extAudioLoading = true
         extAudioError = nil
-        defer { extAudioLoading = false }
+        extAudioLoadFailed = false
         do {
             let response = try await helper.run(["voice-ext-audio"])
             let state = response.details["state"]?.string ?? "ready"
@@ -5399,10 +5410,16 @@ final class ControllerModel: ObservableObject {
         } catch {
             extAudioSessions = []
             extAudioError = error.localizedDescription
+            extAudioLoadFailed = true
         }
         // 0.5.219 — the grouped view rides along with every sessions refresh, so
         // the six call sites that already reload one reload both.
         await loadHeldGroups()
+        extAudioLoading = false
+        if extAudioReloadRequested {
+            extAudioReloadRequested = false
+            await loadExtAudio()
+        }
     }
 
     /// 0.5.219 — every held sample, grouped by who it sounds like across the
@@ -5747,10 +5764,13 @@ final class ControllerModel: ObservableObject {
     }
 
     func loadVoiceDirectory(refresh: Bool = false) async {
-        guard !voiceDirectoryLoading else { return }
+        guard !voiceDirectoryLoading else {
+            if refresh { voiceDirectoryRefreshQueued = true }
+            return
+        }
         voiceDirectoryLoading = true
         voiceDirectoryError = nil
-        defer { voiceDirectoryLoading = false }
+        voiceDirectoryLoadFailed = false
         do {
             var args = ["voice-directory"]
             if refresh { args.append("--refresh") }
@@ -5773,12 +5793,18 @@ final class ControllerModel: ObservableObject {
                 // 30-second flow on the glasses (cos-glasses-app Main.ts
                 // startVoiceEnrollment) reachable by the voice command below. It
                 // was simply undiscoverable.
-                voiceDirectoryError = "No voice profiles are enrolled yet. Say \"enroll my voice\" on the glasses to record a 30-second sample. Until then every speaker is labelled Ext."
+                voiceDirectoryError = "No voice profiles are enrolled yet. Name a held voice under Samples to review, or say \"enroll my voice\" on the glasses to record a 30-second sample. Until then every speaker is labelled Ext."
             }
         } catch {
             // Preserve last-good rows. Empty plus an error means unavailable;
             // non-empty plus an error means stale-but-readable.
             voiceDirectoryError = error.localizedDescription
+            voiceDirectoryLoadFailed = true
+        }
+        voiceDirectoryLoading = false
+        if voiceDirectoryRefreshQueued {
+            voiceDirectoryRefreshQueued = false
+            await loadVoiceDirectory(refresh: true)
         }
     }
 

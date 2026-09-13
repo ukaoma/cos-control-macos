@@ -615,30 +615,43 @@ echo "    empty-review reason: misleading text gone, zero-profile case named"
 # the dead-wiring failure this suite already guards elsewhere.
 /usr/bin/grep -q 'addingVoiceSession = session.sessionId' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'addVoiceNameField(session)' "$ROOT/Sources/ActivityWindow.swift"
-# ZERO-PROFILE USERS ARE THE POINT. If addVoiceSection renders only in the
-# non-empty branch, the people who need it most never see it.
+# ZERO-PROFILE USERS ARE THE POINT. Add a voice has its own view (0.5.222); the
+# empty voice directory must open it, or the people who need it most never find it.
 /usr/bin/python3 - "$ROOT/Sources/ActivityWindow.swift" <<'PYEOF'
-import io, sys
+import io, sys, re as _re
 src = io.open(sys.argv[1], encoding='utf-8').read()
 code = '\n'.join(l for l in src.split('\n') if not l.strip().startswith('//'))
-uses = code.count('addVoiceSection')
-# one declaration + at least two render sites (empty and non-empty branches)
-assert uses >= 3, f'addVoiceSection must render in BOTH the empty and populated directory; found {uses} references'
+assert code.count('addVoiceSection') == 2, \
+    f'addVoiceSection must be declared once and rendered once, in Samples to review; found {code.count("addVoiceSection")}'
+pane = code[code.index('private var voiceSamplesPane'):]
+pane = pane[:pane.index('private func addVoiceNotice')]
+assert 'addVoiceSection' in pane, 'Samples to review must render the Add a voice card'
+directory = code[code.index('private var voiceDirectoryList'):]
+directory = directory[:directory.index('private var voiceDirectoryColumnHeader')]
+e = directory.index('} else if model.voiceDirectory.isEmpty {')
+# The empty branch has its own if/else (failed load vs nobody enrolled), so it ends
+# where the populated branch's VStack begins, not at the first else.
+empty = directory[e:directory.index('        } else {\n            VStack(spacing: 0) {', e)]
+assert 'speakerSubview = .samples' in empty and 'Button(' in empty, \
+    'an empty voice directory must open Samples to review in one click'
+assert 'if model.voiceDirectoryLoadFailed {' in empty and 'Button("Retry")' in empty, \
+    'a directory that failed to load must offer Retry, not the zero-profile guidance'
 
-# THE CARD MUST STAY A CARD. addVoiceSection renders OUTSIDE the voice
-# directory's ScrollView, so an uncapped ForEach over held sessions grew the
-# layout past the window and took the section header, the view picker and the
-# breadcrumbs with it (production, 2026-08-26, 30+ held sessions).
-import re as _re
+# THE LIST SCROLLS IN PLACE. An uncapped ForEach over held sessions grew the layout
+# past the window (production, 2026-08-26). The card has its own view now, so a long
+# list fills it inside a flexible frame with a floor; the root clamp is pinned in 0.5.222.
 section = code[code.index('private var addVoiceSection'):]
 section = section[:section.index('private func addVoiceRow')]
-assert 'extAudioInlineRowLimit' in section, \
-    'the held-audio list must be capped before it renders inline'
-assert 'ScrollView' in section and 'extAudioListHeight' in section, \
-    'a capped held-audio list must scroll inside a fixed frame, never expand the layout'
-assert _re.search(r'\.frame\(height: Self\.extAudioListHeight\)', section), \
-    'the held-audio ScrollView needs an explicit height; maxHeight lets it grow'
-print('    add-a-voice renders in both empty and populated directory')
+assert 'extAudioInlineRowLimit' in section, 'the held-audio list must be capped before it renders inline'
+assert _re.search(r'ScrollView \{[^}]*?ForEach\(model\.extAudioSessions\)[\s\S]{0,400}?\.frame\(minHeight: Self\.extAudioListMinHeight, maxHeight: \.infinity\)', section), \
+    'the long held-audio list must scroll inside a flexible frame with a floor'
+assert 'private static let extAudioListMinHeight: CGFloat = 88' in code, 'the held-audio list floor is 88 pt'
+assert not _re.search(r'\.frame\(height: (?!1\))', section), 'no fixed heights in the Add a voice card except 1 pt hairlines'
+assert section.index('naming it uses up the audio') < section.index('addVoiceRow(session)'), \
+    'the uses-up-the-audio line must come before the session list, where a short window cannot clip it'
+assert section.index('if model.heldGroupsState == nil {') < section.index('} else if heldGroupsUsable {'), \
+    'before the grouping route answers, the card must say it is loading, not show enroll-ext rows'
+print('    add-a-voice has its own view; the empty directory opens it')
 PYEOF
 # SAFETY: the helper must never offer the unscoped enrol. The server calls it a
 # profile-poisoning default -- it assumes one speaker across every held session
@@ -4601,8 +4614,8 @@ if "await model.discardHeld(members)" not in activity:
     fail("the confirmed Discard must go through the model")
 if 'Button("Add to \\(name)")' not in activity or "await model.nameHeld(group.members, as: name)" not in activity:
     fail("a suggested group must offer one-click Add to <name>")
-if "if rows > Self.heldGroupInlineRowLimit {" not in activity or ".frame(height: Self.heldGroupListHeight)" not in activity:
-    fail("the grouped list must be capped and scroll in a fixed frame (2026-08-26 regression)")
+if "if rows > Self.heldGroupInlineRowLimit {" not in activity or ".frame(minHeight: Self.heldGroupListMinHeight, maxHeight: .infinity)" not in activity:
+    fail("the grouped list must be capped and scroll in place inside a flexible frame with a floor (2026-08-26 regression, 0.5.222 layout)")
 if 'payload: ["name": name, "members": members, "confirm": true]' not in helper or 'payload: ["members": members, "confirm": true]' not in helper:
     fail("both held-group mutations must pass confirm to a server that fails closed")
 if 'static let heldGroupsNeeds = "6.45.4"' not in helper \
@@ -4701,6 +4714,107 @@ for decl in ("struct COSTextButtonStyle: ButtonStyle", "struct COSIconButtonStyl
     if decl not in brand:
         fail(f"COSBrand.swift lost {decl}")
 print("COS Control: Add a voice gotcos theme pinned (0.5.221)")
+PY
+
+# 0.5.222 — Speakers has three views and the toolbar stays put (Miles, 2026-09-13:
+# "There's no place for us to review existing speakers" and "the header... is being truncated").
+/usr/bin/python3 - "$ROOT" <<'PY'
+from pathlib import Path
+import re, sys
+root = Path(sys.argv[1])
+activity = (root / "Sources/ActivityWindow.swift").read_text()
+controller = (root / "Sources/ControllerModel.swift").read_text()
+
+def fail(msg):
+    sys.exit(msg)
+
+def body(src, start, end):
+    i = src.index(start)
+    return src[i:src.index(end, i + len(start))]
+
+enum = body(activity, "private enum SpeakerSubview", "private enum VoiceDirectorySort")
+if re.findall(r"^\s*case (\w+)$", enum, re.M) != ["meetings", "samples", "voices"]:
+    fail("SpeakerSubview must be exactly meetings, samples, voices, in that order")
+title = body(enum, "var title: String {", "var headerTitle: String {")
+header_title = enum[enum.index("var headerTitle: String {"):]
+for part, need in ((title, 'case .meetings: "Meetings to review"'), (title, 'case .samples: "Samples to review"'), (title, 'case .voices: "Voices"'),
+                   (header_title, 'case .samples: "Samples to review"'), (header_title, 'case .voices: "Voice directory"')):
+    if need not in part:
+        fail(f"SpeakerSubview picker and hero titles lost {need!r}")
+speakers = body(activity, "private var speakersList: some View {", "private var speakerDirectoryDetail: String {")
+for need in ("case .meetings: meetingsToReviewList", "case .samples: voiceSamplesPane", "case .voices: voiceDirectoryList",
+             "title: speakerSubview.headerTitle,", "refreshDisabled: speakerRefreshDisabled,",
+             "Task { await loadSpeakerSubview(next, refresh: false) }", "Task { await loadSpeakerSubview(speakerSubview, refresh: true) }",
+             "model.addVoiceResult = nil", ".textFieldStyle(.plain)\n                        .cosField()"):
+    if need not in speakers:
+        fail(f"speakersList lost {need!r}")
+if ".roundedBorder" in speakers or speakers.count(".menuStyle(.button)") != 2 or speakers.count(".buttonStyle(COSQuietButtonStyle())") < 2:
+    fail("the Speakers controls row must use cosField and COS quiet menus, not system styles")
+loader = body(activity, "private func loadSpeakerSubview(", "\n    }\n")
+for need in ("case .meetings: await model.loadReviewableMeetings()", "case .samples:\n            await model.loadExtAudio()",
+             "if model.voiceDirectory.isEmpty { await model.loadVoiceDirectory() }", "case .voices: await model.loadVoiceDirectory(refresh: refresh)"):
+    if need not in loader:
+        fail(f"loadSpeakerSubview lost {need!r}")
+if "case .speakers:\n            await loadSpeakerSubview(speakerSubview, refresh: false)" not in activity:
+    fail("opening Speakers must load the current view through loadSpeakerSubview")
+root_body = body(activity, "    var body: some View {\n        VStack(spacing: 0) {\n            navigationBar", ".frame(minWidth: 760, minHeight: 560)")
+if not re.search(r"activityHome\n\s*\}\n\s*\}\n(?:\s*//.*\n)*\s*\.frame\(minWidth: 0, maxWidth: \.infinity, minHeight: 0, maxHeight: \.infinity, alignment: \.top\)\n\s*\.clipped\(\)\n\s*\}\n\s*$", root_body):
+    fail("the content under the toolbar must be .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top).clipped()")
+if "window.contentMinSize = NSSize(width: 760, height: 560)" not in activity or "window.minSize =" in activity:
+    fail("the Activity window minimum must be a content size; minSize counts the title bar")
+held = body(activity, "private var heldGroupsBody: some View {", "private var heldGroupRows: some View {")
+if held.index("uses up the audio") > held.index("if rows > Self.heldGroupInlineRowLimit {"):
+    fail("the uses-up-the-audio line must come before the grouped list")
+if not re.search(r"ScrollView \{[\s\S]{0,200}?heldGroupRows[\s\S]{0,200}?\.frame\(minHeight: Self\.heldGroupListMinHeight, maxHeight: \.infinity\)", held):
+    fail("the grouped list must scroll inside a flexible frame with a floor")
+if "private static let heldGroupListMinHeight: CGFloat = 88" not in activity or re.search(r"\.frame\(height: (?!1\))", held):
+    fail("the grouped list floor is 88 pt and it has no fixed height")
+card = body(activity, "private var addVoiceSection: some View {", "private func commitAddVoice(")
+if 'Button("Refresh"' in card or "Grouping held voices" not in card:
+    fail("the card has no second Refresh and says when it is still grouping")
+if "nameHint(heldGroupName) { heldGroupName = $0 }" not in card:
+    fail("naming a held group must show whether the name adds to someone")
+hint = body(activity, "private func nameHint(", "private func commitHeldName(")
+if "$0.name == name" not in hint or "localizedCaseInsensitiveContains" not in hint:
+    fail("nameHint must say Adds to only on an exact match (the server appends only then) and offer near matches")
+detail = body(activity, "private var heldSamplesDetail: String {", "\n    }\n")
+if "model.heldGroupsState == nil" not in detail or "model.extAudioLoadFailed" not in detail:
+    fail("the Samples hero line must not read as an empty window while loading or after a failure")
+header = body(activity, "private var voiceDirectoryColumnHeader: some View {", "private func voiceDirectoryRow(")
+if re.findall(r'Text\("([A-Z ]+)"\)', header) != ["VOICE", "SAMPLES", "CONFIDENCE", "MEETINGS", "SEGMENTS", "LAST SEEN"]:
+    fail("voice directory columns must be VOICE, SAMPLES, CONFIDENCE, MEETINGS, SEGMENTS, LAST SEEN")
+row = body(activity, "private func voiceDirectoryRow(", "private var meetingsToReviewList: some View {")
+order = [row.find(t) for t in ("metric(formatted(person.embeddings)", "confidenceValue(person)", "formatted(person.meetingCount)", "formatted(person.assertedSegments)", "person.lastSeen ??")]
+if -1 in order or order != sorted(order):
+    fail("row metrics must be samples, confidence, meetings, segments, last seen, the same order as the header")
+share = body(activity, "private func confidenceShare(", "\n    }\n")
+if "Double(confident) / Double(person.observedMatchSegments)" not in share or ">=" in share or re.search(r"\d\.\d", share):
+    fail("confidence divides confident segments by the SCORED basis and never re-derives a similarity threshold")
+if "static let confidenceMinimumBasis = 10" not in activity or activity.count("Self.confidenceMinimumBasis") < 3:
+    fail("the thin-basis mark and the confidence sort must share confidenceMinimumBasis")
+if 'title: "OBSERVED MATCH"' in activity or 'voiceMetricCard(title: "CONFIDENCE"' not in activity:
+    fail("the detail pane must use the same CONFIDENCE name as the list")
+rank = body(activity, "private func confidenceRank(", "\n    }\n")
+if "return (2, nil)" not in rank or "< Self.confidenceMinimumBasis ? 1 : 0" not in rank:
+    fail("confidenceRank must put never-matched last and thin bases after real ones")
+sort = body(activity, "private var visibleVoices: [VoiceDirectoryPerson] {", "private var hasDetail: Bool {")
+for need in ("if a.embeddings != b.embeddings { return a.embeddings > b.embeddings }", "if ra.tier != rb.tier { return ra.tier < rb.tier }",
+             "if let x = ra.share, let y = rb.share, x != y { return x < y }", "return a.observedMatchSegments > b.observedMatchSegments"):
+    if need not in sort:
+        fail(f"voice sort lost {need!r}")
+for need in ('case .samples: "Most samples"', 'case .confidence: "Lowest confidence"', 'Button("Clear search")', "No voices match"):
+    if need not in activity:
+        fail(f"Voices lost {need!r}")
+for need, why in (("guard !extAudioLoading else { extAudioReloadRequested = true; return }", "a held-sessions reload asked for mid-load must be queued"),
+                  ("extAudioReloadRequested = false\n            await loadExtAudio()", "the queued held-sessions reload must run"),
+                  ("if refresh { voiceDirectoryRefreshQueued = true }", "a directory refresh asked for mid-load must be queued"),
+                  ("voiceDirectoryRefreshQueued = false\n            await loadVoiceDirectory(refresh: true)", "the queued directory refresh must run"),
+                  ("voiceDirectoryLoadFailed = true", "a failed directory load must be distinguishable from nobody enrolled"),
+                  ("extAudioLoadFailed = true", "a failed held-sessions load must be distinguishable from nothing held"),
+                  ("there is nothing to review. Name a held voice under Samples to review", "the Meetings zero-profile state must point to Samples to review")):
+    if need not in controller:
+        fail(why)
+print("COS Control: Speakers views and toolbar clamp pinned (0.5.222)")
 PY
 
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"

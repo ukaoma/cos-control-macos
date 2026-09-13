@@ -28,7 +28,9 @@ final class ActivityWindowPresenter: NSObject, ObservableObject, NSWindowDelegat
         let window = NSWindow(contentViewController: hostingController)
         window.title = "COS Activity"
         window.setContentSize(NSSize(width: 920, height: 680))
-        window.minSize = NSSize(width: 760, height: 560)
+        // 0.5.222 — a CONTENT minimum. `minSize` counts the title bar, so the content could
+        // shrink to about 532 pt while the root view asks for 560, and the root overflowed.
+        window.contentMinSize = NSSize(width: 760, height: 560)
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.isReleasedWhenClosed = false
         window.delegate = self
@@ -145,18 +147,40 @@ private enum MemoriesSubview: String, CaseIterable, Identifiable {
     }
 }
 
+/// 0.5.222 — three views (Miles, 2026-09-13: "meetings to review, voice samples to
+/// review, and voices would show us the active speakers"). Add a voice used to sit on top
+/// of the voice directory, where it could not shrink: it squeezed the enrolled speakers to
+/// nothing and pushed the toolbar and breadcrumbs off the window.
 private enum SpeakerSubview: String, CaseIterable, Identifiable {
     case meetings
+    case samples
     case voices
 
     var id: String { rawValue }
-    var title: String { self == .voices ? "Voices" : "Meetings to review" }
+    /// The segmented control's label.
+    var title: String {
+        switch self {
+        case .meetings: "Meetings to review"
+        case .samples: "Samples to review"
+        case .voices: "Voices"
+        }
+    }
+    /// The pane hero's title.
+    var headerTitle: String {
+        switch self {
+        case .meetings: "Meetings to review"
+        case .samples: "Samples to review"
+        case .voices: "Voice directory"
+        }
+    }
 }
 
 private enum VoiceDirectorySort: String, CaseIterable, Identifiable {
     case attention
     case recent
     case meetings
+    case samples
+    case confidence
     case name
 
     var id: String { rawValue }
@@ -165,6 +189,8 @@ private enum VoiceDirectorySort: String, CaseIterable, Identifiable {
         case .attention: "Needs attention"
         case .recent: "Recently heard"
         case .meetings: "Most meetings"
+        case .samples: "Most samples"
+        case .confidence: "Lowest confidence"
         case .name: "Name"
         }
     }
@@ -272,6 +298,16 @@ struct ActivityWindow: View {
                 if (a.lastSeen ?? "") != (b.lastSeen ?? "") { return (a.lastSeen ?? "") > (b.lastSeen ?? "") }
             case .meetings:
                 if a.meetingCount != b.meetingCount { return a.meetingCount > b.meetingCount }
+            case .samples:
+                if a.embeddings != b.embeddings { return a.embeddings > b.embeddings }
+            case .confidence:
+                // Weakest profile first among voices with enough scored speech to judge; a thin
+                // basis sorts after them and a voice never matched goes last, since one segment
+                // swings a share from 0 to 100 (QA 2026-09-13, live data).
+                let ra = confidenceRank(a), rb = confidenceRank(b)
+                if ra.tier != rb.tier { return ra.tier < rb.tier }
+                if let x = ra.share, let y = rb.share, x != y { return x < y }
+                if a.observedMatchSegments != b.observedMatchSegments { return a.observedMatchSegments > b.observedMatchSegments }
             case .name:
                 break
             }
@@ -365,7 +401,14 @@ struct ActivityWindow: View {
                     activityHome
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // 0.5.222 — THE TOOLBAR STAYS PUT. The content region takes exactly the space
+            // left under the navigation bar and the lens rail (minWidth and minHeight 0),
+            // aligned to the top, and clips what does not fit. A pane that cannot shrink
+            // otherwise made the column taller than the window, and the window centered the
+            // overflow: Home, Back and the breadcrumbs slid off the top (Add a voice,
+            // 2026-08-26 and again 2026-09-13).
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
+            .clipped()
         }
         .frame(minWidth: 760, minHeight: 560)
         .font(COSType.body(13))
@@ -1915,18 +1958,12 @@ struct ActivityWindow: View {
         VStack(spacing: 0) {
             sectionHeader(
                 section: .speakers,
-                title: speakerSubview == .voices ? "Voice directory" : "Meetings to review",
+                title: speakerSubview.headerTitle,
                 detail: speakerDirectoryDetail,
                 refresh: {
-                    Task {
-                        if speakerSubview == .voices {
-                            await model.loadVoiceDirectory(refresh: true)
-                            await model.loadExtAudio()
-                        }
-                        else { await model.loadReviewableMeetings() }
-                    }
+                    Task { await loadSpeakerSubview(speakerSubview, refresh: true) }
                 },
-                refreshDisabled: speakerSubview == .voices ? model.voiceDirectoryLoading : model.meetingsLoading,
+                refreshDisabled: speakerRefreshDisabled,
                 refreshTitle: speakerRefreshTitle,
                 refreshProminent: speakerSubview == .meetings && model.meetingsRefreshNeeded
             )
@@ -1936,23 +1973,20 @@ struct ActivityWindow: View {
                     ForEach(SpeakerSubview.allCases) { item in Text(item.title).tag(item) }
                 }
                 .pickerStyle(.segmented)
-                .frame(maxWidth: 360)
+                .fixedSize()
                 .onChange(of: speakerSubview) { _, next in
                     selectedVoiceName = nil
                     selectedSpeakerSessionID = nil
                     model.closeSpeakerReview()
-                    Task {
-                        if next == .voices {
-                            await model.loadVoiceDirectory()
-                            await model.loadExtAudio()
-                        }
-                        else { await model.loadReviewableMeetings() }
-                    }
+                    // A naming or discard result belongs to the view it happened in.
+                    model.addVoiceResult = nil
+                    Task { await loadSpeakerSubview(next, refresh: false) }
                 }
 
                 if speakerSubview == .voices {
                     TextField("Search voices", text: $voiceSearch)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
+                        .cosField()
                         .frame(maxWidth: 280)
                         .accessibilityLabel("Search enrolled voices")
                     Menu {
@@ -1962,13 +1996,18 @@ struct ActivityWindow: View {
                     } label: {
                         Label(voiceSort.title, systemImage: "arrow.up.arrow.down")
                     }
-                } else {
+                    .menuStyle(.button)
+                    .buttonStyle(COSQuietButtonStyle())
+                    .fixedSize()
+                    .help("Needs attention puts voices with meetings to review first. Lowest confidence puts the weakest profiles with enough matched speech first.")
+                } else if speakerSubview == .meetings {
                     Toggle("Hide reviewed", isOn: Binding(
                         get: { model.hideReviewedMeetings },
                         set: { model.setHideReviewed($0) }
                     ))
                     .toggleStyle(.checkbox)
-                    .font(.system(size: 11))
+                    .tint(COSPalette.accent)
+                    .font(COSType.body(11))
                     .help("Keep finished meetings off the list while you work through names.")
                     Menu {
                         Picker("Sort meetings", selection: Binding(
@@ -1980,6 +2019,8 @@ struct ActivityWindow: View {
                     } label: {
                         Label(model.meetingReviewSort.title, systemImage: "arrow.up.arrow.down")
                     }
+                    .menuStyle(.button)
+                    .buttonStyle(COSQuietButtonStyle())
                     .fixedSize()
                     .help("Needs review first is the naming queue. Newest or oldest reads the list by capture time instead.")
                 }
@@ -1991,15 +2032,38 @@ struct ActivityWindow: View {
             .background(COSPalette.card.opacity(0.42))
             .overlay(alignment: .bottom) { Divider() }
 
-            if speakerSubview == .voices {
-                voiceDirectoryList
-            } else {
-                meetingsToReviewList
+            switch speakerSubview {
+            case .meetings: meetingsToReviewList
+            case .samples: voiceSamplesPane
+            case .voices: voiceDirectoryList
             }
         }
     }
 
+    private var speakerRefreshDisabled: Bool {
+        switch speakerSubview {
+        case .meetings: model.meetingsLoading
+        case .samples: model.extAudioLoading
+        case .voices: model.voiceDirectoryLoading
+        }
+    }
+
+    /// One loader per view, shared by the picker, the pane's Refresh and opening the
+    /// section, so the three cannot drift apart. Samples reload the held sessions and
+    /// the grouped voices together (loadExtAudio awaits loadHeldGroups).
+    private func loadSpeakerSubview(_ view: SpeakerSubview, refresh: Bool) async {
+        switch view {
+        case .meetings: await model.loadReviewableMeetings()
+        case .samples:
+            await model.loadExtAudio()
+            // The directory's names back the "Adds to" hint while naming a voice.
+            if model.voiceDirectory.isEmpty { await model.loadVoiceDirectory() }
+        case .voices: await model.loadVoiceDirectory(refresh: refresh)
+        }
+    }
+
     private var speakerDirectoryDetail: String {
+        if speakerSubview == .samples { return heldSamplesDetail }
         if speakerSubview == .meetings {
             if model.reviewableMeetings.isEmpty {
                 return "Choose a saved meeting to name its voices."
@@ -2024,7 +2088,24 @@ struct ActivityWindow: View {
             return "\(model.voiceDirectory.count) enrolled profiles · history unavailable on this server"
         }
         let review = model.voiceDirectory.reduce(0) { $0 + $1.reviewMeetingCount }
-        return "\(model.voiceDirectory.count) enrolled · \(review) review occurrence\(review == 1 ? "" : "s")"
+        let samples = model.voiceDirectory.reduce(0) { $0 + $1.embeddings }
+        return "\(formatted(model.voiceDirectory.count)) enrolled · \(formatted(samples)) sample\(samples == 1 ? "" : "s") · \(formatted(review)) review occurrence\(review == 1 ? "" : "s")"
+    }
+
+    /// The Samples to review hero line: the counts at a glance, like the other two views.
+    private var heldSamplesDetail: String {
+        if model.heldGroupsState == nil { return "Asking the server what it is holding." }
+        if model.heldGroupsState == "error" { return "Held voices could not be grouped. The card says why." }
+        if model.extAudioLoadFailed && !heldGroupsUsable { return "Held audio could not be read. Refresh to try again." }
+        if heldGroupsUsable {
+            let voices = model.heldGroups.count
+            let loose = model.heldLoose.count
+            if voices == 0 && loose == 0 { return "Unrecognized voices wait here for 72 hours." }
+            return "\(formatted(voices)) held voice\(voices == 1 ? "" : "s") · \(formatted(loose)) loose sample\(loose == 1 ? "" : "s") · kept 72 hours"
+        }
+        let sessions = model.extAudioSessions.count
+        if sessions == 0 { return "Unrecognized voices wait here for 72 hours." }
+        return "\(formatted(sessions)) unrecognized session\(sessions == 1 ? "" : "s") · kept 72 hours"
     }
 
     /// ADD A VOICE — the explicit surface for creating a NET-NEW profile.
@@ -2045,9 +2126,11 @@ struct ActivityWindow: View {
     ///   - the window closes, and the countdown is the server's own
     /// Rows shown at natural height before the list starts scrolling in place.
     private static let extAudioInlineRowLimit = 5
-    /// Height of the scrolling frame once the limit is passed. Roughly six rows,
-    /// so the card stays a card and never becomes the whole window.
-    private static let extAudioListHeight: CGFloat = 250
+    /// Floor for the scrolling list once the limit is passed (0.5.222). The card has its
+    /// own view now, so the list takes the height the window has instead of a fixed 250;
+    /// Rows are 53 to 88 pt, so the floor keeps at least one visible in a short window,
+    /// and the window's content clamp keeps even that from pushing the toolbar off.
+    private static let extAudioListMinHeight: CGFloat = 88
 
     /// Says how many are held once the list is capped, because a scrolling box
     /// hides its own length and "some audio" is not an amount.
@@ -2077,10 +2160,9 @@ struct ActivityWindow: View {
                 .frame(width: 34, height: 34)
                 Text("Add a voice").font(COSType.display(18, weight: .medium))
                 Spacer()
-                if model.extAudioLoading { ProgressView().controlSize(.small) }
-                Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.loadExtAudio() } }
-                    .buttonStyle(COSQuietButtonStyle())
-                    .disabled(model.extAudioLoading)
+                // The pane hero's Refresh reloads this view (0.5.222); a second one on the
+                // card was two buttons doing one thing.
+                if model.extAudioLoading && model.heldGroupsState != nil { ProgressView().controlSize(.small) }
             }
 
             if let result = model.addVoiceResult {
@@ -2089,7 +2171,17 @@ struct ActivityWindow: View {
 
             // 0.5.219 — a server that groups held voices (6.45.4) gets the grouped
             // panel; an older one keeps the per-session rows below, unchanged.
-            if heldGroupsUsable {
+            // 0.5.222 — until the grouping route has answered at all, the per-session
+            // rows are a guess, not a fallback: their Name uses enroll-ext, the path that
+            // wrote one household voice into two profiles on 2026-09-12. Say it is loading.
+            if model.heldGroupsState == nil {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Grouping held voices…")
+                        .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+                }
+                .padding(.vertical, 6)
+            } else if heldGroupsUsable {
                 heldGroupsBody
             } else if model.extAudioSessions.isEmpty {
                 heldGroupsFallbackNote
@@ -2100,14 +2192,17 @@ struct ActivityWindow: View {
                 heldGroupsFallbackNote
                 Text(extAudioLead)
                     .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
-                // BOUNDED, ALWAYS. The server holds unrecognized audio for 72
-                // hours, so a busy week is dozens of sessions. This card sits
-                // OUTSIDE the voice directory's ScrollView, so an uncapped
-                // ForEach grew the whole layout past the window and carried the
-                // section header, the view picker and the breadcrumbs off
-                // screen with it. Reported in production 2026-08-26 with 30+
-                // held sessions. Short lists keep their natural height; long
-                // ones scroll inside a fixed frame instead of pushing chrome.
+                // Said BEFORE the list (0.5.222): a short window clips the bottom of the
+                // card first, and this is the only line that says naming uses the audio up.
+                Text("A session can hold more than one unknown speaker, and naming it uses up the audio.")
+                    .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+                // BOUNDED, ALWAYS. The server holds unrecognized audio for 72 hours, so a
+                // busy week is dozens of sessions. Until 0.5.222 this card sat OUTSIDE the
+                // voice directory's ScrollView, and an uncapped ForEach grew the layout past
+                // the window and carried the section header, the view picker and the
+                // breadcrumbs off screen (production, 2026-08-26, 30+ held sessions). Short
+                // lists keep their natural height; long ones scroll in place in the card's
+                // own view, above a floor of about one row.
                 VStack(alignment: .leading, spacing: 0) {
                     if model.extAudioSessions.count > Self.extAudioInlineRowLimit {
                         ScrollView {
@@ -2119,7 +2214,7 @@ struct ActivityWindow: View {
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .frame(height: Self.extAudioListHeight)
+                        .frame(minHeight: Self.extAudioListMinHeight, maxHeight: .infinity)
                     } else {
                         ForEach(model.extAudioSessions) { session in
                             heldRowDivider
@@ -2127,8 +2222,6 @@ struct ActivityWindow: View {
                         }
                     }
                 }
-                Text("A session can hold more than one unknown speaker, and naming it uses up the audio.")
-                    .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
             }
         }
         .padding(16)
@@ -2139,6 +2232,13 @@ struct ActivityWindow: View {
         .padding(.horizontal, 22)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
+    }
+
+    /// SAMPLES TO REVIEW (0.5.222): Add a voice alone in its own view, so its list fills
+    /// the pane instead of competing with the voice directory for the window's height.
+    private var voiceSamplesPane: some View {
+        addVoiceSection
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     /// A result or a reason, set on the card's raised strip rather than as loose
@@ -2177,9 +2277,9 @@ struct ActivityWindow: View {
 
     /// Rows shown at natural height before the list starts scrolling in place.
     private static let heldGroupInlineRowLimit = 4
-    /// Same reason as `extAudioListHeight`: this card sits outside the directory
-    /// ScrollView, so an uncapped list pushes the chrome off screen.
-    private static let heldGroupListHeight: CGFloat = 300
+    /// Same floor as `extAudioListMinHeight`. The fixed 300 this replaced left the card
+    /// taller than a 680-point window once it sat above the directory (Miles, 2026-09-13).
+    private static let heldGroupListMinHeight: CGFloat = 88
 
     /// The grouped view stands in for the per-session rows only when the server
     /// answered the route AND could actually group what it holds. With the
@@ -2227,18 +2327,20 @@ struct ActivityWindow: View {
             Text(heldGroupsLead)
                 .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
                 .fixedSize(horizontal: false, vertical: true)
+            // Above the list (0.5.222): a short window clips the bottom of the card first,
+            // and a high-tier Add to <name> is one click.
+            if rows > 0 {
+                Text("Naming a group adds its samples to that person and uses up the audio. Discarding throws the audio out.")
+                    .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+            }
             if rows > Self.heldGroupInlineRowLimit {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) { heldGroupRows }
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(height: Self.heldGroupListHeight)
+                .frame(minHeight: Self.heldGroupListMinHeight, maxHeight: .infinity)
             } else {
                 VStack(alignment: .leading, spacing: 0) { heldGroupRows }
-            }
-            if rows > 0 {
-                Text("Naming a group adds its samples to that person and uses up the audio. Discarding throws the audio out.")
-                    .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
             }
         }
         // After a naming or a discard the samples under every cursor are gone;
@@ -2395,22 +2497,25 @@ struct ActivityWindow: View {
     @ViewBuilder
     private func heldActionRow(key: String, members: [HeldSampleRef], count: Int) -> some View {
         if model.namingHeldGroup == key {
-            HStack(spacing: 8) {
-                TextField("Who is this?", text: $heldGroupName)
-                    .textFieldStyle(.plain)
-                    .cosField()
-                    .frame(width: 190)
-                    .onSubmit { commitHeldName(members) }
-                Button("Save") { commitHeldName(members) }
-                    .buttonStyle(COSPrimaryButtonStyle())
-                    .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel
-                              || heldGroupName.trimmingCharacters(in: .whitespacesAndNewlines).count < 2)
-                Button("Cancel") {
-                    model.namingHeldGroup = nil
-                    heldGroupName = ""
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    TextField("Who is this?", text: $heldGroupName)
+                        .textFieldStyle(.plain)
+                        .cosField()
+                        .frame(width: 190)
+                        .onSubmit { commitHeldName(members) }
+                    Button("Save") { commitHeldName(members) }
+                        .buttonStyle(COSPrimaryButtonStyle())
+                        .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel
+                                  || heldGroupName.trimmingCharacters(in: .whitespacesAndNewlines).count < 2)
+                    Button("Cancel") {
+                        model.namingHeldGroup = nil
+                        heldGroupName = ""
+                    }
+                    .buttonStyle(COSTextButtonStyle())
+                    if model.addVoiceBusy { ProgressView().controlSize(.small) }
                 }
-                .buttonStyle(COSTextButtonStyle())
-                if model.addVoiceBusy { ProgressView().controlSize(.small) }
+                nameHint(heldGroupName) { heldGroupName = $0 }
             }
         } else if confirmingHeldDiscard == key {
             HStack(spacing: 8) {
@@ -2437,6 +2542,40 @@ struct ActivityWindow: View {
                     .buttonStyle(COSTextButtonStyle(tone: .destructive))
                     .disabled(model.addVoiceBusy)
             }
+        }
+    }
+
+    /// 0.5.222 — while naming, say whether the name adds to someone or starts a new voice.
+    /// The server appends only on an EXACT name match (held-voice-groups.ts,
+    /// `profiles.find(p => p.name === name)`), so "Luke h" quietly creates a second Luke.
+    /// Near matches are offered as one-click fills.
+    @ViewBuilder
+    private func nameHint(_ typed: String, fill: @escaping @MainActor (String) -> Void) -> some View {
+        let name = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.count >= 2 {
+            let exact = model.voiceDirectory.first { $0.name == name }
+            let near = exact == nil
+                ? Array(model.voiceDirectory.filter { $0.name.localizedCaseInsensitiveContains(name) }.prefix(3))
+                : []
+            // Two lines, not one: squeezed beside the chips, the sentence wrapped mid-phrase.
+            VStack(alignment: .leading, spacing: 4) {
+                if let exact {
+                    Text("Adds to \(exact.name), who has \(exact.embeddings) sample\(exact.embeddings == 1 ? "" : "s").")
+                } else {
+                    Text("Creates a new voice.")
+                    if !near.isEmpty {
+                        HStack(spacing: 6) {
+                            Text("Did you mean")
+                            ForEach(near) { person in
+                                Button(person.name) { fill(person.name) }
+                                    .buttonStyle(COSQuietButtonStyle())
+                            }
+                        }
+                    }
+                }
+            }
+            .font(COSType.body(10.5))
+            .foregroundStyle(COSPalette.muted)
         }
     }
 
@@ -2614,23 +2753,44 @@ struct ActivityWindow: View {
         if model.voiceDirectoryLoading && model.voiceDirectory.isEmpty {
             centeredProgress("Building the voice directory…")
         } else if model.voiceDirectory.isEmpty {
-            // ADD-A-VOICE IS SHOWN HERE TOO, and this is the case that matters.
-            // A user with zero profiles is exactly who needs it, and an empty
-            // state that only explains the problem is what sent Chelsie to
-            // Discord instead of to the fix.
-            VStack(spacing: 10) {
-                emptyState(.speakers, text: model.voiceDirectoryError ?? "No voice profiles are enrolled yet.")
-                addVoiceSection
+            // A ZERO-PROFILE USER IS WHO NEEDS ADD A VOICE MOST. An empty state that only
+            // explained the problem is what sent Chelsie to Discord instead of to the fix
+            // (2026-08-24). The card has its own view now (0.5.222), so this state names it
+            // and opens it in one click. A failed load is not "nobody enrolled": it retries.
+            VStack(spacing: 14) {
+                sectionGlyph(.speakers, large: true)
+                if model.voiceDirectoryLoadFailed {
+                    Text("The voice directory could not be loaded.")
+                        .font(COSType.body(12.5, weight: .medium))
+                    Text(model.voiceDirectoryError ?? "The helper did not answer.")
+                        .font(COSType.body(12))
+                        .foregroundStyle(COSPalette.muted)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 380)
+                    Button("Retry") { Task { await model.loadVoiceDirectory(refresh: true) } }
+                        .buttonStyle(COSQuietButtonStyle())
+                } else {
+                    Text("No voice profiles are enrolled yet.")
+                        .font(COSType.body(12.5, weight: .medium))
+                    Text("Voices the glasses did not recognize are held for 72 hours under " + SpeakerSubview.samples.title + ". Listen to one and name it to start a profile, or say \"enroll my voice\" on the glasses.")
+                        .font(COSType.body(12))
+                        .foregroundStyle(COSPalette.muted)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 380)
+                    Button("Open " + SpeakerSubview.samples.title) { speakerSubview = .samples }
+                        .buttonStyle(COSPrimaryButtonStyle())
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(30)
         } else {
             VStack(spacing: 0) {
                 if let error = model.voiceDirectoryError {
                     directoryNotice(error, stale: model.voiceDirectoryRouteAvailable != false)
                 }
-                addVoiceSection
                 if model.voiceDirectoryUnresolvedMeetings > 0 {
                     directoryNotice(
-                        "\(model.voiceDirectoryUnresolvedSegments) unidentified segments remain local to \(model.voiceDirectoryUnresolvedMeetings) meeting\(model.voiceDirectoryUnresolvedMeetings == 1 ? "" : "s"). They are not treated as one person.",
+                        "\(formatted(model.voiceDirectoryUnresolvedSegments)) unidentified segments remain local to \(formatted(model.voiceDirectoryUnresolvedMeetings)) meeting\(model.voiceDirectoryUnresolvedMeetings == 1 ? "" : "s"). They are not treated as one person.",
                         stale: false
                     )
                 }
@@ -2644,7 +2804,16 @@ struct ActivityWindow: View {
                             .buttonStyle(.plain)
                             .accessibilityLabel(voiceAccessibilityLabel(person))
                             .accessibilityHint("Open voice history")
-                            Divider().padding(.leading, 52)
+                            Rectangle().fill(COSPalette.line).frame(height: 1).padding(.leading, 52)
+                        }
+                        if visibleVoices.isEmpty {
+                            VStack(spacing: 10) {
+                                Text("No voices match \u{201C}\(voiceSearch)\u{201D}.")
+                                    .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+                                Button("Clear search") { voiceSearch = "" }
+                                    .buttonStyle(COSQuietButtonStyle())
+                            }
+                            .padding(.vertical, 28)
                         }
                     }
                     .frame(maxWidth: 980)
@@ -2656,17 +2825,31 @@ struct ActivityWindow: View {
         }
     }
 
+    /// Column widths shared by the header and every row, so the two cannot drift apart.
+    private static let voiceSamplesColumn: CGFloat = 64
+    private static let voiceConfidenceColumn: CGFloat = 86
+    private static let voiceCountColumn: CGFloat = 70
+    private static let voiceLastSeenColumn: CGFloat = 88
+    private static let voiceChevronColumn: CGFloat = 12
+    /// Below this many SCORED segments a confident share swings with one segment, so the row
+    /// says "thin" and Lowest confidence sorts it after voices with a real basis. A display
+    /// and sort choice made in Control, not a server threshold.
+    static let confidenceMinimumBasis = 10
+
     private var voiceDirectoryColumnHeader: some View {
         HStack(spacing: 12) {
             Text("VOICE").frame(maxWidth: .infinity, alignment: .leading)
-            Text("SEGMENTS").frame(width: 78, alignment: .trailing)
-            Text("MEETINGS").frame(width: 78, alignment: .trailing)
-            Text("MATCH").frame(width: 76, alignment: .trailing)
-            Text("LAST SEEN").frame(width: 88, alignment: .trailing)
-            Color.clear.frame(width: 12)
+            Text("SAMPLES").frame(width: Self.voiceSamplesColumn, alignment: .trailing)
+                .help("Voiceprints stored in this person's profile.")
+            Text("CONFIDENCE").frame(width: Self.voiceConfidenceColumn, alignment: .trailing)
+                .help("Share of this voice's scored speech the server matched confidently. Under it: the average match across that speech, marked thin below \(Self.confidenceMinimumBasis) scored segments.")
+            Text("MEETINGS").frame(width: Self.voiceCountColumn, alignment: .trailing)
+            Text("SEGMENTS").frame(width: Self.voiceCountColumn, alignment: .trailing)
+            Text("LAST SEEN").frame(width: Self.voiceLastSeenColumn, alignment: .trailing)
+            Color.clear.frame(width: Self.voiceChevronColumn)
         }
-        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-        .foregroundStyle(.secondary)
+        .font(COSType.mono(9, weight: .semibold))
+        .foregroundStyle(COSPalette.muted)
         .padding(.vertical, 10)
     }
 
@@ -2681,24 +2864,29 @@ struct ActivityWindow: View {
             .frame(width: 38, height: 38)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(person.name).font(.system(size: 12.5, weight: .semibold)).lineLimit(1)
-                    if person.isOwner { statusPill("OWNER", tint: COSPalette.green) }
-                    if person.needsAttention { statusPill("REVIEW", tint: COSPalette.amber) }
+                    Text(person.name)
+                        .font(COSType.body(12.5, weight: .semibold))
+                        .lineLimit(1)
+                        .layoutPriority(1)
+                    if person.isOwner { statusPill("OWNER", tint: COSPalette.green).fixedSize() }
+                    if person.needsAttention { statusPill("REVIEW", tint: COSPalette.amber).fixedSize() }
                 }
-                Text("\(person.embeddings) training samples · \(sourceSummary(person.sources))")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+                Text(voiceSourceLine(person))
+                    .font(COSType.body(10.5))
+                    .foregroundStyle(COSPalette.muted)
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            metric(historyAvailable ? "\(person.assertedSegments)" : "—", sub: historyAvailable && person.candidateSegments > 0 ? "+\(person.candidateSegments) review" : nil, width: 78)
-            metric(historyAvailable ? "\(person.meetingCount)" : "—", sub: historyAvailable && person.reviewMeetingCount > 0 ? "\(person.reviewMeetingCount) review" : nil, width: 78)
-            metric(historyAvailable ? percent(person.observedMatch) : "—", sub: historyAvailable ? (person.observedMatch == nil ? "no basis" : "observed") : "update server", width: 76)
-            metric(historyAvailable ? (person.lastSeen ?? "Never") : "—", sub: nil, width: 88)
+            // Samples come from the profile itself, so they show on any server.
+            metric(formatted(person.embeddings), sub: nil, width: Self.voiceSamplesColumn)
+            metric(historyAvailable ? confidenceValue(person) : "—", sub: historyAvailable ? confidenceDetail(person) : "update server", width: Self.voiceConfidenceColumn)
+            metric(historyAvailable ? formatted(person.meetingCount) : "—", sub: historyAvailable && person.reviewMeetingCount > 0 ? "\(formatted(person.reviewMeetingCount)) review" : nil, width: Self.voiceCountColumn)
+            metric(historyAvailable ? formatted(person.assertedSegments) : "—", sub: historyAvailable && person.candidateSegments > 0 ? "+\(formatted(person.candidateSegments)) review" : nil, width: Self.voiceCountColumn)
+            metric(historyAvailable ? (person.lastSeen ?? "Never") : "—", sub: nil, width: Self.voiceLastSeenColumn)
             Image(systemName: "chevron.right")
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.tertiary)
-                .frame(width: 12)
+                .foregroundStyle(COSPalette.muted)
+                .frame(width: Self.voiceChevronColumn)
         }
         .padding(.vertical, 12)
         .contentShape(Rectangle())
@@ -3595,21 +3783,21 @@ struct ActivityWindow: View {
     private func directoryNotice(_ text: String, stale: Bool) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: stale ? "clock.badge.exclamationmark" : "info.circle")
-                .foregroundStyle(stale ? COSPalette.amber : ActivitySection.speakers.tint)
+                .foregroundStyle(stale ? COSPalette.amber : COSPalette.accent)
             Text(text)
-                .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
+                .font(COSType.body(11))
+                .foregroundStyle(COSPalette.muted)
             Spacer()
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 9)
-        .background((stale ? COSPalette.amber : ActivitySection.speakers.tint).opacity(0.07))
+        .background((stale ? COSPalette.amber : COSPalette.accent).opacity(0.07))
         .overlay(alignment: .bottom) { Divider() }
     }
 
     private func statusPill(_ text: String, tint: Color) -> some View {
         Text(text)
-            .font(.system(size: 8, weight: .bold, design: .monospaced))
+            .font(COSType.mono(8, weight: .bold))
             .foregroundStyle(.primary)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
@@ -3618,8 +3806,8 @@ struct ActivityWindow: View {
 
     private func metric(_ value: String, sub: String?, width: CGFloat) -> some View {
         VStack(alignment: .trailing, spacing: 2) {
-            Text(value).font(.system(size: 11.5, weight: .semibold, design: .monospaced)).lineLimit(1)
-            if let sub { Text(sub).font(.system(size: 8.5)).foregroundStyle(.secondary).lineLimit(1) }
+            Text(value).font(COSType.mono(11.5, weight: .semibold)).lineLimit(1)
+            if let sub { Text(sub).font(COSType.body(9)).foregroundStyle(COSPalette.muted).lineLimit(1) }
         }
         .frame(width: width, alignment: .trailing)
     }
@@ -3636,12 +3824,54 @@ struct ActivityWindow: View {
         return rows.prefix(2).map { "\($0.key) \($0.value)" }.joined(separator: " · ")
     }
 
+    /// The row's second line: where the samples came from. The count has its own column.
+    private func voiceSourceLine(_ person: VoiceDirectoryPerson) -> String {
+        let summary = sourceSummary(person.sources)
+        return summary.isEmpty ? "No recorded source" : summary
+    }
+
+    /// CONFIDENCE: the share of this voice's SCORED segments (the ones with a similarity, the
+    /// same basis as `observedMatch`) that came from appearances the server rated confident,
+    /// meaning at or above CONFIDENT_SIMILARITY with no speaker thrash
+    /// (meeting-speaker-review.ts). The server sets that tier per voice per meeting and
+    /// counts it in segments. It also rates unscored segments weak, so dividing by every tier
+    /// read a voice with one scored segment as "0% confident" (QA 2026-09-13, live data).
+    /// The denominator is the scored basis. Nil when nothing was scored.
+    private func confidenceShare(_ person: VoiceDirectoryPerson) -> Double? {
+        guard person.observedMatchSegments > 0 else { return nil }
+        let confident = person.reliabilityCounts["confident"] ?? 0
+        return min(1, Double(confident) / Double(person.observedMatchSegments))
+    }
+
+    private func confidenceValue(_ person: VoiceDirectoryPerson) -> String {
+        confidenceShare(person).map { "\(Int(($0 * 100).rounded()))%" } ?? "—"
+    }
+
+    /// Under the share: the average match as the server reports it (a similarity, not a
+    /// second percentage), marked thin when the basis is too small to lean on.
+    private func confidenceDetail(_ person: VoiceDirectoryPerson) -> String {
+        guard let match = person.observedMatch, person.observedMatchSegments > 0 else { return "not matched yet" }
+        let average = "avg " + String(format: "%.2f", match)
+        return person.observedMatchSegments < Self.confidenceMinimumBasis ? average + " · thin" : average
+    }
+
+    /// Lowest confidence order: 0 = enough scored speech, 1 = a thin basis, 2 = never matched.
+    private func confidenceRank(_ person: VoiceDirectoryPerson) -> (tier: Int, share: Double?) {
+        guard let share = confidenceShare(person) else { return (2, nil) }
+        return (person.observedMatchSegments < Self.confidenceMinimumBasis ? 1 : 0, share)
+    }
+
     private func voiceAccessibilityLabel(_ person: VoiceDirectoryPerson) -> String {
         guard model.voiceDirectoryRouteAvailable != false else {
             return "\(person.name), \(person.embeddings) training samples, cross-meeting history requires a server update"
         }
-        let match = person.observedMatch.map { "observed match \(Int(($0 * 100).rounded())) percent" } ?? "no observed match basis"
-        return "\(person.name), \(person.embeddings) training samples, \(person.assertedSegments) attributed segments in \(person.meetingCount) meetings, \(match)"
+        let confidence: String
+        if let share = confidenceShare(person), let match = person.observedMatch {
+            confidence = "confidence \(Int((share * 100).rounded())) percent of \(person.observedMatchSegments) scored segments, average match \(String(format: "%.2f", match))"
+        } else {
+            confidence = "not matched in a meeting yet"
+        }
+        return "\(person.name), \(person.embeddings) training samples, \(confidence), \(person.assertedSegments) attributed segments in \(person.meetingCount) meetings"
     }
 
     private func messageRow(_ turn: GlassesTurn) -> some View {
@@ -3719,7 +3949,7 @@ struct ActivityWindow: View {
                 }
 
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) {
-                    voiceMetricCard(title: "OBSERVED MATCH", value: historyAvailable ? percent(person.observedMatch) : "—", detail: historyAvailable ? (person.observedMatch == nil ? "No scored segments" : "\(person.observedMatchSegments) segment basis") : "Update server")
+                    voiceMetricCard(title: "CONFIDENCE", value: historyAvailable ? confidenceValue(person) : "—", detail: historyAvailable ? (person.observedMatch.map { "avg match \(String(format: "%.2f", $0)) · \(formatted(person.observedMatchSegments)) scored" } ?? "Not matched yet") : "Update server")
                     voiceMetricCard(title: "ATTRIBUTED", value: historyAvailable ? "\(person.assertedSegments)" : "—", detail: historyAvailable ? "segments" : "History unavailable")
                     voiceMetricCard(title: "MEETINGS", value: historyAvailable ? "\(person.meetingCount)" : "—", detail: historyAvailable ? (person.reviewMeetingCount > 0 ? "\(person.reviewMeetingCount) need review" : "asserted") : "History unavailable")
                     voiceMetricCard(title: "LAST HEARD", value: historyAvailable ? (person.lastSeen ?? "Never") : "—", detail: historyAvailable ? (person.firstSeen.map { "since \($0)" } ?? "No occurrence") : "History unavailable")
@@ -4468,11 +4698,7 @@ struct ActivityWindow: View {
         switch item {
         case .messages: await model.refreshRecentMessages()
         case .speakers:
-            if speakerSubview == .voices {
-                await model.loadVoiceDirectory()
-                await model.loadExtAudio()
-            }
-            else { await model.loadReviewableMeetings() }
+            await loadSpeakerSubview(speakerSubview, refresh: false)
         case .meetings:
             await model.loadLibraryMeetings()
             if model.reviewableMeetings.isEmpty {
