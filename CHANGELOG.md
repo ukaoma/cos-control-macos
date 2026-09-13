@@ -1,3 +1,11 @@
+## 0.5.221 (build 259)
+
+Add a voice speaks the gotcos theme, in light and dark.
+
+- Speakers, Voices, Add a voice: the card now uses the vocabulary the rest of the window uses. It sits on the warm card with a hairline, aligned with the voice list below it; the title is set in Fraunces, prose in DM Sans and counts in JetBrains Mono. The blue system link buttons are gone (Miles, 2026-09-13: "the blue links are kinda odd"). Name this voice and Add to X? are quiet chips; Save, Confirm and a high-confidence Add to X are the gold primary button; Cancel and Keep are muted text actions; Discard is a text action that becomes a red chip to confirm.
+- Listen is a round play button that fills gold while a sample plays, with previous and next around a "3 of 119" counter, in one column so the rows scan as a list. A suggested person's name is set in the accent color, the agreement figures in mono.
+- Every color is an adaptive palette token. Views.swift gains accent, danger, muted and raised with the light and dark values the Memories theme already uses (gold is too faint to read as text on a white card, so light mode uses the theme's darker accent). The new COSTextButtonStyle, COSIconButtonStyle and the destructive tone of COSQuietButtonStyle live in COSBrand.swift for the other panes.
+
 ## 0.5.220 (build 258)
 
 Naming a held voice is disabled when the Mac has no speaker model, as 0.5.219 said it would be.

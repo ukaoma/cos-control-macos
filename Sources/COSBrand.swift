@@ -136,28 +136,107 @@ private struct COSField: ViewModifier {
 }
 
 /// A quiet button: DM Sans, card fill, hairline; gold when hovered or pressed.
+/// `.destructive` (0.5.221) is for the CONFIRMING step of a destructive action:
+/// danger ink at rest and a danger hairline when hovered. Arming one stays a
+/// `COSTextButtonStyle(tone: .destructive)`, so a list of rows is not a wall of red.
 struct COSQuietButtonStyle: ButtonStyle {
+    enum Tone { case standard, destructive }
+    var tone: Tone = .standard
+
     func makeBody(configuration: Configuration) -> some View {
-        QuietBody(configuration: configuration)
+        QuietBody(configuration: configuration, tone: tone)
     }
 
     private struct QuietBody: View {
         let configuration: Configuration
+        let tone: Tone
+        @State private var hovered = false
+        @Environment(\.isEnabled) private var isEnabled
+
+        var body: some View {
+            let hot = (hovered || configuration.isPressed) && isEnabled
+            let signal = tone == .destructive ? COSPalette.danger : COSPalette.gold
+            let ink: Color = tone == .destructive
+                ? (isEnabled ? COSPalette.danger : Color.secondary)
+                : (hot ? COSPalette.gold : (isEnabled ? Color.primary : Color.secondary))
+            configuration.label
+                .font(COSType.body(11.5, weight: .medium))
+                .foregroundStyle(ink)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(configuration.isPressed ? signal.opacity(0.12) : COSPalette.card)
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7)
+                    .stroke(hot ? signal.opacity(0.85) : COSPalette.line, lineWidth: 1))
+                .opacity(isEnabled ? 1 : 0.55)
+                .onHover { hovered = $0 }
+        }
+    }
+}
+
+/// An inline text action beside a chip (Cancel, Keep), or the arming step of a
+/// destructive one (Discard): DM Sans, warm muted ink, no chrome; accent when
+/// hovered, danger when the tone is destructive. Replaces system link buttons,
+/// whose blue reads as a web hyperlink in a warm pane (Miles, 2026-09-13).
+struct COSTextButtonStyle: ButtonStyle {
+    enum Tone { case standard, destructive }
+    var tone: Tone = .standard
+
+    func makeBody(configuration: Configuration) -> some View {
+        TextBody(configuration: configuration, tone: tone)
+    }
+
+    private struct TextBody: View {
+        let configuration: Configuration
+        let tone: Tone
+        @State private var hovered = false
+        @Environment(\.isEnabled) private var isEnabled
+
+        var body: some View {
+            let hot = (hovered || configuration.isPressed) && isEnabled
+            let signal = tone == .destructive ? COSPalette.danger : COSPalette.accent
+            configuration.label
+                .font(COSType.body(11.5, weight: .medium))
+                .foregroundStyle(hot ? signal : COSPalette.muted)
+                .padding(.horizontal, 2)
+                .padding(.vertical, 5)
+                .contentShape(Rectangle())
+                .opacity(isEnabled ? 1 : 0.5)
+                .onHover { hovered = $0 }
+        }
+    }
+}
+
+/// A round icon control (play, previous, next): card fill and hairline with a
+/// muted glyph; `prominent` fills it gold with ink, for the control that is live
+/// right now (a sample playing).
+struct COSIconButtonStyle: ButtonStyle {
+    var size: CGFloat = 22
+    var prominent: Bool = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        IconBody(configuration: configuration, size: size, prominent: prominent)
+    }
+
+    private struct IconBody: View {
+        let configuration: Configuration
+        let size: CGFloat
+        let prominent: Bool
         @State private var hovered = false
         @Environment(\.isEnabled) private var isEnabled
 
         var body: some View {
             let hot = (hovered || configuration.isPressed) && isEnabled
             configuration.label
-                .font(COSType.body(11.5, weight: .medium))
-                .foregroundStyle(hot ? COSPalette.gold : (isEnabled ? Color.primary : Color.secondary))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(configuration.isPressed ? COSPalette.gold.opacity(0.12) : COSPalette.card)
-                .clipShape(RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7)
-                    .stroke(hot ? COSPalette.gold.opacity(0.85) : COSPalette.line, lineWidth: 1))
-                .opacity(isEnabled ? 1 : 0.55)
+                .font(.system(size: max(7, size * 0.40), weight: .semibold))
+                .foregroundStyle(prominent ? COSPalette.ink : (hot ? COSPalette.accent : COSPalette.muted))
+                .frame(width: size, height: size)
+                .background(Circle().fill(prominent
+                    ? COSPalette.gold.opacity(configuration.isPressed ? 0.8 : 1)
+                    : (configuration.isPressed ? COSPalette.gold.opacity(0.12) : COSPalette.card)))
+                .overlay(Circle().stroke(prominent ? Color.clear : (hot ? COSPalette.gold.opacity(0.85) : COSPalette.line), lineWidth: 1))
+                .contentShape(Circle())
+                .opacity(isEnabled ? 1 : 0.4)
                 .onHover { hovered = $0 }
         }
     }

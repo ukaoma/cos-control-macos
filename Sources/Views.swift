@@ -56,6 +56,22 @@ private enum COSInk {
     static let lineNS = adaptiveNSColor(
         light: NSColor(red: 0.45, green: 0.34, blue: 0.16, alpha: 0.20),
         dark:  NSColor(red: 0.79, green: 0.66, blue: 0.43, alpha: 0.16))
+    // 0.5.221 — the Memories theme's accent, danger, muted and raised values
+    // (memories-theme.css light, memories.html dark), so a native pane reads
+    // the same as the web one in both appearances. Gold (#c9a86e) is too faint
+    // to read as text on a white card; the light accent is the theme's #89662d.
+    static let accentNS = adaptiveNSColor(
+        light: NSColor(red: 0.537, green: 0.400, blue: 0.176, alpha: 1),  // #89662d
+        dark:  NSColor(red: 0.788, green: 0.659, blue: 0.431, alpha: 1))  // #c9a86e
+    static let dangerNS = adaptiveNSColor(
+        light: NSColor(red: 0.647, green: 0.278, blue: 0.196, alpha: 1),  // #a54732
+        dark:  NSColor(red: 0.910, green: 0.643, blue: 0.580, alpha: 1))  // #e8a494
+    static let mutedNS = adaptiveNSColor(
+        light: NSColor(red: 0.455, green: 0.447, blue: 0.427, alpha: 1),  // #74726d
+        dark:  NSColor(red: 0.733, green: 0.682, blue: 0.604, alpha: 1))  // #bbae9a
+    static let raisedNS = adaptiveNSColor(
+        light: NSColor(red: 0.933, green: 0.910, blue: 0.867, alpha: 1),  // #eee8dd
+        dark:  NSColor(red: 0.188, green: 0.153, blue: 0.122, alpha: 1))  // #30271f
 }
 
 /// MenuBarExtra(.window) is a translucent vibrancy window by default, so the
@@ -87,6 +103,10 @@ enum COSPalette {
     static let gold = Color(red: 0.79, green: 0.66, blue: 0.43)  // gotcos.com gold
     static let amber = Color(red: 0.79, green: 0.50, blue: 0.27)
     static let green = Color(red: 0.20, green: 0.58, blue: 0.34)
+    static let accent = Color(nsColor: COSInk.accentNS)          // adaptive: text-weight gold
+    static let danger = Color(nsColor: COSInk.dangerNS)          // adaptive: destructive ink
+    static let muted = Color(nsColor: COSInk.mutedNS)            // adaptive: warm secondary text
+    static let raised = Color(nsColor: COSInk.raisedNS)          // adaptive: inset strip on a card
 }
 
 private enum CharacterGallery {

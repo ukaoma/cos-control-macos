@@ -4655,4 +4655,52 @@ if "await loadHeldGroups()" not in controller:
 print("COS Control: held-voice groups pinned (0.5.219)")
 PY
 
+# 0.5.221 — Add a voice speaks the gotcos theme in light and dark (Miles, 2026-09-13).
+/usr/bin/python3 - "$ROOT" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+activity = (root / "Sources/ActivityWindow.swift").read_text()
+views = (root / "Sources/Views.swift").read_text()
+brand = (root / "Sources/COSBrand.swift").read_text()
+
+def fail(msg):
+    sys.exit(msg)
+
+card = activity[activity.index("private var addVoiceSection: some View {"):activity.index("private func commitAddVoice(")]
+for banned, why in ((".buttonStyle(.link)", "system link buttons read as web hyperlinks in a warm pane"),
+                    (".buttonStyle(.plain)", "Listen controls use COSIconButtonStyle"),
+                    (".textFieldStyle(.roundedBorder)", "name fields use cosField()"),
+                    (".foregroundStyle(.secondary)", "secondary text uses COSPalette.muted"),
+                    (".foregroundStyle(.tertiary)", "footnotes use COSPalette.muted")):
+    if banned in card:
+        fail(f"Add a voice must not use {banned}: {why}")
+for needed, why in ((".background(COSPalette.card)", "the card sits on the adaptive card fill"),
+                    (".stroke(COSPalette.line, lineWidth: 1)", "the card carries the adaptive hairline"),
+                    ("COSQuietButtonStyle(tone: .destructive)", "confirming a discard is a danger chip"),
+                    ("COSTextButtonStyle(tone: .destructive)", "arming a discard is a danger text action"),
+                    ("COSIconButtonStyle(size: 28, prominent: playing)", "play fills gold while a sample plays"),
+                    ('Text("Add a voice").font(COSType.display(', "the title is set in Fraunces")):
+    if needed not in card:
+        fail(f"Add a voice lost {needed!r}: {why}")
+if card.count(".cosField()") != 2:
+    fail("both name fields (held group and held session) must use cosField()")
+for token, light, dark in (("accentNS", "red: 0.537, green: 0.400, blue: 0.176", "red: 0.788, green: 0.659, blue: 0.431"),
+                           ("dangerNS", "red: 0.647, green: 0.278, blue: 0.196", "red: 0.910, green: 0.643, blue: 0.580"),
+                           ("mutedNS", "red: 0.455, green: 0.447, blue: 0.427", "red: 0.733, green: 0.682, blue: 0.604"),
+                           ("raisedNS", "red: 0.933, green: 0.910, blue: 0.867", "red: 0.188, green: 0.153, blue: 0.122")):
+    i = views.find(f"static let {token} = adaptiveNSColor(")
+    block = views[i:i + 260] if i >= 0 else ""
+    if light not in block or dark not in block:
+        fail(f"COSInk.{token} must be adaptive with light ({light}) and dark ({dark}), the Memories theme values")
+for decl in ("static let accent = Color(nsColor: COSInk.accentNS)", "static let danger = Color(nsColor: COSInk.dangerNS)",
+             "static let muted = Color(nsColor: COSInk.mutedNS)", "static let raised = Color(nsColor: COSInk.raisedNS)"):
+    if decl not in views:
+        fail(f"COSPalette lost {decl}")
+for decl in ("struct COSTextButtonStyle: ButtonStyle", "struct COSIconButtonStyle: ButtonStyle", "enum Tone { case standard, destructive }"):
+    if decl not in brand:
+        fail(f"COSBrand.swift lost {decl}")
+print("COS Control: Add a voice gotcos theme pinned (0.5.221)")
+PY
+
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"

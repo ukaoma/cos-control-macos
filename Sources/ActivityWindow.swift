@@ -2047,7 +2047,7 @@ struct ActivityWindow: View {
     private static let extAudioInlineRowLimit = 5
     /// Height of the scrolling frame once the limit is passed. Roughly six rows,
     /// so the card stays a card and never becomes the whole window.
-    private static let extAudioListHeight: CGFloat = 200
+    private static let extAudioListHeight: CGFloat = 250
 
     /// Says how many are held once the list is capped, because a scrolling box
     /// hides its own length and "some audio" is not an amount.
@@ -2061,19 +2061,30 @@ struct ActivityWindow: View {
 
     @ViewBuilder
     private var addVoiceSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Label("Add a voice", systemImage: "person.badge.plus")
-                    .font(.system(size: 12, weight: .semibold))
+        // 0.5.221 — the card speaks the gotcos vocabulary the rest of the window
+        // uses (Miles, 2026-09-13: "the blue links are kinda odd"): card fill and
+        // hairline, Fraunces title, DM Sans prose, JetBrains Mono for counts, COS
+        // chips and text actions instead of system link buttons. Every color is
+        // an adaptive COSPalette token, so light and dark both hold.
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 9).fill(COSPalette.gold.opacity(0.16))
+                    Image(systemName: "person.badge.plus")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(COSPalette.accent)
+                }
+                .frame(width: 34, height: 34)
+                Text("Add a voice").font(COSType.display(18, weight: .medium))
                 Spacer()
                 if model.extAudioLoading { ProgressView().controlSize(.small) }
-                Button("Refresh") { Task { await model.loadExtAudio() } }
-                    .buttonStyle(.link).font(.system(size: 11))
+                Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.loadExtAudio() } }
+                    .buttonStyle(COSQuietButtonStyle())
                     .disabled(model.extAudioLoading)
             }
 
             if let result = model.addVoiceResult {
-                Text(result).font(.system(size: 11)).foregroundStyle(.secondary)
+                addVoiceNotice(result)
             }
 
             // 0.5.219 — a server that groups held voices (6.45.4) gets the grouped
@@ -2084,11 +2095,11 @@ struct ActivityWindow: View {
                 heldGroupsFallbackNote
                 Text(model.extAudioError
                      ?? "No unrecognized audio is being held. Record a meeting, then come back within 72 hours.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
             } else {
                 heldGroupsFallbackNote
                 Text(extAudioLead)
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
                 // BOUNDED, ALWAYS. The server holds unrecognized audio for 72
                 // hours, so a busy week is dozens of sessions. This card sits
                 // OUTSIDE the voice directory's ScrollView, so an uncapped
@@ -2097,30 +2108,64 @@ struct ActivityWindow: View {
                 // screen with it. Reported in production 2026-08-26 with 30+
                 // held sessions. Short lists keep their natural height; long
                 // ones scroll inside a fixed frame instead of pushing chrome.
-                if model.extAudioSessions.count > Self.extAudioInlineRowLimit {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 0) {
-                            ForEach(model.extAudioSessions) { session in
-                                addVoiceRow(session)
+                VStack(alignment: .leading, spacing: 0) {
+                    if model.extAudioSessions.count > Self.extAudioInlineRowLimit {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 0) {
+                                ForEach(model.extAudioSessions) { session in
+                                    heldRowDivider
+                                    addVoiceRow(session)
+                                }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .frame(height: Self.extAudioListHeight)
-                } else {
-                    ForEach(model.extAudioSessions) { session in
-                        addVoiceRow(session)
+                        .frame(height: Self.extAudioListHeight)
+                    } else {
+                        ForEach(model.extAudioSessions) { session in
+                            heldRowDivider
+                            addVoiceRow(session)
+                        }
                     }
                 }
                 Text("A session can hold more than one unknown speaker, and naming it uses up the audio.")
-                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+                    .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
             }
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.06)))
-        .padding(.horizontal, 12)
-        .padding(.bottom, 8)
+        .padding(16)
+        .background(COSPalette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
+        .frame(maxWidth: 980)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity)
     }
+
+    /// A result or a reason, set on the card's raised strip rather than as loose
+    /// grey text, so it reads as the answer to what was just done.
+    private func addVoiceNotice(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 12))
+                .foregroundStyle(COSPalette.accent)
+            Text(text)
+                .font(COSType.body(11.5))
+                .foregroundStyle(Color.primary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// The hairline between rows inside the Add-a-voice card.
+    private var heldRowDivider: some View {
+        Rectangle().fill(COSPalette.line).frame(height: 1)
+    }
+
+    /// Width of the Listen column, so play controls line up down the list.
+    private static let heldListenColumnWidth: CGFloat = 136
 
     // ── 0.5.219 — held voices grouped by who they sound like ────────────────
     //
@@ -2134,7 +2179,7 @@ struct ActivityWindow: View {
     private static let heldGroupInlineRowLimit = 4
     /// Same reason as `extAudioListHeight`: this card sits outside the directory
     /// ScrollView, so an uncapped list pushes the chrome off screen.
-    private static let heldGroupListHeight: CGFloat = 240
+    private static let heldGroupListHeight: CGFloat = 300
 
     /// The grouped view stands in for the per-session rows only when the server
     /// answered the route AND could actually group what it holds. With the
@@ -2148,13 +2193,11 @@ struct ActivityWindow: View {
     @ViewBuilder
     private var heldGroupsFallbackNote: some View {
         if model.heldGroupsState == "error", let error = model.heldGroupsError {
-            Text("Voices could not be grouped: \(error)")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
+            addVoiceNotice("Voices could not be grouped: \(error)")
         } else if model.heldGroupsState == "ready", model.heldGroupsEmbedded == 0, model.heldGroupsSamples > 0 {
-            Text(model.heldGroupsSpeakerModel
+            addVoiceNotice(model.heldGroupsSpeakerModel
                  ? "\(model.heldGroupsSamples) held samples are still being read for grouping. Refresh in a moment."
                  : "\(model.heldGroupsSamples) held samples cannot be grouped yet: the speaker model is not loaded on this Mac (Run Doctor shows it). The sessions are listed below.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
         }
     }
 
@@ -2180,8 +2223,10 @@ struct ActivityWindow: View {
     @ViewBuilder
     private var heldGroupsBody: some View {
         let rows = model.heldGroups.count + (model.heldLoose.isEmpty ? 0 : 1)
-        VStack(alignment: .leading, spacing: 6) {
-            Text(heldGroupsLead).font(.system(size: 11)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            Text(heldGroupsLead)
+                .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+                .fixedSize(horizontal: false, vertical: true)
             if rows > Self.heldGroupInlineRowLimit {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) { heldGroupRows }
@@ -2189,11 +2234,11 @@ struct ActivityWindow: View {
                 }
                 .frame(height: Self.heldGroupListHeight)
             } else {
-                heldGroupRows
+                VStack(alignment: .leading, spacing: 0) { heldGroupRows }
             }
             if rows > 0 {
                 Text("Naming a group adds its samples to that person and uses up the audio. Discarding throws the audio out.")
-                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+                    .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
             }
         }
         // After a naming or a discard the samples under every cursor are gone;
@@ -2208,9 +2253,11 @@ struct ActivityWindow: View {
     @ViewBuilder
     private var heldGroupRows: some View {
         ForEach(model.heldGroups) { group in
+            heldRowDivider
             heldGroupRow(group)
         }
         if !model.heldLoose.isEmpty {
+            heldRowDivider
             heldLooseRow
         }
     }
@@ -2218,52 +2265,76 @@ struct ActivityWindow: View {
     @ViewBuilder
     private func heldGroupRow(_ group: HeldVoiceGroup) -> some View {
         let meetings = group.sessions.count
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Text("\(group.sampleCount) sample\(group.sampleCount == 1 ? "" : "s") · \(meetings) meeting\(meetings == 1 ? "" : "s")")
-                    .font(.system(size: 11, weight: .medium))
-                heldMembersListenControl(key: group.id, members: group.playOrder, voice: "heldgroup:\(group.id)")
-                Spacer()
+        HStack(alignment: .center, spacing: 14) {
+            heldMembersListenControl(key: group.id, members: group.playOrder, voice: "heldgroup:\(group.id)")
+                .frame(width: Self.heldListenColumnWidth, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("\(group.sampleCount) sample\(group.sampleCount == 1 ? "" : "s")")
+                        .font(COSType.body(13, weight: .semibold))
+                    Text("\(meetings) MEETING\(meetings == 1 ? "" : "S")")
+                        .font(COSType.mono(9.5)).tracking(0.6)
+                        .foregroundStyle(COSPalette.muted)
+                }
+                if let name = group.suggestionName {
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        Text(group.suggestionTier == "high" ? "Sounds like" : "May be")
+                            .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+                        Text(name)
+                            .font(COSType.body(11.5, weight: .semibold)).foregroundStyle(COSPalette.accent)
+                        Text(group.suggestionOf > 0
+                             ? "\(Int((group.suggestionSimilarity * 100).rounded()))% · \(group.suggestionAgreeing) of \(group.suggestionOf) samples agree"
+                             : "\(Int((group.suggestionSimilarity * 100).rounded()))%")
+                            .font(COSType.mono(9.5)).monospacedDigit()
+                            .foregroundStyle(COSPalette.muted)
+                    }
+                    .lineLimit(1)
+                }
+                if let note = model.playbackNote, note.voice == "heldgroup:\(group.id)" {
+                    Text(note.text).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+                }
             }
-            if let name = group.suggestionName {
-                // Two lines: a real name plus the metric plus a button does not fit
-                // the 346 pt content width in one (measured 384–458 pt, QA 2026-09-12).
-                Text(group.suggestionTier == "high" ? "Sounds like \(name)" : "May be \(name)")
-                    .font(.system(size: 11))
-                HStack(spacing: 6) {
-                    Text(group.suggestionOf > 0
-                         ? "\(Int((group.suggestionSimilarity * 100).rounded()))% · \(group.suggestionAgreeing) of \(group.suggestionOf) samples agree"
-                         : "\(Int((group.suggestionSimilarity * 100).rounded()))%")
-                        .font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit()
-                    Spacer()
-                    // Writing a voice into somebody's profile is the less reversible
-                    // of the two actions here, so only a "high" match (the bar the
-                    // identifier itself enrols at) is one click; "likely" arms first.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            heldGroupActions(group)
+        }
+        .padding(.vertical, 12)
+    }
+
+    /// The suggested person first, then Name and Discard. Writing a voice into
+    /// somebody's profile is the less reversible of the two actions here, so
+    /// only a "high" match (the bar the identifier itself enrols at) is one gold
+    /// click; a "likely" one arms, then asks.
+    @ViewBuilder
+    private func heldGroupActions(_ group: HeldVoiceGroup) -> some View {
+        if let name = group.suggestionName, confirmingHeldAdd == group.id {
+            HStack(spacing: 8) {
+                Text("Add \(group.sampleCount) sample\(group.sampleCount == 1 ? "" : "s") to \(name)?")
+                    .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+                Button("Confirm") {
+                    confirmingHeldAdd = nil
+                    Task { await model.nameHeld(group.members, as: name) }
+                }
+                .buttonStyle(COSPrimaryButtonStyle())
+                .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel)
+                Button("Cancel") { confirmingHeldAdd = nil }
+                    .buttonStyle(COSTextButtonStyle())
+            }
+        } else {
+            HStack(spacing: 8) {
+                if let name = group.suggestionName, model.namingHeldGroup != group.id, confirmingHeldDiscard != group.id {
                     if group.suggestionTier == "high" {
                         Button("Add to \(name)") { Task { await model.nameHeld(group.members, as: name) } }
-                            .font(.system(size: 11))
+                            .buttonStyle(COSPrimaryButtonStyle())
                             .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel)
-                    } else if confirmingHeldAdd == group.id {
-                        Button("Confirm") {
-                            confirmingHeldAdd = nil
-                            Task { await model.nameHeld(group.members, as: name) }
-                        }
-                        .font(.system(size: 11)).disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel)
-                        Button("Cancel") { confirmingHeldAdd = nil }
-                            .buttonStyle(.link).font(.system(size: 11))
                     } else {
                         Button("Add to \(name)?") { confirmingHeldAdd = group.id }
-                            .font(.system(size: 11))
+                            .buttonStyle(COSQuietButtonStyle())
                             .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel)
                     }
                 }
-            }
-            heldActionRow(key: group.id, members: group.members, count: group.sampleCount)
-            if let note = model.playbackNote, note.voice == "heldgroup:\(group.id)" {
-                Text(note.text).font(.system(size: 10)).foregroundStyle(.secondary)
+                heldActionRow(key: group.id, members: group.members, count: group.sampleCount)
             }
         }
-        .padding(.vertical, 4)
     }
 
     /// The samples that cohere with nothing. Listen through them; the one under
@@ -2274,84 +2345,97 @@ struct ActivityWindow: View {
         let loose = model.heldLoose
         let cursor = min(max(heldGroupCursor["loose"] ?? 0, 0), loose.count - 1)
         let current = loose[cursor]
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Text("\(loose.count) loose sample\(loose.count == 1 ? "" : "s") · match no voice")
-                    .font(.system(size: 11, weight: .medium))
-                heldMembersListenControl(key: "loose", members: loose, voice: "heldloose")
-                Spacer()
-            }
-            // Which clip the cursor is on, so naming or discarding it is not blind.
-            Text(Self.heldSampleLabel(current))
-                .font(.system(size: 10)).foregroundStyle(.secondary)
-            heldActionRow(key: "loose:\(current.sessionId)#\(current.chunkIndex)", members: [current], count: 1)
-            if loose.count > 1 && model.namingHeldGroup == nil {
-                if confirmingHeldDiscard == "loose-all" {
-                    HStack(spacing: 6) {
-                        Text("Discard all \(loose.count) loose samples?").font(.system(size: 11))
-                        Button("Discard") {
-                            confirmingHeldDiscard = nil
-                            Task { await model.discardHeld(loose) }
+        HStack(alignment: .center, spacing: 14) {
+            heldMembersListenControl(key: "loose", members: loose, voice: "heldloose")
+                .frame(width: Self.heldListenColumnWidth, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("\(loose.count) loose sample\(loose.count == 1 ? "" : "s")")
+                        .font(COSType.body(13, weight: .semibold))
+                    Text("MATCH NO VOICE")
+                        .font(COSType.mono(9.5)).tracking(0.6)
+                        .foregroundStyle(COSPalette.muted)
+                }
+                // Which clip the cursor is on, so naming or discarding it is not blind.
+                Text(Self.heldSampleLabel(current))
+                    .font(COSType.mono(10)).foregroundStyle(COSPalette.muted)
+                if loose.count > 1 && model.namingHeldGroup == nil {
+                    if confirmingHeldDiscard == "loose-all" {
+                        HStack(spacing: 8) {
+                            Text("Discard all \(loose.count) loose samples?")
+                                .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+                            Button("Discard all") {
+                                confirmingHeldDiscard = nil
+                                Task { await model.discardHeld(loose) }
+                            }
+                            .buttonStyle(COSQuietButtonStyle(tone: .destructive))
+                            .disabled(model.addVoiceBusy)
+                            Button("Keep") { confirmingHeldDiscard = nil }
+                                .buttonStyle(COSTextButtonStyle())
                         }
-                        .font(.system(size: 11)).disabled(model.addVoiceBusy)
-                        Button("Keep") { confirmingHeldDiscard = nil }
-                            .buttonStyle(.link).font(.system(size: 11))
+                    } else {
+                        Button("Discard all \(loose.count) loose samples") { confirmingHeldDiscard = "loose-all" }
+                            .buttonStyle(COSTextButtonStyle(tone: .destructive))
+                            .disabled(model.addVoiceBusy)
                     }
-                } else {
-                    Button("Discard all \(loose.count) loose samples") { confirmingHeldDiscard = "loose-all" }
-                        .buttonStyle(.link).font(.system(size: 11)).disabled(model.addVoiceBusy)
+                }
+                if let note = model.playbackNote, note.voice == "heldloose" {
+                    Text(note.text).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
                 }
             }
-            if let note = model.playbackNote, note.voice == "heldloose" {
-                Text(note.text).font(.system(size: 10)).foregroundStyle(.secondary)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            heldActionRow(key: "loose:\(current.sessionId)#\(current.chunkIndex)", members: [current], count: 1)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 12)
     }
 
     /// Name (a new person, or an existing one by typing their name) or discard.
-    /// Discard is TWO clicks: the audio is gone for good, and the panel is 390 pt
-    /// of buttons a cursor can land on by accident.
+    /// Discard is TWO clicks: the audio is gone for good, and a list of rows is
+    /// a lot of buttons a cursor can land on by accident.
     @ViewBuilder
     private func heldActionRow(key: String, members: [HeldSampleRef], count: Int) -> some View {
         if model.namingHeldGroup == key {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 TextField("Who is this?", text: $heldGroupName)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 11))
-                    .frame(maxWidth: 180)
+                    .textFieldStyle(.plain)
+                    .cosField()
+                    .frame(width: 190)
                     .onSubmit { commitHeldName(members) }
                 Button("Save") { commitHeldName(members) }
-                    .font(.system(size: 11))
+                    .buttonStyle(COSPrimaryButtonStyle())
                     .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel
                               || heldGroupName.trimmingCharacters(in: .whitespacesAndNewlines).count < 2)
                 Button("Cancel") {
                     model.namingHeldGroup = nil
                     heldGroupName = ""
                 }
-                .buttonStyle(.link).font(.system(size: 11))
+                .buttonStyle(COSTextButtonStyle())
                 if model.addVoiceBusy { ProgressView().controlSize(.small) }
             }
         } else if confirmingHeldDiscard == key {
-            HStack(spacing: 6) {
-                Text("Discard \(count) sample\(count == 1 ? "" : "s")?").font(.system(size: 11))
+            HStack(spacing: 8) {
+                Text("Discard \(count) sample\(count == 1 ? "" : "s")?")
+                    .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
                 Button("Discard") {
                     confirmingHeldDiscard = nil
                     Task { await model.discardHeld(members) }
                 }
-                .font(.system(size: 11)).disabled(model.addVoiceBusy)
+                .buttonStyle(COSQuietButtonStyle(tone: .destructive))
+                .disabled(model.addVoiceBusy)
                 Button("Keep") { confirmingHeldDiscard = nil }
-                    .buttonStyle(.link).font(.system(size: 11))
+                    .buttonStyle(COSTextButtonStyle())
             }
         } else {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Button(count == 1 ? "Name this sample" : "Name this voice") {
                     model.namingHeldGroup = key
                     heldGroupName = ""
                 }
-                .buttonStyle(.link).font(.system(size: 11)).disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel)
+                .buttonStyle(COSQuietButtonStyle())
+                .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel)
                 Button("Discard") { confirmingHeldDiscard = key }
-                    .buttonStyle(.link).font(.system(size: 11)).disabled(model.addVoiceBusy)
+                    .buttonStyle(COSTextButtonStyle(tone: .destructive))
+                    .disabled(model.addVoiceBusy)
             }
         }
     }
@@ -2378,6 +2462,38 @@ struct ActivityWindow: View {
         return "\(ref.sessionId) · chunk \(ref.chunkIndex)"
     }
 
+    /// Play or stop one held sample and step through the rest: the one Listen
+    /// control for held groups, loose samples and held sessions.
+    private func heldListenStrip(
+        playing: Bool,
+        position: Int,
+        total: Int,
+        play: @escaping @MainActor () -> Void,
+        previous: @escaping @MainActor () -> Void,
+        next: @escaping @MainActor () -> Void
+    ) -> some View {
+        HStack(spacing: 6) {
+            Button(action: play) {
+                Image(systemName: playing ? "stop.fill" : "play.fill")
+            }
+            .buttonStyle(COSIconButtonStyle(size: 28, prominent: playing))
+            .help(playing ? "Stop" : "Listen to this sample")
+            .accessibilityLabel(playing ? "Stop" : "Listen to sample \(position) of \(total)")
+            Button(action: previous) { Image(systemName: "chevron.left") }
+                .buttonStyle(COSIconButtonStyle(size: 20))
+                .help("Previous sample")
+                .disabled(total < 2)
+            Text("\(position) of \(total)")
+                .font(COSType.mono(10)).monospacedDigit()
+                .foregroundStyle(COSPalette.muted)
+                .lineLimit(1)
+            Button(action: next) { Image(systemName: "chevron.right") }
+                .buttonStyle(COSIconButtonStyle(size: 20))
+                .help("Next sample")
+                .disabled(total < 2)
+        }
+    }
+
     /// The 0.5.218 Listen control over any list of held samples: a group's
     /// members (seed first) or the loose ones. Plays through the shared player.
     @ViewBuilder
@@ -2394,56 +2510,49 @@ struct ActivityWindow: View {
         let cursor = min(max(heldGroupCursor[key] ?? 0, 0), members.count - 1)
         let ref = members[cursor]
         let playKey = model.heldGroupSampleKey(ref)
-        HStack(spacing: 4) {
-            Button {
-                model.playHeldGroupSample(ref, voice: voice)
-            } label: {
-                Image(systemName: model.playingVoice == playKey ? "stop.fill" : "play.fill")
-                    .font(.system(size: 8.5))
-            }
-            .buttonStyle(.plain)
-            .help(model.playingVoice == playKey ? "Stop" : "Listen to this sample")
-            Text("sample \(cursor + 1) of \(members.count)")
-                .font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit()
-            Button {
+        heldListenStrip(
+            playing: model.playingVoice == playKey,
+            position: cursor + 1,
+            total: members.count,
+            play: { model.playHeldGroupSample(ref, voice: voice) },
+            previous: {
                 model.stopPlayback()
                 heldGroupCursor[key] = (cursor - 1 + members.count) % members.count
-            } label: { Image(systemName: "chevron.left").font(.system(size: 8)) }
-            .buttonStyle(.plain).help("Previous sample").disabled(members.count < 2)
-            Button {
+            },
+            next: {
                 model.stopPlayback()
                 heldGroupCursor[key] = (cursor + 1) % members.count
-            } label: { Image(systemName: "chevron.right").font(.system(size: 8)) }
-            .buttonStyle(.plain).help("Next sample").disabled(members.count < 2)
-        }
+            }
+        )
     }
 
     @ViewBuilder
     private func addVoiceRow(_ session: ExtAudioSession) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
+        HStack(alignment: .center, spacing: 14) {
+            if !session.chunkIndices.isEmpty {
+                heldSampleListenControl(session)
+                    .frame(width: Self.heldListenColumnWidth, alignment: .leading)
+            }
+            VStack(alignment: .leading, spacing: 4) {
                 Text("\(session.chunks) sample\(session.chunks == 1 ? "" : "s")")
-                    .font(.system(size: 11, weight: .medium))
-                Text("expires in \(session.expiresIn)")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-                if !session.chunkIndices.isEmpty {
-                    heldSampleListenControl(session)
-                }
-                Spacer()
-                if model.addingVoiceSession != session.sessionId {
-                    Button("Name this voice") { model.addingVoiceSession = session.sessionId }
-                        .buttonStyle(.link).font(.system(size: 11))
-                        .disabled(model.addVoiceBusy)
+                    .font(COSType.body(13, weight: .semibold))
+                Text("EXPIRES IN \(session.expiresIn.uppercased())")
+                    .font(COSType.mono(9.5)).tracking(0.6)
+                    .foregroundStyle(COSPalette.muted)
+                if let note = model.playbackNote, note.voice == "held:\(session.sessionId)" {
+                    Text(note.text).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
                 }
             }
-            if let note = model.playbackNote, note.voice == "held:\(session.sessionId)" {
-                Text(note.text).font(.system(size: 10)).foregroundStyle(.secondary)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             if model.addingVoiceSession == session.sessionId {
                 addVoiceNameField(session)
+            } else {
+                Button("Name this voice") { model.addingVoiceSession = session.sessionId }
+                    .buttonStyle(COSQuietButtonStyle())
+                    .disabled(model.addVoiceBusy)
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 12)
     }
 
     /// 0.5.218 — Listen before naming: play one held chunk, step through the rest.
@@ -2455,47 +2564,39 @@ struct ActivityWindow: View {
         let cursor = min(max(heldSampleCursor[session.sessionId] ?? 0, 0), indices.count - 1)
         let chunkIndex = indices[cursor]
         let key = model.heldSampleKey(session.sessionId, chunkIndex: chunkIndex)
-        HStack(spacing: 4) {
-            Button {
-                model.playHeldSample(session, chunkIndex: chunkIndex)
-            } label: {
-                Image(systemName: model.playingVoice == key ? "stop.fill" : "play.fill")
-                    .font(.system(size: 8.5))
-            }
-            .buttonStyle(.plain)
-            .help(model.playingVoice == key ? "Stop" : "Listen to this sample")
-            Text("sample \(cursor + 1) of \(indices.count)")
-                .font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit()
-            Button {
+        heldListenStrip(
+            playing: model.playingVoice == key,
+            position: cursor + 1,
+            total: indices.count,
+            play: { model.playHeldSample(session, chunkIndex: chunkIndex) },
+            previous: {
                 model.stopPlayback()
                 heldSampleCursor[session.sessionId] = (cursor - 1 + indices.count) % indices.count
-            } label: { Image(systemName: "chevron.left").font(.system(size: 8)) }
-            .buttonStyle(.plain).help("Previous sample").disabled(indices.count < 2)
-            Button {
+            },
+            next: {
                 model.stopPlayback()
                 heldSampleCursor[session.sessionId] = (cursor + 1) % indices.count
-            } label: { Image(systemName: "chevron.right").font(.system(size: 8)) }
-            .buttonStyle(.plain).help("Next sample").disabled(indices.count < 2)
-        }
+            }
+        )
     }
 
     @ViewBuilder
     private func addVoiceNameField(_ session: ExtAudioSession) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             TextField("Who is this?", text: $addVoiceName)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 11))
-                .frame(maxWidth: 180)
+                .textFieldStyle(.plain)
+                .cosField()
+                .frame(width: 190)
                 .onSubmit { commitAddVoice(session) }
             Button("Save") { commitAddVoice(session) }
-                .font(.system(size: 11))
+                .buttonStyle(COSPrimaryButtonStyle())
                 .disabled(model.addVoiceBusy
                           || addVoiceName.trimmingCharacters(in: .whitespacesAndNewlines).count < 2)
             Button("Cancel") {
                 model.addingVoiceSession = nil
                 addVoiceName = ""
             }
-            .buttonStyle(.link).font(.system(size: 11))
+            .buttonStyle(COSTextButtonStyle())
             if model.addVoiceBusy { ProgressView().controlSize(.small) }
         }
     }
