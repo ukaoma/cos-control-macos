@@ -4613,6 +4613,13 @@ if "if heldGroupsUsable {" not in activity or activity.count("\n                
     fail("the grouped view stands in for the sessions only when the server could group; both fallback branches must explain why")
 if 'model.heldGroupsSpeakerModel = response.details["speakerModel"]?.bool ?? true' not in controller and 'heldGroupsSpeakerModel = response.details["speakerModel"]?.bool ?? true' not in controller:
     fail("loadHeldGroups must read whether the speaker model is loaded")
+# 0.5.220: the read above passed while the helper never forwarded the field, so
+# the controller always fell back to true and naming stayed enabled with no model.
+held_start = helper.find("private func emitVoiceHeldGroups() throws {")
+held_body = helper[held_start:helper.find("\n    }\n", held_start)] if held_start >= 0 else ""
+if helper.count('"speakerModel": (body["speakerModel"] as? Bool) ?? true') != 1 \
+   or '"speakerModel": (body["speakerModel"] as? Bool) ?? true' not in held_body:
+    fail("emitVoiceHeldGroups must forward the server's speakerModel exactly once, or every naming button stays enabled on a Mac with no model")
 if 'model.heldGroupsState == "error", let error = model.heldGroupsError' not in activity:
     fail("a held-groups failure must be shown, not swallowed into the per-session rows")
 if "confirmingHeldAdd == group.id" not in activity or 'if group.suggestionTier == "high" {' not in activity:

@@ -1,3 +1,11 @@
+## 0.5.220 (build 258)
+
+Naming a held voice is disabled when the Mac has no speaker model, as 0.5.219 said it would be.
+
+- Speakers, Voices, Add a voice: the helper now passes the server's `speakerModel` flag through from `GET /api/voice/held-groups`. In 0.5.219 the helper dropped it, so the panel always assumed the model was loaded. On a Mac without the speaker model, Name and Add to a person stayed enabled, and every click was refused by the server (`speaker_model_unavailable`) with nothing changed. The panel now says the model is not loaded, keeps Listen and Discard, and disables naming.
+- A Mac with the model loaded sees no change. If a server omits the flag, Control still assumes the model is loaded, as before.
+- Tests: the held-voice contract now requires the helper to forward the flag exactly once, inside `emitVoiceHeldGroups`. The 0.5.219 pin checked only the controller's read of the field, which is why it passed while the helper never sent it.
+
 ## 0.5.219 (build 257)
 
 Held voices, grouped by who they sound like.

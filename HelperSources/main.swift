@@ -12810,6 +12810,7 @@ final class COSControlHelper {
             "embedded": body["embedded"] as? Int ?? 0,
             "pending": pending,
             "unusable": body["unusable"] as? Int ?? 0,
+            "speakerModel": (body["speakerModel"] as? Bool) ?? true,
         ])
     }
 
