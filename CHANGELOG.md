@@ -1,3 +1,11 @@
+## 0.5.224 (build 262)
+
+The Session Pet tracks live work again.
+
+- A running Claude session reads as working while its transcript moves, including sessions started from the Claude desktop app, whose session registry carries no status. Since 0.5.211 the pet's live rows started from the Sessions cache, whose last-activity time only advanced when Activity walked the list, so a few minutes after Activity closed every session read idle.
+- Live peer times from the server arrive as epoch milliseconds and now reach each row as dates instead of blanks.
+- Waiting on you still comes only from the status Claude Code publishes. The Claude desktop session measured for this fix publishes none, so such a session cannot show as waiting.
+
 ## 0.5.223 (build 261)
 
 Name held voice samples with a preview of the meeting labels, then apply or undo.

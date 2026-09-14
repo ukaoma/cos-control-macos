@@ -4845,4 +4845,37 @@ for m in sites:
 print("COS Control: held naming Undo captures its target before dismissal (0.5.223)")
 UNDOCAP
 
+# 0.5.224 — the pet's live rows take last activity from the transcript (Miles, 2026-09-13:
+# "our pet isn't actually tracking our sessions anymore"). The cached updatedAt ages past
+# petWorkingMaxAge and a Claude Desktop registry carries no status, so every live session
+# read `recent` a few minutes after Activity last walked the list.
+/usr/bin/python3 - "$ROOT" <<'PETLIVE'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+helper = (root / "HelperSources/main.swift").read_text()
+
+def fail(msg):
+    sys.exit(msg)
+
+live = helper[helper.index("private func emitLiveClaudeSessions("):helper.index("private func emitQuickClaudeSessions(")]
+order = [live.find(t) for t in ("Self.overlayLiveState(onto: peers, live: live)", "Self.refreshClaudeTranscriptActivity(peers)", "Self.applyLiveWorkingState(peers")]
+if -1 in order or order != sorted(order):
+    fail("session-pet-live must refresh transcript activity after the live overlay and before the working-state pass")
+if "Self.claudeTranscriptModified(sessionId: $0, projectsRoot: claudeProjects)" not in live or 'home.appendingPathComponent(".claude/projects", isDirectory: true)' not in live:
+    fail("session-pet-live must read activity from ~/.claude/projects transcripts")
+start = helper.index("static func claudeTranscriptModified(")
+locator = helper[start:helper.index("\n    }\n", start)]
+for banned in ("Data(contentsOf", "FileHandle", "InputStream", "String(contentsOf"):
+    if banned in locator:
+        fail(f"claudeTranscriptModified must stat, never open, the transcript ({banned})")
+start = helper.index("static func claudePeerProjection(")
+projection = helper[start:helper.index("\n    }\n", start)]
+if 'row["lastActiveAt"] as? String' in projection or 'row["startedAt"] as? String' in projection:
+    fail("the server sends peer times as epoch milliseconds; claudePeerProjection must parse them with peerTimeISO")
+if projection.count("peerTimeISO(row[") != 3:
+    fail("claudePeerProjection must pass lastActiveAt (state and updatedAt) and startedAt through peerTimeISO")
+print("COS Control: pet live rows follow transcript activity (0.5.224)")
+PETLIVE
+
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"

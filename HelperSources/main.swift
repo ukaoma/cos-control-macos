@@ -8490,6 +8490,15 @@ final class COSControlHelper {
         return merged
     }
 
+    /// The server sends registry times as epoch milliseconds
+    /// (`claude-session-registry.ts`), so `as? String` read every live peer's last
+    /// activity as blank. An older server's ISO string passes through unchanged.
+    static func peerTimeISO(_ value: Any?) -> String {
+        if let text = value as? String { return text }
+        if let date = dateFromEpochMillis(value) { return isoString(from: date) }
+        return ""
+    }
+
     static func claudePeerProjection(_ row: [String: Any]) -> [String: Any]? {
         guard let id = row["id"] as? String, !id.isEmpty else { return nil }
         let alive = row["alive"] as? Bool ?? false
@@ -8504,14 +8513,14 @@ final class COSControlHelper {
                 alive: alive,
                 status: status,
                 waitingFor: waitingFor,
-                lastActiveAt: row["lastActiveAt"] as? String ?? ""
+                lastActiveAt: peerTimeISO(row["lastActiveAt"])
             ),
             "status": status,
             "waitingFor": waitingFor,
             "alive": alive,
             "reachable": row["reachable"] as? Bool ?? false,
-            "createdAt": row["startedAt"] as? String ?? "",
-            "updatedAt": row["lastActiveAt"] as? String ?? "",
+            "createdAt": peerTimeISO(row["startedAt"]),
+            "updatedAt": peerTimeISO(row["lastActiveAt"]),
         ]
     }
 
@@ -9858,6 +9867,72 @@ final class COSControlHelper {
         return out
     }
 
+    /// 0.5.224: a live Claude row's last activity follows its transcript.
+    ///
+    /// `session-pet-live` starts from `session-list-cache.json`, whose `updatedAt` is
+    /// the transcript mtime from the last Activity walk, and `claudePeerState` keeps an
+    /// alive PID `running` only inside `petWorkingMaxAge`. So three minutes after
+    /// Activity last walked, every live session read `recent` and the pet sat idle
+    /// through real work. The registry cannot fill the gap: the Claude Desktop session
+    /// measured on 2026-09-13 (Claude Code 2.1.266) wrote `~/.claude/sessions/<pid>.json`
+    /// once, with no `status`, and the server's `lastActiveAt` for it was its start
+    /// time. The transcript mtime moves on every turn. Newer only, so an older or
+    /// missing file never ages a row, and only alive Claude rows are touched.
+    static func refreshClaudeTranscriptActivity(
+        _ rows: [[String: Any]],
+        transcriptModified: (String) -> Date?
+    ) -> [[String: Any]] {
+        var out = rows
+        for index in out.indices {
+            let provider = (out[index]["provider"] as? String ?? "claude").lowercased()
+            guard provider == "claude",
+                  out[index]["alive"] as? Bool == true,
+                  let id = out[index]["id"] as? String,
+                  let modified = transcriptModified(id) else { continue }
+            if let current = parseISODate(out[index]["updatedAt"] as? String ?? ""), modified <= current { continue }
+            out[index]["updatedAt"] = isoString(from: modified)
+        }
+        return out
+    }
+
+    /// Stat only, never opens the transcript: the newest `<id>.jsonl` directly under
+    /// `~/.claude/projects/*/`. The server's peer ids are the eight-character short
+    /// form, so a short id matches by prefix, and an ambiguous prefix returns nil.
+    static func claudeTranscriptModified(sessionId: String, projectsRoot: URL) -> Date? {
+        let needle = sessionId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard needle.count >= 8, needle.allSatisfy({ $0.isHexDigit || $0 == "-" }) else { return nil }
+        let exact = UUID(uuidString: needle) != nil
+        let fm = FileManager.default
+        var newest: Date?
+        var matched = Set<String>()
+        let dirs = (try? fm.contentsOfDirectory(
+            at: projectsRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        for dir in dirs {
+            guard (try? dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { continue }
+            let candidates: [URL]
+            if exact {
+                candidates = [dir.appendingPathComponent("\(needle).jsonl")]
+            } else {
+                candidates = ((try? fm.contentsOfDirectory(
+                    at: dir,
+                    includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
+                    options: [.skipsHiddenFiles]
+                )) ?? []).filter { $0.pathExtension == "jsonl" && $0.lastPathComponent.lowercased().hasPrefix(needle) }
+            }
+            for file in candidates {
+                guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey]),
+                      values.isRegularFile == true,
+                      let modified = values.contentModificationDate else { continue }
+                matched.insert(file.deletingPathExtension().lastPathComponent.lowercased())
+                if newest.map({ modified > $0 }) ?? true { newest = modified }
+            }
+        }
+        return matched.count == 1 ? newest : nil
+    }
+
     static func loadCursorComposerMeta(from db: URL) -> CursorComposerMeta {
         guard FileManager.default.fileExists(atPath: db.path) else {
             return CursorComposerMeta(names: [:], activity: [:])
@@ -10123,7 +10198,7 @@ final class COSControlHelper {
         try emitFreshClaudeSessions(home: home, composerMeta: composerMeta)
     }
 
-    private func emitLiveClaudeSessions(home _: URL, composerMeta: CursorComposerMeta) throws {
+    private func emitLiveClaudeSessions(home: URL, composerMeta: CursorComposerMeta) throws {
         var enabled = false
         var reason = ""
         var live: [[String: Any]] = []
@@ -10150,6 +10225,10 @@ final class COSControlHelper {
             }
         }
         peers = Self.overlayLiveState(onto: peers, live: live)
+        let claudeProjects = home.appendingPathComponent(".claude/projects", isDirectory: true)
+        peers = Self.refreshClaudeTranscriptActivity(peers) {
+            Self.claudeTranscriptModified(sessionId: $0, projectsRoot: claudeProjects)
+        }
         peers = Self.applyLiveWorkingState(peers, composerActivity: composerMeta.activity)
         peers.removeAll { Self.isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
         peers = peers.filter { Self.isPetLiveRow($0) }
@@ -14593,6 +14672,69 @@ final class COSControlHelper {
             ) == "running",
             "a Claude turn with activity inside the working window stays running"
         )
+        // 0.5.224: the pet's live rows take last activity from the transcript, so a
+        // Claude Desktop session with no registry status still reads running mid-turn.
+        let liveActPetNow = Self.parseISODate("2026-09-14T02:59:00Z") ?? Date()
+        let liveActPetTranscripts: [String: Date] = [
+            "3ae96fe1-11f9-444a-8a7e-d23f6d4baabf": Self.parseISODate("2026-09-14T02:58:40Z") ?? Date.distantPast,
+            "28601e3f-d98e-49e8-a772-41f1664ee0ce": Self.parseISODate("2026-09-14T02:10:00Z") ?? Date.distantPast,
+            "dead0000-1111-2222-3333-444444444444": liveActPetNow,
+            "01a0451c-a914-7853-8732-14ed944a2d56": liveActPetNow,
+        ]
+        let liveActPetRefreshed = Self.refreshClaudeTranscriptActivity([
+            ["id": "3ae96fe1-11f9-444a-8a7e-d23f6d4baabf", "provider": "claude", "alive": true,
+             "status": "", "waitingFor": "", "updatedAt": "2026-09-14T02:38:38.777Z"],
+            ["id": "28601e3f-d98e-49e8-a772-41f1664ee0ce", "provider": "claude", "alive": true,
+             "status": "idle", "waitingFor": "", "updatedAt": "2026-09-14T02:24:14.952Z"],
+            ["id": "dead0000-1111-2222-3333-444444444444", "provider": "claude", "alive": false,
+             "updatedAt": "2026-09-14T02:00:00Z"],
+            ["id": "01a0451c-a914-7853-8732-14ed944a2d56", "provider": "codex", "alive": true,
+             "updatedAt": "2026-09-14T02:00:00Z"],
+        ]) { liveActPetTranscripts[$0] }
+        let liveActPetStates = Self.applyLiveWorkingState(liveActPetRefreshed, now: liveActPetNow)
+        try expect(liveActPetStates.count == 4 && liveActPetStates[0]["state"] as? String == "running",
+                   "a live Claude Desktop session with no registry status reads running while its transcript moves")
+        try expect(liveActPetRefreshed.count == 4 && liveActPetRefreshed[1]["updatedAt"] as? String == "2026-09-14T02:24:14.952Z"
+                   && liveActPetStates[1]["state"] as? String == "recent",
+                   "an older transcript never ages a live row, and a quiet session stays idle")
+        try expect(liveActPetRefreshed[2]["updatedAt"] as? String == "2026-09-14T02:00:00Z",
+                   "a dead Claude PID takes no activity from a transcript")
+        try expect(liveActPetRefreshed[3]["updatedAt"] as? String == "2026-09-14T02:00:00Z",
+                   "only Claude rows take transcript activity")
+        let liveActNumericPeer = Self.claudePeerProjection([
+            "id": "3ae96fe1", "alive": true, "reachable": true, "status": NSNull(),
+            "lastActiveAt": NSNumber(value: 1_789_339_147_841), "startedAt": NSNumber(value: 1_789_339_147_429),
+        ])
+        try expect((liveActNumericPeer?["updatedAt"] as? String).flatMap { Self.parseISODate($0) } != nil,
+                   "a server epoch-millisecond lastActiveAt reaches the peer row as a date")
+        try expect((liveActNumericPeer?["createdAt"] as? String).flatMap { Self.parseISODate($0) } != nil,
+                   "a server epoch-millisecond startedAt reaches the peer row as a date")
+        try expect(Self.peerTimeISO("2026-09-14T02:58:40Z") == "2026-09-14T02:58:40Z",
+                   "an older server's ISO peer time passes through unchanged")
+        let liveActPetTmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cos-pet-live \(UUID().uuidString).d", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: liveActPetTmp) }
+        let liveActPetProjects = liveActPetTmp.appendingPathComponent(".claude/projects", isDirectory: true)
+        let liveActPetProject = liveActPetProjects.appendingPathComponent("-Users-x-Ukaoma Chief Of Staff-MU-Chief-Staff", isDirectory: true)
+        try FileManager.default.createDirectory(at: liveActPetProject, withIntermediateDirectories: true)
+        let liveActPetTranscript = liveActPetProject.appendingPathComponent("3ae96fe1-11f9-444a-8a7e-d23f6d4baabf.jsonl")
+        try Data("{}\n".utf8).write(to: liveActPetTranscript)
+        let liveActPetStamp = Self.parseISODate("2026-09-14T02:58:40Z") ?? Date()
+        try FileManager.default.setAttributes([.modificationDate: liveActPetStamp], ofItemAtPath: liveActPetTranscript.path)
+        func liveActPetNear(_ date: Date?) -> Bool { date.map { abs($0.timeIntervalSince(liveActPetStamp)) < 1 } ?? false }
+        try expect(liveActPetNear(Self.claudeTranscriptModified(sessionId: "3AE96FE1-11F9-444A-8A7E-D23F6D4BAABF", projectsRoot: liveActPetProjects)),
+                   "a full session id resolves its transcript mtime without opening it")
+        try expect(liveActPetNear(Self.claudeTranscriptModified(sessionId: "3ae96fe1", projectsRoot: liveActPetProjects)),
+                   "the server's eight-character peer id resolves by prefix")
+        try expect(Self.claudeTranscriptModified(sessionId: "3ae96fe", projectsRoot: liveActPetProjects) == nil,
+                   "an id shorter than eight characters resolves nothing, even when one transcript would match")
+        try expect(Self.claudeTranscriptModified(sessionId: "3ae96fe1-11f9-444a-8a7e-d23f6d4baabf.jsonl", projectsRoot: liveActPetProjects) == nil,
+                   "a file name or path-shaped id is not a session id")
+        try Data("{}\n".utf8).write(to: liveActPetProject.appendingPathComponent("3ae96fe1-0000-4000-8000-000000000000.jsonl"))
+        try expect(Self.claudeTranscriptModified(sessionId: "3ae96fe1", projectsRoot: liveActPetProjects) == nil,
+                   "an ambiguous short id refreshes nothing")
+        try expect(liveActPetNear(Self.claudeTranscriptModified(sessionId: "3ae96fe1-11f9-444a-8a7e-d23f6d4baabf", projectsRoot: liveActPetProjects)),
+                   "a full id is never ambiguous")
         try expect(Self.dateFromEpochMillis(NSNumber(value: 1_787_857_717_954)) != nil,
                    "sqlite JSON numbers arrive as NSNumber, not Int")
         try expect(Self.dateFromEpochMillis(NSNull()) == nil,
