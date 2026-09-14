@@ -39,8 +39,8 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 551:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 551 (551 at 0.5.225)")
+if count < 576:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 576 (576 at 0.5.227)")
 ' "$SELF_TEST"
 
 python3 "$ROOT/Tests/HeldNamingTransport.py" "$TMP/cos-control-helper"
@@ -4929,5 +4929,52 @@ if "title: session.petIdleLine" not in body(pet, "private func idleRow("):
     fail("an idle pet row must use petIdleLine, never petLiveLine's working fallback (0.5.226)")
 print("COS Control: pet live rows follow transcript records and tab titles (0.5.226)")
 PETLIVE
+
+/usr/bin/python3 - "$ROOT" <<'MEETAUDIO'
+import re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+helper = (root / "HelperSources/main.swift").read_text()
+model = (root / "Sources/ControllerModel.swift").read_text()
+views = (root / "Sources/Views.swift").read_text()
+def fail(message):
+    sys.exit(f"meeting-audio: {message}")
+def body(text, marker):
+    start = text.find(marker)
+    if start < 0:
+        fail(f"missing {marker}")
+    depth = 0
+    for j in range(text.index("{", start), len(text)):
+        if text[j] == "{":
+            depth += 1
+        elif text[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return re.sub(r"//[^\n]*", "", text[start:j + 1])
+    fail(f"unterminated {marker}")
+if 'case "meeting-audio-watch": try emitMeetingAudioWatch()' not in helper:
+    fail("the helper must dispatch meeting-audio-watch")
+for name, value in (("meetingAudioSilenceAlertSeconds", "60"), ("meetingAudioHeartbeatFreshSeconds", "90"), ("meetingAudioForgetSeconds", "10 * 60")):
+    if f"static let {name}: TimeInterval = {value}" not in helper:
+        fail(f"{name} must stay {value}; change it with the self-tests and the CHANGELOG")
+refresh = body(model, "func refresh(quiet: Bool = false) async {")
+watch_at, orphans_at = refresh.find("await loadMeetingAudioWatch()"), refresh.find("await loadOrphans(quiet: true)")
+if watch_at < 0 or orphans_at < 0 or watch_at < orphans_at:
+    fail("every status refresh must check meeting audio, after the captures load")
+load = body(model, "func loadMeetingAudioWatch() async {")
+if '"meeting-audio-watch"' not in load:
+    fail("the check must run the helper's meeting-audio-watch")
+if "meetingAudioLedger.alertsToPost(" not in load or "meetingAudioNotifier.post(" not in load:
+    fail("alerts must pass the one-per-drop ledger before posting")
+init = body(model, "init(startBackgroundWork: Bool = true) {")
+guard_at, ask_at = init.find("guard startBackgroundWork else { return }"), init.find("meetingAudioNotifier.requestAuthorization()")
+if guard_at < 0 or ask_at < guard_at:
+    fail("notification permission is asked at launch, and only by the background-work model")
+notifier = body(model, "final class MeetingAudioNotifier")
+if "center.delegate = self" not in notifier or ".alert" not in notifier:
+    fail("the notifier must own the delegate and ask for alerts")
+if "ForEach(model.meetingAudio)" not in views or 'statusRow("Meeting audio"' not in views:
+    fail("the panel must show a Meeting audio row per live meeting")
+print("COS Control: meeting audio alert wiring (0.5.227)")
+MEETAUDIO
 
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"

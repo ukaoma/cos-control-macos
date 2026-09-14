@@ -838,6 +838,17 @@ struct ControlPanel: View {
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
+            ForEach(model.meetingAudio) { watch in
+                statusRow("Meeting audio", value: watch.rowValue, good: watch.state == "reaching")
+                if watch.alert {
+                    Text(watch.state == "paused"
+                        ? "The phone paused recording to protect its storage. Open COS on the phone."
+                        : "No audio has reached this Mac since \(watch.lastChunkAt.map { $0.formatted(date: .omitted, time: .shortened) } ?? "the last chunk"). Unlock the phone and open COS to reconnect.")
+                        .font(.caption2)
+                        .foregroundStyle(COSPalette.amber)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            }
             statusRow("Meeting sync", value: model.status.displayedMeetingSync.label, good: !model.status.meetingWorkBlockingRestart)
             HStack {
                 Spacer()

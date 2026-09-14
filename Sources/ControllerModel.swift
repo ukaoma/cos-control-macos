@@ -5,6 +5,7 @@ import Darwin
 import Foundation
 import ServiceManagement
 import UniformTypeIdentifiers
+import UserNotifications
 
 private actor MediaFetchGate {
     private var available = 2
@@ -44,6 +45,30 @@ private enum MediaFetchError: LocalizedError {
             }
         case .invalidResponse: return "COS returned an invalid attachment response."
         }
+    }
+}
+
+/// 0.5.227. macOS notifications for meeting audio that stops reaching this Mac.
+final class MeetingAudioNotifier: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
+    private let center = UNUserNotificationCenter.current()
+
+    /// Asked once at launch, so the permission prompt appears before the first drop needs it.
+    func requestAuthorization() {
+        center.delegate = self
+        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    func post(_ watch: MeetingAudioWatch) {
+        let content = UNMutableNotificationContent()
+        content.title = watch.notificationTitle
+        content.body = watch.notificationBody
+        content.sound = .default
+        center.add(UNNotificationRequest(identifier: "meeting-audio-\(watch.sessionId)", content: content, trigger: nil)) { _ in }
+    }
+
+    /// COS Control is a menu-bar app: show the banner even while its panel is open.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
     }
 }
 
@@ -313,6 +338,8 @@ final class ControllerModel: ObservableObject {
     private var threadSearchTask: Task<Void, Never>?
     private var sessionSearchTask: Task<Void, Never>?
     private var petPollInFlight = false
+    private var meetingAudioLedger = MeetingAudioAlertLedger()
+    private let meetingAudioNotifier = MeetingAudioNotifier()
     private var mediaPreviewTask: Task<Void, Never>?
     private var thumbnailTasks: [String: Task<Void, Never>] = [:]
     private var thumbnailLoadIDs: [String: UUID] = [:]
@@ -345,6 +372,7 @@ final class ControllerModel: ObservableObject {
         loadPetCompletions()
         loadPetSprite()
         hydrateClaudeSessionsFromCache()
+        meetingAudioNotifier.requestAuthorization()
     }
 
     /// P1 check. Silent on helper crash. The helper itself returns ok:true with
@@ -499,6 +527,7 @@ final class ControllerModel: ObservableObject {
             status = ServerStatus(response.details)
             if !quiet { error = nil }
             await loadOrphans(quiet: true)
+            await loadMeetingAudioWatch()
             await loadActivitySignals(force: !quiet)
         } catch {
             status.running = false
@@ -1454,6 +1483,8 @@ final class ControllerModel: ObservableObject {
     @Published var librarySemanticReason: String?
     @Published var orphanCaptures: [OrphanCapture] = []
     @Published var strandedCaptures: [StrandedCapture] = []
+    /// 0.5.227. Live meetings and whether their audio still reaches this Mac.
+    @Published var meetingAudio: [MeetingAudioWatch] = []
     @Published var orphanBusy = false
     @Published var claudeSessions: [ClaudeSession] = []
     @Published var claudeSessionsEnabled = false
@@ -1780,6 +1811,25 @@ final class ControllerModel: ObservableObject {
                 orphanCaptures = []
                 strandedCaptures = []
             }
+        }
+    }
+
+    /// 0.5.227. Is live meeting audio still reaching this Mac? Runs on every status tick and
+    /// notifies once per drop; a helper that cannot answer keeps the last rows and never invents an alert.
+    func loadMeetingAudioWatch() async {
+        guard status.running else {
+            meetingAudio = []
+            return
+        }
+        do {
+            let response = try await helper.run(["meeting-audio-watch"], timeout: 20)
+            let watches = (response.details["sessions"]?.array ?? []).compactMap(MeetingAudioWatch.init)
+            meetingAudio = watches
+            for watch in meetingAudioLedger.alertsToPost(watches) {
+                meetingAudioNotifier.post(watch)
+            }
+        } catch {
+            return
         }
     }
 

@@ -1,3 +1,13 @@
+## 0.5.227 (build 265)
+
+COS Control tells you when meeting audio stops reaching this Mac.
+
+- While a G2 meeting records, COS Control checks on every 12-second status refresh when the last audio chunk reached this Mac and what the phone last reported. When the phone's newest heartbeat is under 90 seconds old and says it is recording with the microphone on, and no chunk has arrived for 60 seconds, it posts a macOS notification: "Meeting audio stopped reaching your Mac". A phone storage pause posts "Meeting audio paused on your phone". One notification per drop; the same meeting can notify again once its audio has reached the Mac again.
+- The panel shows a Meeting audio row for each live meeting: Reaching this Mac, Stopped, Paused on phone, No word from phone, or Ending. A phone with no heartbeat for 90 seconds never notifies, because a phone recording offline sends neither heartbeats nor chunks.
+- Why: on 2026-09-14 two phone locks stopped meeting audio for 8 and 9 minutes while this Mac kept receiving the phone's heartbeats, and nothing reached the wearer. This Mac is the one place that sees both facts.
+- The first launch asks for permission to send notifications. The alert reaches you where you can see this Mac; a push to the phone is a later step.
+- Reads `active-sessions/` and the end of `client-diagnostics.jsonl` in the glasses data folder. No server change: works with server 6.46.0 and any glasses build that sends meeting heartbeats.
+
 ## 0.5.226 (build 264)
 
 Session names match the Claude desktop tab.

@@ -4324,6 +4324,31 @@ struct ModelsContract {
         precondition(undoWire.restoredSegments == 8 && undoWire.labelled == 4 && undoWire.partial, "partial Undo separates restored and remaining labels")
         print("COS Control: held naming 239-row, playback, preview, partial-copy and undo contracts passed")
 
+        // 0.5.227: meeting audio watch rows, and one notification per drop.
+        let audioStopped = MeetingAudioWatch(.object(["sessionId": .string("m1"), "state": .string("stopped"), "alert": .bool(true),
+            "silenceSeconds": .number(125), "heartbeatAgeSeconds": .number(4), "lastChunkAt": .string("2026-09-14T15:24:06Z")]))
+        precondition(audioStopped?.alert == true && audioStopped?.rowValue == "Stopped 2 min ago" && audioStopped?.heartbeatAgeSeconds == 4
+            && audioStopped?.lastChunkAt != nil, "a stopped row decodes and reads in minutes")
+        precondition(audioStopped?.notificationTitle == "Meeting audio stopped reaching your Mac"
+            && audioStopped?.notificationBody == "No audio from your phone for 2 min. Unlock your phone and open COS to reconnect.")
+        let audioPaused = MeetingAudioWatch(.object(["sessionId": .string("m1"), "state": .string("paused"), "alert": .bool(true), "silenceSeconds": .number(61)]))
+        precondition(audioPaused?.rowValue == "Paused on phone 1 min" && audioPaused?.notificationTitle == "Meeting audio paused on your phone")
+        let audioReaching = MeetingAudioWatch(.object(["sessionId": .string("m1"), "state": .string("reaching"), "alert": .bool(false), "silenceSeconds": .number(3)]))
+        precondition(audioReaching?.rowValue == "Reaching this Mac" && audioReaching?.alert == false)
+        precondition(MeetingAudioWatch(.object(["state": .string("stopped")])) == nil, "a row without a session id is dropped")
+        var audioLedger = MeetingAudioAlertLedger()
+        precondition(audioLedger.alertsToPost([audioStopped!]).count == 1, "the first stopped check notifies")
+        precondition(audioLedger.alertsToPost([audioStopped!]).isEmpty, "the same drop notifies once")
+        precondition(audioLedger.alertsToPost([audioPaused!]).count == 1, "a change to paused notifies")
+        precondition(audioLedger.alertsToPost([audioReaching!]).isEmpty, "audio reaching the Mac again posts nothing")
+        precondition(audioLedger.alertsToPost([audioStopped!]).count == 1, "a later drop in the same meeting notifies again")
+        precondition(audioLedger.alertsToPost([]).isEmpty && audioLedger.notified.isEmpty, "a meeting that is no longer live is forgotten")
+        let audioQuiet = MeetingAudioWatch(.object(["sessionId": .string("m2"), "state": .string("phone_quiet"), "alert": .bool(false), "silenceSeconds": .number(200)]))
+        precondition(audioLedger.alertsToPost([audioQuiet!]).isEmpty && audioQuiet?.rowValue == "No word from phone 3 min", "a quiet phone never notifies")
+        precondition(MeetingAudioWatch.minutes(90) == "2 min" && MeetingAudioWatch.minutes(89) == "1 min" && MeetingAudioWatch.minutes(10) == "1 min",
+            "minutes round to the nearest minute and never read 0")
+        print("COS Control: meeting audio watch rows and one notification per drop passed")
+
         print("COS Control: Swift attachment parsing and owned-image decoding passed")
     }
 }

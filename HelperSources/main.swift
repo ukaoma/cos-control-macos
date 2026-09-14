@@ -508,6 +508,7 @@ final class COSControlHelper {
         case "clear-stranded-video-uploads": try clearStrandedVideoUploads()
         case "reset-message-era": try resetMessageEra()
         case "meeting-orphans": try emitMeetingOrphans()
+        case "meeting-audio-watch": try emitMeetingAudioWatch()
         case "meeting-orphan-recover": try emitMeetingOrphanRecover(args: args)
         case "meeting-orphan-recover-all": try emitMeetingOrphanRecoverAll()
         case "meeting-sync-now": try emitMeetingSyncNow()
@@ -11301,6 +11302,162 @@ final class COSControlHelper {
         ])
     }
 
+    // MARK: - Meeting audio watch (0.5.227)
+    //
+    // On 2026-09-14 two phone locks stopped G2 meeting audio mid-recording. This Mac kept
+    // receiving the phone's heartbeats (recording, microphone on) for 8 and 9 minutes while no
+    // audio chunk arrived, and nothing reached Miles: the lens could not be written and the
+    // phone was locked. This Mac is the one place that sees both facts. The server bumps
+    // `lastActivityAt` in `active-sessions/<id>.json` on chunk ARRIVAL, and appends every phone
+    // heartbeat to `client-diagnostics.jsonl` stamped with this Mac's clock (`server_received`).
+    //
+    // A missing or stale heartbeat never raises the alert. Heartbeats are lossy (63% were
+    // missing in one 2026-07-27 session), and a phone recording offline sends neither heartbeats
+    // nor chunks. Those sessions read `phone_quiet` and stay silent.
+
+    /// No chunk for this long while the phone says it is recording. Chunks arrive about every
+    /// 6 s (a median of 6.1 s over 301 chunks on 2026-09-14, with no gap over 30 s), so this is
+    /// about ten missed chunks.
+    static let meetingAudioSilenceAlertSeconds: TimeInterval = 60
+    /// A heartbeat newer than this proves the phone still talks to this Mac. The phone sends one
+    /// every 10 s while it runs timers, so 90 s allows eight in a row to be lost.
+    static let meetingAudioHeartbeatFreshSeconds: TimeInterval = 90
+    /// Neither a chunk nor a heartbeat for this long: stranded, not live. Retained captures covers it.
+    static let meetingAudioForgetSeconds: TimeInterval = 10 * 60
+    /// Diagnostics read per check, from the end: about 2,000 rows, several minutes of a meeting.
+    static let meetingAudioDiagTailBytes = 1_048_576
+
+    struct MeetingAudioHeartbeat: Sendable {
+        var receivedAt: Date
+        var audioState: String?
+        var micEnabled: Bool?
+        var capturePaused: Bool?
+        var phase: String?
+        var visibilityState: String?
+        var bridgeProbe: String?
+        var frameAgeMs: Double?
+        var glassesConnected: Bool?
+    }
+
+    struct MeetingAudioLiveSession: Sendable {
+        var sessionId: String
+        var lastChunkAt: Date
+        var chunks: Int
+    }
+
+    /// The newest heartbeat per wanted session, by this Mac's receive time.
+    static func meetingAudioHeartbeats(fromLines lines: [String], sessions wanted: Set<String>) -> [String: MeetingAudioHeartbeat] {
+        var out: [String: MeetingAudioHeartbeat] = [:]
+        for line in lines where line.contains("\"heartbeat\"") {
+            guard let data = line.data(using: .utf8),
+                  let row = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  row["event"] as? String == "heartbeat",
+                  let sessionId = row["sessionId"] as? String, wanted.contains(sessionId),
+                  let received = dateFromEpochMillis(row["server_received"]) else { continue }
+            if let existing = out[sessionId], existing.receivedAt >= received { continue }
+            let payload = row["data"] as? [String: Any] ?? [:]
+            out[sessionId] = MeetingAudioHeartbeat(
+                receivedAt: received,
+                audioState: payload["audioState"] as? String,
+                micEnabled: payload["micEnabled"] as? Bool,
+                capturePaused: payload["capturePaused"] as? Bool,
+                phase: payload["phase"] as? String,
+                visibilityState: payload["visibilityState"] as? String,
+                bridgeProbe: payload["audioBridgeProbe"] as? String,
+                frameAgeMs: (payload["audioFrameAgeMs"] as? NSNumber)?.doubleValue,
+                glassesConnected: payload["audioGlassesConnected"] as? Bool
+            )
+        }
+        return out
+    }
+
+    /// One live session's verdict, or nil when it is stranded. `stopped` and `paused` alert.
+    static func meetingAudioVerdict(session: MeetingAudioLiveSession, heartbeat: MeetingAudioHeartbeat?, now: Date) -> [String: Any]? {
+        let silence = max(0, now.timeIntervalSince(session.lastChunkAt))
+        let heartbeatAge = heartbeat.map { max(0, now.timeIntervalSince($0.receivedAt)) }
+        if silence >= meetingAudioForgetSeconds && (heartbeatAge ?? .infinity) >= meetingAudioForgetSeconds { return nil }
+        let fresh = (heartbeatAge ?? .infinity) <= meetingAudioHeartbeatFreshSeconds
+        let recording = heartbeat?.audioState == "recording_continuous" && heartbeat?.phase != "stop"
+        let state: String
+        if silence < meetingAudioSilenceAlertSeconds {
+            state = "reaching"
+        } else if !fresh {
+            state = "phone_quiet"
+        } else if !recording {
+            state = "ending"
+        } else if heartbeat?.capturePaused == true {
+            state = "paused"
+        } else if heartbeat?.micEnabled == false {
+            state = "ending"
+        } else {
+            state = "stopped"
+        }
+        var row: [String: Any] = [
+            "sessionId": session.sessionId,
+            "state": state,
+            "alert": state == "stopped" || state == "paused",
+            "silenceSeconds": Int(silence.rounded(.down)),
+            "lastChunkAt": ISO8601DateFormatter().string(from: session.lastChunkAt),
+            "chunks": session.chunks,
+        ]
+        if let heartbeatAge { row["heartbeatAgeSeconds"] = Int(heartbeatAge.rounded(.down)) }
+        if let heartbeat {
+            if let value = heartbeat.visibilityState { row["visibilityState"] = value }
+            if let value = heartbeat.bridgeProbe { row["bridgeProbe"] = value }
+            if let value = heartbeat.frameAgeMs { row["frameAgeSeconds"] = Int((value / 1000).rounded(.down)) }
+            if let value = heartbeat.glassesConnected { row["glassesConnected"] = value }
+        }
+        return row
+    }
+
+    static func meetingAudioLiveSessions(dataDir: URL) -> [MeetingAudioLiveSession] {
+        let dir = dataDir.appendingPathComponent("active-sessions", isDirectory: true)
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return [] }
+        var out: [MeetingAudioLiveSession] = []
+        for name in names where name.hasSuffix(".json") {
+            guard let data = try? Data(contentsOf: dir.appendingPathComponent(name)),
+                  let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let sessionId = object["sessionId"] as? String, !sessionId.isEmpty,
+                  let lastChunkAt = dateFromEpochMillis(object["lastActivityAt"]) else { continue }
+            let chunks = (object["maxChunkIndex"] as? NSNumber).map { $0.intValue + 1 } ?? 0
+            out.append(MeetingAudioLiveSession(sessionId: sessionId, lastChunkAt: lastChunkAt, chunks: max(0, chunks)))
+        }
+        return out.sorted { $0.lastChunkAt > $1.lastChunkAt }
+    }
+
+    /// The last `maxBytes` of diagnostics, reaching into the rotated file when the current one is short.
+    static func meetingAudioDiagLines(dataDir: URL, maxBytes: Int = meetingAudioDiagTailBytes) -> [String] {
+        let current = dataDir.appendingPathComponent("client-diagnostics.jsonl")
+        let rotated = dataDir.appendingPathComponent("client-diagnostics.jsonl.1")
+        let currentSize = (try? FileManager.default.attributesOfItem(atPath: current.path)[.size] as? NSNumber)?.intValue ?? 0
+        var lines: [String] = []
+        if currentSize < maxBytes { lines += meetingAudioTailLines(rotated, bytes: maxBytes - currentSize) }
+        lines += meetingAudioTailLines(current, bytes: maxBytes)
+        return lines
+    }
+
+    private static func meetingAudioTailLines(_ url: URL, bytes: Int) -> [String] {
+        guard bytes > 0,
+              let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue, size > 0,
+              let handle = try? FileHandle(forReadingFrom: url) else { return [] }
+        defer { try? handle.close() }
+        return claudeTailLines(handle: handle, start: max(0, size - bytes), end: size)
+    }
+
+    static func meetingAudioWatch(dataDir: URL, now: Date) -> [[String: Any]] {
+        let sessions = meetingAudioLiveSessions(dataDir: dataDir)
+        guard !sessions.isEmpty else { return [] }
+        let heartbeats = meetingAudioHeartbeats(fromLines: meetingAudioDiagLines(dataDir: dataDir), sessions: Set(sessions.map(\.sessionId)))
+        return sessions.compactMap { meetingAudioVerdict(session: $0, heartbeat: heartbeats[$0.sessionId], now: now) }
+    }
+
+    private func emitMeetingAudioWatch() throws {
+        let rows = Self.meetingAudioWatch(dataDir: glassesDataDir(), now: Date())
+        let alerts = rows.filter { $0["alert"] as? Bool == true }.count
+        let message = alerts > 0 ? "Meeting audio stopped reaching this Mac" : rows.isEmpty ? "No live meeting" : "Meeting audio reaching this Mac"
+        emit(ok: true, message: message, details: ["sessions": rows, "alerts": alerts])
+    }
+
     private func postOrphanRecover(sessionId: String) throws -> (status: Int, body: [String: Any]) {
         let token = try speakerReviewToken()
         let path = try orphanSessionPath(sessionId)
@@ -15164,6 +15321,73 @@ final class COSControlHelper {
                    "the Sessions walk shows a Claude row's Claude Desktop tab title")
         try expect(liveActDesktopRows[1]["name"] as? String == "Codex thread" && liveActDesktopRows[2]["name"] as? String == "Offline recording and gesture remapping",
                    "other providers and rows missing from the Desktop index keep their names")
+        // 0.5.227: meeting audio that stops reaching this Mac while the phone says it is recording.
+        let audioNow = Date(timeIntervalSince1970: 1_789_400_000)
+        func audioSession(_ silence: TimeInterval) -> MeetingAudioLiveSession {
+            MeetingAudioLiveSession(sessionId: "a", lastChunkAt: audioNow.addingTimeInterval(-silence), chunks: 516)
+        }
+        func audioBeat(age: TimeInterval, state: String = "recording_continuous", mic: Bool? = true, paused: Bool? = false, phase: String? = "tick") -> MeetingAudioHeartbeat {
+            MeetingAudioHeartbeat(receivedAt: audioNow.addingTimeInterval(-age), audioState: state, micEnabled: mic, capturePaused: paused, phase: phase,
+                                  visibilityState: "hidden", bridgeProbe: nil, frameAgeMs: nil, glassesConnected: nil)
+        }
+        let audioWindow = Self.meetingAudioSilenceAlertSeconds
+        let audioFresh = Self.meetingAudioHeartbeatFreshSeconds
+        try expect(Self.meetingAudioVerdict(session: audioSession(audioWindow - 1), heartbeat: audioBeat(age: 5), now: audioNow)?["state"] as? String == "reaching",
+                   "a chunk inside the silence window reads reaching")
+        let audioStopped = Self.meetingAudioVerdict(session: audioSession(audioWindow), heartbeat: audioBeat(age: 5), now: audioNow)
+        try expect(audioStopped?["state"] as? String == "stopped" && audioStopped?["alert"] as? Bool == true && audioStopped?["silenceSeconds"] as? Int == 60,
+                   "no chunk for the silence window with a fresh recording heartbeat alerts as stopped")
+        try expect(Self.meetingAudioVerdict(session: audioSession(audioWindow * 3), heartbeat: audioBeat(age: audioFresh), now: audioNow)?["state"] as? String == "stopped",
+                   "a heartbeat exactly at the freshness limit still proves the phone is up")
+        let audioQuiet = Self.meetingAudioVerdict(session: audioSession(audioWindow * 3), heartbeat: audioBeat(age: audioFresh + 1), now: audioNow)
+        try expect(audioQuiet?["state"] as? String == "phone_quiet" && audioQuiet?["alert"] as? Bool == false,
+                   "a stale heartbeat never alerts: a phone recording offline sends neither heartbeats nor chunks")
+        try expect(Self.meetingAudioVerdict(session: audioSession(audioWindow * 3), heartbeat: nil, now: audioNow)?["alert"] as? Bool == false,
+                   "no heartbeat at all never alerts")
+        let audioPaused = Self.meetingAudioVerdict(session: audioSession(audioWindow * 3), heartbeat: audioBeat(age: 5, mic: false, paused: true), now: audioNow)
+        try expect(audioPaused?["state"] as? String == "paused" && audioPaused?["alert"] as? Bool == true,
+                   "a storage pause on the phone alerts as paused")
+        try expect(Self.meetingAudioVerdict(session: audioSession(audioWindow * 3), heartbeat: audioBeat(age: 5, phase: "stop"), now: audioNow)?["state"] as? String == "ending",
+                   "a Stop heartbeat never alerts")
+        try expect(Self.meetingAudioVerdict(session: audioSession(audioWindow * 3), heartbeat: audioBeat(age: 5, state: "idle"), now: audioNow)?["state"] as? String == "ending",
+                   "a phone that is not recording never alerts")
+        try expect(Self.meetingAudioVerdict(session: audioSession(audioWindow * 3), heartbeat: audioBeat(age: 5, mic: false, paused: false), now: audioNow)?["state"] as? String == "ending",
+                   "a microphone that is off without a pause reads as ending, not an alert")
+        try expect(Self.meetingAudioVerdict(session: audioSession(Self.meetingAudioForgetSeconds), heartbeat: audioBeat(age: Self.meetingAudioForgetSeconds), now: audioNow) == nil,
+                   "no audio and no heartbeat for ten minutes is a stranded session, not a live one")
+        try expect(Self.meetingAudioVerdict(session: audioSession(Self.meetingAudioForgetSeconds), heartbeat: audioBeat(age: 5), now: audioNow)?["state"] as? String == "stopped",
+                   "a long silence with a fresh heartbeat is still live and still alerts")
+        let audioLines = [
+            #"{"ts":1,"event":"heartbeat","sessionId":"a","server_received":1789399990000,"data":{"audioState":"recording_continuous","micEnabled":true,"capturePaused":false,"phase":"tick","visibilityState":"hidden"}}"#,
+            #"{"ts":2,"event":"heartbeat","sessionId":"a","server_received":1789399995000,"data":{"audioState":"recording_continuous","micEnabled":false,"capturePaused":true,"phase":"tick","audioBridgeProbe":"alive","audioFrameAgeMs":15000,"audioGlassesConnected":false}}"#,
+            #"{"ts":3,"event":"heartbeat","sessionId":"a","server_received":1789399980000,"data":{"audioState":"idle"}}"#,
+            #"{"ts":4,"event":"heartbeat","sessionId":"other","server_received":1789399999000,"data":{"audioState":"recording_continuous"}}"#,
+            #"{"ts":5,"event":"meeting.even_role","sessionId":"a","server_received":1789399999500,"data":{"heartbeat":true}}"#,
+            "not json",
+        ]
+        let audioBeats = Self.meetingAudioHeartbeats(fromLines: audioLines, sessions: ["a"])
+        try expect(audioBeats.count == 1 && audioBeats["a"]?.capturePaused == true && audioBeats["a"]?.receivedAt == Date(timeIntervalSince1970: 1_789_399_995),
+                   "the newest heartbeat by this Mac's receive time wins; other sessions and other events are ignored")
+        try expect(audioBeats["a"]?.bridgeProbe == "alive" && audioBeats["a"]?.frameAgeMs == 15_000 && audioBeats["a"]?.glassesConnected == false,
+                   "the phone's 6.9.473 liveness fields pass through")
+        let audioDir = FileManager.default.temporaryDirectory.appendingPathComponent("cos-audio-watch-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: audioDir.appendingPathComponent("active-sessions", isDirectory: true), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: audioDir) }
+        try Data(#"{"sessionId":"a","startTime":1789396384730,"lastActivityAt":1789399930000,"maxChunkIndex":515}"#.utf8)
+            .write(to: audioDir.appendingPathComponent("active-sessions/a.json"))
+        try Data(#"{"sessionId":"stranded","startTime":1789396369170,"lastActivityAt":1789396373388,"maxChunkIndex":0}"#.utf8)
+            .write(to: audioDir.appendingPathComponent("active-sessions/stranded.json"))
+        try Data((audioLines.prefix(2).joined(separator: "\n") + "\n").utf8).write(to: audioDir.appendingPathComponent("client-diagnostics.jsonl"))
+        let audioRows = Self.meetingAudioWatch(dataDir: audioDir, now: audioNow)
+        try expect(audioRows.count == 1 && audioRows.first?["sessionId"] as? String == "a" && audioRows.first?["state"] as? String == "paused"
+                   && audioRows.first?["chunks"] as? Int == 516 && audioRows.first?["heartbeatAgeSeconds"] as? Int == 5,
+                   "the watch reads live sessions and heartbeats from the data directory and drops a stranded session")
+        try Data().write(to: audioDir.appendingPathComponent("client-diagnostics.jsonl"))
+        try Data((audioLines.prefix(2).joined(separator: "\n") + "\n").utf8).write(to: audioDir.appendingPathComponent("client-diagnostics.jsonl.1"))
+        try expect(Self.meetingAudioWatch(dataDir: audioDir, now: audioNow).first?["state"] as? String == "paused",
+                   "right after the diagnostics file rotates, heartbeats are read from the rotated file")
+        try expect(Self.meetingAudioWatch(dataDir: audioDir.appendingPathComponent("missing"), now: audioNow).isEmpty,
+                   "no data directory reads as no live meeting")
         try expect(Self.dateFromEpochMillis(NSNumber(value: 1_787_857_717_954)) != nil,
                    "sqlite JSON numbers arrive as NSNumber, not Int")
         try expect(Self.dateFromEpochMillis(NSNull()) == nil,

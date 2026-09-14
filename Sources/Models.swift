@@ -1166,6 +1166,84 @@ struct OrphanCapture: Identifiable, Sendable {
 /// A live recording whose phone went quiet. Not quarantined yet — do not
 /// delete its session files. Save it with POST /api/meeting/save; the
 /// quarantine recover route will 404 until the 4h cutoff.
+/// 0.5.227. One live meeting as COS Control sees it: is its audio still reaching this Mac?
+struct MeetingAudioWatch: Identifiable, Sendable, Equatable {
+    /// reaching | stopped | paused | phone_quiet | ending
+    let sessionId: String
+    let state: String
+    let alert: Bool
+    let silenceSeconds: Int
+    let heartbeatAgeSeconds: Int?
+    let lastChunkAt: Date?
+    let visibilityState: String?
+    let bridgeProbe: String?
+
+    var id: String { sessionId }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let sessionId = o["sessionId"]?.string, !sessionId.isEmpty,
+              let state = o["state"]?.string, !state.isEmpty else { return nil }
+        self.sessionId = sessionId
+        self.state = state
+        alert = o["alert"]?.bool ?? (state == "stopped" || state == "paused")
+        silenceSeconds = o["silenceSeconds"]?.int ?? 0
+        heartbeatAgeSeconds = o["heartbeatAgeSeconds"]?.int
+        lastChunkAt = o["lastChunkAt"]?.string.flatMap { ISO8601DateFormatter().date(from: $0) }
+        visibilityState = o["visibilityState"]?.string
+        bridgeProbe = o["bridgeProbe"]?.string
+    }
+
+    static func minutes(_ seconds: Int) -> String {
+        let value = max(1, Int((Double(seconds) / 60).rounded()))
+        return "\(value) min"
+    }
+
+    /// The panel's Meeting audio value.
+    var rowValue: String {
+        switch state {
+        case "stopped": return "Stopped \(Self.minutes(silenceSeconds)) ago"
+        case "paused": return "Paused on phone \(Self.minutes(silenceSeconds))"
+        case "phone_quiet": return "No word from phone \(Self.minutes(silenceSeconds))"
+        case "ending": return "Ending"
+        default: return "Reaching this Mac"
+        }
+    }
+
+    var notificationTitle: String {
+        state == "paused" ? "Meeting audio paused on your phone" : "Meeting audio stopped reaching your Mac"
+    }
+
+    var notificationBody: String {
+        state == "paused"
+            ? "Phone storage paused the recording \(Self.minutes(silenceSeconds)) ago. Open COS on your phone."
+            : "No audio from your phone for \(Self.minutes(silenceSeconds)). Unlock your phone and open COS to reconnect."
+    }
+}
+
+/// 0.5.227. One notification per drop. A meeting notifies when it enters `stopped` or `paused`,
+/// again only after its audio reaches this Mac again, and is forgotten once it is no longer live.
+struct MeetingAudioAlertLedger: Sendable, Equatable {
+    private(set) var notified: [String: String] = [:]
+
+    mutating func alertsToPost(_ watches: [MeetingAudioWatch]) -> [MeetingAudioWatch] {
+        var post: [MeetingAudioWatch] = []
+        var live: Set<String> = []
+        for watch in watches {
+            live.insert(watch.sessionId)
+            if watch.alert {
+                if notified[watch.sessionId] != watch.state {
+                    notified[watch.sessionId] = watch.state
+                    post.append(watch)
+                }
+            } else if watch.state == "reaching" {
+                notified[watch.sessionId] = nil
+            }
+        }
+        for id in notified.keys where !live.contains(id) { notified[id] = nil }
+        return post
+    }
+}
+
 struct StrandedCapture: Identifiable, Sendable {
     let sessionId: String
     let idleMinutes: Int
