@@ -4324,32 +4324,68 @@ struct ModelsContract {
         precondition(undoWire.restoredSegments == 8 && undoWire.labelled == 4 && undoWire.partial, "partial Undo separates restored and remaining labels")
         print("COS Control: held naming 239-row, playback, preview, partial-copy and undo contracts passed")
 
-        // 0.5.227: meeting audio watch rows, and one notification per drop.
+        // 0.5.227: meeting audio watch rows, and one notification per drop. 0.5.228: delayed, pause reasons, start times, resolved.
         let audioStopped = MeetingAudioWatch(.object(["sessionId": .string("m1"), "state": .string("stopped"), "alert": .bool(true),
             "silenceSeconds": .number(125), "heartbeatAgeSeconds": .number(4), "lastChunkAt": .string("2026-09-14T15:24:06Z")]))
         precondition(audioStopped?.alert == true && audioStopped?.rowValue == "Stopped 2 min ago" && audioStopped?.heartbeatAgeSeconds == 4
             && audioStopped?.lastChunkAt != nil, "a stopped row decodes and reads in minutes")
         precondition(audioStopped?.notificationTitle == "Meeting audio stopped reaching your Mac"
             && audioStopped?.notificationBody == "No audio from your phone for 2 min. Unlock your phone and open COS to reconnect.")
+        precondition(audioStopped?.notificationSubtitle == nil && audioStopped?.rowLabel(amongLive: 2) == "Meeting audio",
+            "a row without a start time has no subtitle and a plain label")
+        precondition(audioStopped?.panelCaption.hasPrefix("No audio has reached this Mac since ") == true && audioStopped?.panelCaption.contains("the last chunk") == false,
+            "a stopped caption names the last chunk's time")
+        let audioStarted = MeetingAudioWatch(.object(["sessionId": .string("m3"), "state": .string("stopped"), "alert": .bool(true), "silenceSeconds": .number(70),
+            "startedAt": .string("2026-09-14T15:02:00Z")]))
+        precondition(audioStarted?.notificationSubtitle?.hasPrefix("Meeting started ") == true
+            && audioStarted?.rowLabel(amongLive: 1) == "Meeting audio" && audioStarted?.rowLabel(amongLive: 2).hasPrefix("Meeting audio, ") == true,
+            "a start time tells two live meetings apart, in the notification and in the panel")
         let audioPaused = MeetingAudioWatch(.object(["sessionId": .string("m1"), "state": .string("paused"), "alert": .bool(true), "silenceSeconds": .number(61)]))
         precondition(audioPaused?.rowValue == "Paused on phone 1 min" && audioPaused?.notificationTitle == "Meeting audio paused on your phone")
+        precondition(audioPaused?.notificationBody == "Your phone paused the recording 1 min ago. Open COS on your phone."
+            && audioPaused?.panelCaption == "The phone paused recording. Open COS on the phone.", "a pause with no reason does not blame storage")
+        func pausedFor(_ reason: String) -> MeetingAudioWatch? {
+            MeetingAudioWatch(.object(["sessionId": .string("m1"), "state": .string("paused"), "alert": .bool(true), "silenceSeconds": .number(61), "pauseReason": .string(reason)]))
+        }
+        for reason in ["budget", "overflow", "quota"] {
+            precondition(pausedFor(reason)?.notificationBody == "Phone storage paused the recording 1 min ago. Open COS on your phone."
+                && pausedFor(reason)?.panelCaption == "The phone paused recording to protect its storage. Open COS on the phone.", "a \(reason) pause reads as storage")
+        }
+        for reason in ["failed", "permanent"] {
+            precondition(pausedFor(reason)?.notificationBody == "A storage error on your phone paused the recording 1 min ago. Open COS on your phone."
+                && pausedFor(reason)?.panelCaption == "A storage error on the phone paused recording. Open COS on the phone.", "a \(reason) pause reads as a storage error")
+        }
+        precondition(pausedFor("sealing")?.notificationBody == "Your phone paused the recording 1 min ago. Open COS on your phone.", "any other pause reads as a plain pause")
+        let audioDelayed = MeetingAudioWatch(.object(["sessionId": .string("m1"), "state": .string("delayed"), "alert": .bool(false), "silenceSeconds": .number(90)]))
+        precondition(audioDelayed?.rowValue == "Phone catching up" && audioDelayed?.alert == false, "a growing upload queue reads as catching up, not an alert")
+        precondition(MeetingAudioWatch(.object(["sessionId": .string("m1"), "state": .string("delayed")]))?.alert == false
+            && MeetingAudioWatch(.object(["sessionId": .string("m1"), "state": .string("stopped")]))?.alert == true,
+            "a row without the alert key alerts only for stopped and paused")
         let audioReaching = MeetingAudioWatch(.object(["sessionId": .string("m1"), "state": .string("reaching"), "alert": .bool(false), "silenceSeconds": .number(3)]))
         precondition(audioReaching?.rowValue == "Reaching this Mac" && audioReaching?.alert == false)
         precondition(MeetingAudioWatch(.object(["state": .string("stopped")])) == nil, "a row without a session id is dropped")
         var audioLedger = MeetingAudioAlertLedger()
-        precondition(audioLedger.alertsToPost([audioStopped!]).count == 1, "the first stopped check notifies")
-        precondition(audioLedger.alertsToPost([audioStopped!]).isEmpty, "the same drop notifies once")
-        precondition(audioLedger.alertsToPost([audioPaused!]).count == 1, "a change to paused notifies")
-        precondition(audioLedger.alertsToPost([audioReaching!]).isEmpty, "audio reaching the Mac again posts nothing")
-        precondition(audioLedger.alertsToPost([audioStopped!]).count == 1, "a later drop in the same meeting notifies again")
-        precondition(audioLedger.alertsToPost([]).isEmpty && audioLedger.notified.isEmpty, "a meeting that is no longer live is forgotten")
+        precondition(audioLedger.update([audioStopped!]).post.count == 1, "the first stopped check notifies")
+        precondition(audioLedger.update([audioStopped!]).post.isEmpty, "the same drop notifies once")
+        precondition(audioLedger.update([audioPaused!]).post.count == 1, "a change to paused notifies")
+        let audioBack = audioLedger.update([audioReaching!])
+        precondition(audioBack.post.isEmpty && audioBack.resolved == ["m1"], "audio reaching the Mac again posts nothing and takes the notification down")
+        precondition(audioLedger.update([audioReaching!]).resolved.isEmpty, "a meeting with nothing delivered has nothing to take down")
+        precondition(audioLedger.update([audioStopped!]).post.count == 1, "a later drop in the same meeting notifies again")
+        precondition(audioLedger.update([]).post.isEmpty && audioLedger.notified.isEmpty, "a meeting that is no longer live is forgotten")
         var audioRearm = MeetingAudioAlertLedger()
-        precondition(audioRearm.alertsToPost([audioStopped!]).count == 1
-            && audioRearm.alertsToPost([audioReaching!]).isEmpty
-            && audioRearm.alertsToPost([audioStopped!]).count == 1,
+        precondition(audioRearm.update([audioStopped!]).post.count == 1
+            && audioRearm.update([audioReaching!]).post.isEmpty
+            && audioRearm.update([audioStopped!]).post.count == 1,
             "a drop, audio reaching the Mac again, then the same kind of drop notifies twice")
-        let audioQuiet = MeetingAudioWatch(.object(["sessionId": .string("m2"), "state": .string("phone_quiet"), "alert": .bool(false), "silenceSeconds": .number(200)]))
-        precondition(audioLedger.alertsToPost([audioQuiet!]).isEmpty && audioQuiet?.rowValue == "No word from phone 3 min", "a quiet phone never notifies")
+        let audioQuiet = MeetingAudioWatch(.object(["sessionId": .string("m1"), "state": .string("phone_quiet"), "alert": .bool(false), "silenceSeconds": .number(200)]))
+        var audioGap = MeetingAudioAlertLedger()
+        precondition(audioGap.update([audioStopped!]).post.count == 1
+            && audioGap.update([audioQuiet!]) == MeetingAudioAlertUpdate()
+            && audioGap.update([audioDelayed!]) == MeetingAudioAlertUpdate()
+            && audioGap.update([audioStopped!]).post.isEmpty,
+            "a locked phone's heartbeat gap or a catch-up in the middle of one drop never notifies twice")
+        precondition(audioLedger.update([audioQuiet!]).post.isEmpty && audioQuiet?.rowValue == "No word from phone 3 min", "a quiet phone never notifies")
         precondition(MeetingAudioWatch.minutes(90) == "2 min" && MeetingAudioWatch.minutes(89) == "1 min" && MeetingAudioWatch.minutes(10) == "1 min",
             "minutes round to the nearest minute and never read 0")
         print("COS Control: meeting audio watch rows and one notification per drop passed")

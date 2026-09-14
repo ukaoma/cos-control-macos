@@ -49,21 +49,47 @@ private enum MediaFetchError: LocalizedError {
 }
 
 /// 0.5.227. macOS notifications for meeting audio that stops reaching this Mac.
+/// 0.5.228: every permission answer and posting error is logged (`log show --process "COS Control"`),
+/// and the center is created on first use, so a model built outside an app bundle never touches it.
 final class MeetingAudioNotifier: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
-    private let center = UNUserNotificationCenter.current()
-
-    /// Asked once at launch, so the permission prompt appears before the first drop needs it.
-    func requestAuthorization() {
+    private lazy var center: UNUserNotificationCenter = {
+        let center = UNUserNotificationCenter.current()
         center.delegate = self
-        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        return center
+    }()
+
+    /// Asked at launch so the prompt appears before the first drop needs it, and again while macOS
+    /// has no answer on record: the first 0.5.227 launch on 2026-09-14 got an error back.
+    func requestAuthorization() {
+        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+            NSLog("COSControl meeting-audio authorization granted=%ld error=%@", granted ? 1 : 0, error.map { String(describing: $0) } ?? "none")
+        }
+    }
+
+    /// Whether macOS will show COS Control's alerts: the authorization, and whether alerts are switched on.
+    func alertsAllowed() async -> (authorization: UNAuthorizationStatus, alertsOn: Bool) {
+        let settings = await center.notificationSettings()
+        return (settings.authorizationStatus, settings.alertSetting == .enabled)
     }
 
     func post(_ watch: MeetingAudioWatch) {
         let content = UNMutableNotificationContent()
         content.title = watch.notificationTitle
+        if let subtitle = watch.notificationSubtitle { content.subtitle = subtitle }
         content.body = watch.notificationBody
         content.sound = .default
-        center.add(UNNotificationRequest(identifier: "meeting-audio-\(watch.sessionId)", content: content, trigger: nil)) { _ in }
+        let identifier = "meeting-audio-\(watch.sessionId)"
+        let state = watch.state
+        let silence = watch.silenceSeconds
+        center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil)) { error in
+            NSLog("COSControl meeting-audio post %@ state=%@ silence=%ld error=%@", identifier, state, silence, error.map { String(describing: $0) } ?? "none")
+        }
+    }
+
+    /// Audio reached this Mac again: take the out-of-date notification out of Notification Center.
+    func removeDelivered(sessionIds: [String]) {
+        guard !sessionIds.isEmpty else { return }
+        center.removeDeliveredNotifications(withIdentifiers: sessionIds.map { "meeting-audio-\($0)" })
     }
 
     /// COS Control is a menu-bar app: show the banner even while its panel is open.
@@ -339,6 +365,10 @@ final class ControllerModel: ObservableObject {
     private var sessionSearchTask: Task<Void, Never>?
     private var petPollInFlight = false
     private var meetingAudioLedger = MeetingAudioAlertLedger()
+    private var meetingAudioGeneration = 0
+    private var meetingAudioAskedAgainAt: Date?
+    /// 0.5.228. macOS is not showing COS Control's alerts: denied, or alerts switched off.
+    @Published var meetingAlertsOff = false
     private let meetingAudioNotifier = MeetingAudioNotifier()
     private var mediaPreviewTask: Task<Void, Never>?
     private var thumbnailTasks: [String: Task<Void, Never>] = [:]
@@ -531,6 +561,8 @@ final class ControllerModel: ObservableObject {
             await loadActivitySignals(force: !quiet)
         } catch {
             status.running = false
+            meetingAudioGeneration += 1
+            meetingAudio = []
             if !quiet { self.error = error.localizedDescription }
         }
     }
@@ -1814,23 +1846,56 @@ final class ControllerModel: ObservableObject {
         }
     }
 
-    /// 0.5.227. Is live meeting audio still reaching this Mac? Runs on every status tick and
-    /// notifies once per drop; a helper that cannot answer keeps the last rows and never invents an alert.
+    /// 0.5.227. Is live meeting audio still reaching this Mac? Runs after each successful status
+    /// refresh and notifies once per drop. 0.5.228: a failed check clears its rows instead of leaving a
+    /// stale "Reaching this Mac", a check that finishes after a newer one is ignored, and the panel
+    /// says when macOS is not showing COS Control's alerts.
     func loadMeetingAudioWatch() async {
+        meetingAudioGeneration += 1
+        let generation = meetingAudioGeneration
         guard status.running else {
             meetingAudio = []
             return
         }
         do {
             let response = try await helper.run(["meeting-audio-watch"], timeout: 20)
+            guard generation == meetingAudioGeneration else { return }
             let watches = (response.details["sessions"]?.array ?? []).compactMap(MeetingAudioWatch.init)
             meetingAudio = watches
-            for watch in meetingAudioLedger.alertsToPost(watches) {
+            let update = meetingAudioLedger.update(watches)
+            for watch in update.post {
                 meetingAudioNotifier.post(watch)
             }
+            meetingAudioNotifier.removeDelivered(sessionIds: update.resolved)
         } catch {
+            guard generation == meetingAudioGeneration else { return }
+            NSLog("COSControl meeting-audio check failed: %@", String(describing: error))
+            meetingAudio = []
             return
         }
+        await loadMeetingAlertPermission()
+    }
+
+    /// 0.5.228. Checked only while a meeting is live. A Mac with no answer on record is asked again at
+    /// most every ten minutes; denied, or alerts switched off, shows as a panel row.
+    private func loadMeetingAlertPermission() async {
+        guard !meetingAudio.isEmpty else { return }
+        let allowed = await meetingAudioNotifier.alertsAllowed()
+        if allowed.authorization == .notDetermined, meetingAudioAskedAgainAt.map({ Date().timeIntervalSince($0) >= 600 }) ?? true {
+            meetingAudioAskedAgainAt = Date()
+            meetingAudioNotifier.requestAuthorization()
+        }
+        let off = allowed.authorization == .denied || (allowed.authorization == .authorized && !allowed.alertsOn)
+        if off != meetingAlertsOff {
+            NSLog("COSControl meeting-audio alerts %@ authorization=%ld alertsOn=%ld", off ? "off" : "on", allowed.authorization.rawValue, allowed.alertsOn ? 1 : 0)
+            meetingAlertsOff = off
+        }
+    }
+
+    func openNotificationSettings() {
+        let id = Bundle.main.bundleIdentifier ?? "com.gotcos.control"
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     func hydrateClaudeSessionsFromCache() {

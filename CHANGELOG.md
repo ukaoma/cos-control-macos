@@ -1,3 +1,16 @@
+## 0.5.228 (build 266)
+
+The meeting audio alert fires only when the phone is still running and its audio is not.
+
+- An alert now needs a phone heartbeat that arrived at least 30 seconds after the last audio chunk. A phone that goes quiet on both channels at once (relaunched, offline, or recording without the Mac) reads No word from phone and never notifies. Replayed over the 29 G2 meetings with heartbeats from 2026-09-10 to 09-14, 0.5.227's rules posted 17 notifications; 0.5.228's post 3, the two phone-lock drops and one storage pause, at the same moments.
+- A phone whose upload queue keeps growing is still recording. That meeting reads Phone catching up and does not notify.
+- A heartbeat counts as recent for 3 minutes, matching the server, so a locked phone's paused timers no longer turn a drop into No word from phone halfway through. A meeting leaves the Meeting audio rows after 30 minutes with neither audio nor a heartbeat, when Retained captures lists it, and within a minute of the phone's Stop.
+- Pause notifications name the reason: a storage limit, a storage error, or a plain pause. When two meetings are live, each row and notification shows its start time.
+- When audio reaches the Mac again, its notification is removed from Notification Center.
+- During a live meeting the panel shows Meeting alerts: Off for COS Control, with a Notification settings button, when macOS is not showing COS Control's alerts. COS Control asks again while macOS has no answer on record. Permission answers and posting errors are logged (`log show --process "COS Control"`).
+- A failed check clears the Meeting audio rows instead of leaving the last ones on screen, and a check that finishes after a newer one is ignored.
+- One notification per drop holds while COS Control stays open; relaunching mid-drop notifies again. The alert shows on this Mac only, and a Focus that does not allow COS Control holds it in Notification Center.
+
 ## 0.5.227 (build 265)
 
 COS Control tells you when meeting audio stops reaching this Mac.
