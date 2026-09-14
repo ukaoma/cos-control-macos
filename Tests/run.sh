@@ -40,6 +40,9 @@ if count < 440:
     sys.exit(f"helper self-test ran only {count} checks; expected at least 440 (445 at 0.5.190)")
 ' "$SELF_TEST"
 
+python3 "$ROOT/Tests/HeldNamingTransport.py" "$TMP/cos-control-helper"
+python3 "$ROOT/Tests/HeldNamingGuardMutations.py"
+
 # THE APP ITSELF MUST COMPILE.
 #
 # Until 0.5.44 this suite built the helper and Models.swift and then only grepped
@@ -4616,9 +4619,9 @@ if 'Button("Add to \\(name)")' not in activity or "await model.nameHeld(group.me
     fail("a suggested group must offer one-click Add to <name>")
 if "if rows > Self.heldGroupInlineRowLimit {" not in activity or ".frame(minHeight: Self.heldGroupListMinHeight, maxHeight: .infinity)" not in activity:
     fail("the grouped list must be capped and scroll in place inside a flexible frame with a floor (2026-08-26 regression, 0.5.222 layout)")
-if 'payload: ["name": name, "members": members, "confirm": true]' not in helper or 'payload: ["members": members, "confirm": true]' not in helper:
-    fail("both held-group mutations must pass confirm to a server that fails closed")
-if 'static let heldGroupsNeeds = "6.45.4"' not in helper \
+if 'payload["confirm"] = true' not in helper or 'payload: ["members": members, "confirm": true]' not in helper:
+    fail("Apply and discard must pass confirm to a server that fails closed")
+if 'static let heldGroupsNeeds = "6.46.0"' not in helper \
    or 'emit(ok: true, message: Self.heldGroupsUpdateMessage("group held voices")' not in helper \
    or 'throw HelperError.message(Self.heldGroupsUpdateMessage("name held voices by group"))' not in helper:
     fail("a held-groups 404 must name the route's own requirement, in both places")
@@ -4661,7 +4664,7 @@ if "struct HeldVoiceGroup" not in models or 'suggestionTier = suggestion?["tier"
     fail("HeldVoiceGroup must parse the server's suggestion")
 if 'suggestionAgreeing = suggestion?["agreeing"]?.int ?? 0' not in models or "of \\(group.suggestionOf) samples agree" not in activity:
     fail("a suggestion row must say how many of the profile's samples agree")
-if '"voice-held-enroll", "--name", trimmed, "--members", Self.heldMembersJSON(members)' not in controller:
+if '"voice-held-preview", "--name", trimmed, "--members", Self.heldMembersJSON(members)' not in controller:
     fail("nameHeld must send the member list as JSON to the helper")
 if "await loadHeldGroups()" not in controller:
     fail("loadExtAudio must refresh the grouped view alongside the sessions")

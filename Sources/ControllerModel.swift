@@ -200,6 +200,15 @@ final class ControllerModel: ObservableObject {
     @Published var heldGroupsSpeakerModel = true
     /// Bumped after every naming or discard so the panel drops its cursors and
     /// armed confirmations, which would otherwise point at samples that are gone.
+    @Published var heldNamingAvailable = false
+    @Published var heldNamingPreview: HeldNamingReceipt?
+    @Published var heldNamingResult: HeldNamingReceipt?
+    @Published var heldNamingBatches: [HeldNamingBatch] = []
+    @Published var heldNamingHistoryError: String?
+    @Published var heldNamingOwnerAck = false
+    @Published var heldNamingListened = false
+    @Published var heldNamingShowReview = false
+    private var heldNamingMembers: [HeldSampleRef] = []
     @Published var heldGroupsGeneration = 0
     private var heldGroupsReloadRequested = false
     /// 0.5.222 — a refresh asked for while the directory is loading is queued, not
@@ -5440,8 +5449,12 @@ final class ControllerModel: ObservableObject {
             heldGroupsEmbedded = response.details["embedded"]?.int ?? 0
             heldGroupsUnusable = response.details["unusable"]?.int ?? 0
             heldGroupsSpeakerModel = response.details["speakerModel"]?.bool ?? true
+            heldNamingAvailable = response.details["namingAvailable"]?.bool ?? false
+            if heldNamingAvailable { await loadHeldNamingBatches() }
+            else { heldNamingBatches = []; heldNamingPreview = nil; heldNamingShowReview = false }
         } catch {
             heldGroupsState = "error"
+            heldNamingAvailable = false
             heldGroups = []
             heldLoose = []
             heldGroupsPending = 0
@@ -5454,32 +5467,134 @@ final class ControllerModel: ObservableObject {
         }
     }
 
-    /// Name held samples as ONE person. A name that already has a profile is
-    /// appended to — that is how a voice that missed in a new room heals. The
-    /// server re-checks that the set is one voice and writes only that core.
+    /// Every Add/Name starts a read-only preview, including a high-tier suggestion.
     func nameHeld(_ members: [HeldSampleRef], as name: String) async {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count >= 2 else {
-            addVoiceResult = "A name needs at least two characters."
-            return
-        }
+        guard heldNamingAvailable else { addVoiceResult = "Update the COS server to 6.46.0 or newer to preview and apply meeting labels."; return }
+        guard trimmed.count >= 2 else { addVoiceResult = "A name needs at least two characters."; return }
         guard !members.isEmpty, !addVoiceBusy else { return }
         addVoiceBusy = true
         addVoiceResult = nil
+        heldNamingPreview = nil
+        heldNamingMembers = members
+        heldNamingOwnerAck = false
+        heldNamingListened = false
         defer { addVoiceBusy = false }
         do {
-            let response = try await helper.run([
-                "voice-held-enroll", "--name", trimmed, "--members", Self.heldMembersJSON(members),
-            ])
+            let response = try await helper.run(["voice-held-preview", "--name", trimmed, "--members", Self.heldMembersJSON(members)])
+            let receipt = HeldNamingReceipt(response.details)
             addVoiceResult = response.message
-            namingHeldGroup = nil
-            heldGroupsGeneration += 1
-            stopPlayback()
-            await loadExtAudio()
-            await loadVoiceDirectory(refresh: true)
+            if receipt.httpStatus == 200 && receipt.kind == "preview" {
+                heldNamingPreview = receipt
+                heldNamingShowReview = true
+            }
+        } catch { addVoiceResult = error.localizedDescription }
+    }
+
+    var heldNamingCanApply: Bool {
+        guard heldNamingAvailable, !addVoiceBusy, let preview = heldNamingPreview, preview.canApply else { return false }
+        return preview.canApply(ownerAcknowledged: heldNamingOwnerAck, listened: heldNamingListened)
+    }
+
+    func applyHeldNaming() async {
+        if let preview = heldNamingPreview, preview.expiresAt.map({ $0 <= Date() }) == true {
+            addVoiceResult = "The preview expired. Preview this naming again."
+            cancelHeldNamingPreview()
+            return
+        }
+        guard heldNamingCanApply, let preview = heldNamingPreview, let hash = preview.previewHash else { return }
+        addVoiceBusy = true
+        defer { addVoiceBusy = false }
+        var args = ["voice-held-apply", "--name", preview.speaker, "--members", Self.heldMembersJSON(heldNamingMembers),
+                    "--preview-hash", hash, "--confirm"]
+        if heldNamingOwnerAck { args.append("--owner-ack") }
+        if heldNamingListened { args.append("--listened") }
+        do {
+            let response = try await helper.run(args)
+            let receipt = HeldNamingReceipt(response.details)
+            addVoiceResult = response.message
+            if receipt.kind == "applied" {
+                heldNamingResult = receipt
+                heldNamingPreview = nil
+                heldNamingShowReview = false
+                namingHeldGroup = nil
+                heldGroupsGeneration += 1
+                stopPlayback()
+                await loadExtAudio()
+                await loadVoiceDirectory(refresh: true)
+            } else {
+                // A changed hash, sync lock or owner check never leaves a stale Apply armed.
+                heldNamingPreview = nil
+                heldNamingShowReview = false
+                heldNamingResult = receipt
+            }
         } catch {
             addVoiceResult = error.localizedDescription
+            heldNamingPreview = nil
+            heldNamingShowReview = false
+            await loadHeldNamingBatches()
         }
+    }
+
+    func cancelHeldNamingPreview() {
+        guard !addVoiceBusy else { return }
+        heldNamingPreview = nil
+        heldNamingShowReview = false
+        heldNamingOwnerAck = false
+        heldNamingListened = false
+        stopPlayback()
+    }
+
+    func loadHeldNamingBatches() async {
+        guard heldNamingAvailable else { return }
+        do {
+            let response = try await helper.run(["voice-held-batches"])
+            heldNamingBatches = (response.details["batches"]?.array ?? []).compactMap(HeldNamingBatch.init)
+            heldNamingHistoryError = nil
+        } catch { heldNamingHistoryError = error.localizedDescription }
+    }
+
+    /// Called only after the user's explicit Resume action; the server returns a preview.
+    func resumeHeldNaming(_ batch: HeldNamingBatch) async {
+        guard heldNamingAvailable, !addVoiceBusy else { return }
+        addVoiceBusy = true
+        defer { addVoiceBusy = false }
+        do {
+            let response = try await helper.run(["voice-held-resume", "--batch-id", batch.batchId, "--confirm"])
+            addVoiceResult = response.message
+            let receipt = HeldNamingReceipt(response.details)
+            if receipt.httpStatus == 200 && receipt.kind == "preview" {
+                heldNamingMembers = receipt.members
+                heldNamingOwnerAck = false
+                heldNamingListened = false
+                heldNamingPreview = receipt
+                heldNamingShowReview = true
+            } else { heldNamingResult = receipt }
+        } catch { addVoiceResult = error.localizedDescription }
+    }
+
+    /// Undo relies on the persisted batch receipt, never on still-held WAVs.
+    func undoHeldNaming(_ handle: String) async {
+        guard heldNamingAvailable, !addVoiceBusy else { return }
+        addVoiceBusy = true
+        defer { addVoiceBusy = false }
+        do {
+            let response = try await helper.run(["voice-held-undo", "--batch-id", handle, "--confirm"])
+            addVoiceResult = response.message
+            heldNamingResult = HeldNamingReceipt(response.details)
+            heldNamingPreview = nil
+            stopPlayback()
+            await loadHeldNamingBatches()
+            await loadVoiceDirectory(refresh: true)
+        } catch { addVoiceResult = error.localizedDescription }
+    }
+
+    func playHeldNamingMatch(_ triple: HeldNamingPlayback) {
+        // The route takes RAW chunkIndex. `position` proves the mapping exists;
+        // sending it as the WAV index plays chunk 3 when the preview meant chunk 7.
+        play(key: "naming:\(triple.id)", voice: "held-naming-preview",
+             args: ["review-audio", "--session", triple.sessionId, "--chunk", String(triple.chunkIndex)],
+             missing: "Audio expired, vectors only.")
     }
 
     /// Throw held samples out unnamed — the random artifacts.

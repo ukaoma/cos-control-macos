@@ -4259,6 +4259,48 @@ struct ModelsContract {
             "createdAt": .string("2026-08-24T13:01:38.348Z"),
         ]) == nil, "an unknown kind/mime must still be refused")
 
+        // Slice 1: 239 independently addressed loose rows, including unicode names.
+        let looseFixture: [HeldSampleRef] = (0..<239).compactMap { index in
+            HeldSampleRef(.object(["sessionId": .string("meeting_1"), "chunkIndex": .number(Double(index)),
+                "suggestion": .object(["name": .string("Brigitta Pólya"), "similarity": .number(0.68), "ownerCaution": .bool(index == 7)])]))
+        }
+        precondition(looseFixture.count == 239 && Set(looseFixture.map(\.id)).count == 239)
+        precondition(looseFixture[7].suggestion?.name == "Brigitta Pólya" && looseFixture[7].suggestion?.ownerCaution == true)
+        precondition(looseFixture[7] == HeldSampleRef(sessionId: "meeting_1", chunkIndex: 7), "a score refresh preserves sample identity")
+        let triple: JSONValue = .object(["sessionId": .string("meeting_1"), "chunkIndex": .number(7), "position": .number(3)])
+        precondition(HeldNamingPlayback(triple)?.chunkIndex == 7 && HeldNamingPlayback(triple)?.position == 3)
+        precondition(HeldNamingPlayback(.object(["sessionId": .string("meeting_1"), "chunkIndex": .number(7), "position": .null])) == nil,
+                     "null raw mapping must suppress Play")
+        var previewFixture: [String: JSONValue] = ["kind": .string("preview"), "speaker": .string("Brigitta Pólya"),
+            "previewHash": .string(String(repeating: "a", count: 64)), "expiresAt": .number(Date().addingTimeInterval(900).timeIntervalSince1970 * 1000),
+            "owner": .bool(true), "requiresListening": .bool(true), "members": .array([.object(["sessionId": .string("meeting_1"), "chunkIndex": .number(7), "status": .string("no_transcript_position")])]),
+            "meetings": .array([.object(["sessionId": .string("meeting_1"), "status": .string("ready"), "playback": .array([triple]), "namedChunks": .array([.number(3)]), "widerChunks": .array([.number(5), .number(6)]), "copies": .array([.object(["copy": .string("operations"), "status": .string("blocked"), "error": .string("read-only")])])])])]
+        let naming = HeldNamingReceipt(previewFixture)
+        precondition(naming.canApply && naming.owner && naming.requiresListening && naming.noTranscriptCount == 1)
+        precondition(!naming.canApply(ownerAcknowledged: false, listened: true), "owner acknowledgment is mandatory")
+        precondition(!naming.canApply(ownerAcknowledged: true, listened: false), "high-count listening is mandatory")
+        precondition(naming.canApply(ownerAcknowledged: true, listened: true))
+        precondition(naming.labelled == 3 && naming.members[0].chunkIndex == 7)
+        precondition(naming.meetings[0].playback[0].position == 3 && naming.meetings[0].copySummaries[0].contains("read-only"))
+        previewFixture["expiresAt"] = .number(1)
+        precondition(!HeldNamingReceipt(previewFixture).canApply, "expired preview cannot arm Apply")
+        previewFixture["expiresAt"] = .number(Date().addingTimeInterval(900).timeIntervalSince1970 * 1000)
+        previewFixture["httpStatus"] = .number(409)
+        precondition(!HeldNamingReceipt(previewFixture).canApply, "refused response cannot arm Apply")
+        let failedCopy = HeldNamingMeeting(.object(["sessionId": .string("meeting_1"), "status": .string("failed"),
+            "copies": .array([.object(["copy": .string("local"), "correctionRevision": .number(1)])]),
+            "receipts": .array([.object(["copy": .string("local"), "status": .string("applied")]), .object(["copy": .string("operations"), "status": .string("failed"), "error": .string("read-only")])])]))
+        precondition(failedCopy?.copySummaries == ["local: applied", "operations: failed — read-only"], "receipt outcomes must win over preview copy snapshots")
+        var blockedFixture = previewFixture
+        blockedFixture["httpStatus"] = .number(200)
+        blockedFixture["members"] = .array([.object(["sessionId": .string("meeting_1"), "chunkIndex": .number(7), "status": .string("blocked")])])
+        precondition(!HeldNamingReceipt(blockedFixture).canApply, "zero eligible samples must disable Apply")
+        let undoReceipt = HeldNamingReceipt(["kind": .string("applied"), "batchId": .string("batch-1"), "undoHandle": .string("batch-1"), "deleted": .number(239)])
+        precondition(undoReceipt.deleted == 239 && undoReceipt.undoHandle == "batch-1", "undo survives deletion of every held sample")
+        let interrupted = HeldNamingBatch(.object(["batchId": .string("batch-2"), "speaker": .string("Brigitta Pólya"), "status": .string("interrupted")]))
+        precondition(interrupted?.needsReview == true)
+        print("COS Control: held naming 239-row, playback, preview, partial-copy and undo contracts passed")
+
         print("COS Control: Swift attachment parsing and owned-image decoding passed")
     }
 }

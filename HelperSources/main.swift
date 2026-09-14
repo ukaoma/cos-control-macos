@@ -567,6 +567,11 @@ final class COSControlHelper {
         case "voice-enroll-ext": try emitVoiceEnrollExt(args: args)
         case "voice-held-groups": try emitVoiceHeldGroups()
         case "voice-held-enroll": try emitVoiceHeldEnroll(args: args)
+        case "voice-held-preview": try emitVoiceHeldEnroll(args: args)
+        case "voice-held-apply": try emitVoiceHeldEnroll(args: args)
+        case "voice-held-undo": try emitVoiceHeldBatch(args: args, undo: true)
+        case "voice-held-resume": try emitVoiceHeldBatch(args: args, undo: false)
+        case "voice-held-batches": try emitVoiceHeldBatches()
         case "voice-held-discard": try emitVoiceHeldDiscard(args: args)
         case "meeting-relabel": try emitMeetingRelabel(args: args)
         case "meeting-deattribute": try emitMeetingDeattribute(args: args)
@@ -12811,13 +12816,15 @@ final class COSControlHelper {
             "pending": pending,
             "unusable": body["unusable"] as? Int ?? 0,
             "speakerModel": (body["speakerModel"] as? Bool) ?? true,
+            "namingAvailable": Self.heldNamingSupported(body),
+            "namingCapabilities": body["namingCapabilities"] ?? [:],
         ])
     }
 
     /// The first server that groups held voices. A 404 message names the
     /// route's OWN requirement, never a blanket version (Tests/run.sh records
     /// why: a blanket 6.44.0 once told a user on 6.44.1 to update).
-    static let heldGroupsNeeds = "6.45.4"
+    static let heldGroupsNeeds = "6.46.0"
     static func heldGroupsUpdateMessage(_ what: String) -> String {
         "Update the COS server to \(heldGroupsNeeds) or newer to \(what)."
     }
@@ -12877,28 +12884,98 @@ final class COSControlHelper {
         return body
     }
 
-    /// POST /api/voice/held-groups/enroll — name held samples as ONE person. The
-    /// server re-clusters the set and writes only the coherent core; an existing
-    /// name is appended to, and only the core's audio is consumed.
+    /// Naming is a separate capability from grouping. Probe before EVERY write:
+    /// an older server's enroll route would otherwise apply a preview request.
+    static func heldNamingSupported(_ body: [String: Any]) -> Bool {
+        guard let caps = body["namingCapabilities"] as? [String: Any] else { return false }
+        return caps["version"] as? Int == 1 && caps["preview"] as? Bool == true
+            && caps["apply"] as? Bool == true && caps["undo"] as? Bool == true
+    }
+
+    private func requireHeldNaming() throws {
+        let token = try speakerReviewToken()
+        guard let response = request("/api/voice/held-groups", token: token, timeout: 30) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        guard response.status == 200, let body = response.body, Self.heldNamingSupported(body) else {
+            throw HelperError.message(Self.heldGroupsUpdateMessage("preview, apply and undo meeting labels"))
+        }
+    }
+
+    static func heldNamingPayload(name: String, members: [[String: Any]], hash: String?, apply: Bool,
+                                  confirmed: Bool, ownerAck: Bool, listened: Bool) throws -> [String: Any] {
+        var payload: [String: Any] = ["name": name, "members": members]
+        if apply {
+            guard confirmed, let hash, hash.count == 64, hash.allSatisfy({ $0.isHexDigit }) else {
+                throw HelperError.message("Apply requires --confirm and a valid --preview-hash. Preview this naming again.")
+            }
+            payload["previewHash"] = hash
+            payload["confirm"] = true
+            if ownerAck { payload["ownerAck"] = true }
+            if listened { payload["listened"] = true }
+        }
+        // A preview NEVER carries confirm, even if a caller supplies --confirm.
+        return payload
+    }
+
+    /// Preserve the whole receipt, including playback triples and per-copy failures.
+    /// 400/409/422/503 are review states, not transport errors; never erase their body.
+    static func heldNamingDetails(status: Int, body: [String: Any]) -> [String: Any] {
+        var details = body
+        details["httpStatus"] = status
+        details["state"] = status == 200 ? ((body["kind"] as? String) ?? "unknown") : "refused"
+        return details
+    }
+
+    private func heldNamingRequest(_ path: String, payload: [String: Any]) throws {
+        try requireHeldNaming()
+        let token = try speakerReviewToken()
+        let json = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
+        guard let response = request(path, method: "POST", token: token, body: json, timeout: 120) else {
+            throw HelperError.message("Server stopped. Refresh to review any interrupted naming before retrying.")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if response.status == 404, response.body?["reason"] == nil {
+            throw HelperError.message(Self.heldGroupsUpdateMessage("preview, apply and undo meeting labels"))
+        }
+        guard let body = response.body else { throw HelperError.message("Server returned no naming receipt") }
+        guard [200, 400, 409, 422, 503].contains(response.status) else {
+            throw HelperError.message((body["error"] as? String) ?? "Naming failed (\(response.status))")
+        }
+        let details = Self.heldNamingDetails(status: response.status, body: body)
+        emit(ok: true, message: (body["message"] as? String) ?? (body["error"] as? String)
+             ?? (response.status == 200 ? "Naming receipt ready" : "Naming refused (\(response.status))"), details: details)
+    }
+
     private func emitVoiceHeldEnroll(args: [String]) throws {
-        guard let name = option("--name", in: args), name.count >= 2 else {
+        guard let name = option("--name", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines), name.count >= 2 else {
             throw HelperError.message("--name is required (min 2 characters)")
         }
         let members = try Self.heldMembersPayload(option("--members", in: args))
-        // `confirm` is Control's own two-click gate (or the one-click "Add to X"
-        // for a high-confidence match) already having happened; the server fails
-        // closed without it, like every other destructive voice route.
-        let body = try postHeldGroups("/api/voice/held-groups/enroll", payload: ["name": name, "members": members, "confirm": true])
-        let enrolled = body["enrolled"] as? Int ?? 0
-        emit(ok: enrolled > 0, message: (body["message"] as? String) ?? "Enrolled \(name) from \(enrolled) sample(s)", details: [
-            "enrolled": enrolled,
-            "name": name,
-            "created": body["created"] as? Bool ?? false,
-            "coherent": body["coherent"] as? Int ?? 0,
-            "leftBehind": (body["leftBehind"] as? [[String: Any]]) ?? [],
-            "missing": (body["missing"] as? [[String: Any]]) ?? [],
-            "deleted": body["deleted"] as? Int ?? 0,
-        ])
+        let payload = try Self.heldNamingPayload(name: name, members: members,
+            hash: option("--preview-hash", in: args), apply: args.first == "voice-held-apply",
+            confirmed: args.contains("--confirm"), ownerAck: args.contains("--owner-ack"), listened: args.contains("--listened"))
+        try heldNamingRequest("/api/voice/held-groups/enroll", payload: payload)
+    }
+
+    private func emitVoiceHeldBatch(args: [String], undo: Bool) throws {
+        guard let batch = option("--batch-id", in: args), !batch.isEmpty, batch.count <= 128,
+              batch.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }), args.contains("--confirm") else {
+            throw HelperError.message("--batch-id and --confirm are required")
+        }
+        try heldNamingRequest(undo ? "/api/voice/held-groups/undo" : "/api/voice/held-groups/resume",
+                              payload: ["batchId": batch, "confirm": true])
+    }
+
+    private func emitVoiceHeldBatches() throws {
+        try requireHeldNaming()
+        let token = try speakerReviewToken()
+        guard let response = request("/api/voice/held-groups/batches", token: token, timeout: 30),
+              response.status == 200, let body = response.body else {
+            throw HelperError.message("Interrupted naming history could not be read. Refresh to retry.")
+        }
+        emit(ok: true, message: "Naming history ready", details: body)
     }
 
     /// POST /api/voice/held-groups/discard — throw held samples out unnamed.
@@ -14068,7 +14145,21 @@ final class COSControlHelper {
         try expect(Self.heldGroupsSummary(groups: 3, loose: 7, pending: 0) == "3 voices · 7 loose samples", "held-groups summary names voices and loose samples")
         try expect(Self.heldGroupsSummary(groups: 0, loose: 0, pending: 0) == "No unrecognized audio is being held.", "held-groups summary for an empty window")
         try expect(Self.heldGroupsSummary(groups: 0, loose: 0, pending: 12) == "12 still being read", "held-groups summary while decodes are pending")
-        try expect(Self.heldGroupsUpdateMessage("group held voices") == "Update the COS server to 6.45.4 or newer to group held voices.", "a held-groups 404 names the route's own requirement")
+        let heldCaps: [String: Any] = ["namingCapabilities": ["version": 1, "preview": true, "apply": true, "undo": true]]
+        try expect(Self.heldNamingSupported(heldCaps), "held naming explicit capabilities accepted")
+        try expect(!Self.heldNamingSupported([:]), "old grouping server cannot receive preview POST")
+        try expect(!Self.heldNamingSupported(["namingCapabilities": ["version": 1, "preview": true, "apply": true]]), "missing undo disables naming")
+        let heldPreview = try Self.heldNamingPayload(name: "Brigitta Pólya", members: [["sessionId": "meeting_1", "chunkIndex": 7]], hash: nil, apply: false, confirmed: true, ownerAck: true, listened: true)
+        try expect(heldPreview["confirm"] == nil && heldPreview["previewHash"] == nil, "preview strips confirmation; legacy enroll alias stays read-only")
+        try expect((try? Self.heldNamingPayload(name: "MU", members: [], hash: nil, apply: true, confirmed: true, ownerAck: false, listened: false)) == nil, "apply without preview hash refused before network")
+        try expect((try? Self.heldNamingPayload(name: "MU", members: [], hash: String(repeating: "a", count: 64), apply: true, confirmed: false, ownerAck: false, listened: false)) == nil, "apply requires explicit confirm")
+        let heldApply = try Self.heldNamingPayload(name: "MU", members: [], hash: String(repeating: "a", count: 64), apply: true, confirmed: true, ownerAck: true, listened: true)
+        try expect(heldApply["ownerAck"] as? Bool == true && heldApply["listened"] as? Bool == true && heldApply["confirm"] as? Bool == true, "owner and listen acknowledgments preserved")
+        for status in [200, 400, 409, 422, 503] {
+            let details = Self.heldNamingDetails(status: status, body: ["kind": "applied", "undoHandle": "batch-after-audio-delete", "meetings": [["sessionId": "m", "status": "failed", "playback": [["sessionId": "m", "chunkIndex": 7, "position": 3]]]]])
+            try expect(details["httpStatus"] as? Int == status && details["undoHandle"] as? String == "batch-after-audio-delete" && (details["meetings"] as? [[String: Any]])?.count == 1, "naming status \(status) preserves outcome and undo after audio deletion")
+        }
+        try expect(Self.heldGroupsUpdateMessage("group held voices") == "Update the COS server to 6.46.0 or newer to group held voices.", "a held-groups 404 names the route's own requirement")
         let sliced = sliceRecentMessages(fixture, limit: 30)
         try expect(sliced.count == 30, "recent-messages slice enforces ≤30")
         try expect((sliced.first?["no"] as? Int) == 35 && (sliced.last?["no"] as? Int) == 6, "recent-messages newest-first")

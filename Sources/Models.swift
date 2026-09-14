@@ -3912,24 +3912,149 @@ struct ExtAudioSession: Identifiable, Sendable, Hashable {
 }
 
 /// 0.5.219 — one held sample, addressed the way glasses-server 6.45.4 addresses it.
-struct HeldSampleRef: Sendable, Hashable {
+struct HeldVoiceSuggestion: Sendable, Hashable {
+    let name: String
+    let similarity: Double
+    let tier: String
+    let agreeing: Int
+    let ownerCaution: Bool
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let name = o["name"]?.string, !name.isEmpty else { return nil }
+        self.name = name
+        similarity = o["similarity"]?.double ?? 0
+        tier = o["tier"]?.string ?? "likely"
+        agreeing = o["agreeing"]?.int ?? 0
+        ownerCaution = o["ownerCaution"]?.bool ?? false
+    }
+}
+
+struct HeldSampleRef: Identifiable, Sendable, Hashable {
     let sessionId: String
     let chunkIndex: Int
+    let suggestion: HeldVoiceSuggestion?
+    var id: String { "\(sessionId)#\(chunkIndex)" }
 
     init(sessionId: String, chunkIndex: Int) {
         self.sessionId = sessionId
         self.chunkIndex = chunkIndex
+        suggestion = nil
     }
-
     init?(_ value: JSONValue?) {
         guard let o = value?.object,
               let sessionId = o["sessionId"]?.string, !sessionId.isEmpty,
               let chunkIndex = o["chunkIndex"]?.int, chunkIndex >= 0 else { return nil }
         self.sessionId = sessionId
         self.chunkIndex = chunkIndex
+        suggestion = HeldVoiceSuggestion(o["suggestion"])
     }
-
+    // Suggestion refreshes cannot change which sample a cursor or seed addresses.
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
     var payload: [String: Any] { ["sessionId": sessionId, "chunkIndex": chunkIndex] }
+}
+
+/// All three positions are required. A null mapping suppresses playback entirely.
+struct HeldNamingPlayback: Identifiable, Sendable {
+    let sessionId: String
+    let chunkIndex: Int
+    let position: Int
+    var id: String { "\(sessionId)#\(chunkIndex)#\(position)" }
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let session = o["sessionId"]?.string, !session.isEmpty,
+              let chunk = o["chunkIndex"]?.int, chunk >= 0,
+              let position = o["position"]?.int, position >= 0 else { return nil }
+        sessionId = session; chunkIndex = chunk; self.position = position
+    }
+}
+
+struct HeldNamingMeeting: Identifiable, Sendable {
+    let raw: [String: JSONValue]
+    let sessionId: String
+    let status: String
+    let error: String?
+    let named: [Int]
+    let wider: [Int]
+    let labelled: Int
+    let roomRisk: Bool
+    let labelsNewerThanGraph: Bool
+    let playback: [HeldNamingPlayback]
+    var id: String { sessionId }
+    var copySummaries: [String] {
+        (raw["receipts"]?.array ?? raw["copies"]?.array ?? []).compactMap { value in
+            guard let o = value.object, let copy = o["copy"]?.string else { return nil }
+            return "\(copy): \(o["status"]?.string ?? status)\(o["error"]?.string.map { " — \($0)" } ?? "")"
+        }
+    }
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let session = o["sessionId"]?.string, !session.isEmpty else { return nil }
+        raw = o; sessionId = session; status = o["status"]?.string ?? "unknown"
+        error = o["error"]?.string
+        named = (o["namedChunks"]?.array ?? []).compactMap { $0.int }
+        wider = (o["widerChunks"]?.array ?? []).compactMap { $0.int }
+        labelled = o["labelled"]?.int ?? (named.count + wider.count)
+        roomRisk = o["roomRisk"]?.bool ?? false
+        labelsNewerThanGraph = o["labelsNewerThanGraph"]?.bool ?? false
+        playback = (o["playback"]?.array ?? []).compactMap(HeldNamingPlayback.init)
+    }
+}
+
+struct HeldNamingReceipt: Identifiable, Sendable {
+    let raw: [String: JSONValue]
+    let kind: String
+    let speaker: String
+    let previewHash: String?
+    let expiresAt: Date?
+    let owner: Bool
+    let ownerWarning: String?
+    let requiresListening: Bool
+    let meetings: [HeldNamingMeeting]
+    let batchId: String?
+    let undoHandle: String?
+    let members: [HeldSampleRef]
+    let httpStatus: Int
+    var id: String { previewHash ?? batchId ?? kind }
+    var enrolled: Int { raw["enrolled"]?.int ?? 0 }
+    var deleted: Int { raw["deleted"]?.int ?? 0 }
+    var partial: Bool { raw["partial"]?.bool ?? false }
+    var noTranscriptCount: Int { (raw["members"]?.array ?? []).filter { $0.object?["status"]?.string == "no_transcript_position" }.count }
+    var eligibleSamples: Int { (raw["members"]?.array ?? []).filter { ["ready", "no_transcript_position"].contains($0.object?["status"]?.string ?? "") }.count }
+    var labelled: Int { meetings.filter { $0.status == "ready" || $0.status == "applied" }.reduce(0) { $0 + $1.labelled } }
+    var canApply: Bool { kind == "preview" && httpStatus == 200 && eligibleSamples > 0 && previewHash?.count == 64 && expiresAt.map { $0 > Date() } == true }
+    func canApply(ownerAcknowledged: Bool, listened: Bool) -> Bool {
+        canApply && (!owner || ownerAcknowledged) && (!requiresListening || listened)
+    }
+    init(_ raw: [String: JSONValue]) {
+        self.raw = raw; kind = raw["kind"]?.string ?? "unknown"
+        speaker = raw["speaker"]?.string ?? raw["name"]?.string ?? "Voice"
+        previewHash = raw["previewHash"]?.string
+        if let ms = raw["expiresAt"]?.double { expiresAt = Date(timeIntervalSince1970: ms / 1000) }
+        else if let iso = raw["expiresAt"]?.string {
+            let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            expiresAt = f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
+        } else { expiresAt = nil }
+        owner = raw["owner"]?.bool ?? false; ownerWarning = raw["ownerWarning"]?.string
+        requiresListening = raw["requiresListening"]?.bool ?? false
+        meetings = (raw["meetings"]?.array ?? []).compactMap(HeldNamingMeeting.init)
+        batchId = raw["batchId"]?.string; undoHandle = raw["undoHandle"]?.string
+        members = (raw["members"]?.array ?? []).compactMap(HeldSampleRef.init)
+        httpStatus = raw["httpStatus"]?.int ?? 200
+    }
+}
+
+struct HeldNamingBatch: Identifiable, Sendable {
+    let batchId: String
+    let speaker: String
+    let status: String
+    let undoHandle: String?
+    let meetings: [HeldNamingMeeting]
+    var id: String { batchId }
+    var needsReview: Bool { status == "interrupted" || status == "partial" }
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let batch = o["batchId"]?.string, !batch.isEmpty else { return nil }
+        batchId = batch; speaker = o["speaker"]?.string ?? "Voice"; status = o["status"]?.string ?? "unknown"
+        undoHandle = o["undoHandle"]?.string
+        meetings = (o["meetings"]?.array ?? []).compactMap(HeldNamingMeeting.init)
+    }
 }
 
 /// 0.5.219 — held samples that sound like ONE person, across every meeting in the
@@ -3953,6 +4078,7 @@ struct HeldVoiceGroup: Identifiable, Sendable, Hashable {
     /// vouches only with two or more, one of them from an anchored source.
     let suggestionAgreeing: Int
     let suggestionOf: Int
+    let ownerCaution: Bool
 
     init?(_ value: JSONValue?) {
         guard let o = value?.object, let id = o["id"]?.string, !id.isEmpty else { return nil }
@@ -3970,6 +4096,7 @@ struct HeldVoiceGroup: Identifiable, Sendable, Hashable {
         suggestionTier = suggestion?["tier"]?.string
         suggestionAgreeing = suggestion?["agreeing"]?.int ?? 0
         suggestionOf = suggestion?["of"]?.int ?? 0
+        ownerCaution = suggestion?["ownerCaution"]?.bool ?? false
     }
 
     /// Seed first, then the rest: the Listen control starts on the sample that

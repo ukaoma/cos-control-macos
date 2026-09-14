@@ -1,3 +1,15 @@
+## 0.5.223 (build 261)
+
+Local release preparation: helper, controller, and model work is verified. The UI items below describe the reviewed mock and remain pending layout approval and implementation.
+
+Name held voice samples with a preview of the meeting labels, then apply or undo.
+
+- Each loose sample has its own row and can show an existing voice suggestion with its score and owner-proximity caution. Long lists scroll in place, including a 239-row fixture.
+- Add to a person and Name open a read-only preview. The preview separates enrolled samples from transcript labels, shows each meeting and its named/wider matches, plays only a complete server-provided raw-audio mapping, and requires listening or owner acknowledgment when the server calls for it. Apply carries the preview hash and fails closed if the meeting changes.
+- Results retain per-meeting and per-copy outcomes. Undo restores this batch’s labels while keeping voice samples enrolled and deleted audio deleted. Interrupted naming is visible on view-open; Resume requests a fresh preview and Revert is explicit. Labels newer than the graph remain visible, and indexing copy says search catches up at up to 10 meetings per run.
+- Requires the server 6.46.0 naming capability for preview, Apply, and Undo. Older servers keep listening and discard; Control verifies the capability before every naming request so a preview cannot accidentally reach an older applying endpoint. The helper preserves 400, 409, 422, and 503 response bodies.
+- Validation includes helper self-tests, an isolated HTTP transport test, and 239-row / unicode / raw-index / expired-preview / undo-after-deletion model contracts. Release artifacts are prepared separately from publication.
+
 ## 0.5.222 (build 260)
 
 Speakers has three views, and the toolbar stays on screen.
