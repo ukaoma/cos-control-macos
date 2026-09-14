@@ -240,8 +240,9 @@ struct ActivityWindow: View {
     @State private var heldGroupCursor: [String: Int] = [:]
     @State private var heldGroupName = ""
     @State private var confirmingHeldDiscard: String?
-    /// A "likely" match is added on a second click; only a "high" one is one click.
-    @State private var confirmingHeldAdd: String?
+    @State private var heldNamingHistoryOpen = false
+    @State private var heldNamingResultOpen = false
+    @State private var heldNamingUndoHandle: String?
     @State private var voiceSearch = ""
     @State private var voiceSort: VoiceDirectorySort = .attention
     @State private var selectedContextID: String?
@@ -269,6 +270,14 @@ struct ActivityWindow: View {
     @State private var hoveredSection: ActivitySection?
     /// One indicator that travels between tabs instead of six that blink.
     @Namespace private var railIndicator
+
+    /// Fixture-only native render: uses the actual window tree without fetching live data.
+    static func heldSamplesCanary(model: ControllerModel) -> ActivityWindow {
+        var view = ActivityWindow(model: model)
+        view._section = State(initialValue: .speakers)
+        view._speakerSubview = State(initialValue: .samples)
+        return view
+    }
 
     private var selectedTurn: GlassesTurn? {
         guard let selectedTurnID else { return nil }
@@ -423,7 +432,43 @@ struct ActivityWindow: View {
         } message: {
             Text(model.error ?? "")
         }
-        .onExitCommand { goBack() }
+        // Inline, like the task detail: the Tests/run.sh overlay guard forbids sheet
+        // presentations in this view tree, and a refresh underneath cannot dismiss it.
+        .overlay {
+            if heldNamingOverlayOpen {
+                ZStack {
+                    Color.black.opacity(0.16).ignoresSafeArea()
+                        .onTapGesture { if !model.addVoiceBusy { closeHeldNamingOverlay() } }
+                    Group {
+                        if model.heldNamingShowReview {
+                            HeldNamingReviewSheet(model: model)
+                        } else if heldNamingResultOpen {
+                            HeldNamingResultSheet(model: model, onClose: { heldNamingResultOpen = false })
+                        } else {
+                            HeldNamingHistorySheet(model: model, onClose: { heldNamingHistoryOpen = false })
+                        }
+                    }
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(COSPalette.panel))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(COSPalette.line, lineWidth: 1))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .padding(24)
+                }
+            }
+        }
+        .cosConfirm(
+            "Restore this naming’s previous labels?",
+            isPresented: Binding(get: { heldNamingUndoHandle != nil }, set: { if !$0 { heldNamingUndoHandle = nil } }),
+            message: "Later naming is protected. Voice samples stay enrolled; deleted audio stays deleted.",
+            actions: [
+                // cosConfirm clears the binding before it runs an action, so the handle is
+                // captured when the actions are built, not read afterwards.
+                .destructive("Undo labels") { [handle = heldNamingUndoHandle] in
+                    if let handle { Task { await model.undoHeldNaming(handle) } }
+                },
+                .cancel("Keep labels"),
+            ]
+        )
+        .onExitCommand { if heldNamingOverlayOpen { closeHeldNamingOverlay() } else { goBack() } }
         .onAppear { applyLaunchSection() }
         .onChange(of: model.activityOpenSection) { _, _ in applyLaunchSection() }
         .onChange(of: model.activityOpenSessionID) { _, _ in applyLaunchSection() }
@@ -2168,6 +2213,12 @@ struct ActivityWindow: View {
             if let result = model.addVoiceResult {
                 addVoiceNotice(result)
             }
+            if model.heldNamingAvailable {
+                heldNamingStatusBar
+            } else if model.heldGroupsState != nil {
+                Text("Update the COS server to 6.46.0 or newer to preview, apply and undo meeting labels.")
+                    .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+            }
 
             // 0.5.219 — a server that groups held voices (6.45.4) gets the grouped
             // panel; an older one keeps the per-session rows below, unchanged.
@@ -2312,7 +2363,10 @@ struct ActivityWindow: View {
         }
         var parts: [String] = []
         if voices > 0 { parts.append("\(voices) voice\(voices == 1 ? "" : "s") the server is holding, grouped by who they sound like across meetings.") }
-        if loose > 0 { parts.append("\(loose) loose sample\(loose == 1 ? "" : "s") match no voice.") }
+        if loose > 0 {
+            let suggested = model.heldLoose.filter { $0.suggestion != nil }.count
+            parts.append("\(loose) loose sample\(loose == 1 ? "" : "s") to review individually\(suggested > 0 ? ", \(suggested) with a suggestion" : "").")
+        }
         if pending > 0 { parts.append("\(pending) still being read.") }
         if model.heldGroupsUnusable > 0 { parts.append("\(model.heldGroupsUnusable) could not be read and will expire with the window.") }
         // Naming needs the model on the server side; listening and discarding do not.
@@ -2322,20 +2376,21 @@ struct ActivityWindow: View {
 
     @ViewBuilder
     private var heldGroupsBody: some View {
-        let rows = model.heldGroups.count + (model.heldLoose.isEmpty ? 0 : 1)
+        let rows = model.heldGroups.count + model.heldLoose.count
         VStack(alignment: .leading, spacing: 10) {
             Text(heldGroupsLead)
                 .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
                 .fixedSize(horizontal: false, vertical: true)
-            // Above the list (0.5.222): a short window clips the bottom of the card first,
-            // and a high-tier Add to <name> is one click.
+            // The explanation stays above the scrolling rows, including an empty window after Apply.
             if rows > 0 {
-                Text("Naming a group adds its samples to that person and uses up the audio. Discarding throws the audio out.")
+                Text(model.heldNamingAvailable
+                     ? "Preview first. Apply adds voice samples, labels matching segments in their own meetings, and uses up the audio. Discarding throws the audio out."
+                     : "Listen to or discard held audio. Naming needs server 6.46.0 or newer.")
                     .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
             }
             if rows > Self.heldGroupInlineRowLimit {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 0) { heldGroupRows }
+                    LazyVStack(alignment: .leading, spacing: 0) { heldGroupRows }
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(minHeight: Self.heldGroupListMinHeight, maxHeight: .infinity)
@@ -2348,7 +2403,6 @@ struct ActivityWindow: View {
         .onChange(of: model.heldGroupsGeneration) { _, _ in
             heldGroupCursor = [:]
             confirmingHeldDiscard = nil
-            confirmingHeldAdd = nil
         }
     }
 
@@ -2358,9 +2412,9 @@ struct ActivityWindow: View {
             heldRowDivider
             heldGroupRow(group)
         }
-        if !model.heldLoose.isEmpty {
+        ForEach(model.heldLoose) { current in
             heldRowDivider
-            heldLooseRow
+            heldLooseRow(current)
         }
     }
 
@@ -2392,6 +2446,10 @@ struct ActivityWindow: View {
                     }
                     .lineLimit(1)
                 }
+                if group.ownerCaution {
+                    Text("Also close to the owner voice. Listen carefully.")
+                        .font(COSType.body(10.5)).foregroundStyle(COSPalette.accent)
+                }
                 if let note = model.playbackNote, note.voice == "heldgroup:\(group.id)" {
                     Text(note.text).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
                 }
@@ -2402,93 +2460,108 @@ struct ActivityWindow: View {
         .padding(.vertical, 12)
     }
 
-    /// The suggested person first, then Name and Discard. Writing a voice into
-    /// somebody's profile is the less reversible of the two actions here, so
-    /// only a "high" match (the bar the identifier itself enrols at) is one gold
-    /// click; a "likely" one arms, then asks.
+    /// Both suggestion tiers open the same read-only preview before Apply.
     @ViewBuilder
     private func heldGroupActions(_ group: HeldVoiceGroup) -> some View {
-        if let name = group.suggestionName, confirmingHeldAdd == group.id {
-            HStack(spacing: 8) {
-                Text("Add \(group.sampleCount) sample\(group.sampleCount == 1 ? "" : "s") to \(name)?")
-                    .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
-                Button("Confirm") {
-                    confirmingHeldAdd = nil
-                    Task { await model.nameHeld(group.members, as: name) }
-                }
-                .buttonStyle(COSPrimaryButtonStyle())
-                .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel)
-                Button("Cancel") { confirmingHeldAdd = nil }
-                    .buttonStyle(COSTextButtonStyle())
+        HStack(spacing: 8) {
+            if let name = group.suggestionName, model.namingHeldGroup != group.id, confirmingHeldDiscard != group.id {
+                Button("Add to \(name)") { Task { await model.nameHeld(group.members, as: name) } }
+                    .buttonStyle(COSPrimaryButtonStyle())
+                    .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel || !model.heldNamingAvailable)
             }
-        } else {
-            HStack(spacing: 8) {
-                if let name = group.suggestionName, model.namingHeldGroup != group.id, confirmingHeldDiscard != group.id {
-                    if group.suggestionTier == "high" {
-                        Button("Add to \(name)") { Task { await model.nameHeld(group.members, as: name) } }
-                            .buttonStyle(COSPrimaryButtonStyle())
-                            .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel)
-                    } else {
-                        Button("Add to \(name)?") { confirmingHeldAdd = group.id }
-                            .buttonStyle(COSQuietButtonStyle())
-                            .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel)
-                    }
-                }
-                heldActionRow(key: group.id, members: group.members, count: group.sampleCount)
-            }
+            heldActionRow(key: group.id, members: group.members, count: group.sampleCount)
         }
     }
 
-    /// The samples that cohere with nothing. Listen through them; the one under
-    /// the cursor can be named on its own (a real person in a one-off) or thrown
-    /// out; the whole set can go at once.
     @ViewBuilder
-    private var heldLooseRow: some View {
-        let loose = model.heldLoose
-        let cursor = min(max(heldGroupCursor["loose"] ?? 0, 0), loose.count - 1)
-        let current = loose[cursor]
+    private func heldLooseRow(_ current: HeldSampleRef) -> some View {
         HStack(alignment: .center, spacing: 14) {
-            heldMembersListenControl(key: "loose", members: loose, voice: "heldloose")
+            heldMembersListenControl(key: current.id, members: [current], voice: "heldloose:\(current.id)")
                 .frame(width: Self.heldListenColumnWidth, alignment: .leading)
             VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("\(loose.count) loose sample\(loose.count == 1 ? "" : "s")")
-                        .font(COSType.body(13, weight: .semibold))
-                    Text("MATCH NO VOICE")
-                        .font(COSType.mono(9.5)).tracking(0.6)
-                        .foregroundStyle(COSPalette.muted)
+                Text("Loose sample").font(COSType.body(13, weight: .semibold))
+                if let suggestion = current.suggestion {
+                    Text("Sounds like \(suggestion.name) · \(Int((suggestion.similarity * 100).rounded()))%")
+                        .font(COSType.body(11.5, weight: .medium)).foregroundStyle(COSPalette.accent)
+                    Text("\(suggestion.agreeing) voice samples agree")
+                        .font(COSType.mono(9.5)).foregroundStyle(COSPalette.muted)
+                    if suggestion.ownerCaution {
+                        Text("Also close to the owner voice. Listen carefully.")
+                            .font(COSType.body(10.5)).foregroundStyle(COSPalette.accent)
+                    }
+                } else {
+                    Text("No existing voice suggestion").font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
                 }
-                // Which clip the cursor is on, so naming or discarding it is not blind.
                 Text(Self.heldSampleLabel(current))
                     .font(COSType.mono(10)).foregroundStyle(COSPalette.muted)
-                if loose.count > 1 && model.namingHeldGroup == nil {
-                    if confirmingHeldDiscard == "loose-all" {
-                        HStack(spacing: 8) {
-                            Text("Discard all \(loose.count) loose samples?")
-                                .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
-                            Button("Discard all") {
-                                confirmingHeldDiscard = nil
-                                Task { await model.discardHeld(loose) }
-                            }
-                            .buttonStyle(COSQuietButtonStyle(tone: .destructive))
-                            .disabled(model.addVoiceBusy)
-                            Button("Keep") { confirmingHeldDiscard = nil }
-                                .buttonStyle(COSTextButtonStyle())
-                        }
-                    } else {
-                        Button("Discard all \(loose.count) loose samples") { confirmingHeldDiscard = "loose-all" }
-                            .buttonStyle(COSTextButtonStyle(tone: .destructive))
-                            .disabled(model.addVoiceBusy)
-                    }
-                }
-                if let note = model.playbackNote, note.voice == "heldloose" {
+                if let note = model.playbackNote, note.voice == "heldloose:\(current.id)" {
                     Text(note.text).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            heldActionRow(key: "loose:\(current.sessionId)#\(current.chunkIndex)", members: [current], count: 1)
+            VStack(alignment: .trailing, spacing: 7) {
+                if let suggestion = current.suggestion, model.namingHeldGroup != "loose:\(current.id)", confirmingHeldDiscard != "loose:\(current.id)" {
+                    Button("Add to \(suggestion.name)") { Task { await model.nameHeld([current], as: suggestion.name) } }
+                        .buttonStyle(COSPrimaryButtonStyle())
+                        .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel || !model.heldNamingAvailable)
+                }
+                heldActionRow(key: "loose:\(current.id)", members: [current], count: 1)
+            }
         }
         .padding(.vertical, 12)
+        .accessibilityIdentifier("held-sample-\(current.id)")
+    }
+
+    private var heldNamingOverlayOpen: Bool {
+        model.heldNamingShowReview || heldNamingResultOpen || heldNamingHistoryOpen
+    }
+
+    private func closeHeldNamingOverlay() {
+        if model.heldNamingShowReview { model.cancelHeldNamingPreview() }
+        heldNamingResultOpen = false
+        heldNamingHistoryOpen = false
+    }
+
+    @ViewBuilder
+    private var heldNamingStatusBar: some View {
+        HStack(spacing: 10) {
+            let interrupted = model.heldNamingBatches.filter(\.needsReview).count
+            if interrupted > 0 {
+                Button("Review \(interrupted) interrupted naming\(interrupted == 1 ? "" : "s")") { heldNamingHistoryOpen = true }
+                    .buttonStyle(COSQuietButtonStyle())
+            } else if !model.heldNamingBatches.isEmpty {
+                Button("Recent naming (\(model.heldNamingBatches.count))") { heldNamingHistoryOpen = true }
+                    .buttonStyle(COSQuietButtonStyle())
+            }
+            if let receipt = model.heldNamingResult {
+                Button(receipt.kind == "undone" ? "Undo result" : "Naming result") { heldNamingResultOpen = true }
+                    .buttonStyle(COSTextButtonStyle())
+                if let handle = receipt.undoHandle, receipt.kind != "undone" || receipt.partial {
+                    Button("Undo labels") { heldNamingUndoHandle = handle }
+                        .buttonStyle(COSQuietButtonStyle())
+                        .disabled(model.addVoiceBusy || !model.heldNamingAvailable)
+                }
+            }
+            if let error = model.heldNamingHistoryError {
+                Text(error).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).lineLimit(2)
+            }
+            Spacer(minLength: 0)
+            if model.heldLoose.count > 1 {
+                if confirmingHeldDiscard == "loose-all" {
+                    Button("Discard all \(model.heldLoose.count)?") {
+                        confirmingHeldDiscard = nil
+                        Task { await model.discardHeld(model.heldLoose) }
+                    }
+                    .buttonStyle(COSQuietButtonStyle(tone: .destructive))
+                    .disabled(model.addVoiceBusy)
+                    Button("Keep") { confirmingHeldDiscard = nil }.buttonStyle(COSTextButtonStyle())
+                } else {
+                    Button("Discard all loose") { confirmingHeldDiscard = "loose-all" }
+                        .buttonStyle(COSTextButtonStyle(tone: .destructive))
+                        .disabled(model.addVoiceBusy)
+                }
+            }
+        }
     }
 
     /// Name (a new person, or an existing one by typing their name) or discard.
@@ -2504,9 +2577,9 @@ struct ActivityWindow: View {
                         .cosField()
                         .frame(width: 190)
                         .onSubmit { commitHeldName(members) }
-                    Button("Save") { commitHeldName(members) }
+                    Button("Preview") { commitHeldName(members) }
                         .buttonStyle(COSPrimaryButtonStyle())
-                        .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel
+                        .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel || !model.heldNamingAvailable
                                   || heldGroupName.trimmingCharacters(in: .whitespacesAndNewlines).count < 2)
                     Button("Cancel") {
                         model.namingHeldGroup = nil
@@ -2537,7 +2610,7 @@ struct ActivityWindow: View {
                     heldGroupName = ""
                 }
                 .buttonStyle(COSQuietButtonStyle())
-                .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel)
+                .disabled(model.addVoiceBusy || !model.heldGroupsSpeakerModel || !model.heldNamingAvailable)
                 Button("Discard") { confirmingHeldDiscard = key }
                     .buttonStyle(COSTextButtonStyle(tone: .destructive))
                     .disabled(model.addVoiceBusy)
@@ -2545,22 +2618,26 @@ struct ActivityWindow: View {
         }
     }
 
-    /// 0.5.222 — while naming, say whether the name adds to someone or starts a new voice.
-    /// The server appends only on an EXACT name match (held-voice-groups.ts,
-    /// `profiles.find(p => p.name === name)`), so "Luke h" quietly creates a second Luke.
-    /// Near matches are offered as one-click fills.
+    /// Match the server's compatibility normalization and case-folded name lookup.
+    /// Ambiguous duplicates cannot be treated as a unique existing profile.
     @ViewBuilder
     private func nameHint(_ typed: String, fill: @escaping @MainActor (String) -> Void) -> some View {
         let name = typed.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.count >= 2 {
-            let exact = model.voiceDirectory.first { $0.name == name }
-            let near = exact == nil
+            let folded = name.precomposedStringWithCompatibilityMapping.lowercased()
+            let matches = model.voiceDirectory.filter { $0.name.precomposedStringWithCompatibilityMapping.lowercased() == folded }
+            let exact = matches.count == 1 ? matches.first : nil
+            let near = matches.isEmpty
                 ? Array(model.voiceDirectory.filter { $0.name.localizedCaseInsensitiveContains(name) }.prefix(3))
                 : []
             // Two lines, not one: squeezed beside the chips, the sentence wrapped mid-phrase.
             VStack(alignment: .leading, spacing: 4) {
-                if let exact {
+                if matches.count > 1 {
+                    Text("Several stored voices share this spelling. Resolve the duplicate names before applying.")
+                } else if let exact {
                     Text("Adds to \(exact.name), who has \(exact.embeddings) sample\(exact.embeddings == 1 ? "" : "s").")
+                    if exact.embeddings >= 40 { Text("At the 40-sample limit, the server chooses which voice samples to keep.") }
+                    if exact.isOwner { Text("This is your owner voice. Preview requires owner verification.") }
                 } else {
                     Text("Creates a new voice.")
                     if !near.isEmpty {
@@ -2688,7 +2765,8 @@ struct ActivityWindow: View {
             } else {
                 Button("Name this voice") { model.addingVoiceSession = session.sessionId }
                     .buttonStyle(COSQuietButtonStyle())
-                    .disabled(model.addVoiceBusy)
+                    .disabled(true)
+                    .help("Wait for sample grouping, or update the server to 6.46.0, to preview a name safely.")
             }
         }
         .padding(.vertical, 12)
@@ -4673,6 +4751,7 @@ struct ActivityWindow: View {
     // MARK: - Loading and copy
 
     private func loadOverviewIfNeeded() async {
+        guard model.backgroundWorkEnabled else { return }
         // Activity can be the first COS Control surface opened after launch.
         // Prove the server here instead of inheriting the model's initial
         // `running = false` placeholder from the unopened menu-bar panel.
@@ -5340,5 +5419,300 @@ struct MemoriesWebView: NSViewRepresentable {
             guard let data = try? JSONEncoder().encode(payload), let json = String(data: data, encoding: .utf8) else { return }
             webView?.evaluateJavaScript("window.cosBridge && window.cosBridge.resolve(\(id), \(json))") { _, _ in }
         }
+    }
+}
+
+// MARK: - Held naming review (0.5.223)
+
+struct HeldNamingReviewSheet: View {
+    @ObservedObject var model: ControllerModel
+    @State private var revisedName = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("PREVIEW · NO CHANGES YET").font(COSType.mono(10)).foregroundStyle(COSPalette.muted)
+            if let preview = model.heldNamingPreview {
+                Text("Name this voice \(preview.speaker)?").font(COSType.display(24))
+                HStack(spacing: 10) {
+                    TextField("Who is this?", text: $revisedName).textFieldStyle(.plain).cosField()
+                        .accessibilityIdentifier("held-preview-name")
+                    Button("Preview name") { Task { await model.nameHeld(preview.members, as: revisedName) } }
+                        .buttonStyle(COSQuietButtonStyle())
+                        .disabled(model.addVoiceBusy || revisedName.trimmingCharacters(in: .whitespacesAndNewlines).count < 2)
+                }
+                Text("\(preview.eligibleSamples) held sample\(preview.eligibleSamples == 1 ? "" : "s") eligible · \(preview.labelled) transcript segment\(preview.labelled == 1 ? "" : "s") in \(preview.meetings.count) meeting\(preview.meetings.count == 1 ? "" : "s")")
+                    .font(COSType.body(12, weight: .medium))
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("The server selects distinct voiceprints to keep. Apply reports how many were enrolled; naming several samples does not always add that many voiceprints.")
+                            .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                        if preview.noTranscriptCount > 0 {
+                            Text("\(preview.noTranscriptCount) samples have no transcript position. They can help the voice profile without adding transcript labels.")
+                                .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                        }
+                        ForEach(preview.meetings) { meeting in
+                            HeldNamingMeetingDetail(model: model, meeting: meeting, showPlayback: true)
+                        }
+                        if let note = model.playbackNote, note.voice == "held-naming-preview" {
+                            Text(note.text).font(COSType.body(11)).foregroundStyle(COSPalette.accent)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 120, maxHeight: .infinity)
+                if preview.owner {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(preview.ownerWarning ?? "This is your owner voice. Confirm these samples are your own voice.")
+                            .font(COSType.body(11, weight: .medium)).foregroundStyle(COSPalette.accent)
+                        Toggle("I confirm these samples are my own voice.", isOn: $model.heldNamingOwnerAck)
+                            .toggleStyle(.checkbox).font(COSType.body(12))
+                            .accessibilityIdentifier("held-owner-ack")
+                    }
+                }
+                if preview.requiresListening {
+                    Toggle("I listened and these segments sound like the same person.", isOn: $model.heldNamingListened)
+                        .toggleStyle(.checkbox).font(COSType.body(12))
+                        .accessibilityIdentifier("held-listening-ack")
+                }
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    Text(preview.expiresAt.map { $0 > Date() ? "Preview expires at \($0.formatted(date: .omitted, time: .shortened)). If a meeting changes, preview again." : "This preview expired. Choose Preview name to refresh it." } ?? "Preview expiration unavailable. Preview again.")
+                        .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+                    HStack {
+                        Button("Cancel") { model.cancelHeldNamingPreview() }.buttonStyle(COSTextButtonStyle())
+                        Spacer()
+                        if model.addVoiceBusy { ProgressView().controlSize(.small) }
+                        Button("Apply") { Task { await model.applyHeldNaming() } }
+                            .buttonStyle(COSPrimaryButtonStyle())
+                            .disabled(!model.heldNamingCanApply)
+                            .accessibilityIdentifier("held-preview-apply")
+                    }
+                }
+            } else {
+                Text(model.addVoiceBusy ? "Preparing a fresh preview…" : (model.addVoiceResult ?? "Preview unavailable. Close and try again."))
+                    .font(COSType.body(12))
+                Button("Close") { model.cancelHeldNamingPreview() }.buttonStyle(COSTextButtonStyle())
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 600, idealWidth: 700, maxWidth: 780, minHeight: 430, idealHeight: 590, maxHeight: 700)
+        .background(COSPalette.panel)
+        .onAppear { revisedName = model.heldNamingPreview?.speaker ?? "" }
+        .onChange(of: model.heldNamingPreview?.previewHash) { _, _ in revisedName = model.heldNamingPreview?.speaker ?? revisedName }
+        .onDisappear { model.stopPlayback() }
+    }
+}
+
+struct HeldNamingMeetingDetail: View {
+    @ObservedObject var model: ControllerModel
+    let meeting: HeldNamingMeeting
+    var showPlayback = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(ActivityWindow.heldSampleLabel(HeldSampleRef(sessionId: meeting.sessionId, chunkIndex: 0)).replacingOccurrences(of: " · chunk 0", with: ""))
+                    .font(COSType.body(12, weight: .semibold))
+                Spacer()
+                Text(meeting.status.uppercased()).font(COSType.mono(9.5)).foregroundStyle(COSPalette.muted)
+            }
+            Text("\(meeting.named.count) named · \(meeting.wider.count) wider matches · \(meeting.labelled) transcript positions")
+                .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+            if meeting.wider.isEmpty && showPlayback && meeting.status == "ready" {
+                Text("No wider match. The named segments still get a label.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+            }
+            if let error = meeting.error {
+                Text(error).font(COSType.body(11, weight: .medium)).foregroundStyle(COSPalette.accent)
+            }
+            if meeting.roomRisk {
+                Text("Room caution: all agreeing samples for a wider match came from this meeting. Listen carefully.")
+                    .font(COSType.body(11)).foregroundStyle(COSPalette.accent)
+            }
+            if meeting.labelsNewerThanGraph {
+                Text("LABELS NEWER THAN GRAPH").font(COSType.mono(9)).foregroundStyle(COSPalette.accent)
+            }
+            ForEach(Array(meeting.copySummaries.enumerated()), id: \.offset) { _, copy in
+                Text(copy).font(COSType.mono(9.5)).foregroundStyle(COSPalette.muted)
+            }
+            if showPlayback {
+                if meeting.playback.isEmpty {
+                    Text("No mapped audio to play. Audio expired, vectors only, or no transcript position.")
+                        .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+                } else {
+                    ForEach(Array(meeting.playback.prefix(5))) { triple in playbackRow(triple) }
+                    if meeting.playback.count > 5 {
+                        DisclosureGroup("Listen to all \(meeting.playback.count) segments") {
+                            LazyVStack(alignment: .leading, spacing: 7) {
+                                ForEach(Array(meeting.playback.dropFirst(5))) { triple in playbackRow(triple) }
+                            }
+                        }
+                        .font(COSType.body(11))
+                    }
+                }
+            }
+        }
+        .padding(13)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(COSPalette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(COSPalette.line, lineWidth: 1))
+    }
+    private func playbackRow(_ triple: HeldNamingPlayback) -> some View {
+        HStack(spacing: 10) {
+            Button(model.playingVoice == "naming:\(triple.id)" ? "Stop" : "Listen · chunk \(triple.chunkIndex)") {
+                model.playHeldNamingMatch(triple)
+            }
+            .buttonStyle(COSQuietButtonStyle())
+            .accessibilityIdentifier("held-preview-play-\(triple.id)")
+            if let score = (meeting.raw["widerScores"]?.array ?? []).first(where: { $0.object?["chunkIndex"]?.int == triple.chunkIndex })?.object?["similarity"]?.double {
+                Text("Sounds like · \(Int((score * 100).rounded()))%")
+                    .font(COSType.mono(10)).foregroundStyle(COSPalette.muted)
+            } else {
+                Text("Named sample").font(COSType.mono(10)).foregroundStyle(COSPalette.muted)
+            }
+        }
+    }
+}
+
+struct HeldNamingResultContent: View {
+    @ObservedObject var model: ControllerModel
+    let receipt: HeldNamingReceipt
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            Text(receipt.kind == "undone" ? (receipt.partial ? "Some labels still need review" : "Labels restored") : "Naming \(receipt.speaker)")
+                .font(COSType.display(23))
+            if let error = receipt.raw["error"]?.string {
+                Text(error).font(COSType.body(12, weight: .medium)).foregroundStyle(COSPalette.accent)
+            }
+            if receipt.kind == "undone" {
+                Text("\(receipt.restoredSegments) segment\(receipt.restoredSegments == 1 ? "" : "s") restored · \(receipt.labelled) remain\(receipt.labelled == 1 ? "s" : "") labelled by this naming")
+                    .font(COSType.body(12, weight: .medium))
+            } else if receipt.kind == "applied" {
+                Text("\(receipt.enrolled) sample\(receipt.enrolled == 1 ? "" : "s") enrolled · \(receipt.labelled) segment\(receipt.labelled == 1 ? "" : "s") labelled · \(receipt.deleted) audio sample\(receipt.deleted == 1 ? "" : "s") deleted")
+                    .font(COSType.body(12, weight: .medium))
+            }
+            if let total = receipt.profileEmbeddings {
+                Text("\(total) voice samples retained in the profile").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+            }
+            if receipt.partial { Text("Some meetings or copies could not be completed. Review each outcome below.").font(COSType.body(11)).foregroundStyle(COSPalette.accent) }
+            Text("Undo restores labels. Voice samples stay enrolled; deleted audio stays deleted. Search catches up at up to 10 meetings per sync; graph labels may lag.")
+                .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+            if receipt.raw["lockMode"]?.string == "standalone" {
+                Text("Standalone meeting library: no COS sync lock was needed.").font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+            }
+            ForEach(receipt.meetings) { meeting in HeldNamingMeetingDetail(model: model, meeting: meeting) }
+            if !receipt.memberOutcomes.isEmpty {
+                DisclosureGroup("Sample outcomes (\(receipt.memberOutcomes.count))") {
+                    LazyVStack(alignment: .leading, spacing: 9) {
+                        ForEach(receipt.memberOutcomes) { member in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(ActivityWindow.heldSampleLabel(member.sample)).font(COSType.mono(10))
+                                Text(member.hasNoTranscriptPosition ? "\(member.enrollmentStatus) · no transcript position · audio \(member.audioStatus)" : "Voice \(member.enrollmentStatus) · labels \(member.labelStatus) · audio \(member.audioStatus)")
+                                    .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                                if let reason = member.reason { Text(reason).font(COSType.body(10.5)).foregroundStyle(COSPalette.accent) }
+                            }
+                        }
+                    }
+                }.font(COSType.body(12))
+            }
+        }
+    }
+}
+
+struct HeldNamingResultSheet: View {
+    @ObservedObject var model: ControllerModel
+    var onClose: () -> Void = {}
+    @State private var pendingUndo: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            if let receipt = model.heldNamingResult {
+                ScrollView { HeldNamingResultContent(model: model, receipt: receipt).frame(maxWidth: .infinity, alignment: .leading) }
+                HStack {
+                    Button("Close") { onClose() }.buttonStyle(COSTextButtonStyle())
+                    Spacer()
+                    if let handle = receipt.undoHandle, receipt.kind != "undone" || receipt.partial {
+                        Button("Undo labels") { pendingUndo = handle }
+                            .buttonStyle(COSQuietButtonStyle())
+                            .disabled(model.addVoiceBusy || !model.heldNamingAvailable)
+                    }
+                    if model.addVoiceBusy { ProgressView().controlSize(.small) }
+                }
+            } else { Text("No naming receipt is selected."); Button("Close") { onClose() } }
+        }
+        .padding(24).frame(minWidth: 600, idealWidth: 700, minHeight: 400, idealHeight: 560, maxHeight: 680)
+        .background(COSPalette.panel)
+        .cosConfirm(
+            "Restore this naming’s previous labels?",
+            isPresented: Binding(get: { pendingUndo != nil }, set: { if !$0 { pendingUndo = nil } }),
+            message: "Later naming is protected. Voice samples stay enrolled; deleted audio stays deleted.",
+            actions: [
+                .destructive("Undo labels") { [handle = pendingUndo] in
+                    if let handle { Task { await model.undoHeldNaming(handle) } }
+                },
+                .cancel("Keep labels"),
+            ]
+        )
+    }
+}
+
+struct HeldNamingHistorySheet: View {
+    @ObservedObject var model: ControllerModel
+    var onClose: () -> Void = {}
+    @State private var undoHandle: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            Text("Recent naming").font(COSType.display(25))
+            Text("Interrupted naming never resumes automatically. Resume opens a fresh preview; Revert restores this naming’s labels where later changes allow it.")
+                .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+            if !model.heldNamingAvailable {
+                Text("Update the COS server to 6.46.0 or newer to review and undo naming.").font(COSType.body(12))
+            }
+            if let result = model.addVoiceResult { Text(result).font(COSType.body(11.5)).foregroundStyle(COSPalette.accent) }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(model.heldNamingBatches) { batch in
+                        VStack(alignment: .leading, spacing: 9) {
+                            HStack {
+                                Text(batch.speaker).font(COSType.body(13, weight: .semibold))
+                                Spacer()
+                                Text(batch.needsReview ? "INTERRUPTED NAMING" : batch.status.uppercased())
+                                    .font(COSType.mono(9)).foregroundStyle(COSPalette.accent)
+                            }
+                            ForEach(batch.meetings) { meeting in HeldNamingMeetingDetail(model: model, meeting: meeting) }
+                            HStack(spacing: 10) {
+                                if batch.needsReview {
+                                    Button("Resume") {
+                                        onClose()
+                                        Task { await model.resumeHeldNaming(batch) }
+                                    }
+                                    .buttonStyle(COSPrimaryButtonStyle())
+                                    .disabled(model.addVoiceBusy || !model.heldNamingAvailable)
+                                }
+                                if let handle = batch.undoHandle, batch.status != "reverted" {
+                                    Button(batch.needsReview ? "Revert labels" : "Undo labels") { undoHandle = handle }
+                                        .buttonStyle(COSQuietButtonStyle())
+                                        .disabled(model.addVoiceBusy || !model.heldNamingAvailable)
+                                }
+                            }
+                        }
+                        .padding(13).background(COSPalette.card).clipShape(RoundedRectangle(cornerRadius: 9))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Text("Voice samples stay enrolled. Audio is never restored. Per-copy results show any labels that could not be reverted.")
+                .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+            HStack { Button("Close") { onClose() }.buttonStyle(COSTextButtonStyle()); Spacer(); if model.addVoiceBusy { ProgressView().controlSize(.small) } }
+        }
+        .padding(24).frame(minWidth: 600, idealWidth: 700, minHeight: 400, idealHeight: 580, maxHeight: 680)
+        .background(COSPalette.panel)
+        .cosConfirm(
+            "Restore this naming’s previous labels?",
+            isPresented: Binding(get: { undoHandle != nil }, set: { if !$0 { undoHandle = nil } }),
+            message: "Later naming is protected. Voice samples stay enrolled; deleted audio stays deleted.",
+            actions: [
+                .destructive("Undo labels") { [handle = undoHandle] in
+                    if let handle { Task { await model.undoHeldNaming(handle) } }
+                },
+                .cancel("Keep labels"),
+            ]
+        )
     }
 }

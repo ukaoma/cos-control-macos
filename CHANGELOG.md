@@ -1,7 +1,5 @@
 ## 0.5.223 (build 261)
 
-Local release preparation: helper, controller, and model work is verified. The UI items below describe the reviewed mock and remain pending layout approval and implementation.
-
 Name held voice samples with a preview of the meeting labels, then apply or undo.
 
 - Each loose sample has its own row and can show an existing voice suggestion with its score and owner-proximity caution. Long lists scroll in place, including a 239-row fixture.

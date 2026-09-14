@@ -319,7 +319,10 @@ final class ControllerModel: ObservableObject {
     private let openPetsThumbGate = MediaFetchGate()
     private var openPetsThumbTasks: [String: Task<Void, Never>] = [:]
 
-    init() {
+    let backgroundWorkEnabled: Bool
+    init(startBackgroundWork: Bool = true) {
+        backgroundWorkEnabled = startBackgroundWork
+        guard startBackgroundWork else { return }
         try? Self.pruneMediaHandoffs()
         refreshTask = Task { [weak self] in
             await self?.refresh()
@@ -5492,7 +5495,7 @@ final class ControllerModel: ObservableObject {
     }
 
     var heldNamingCanApply: Bool {
-        guard heldNamingAvailable, !addVoiceBusy, let preview = heldNamingPreview, preview.canApply else { return false }
+        guard heldNamingAvailable, heldGroupsSpeakerModel, !addVoiceBusy, let preview = heldNamingPreview, preview.canApply else { return false }
         return preview.canApply(ownerAcknowledged: heldNamingOwnerAck, listened: heldNamingListened)
     }
 
@@ -5514,6 +5517,7 @@ final class ControllerModel: ObservableObject {
             let receipt = HeldNamingReceipt(response.details)
             addVoiceResult = response.message
             if receipt.kind == "applied" {
+                addVoiceResult = "\(receipt.enrolled) samples enrolled · \(receipt.labelled) segments labelled.\(receipt.partial ? " Some meetings need review." : "")"
                 heldNamingResult = receipt
                 heldNamingPreview = nil
                 heldNamingShowReview = false
@@ -5527,6 +5531,7 @@ final class ControllerModel: ObservableObject {
                 heldNamingPreview = nil
                 heldNamingShowReview = false
                 heldNamingResult = receipt
+                await loadHeldNamingBatches()
             }
         } catch {
             addVoiceResult = error.localizedDescription
@@ -5581,7 +5586,11 @@ final class ControllerModel: ObservableObject {
         do {
             let response = try await helper.run(["voice-held-undo", "--batch-id", handle, "--confirm"])
             addVoiceResult = response.message
-            heldNamingResult = HeldNamingReceipt(response.details)
+            let receipt = HeldNamingReceipt(response.details)
+            heldNamingResult = receipt
+            if receipt.kind == "undone" {
+                addVoiceResult = "\(receipt.restoredSegments) segments restored. Voice samples stay enrolled; deleted audio stays deleted.\(receipt.partial ? " Some copies still need review." : "")"
+            }
             heldNamingPreview = nil
             stopPlayback()
             await loadHeldNamingBatches()

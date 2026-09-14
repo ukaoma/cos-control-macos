@@ -4364,7 +4364,7 @@ if "FileHandle" in models[models.index("struct SessionListCache"):models.index("
     fail("SessionListCache must not open session bodies")
 if "hydrateClaudeSessionsFromCache()" not in model:
     fail("ControllerModel must hydrate Sessions from cache before helper RPC")
-init = model[model.index("init() {"):model.index("func checkForAppUpdate(")]
+init = model[model.index("init(startBackgroundWork: Bool = true) {"):model.index("func checkForAppUpdate(")]
 if "hydrateClaudeSessionsFromCache()" not in init:
     fail("first paint must read the session cache in init, not after the week scan")
 load = model[model.index("func loadClaudeSessions"):model.index("private func fetchClaudeSessions")]
@@ -4638,8 +4638,8 @@ if helper.count('"speakerModel": (body["speakerModel"] as? Bool) ?? true') != 1 
     fail("emitVoiceHeldGroups must forward the server's speakerModel exactly once, or every naming button stays enabled on a Mac with no model")
 if 'model.heldGroupsState == "error", let error = model.heldGroupsError' not in activity:
     fail("a held-groups failure must be shown, not swallowed into the per-session rows")
-if "confirmingHeldAdd == group.id" not in activity or 'if group.suggestionTier == "high" {' not in activity:
-    fail("only a high match may be added with one click; a likely match arms first")
+if '"voice-held-preview"' not in controller or 'Button("Apply")' not in activity or "await model.applyHeldNaming()" not in activity:
+    fail("every suggestion must preview before explicit Apply")
 if "static let heldDiscardBatchSize = 200" not in controller or "Self.heldDiscardBatchSize" not in controller:
     fail("discard must be sent in bounded slices: a full loose set exceeds one request")
 if "heldGroupsReloadRequested = true" not in controller:
@@ -4650,7 +4650,7 @@ if "if members.isEmpty {" not in activity:
     fail("the Listen control must guard an empty list")
 if "Self.heldSampleLabel(current)" not in activity:
     fail("the loose row must say which clip the cursor is on")
-if activity.count("|| !model.heldGroupsSpeakerModel") < 5:
+if activity.count("|| !model.heldGroupsSpeakerModel") < 4:
     fail("every naming affordance must be disabled while the server has no speaker model (a click would 503)")
 if "voices can be heard and discarded, not named yet" not in activity or "model.heldGroupsUnusable > 0" not in activity:
     fail("the lead must say why naming is unavailable and count the samples that cannot be read")
@@ -4778,8 +4778,8 @@ if 'Button("Refresh"' in card or "Grouping held voices" not in card:
 if "nameHint(heldGroupName) { heldGroupName = $0 }" not in card:
     fail("naming a held group must show whether the name adds to someone")
 hint = body(activity, "private func nameHint(", "private func commitHeldName(")
-if "$0.name == name" not in hint or "localizedCaseInsensitiveContains" not in hint:
-    fail("nameHint must say Adds to only on an exact match (the server appends only then) and offer near matches")
+if "precomposedStringWithCompatibilityMapping.lowercased()" not in hint or "matches.count > 1" not in hint or "localizedCaseInsensitiveContains" not in hint:
+    fail("nameHint must resolve normalized case, refuse ambiguous duplicate names, and offer near matches")
 detail = body(activity, "private var heldSamplesDetail: String {", "\n    }\n")
 if "model.heldGroupsState == nil" not in detail or "model.extAudioLoadFailed" not in detail:
     fail("the Samples hero line must not read as an empty window while loading or after a failure")
@@ -4819,5 +4819,30 @@ for need, why in (("guard !extAudioLoading else { extAudioReloadRequested = true
         fail(why)
 print("COS Control: Speakers views and toolbar clamp pinned (0.5.222)")
 PY
+
+# 0.5.223 — held naming Undo confirmations capture their target. `cosConfirm` dismisses
+# BEFORE it runs the action, and dismissal nils the handle binding, so an action that
+# read the binding would guard-out and undo nothing: the fence Release bug again.
+/usr/bin/python3 - "$ROOT" <<'UNDOCAP'
+from pathlib import Path
+import re, sys
+root = Path(sys.argv[1])
+activity = (root / "Sources/ActivityWindow.swift").read_text()
+
+def fail(msg):
+    sys.exit(msg)
+
+sites = list(re.finditer(r'\.destructive\("Undo labels"\) \{ \[handle = (\w+)\] in\n', activity))
+if len(sites) != 3 or activity.count('.destructive("Undo labels")') != 3:
+    fail("the status bar, result and history Undo confirmations must each capture the handle in the action's capture list")
+for m in sites:
+    var = m.group(1)
+    action = activity[m.end():activity.index("\n", activity.index("undoHeldNaming(", m.end()))]
+    if "if let handle { Task { await model.undoHeldNaming(handle) } }" not in action:
+        fail(f"the Undo action for {var} must undo the captured handle")
+    if re.search(rf"\b{var}\b", action):
+        fail(f"the Undo action reads {var}, which dismissal has already cleared")
+print("COS Control: held naming Undo captures its target before dismissal (0.5.223)")
+UNDOCAP
 
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"
