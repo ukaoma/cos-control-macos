@@ -39,8 +39,8 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 589:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 589 (589 at 0.5.228)")
+if count < 605:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 605 (605 at 0.5.229)")
 ' "$SELF_TEST"
 
 python3 "$ROOT/Tests/HeldNamingTransport.py" "$TMP/cos-control-helper"
@@ -3458,7 +3458,8 @@ _done = _done[:_done.index("actions: PetRowActions")]
 need("outcome: row.name.isEmpty" in _done,
      "finished rows stopped leading with the session name; every resumed "
      "session shares one summary, so the rows become indistinguishable")
-need('title: row.summary.isEmpty ? "Finished" : row.summary' in _done,
+# 0.5.229: a scheduled job's one row counts its runs instead; every session row keeps its outcome.
+need('title: row.isScheduledJob ? row.runsLabel() : (row.summary.isEmpty ? "Finished" : row.summary)' in _done,
      "finished rows lost the outcome from their second line")
 
 # The pet panel sizes ITSELF. NSHostingController defaults to
@@ -4991,8 +4992,11 @@ if guard_at < 0 or ask_at < guard_at:
 notifier = body(model, "final class MeetingAudioNotifier")
 if "private lazy var center" not in notifier or "center.delegate = self" not in notifier or ".alert" not in notifier:
     fail("the notifier must create its center on first use, own the delegate and ask for alerts")
-if notifier.count("NSLog(") < 2:
-    fail("permission answers and posting errors must be logged")
+if notifier.count("meetingAudioLog.") < 2 or "NSLog(" in notifier or "privacy: .public" not in notifier:
+    fail("permission answers and posting errors must be logged in the open with meetingAudioLog, never NSLog (0.5.229)")
+_load_and_permission = load + body(model, "private func loadMeetingAlertPermission() async {")
+if "NSLog(" in _load_and_permission or _load_and_permission.count("meetingAudioLog.") < 2:
+    fail("failed checks and alert state changes must be logged with meetingAudioLog in the open (0.5.229)")
 permission = body(model, "private func loadMeetingAlertPermission() async {")
 if ".notDetermined" not in permission or "requestAuthorization()" not in permission or "meetingAlertsOff = off" not in permission:
     fail("a Mac with no answer on record is asked again, and alerts that are off show in the panel")
@@ -5002,5 +5006,86 @@ if "model.meetingAlertsOff && !model.meetingAudio.isEmpty" not in views:
     fail("the panel must say when macOS is not showing COS Control's alerts")
 print("COS Control: meeting audio alert wiring (0.5.228)")
 MEETAUDIO
+
+/usr/bin/python3 - "$ROOT" <<'SCHEDJOBS'
+import re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+def code(path):
+    return re.sub(r"//[^\n]*", "", (root / path).read_text())
+helper = code("HelperSources/main.swift")
+model = code("Sources/ControllerModel.swift")
+models = code("Sources/Models.swift")
+pet = code("Sources/SessionPet.swift")
+activity = code("Sources/ActivityWindow.swift")
+def fail(message):
+    sys.exit(f"scheduled-jobs: {message}")
+def body(text, marker):
+    start = text.find(marker)
+    if start < 0:
+        fail(f"missing {marker}")
+    depth = 0
+    for j in range(text.index("{", start), len(text)):
+        if text[j] == "{":
+            depth += 1
+        elif text[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:j + 1]
+    fail(f"unterminated {marker}")
+live = body(helper, "private func emitLiveClaudeSessions(")
+at_rows = live.find("Self.petLiveRows(")
+at_jobs = live.find("annotatedScheduledJobs(peers, home: home, previous: previousRows)")
+at_emit = live.find("emitSessionList(")
+if min(at_rows, at_jobs, at_emit) < 0 or not at_rows < at_jobs < at_emit:
+    fail("the pet's live rows must be marked as scheduled jobs after petLiveRows and before they are emitted")
+fresh = body(helper, "private func emitFreshClaudeSessions(")
+if not 0 <= fresh.find("annotatedScheduledJobs(") < fresh.find("saveSessionListCache("):
+    fail("the Sessions list must be marked before it is cached, so a finished job keeps its label")
+walker = body(helper, "private func annotatedScheduledJobs(")
+if "Self.processNode(pid: $0, includeArgs: $0 != pid)" not in walker:
+    fail("the walk must never read the Claude run's own arguments; they can carry its prompt")
+origin = body(helper, "static func scheduledJobOrigin(")
+if 'label.hasPrefix("com.cos.")' not in origin or 'node.comm == "claude"' not in origin:
+    fail("only a com.cos LaunchAgent or a parent Claude session makes a run a job")
+apply_sessions = body(model, "private func applyPetSessions(")
+if not 0 <= apply_sessions.find("mergeCompletions(") < apply_sessions.find("ScheduledJobLedger.record(") \
+        or "saveScheduledJobRuns()" not in apply_sessions:
+    fail("finished job runs must be recorded and saved on the authoritative pet poll")
+init = body(model, "init(startBackgroundWork: Bool = true) {")
+if not 0 <= init.find("guard startBackgroundWork else { return }") < init.find("loadScheduledJobRuns()"):
+    fail("today's runs must load at launch, only in the background-work model")
+opener = body(model, "func openClaudeSession(")
+guard_at = opener.find("guard !session.isScheduledJob")
+if guard_at < 0 or guard_at > opener.find("claudeSessionDetailTask = Task") or guard_at > opener.find("prepareSessionChat(session)"):
+    fail("opening a scheduled job must not fetch a transcript or prepare Continue")
+for fn in ("private func missionRow(", "private func idleRow("):
+    row_body = body(pet, fn)
+    if "openInPlatform: session.isScheduledJob ? nil :" not in row_body:
+        fail(f"{fn} still offers a platform window for a scheduled job")
+    branch_at = row_body.find("if session.isScheduledJob {")
+    else_at = row_body.find("} else {", branch_at) if branch_at >= 0 else -1
+    if branch_at < 0 or else_at < 0 or "presenter.openInControl(session)" not in row_body[branch_at:else_at]:
+        fail(f"{fn}: tapping a scheduled job must open it in Control, not a platform window")
+done = pet[pet.index("private var completionsList"):pet.index("private func petFloatingText")]
+if "openInPlatform: row.isScheduledJob ? nil :" not in done or "row.runsLabel()" not in done:
+    fail("a finished job row must count its runs and offer no platform window")
+if 'if session.isScheduledJob { return "Scheduled job" }' not in body(pet, "private func slotSecondLine(for session: ClaudeSession)"):
+    fail("a job row's second line must say Scheduled job, not its folder")
+pane = body(activity, "struct ClaudeSessionDetailPane")
+if "ScheduledJobFacts(row: row)" not in pane or "if model.openClaudeRow?.isScheduledJob != true {" not in pane \
+        or "if let row = model.openClaudeRow, !row.isScheduledJob {" not in pane \
+        or "if let row = model.openClaudeRow, row.isScheduledJob {" not in pane:
+    fail("a scheduled job must show its facts, with no Continue composer and no Open in platform")
+if "scheduledJobRunsSection" not in body(activity, "private var sessionsList: some View {"):
+    fail("Sessions must list today's finished scheduled job runs")
+if "model.openClaudeSession(session)" not in body(activity, "private var scheduledJobRunsSection: some View {"):
+    fail("a finished run must open as its facts")
+detector = body(models, "static func diff(")
+if "seen: true" not in detector or 'sessionId: "job:\\(label)"' not in detector:
+    fail("a finished job must emit one row per job, already seen")
+if "rows.filter({ !$0.isScheduledJob })" not in body(models, "static func canonicalized("):
+    fail("job rows must never be prefix-merged")
+print("COS Control: scheduled jobs pinned (0.5.229)")
+SCHEDJOBS
 
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"

@@ -6,6 +6,11 @@ import Foundation
 import ServiceManagement
 import UniformTypeIdentifiers
 import UserNotifications
+import os
+
+/// 0.5.229. Meeting-audio alert telemetry in the open. 0.5.228 used NSLog, which the unified log
+/// redacts to <private> for this app; read it with `log show --predicate 'subsystem == "com.gotcos.control"'`.
+private let meetingAudioLog = Logger(subsystem: "com.gotcos.control", category: "meeting-audio")
 
 private actor MediaFetchGate {
     private var available = 2
@@ -49,8 +54,8 @@ private enum MediaFetchError: LocalizedError {
 }
 
 /// 0.5.227. macOS notifications for meeting audio that stops reaching this Mac.
-/// 0.5.228: every permission answer and posting error is logged (`log show --process "COS Control"`),
-/// and the center is created on first use, so a model built outside an app bundle never touches it.
+/// 0.5.228: every permission answer and posting error is logged (0.5.229: to meetingAudioLog, in the
+/// open), and the center is created on first use, so a model built outside an app bundle never touches it.
 final class MeetingAudioNotifier: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
     private lazy var center: UNUserNotificationCenter = {
         let center = UNUserNotificationCenter.current()
@@ -62,7 +67,8 @@ final class MeetingAudioNotifier: NSObject, UNUserNotificationCenterDelegate, @u
     /// has no answer on record: the first 0.5.227 launch on 2026-09-14 got an error back.
     func requestAuthorization() {
         center.requestAuthorization(options: [.alert, .sound]) { granted, error in
-            NSLog("COSControl meeting-audio authorization granted=%ld error=%@", granted ? 1 : 0, error.map { String(describing: $0) } ?? "none")
+            let detail = error.map { String(describing: $0) } ?? "none"
+            meetingAudioLog.notice("authorization granted=\(granted, privacy: .public) error=\(detail, privacy: .public)")
         }
     }
 
@@ -82,7 +88,8 @@ final class MeetingAudioNotifier: NSObject, UNUserNotificationCenterDelegate, @u
         let state = watch.state
         let silence = watch.silenceSeconds
         center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil)) { error in
-            NSLog("COSControl meeting-audio post %@ state=%@ silence=%ld error=%@", identifier, state, silence, error.map { String(describing: $0) } ?? "none")
+            let detail = error.map { String(describing: $0) } ?? "none"
+            meetingAudioLog.notice("post \(identifier, privacy: .public) state=\(state, privacy: .public) silence=\(silence, privacy: .public) error=\(detail, privacy: .public)")
         }
     }
 
@@ -400,6 +407,7 @@ final class ControllerModel: ObservableObject {
         }
         loadPetDismissals()
         loadPetCompletions()
+        loadScheduledJobRuns()
         loadPetSprite()
         hydrateClaudeSessionsFromCache()
         meetingAudioNotifier.requestAuthorization()
@@ -1560,6 +1568,8 @@ final class ControllerModel: ObservableObject {
     @Published var petDismissals = PetDismissals()
     /// Finished sessions, D2: a completion now outlives its 2-second flash.
     @Published var petCompletions: [PetCompletion] = []
+    /// 0.5.229. Today's finished scheduled job runs, for the Sessions tab.
+    @Published var scheduledJobRuns: [ScheduledJobRun] = []
     @Published var petCompletionsExpanded = false
     /// Which list a double-tap on the figure reopens. The gesture is a toggle,
     /// so closing from DONE must reopen DONE — snapping back to RUNNING loses
@@ -1869,7 +1879,8 @@ final class ControllerModel: ObservableObject {
             meetingAudioNotifier.removeDelivered(sessionIds: update.resolved)
         } catch {
             guard generation == meetingAudioGeneration else { return }
-            NSLog("COSControl meeting-audio check failed: %@", String(describing: error))
+            let detail = String(describing: error)
+            meetingAudioLog.error("check failed: \(detail, privacy: .public)")
             meetingAudio = []
             return
         }
@@ -1887,7 +1898,10 @@ final class ControllerModel: ObservableObject {
         }
         let off = allowed.authorization == .denied || (allowed.authorization == .authorized && !allowed.alertsOn)
         if off != meetingAlertsOff {
-            NSLog("COSControl meeting-audio alerts %@ authorization=%ld alertsOn=%ld", off ? "off" : "on", allowed.authorization.rawValue, allowed.alertsOn ? 1 : 0)
+            let word = off ? "off" : "on"
+            let authorization = allowed.authorization.rawValue
+            let alertsOn = allowed.alertsOn
+            meetingAudioLog.notice("alerts \(word, privacy: .public) authorization=\(authorization, privacy: .public) alertsOn=\(alertsOn, privacy: .public)")
             meetingAlertsOff = off
         }
     }
@@ -2667,6 +2681,12 @@ final class ControllerModel: ObservableObject {
                     previous: previous, current: sessions, suppressedIDs: blocked
                 )
                 mergeCompletions(fresh, previous: previous, current: sessions)
+                // 0.5.229: a scheduled job run that stopped running joins Sessions' Scheduled jobs today.
+                let runs = ScheduledJobLedger.record(existing: scheduledJobRuns, previous: previous, current: sessions)
+                if runs != scheduledJobRuns {
+                    scheduledJobRuns = runs
+                    saveScheduledJobRuns()
+                }
                 let working = sessions.filter(\.isPetWorking).count
                 let waiting = sessions.filter { $0.state == "waiting" }.count
                 if !fresh.isEmpty && working == 0 && waiting == 0 {
@@ -2774,6 +2794,23 @@ final class ControllerModel: ObservableObject {
     private func loadPetDismissals() {
         let stored = UserDefaults.standard.dictionary(forKey: Self.petDismissedKey) as? [String: String]
         petDismissals = PetDismissals(stamps: stored ?? [:])
+    }
+
+    private static let scheduledJobRunsKey = "cos.scheduledJobRuns"
+
+    func saveScheduledJobRuns(defaults: UserDefaults = .standard) {
+        guard let data = try? JSONEncoder().encode(scheduledJobRuns) else { return }
+        defaults.set(data, forKey: Self.scheduledJobRunsKey)
+    }
+
+    /// 0.5.229. Only today's finished runs survive a relaunch.
+    func loadScheduledJobRuns(defaults: UserDefaults = .standard) {
+        guard let data = defaults.data(forKey: Self.scheduledJobRunsKey),
+              let runs = try? JSONDecoder().decode([ScheduledJobRun].self, from: data) else {
+            scheduledJobRuns = []
+            return
+        }
+        scheduledJobRuns = ScheduledJobLedger.prune(runs)
     }
 
     private static let petCompletionsKey = "cos.sessionPetCompletions"
@@ -3830,6 +3867,11 @@ final class ControllerModel: ObservableObject {
         claudeSessionDetailError = nil
         copyNote = nil
         resetSessionChat()
+        // 0.5.229: a scheduled job keeps no transcript and nothing to continue; the pane shows its facts.
+        guard !session.isScheduledJob else {
+            claudeSessionDetailLoading = false
+            return
+        }
         claudeSessionDetailTask = Task { [weak self] in
             await self?.fetchClaudeSessionDetail(session)
         }

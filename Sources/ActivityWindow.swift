@@ -1064,10 +1064,61 @@ struct ActivityWindow: View {
                         ForEach(visibleSessions) { session in
                             sessionRow(session)
                         }
+                        // 0.5.229: today's finished scheduled job runs, under the live list.
+                        if model.sessionClock != .pinned && !model.scheduledJobRuns.isEmpty {
+                            scheduledJobRunsSection
+                        }
                     }
                     .padding(.horizontal, 22)
                     .padding(.bottom, 22)
                 }
+            }
+        }
+    }
+
+    private var scheduledJobRunsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("SCHEDULED JOBS TODAY")
+                .font(COSType.mono(9.5, weight: .semibold))
+                .tracking(1.2)
+                .foregroundStyle(.secondary)
+                .padding(.top, 14)
+                .padding(.bottom, 2)
+            ForEach(model.scheduledJobRuns) { run in
+                Button {
+                    if let session = ClaudeSession.fromJobRun(run) {
+                        selectedSessionID = session.id
+                        model.openClaudeSession(session)
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "checkmark.circle")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(COSPalette.green)
+                        Text(run.label)
+                            .font(COSType.body(12.5, weight: .semibold))
+                            .lineLimit(1)
+                        if !run.script.isEmpty {
+                            Text(run.script)
+                                .font(COSType.mono(10.5))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Text(run.finishedAt.formatted(date: .omitted, time: .shortened))
+                            .font(COSType.body(10.5))
+                            .foregroundStyle(.secondary)
+                        if let duration = run.duration {
+                            Text(ScheduledJobRun.durationLabel(duration))
+                                .font(COSType.mono(10.5))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                    .contentShape(Rectangle())
+                    .cosRowCard()
+                }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -1643,7 +1694,13 @@ struct ActivityWindow: View {
                                     .lineLimit(1)
                                     .help("Another session on screen has the same name. This one was opened \(ClaudeSession.shortSessionDate(opened)).")
                             }
-                            if !session.workspace.isEmpty, session.workspace != session.title {
+                            if session.isScheduledJob, !session.jobScript.isEmpty {
+                                // 0.5.229: a job's script says more than its folder.
+                                Text(session.jobScript)
+                                    .font(COSType.mono(10.5))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            } else if !session.workspace.isEmpty, session.workspace != session.title {
                                 Text(session.workspace)
                                     .font(COSType.body(10.5))
                                     .foregroundStyle(.secondary)
@@ -4888,7 +4945,9 @@ struct ClaudeSessionDetailPane: View {
                         .font(COSType.display(22, weight: .medium))
                         .textSelection(.enabled)
                 }
-                Text(model.claudeSessionDetail?.subtitle ?? "Read-only · local transcript")
+                Text(model.openClaudeRow?.isScheduledJob == true
+                     ? "Scheduled job · started by COS"
+                     : (model.claudeSessionDetail?.subtitle ?? "Read-only · local transcript"))
                     .font(COSType.body(12))
                     .foregroundStyle(.secondary)
                 if let cwd = model.claudeSessionDetail?.cwd, !cwd.isEmpty {
@@ -4904,7 +4963,11 @@ struct ClaudeSessionDetailPane: View {
             .padding(.bottom, 12)
             Divider()
 
-            if model.claudeSessionDetailLoading && model.claudeSessionDetail == nil {
+            if let row = model.openClaudeRow, row.isScheduledJob {
+                // 0.5.229: a scheduled job keeps no conversation; show what COS knows about the run.
+                ScheduledJobFacts(row: row)
+                Spacer()
+            } else if model.claudeSessionDetailLoading && model.claudeSessionDetail == nil {
                 ProgressView("Loading session…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = model.claudeSessionDetailError, model.claudeSessionDetail == nil {
@@ -4952,7 +5015,7 @@ struct ClaudeSessionDetailPane: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            if let row = model.openClaudeRow {
+            if let row = model.openClaudeRow, !row.isScheduledJob {
                 Divider()
                 HStack(spacing: 10) {
                     Button("Open in platform") { model.openSessionInPlatform(row) }
@@ -4982,8 +5045,11 @@ struct ClaudeSessionDetailPane: View {
             // At the pane ROOT, outside the `if let detail` branch, so the
             // composer renders on the local-transcript-error path too — a
             // Desktop-store session has no local JSONL, and it is exactly the
-            // session the server-side Continue can still reach.
-            SessionChatComposer(model: model)
+            // session the server-side Continue can still reach. 0.5.229: a
+            // scheduled job has nothing to continue.
+            if model.openClaudeRow?.isScheduledJob != true {
+                SessionChatComposer(model: model)
+            }
         }
         .cosConfirm(
             "Send into an open session?",
@@ -5004,6 +5070,48 @@ struct ClaudeSessionDetailPane: View {
         case "codex": Color(red: 0.10, green: 0.55, blue: 0.48)
         case "cursor": Color(red: 0.42, green: 0.38, blue: 0.86)
         default: Color(red: 0.78, green: 0.45, blue: 0.22)
+        }
+    }
+}
+
+/// 0.5.229. What Control knows about a scheduled job's run, shown in place of a transcript it never kept.
+struct ScheduledJobFacts: View {
+    let row: ClaudeSession
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            fact("Job", row.title)
+            if !row.jobScript.isEmpty { fact("Script", row.jobScript) }
+            if let started = row.createdDate {
+                fact("Started", started.formatted(date: .omitted, time: .standard))
+            }
+            if row.alive {
+                fact("Status", "Running")
+            } else if let finished = row.updatedDate {
+                fact("Finished", finished.formatted(date: .omitted, time: .standard))
+                if let started = row.createdDate {
+                    fact("Duration", ScheduledJobRun.durationLabel(finished.timeIntervalSince(started)))
+                }
+            }
+            Text("COS started this Claude run in the background. It keeps no conversation to open or continue.")
+                .font(COSType.body(11.5))
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func fact(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(label.uppercased())
+                .font(COSType.mono(9.5, weight: .semibold))
+                .tracking(1.0)
+                .foregroundStyle(.secondary)
+                .frame(width: 84, alignment: .leading)
+            Text(value)
+                .font(COSType.body(12.5))
+                .textSelection(.enabled)
         }
     }
 }

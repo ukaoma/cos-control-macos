@@ -659,6 +659,8 @@ private struct SessionPetRoot: View {
     /// untouched, and so are rows that merely share a name across different
     /// workspaces: there the workspace is already doing the job.
     private func slotSecondLine(for session: ClaudeSession) -> String {
+        // 0.5.229: a scheduled job says what it is; its folder ("scripts") says nothing.
+        if session.isScheduledJob { return "Scheduled job" }
         guard indistinguishableSessionIDs.contains(session.id),
               let opened = session.createdDate else { return session.workspace }
         return PetRowIdentity.clockLabel(opened)
@@ -706,10 +708,15 @@ private struct SessionPetRoot: View {
             dim: false,
             primary: {
                 model.petFocusID = session.id
-                model.openSessionInPlatform(session)
+                if session.isScheduledJob {
+                    // 0.5.229: a scheduled job has no platform window; it opens in Control.
+                    presenter.openInControl(session)
+                } else {
+                    model.openSessionInPlatform(session)
+                }
             },
             actions: PetRowActions(
-                openInPlatform: {
+                openInPlatform: session.isScheduledJob ? nil : {
                     model.petFocusID = session.id
                     model.openSessionInPlatform(session)
                 },
@@ -739,10 +746,14 @@ private struct SessionPetRoot: View {
             dim: true,
             primary: {
                 model.petFocusID = session.id
-                model.openSessionInPlatform(session)
+                if session.isScheduledJob {
+                    presenter.openInControl(session)
+                } else {
+                    model.openSessionInPlatform(session)
+                }
             },
             actions: PetRowActions(
-                openInPlatform: {
+                openInPlatform: session.isScheduledJob ? nil : {
                     model.petFocusID = session.id
                     model.openSessionInPlatform(session)
                 },
@@ -984,7 +995,8 @@ private struct SessionPetRoot: View {
                         outcome: row.name.isEmpty
                             ? (row.summary.isEmpty ? "Finished" : row.summary)
                             : row.name,
-                        title: row.summary.isEmpty ? "Finished" : row.summary,
+                        // 0.5.229: a scheduled job keeps one row that counts its runs today.
+                        title: row.isScheduledJob ? row.runsLabel() : (row.summary.isEmpty ? "Finished" : row.summary),
                         mark: PetProvider.mark(row.provider),
                         markTint: providerTint(row.provider),
                         tint: COSPalette.gold,
@@ -998,7 +1010,7 @@ private struct SessionPetRoot: View {
                             }
                         },
                         actions: PetRowActions(
-                            openInPlatform: {
+                            openInPlatform: row.isScheduledJob ? nil : {
                                 if let session = ClaudeSession.fromCompletion(row) {
                                     model.openSessionInPlatform(session)
                                 }

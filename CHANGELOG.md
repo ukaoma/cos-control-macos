@@ -1,3 +1,12 @@
+## 0.5.229 (build 267)
+
+COS's own background Claude runs show as scheduled jobs.
+
+- COS starts Claude runs of its own, such as the meeting watcher's sync and the glasses server's queries. Claude Code lists each run like any session, so Sessions and the Session Pet showed rows named after a folder, such as scripts-b8, with no transcript, no Claude tab and nothing to continue. COS Control now names each run by the job that started it, found by walking the process tree up to its COS LaunchAgent: Meeting watcher, COS server, or From a Claude session for a run that a session's hook starts. Claude Desktop and terminal sessions are unchanged.
+- The pet shows a running job with its script and a Scheduled job line. When a job's runs finish it keeps one DONE row with the last finish and today's run count, so a burst of runs never pushes a session's finish out of the list, and a job finishing never counts as NEW.
+- Sessions marks a running job SCHEDULED JOB and lists today's finished runs under Scheduled jobs today with their script, finish time and duration. Opening a job shows those facts instead of a transcript, with no Open in platform and no Continue. Runs are recorded while the Session Pet is on; a run that starts and ends between two of its refreshes is not.
+- Meeting audio alert telemetry is readable: `log show --predicate 'subsystem == "com.gotcos.control"'` shows permission answers, posting errors and failed checks. 0.5.228 wrote them with NSLog, which the unified log redacted to <private>.
+
 ## 0.5.228 (build 266)
 
 The meeting audio alert fires only when the phone is still running and its audio is not.

@@ -1392,6 +1392,13 @@ struct ClaudeSession: Identifiable, Sendable {
     let updatedAt: String
     let pinned: Bool
     let discussionSummary: String
+    /// 0.5.229. "job" when COS automation started this run (the helper's scheduledJobOrigin), with
+    /// the job's name ("Meeting watcher") and the script that ran Claude ("sync_meetings.py").
+    let origin: String
+    let jobLabel: String
+    let jobScript: String
+
+    var isScheduledJob: Bool { origin == "job" }
 
     var stateLabel: String {
         switch state {
@@ -1424,6 +1431,7 @@ struct ClaudeSession: Identifiable, Sendable {
     }
 
     var title: String {
+        if isScheduledJob, !jobLabel.isEmpty { return jobLabel }
         if !name.isEmpty { return name }
         if !workspace.isEmpty { return workspace }
         return sessionId
@@ -1547,6 +1555,8 @@ struct ClaudeSession: Identifiable, Sendable {
     /// row speaks its live summary — the field the helper has shipped all
     /// along and the pet never rendered.
     var petLiveLine: String {
+        // 0.5.229: a scheduled job's live line is the script it runs.
+        if isScheduledJob { return jobScript.isEmpty ? "running" : jobScript }
         if state == "waiting" {
             let need = waitingFor.trimmingCharacters(in: .whitespacesAndNewlines)
             return need.isEmpty || need == "user" ? "needs you" : need
@@ -1603,10 +1613,11 @@ struct ClaudeSession: Identifiable, Sendable {
     var petProviderMark: PetProvider.Mark { PetProvider.mark(provider) }
 
     var providerLabel: String {
+        if isScheduledJob { return "Scheduled job" }
         switch provider {
-        case "codex": "Codex"
-        case "cursor": "Cursor"
-        default: "Claude"
+        case "codex": return "Codex"
+        case "cursor": return "Cursor"
+        default: return "Claude"
         }
     }
 
@@ -1638,6 +1649,9 @@ struct ClaudeSession: Identifiable, Sendable {
         updatedAt = o["updatedAt"]?.string ?? ""
         pinned = o["pinned"]?.bool ?? false
         discussionSummary = o["discussion_summary"]?.string ?? o["discussionSummary"]?.string ?? ""
+        origin = o["origin"]?.string ?? ""
+        jobLabel = o["jobLabel"]?.string ?? ""
+        jobScript = o["jobScript"]?.string ?? ""
     }
 
     static func isKeepWarmSessionTitle(_ title: String) -> Bool {
@@ -1896,6 +1910,27 @@ struct PetCompletion: Identifiable, Sendable, Equatable {
     /// The last thing the session was doing, captured at the moment it stopped.
     /// Empty on rows written before 0.5.171, which render the old literal.
     var summary: String = ""
+    /// 0.5.229. A scheduled job keeps ONE row per job (sessionId "job:<label>"): its last finish and
+    /// how many runs finished on `runsDay`, so a burst of runs never pushes a session's finish out.
+    var jobLabel: String = ""
+    var jobScript: String = ""
+    var runsToday: Int = 0
+    var runsDay: String = ""
+
+    var isScheduledJob: Bool { !jobLabel.isEmpty }
+
+    /// yyyy-MM-dd in the given calendar.
+    static func dayKey(_ date: Date, calendar: Calendar = .current) -> String {
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+    }
+
+    /// "1 run today", "4 runs today"; a job row still showing after midnight says "4 runs".
+    func runsLabel(now: Date = Date(), calendar: Calendar = .current) -> String {
+        let count = max(1, runsToday)
+        let noun = count == 1 ? "run" : "runs"
+        return runsDay == Self.dayKey(now, calendar: calendar) ? "\(count) \(noun) today" : "\(count) \(noun)"
+    }
 }
 
 // Codable by hand in BOTH directions: decode defaults provider/workspace to ""
@@ -1916,6 +1951,7 @@ extension PetCompletion {
 extension PetCompletion: Codable {
     private enum CodingKeys: String, CodingKey {
         case id, sessionId, name, provider, workspace, finishedAt, seen, summary
+        case jobLabel, jobScript, runsToday, runsDay
     }
 
     init(from decoder: Decoder) throws {
@@ -1928,6 +1964,10 @@ extension PetCompletion: Codable {
         finishedAt = try c.decode(Date.self, forKey: .finishedAt)
         seen = try c.decodeIfPresent(Bool.self, forKey: .seen) ?? false
         summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        jobLabel = try c.decodeIfPresent(String.self, forKey: .jobLabel) ?? ""
+        jobScript = try c.decodeIfPresent(String.self, forKey: .jobScript) ?? ""
+        runsToday = try c.decodeIfPresent(Int.self, forKey: .runsToday) ?? 0
+        runsDay = try c.decodeIfPresent(String.self, forKey: .runsDay) ?? ""
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1940,14 +1980,34 @@ extension PetCompletion: Codable {
         try c.encode(finishedAt, forKey: .finishedAt)
         try c.encode(summary, forKey: .summary)
         try c.encode(seen, forKey: .seen)
+        try c.encode(jobLabel, forKey: .jobLabel)
+        try c.encode(jobScript, forKey: .jobScript)
+        try c.encode(runsToday, forKey: .runsToday)
+        try c.encode(runsDay, forKey: .runsDay)
     }
 }
 
 extension ClaudeSession {
     /// A finished chip re-hydrated into a routable session. `state: "recent"`
     /// + `alive: true` keeps it isPetVisible-shaped for the reveal path.
+    /// 0.5.229: a finished scheduled job is never revealed; it reopens as its facts, not alive.
     static func fromCompletion(_ row: PetCompletion) -> ClaudeSession? {
-        ClaudeSession(.object([
+        if row.isScheduledJob {
+            return ClaudeSession(.object([
+                "id": .string(row.sessionId),
+                "provider": .string(row.provider),
+                "name": .string(row.name),
+                "workspace": .string(row.workspace),
+                "state": .string("recent"),
+                "alive": .bool(false),
+                "waitingFor": .string(""),
+                "updatedAt": .string(ISO8601DateFormatter().string(from: row.finishedAt)),
+                "origin": .string("job"),
+                "jobLabel": .string(row.jobLabel),
+                "jobScript": .string(row.jobScript),
+            ]))
+        }
+        return ClaudeSession(.object([
             "id": .string(row.sessionId),
             "provider": .string(row.provider),
             "name": .string(row.name),
@@ -1955,6 +2015,24 @@ extension ClaudeSession {
             "state": .string("recent"),
             "alive": .bool(true),
             "waitingFor": .string(""),
+        ]))
+    }
+
+    /// 0.5.229. One finished run from the Sessions tab's Scheduled jobs today list, opened as its facts.
+    static func fromJobRun(_ run: ScheduledJobRun) -> ClaudeSession? {
+        let iso = ISO8601DateFormatter()
+        return ClaudeSession(.object([
+            "id": .string(run.id),
+            "provider": .string("claude"),
+            "name": .string(run.label),
+            "workspace": .string("Scheduled job"),
+            "state": .string("recent"),
+            "alive": .bool(false),
+            "createdAt": .string(run.startedAt.map { iso.string(from: $0) } ?? ""),
+            "updatedAt": .string(iso.string(from: run.finishedAt)),
+            "origin": .string("job"),
+            "jobLabel": .string(run.label),
+            "jobScript": .string(run.script),
         ]))
     }
 
@@ -2137,6 +2215,18 @@ enum PetCompletionDetector {
                 // running -> waiting is a handoff to Miles, not a finish.
                 guard !now_.isPetWorking, now_.state != "waiting" else { continue }
             }
+            if prior.isScheduledJob {
+                // 0.5.229: one row per job, keyed by its name and already seen: a job finishing is not news.
+                let label = prior.title
+                out.append(PetCompletion(
+                    id: "\(prior.provider):job:\(label)", sessionId: "job:\(label)", name: label,
+                    provider: prior.provider, workspace: "Scheduled job",
+                    finishedAt: now, seen: true, summary: prior.jobScript,
+                    jobLabel: label, jobScript: prior.jobScript,
+                    runsToday: 1, runsDay: PetCompletion.dayKey(now)
+                ))
+                continue
+            }
             out.append(PetCompletion(
                 id: prior.id, sessionId: prior.sessionId, name: prior.name,
                 provider: prior.provider, workspace: prior.workspace,
@@ -2163,7 +2253,13 @@ enum PetCompletionDetector {
         for row in fresh {
             var next = row
             if let i = rows.firstIndex(where: { $0.id == row.id }) {
-                next.seen = workingBefore.contains(row.id) ? false : rows[i].seen
+                if row.isScheduledJob {
+                    // 0.5.229: the job's one row counts runs finished on the same day.
+                    next.runsToday = (rows[i].runsDay == row.runsDay ? rows[i].runsToday : 0) + row.runsToday
+                    next.seen = true
+                } else {
+                    next.seen = workingBefore.contains(row.id) ? false : rows[i].seen
+                }
                 rows[i] = next
             } else {
                 rows.append(next)
@@ -2187,7 +2283,8 @@ enum PetCompletionDetector {
     /// and unseen-wins so a merge never hides news.
     static func canonicalized(_ rows: [PetCompletion]) -> [PetCompletion] {
         var out: [PetCompletion] = []
-        for row in rows.sorted(by: { $0.sessionId.count > $1.sessionId.count }) {
+        // 0.5.229: job rows are keyed by name and never prefix-merged ("Meeting watcher" vs "Meeting watcher sync").
+        for row in rows.filter({ !$0.isScheduledJob }).sorted(by: { $0.sessionId.count > $1.sessionId.count }) {
             if let i = out.firstIndex(where: {
                 $0.provider == row.provider
                     && ($0.sessionId.lowercased().hasPrefix(row.sessionId.lowercased())
@@ -2206,7 +2303,56 @@ enum PetCompletionDetector {
                 out.append(row)
             }
         }
-        return out
+        return out + rows.filter(\.isScheduledJob)
+    }
+}
+
+/// 0.5.229. One finished run of a COS scheduled job, kept for the Sessions tab's Scheduled jobs today list.
+struct ScheduledJobRun: Identifiable, Codable, Sendable, Equatable {
+    let id: String
+    let label: String
+    let script: String
+    let startedAt: Date?
+    let finishedAt: Date
+
+    var duration: TimeInterval? {
+        startedAt.map { max(0, finishedAt.timeIntervalSince($0)) }
+    }
+
+    /// "38s", "4m 12s", "1h 3m".
+    static func durationLabel(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        if total < 60 { return "\(total)s" }
+        if total < 3600 { return total % 60 == 0 ? "\(total / 60)m" : "\(total / 60)m \(total % 60)s" }
+        let minutes = (total % 3600) / 60
+        return minutes == 0 ? "\(total / 3600)h" : "\(total / 3600)h \(minutes)m"
+    }
+}
+
+/// 0.5.229. A scheduled job row that was running and is no longer running finished now. The pet's poll
+/// is the clock, so a run that starts and ends between two polls is never seen.
+enum ScheduledJobLedger {
+    static let cap = 200
+
+    static func record(
+        existing: [ScheduledJobRun], previous: [ClaudeSession], current: [ClaudeSession],
+        now: Date = Date(), calendar: Calendar = .current
+    ) -> [ScheduledJobRun] {
+        let stillRunning = Set(current.filter(\.isPetWorking).map(\.id))
+        var runs = existing
+        for prior in previous where prior.isScheduledJob && prior.isPetWorking && !stillRunning.contains(prior.id) {
+            guard !runs.contains(where: { $0.id == prior.sessionId }) else { continue }
+            runs.append(ScheduledJobRun(
+                id: prior.sessionId, label: prior.title, script: prior.jobScript,
+                startedAt: prior.createdDate, finishedAt: now
+            ))
+        }
+        return prune(runs, now: now, calendar: calendar)
+    }
+
+    static func prune(_ runs: [ScheduledJobRun], now: Date = Date(), calendar: Calendar = .current) -> [ScheduledJobRun] {
+        let today = runs.filter { calendar.isDate($0.finishedAt, inSameDayAs: now) }
+        return Array(today.sorted { $0.finishedAt > $1.finishedAt }.prefix(cap))
     }
 }
 

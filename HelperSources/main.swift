@@ -8353,6 +8353,205 @@ final class COSControlHelper {
         ]
     }
 
+    // MARK: - Scheduled jobs (0.5.229)
+    //
+    // COS's own automation starts `claude -p`: the meeting watcher's sync (llm_client.py) and the
+    // glasses server's queries. Claude Code registers each run in ~/.claude/sessions like any
+    // session, so Sessions and the pet listed rows such as "scripts-b8" that had no transcript, no
+    // Desktop tab and nothing to continue. Miles, 2026-09-14: track them as scheduled jobs.
+    //
+    // `entrypoint` and `kind` cannot tell these runs apart: a `claude -p` has reported
+    // `entrypoint=claude-desktop, kind=interactive` (server lib/thread-occupancy.ts). The process
+    // tree can. A run whose ancestry reaches a com.cos LaunchAgent is that job; a run started beneath
+    // another `claude` process came from that session. Claude Desktop, a terminal, tmux or an unknown
+    // daemon stays a session.
+
+    struct ProcessNode: Sendable, Equatable {
+        var ppid: Int32
+        var comm: String
+        var args: [String]
+    }
+
+    struct ScheduledJobOrigin: Sendable, Equatable {
+        var label: String
+        var script: String
+    }
+
+    /// Parent pid and short command name from sysctl, plus the argument vector when asked. The walk
+    /// asks only for ancestors: a Claude run's own arguments can carry its prompt.
+    static func processNode(pid: Int32, includeArgs: Bool) -> ProcessNode? {
+        guard pid > 0 else { return nil }
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        let comm = withUnsafeBytes(of: info.kp_proc.p_comm) { raw in
+            String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+        }
+        return ProcessNode(ppid: info.kp_eproc.e_ppid, comm: comm, args: includeArgs ? processArguments(pid: pid) : [])
+    }
+
+    static func processArguments(pid: Int32) -> [String] {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else { return [] }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0, size > 0 else { return [] }
+        return parseProcArgs2(Array(buffer.prefix(size)))
+    }
+
+    /// KERN_PROCARGS2: a little-endian Int32 argc, the executable path, NUL padding, then argc
+    /// NUL-terminated arguments. The environment that follows is never read.
+    static func parseProcArgs2(_ bytes: [UInt8]) -> [String] {
+        guard bytes.count >= 4 else { return [] }
+        let argc = Int(bytes[0]) | Int(bytes[1]) << 8 | Int(bytes[2]) << 16 | Int(bytes[3]) << 24
+        var index = 4
+        while index < bytes.count, bytes[index] != 0 { index += 1 }
+        while index < bytes.count, bytes[index] == 0 { index += 1 }
+        var args: [String] = []
+        while index < bytes.count, args.count < argc {
+            let start = index
+            while index < bytes.count, bytes[index] != 0 { index += 1 }
+            args.append(String(decoding: bytes[start..<index], as: UTF8.self))
+            index += 1
+        }
+        return args
+    }
+
+    /// The script an interpreter runs: the last argument naming a script file, as a bare file name.
+    static func scriptName(in args: [String]) -> String {
+        let suffixes = [".py", ".sh", ".ts", ".mjs", ".cjs", ".js"]
+        guard let token = args.last(where: { arg in suffixes.contains { arg.hasSuffix($0) } }) else { return "" }
+        return URL(fileURLWithPath: token).lastPathComponent
+    }
+
+    /// "com.cos.meeting-watcher" reads "Meeting watcher"; the glasses server reads "COS server".
+    static func jobDisplayName(launchdLabel: String) -> String {
+        if launchdLabel == "com.cos.glasses-server" { return "COS server" }
+        let words = launchdLabel.dropFirst("com.cos.".count)
+            .split(whereSeparator: { $0 == "-" || $0 == "." || $0 == "_" })
+            .map(String.init)
+        guard let first = words.first else { return "COS job" }
+        return ([first.prefix(1).uppercased() + String(first.dropFirst())] + words.dropFirst()).joined(separator: " ")
+    }
+
+    /// `launchctl list` rows are "PID<TAB>Status<TAB>Label"; a "-" PID is a job that is not running.
+    static func parseLaunchctlList(_ text: String) -> [Int32: String] {
+        var out: [Int32: String] = [:]
+        for line in text.split(whereSeparator: \.isNewline) {
+            let parts = line.split(separator: "\t", omittingEmptySubsequences: false)
+            guard parts.count >= 3, let pid = Int32(parts[0].trimmingCharacters(in: .whitespaces)), pid > 0 else { continue }
+            out[pid] = parts[2].trimmingCharacters(in: .whitespaces)
+        }
+        return out
+    }
+
+    static let scheduledJobFromSessionLabel = "From a Claude session"
+
+    /// Walks up from a Claude run's parent. Returns the job that started it, or nil for a session
+    /// Miles opened and for anything the walk cannot place. `launchdLabels` runs only when the walk
+    /// reaches a direct child of launchd other than Claude Desktop.
+    static func scheduledJobOrigin(
+        claudePid: Int32,
+        lookup: (Int32) -> ProcessNode?,
+        launchdLabels: () -> [Int32: String]
+    ) -> ScheduledJobOrigin? {
+        guard let start = lookup(claudePid) else { return nil }
+        var pid = start.ppid
+        var script = ""
+        var hops = 0
+        while pid > 1, hops < 16, let node = lookup(pid) {
+            hops += 1
+            if script.isEmpty { script = scriptName(in: node.args) }
+            if node.comm == "claude" {
+                return ScheduledJobOrigin(label: scheduledJobFromSessionLabel, script: script)
+            }
+            if node.ppid == 1 {
+                // Only Claude Desktop is skipped without asking launchd: framework Python runs as
+                // Python.app/Contents/MacOS/Python, and the meeting watcher is exactly that (2026-09-14).
+                if node.comm == "Claude", node.args.first?.hasSuffix("/Claude.app/Contents/MacOS/Claude") == true { return nil }
+                guard let label = launchdLabels()[pid], label.hasPrefix("com.cos.") else { return nil }
+                return ScheduledJobOrigin(label: jobDisplayName(launchdLabel: label), script: script)
+            }
+            pid = node.ppid
+        }
+        return nil
+    }
+
+    static func loadClaudeRegistryPids(sessionsRoot: URL) -> [(sessionId: String, pid: Int32)] {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: sessionsRoot, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return entries.compactMap { file in
+            guard file.pathExtension == "json",
+                  let data = try? Data(contentsOf: file),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let sessionId = obj["sessionId"] as? String, !sessionId.isEmpty,
+                  let pid = jsonInt(obj["pid"]), pid > 0, pid <= Int(Int32.max) else { return nil }
+            return (sessionId: sessionId, pid: Int32(pid))
+        }
+    }
+
+    /// Marks live Claude rows that COS automation started, and carries a job's label forward by row
+    /// id from the previous list, so a finished run that left a transcript keeps it.
+    static func annotateScheduledJobs(
+        _ rows: [[String: Any]],
+        registry: [(sessionId: String, pid: Int32)],
+        previous: [[String: Any]] = [],
+        origin: (Int32) -> ScheduledJobOrigin?
+    ) -> [[String: Any]] {
+        let remembered = previous.filter { $0["origin"] as? String == "job" }
+        var resolved: [Int32: ScheduledJobOrigin?] = [:]
+        return rows.map { source in
+            var row = source
+            guard (row["provider"] as? String ?? "claude") == "claude",
+                  let id = row["id"] as? String, !id.isEmpty else { return row }
+            if row["alive"] as? Bool == true,
+               let entry = registry.first(where: { sessionIdsMatch(id, $0.sessionId) }) {
+                let found: ScheduledJobOrigin?
+                if let cached = resolved[entry.pid] {
+                    found = cached
+                } else {
+                    found = origin(entry.pid)
+                    resolved[entry.pid] = found
+                }
+                guard let found else { return row }
+                row["origin"] = "job"
+                row["jobLabel"] = found.label
+                row["jobScript"] = found.script
+                return row
+            }
+            if row["origin"] == nil,
+               let prior = remembered.first(where: { sessionIdsMatch(id, $0["id"] as? String ?? "") }) {
+                row["origin"] = "job"
+                row["jobLabel"] = prior["jobLabel"] as? String ?? ""
+                row["jobScript"] = prior["jobScript"] as? String ?? ""
+            }
+            return row
+        }
+    }
+
+    private func annotatedScheduledJobs(_ rows: [[String: Any]], home: URL, previous: [[String: Any]]) -> [[String: Any]] {
+        let live = rows.contains { ($0["provider"] as? String ?? "claude") == "claude" && $0["alive"] as? Bool == true }
+        guard live || previous.contains(where: { $0["origin"] as? String == "job" }) else { return rows }
+        let registry = live
+            ? Self.loadClaudeRegistryPids(sessionsRoot: home.appendingPathComponent(".claude/sessions", isDirectory: true))
+            : []
+        var labels: [Int32: String]?
+        return Self.annotateScheduledJobs(rows, registry: registry, previous: previous) { pid in
+            Self.scheduledJobOrigin(
+                claudePid: pid,
+                lookup: { Self.processNode(pid: $0, includeArgs: $0 != pid) },
+                launchdLabels: {
+                    if let labels { return labels }
+                    let parsed = Self.parseLaunchctlList((try? self.launchctl(["list"]))?.output ?? "")
+                    labels = parsed
+                    return parsed
+                }
+            )
+        }
+    }
+
     static func isPetLiveRow(_ row: [String: Any]) -> Bool {
         if isKeepWarmSessionTitle((row["name"] as? String) ?? "") { return false }
         if row["alive"] as? Bool == true { return true }
@@ -10477,12 +10676,15 @@ final class COSControlHelper {
             }
         }
         let claudeProjects = home.appendingPathComponent(".claude/projects", isDirectory: true)
+        let previousRows = peers
         peers = Self.petLiveRows(
             cached: peers,
             livePeers: serverAnswered && enabled ? live : nil,
             transcriptActivity: { Self.claudeSessionActivity(sessionId: $0, projectsRoot: claudeProjects) },
             composerActivity: composerMeta.activity
         )
+        // 0.5.229: a live row that COS automation started reads as that scheduled job.
+        peers = annotatedScheduledJobs(peers, home: home, previous: previousRows)
         emitSessionList(
             peers, liveOnly: true, enabled: enabled, reason: reason, counts: counts,
             dropped: dropped, cached: cached, partial: false
@@ -10615,6 +10817,12 @@ final class COSControlHelper {
         peers = Self.refreshClaudeTranscriptActivity(peers) { Self.claudeSessionActivity(sessionId: $0, projectsRoot: claudeProjects) }
         peers = Self.applyLiveWorkingState(peers, composerActivity: composerMeta.activity)
         peers.removeAll { Self.isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
+        // 0.5.229: live runs that COS automation started read as scheduled jobs; a finished run
+        // that left a transcript keeps its label from the previous list.
+        peers = annotatedScheduledJobs(
+            peers, home: home,
+            previous: (Self.readSessionListCache(from: sessionListCacheURL)?["sessions"] as? [[String: Any]]) ?? []
+        )
         peers.sort { a, b in
             let aLive = a["alive"] as? Bool == true
             let bLive = b["alive"] as? Bool == true
@@ -15367,6 +15575,93 @@ final class COSControlHelper {
                    "the Sessions walk shows a Claude row's Claude Desktop tab title")
         try expect(liveActDesktopRows[1]["name"] as? String == "Codex thread" && liveActDesktopRows[2]["name"] as? String == "Offline recording and gesture remapping",
                    "other providers and rows missing from the Desktop index keep their names")
+        // 0.5.229: COS automation's Claude runs read as scheduled jobs, found by walking the process tree.
+        var argBytes: [UInt8] = [3, 0, 0, 0]
+        func appendNulTerminated(_ text: String, padding: Int = 1) {
+            argBytes.append(contentsOf: Array(text.utf8))
+            argBytes.append(contentsOf: [UInt8](repeating: 0, count: padding))
+        }
+        appendNulTerminated("/usr/bin/python3", padding: 3)
+        appendNulTerminated("python3")
+        appendNulTerminated("/x/sync_meetings.py")
+        appendNulTerminated("--quiet")
+        appendNulTerminated("HOME=/private")
+        try expect(Self.parseProcArgs2(argBytes) == ["python3", "/x/sync_meetings.py", "--quiet"],
+                   "KERN_PROCARGS2 yields argc arguments after the executable path and padding, never the environment")
+        try expect(Self.parseProcArgs2([]).isEmpty && Self.parseProcArgs2([5, 0, 0, 0]).isEmpty,
+                   "a short or empty argument buffer reads as no arguments")
+        let selfNode = Self.processNode(pid: getpid(), includeArgs: true)
+        try expect(selfNode != nil && (selfNode?.ppid ?? 0) > 0 && selfNode?.args.contains("self-test") == true,
+                   "sysctl reads this helper's own parent pid and arguments")
+        try expect(Self.processNode(pid: getpid(), includeArgs: false)?.args.isEmpty == true,
+                   "arguments are read only when asked, so a Claude run's own prompt is never read")
+        try expect(Self.scriptName(in: ["python3", "/x/sync_meetings.py", "--quiet"]) == "sync_meetings.py"
+                   && Self.scriptName(in: ["/opt/homebrew/bin/node", "/x/tsx/dist/cli.mjs", "server/index.ts"]) == "index.ts"
+                   && Self.scriptName(in: ["/Applications/Claude.app/Contents/MacOS/Claude"]).isEmpty,
+                   "the script name is the last script-file argument")
+        try expect(Self.jobDisplayName(launchdLabel: "com.cos.meeting-watcher") == "Meeting watcher"
+                   && Self.jobDisplayName(launchdLabel: "com.cos.glasses-server") == "COS server"
+                   && Self.jobDisplayName(launchdLabel: "com.cos.daily_loop") == "Daily loop",
+                   "a com.cos LaunchAgent label reads as a job name")
+        try expect(Self.parseLaunchctlList("PID\tStatus\tLabel\n1001\t0\tcom.cos.meeting-watcher\n-\t0\tcom.cos.meeting-sync\n") == [1001: "com.cos.meeting-watcher"],
+                   "launchctl list maps running pids to labels and skips jobs that are not running")
+        let jobTable: [Int32: ProcessNode] = [
+            200: ProcessNode(ppid: 199, comm: "claude", args: []),
+            // Framework Python, as the live meeting watcher runs it (2026-09-14): an app-bundle executable.
+            199: ProcessNode(ppid: 198, comm: "Python", args: ["/opt/homebrew/Cellar/python@3.11/3.11.14_1/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python", "/x/sync_meetings.py"]),
+            198: ProcessNode(ppid: 1, comm: "Python", args: ["/opt/homebrew/Cellar/python@3.11/3.11.14_1/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python", "/x/meeting_watcher.py"]),
+            300: ProcessNode(ppid: 299, comm: "claude", args: []),
+            299: ProcessNode(ppid: 298, comm: "disclaimer", args: ["disclaimer"]),
+            298: ProcessNode(ppid: 1, comm: "Claude", args: ["/Applications/Claude.app/Contents/MacOS/Claude"]),
+            400: ProcessNode(ppid: 399, comm: "claude", args: []),
+            399: ProcessNode(ppid: 397, comm: "zsh", args: ["-zsh"]),
+            397: ProcessNode(ppid: 1, comm: "tmux", args: ["tmux"]),
+            500: ProcessNode(ppid: 499, comm: "claude", args: []),
+            499: ProcessNode(ppid: 498, comm: "python3", args: ["python3", "/x/transcript_summary_hook.py"]),
+            498: ProcessNode(ppid: 299, comm: "claude", args: []),
+            600: ProcessNode(ppid: 599, comm: "claude", args: []),
+            599: ProcessNode(ppid: 1, comm: "node", args: ["node", "/x/other.js"]),
+        ]
+        let jobLabels: [Int32: String] = [198: "com.cos.meeting-watcher", 298: "application.com.anthropic.claudefordesktop.1", 599: "homebrew.mxcl.other"]
+        var jobLabelCalls = 0
+        func jobOrigin(_ pid: Int32) -> ScheduledJobOrigin? {
+            Self.scheduledJobOrigin(claudePid: pid, lookup: { jobTable[$0] }, launchdLabels: { jobLabelCalls += 1; return jobLabels })
+        }
+        try expect(jobOrigin(200) == ScheduledJobOrigin(label: "Meeting watcher", script: "sync_meetings.py"),
+                   "a run whose ancestry reaches a com.cos LaunchAgent is that job, named with the nearest script")
+        jobLabelCalls = 0
+        try expect(jobOrigin(300) == nil && jobLabelCalls == 0,
+                   "a Claude Desktop session stays a session, without asking launchd about an app bundle")
+        try expect(jobOrigin(400) == nil, "a terminal or tmux session stays a session")
+        try expect(jobOrigin(500) == ScheduledJobOrigin(label: Self.scheduledJobFromSessionLabel, script: "transcript_summary_hook.py"),
+                   "a run started beneath another claude process came from that session")
+        try expect(jobOrigin(600) == nil, "a daemon that is not a COS LaunchAgent is not a COS job")
+        try expect(jobOrigin(999) == nil, "a process the walk cannot read is nothing")
+        let jobRows: [[String: Any]] = [
+            ["id": "3d8702ff", "provider": "claude", "alive": true, "name": "scripts-b8"],
+            ["id": "5200eb02", "provider": "claude", "alive": true, "name": "mu-chief-staff-f7"],
+            ["id": "9a1b2c3d-0000", "provider": "claude", "alive": false, "name": "scripts-11"],
+            ["id": "codex-thread", "provider": "codex", "alive": true, "name": "Codex"],
+        ]
+        var jobOriginCalls = 0
+        let annotatedJobs = Self.annotateScheduledJobs(
+            jobRows,
+            registry: [(sessionId: "3d8702ff-c097-42a2-8b6d-1134b86bec88", pid: 65333), (sessionId: "5200eb02-9401", pid: 29395),
+                       (sessionId: "9a1b2c3d-0000-stale", pid: 12345)],
+            previous: [["id": "9a1b2c3d", "origin": "job", "jobLabel": "COS server", "jobScript": "index.ts"]]
+        ) { pid in
+            jobOriginCalls += 1
+            // A finished row can leave a registry file whose pid now belongs to something else.
+            if pid == 12345 { return ScheduledJobOrigin(label: "Recycled pid", script: "") }
+            return pid == 65333 ? ScheduledJobOrigin(label: "Meeting watcher", script: "sync_meetings.py") : nil
+        }
+        try expect(annotatedJobs[0]["origin"] as? String == "job" && annotatedJobs[0]["jobLabel"] as? String == "Meeting watcher"
+                   && annotatedJobs[0]["jobScript"] as? String == "sync_meetings.py",
+                   "a live row whose registry pid a COS job started is marked as that job")
+        try expect(annotatedJobs[1]["origin"] == nil && annotatedJobs[3]["origin"] == nil && jobOriginCalls == 2,
+                   "a Desktop session and a Codex row stay sessions, and each live Claude pid is walked once")
+        try expect(annotatedJobs[2]["origin"] as? String == "job" && annotatedJobs[2]["jobLabel"] as? String == "COS server",
+                   "a finished run keeps the job label it had in the previous list")
         // 0.5.227: meeting audio that stops reaching this Mac while the phone says it is recording.
         // 0.5.228: the heartbeat must postdate the audio, a growing upload queue is not a drop, and a Stop leaves the rows.
         let audioNow = Date(timeIntervalSince1970: 1_789_400_000)

@@ -3113,6 +3113,89 @@ struct ModelsContract {
     }
 
     /// D1: the per-id detector, execution-tested without ControllerModel.
+    /// 0.5.229: COS automation's Claude runs are scheduled jobs. A job row reads as its job, the pet keeps
+    /// one DONE row per job with today's run count, and the Sessions tab keeps today's finished runs.
+    private static func checkScheduledJobs() {
+        func job(_ native: String, _ state: String, label: String = "Meeting watcher") -> ClaudeSession {
+            ClaudeSession(.object([
+                "id": .string(native), "name": .string("scripts-b8"), "workspace": .string("scripts"),
+                "state": .string(state), "alive": .bool(state == "running"),
+                "createdAt": .string("2026-09-14T19:57:14Z"), "updatedAt": .string("2026-09-14T19:58:00Z"),
+                "origin": .string("job"), "jobLabel": .string(label), "jobScript": .string("sync_meetings.py"),
+            ]))!
+        }
+        let running = job("3d8702ff", "running")
+        precondition(running.isScheduledJob && running.title == "Meeting watcher" && running.providerLabel == "Scheduled job"
+            && running.petLiveLine == "sync_meetings.py", "a job row reads as its job, its script and a Scheduled job badge")
+        let plain = ClaudeSession(.object(["id": .string("5200eb02"), "name": .string("Event Hub"),
+                                           "state": .string("running"), "alive": .bool(true)]))!
+        precondition(!plain.isScheduledJob && plain.title == "Event Hub" && plain.providerLabel == "Claude" && plain.petLiveLine == "working",
+            "a session without the job origin reads exactly as before")
+
+        let now = ISO8601DateFormatter().date(from: "2026-09-14T20:00:00Z")!
+        let emitted = PetCompletionDetector.diff(previous: [running, plain], current: [], suppressedIDs: [], now: now)
+        let jobChip = emitted.first(where: \.isScheduledJob)
+        precondition(emitted.count == 2 && jobChip?.id == "claude:job:Meeting watcher" && jobChip?.seen == true
+            && jobChip?.runsToday == 1 && jobChip?.workspace == "Scheduled job" && jobChip?.summary == "sync_meetings.py",
+            "a finished job emits its job's one row, already seen, counting one run")
+        var ring = PetCompletionDetector.apply(existing: [], fresh: emitted, previous: [running, plain], current: [], now: now)
+        let later = now.addingTimeInterval(120)
+        let secondRun = job("9a1b2c3d", "running")
+        ring = PetCompletionDetector.apply(
+            existing: ring,
+            fresh: PetCompletionDetector.diff(previous: [secondRun], current: [], suppressedIDs: [], now: later),
+            previous: [secondRun], current: [], now: later)
+        let collapsed = ring.filter(\.isScheduledJob)
+        precondition(ring.count == 2 && collapsed.count == 1 && collapsed[0].runsToday == 2 && collapsed[0].finishedAt == later,
+            "two runs of one job keep one row with the newest finish and a count of two")
+        precondition(PetLedger.resolve(sessions: [], completions: ring).unseen == 1,
+            "a job finishing never counts as NEW; the session's finish still does")
+        precondition(collapsed[0].runsLabel(now: later) == "2 runs today"
+            && collapsed[0].runsLabel(now: later.addingTimeInterval(24 * 3600)) == "2 runs",
+            "the job row says how many runs finished today")
+        let tomorrow = later.addingTimeInterval(24 * 3600)
+        let nextDay = PetCompletionDetector.apply(
+            existing: ring,
+            fresh: PetCompletionDetector.diff(previous: [job("aa11bb22", "running")], current: [], suppressedIDs: [], now: tomorrow),
+            previous: [], current: [], now: tomorrow)
+        precondition(nextDay.filter(\.isScheduledJob).first?.runsToday == 1, "a new day starts the job's count again")
+        let prefixTwins = PetCompletionDetector.canonicalized([
+            PetCompletion(id: "claude:job:Meeting watcher", sessionId: "job:Meeting watcher", name: "Meeting watcher",
+                          provider: "claude", workspace: "Scheduled job", finishedAt: now, seen: true, jobLabel: "Meeting watcher"),
+            PetCompletion(id: "claude:job:Meeting watcher sync", sessionId: "job:Meeting watcher sync", name: "Meeting watcher sync",
+                          provider: "claude", workspace: "Scheduled job", finishedAt: now, seen: true, jobLabel: "Meeting watcher sync"),
+        ])
+        precondition(prefixTwins.count == 2, "two jobs whose names share a prefix never merge into one row")
+        let reopened = ClaudeSession.fromCompletion(collapsed[0])
+        precondition(reopened?.isScheduledJob == true && reopened?.alive == false && reopened?.id == collapsed[0].id,
+            "a finished job reopens as a job, not a live session, under the id the pet looks up")
+        let encoded = try! JSONEncoder().encode([collapsed[0]])
+        let decoded = try! JSONDecoder().decode([PetCompletion].self, from: encoded)
+        precondition(decoded.first?.jobLabel == "Meeting watcher" && decoded.first?.runsToday == 2
+            && decoded.first?.runsDay == collapsed[0].runsDay, "a job row survives relaunch")
+        let legacy = try! JSONDecoder().decode([PetCompletion].self, from: Data(#"[{"id":"claude:x","sessionId":"x","finishedAt":0}]"#.utf8))
+        precondition(legacy.first?.isScheduledJob == false && legacy.first?.runsToday == 0,
+            "a row written before 0.5.229 still decodes as a session")
+
+        var runs = ScheduledJobLedger.record(existing: [], previous: [running, plain], current: [], now: now)
+        precondition(runs.count == 1 && runs[0].label == "Meeting watcher" && runs[0].script == "sync_meetings.py"
+            && runs[0].duration == now.timeIntervalSince(running.createdDate!),
+            "a finished job run is recorded with its start and finish; a finished session is not")
+        runs = ScheduledJobLedger.record(existing: runs, previous: [running], current: [], now: later)
+        precondition(runs.count == 1, "the same run is recorded once")
+        precondition(ScheduledJobLedger.record(existing: [], previous: [running], current: [running], now: now).isEmpty,
+            "a job still running has not finished")
+        let yesterdayRun = ScheduledJobRun(id: "old", label: "Meeting watcher", script: "", startedAt: nil,
+                                           finishedAt: now.addingTimeInterval(-30 * 3600))
+        precondition(ScheduledJobLedger.prune([yesterdayRun] + runs, now: now).count == 1, "only today's runs are kept")
+        let opened = ClaudeSession.fromJobRun(runs[0])
+        precondition(opened?.isScheduledJob == true && opened?.alive == false && opened?.title == "Meeting watcher",
+            "a finished run opens as its job")
+        precondition(ScheduledJobRun.durationLabel(38) == "38s" && ScheduledJobRun.durationLabel(252) == "4m 12s"
+            && ScheduledJobRun.durationLabel(3780) == "1h 3m", "durations read in seconds, minutes and hours")
+        print("COS Control: scheduled job rows, one DONE row per job, and today's runs passed")
+    }
+
     private static func checkPetCompletionDetector() {
         func sess(_ native: String, _ state: String, keepWarm: Bool = false) -> ClaudeSession {
             ClaudeSession(.object([
@@ -3958,6 +4041,7 @@ struct ModelsContract {
         checkPetSpriteStore()
         checkPetDismissals()
         checkPetCompletionDetector()
+        checkScheduledJobs()
         checkPetCompletionsPersist()
         checkPetJumpRoute()
         checkPetLedger()
