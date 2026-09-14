@@ -3738,6 +3738,10 @@ struct ModelsContract {
                      "an empty summary must fall back to the old literal, never to \"working\"")
         precondition(blank.petLiveLine == "working",
                      "petLiveLine keeps its own fallback; the two are different questions")
+        precondition(blank.petIdleLine == "idle",
+                     "an idle pet row with no summary says idle, never working")
+        precondition(running.petIdleLine == "Rebuilt the matrix",
+                     "an idle pet row keeps its summary")
 
         // The outcome is captured at the moment the session stops, from the
         // value already in scope there. Without this every finished row prints

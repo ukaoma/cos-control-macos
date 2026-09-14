@@ -3440,13 +3440,15 @@ need(re.search(r"\.padding\(\.trailing, size\.length\(4\)\)", slot_src),
 # from a previous..."), so leading with it made running rows indistinguishable
 # while their real names sat on the second line (Miles, 2026-09-01). Finished
 # rows still lead with their outcome — that is the 0.5.171 design and is right.
-for _fn in ("missionRow", "idleRow"):
+# The idle row reads petIdleLine (0.5.226): the same summary, but a blank
+# summary says "idle" instead of petLiveLine's "working".
+for _fn, _line in (("missionRow", "petLiveLine"), ("idleRow", "petIdleLine")):
     _row = code[code.index(f"private func {_fn}("):]
     _row = _row[:_row.index("actions: PetRowActions")]
     need("outcome: session.title" in _row,
          f"{_fn} no longer leads with the session name; running rows become "
          "indistinguishable whenever their summaries match")
-    need("title: session.petLiveLine" in _row,
+    need(f"title: session.{_line}" in _row,
          f"{_fn} lost its live summary from the second line")
 _done = code[code.index("private var completionsList"):]
 _done = _done[:_done.index("actions: PetRowActions")]
@@ -4913,7 +4915,19 @@ for need in ('"createdAt": peerTimeISO(row["startedAt"])', '"updatedAt": peerTim
 prepass = code(model[model.index("func loadPetSessions() async"):model.index('helper.run(["session-pet-live"]')])
 if "lastAuthoritativeRaw == nil, petSessions.isEmpty, !claudeSessions.isEmpty" not in prepass:
     fail("the pet may paint Activity's snapshot only before the helper's first live answer")
-print("COS Control: pet live rows follow transcript records (0.5.225)")
+refresh = body(helper, "static func refreshClaudeTranscriptActivity(")
+if 'if let title = activity.title, !title.isEmpty { out[index]["name"] = title }' not in refresh:
+    fail("a live Claude row must take its Claude Desktop tab title from the transcript (0.5.226)")
+if "claudeCustomTitleFromLines(lines)" not in reader:
+    fail("the activity reader must read the tab title from the lines it already holds (0.5.226)")
+if "title: main?.title ?? lastCustomTitle(in: url)" not in body(helper, "static func claudeSessionActivity("):
+    fail("a title record outside the activity window must come from the transcript head (0.5.226)")
+if not (0 <= fresh.find("Self.applyClaudeDesktopTitles(peers, desktopIndex: desktopIndex)") < fresh.find("Self.refreshClaudeTranscriptActivity(peers)")):
+    fail("the fresh Sessions walk must apply Claude Desktop tab titles before reading transcript records (0.5.226)")
+pet = (root / "Sources/SessionPet.swift").read_text()
+if "title: session.petIdleLine" not in body(pet, "private func idleRow("):
+    fail("an idle pet row must use petIdleLine, never petLiveLine's working fallback (0.5.226)")
+print("COS Control: pet live rows follow transcript records and tab titles (0.5.226)")
 PETLIVE
 
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"

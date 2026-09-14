@@ -1422,6 +1422,14 @@ struct ClaudeSession: Identifiable, Sendable {
         return summary.isEmpty ? "working" : summary
     }
 
+    /// 0.5.226: the second line of an idle-alive row. petLiveLine falls back to "working",
+    /// which the pet printed under IDLE for every session without a summary (Miles,
+    /// 2026-09-14); an idle row falls back to "idle".
+    var petIdleLine: String {
+        let summary = discussionSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? "idle" : summary
+    }
+
     /// What this session DID, for a row that has already finished. petLiveLine
     /// answers "what is it doing" and falls back to "working", which is wrong
     /// once nothing is running; this falls back to "Finished", the literal the

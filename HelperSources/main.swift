@@ -9885,6 +9885,8 @@ final class COSControlHelper {
         let at: Date
         let inFlight: Bool
         let waitingOnUser: Bool
+        /// 0.5.226: the newest `custom-title` in the same window, the tab title Claude Desktop shows.
+        var title: String? = nil
     }
 
     /// A live session's activity: its own transcript plus any subagent still working.
@@ -9894,6 +9896,7 @@ final class COSControlHelper {
         let inFlight: Bool
         let waitingOnUser: Bool
         let subagentInFlightAt: Date?
+        var title: String? = nil
     }
 
     /// First window read from the end of a transcript, and the widest it grows to (x4 a
@@ -9949,6 +9952,21 @@ final class COSControlHelper {
         return nil
     }
 
+    /// 0.5.226: the newest `custom-title` record in `lines`. Claude Desktop writes the title it
+    /// shows on a session's tab into the transcript as this record; the registry only carries a
+    /// derived name such as `mu-chief-staff-bc`.
+    static func claudeCustomTitleFromLines(_ lines: [String]) -> String? {
+        for line in lines.reversed() where line.contains("custom-title") {
+            guard let data = line.data(using: .utf8),
+                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  obj["type"] as? String == "custom-title",
+                  let title = (obj["customTitle"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !title.isEmpty else { continue }
+            return String(title.prefix(120))
+        }
+        return nil
+    }
+
     /// Complete lines between `start` and `end`, read with throwing FileHandle calls. A
     /// window that starts mid-file drops its first, cut line, and a last line without its
     /// newline is still being written. No per-line cap: a newest prompt carrying a pasted
@@ -9977,7 +9995,11 @@ final class COSControlHelper {
         while true {
             let length = min(window, maxBytes)
             let start = max(0, size - length)
-            if let turn = claudeTurnFromTail(claudeTailLines(handle: handle, start: start, end: size)) { return turn }
+            let lines = claudeTailLines(handle: handle, start: start, end: size)
+            if var turn = claudeTurnFromTail(lines) {
+                turn.title = claudeCustomTitleFromLines(lines)
+                return turn
+            }
             if start == 0 || length >= maxBytes { return nil }
             window *= 4
         }
@@ -10052,7 +10074,8 @@ final class COSControlHelper {
             lastActivityAt: last,
             inFlight: main?.inFlight ?? false,
             waitingOnUser: main?.waitingOnUser ?? false,
-            subagentInFlightAt: subagentInFlightAt
+            subagentInFlightAt: subagentInFlightAt,
+            title: main?.title ?? lastCustomTitle(in: url)
         )
     }
 
@@ -10103,6 +10126,7 @@ final class COSControlHelper {
                 out[index]["id"] = activity.sessionId
             }
             out[index]["updatedAt"] = isoString(from: activity.lastActivityAt)
+            if let title = activity.title, !title.isEmpty { out[index]["name"] = title }
             out[index]["turnInFlight"] = activity.inFlight
             out[index]["waitingOnUser"] = activity.waitingOnUser
             if let sub = activity.subagentInFlightAt { out[index]["subagentInFlightAt"] = isoString(from: sub) }
@@ -10122,6 +10146,22 @@ final class COSControlHelper {
             var gone = row
             gone["alive"] = false
             return gone
+        }
+    }
+
+    /// 0.5.226: the Sessions walk names each Claude row with its Claude Desktop tab title. The
+    /// server's `display_label` is the first prompt or skill name for newer sessions.
+    static func applyClaudeDesktopTitles(_ rows: [[String: Any]], desktopIndex: [String: ClaudeDesktopSession]) -> [[String: Any]] {
+        rows.map { row in
+            guard (row["provider"] as? String ?? "claude").lowercased() == "claude",
+                  let id = row["id"] as? String else { return row }
+            let key = normalizeClaudeSessionId(id)
+            guard let title = (desktopIndex[key] ?? desktopIndex[String(key.prefix(8))])?.title
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !title.isEmpty else { return row }
+            var titled = row
+            titled["name"] = title
+            return titled
         }
     }
 
@@ -10501,6 +10541,7 @@ final class COSControlHelper {
             "Library/Application Support/Claude/claude-code-sessions",
             isDirectory: true
         )
+        let desktopIndex = Self.loadClaudeDesktopIndex(from: claudeDesktop)
         if let token = try? speakerReviewToken(),
            let response = request("/api/claude-sessions", token: token, timeout: 12),
            response.status == 200,
@@ -10509,7 +10550,6 @@ final class COSControlHelper {
             reason = body["reason"] as? String ?? ""
             counts = body["counts"] ?? counts
             if enabled {
-                let desktopIndex = Self.loadClaudeDesktopIndex(from: claudeDesktop)
                 peers = ((body["peers"] as? [[String: Any]]) ?? []).compactMap(Self.claudePeerProjection)
                 for index in peers.indices {
                     let id = peers[index]["id"] as? String ?? ""
@@ -10570,6 +10610,7 @@ final class COSControlHelper {
         } else {
             peers = Self.overlayLiveState(onto: serverRows, live: peers)
         }
+        peers = Self.applyClaudeDesktopTitles(peers, desktopIndex: desktopIndex)
         peers = Self.refreshClaudeTranscriptActivity(peers) { Self.claudeSessionActivity(sessionId: $0, projectsRoot: claudeProjects) }
         peers = Self.applyLiveWorkingState(peers, composerActivity: composerMeta.activity)
         peers.removeAll { Self.isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
@@ -15075,6 +15116,54 @@ final class COSControlHelper {
                    && Self.claudeTurnState(inFlight: false, waitingOnUser: false, lastActivityAt: liveActSession?.lastActivityAt,
                                            subagentInFlightAt: liveActSession?.subagentInFlightAt, now: liveActClock) == "running",
                    "a subagent still working keeps its session running after the parent turn ends")
+        // 0.5.226: rows carry the title Claude Desktop shows on the session's tab.
+        try expect(Self.claudeCustomTitleFromLines([
+            liveActBookkeeping("custom-title", nil),
+            #"{"type":"custom-title","customTitle":"Older title","sessionId":"x"}"#,
+            liveActRecord("assistant", "2026-09-14T03:25:15.996Z", stop: "end_turn", blocks: ["text"]),
+            #"{"type":"custom-title","customTitle":"  Event Hub programmatic access requirements  ","sessionId":"x"}"#,
+        ]) == "Event Hub programmatic access requirements", "the newest custom-title record is the tab title")
+        try expect(Self.claudeCustomTitleFromLines([liveActRecord("user", "2026-09-14T03:26:00.000Z", text: "custom-title is only a word here")]) == nil,
+                   "a message that mentions custom-title is not a title record")
+        let liveActTitled = Self.refreshClaudeTranscriptActivity([
+            ["id": liveActFull, "provider": "claude", "name": "mu-chief-staff-1b", "alive": true, "updatedAt": "2026-09-14T02:00:00Z"],
+            ["id": liveActIdle, "provider": "claude", "name": "Idle CLI", "alive": true, "updatedAt": "2026-09-14T02:00:00Z"],
+        ]) { id in
+            id == liveActFull
+                ? ClaudeSessionActivity(sessionId: liveActFull, lastActivityAt: liveActJustNow, inFlight: true, waitingOnUser: false,
+                                        subagentInFlightAt: nil, title: "Offline recording and gesture remapping")
+                : ClaudeSessionActivity(sessionId: liveActIdle, lastActivityAt: liveActJustNow, inFlight: false, waitingOnUser: false, subagentInFlightAt: nil)
+        }
+        try expect(liveActTitled.first?["name"] as? String == "Offline recording and gesture remapping",
+                   "a live row takes its Claude Desktop tab title instead of the registry's derived name")
+        try expect(liveActTitled.last?["name"] as? String == "Idle CLI", "a row without a title record keeps its name")
+        try Data((liveActRecord("assistant", liveActFormat.string(from: liveActClock.addingTimeInterval(-600)), stop: "end_turn", blocks: ["text"]) + "\n"
+                  + #"{"type":"custom-title","customTitle":"Offline recording and gesture remapping","sessionId":"3ae96fe1"}"# + "\n").utf8)
+            .write(to: liveActTranscript)
+        try expect(liveActFound.flatMap { Self.claudeTranscriptTurn(in: $0) }?.title == "Offline recording and gesture remapping",
+                   "a title record inside the activity window names the row without another read")
+        let liveActTitleId = "7a7a7a7a-1111-4222-8333-444444444444"
+        var liveActTitleBody = #"{"type":"custom-title","customTitle":"HubSpot table GraphQL query","sessionId":"7a7a7a7a"}"# + "\n"
+        while liveActTitleBody.utf8.count < Self.claudeActivityTailBytes + 64 * 1024 { liveActTitleBody += liveActPad }
+        liveActTitleBody += liveActRecord("assistant", liveActFormat.string(from: liveActClock.addingTimeInterval(-20)), stop: "end_turn", blocks: ["text"]) + "\n"
+        try Data(liveActTitleBody.utf8).write(to: liveActProject.appendingPathComponent("\(liveActTitleId).jsonl"))
+        try expect(Self.claudeTranscriptURL(sessionId: liveActTitleId, projectsRoot: liveActProjects).flatMap { Self.claudeTranscriptTurn(in: $0) }?.title == nil,
+                   "a title record outside the activity window is not in the tail")
+        try expect(Self.claudeSessionActivity(sessionId: liveActTitleId, projectsRoot: liveActProjects, now: liveActClock)?.title == "HubSpot table GraphQL query",
+                   "a new session's title near the head of its transcript still names the row")
+        let liveActDesktop: [String: ClaudeDesktopSession] = [
+            liveActIdle: ClaudeDesktopSession(id: liveActIdle, cliSessionId: liveActIdle, title: "HubSpot table GraphQL query", cwd: "/repo",
+                                              mtime: liveActNow, created: liveActNow),
+        ]
+        let liveActDesktopRows = Self.applyClaudeDesktopTitles([
+            ["id": liveActIdle, "provider": "claude", "name": "Can you show me the graphQL for this table"],
+            ["id": liveActIdle, "provider": "codex", "name": "Codex thread"],
+            ["id": liveActFull, "provider": "claude", "name": "Offline recording and gesture remapping"],
+        ], desktopIndex: liveActDesktop)
+        try expect(liveActDesktopRows.count == 3 && liveActDesktopRows[0]["name"] as? String == "HubSpot table GraphQL query",
+                   "the Sessions walk shows a Claude row's Claude Desktop tab title")
+        try expect(liveActDesktopRows[1]["name"] as? String == "Codex thread" && liveActDesktopRows[2]["name"] as? String == "Offline recording and gesture remapping",
+                   "other providers and rows missing from the Desktop index keep their names")
         try expect(Self.dateFromEpochMillis(NSNumber(value: 1_787_857_717_954)) != nil,
                    "sqlite JSON numbers arrive as NSNumber, not Int")
         try expect(Self.dateFromEpochMillis(NSNull()) == nil,

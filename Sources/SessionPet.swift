@@ -729,7 +729,7 @@ private struct SessionPetRoot: View {
         petRowD(
             id: session.id,
             outcome: session.title,
-            title: session.petLiveLine,
+            title: session.petIdleLine,
             mark: session.petProviderMark,
             markTint: providerTint(session.provider).opacity(0.75),
             tint: Color.secondary,

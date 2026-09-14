@@ -1,3 +1,10 @@
+## 0.5.226 (build 264)
+
+Session names match the Claude desktop tab.
+
+- The Session Pet and the Sessions tab name each Claude session with the title Claude Desktop shows on its tab. The pet showed the registry's derived name, such as mu-chief-staff-bc, for any session started after Sessions last refreshed, and the Sessions tab showed the first prompt or skill name for newer sessions.
+- An idle row on the pet says idle, not working, when the session has no summary.
+
 ## 0.5.225 (build 263)
 
 The Session Pet shows what Claude sessions are actually doing.
