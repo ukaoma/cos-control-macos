@@ -3,6 +3,9 @@ set -euo pipefail
 
 ROOT="${0:A:h:h}"
 TARGET="arm64-apple-macosx14.0"
+# Keep the self-test home under /tmp: loopbackAPIPort honors COS_CONTROL_TEST_HOME only
+# when it starts with /tmp/, and with a home elsewhere the self-test failed its workspace
+# fixture (measured 2026-09-13, released 0.5.223 helper included).
 TMP="$(mktemp -d /tmp/cos-control-tests.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -36,8 +39,8 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 440:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 440 (445 at 0.5.190)")
+if count < 551:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 551 (551 at 0.5.225)")
 ' "$SELF_TEST"
 
 python3 "$ROOT/Tests/HeldNamingTransport.py" "$TMP/cos-control-helper"
@@ -4845,37 +4848,72 @@ for m in sites:
 print("COS Control: held naming Undo captures its target before dismissal (0.5.223)")
 UNDOCAP
 
-# 0.5.224 — the pet's live rows take last activity from the transcript (Miles, 2026-09-13:
-# "our pet isn't actually tracking our sessions anymore"). The cached updatedAt ages past
-# petWorkingMaxAge and a Claude Desktop registry carries no status, so every live session
-# read `recent` a few minutes after Activity last walked the list.
+# 0.5.225 — the pet's live rows take their activity from transcript records (Miles, 2026-09-13:
+# "our pet isn't actually tracking our sessions anymore"). Checks read code with comments
+# stripped, because a clause that matches its own explanatory comment cannot fail.
 /usr/bin/python3 - "$ROOT" <<'PETLIVE'
 from pathlib import Path
-import sys
+import re, sys
 root = Path(sys.argv[1])
 helper = (root / "HelperSources/main.swift").read_text()
+model = (root / "Sources/ControllerModel.swift").read_text()
 
 def fail(msg):
     sys.exit(msg)
 
-live = helper[helper.index("private func emitLiveClaudeSessions("):helper.index("private func emitQuickClaudeSessions(")]
-order = [live.find(t) for t in ("Self.overlayLiveState(onto: peers, live: live)", "Self.refreshClaudeTranscriptActivity(peers)", "Self.applyLiveWorkingState(peers")]
+def code(text):
+    return re.sub(r"//[^\n]*", "", text)
+
+def body(src, name):
+    start = src.index(name)
+    return code(src[start:src.index("\n    }\n", start)])
+
+live = code(helper[helper.index("private func emitLiveClaudeSessions("):helper.index("private func emitQuickClaudeSessions(")])
+if ("Self.petLiveRows(" not in live or "Self.claudeSessionActivity(sessionId: $0, projectsRoot: claudeProjects)" not in live
+        or "serverAnswered && enabled ? live : nil" not in live):
+    fail("session-pet-live must run petLiveRows with transcript activity, passing live peers only when the server answered")
+pipeline = body(helper, "static func petLiveRows(")
+order = [pipeline.find(t) for t in ("overlayLiveState(", "markUnlistedClaudeRowsGone(", "refreshClaudeTranscriptActivity(", "applyLiveWorkingState(", "isPetLiveRow(")]
 if -1 in order or order != sorted(order):
-    fail("session-pet-live must refresh transcript activity after the live overlay and before the working-state pass")
-if "Self.claudeTranscriptModified(sessionId: $0, projectsRoot: claudeProjects)" not in live or 'home.appendingPathComponent(".claude/projects", isDirectory: true)' not in live:
-    fail("session-pet-live must read activity from ~/.claude/projects transcripts")
-start = helper.index("static func claudeTranscriptModified(")
-locator = helper[start:helper.index("\n    }\n", start)]
-for banned in ("Data(contentsOf", "FileHandle", "InputStream", "String(contentsOf"):
+    fail("petLiveRows must overlay, mark unlisted rows gone, read transcript records, apply state, then filter")
+quick = code(helper[helper.index("private func emitQuickClaudeSessions("):helper.index("private func emitFreshClaudeSessions(")])
+if "Self.refreshClaudeTranscriptActivity(cachedRows)" not in quick:
+    fail("the quick Sessions path must read transcript records, so Activity agrees with the pet")
+fresh_start = helper.index("private func emitFreshClaudeSessions(")
+fresh = code(helper[fresh_start:helper.index("saveSessionListCache(sessions: peers", fresh_start)])
+if not (0 <= fresh.find("Self.refreshClaudeTranscriptActivity(peers)") < fresh.find("Self.applyLiveWorkingState(peers")):
+    fail("the fresh Sessions path must read transcript records before its working-state pass")
+locator = body(helper, "static func claudeTranscriptURL(")
+for banned in ("Data(contentsOf", "FileHandle", "InputStream", "String(contentsOf", "contents(atPath", "read(upToCount", "claudeTranscriptTurn("):
     if banned in locator:
-        fail(f"claudeTranscriptModified must stat, never open, the transcript ({banned})")
-start = helper.index("static func claudePeerProjection(")
-projection = helper[start:helper.index("\n    }\n", start)]
-if 'row["lastActiveAt"] as? String' in projection or 'row["startedAt"] as? String' in projection:
-    fail("the server sends peer times as epoch milliseconds; claudePeerProjection must parse them with peerTimeISO")
-if projection.count("peerTimeISO(row[") != 3:
-    fail("claudePeerProjection must pass lastActiveAt (state and updatedAt) and startedAt through peerTimeISO")
-print("COS Control: pet live rows follow transcript activity (0.5.224)")
+        fail(f"claudeTranscriptURL must stat, never open, the transcript ({banned})")
+lines = body(helper, "static func claudeTailLines(")
+reader = body(helper, "static func claudeTranscriptTurn(")
+if "handle.read(upToCount: end - start)" not in lines or "seek(toOffset:" not in lines:
+    fail("claudeTailLines must seek and read only its window, with throwing FileHandle calls")
+for banned in ("Data(contentsOf", "String(contentsOf", "readToEnd", "readDataToEndOfFile", "forEachClaudeJsonlLine", "claudeTranscriptMaxLineBytes"):
+    if banned in lines or banned in reader:
+        fail(f"the activity reader must read a bounded window with no line cap ({banned})")
+if "min(window, maxBytes)" not in reader or "maxBytes: Int = claudeActivityTailMaxBytes" not in reader:
+    fail("claudeTranscriptTurn must cap each read at maxBytes, defaulting to claudeActivityTailMaxBytes")
+parser = body(helper, "static func claudeTurnFromTail(")
+if 'type == "user" || type == "assistant"' not in parser or 'obj["isMeta"] as? Bool != true' not in parser:
+    fail("only user and assistant records are activity, and isMeta records are skipped")
+if "current" in body(helper, "static func refreshClaudeTranscriptActivity("):
+    fail("the newest record replaces the cached stamp; a newer-only rule keeps a touched file time")
+apply = body(helper, "static func applyLiveWorkingState(")
+if 'out[index]["activitySource"] as? String == "transcript", state != "stale", state != "waiting"' not in apply or "claudeTurnState(" not in apply:
+    fail("applyLiveWorkingState must let transcript records decide a live Claude row, after a dead PID and a registry wait")
+if 'now.timeIntervalSince(last) <= petUnfinishedMaxAge ? "running" : "waiting"' not in body(helper, "static func claudeTurnState("):
+    fail("a turn in flight past petUnfinishedMaxAge must read waiting, never a finish")
+projection = body(helper, "static func claudePeerProjection(")
+for need in ('"createdAt": peerTimeISO(row["startedAt"])', '"updatedAt": peerTimeISO(row["lastActiveAt"])'):
+    if need not in projection:
+        fail(f"the server sends peer times as epoch milliseconds; claudePeerProjection lost {need!r}")
+prepass = code(model[model.index("func loadPetSessions() async"):model.index('helper.run(["session-pet-live"]')])
+if "lastAuthoritativeRaw == nil, petSessions.isEmpty, !claudeSessions.isEmpty" not in prepass:
+    fail("the pet may paint Activity's snapshot only before the helper's first live answer")
+print("COS Control: pet live rows follow transcript records (0.5.225)")
 PETLIVE
 
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"

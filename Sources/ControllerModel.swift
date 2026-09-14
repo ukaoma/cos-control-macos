@@ -2496,7 +2496,11 @@ final class ControllerModel: ObservableObject {
         if petPollInFlight { return }
         petPollInFlight = true
         defer { petPollInFlight = false }
-        if !claudeSessions.isEmpty {
+        // 0.5.225: Activity's snapshot paints the pet only until the live helper has
+        // answered once. Re-applying it on every poll showed its older state for the length
+        // of each helper call, and its stamps never matched the helper's, so a dismissal
+        // made on one pass came back on the other.
+        if lastAuthoritativeRaw == nil, petSessions.isEmpty, !claudeSessions.isEmpty {
             applyPetSessions(ClaudeSession.petVisibleSessions(in: claudeSessions))
         }
         // Skip the extra helper only when Activity already gave us live rows.

@@ -1,8 +1,18 @@
+## 0.5.225 (build 263)
+
+The Session Pet shows what Claude sessions are actually doing.
+
+- A live Claude session reads from its transcript's newest user or assistant record, the timestamp rule server 6.45.5 uses for the phone's Sessions list. A finished or interrupted turn reads idle at once, so the finish lands when the turn ends. A running tool call reads working, a pending AskUserQuestion or ExitPlanMode reads waiting, and a turn with no new record for fifteen minutes reads waiting rather than finished, since that is usually a permission prompt.
+- A subagent still working keeps its session working, including parallel batches and background agents, which write to their own transcripts.
+- Local commands, meta records and bookkeeping writes to an idle transcript do not read as work. A newest record larger than 200 KB, such as a prompt with a pasted image, is read.
+- A session that appeared after Activity last refreshed keeps its full id, so a later refresh no longer counts a false finish. When the server answers, a cached session it no longer lists stops reading live.
+- The pet paints Activity's snapshot only until the live helper first answers, which stops the flicker between the two and lets a dismissal stick. Activity's Sessions list reads the same transcript records.
+
 ## 0.5.224 (build 262)
 
-The Session Pet tracks live work again.
+The Session Pet tracks live work again. Installed on one Mac only and never offered through the update feed; 0.5.225 supersedes it.
 
-- A running Claude session reads as working while its transcript moves, including sessions started from the Claude desktop app, whose session registry carries no status. Since 0.5.211 the pet's live rows started from the Sessions cache, whose last-activity time only advanced when Activity walked the list, so a few minutes after Activity closed every session read idle.
+- A running Claude session reads as working while its transcript moves, including sessions started from the Claude desktop app, whose session registry carries no status. Since 0.5.214 the pet's live rows started from the Sessions cache, whose last-activity time only advanced when Activity walked the list, so a few minutes after Activity closed every session read idle.
 - Live peer times from the server arrive as epoch milliseconds and now reach each row as dates instead of blanks.
 - Waiting on you still comes only from the status Claude Code publishes. The Claude desktop session measured for this fix publishes none, so such a session cannot show as waiting.
 

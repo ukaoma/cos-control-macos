@@ -9856,54 +9856,142 @@ final class COSControlHelper {
                 continue
             }
             if provider != "claude" { continue }
-            out[index]["state"] = claudePeerState(
+            var state = claudePeerState(
                 alive: out[index]["alive"] as? Bool ?? false,
                 status: out[index]["status"] as? String ?? "",
                 waitingFor: out[index]["waitingFor"] as? String ?? "",
                 lastActiveAt: out[index]["updatedAt"] as? String ?? "",
                 now: now
             )
+            // 0.5.225: when the transcript was read, its records decide. A dead PID stays
+            // stale and a registry wait stays waiting.
+            if out[index]["activitySource"] as? String == "transcript", state != "stale", state != "waiting" {
+                state = claudeTurnState(
+                    inFlight: out[index]["turnInFlight"] as? Bool == true,
+                    waitingOnUser: out[index]["waitingOnUser"] as? Bool == true,
+                    lastActivityAt: parseISODate(out[index]["updatedAt"] as? String ?? ""),
+                    subagentInFlightAt: parseISODate(out[index]["subagentInFlightAt"] as? String ?? ""),
+                    now: now
+                )
+            }
+            out[index]["state"] = state
         }
         return out
     }
 
-    /// 0.5.224: a live Claude row's last activity follows its transcript.
-    ///
-    /// `session-pet-live` starts from `session-list-cache.json`, whose `updatedAt` is
-    /// the transcript mtime from the last Activity walk, and `claudePeerState` keeps an
-    /// alive PID `running` only inside `petWorkingMaxAge`. So three minutes after
-    /// Activity last walked, every live session read `recent` and the pet sat idle
-    /// through real work. The registry cannot fill the gap: the Claude Desktop session
-    /// measured on 2026-09-13 (Claude Code 2.1.266) wrote `~/.claude/sessions/<pid>.json`
-    /// once, with no `status`, and the server's `lastActiveAt` for it was its start
-    /// time. The transcript mtime moves on every turn. Newer only, so an older or
-    /// missing file never ages a row, and only alive Claude rows are touched.
-    static func refreshClaudeTranscriptActivity(
-        _ rows: [[String: Any]],
-        transcriptModified: (String) -> Date?
-    ) -> [[String: Any]] {
-        var out = rows
-        for index in out.indices {
-            let provider = (out[index]["provider"] as? String ?? "claude").lowercased()
-            guard provider == "claude",
-                  out[index]["alive"] as? Bool == true,
-                  let id = out[index]["id"] as? String,
-                  let modified = transcriptModified(id) else { continue }
-            if let current = parseISODate(out[index]["updatedAt"] as? String ?? ""), modified <= current { continue }
-            out[index]["updatedAt"] = isoString(from: modified)
+    /// One transcript's newest conversation record: when it was written, whether its turn
+    /// is still going, and whether that turn is waiting on the user.
+    struct ClaudeTurn: Equatable {
+        let at: Date
+        let inFlight: Bool
+        let waitingOnUser: Bool
+    }
+
+    /// A live session's activity: its own transcript plus any subagent still working.
+    struct ClaudeSessionActivity: Equatable {
+        let sessionId: String
+        let lastActivityAt: Date
+        let inFlight: Bool
+        let waitingOnUser: Bool
+        let subagentInFlightAt: Date?
+    }
+
+    /// First window read from the end of a transcript, and the widest it grows to (x4 a
+    /// step) while the tail holds no conversation record. The server's reader in
+    /// `agent-session-activity.ts` (6.45.5) uses the same two sizes.
+    static let claudeActivityTailBytes = 256 * 1024
+    static let claudeActivityTailMaxBytes = 16 * 1024 * 1024
+
+    /// Tools whose pending call is a question to the user, not work.
+    static let claudeWaitingTools: Set<String> = ["AskUserQuestion", "ExitPlanMode"]
+
+    /// User records written by a local command or bash-mode input rather than a model turn.
+    static let claudeLocalCommandPrefixes = [
+        "<command-name>", "<command-message>", "<local-command-stdout>", "<local-command-stderr>",
+        "<local-command-caveat>", "<bash-input>", "<bash-stdout>", "<bash-stderr>",
+    ]
+
+    static func claudeMessageTexts(_ message: [String: Any]) -> [String] {
+        if let text = message["content"] as? String { return [text] }
+        return (message["content"] as? [[String: Any]] ?? []).compactMap { $0["text"] as? String }
+    }
+
+    static func claudeLastToolName(_ message: [String: Any]) -> String? {
+        (message["content"] as? [[String: Any]] ?? []).last(where: { $0["type"] as? String == "tool_use" })?["name"] as? String
+    }
+
+    /// The newest user or assistant record in `lines` (file order), skipping `isMeta`
+    /// records. An assistant record whose stop is `tool_use` or not yet written keeps the
+    /// turn in flight, and a pending AskUserQuestion or ExitPlanMode is waiting on the user.
+    /// A user record means the model has work to do, unless it is an interrupt
+    /// (`[Request interrupted by user]`, 31 transcripts on this Mac on 2026-09-13) or a
+    /// local command's own record.
+    static func claudeTurnFromTail(_ lines: [String]) -> ClaudeTurn? {
+        for line in lines.reversed() {
+            guard let data = line.data(using: .utf8),
+                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let type = obj["type"] as? String, type == "user" || type == "assistant",
+                  obj["isMeta"] as? Bool != true,
+                  let at = parseISODate(obj["timestamp"] as? String ?? "") else { continue }
+            let message = obj["message"] as? [String: Any] ?? [:]
+            if type == "assistant" {
+                let stop = message["stop_reason"] as? String
+                let pending = stop == nil || stop == "tool_use"
+                let asking = pending && claudeLastToolName(message).map { claudeWaitingTools.contains($0) } == true
+                return ClaudeTurn(at: at, inFlight: pending, waitingOnUser: asking)
+            }
+            let texts = claudeMessageTexts(message).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            let ended = texts.contains { text in
+                text.hasPrefix("[Request interrupted by user") || claudeLocalCommandPrefixes.contains { text.hasPrefix($0) }
+            }
+            return ClaudeTurn(at: at, inFlight: !ended, waitingOnUser: false)
         }
-        return out
+        return nil
+    }
+
+    /// Complete lines between `start` and `end`, read with throwing FileHandle calls. A
+    /// window that starts mid-file drops its first, cut line, and a last line without its
+    /// newline is still being written. No per-line cap: a newest prompt carrying a pasted
+    /// image can pass 1 MB, and the window widens to reach it.
+    static func claudeTailLines(handle: FileHandle, start: Int, end: Int) -> [String] {
+        guard end > start, (try? handle.seek(toOffset: UInt64(start))) != nil,
+              let data = try? handle.read(upToCount: end - start), !data.isEmpty else { return [] }
+        var parts = data.split(separator: 0x0a, omittingEmptySubsequences: false)
+        if start > 0, !parts.isEmpty { parts.removeFirst() }
+        if data.last != 0x0a, !parts.isEmpty { parts.removeLast() }
+        return parts.compactMap { $0.isEmpty ? nil : String(data: Data($0), encoding: .utf8) }
+    }
+
+    /// Bounded tail read: `initialBytes` from the end, x4 while no conversation record is
+    /// found, never more than `maxBytes` in one read.
+    static func claudeTranscriptTurn(
+        in url: URL,
+        initialBytes: Int = claudeActivityTailBytes,
+        maxBytes: Int = claudeActivityTailMaxBytes
+    ) -> ClaudeTurn? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = (attributes[.size] as? NSNumber)?.intValue, size > 0,
+              let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        var window = max(1, initialBytes)
+        while true {
+            let length = min(window, maxBytes)
+            let start = max(0, size - length)
+            if let turn = claudeTurnFromTail(claudeTailLines(handle: handle, start: start, end: size)) { return turn }
+            if start == 0 || length >= maxBytes { return nil }
+            window *= 4
+        }
     }
 
     /// Stat only, never opens the transcript: the newest `<id>.jsonl` directly under
-    /// `~/.claude/projects/*/`. The server's peer ids are the eight-character short
-    /// form, so a short id matches by prefix, and an ambiguous prefix returns nil.
-    static func claudeTranscriptModified(sessionId: String, projectsRoot: URL) -> Date? {
+    /// `~/.claude/projects/*/`. The server's peer ids are the eight-character short form,
+    /// so a short id matches by prefix, and an ambiguous prefix returns nil.
+    static func claudeTranscriptURL(sessionId: String, projectsRoot: URL) -> URL? {
         let needle = sessionId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard needle.count >= 8, needle.allSatisfy({ $0.isHexDigit || $0 == "-" }) else { return nil }
         let exact = UUID(uuidString: needle) != nil
         let fm = FileManager.default
-        var newest: Date?
+        var newest: (modified: Date, file: URL)?
         var matched = Set<String>()
         let dirs = (try? fm.contentsOfDirectory(
             at: projectsRoot,
@@ -9927,10 +10015,131 @@ final class COSControlHelper {
                       values.isRegularFile == true,
                       let modified = values.contentModificationDate else { continue }
                 matched.insert(file.deletingPathExtension().lastPathComponent.lowercased())
-                if newest.map({ modified > $0 }) ?? true { newest = modified }
+                if newest.map({ modified > $0.modified }) ?? true { newest = (modified, file) }
             }
         }
-        return matched.count == 1 ? newest : nil
+        return matched.count == 1 ? newest?.file : nil
+    }
+
+    /// A live session's transcript turn plus its subagents. Subagent transcripts live in
+    /// `<project>/<session>/subagents/*.jsonl`, and only files written within
+    /// `petUnfinishedMaxAge` are read. A parallel batch or a background agent writes there,
+    /// not to the parent, so the parent alone would read idle through it.
+    static func claudeSessionActivity(sessionId: String, projectsRoot: URL, now: Date = Date()) -> ClaudeSessionActivity? {
+        guard let url = claudeTranscriptURL(sessionId: sessionId, projectsRoot: projectsRoot) else { return nil }
+        let fullId = url.deletingPathExtension().lastPathComponent.lowercased()
+        let main = claudeTranscriptTurn(in: url)
+        let subagents = url.deletingPathExtension().appendingPathComponent("subagents", isDirectory: true)
+        var newestSubagent: Date?
+        var subagentInFlightAt: Date?
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: subagents,
+            includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        for file in files where file.pathExtension == "jsonl" {
+            guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey]),
+                  values.isRegularFile == true,
+                  let modified = values.contentModificationDate,
+                  now.timeIntervalSince(modified) <= petUnfinishedMaxAge,
+                  let turn = claudeTranscriptTurn(in: file) else { continue }
+            newestSubagent = max(newestSubagent ?? turn.at, turn.at)
+            if turn.inFlight { subagentInFlightAt = max(subagentInFlightAt ?? turn.at, turn.at) }
+        }
+        guard let last = [main?.at, newestSubagent].compactMap({ $0 }).max() else { return nil }
+        return ClaudeSessionActivity(
+            sessionId: fullId,
+            lastActivityAt: last,
+            inFlight: main?.inFlight ?? false,
+            waitingOnUser: main?.waitingOnUser ?? false,
+            subagentInFlightAt: subagentInFlightAt
+        )
+    }
+
+    /// 0.5.225: what a live Claude session is doing, from its records. Waiting on the user
+    /// wins. A subagent still in flight is work. A finished or interrupted turn is idle at
+    /// once, so a finish lands when the turn ends. A turn in flight is working until
+    /// `petUnfinishedMaxAge` passes with no new record, then reads waiting: by then it is
+    /// usually a permission prompt, and waiting is a handoff, never a finish.
+    static func claudeTurnState(
+        inFlight: Bool,
+        waitingOnUser: Bool,
+        lastActivityAt: Date?,
+        subagentInFlightAt: Date?,
+        now: Date
+    ) -> String {
+        if waitingOnUser { return "waiting" }
+        if let sub = subagentInFlightAt, now.timeIntervalSince(sub) <= petUnfinishedMaxAge { return "running" }
+        guard inFlight else { return "recent" }
+        guard let last = lastActivityAt else { return "running" }
+        return now.timeIntervalSince(last) <= petUnfinishedMaxAge ? "running" : "waiting"
+    }
+
+    /// 0.5.225: a live Claude row takes its activity from transcript records.
+    ///
+    /// `session-list-cache.json` only moves when Activity walks the list, the Claude Desktop
+    /// session measured on 2026-09-13 (Claude Code 2.1.266) publishes no registry `status`,
+    /// and a transcript's file time can move with nothing written (0.5.224 read that as
+    /// work). Cached turn keys are cleared first. A row whose transcript was read gets the
+    /// newest record time as `updatedAt`, the turn flags, `activitySource: transcript`, and
+    /// its full session id when it arrived under the server's eight-character form. Any
+    /// other Claude row says `activitySource: cache`.
+    static func refreshClaudeTranscriptActivity(
+        _ rows: [[String: Any]],
+        transcriptActivity: (String) -> ClaudeSessionActivity?
+    ) -> [[String: Any]] {
+        var out = rows
+        for index in out.indices {
+            for key in ["turnInFlight", "waitingOnUser", "subagentInFlightAt", "activitySource"] {
+                out[index].removeValue(forKey: key)
+            }
+            let provider = (out[index]["provider"] as? String ?? "claude").lowercased()
+            guard provider == "claude" else { continue }
+            out[index]["activitySource"] = "cache"
+            guard out[index]["alive"] as? Bool == true,
+                  let id = out[index]["id"] as? String,
+                  let activity = transcriptActivity(id) else { continue }
+            if activity.sessionId.count > id.count, activity.sessionId.hasPrefix(id.lowercased()) {
+                out[index]["id"] = activity.sessionId
+            }
+            out[index]["updatedAt"] = isoString(from: activity.lastActivityAt)
+            out[index]["turnInFlight"] = activity.inFlight
+            out[index]["waitingOnUser"] = activity.waitingOnUser
+            if let sub = activity.subagentInFlightAt { out[index]["subagentInFlightAt"] = isoString(from: sub) }
+            out[index]["activitySource"] = "transcript"
+        }
+        return out
+    }
+
+    /// When the server answered, a cached Claude row it does not list is not running:
+    /// cached rows keep `alive` for days, and a killed session would otherwise read live.
+    static func markUnlistedClaudeRowsGone(_ rows: [[String: Any]], live: [[String: Any]]) -> [[String: Any]] {
+        let peerIds = live.compactMap { ($0["id"] as? String)?.lowercased() }.filter { !$0.isEmpty }
+        return rows.map { row in
+            guard (row["provider"] as? String ?? "claude").lowercased() == "claude",
+                  let id = (row["id"] as? String)?.lowercased(), !id.isEmpty,
+                  !peerIds.contains(where: { id == $0 || id.hasPrefix($0) }) else { return row }
+            var gone = row
+            gone["alive"] = false
+            return gone
+        }
+    }
+
+    /// The whole `session-pet-live` row pipeline, pure so the self-test runs it end to end.
+    /// `livePeers` nil means the server did not answer, and cached liveness stands.
+    static func petLiveRows(
+        cached: [[String: Any]],
+        livePeers: [[String: Any]]?,
+        transcriptActivity: (String) -> ClaudeSessionActivity?,
+        composerActivity: [String: CursorComposerActivity] = [:],
+        now: Date = Date()
+    ) -> [[String: Any]] {
+        var rows = overlayLiveState(onto: cached, live: livePeers ?? [])
+        if let livePeers { rows = markUnlistedClaudeRowsGone(rows, live: livePeers) }
+        rows = refreshClaudeTranscriptActivity(rows, transcriptActivity: transcriptActivity)
+        rows = applyLiveWorkingState(rows, now: now, composerActivity: composerActivity)
+        rows.removeAll { isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
+        return rows.filter { isPetLiveRow($0) }
     }
 
     static func loadCursorComposerMeta(from db: URL) -> CursorComposerMeta {
@@ -10206,6 +10415,7 @@ final class COSControlHelper {
         var peers: [[String: Any]] = []
         var dropped: [String: Int] = ["age": 0, "limit": 0, "oversized": 0]
         var cached = false
+        var serverAnswered = false
         if let payload = Self.readSessionListCache(from: sessionListCacheURL) {
             peers = payload["sessions"] as? [[String: Any]] ?? []
             dropped = Self.agentSessionDroppedProjection(payload)
@@ -10217,6 +10427,7 @@ final class COSControlHelper {
            let response = request("/api/claude-sessions", token: token, timeout: 12),
            response.status == 200,
            let body = response.body {
+            serverAnswered = true
             enabled = body["enabled"] as? Bool ?? enabled
             reason = body["reason"] as? String ?? reason
             counts = body["counts"] ?? counts
@@ -10224,14 +10435,13 @@ final class COSControlHelper {
                 live = ((body["peers"] as? [[String: Any]]) ?? []).compactMap(Self.claudePeerProjection)
             }
         }
-        peers = Self.overlayLiveState(onto: peers, live: live)
         let claudeProjects = home.appendingPathComponent(".claude/projects", isDirectory: true)
-        peers = Self.refreshClaudeTranscriptActivity(peers) {
-            Self.claudeTranscriptModified(sessionId: $0, projectsRoot: claudeProjects)
-        }
-        peers = Self.applyLiveWorkingState(peers, composerActivity: composerMeta.activity)
-        peers.removeAll { Self.isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
-        peers = peers.filter { Self.isPetLiveRow($0) }
+        peers = Self.petLiveRows(
+            cached: peers,
+            livePeers: serverAnswered && enabled ? live : nil,
+            transcriptActivity: { Self.claudeSessionActivity(sessionId: $0, projectsRoot: claudeProjects) },
+            composerActivity: composerMeta.activity
+        )
         emitSessionList(
             peers, liveOnly: true, enabled: enabled, reason: reason, counts: counts,
             dropped: dropped, cached: cached, partial: false
@@ -10241,7 +10451,11 @@ final class COSControlHelper {
     private func emitQuickClaudeSessions(home: URL, composerMeta: CursorComposerMeta) throws {
         if let payload = Self.readSessionListCache(from: sessionListCacheURL),
            let cachedRows = payload["sessions"] as? [[String: Any]], !cachedRows.isEmpty {
-            var peers = Self.applyLiveWorkingState(cachedRows, composerActivity: composerMeta.activity)
+            let claudeProjects = home.appendingPathComponent(".claude/projects", isDirectory: true)
+            var peers = Self.applyLiveWorkingState(
+                Self.refreshClaudeTranscriptActivity(cachedRows) { Self.claudeSessionActivity(sessionId: $0, projectsRoot: claudeProjects) },
+                composerActivity: composerMeta.activity
+            )
             peers.removeAll { Self.isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
             emitSessionList(
                 peers, liveOnly: false,
@@ -10356,6 +10570,7 @@ final class COSControlHelper {
         } else {
             peers = Self.overlayLiveState(onto: serverRows, live: peers)
         }
+        peers = Self.refreshClaudeTranscriptActivity(peers) { Self.claudeSessionActivity(sessionId: $0, projectsRoot: claudeProjects) }
         peers = Self.applyLiveWorkingState(peers, composerActivity: composerMeta.activity)
         peers.removeAll { Self.isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
         peers.sort { a, b in
@@ -14672,69 +14887,194 @@ final class COSControlHelper {
             ) == "running",
             "a Claude turn with activity inside the working window stays running"
         )
-        // 0.5.224: the pet's live rows take last activity from the transcript, so a
-        // Claude Desktop session with no registry status still reads running mid-turn.
-        let liveActPetNow = Self.parseISODate("2026-09-14T02:59:00Z") ?? Date()
-        let liveActPetTranscripts: [String: Date] = [
-            "3ae96fe1-11f9-444a-8a7e-d23f6d4baabf": Self.parseISODate("2026-09-14T02:58:40Z") ?? Date.distantPast,
-            "28601e3f-d98e-49e8-a772-41f1664ee0ce": Self.parseISODate("2026-09-14T02:10:00Z") ?? Date.distantPast,
-            "dead0000-1111-2222-3333-444444444444": liveActPetNow,
-            "01a0451c-a914-7853-8732-14ed944a2d56": liveActPetNow,
-        ]
-        let liveActPetRefreshed = Self.refreshClaudeTranscriptActivity([
-            ["id": "3ae96fe1-11f9-444a-8a7e-d23f6d4baabf", "provider": "claude", "alive": true,
-             "status": "", "waitingFor": "", "updatedAt": "2026-09-14T02:38:38.777Z"],
-            ["id": "28601e3f-d98e-49e8-a772-41f1664ee0ce", "provider": "claude", "alive": true,
-             "status": "idle", "waitingFor": "", "updatedAt": "2026-09-14T02:24:14.952Z"],
-            ["id": "dead0000-1111-2222-3333-444444444444", "provider": "claude", "alive": false,
-             "updatedAt": "2026-09-14T02:00:00Z"],
-            ["id": "01a0451c-a914-7853-8732-14ed944a2d56", "provider": "codex", "alive": true,
-             "updatedAt": "2026-09-14T02:00:00Z"],
-        ]) { liveActPetTranscripts[$0] }
-        let liveActPetStates = Self.applyLiveWorkingState(liveActPetRefreshed, now: liveActPetNow)
-        try expect(liveActPetStates.count == 4 && liveActPetStates[0]["state"] as? String == "running",
-                   "a live Claude Desktop session with no registry status reads running while its transcript moves")
-        try expect(liveActPetRefreshed.count == 4 && liveActPetRefreshed[1]["updatedAt"] as? String == "2026-09-14T02:24:14.952Z"
-                   && liveActPetStates[1]["state"] as? String == "recent",
-                   "an older transcript never ages a live row, and a quiet session stays idle")
-        try expect(liveActPetRefreshed[2]["updatedAt"] as? String == "2026-09-14T02:00:00Z",
-                   "a dead Claude PID takes no activity from a transcript")
-        try expect(liveActPetRefreshed[3]["updatedAt"] as? String == "2026-09-14T02:00:00Z",
-                   "only Claude rows take transcript activity")
-        let liveActNumericPeer = Self.claudePeerProjection([
+        // 0.5.225: the pet's live rows take their activity from transcript records.
+        func liveActRecord(_ type: String, _ at: String, stop: String? = nil, text: String? = nil,
+                           stringContent: String? = nil, tool: String? = nil, blocks: [String] = [], meta: Bool = false) -> String {
+            var message: [String: Any] = ["role": type == "assistant" ? "assistant" : "user"]
+            if let stop { message["stop_reason"] = stop }
+            if let stringContent { message["content"] = stringContent }
+            else if let text { message["content"] = [["type": "text", "text": text]] }
+            else if let tool { message["content"] = [["type": "tool_use", "name": tool, "id": "toolu_1"]] }
+            else if !blocks.isEmpty { message["content"] = blocks.map { ["type": $0] } }
+            var record: [String: Any] = ["type": type, "timestamp": at, "message": message]
+            if meta { record["isMeta"] = true }
+            let data = (try? JSONSerialization.data(withJSONObject: record)) ?? Data()
+            return String(data: data, encoding: .utf8) ?? ""
+        }
+        func liveActBookkeeping(_ type: String, _ at: String?, subtype: String? = nil) -> String {
+            var record: [String: Any] = ["type": type]
+            if let at { record["timestamp"] = at }
+            if let subtype { record["subtype"] = subtype }
+            let data = (try? JSONSerialization.data(withJSONObject: record)) ?? Data()
+            return String(data: data, encoding: .utf8) ?? ""
+        }
+        let liveActFinished = Self.claudeTurnFromTail([
+            liveActRecord("user", "2026-09-10T14:25:00.000Z", text: "Run the sync"),
+            liveActRecord("assistant", "2026-09-10T14:26:00.000Z", stop: "tool_use", tool: "Bash"),
+            liveActRecord("user", "2026-09-10T14:27:00.000Z", blocks: ["tool_result"]),
+            liveActRecord("assistant", "2026-09-10T14:30:06.048Z", stop: "end_turn", blocks: ["text"]),
+            liveActRecord("user", "2026-09-10T14:30:07.000Z", text: "Caveat: the messages below came from local commands.", meta: true),
+            liveActBookkeeping("system", "2026-09-10T14:30:20.285Z", subtype: "stop_hook_summary"),
+            liveActBookkeeping("system", "2026-09-10T14:33:22.863Z", subtype: "away_summary"),
+            liveActBookkeeping("queue-operation", "2026-09-14T03:24:14.000Z"),
+            liveActBookkeeping("custom-title", nil),
+        ])
+        try expect(liveActFinished == ClaudeTurn(at: Self.parseISODate("2026-09-10T14:30:06.048Z") ?? .distantPast, inFlight: false, waitingOnUser: false),
+                   "bookkeeping, system and meta records after a finished turn are not activity")
+        try expect(Self.claudeTurnFromTail([liveActRecord("assistant", "2026-09-14T03:25:15.996Z", stop: "tool_use", tool: "Bash"),
+                                            liveActBookkeeping("attachment", "2026-09-14T03:25:16.100Z")])
+                   == ClaudeTurn(at: Self.parseISODate("2026-09-14T03:25:15.996Z") ?? .distantPast, inFlight: true, waitingOnUser: false),
+                   "a pending ordinary tool call keeps the turn in flight and is not a question")
+        try expect(Self.claudeTurnFromTail([liveActRecord("assistant", "2026-09-14T03:25:15.996Z", stop: "tool_use", tool: "AskUserQuestion")])?.waitingOnUser == true,
+                   "a pending AskUserQuestion is waiting on the user")
+        try expect(Self.claudeTurnFromTail([liveActRecord("user", "2026-09-14T03:28:20.288Z", blocks: ["tool_result"])])?.inFlight == true,
+                   "a returned tool result means the model is working")
+        try expect(Self.claudeTurnFromTail([liveActRecord("user", "2026-09-14T03:26:00.000Z", text: "[Request interrupted by user]")])?.inFlight == false,
+                   "an interrupt ends the turn")
+        try expect(Self.claudeTurnFromTail([liveActRecord("user", "2026-09-14T03:26:00.000Z", stringContent: "[Request interrupted by user for tool use]")])?.inFlight == false,
+                   "an interrupt written as plain content ends the turn")
+        try expect(Self.claudeTurnFromTail([liveActRecord("user", "2026-09-14T03:26:00.000Z", stringContent: "<local-command-stdout>Total cost: 0</local-command-stdout>")])?.inFlight == false,
+                   "a local command's own record is not a model turn")
+        try expect(Self.claudeTurnFromTail([liveActBookkeeping("queue-operation", "2026-09-14T03:24:14.000Z"), liveActBookkeeping("mode", nil)]) == nil,
+                   "a tail with no conversation record answers nothing")
+        let liveActNow = Self.parseISODate("2026-09-14T03:25:00Z") ?? Date()
+        let liveActWithin = liveActNow.addingTimeInterval(-(Self.petUnfinishedMaxAge - 60))
+        let liveActPast = liveActNow.addingTimeInterval(-(Self.petUnfinishedMaxAge + 60))
+        let liveActJustNow = liveActNow.addingTimeInterval(-1)
+        try expect(Self.claudeTurnState(inFlight: false, waitingOnUser: false, lastActivityAt: liveActJustNow, subagentInFlightAt: nil, now: liveActNow) == "recent",
+                   "a finished turn reads idle the moment it ends")
+        try expect(Self.claudeTurnState(inFlight: true, waitingOnUser: false, lastActivityAt: liveActWithin, subagentInFlightAt: nil, now: liveActNow) == "running",
+                   "a turn in flight stays working inside petUnfinishedMaxAge")
+        try expect(Self.claudeTurnState(inFlight: true, waitingOnUser: false, lastActivityAt: liveActPast, subagentInFlightAt: nil, now: liveActNow) == "waiting",
+                   "a turn with no new record past petUnfinishedMaxAge reads waiting, never a finish")
+        try expect(Self.claudeTurnState(inFlight: true, waitingOnUser: true, lastActivityAt: liveActJustNow, subagentInFlightAt: nil, now: liveActNow) == "waiting",
+                   "a question to the user reads waiting at once")
+        try expect(Self.claudeTurnState(inFlight: false, waitingOnUser: false, lastActivityAt: liveActPast, subagentInFlightAt: liveActWithin, now: liveActNow) == "running",
+                   "a subagent in flight keeps its session working after the parent turn ends")
+        try expect(Self.claudeTurnState(inFlight: false, waitingOnUser: false, lastActivityAt: liveActPast, subagentInFlightAt: liveActPast, now: liveActNow) == "recent",
+                   "a subagent silent past petUnfinishedMaxAge no longer counts")
+        let liveActPeer = Self.claudePeerProjection([
             "id": "3ae96fe1", "alive": true, "reachable": true, "status": NSNull(),
             "lastActiveAt": NSNumber(value: 1_789_339_147_841), "startedAt": NSNumber(value: 1_789_339_147_429),
         ])
-        try expect((liveActNumericPeer?["updatedAt"] as? String).flatMap { Self.parseISODate($0) } != nil,
+        try expect((liveActPeer?["updatedAt"] as? String).flatMap { Self.parseISODate($0) } != nil,
                    "a server epoch-millisecond lastActiveAt reaches the peer row as a date")
-        try expect((liveActNumericPeer?["createdAt"] as? String).flatMap { Self.parseISODate($0) } != nil,
+        try expect((liveActPeer?["createdAt"] as? String).flatMap { Self.parseISODate($0) } != nil,
                    "a server epoch-millisecond startedAt reaches the peer row as a date")
         try expect(Self.peerTimeISO("2026-09-14T02:58:40Z") == "2026-09-14T02:58:40Z",
                    "an older server's ISO peer time passes through unchanged")
-        let liveActPetTmp = FileManager.default.temporaryDirectory
+        // 0.5.225 pipeline and file tests.
+        let liveActFull = "3ae96fe1-11f9-444a-8a7e-d23f6d4baabf"
+        let liveActIdle = "28601e3f-d98e-49e8-a772-41f1664ee0ce"
+        let liveActDead = "dead0000-1111-2222-3333-444444444444"
+        let liveActAsking = "c0c0c0c0-1111-4222-8333-444444444444"
+        let liveActNew = "5b5b5b5b-0000-4000-8000-000000000005"
+        let liveActCodex = "01a0451c-a914-7853-8732-14ed944a2d56"
+        let liveActActivity: [String: ClaudeSessionActivity] = [
+            liveActFull: ClaudeSessionActivity(sessionId: liveActFull, lastActivityAt: liveActJustNow, inFlight: true, waitingOnUser: false, subagentInFlightAt: nil),
+            liveActIdle: ClaudeSessionActivity(sessionId: liveActIdle, lastActivityAt: Self.parseISODate("2026-09-10T14:30:06.048Z") ?? .distantPast,
+                                               inFlight: false, waitingOnUser: false, subagentInFlightAt: nil),
+            liveActDead: ClaudeSessionActivity(sessionId: liveActDead, lastActivityAt: liveActJustNow, inFlight: true, waitingOnUser: false, subagentInFlightAt: nil),
+            liveActAsking: ClaudeSessionActivity(sessionId: liveActAsking, lastActivityAt: liveActJustNow, inFlight: true, waitingOnUser: false, subagentInFlightAt: nil),
+            "5b5b5b5b": ClaudeSessionActivity(sessionId: liveActNew, lastActivityAt: liveActJustNow, inFlight: true, waitingOnUser: false, subagentInFlightAt: nil),
+            liveActCodex: ClaudeSessionActivity(sessionId: liveActCodex, lastActivityAt: liveActJustNow, inFlight: true, waitingOnUser: false, subagentInFlightAt: nil),
+        ]
+        let liveActCached: [[String: Any]] = [
+            ["id": liveActFull, "provider": "claude", "name": "Pet fix", "alive": true, "state": "running", "status": "", "waitingFor": "",
+             "updatedAt": "2026-09-14T02:38:38.777Z", "turnInFlight": false],
+            ["id": liveActIdle, "provider": "claude", "name": "Idle CLI", "alive": true, "state": "recent", "status": "idle", "waitingFor": "",
+             "updatedAt": "2026-09-14T03:24:14.000Z"],
+            ["id": liveActDead, "provider": "claude", "name": "Killed", "alive": true, "state": "running", "status": "", "waitingFor": "",
+             "updatedAt": "2026-09-14T03:20:00.000Z"],
+            ["id": liveActAsking, "provider": "claude", "name": "Blocked", "alive": true, "state": "running", "status": "", "waitingFor": "",
+             "updatedAt": "2026-09-14T03:20:00.000Z"],
+            ["id": liveActCodex, "provider": "codex", "name": "Codex thread", "alive": false, "state": "recent", "updatedAt": "2026-09-14T03:24:30Z"],
+            ["id": "e0e0e0e0-1111-4222-8333-444444444444", "provider": "claude", "name": "ready", "alive": true, "state": "recent",
+             "updatedAt": "2026-09-14T03:24:00Z"],
+            ["id": "f1f1f1f1-1111-4222-8333-444444444444", "provider": "claude", "name": "No transcript", "alive": true, "state": "recent",
+             "status": "", "waitingFor": "", "updatedAt": "2026-09-14T03:24:30Z"],
+        ]
+        let liveActPeers: [[String: Any]] = [
+            ["id": "3ae96fe1", "provider": "claude", "alive": true, "state": "running", "status": "", "waitingFor": "", "updatedAt": ""],
+            ["id": "28601e3f", "provider": "claude", "alive": true, "state": "running", "status": "idle", "waitingFor": "", "updatedAt": ""],
+            ["id": "c0c0c0c0", "provider": "claude", "alive": true, "state": "waiting", "status": "", "waitingFor": "permission", "updatedAt": ""],
+            ["id": "e0e0e0e0", "provider": "claude", "alive": true, "state": "running", "status": "", "waitingFor": "", "updatedAt": ""],
+            ["id": "5b5b5b5b", "provider": "claude", "name": "New session", "alive": true, "state": "running", "status": "", "waitingFor": "", "updatedAt": ""],
+            ["id": "f1f1f1f1", "provider": "claude", "alive": true, "state": "recent", "status": "", "waitingFor": "", "updatedAt": ""],
+        ]
+        let liveActRows = Self.petLiveRows(cached: liveActCached, livePeers: liveActPeers, transcriptActivity: { liveActActivity[$0] }, now: liveActNow)
+        func liveActRow(_ id: String) -> [String: Any]? { liveActRows.first { $0["id"] as? String == id } }
+        try expect(liveActRow(liveActFull)?["state"] as? String == "running",
+                   "a live Claude Desktop session with no registry status reads running from its records")
+        try expect(liveActRow(liveActIdle)?["state"] as? String == "recent"
+                   && liveActRow(liveActIdle)?["updatedAt"] as? String == Self.isoString(from: Self.parseISODate("2026-09-10T14:30:06.048Z") ?? Date()),
+                   "a touched file time in the cache never reads as work: the newest record replaces it")
+        try expect(liveActRow(liveActDead) == nil, "a cached session the answering server does not list is gone, not running")
+        try expect(liveActRow(liveActAsking)?["state"] as? String == "waiting", "a registry wait outranks a transcript turn in flight")
+        try expect(liveActRow(liveActNew)?["state"] as? String == "running" && liveActRow("5b5b5b5b") == nil,
+                   "a session new since the cache carries its full id, so a later cache refresh is not a finish")
+        try expect(liveActRow(liveActCodex)?["updatedAt"] as? String == "2026-09-14T03:24:30Z" && liveActRow(liveActCodex)?["activitySource"] == nil,
+                   "only Claude rows take transcript activity")
+        try expect(liveActRow("e0e0e0e0-1111-4222-8333-444444444444") == nil, "a keep-warm session never shows on the pet")
+        try expect(liveActRow("f1f1f1f1-1111-4222-8333-444444444444")?["state"] as? String == "running"
+                   && liveActRow("f1f1f1f1-1111-4222-8333-444444444444")?["activitySource"] as? String == "cache",
+                   "a row without a readable transcript keeps the cached-time rule")
+        let liveActOffline = Self.petLiveRows(cached: liveActCached, livePeers: nil, transcriptActivity: { liveActActivity[$0] }, now: liveActNow)
+        try expect(liveActOffline.contains { $0["id"] as? String == liveActDead },
+                   "without a server answer, cached liveness stands")
+        let liveActDirect = Self.refreshClaudeTranscriptActivity([
+            ["id": liveActDead, "provider": "claude", "alive": false, "updatedAt": "2026-09-14T02:00:00Z", "turnInFlight": true, "waitingOnUser": true],
+        ]) { liveActActivity[$0] }
+        try expect(liveActDirect.first?["updatedAt"] as? String == "2026-09-14T02:00:00Z" && liveActDirect.first?["activitySource"] as? String == "cache"
+                   && liveActDirect.first?["turnInFlight"] == nil && liveActDirect.first?["waitingOnUser"] == nil,
+                   "a dead Claude PID takes no activity from a transcript, and cached turn flags are cleared")
+        let liveActTmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("cos-pet-live \(UUID().uuidString).d", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: liveActPetTmp) }
-        let liveActPetProjects = liveActPetTmp.appendingPathComponent(".claude/projects", isDirectory: true)
-        let liveActPetProject = liveActPetProjects.appendingPathComponent("-Users-x-Ukaoma Chief Of Staff-MU-Chief-Staff", isDirectory: true)
-        try FileManager.default.createDirectory(at: liveActPetProject, withIntermediateDirectories: true)
-        let liveActPetTranscript = liveActPetProject.appendingPathComponent("3ae96fe1-11f9-444a-8a7e-d23f6d4baabf.jsonl")
-        try Data("{}\n".utf8).write(to: liveActPetTranscript)
-        let liveActPetStamp = Self.parseISODate("2026-09-14T02:58:40Z") ?? Date()
-        try FileManager.default.setAttributes([.modificationDate: liveActPetStamp], ofItemAtPath: liveActPetTranscript.path)
-        func liveActPetNear(_ date: Date?) -> Bool { date.map { abs($0.timeIntervalSince(liveActPetStamp)) < 1 } ?? false }
-        try expect(liveActPetNear(Self.claudeTranscriptModified(sessionId: "3AE96FE1-11F9-444A-8A7E-D23F6D4BAABF", projectsRoot: liveActPetProjects)),
-                   "a full session id resolves its transcript mtime without opening it")
-        try expect(liveActPetNear(Self.claudeTranscriptModified(sessionId: "3ae96fe1", projectsRoot: liveActPetProjects)),
+        defer { try? FileManager.default.removeItem(at: liveActTmp) }
+        let liveActProjects = liveActTmp.appendingPathComponent(".claude/projects", isDirectory: true)
+        let liveActProject = liveActProjects.appendingPathComponent("-Users-x-Ukaoma Chief Of Staff-MU-Chief-Staff", isDirectory: true)
+        try FileManager.default.createDirectory(at: liveActProject, withIntermediateDirectories: true)
+        let liveActTranscript = liveActProject.appendingPathComponent("\(liveActFull).jsonl")
+        var liveActBody = liveActRecord("assistant", "2026-09-14T03:25:15.996Z", stop: "tool_use", tool: "Bash") + "\n"
+        let liveActPad = liveActBookkeeping("queue-operation", "2026-09-14T04:24:14.000Z") + "\n"
+        while liveActBody.utf8.count < Self.claudeActivityTailBytes + 64 * 1024 { liveActBody += liveActPad }
+        try Data(liveActBody.utf8).write(to: liveActTranscript)
+        let liveActFound = Self.claudeTranscriptURL(sessionId: liveActFull.uppercased(), projectsRoot: liveActProjects)
+        try expect(liveActFound?.lastPathComponent == "\(liveActFull).jsonl", "a full session id resolves its transcript")
+        try expect(liveActFound.flatMap { Self.claudeTranscriptTurn(in: $0) }?.at == Self.parseISODate("2026-09-14T03:25:15.996Z"),
+                   "the reader widens past a bookkeeping-only tail to the newest conversation record")
+        try expect(liveActFound.flatMap { Self.claudeTranscriptTurn(in: $0, initialBytes: 64 * 1024, maxBytes: Self.claudeActivityTailBytes) } == nil,
+                   "the reader stops widening at maxBytes")
+        try Data((liveActBody + liveActRecord("user", "2026-09-14T04:30:00.000Z", text: String(repeating: "x", count: 300 * 1024)) + "\n").utf8)
+            .write(to: liveActTranscript)
+        try expect(liveActFound.flatMap { Self.claudeTranscriptTurn(in: $0) }
+                   == ClaudeTurn(at: Self.parseISODate("2026-09-14T04:30:00.000Z") ?? .distantPast, inFlight: true, waitingOnUser: false),
+                   "a newest record larger than 200 KB, such as a pasted screenshot, is read")
+        try expect(Self.claudeTranscriptURL(sessionId: "3ae96fe1", projectsRoot: liveActProjects)?.lastPathComponent == "\(liveActFull).jsonl",
                    "the server's eight-character peer id resolves by prefix")
-        try expect(Self.claudeTranscriptModified(sessionId: "3ae96fe", projectsRoot: liveActPetProjects) == nil,
+        try expect(Self.claudeTranscriptURL(sessionId: "3ae96fe", projectsRoot: liveActProjects) == nil,
                    "an id shorter than eight characters resolves nothing, even when one transcript would match")
-        try expect(Self.claudeTranscriptModified(sessionId: "3ae96fe1-11f9-444a-8a7e-d23f6d4baabf.jsonl", projectsRoot: liveActPetProjects) == nil,
+        try expect(Self.claudeTranscriptURL(sessionId: "\(liveActFull).jsonl", projectsRoot: liveActProjects) == nil,
                    "a file name or path-shaped id is not a session id")
-        try Data("{}\n".utf8).write(to: liveActPetProject.appendingPathComponent("3ae96fe1-0000-4000-8000-000000000000.jsonl"))
-        try expect(Self.claudeTranscriptModified(sessionId: "3ae96fe1", projectsRoot: liveActPetProjects) == nil,
+        try Data("{}\n".utf8).write(to: liveActProject.appendingPathComponent("3ae96fe1-0000-4000-8000-000000000000.jsonl"))
+        try expect(Self.claudeTranscriptURL(sessionId: "3ae96fe1", projectsRoot: liveActProjects) == nil,
                    "an ambiguous short id refreshes nothing")
-        try expect(liveActPetNear(Self.claudeTranscriptModified(sessionId: "3ae96fe1-11f9-444a-8a7e-d23f6d4baabf", projectsRoot: liveActPetProjects)),
-                   "a full id is never ambiguous")
+        try expect(Self.claudeTranscriptURL(sessionId: liveActFull, projectsRoot: liveActProjects) != nil,
+                   "a full id resolves even when a sibling shares its prefix")
+        let liveActClock = Date()
+        let liveActFormat = ISO8601DateFormatter()
+        liveActFormat.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        try Data((liveActRecord("assistant", liveActFormat.string(from: liveActClock.addingTimeInterval(-600)), stop: "end_turn", blocks: ["text"]) + "\n").utf8)
+            .write(to: liveActTranscript)
+        let liveActSubagents = liveActProject.appendingPathComponent(liveActFull, isDirectory: true).appendingPathComponent("subagents", isDirectory: true)
+        try FileManager.default.createDirectory(at: liveActSubagents, withIntermediateDirectories: true)
+        try Data((liveActRecord("assistant", liveActFormat.string(from: liveActClock.addingTimeInterval(-30)), stop: "tool_use", tool: "Bash") + "\n").utf8)
+            .write(to: liveActSubagents.appendingPathComponent("agent-a1.jsonl"))
+        let liveActSession = Self.claudeSessionActivity(sessionId: liveActFull, projectsRoot: liveActProjects, now: liveActClock)
+        try expect(liveActSession?.inFlight == false && liveActSession?.subagentInFlightAt != nil
+                   && Self.claudeTurnState(inFlight: false, waitingOnUser: false, lastActivityAt: liveActSession?.lastActivityAt,
+                                           subagentInFlightAt: liveActSession?.subagentInFlightAt, now: liveActClock) == "running",
+                   "a subagent still working keeps its session running after the parent turn ends")
         try expect(Self.dateFromEpochMillis(NSNumber(value: 1_787_857_717_954)) != nil,
                    "sqlite JSON numbers arrive as NSNumber, not Int")
         try expect(Self.dateFromEpochMillis(NSNull()) == nil,
