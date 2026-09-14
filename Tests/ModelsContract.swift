@@ -4343,6 +4343,11 @@ struct ModelsContract {
         precondition(audioLedger.alertsToPost([audioReaching!]).isEmpty, "audio reaching the Mac again posts nothing")
         precondition(audioLedger.alertsToPost([audioStopped!]).count == 1, "a later drop in the same meeting notifies again")
         precondition(audioLedger.alertsToPost([]).isEmpty && audioLedger.notified.isEmpty, "a meeting that is no longer live is forgotten")
+        var audioRearm = MeetingAudioAlertLedger()
+        precondition(audioRearm.alertsToPost([audioStopped!]).count == 1
+            && audioRearm.alertsToPost([audioReaching!]).isEmpty
+            && audioRearm.alertsToPost([audioStopped!]).count == 1,
+            "a drop, audio reaching the Mac again, then the same kind of drop notifies twice")
         let audioQuiet = MeetingAudioWatch(.object(["sessionId": .string("m2"), "state": .string("phone_quiet"), "alert": .bool(false), "silenceSeconds": .number(200)]))
         precondition(audioLedger.alertsToPost([audioQuiet!]).isEmpty && audioQuiet?.rowValue == "No word from phone 3 min", "a quiet phone never notifies")
         precondition(MeetingAudioWatch.minutes(90) == "2 min" && MeetingAudioWatch.minutes(89) == "1 min" && MeetingAudioWatch.minutes(10) == "1 min",
