@@ -12940,7 +12940,7 @@ final class COSControlHelper {
             throw HelperError.message(Self.heldGroupsUpdateMessage("preview, apply and undo meeting labels"))
         }
         guard let body = response.body else { throw HelperError.message("Server returned no naming receipt") }
-        guard [200, 400, 409, 422, 503].contains(response.status) else {
+        guard [200, 400, 404, 409, 422, 503].contains(response.status) else {
             throw HelperError.message((body["error"] as? String) ?? "Naming failed (\(response.status))")
         }
         let details = Self.heldNamingDetails(status: response.status, body: body)

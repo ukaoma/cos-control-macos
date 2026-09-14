@@ -52,19 +52,23 @@ with tempfile.TemporaryDirectory(prefix='cos-held-wire-',dir='/tmp') as home:
         assert result['details']['undoHandle']=='batch-1' and result['details']['deleted']==239
         assert state['requests'][-1][2]['ownerAck'] is True and state['requests'][-1][2]['listened'] is True
     # Match the route's real error envelopes: no kind/hash on refusal.
-    for status, reason, message in ((409,'preview_expired','The preview expired. Preview again.'),
+    for status, reason, message in ((404,'no_samples','None of those samples are held any more.'),
+                                    (409,'preview_expired','The preview expired. Preview again.'),
                                     (503,'speaker_model_unavailable','The speaker model is not loaded. Nothing was changed.')):
         state['status']=status
         state['override']={'success':False,'error':message,'reason':reason,
-                           'meetings':[{'sessionId':'meeting_1','status':'blocked','error':message}]}
+                           'meetings':[{'sessionId':'meeting_1','status':'blocked','error':message}],
+                           'missing':[{'sessionId':'meeting_1','chunkIndex':7}], 'notReady':[]}
         refusal=run('voice-held-apply',*naming,'--preview-hash','a'*64,'--confirm')
         assert refusal['message']==message and refusal['details']['httpStatus']==status and refusal['details']['state']=='refused'
         assert refusal['details']['reason']==reason and 'previewHash' not in refusal['details']
+        assert refusal['details']['missing'][0]['chunkIndex']==7
     state['status']=200
     state['override']={'success':True,'kind':'applied','status':'partial','partial':True,'batchId':'batch-1','undoHandle':'batch-1',
-                       'enrolled':1,'deleted':0,'meetings':[{'sessionId':'meeting_1','status':'failed','copies':[{'copy':'local','correctionRevision':0}],
+                       'enrolled':1,'profileEmbeddings':40,'members':[{'sessionId':'meeting_1','chunkIndex':7,'status':'no_transcript_position','enrollmentStatus':'enrolled','labelStatus':'no_transcript_position','audioStatus':'retained','position':None}],'deleted':0,'meetings':[{'sessionId':'meeting_1','status':'failed','copies':[{'copy':'local','correctionRevision':0}],
                        'receipts':[{'copy':'local','status':'applied'},{'copy':'operations','status':'failed','error':'read-only'}]}]}
     partial=run('voice-held-apply',*naming,'--preview-hash','a'*64,'--confirm')
+    assert partial['details']['profileEmbeddings']==40 and partial['details']['members'][0]['enrollmentStatus']=='enrolled'
     assert partial['details']['partial'] is True and partial['details']['enrolled']==1 and partial['details']['deleted']==0
     assert partial['details']['meetings'][0]['receipts'][1]['error']=='read-only'
     state['override']=None

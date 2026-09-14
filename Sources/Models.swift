@@ -3998,6 +3998,30 @@ struct HeldNamingMeeting: Identifiable, Sendable {
     }
 }
 
+/// Preview readiness and durable enrollment/label/audio outcomes are separate.
+/// A coherent member can be represented without adding another stored voiceprint.
+struct HeldNamingMemberOutcome: Identifiable, Sendable {
+    let sample: HeldSampleRef
+    let status: String
+    let enrollmentStatus: String
+    let labelStatus: String
+    let audioStatus: String
+    let position: Int?
+    let reason: String?
+    var id: String { sample.id }
+    var hasNoTranscriptPosition: Bool { labelStatus == "no_transcript_position" || status == "no_transcript_position" }
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let sample = HeldSampleRef(value) else { return nil }
+        self.sample = sample
+        status = o["status"]?.string ?? "unknown"
+        enrollmentStatus = o["enrollmentStatus"]?.string ?? "unknown"
+        labelStatus = o["labelStatus"]?.string ?? "unknown"
+        audioStatus = o["audioStatus"]?.string ?? "unknown"
+        position = o["position"]?.int
+        reason = o["reason"]?.string
+    }
+}
+
 struct HeldNamingReceipt: Identifiable, Sendable {
     let raw: [String: JSONValue]
     let kind: String
@@ -4015,8 +4039,12 @@ struct HeldNamingReceipt: Identifiable, Sendable {
     var id: String { previewHash ?? batchId ?? kind }
     var enrolled: Int { raw["enrolled"]?.int ?? 0 }
     var deleted: Int { raw["deleted"]?.int ?? 0 }
+    /// Server's retained count: enrollment can replace samples at the cap.
+    var profileEmbeddings: Int? { raw["profileEmbeddings"]?.int }
+    var memberOutcomes: [HeldNamingMemberOutcome] { (raw["members"]?.array ?? []).compactMap(HeldNamingMemberOutcome.init) }
+    var restoredSegments: Int { meetings.filter { $0.status == "reverted" }.reduce(0) { $0 + $1.labelled } }
     var partial: Bool { raw["partial"]?.bool ?? false }
-    var noTranscriptCount: Int { (raw["members"]?.array ?? []).filter { $0.object?["status"]?.string == "no_transcript_position" }.count }
+    var noTranscriptCount: Int { memberOutcomes.filter(\.hasNoTranscriptPosition).count }
     var eligibleSamples: Int { (raw["members"]?.array ?? []).filter { ["ready", "no_transcript_position"].contains($0.object?["status"]?.string ?? "") }.count }
     var labelled: Int { meetings.filter { $0.status == "ready" || $0.status == "applied" }.reduce(0) { $0 + $1.labelled } }
     var canApply: Bool { kind == "preview" && httpStatus == 200 && eligibleSamples > 0 && previewHash?.count == 64 && expiresAt.map { $0 > Date() } == true }
@@ -4042,6 +4070,7 @@ struct HeldNamingReceipt: Identifiable, Sendable {
 }
 
 struct HeldNamingBatch: Identifiable, Sendable {
+    let raw: [String: JSONValue]
     let batchId: String
     let speaker: String
     let status: String
@@ -4049,8 +4078,11 @@ struct HeldNamingBatch: Identifiable, Sendable {
     let meetings: [HeldNamingMeeting]
     var id: String { batchId }
     var needsReview: Bool { status == "interrupted" || status == "partial" }
+    var memberOutcomes: [HeldNamingMemberOutcome] { (raw["members"]?.array ?? []).compactMap(HeldNamingMemberOutcome.init) }
+    var profileEmbeddings: Int? { raw["profileEmbeddings"]?.int }
     init?(_ value: JSONValue?) {
         guard let o = value?.object, let batch = o["batchId"]?.string, !batch.isEmpty else { return nil }
+        raw = o
         batchId = batch; speaker = o["speaker"]?.string ?? "Voice"; status = o["status"]?.string ?? "unknown"
         undoHandle = o["undoHandle"]?.string
         meetings = (o["meetings"]?.array ?? []).compactMap(HeldNamingMeeting.init)

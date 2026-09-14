@@ -14,7 +14,7 @@ Local build review. No production naming or release action was performed.
 
 Every new naming request first verifies GET returns `namingCapabilities: {version:1,preview:true,apply:true,undo:true}`. This matters because an old server has an enroll route which could otherwise interpret a new preview as a write. An old server receives **zero POST requests** in the executable compatibility fixture. Old helper → new server is safe because absence of `previewHash` returns a preview.
 
-Helper responses retain all server JSON fields, including `previewHash`, `expiresAt`, per-member status, `batchId`, `undoHandle`, `meetings`, copy snapshots, write `receipts`, and raw playback triples. Each reply adds `httpStatus` and a `state`; 400, 409, 422 and 503 stay distinct review refusals, preserving their reason and message.
+Helper responses retain all server JSON fields, including `previewHash`, `expiresAt`, per-member status, `batchId`, `undoHandle`, `meetings`, copy snapshots, write `receipts`, and raw playback triples. Each reply adds `httpStatus` and a `state`; 400, route-owned 404, 409, 422 and 503 stay distinct review refusals, preserving their reason and message.
 
 Playback requires all three server fields: `{sessionId,chunkIndex,position}`. `chunkIndex` selects the raw WAV. `position` proves the mapping but is never used as the WAV index. Null mapping suppresses Play. The fixture explicitly uses raw chunk 7 / compacted position 3.
 
@@ -29,3 +29,13 @@ Receipt display separates samples enrolled, transcript segments labelled, and de
 - `Tests/HeldNamingGuardMutations.py`: 8 mutations uniquely land in actual model definitions, compile, and fail their expected guard test. Covers owner, listening, expiry, HTTP refusal, hash, eligibility, preview kind, and null playback.
 
 Release appcast and `serverTarget` live in the separate `cos-starter/control/appcast.json`. This repository owns `Resources/Info.plist` (0.5.223, build 261) and its changelog. Signing, appcast publication, installation and server/npm release remain separate actions.
+
+## Final wire audit
+
+The final server receipt adds `members[]` to applied and history results. Control decodes each member’s enrollment, label and audio outcomes separately. `enrolled` means an accepted selected voiceprint; `represented` means the sample is covered without claiming it added another stored voiceprint. Old receipts missing these fields remain `unknown`. Textless members retain `no_transcript_position` and their enrollment outcome.
+
+`profileEmbeddings` is the server’s retained profile count, including cap eviction. It is nullable in Control and is never calculated as prior count plus enrolled samples. Partial Undo exposes restored segments separately from the labels that remain applied.
+
+A route-owned `404 no_samples` preserves missing/not-ready member details, while a bare missing route still requests server 6.46.0. `Tests/HeldNamingWire.swift` accepts server-produced preview/applied/undone/history JSON files and checks their shipping model decoding without copying private fixture data into the repository.
+
+Final validation passed against server-generated native-fixture receipts: preview, applied, undone and persisted history each decoded one member and one meeting with raw mappings and per-copy receipts intact. The preview retained-count snapshot was 33; Apply accepted one sample and reported 34 retained; Undo and restart history still reported 34, correctly retaining the enrollment. These files remain in the private fixture archive. The complete `Tests/run.sh`, including strict Swift 6 app compilation, passed again after the final helper/model changes.

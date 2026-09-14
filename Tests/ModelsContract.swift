@@ -4299,6 +4299,25 @@ struct ModelsContract {
         precondition(undoReceipt.deleted == 239 && undoReceipt.undoHandle == "batch-1", "undo survives deletion of every held sample")
         let interrupted = HeldNamingBatch(.object(["batchId": .string("batch-2"), "speaker": .string("Brigitta Pólya"), "status": .string("interrupted")]))
         precondition(interrupted?.needsReview == true)
+        let outcomeMembers: [JSONValue] = [
+            .object(["sessionId": .string("meeting_1"), "chunkIndex": .number(7), "status": .string("no_transcript_position"), "enrollmentStatus": .string("enrolled"), "labelStatus": .string("no_transcript_position"), "audioStatus": .string("deleted"), "position": .null]),
+            .object(["sessionId": .string("meeting_1"), "chunkIndex": .number(8), "status": .string("applied"), "enrollmentStatus": .string("represented"), "labelStatus": .string("labelled"), "audioStatus": .string("deleted"), "position": .number(3)]),
+            .object(["sessionId": .string("meeting_2"), "chunkIndex": .number(4), "status": .string("failed"), "enrollmentStatus": .string("not_enrolled"), "labelStatus": .string("failed"), "audioStatus": .string("retained"), "position": .number(1), "reason": .string("Operations copy missing")])]
+        let durableWire: [String: JSONValue] = ["kind": .string("applied"), "batchId": .string("batch-3"), "status": .string("partial"), "enrolled": .number(5), "profileEmbeddings": .number(40), "deleted": .number(2), "members": .array(outcomeMembers)]
+        let durableNaming = HeldNamingReceipt(durableWire)
+        precondition(durableNaming.profileEmbeddings == 40 && durableNaming.enrolled == 5, "retained profile count never adds enrollment at the cap")
+        precondition(durableNaming.noTranscriptCount == 1 && durableNaming.memberOutcomes[0].enrollmentStatus == "enrolled")
+        precondition(durableNaming.memberOutcomes[1].enrollmentStatus == "represented" && durableNaming.memberOutcomes[1].sample.chunkIndex == 8 && durableNaming.memberOutcomes[1].position == 3)
+        precondition(durableNaming.memberOutcomes[2].audioStatus == "retained" && durableNaming.memberOutcomes[2].reason == "Operations copy missing")
+        let durableHistory = HeldNamingBatch(.object(durableWire))
+        precondition(durableHistory?.memberOutcomes.count == 3 && durableHistory?.profileEmbeddings == 40 && durableHistory?.needsReview == true)
+        precondition(HeldNamingReceipt([:]).profileEmbeddings == nil, "missing retained count remains unknown")
+        let legacyOutcome = HeldNamingMemberOutcome(.object(["sessionId": .string("m"), "chunkIndex": .number(1)]))
+        precondition(legacyOutcome?.enrollmentStatus == "unknown" && legacyOutcome?.audioStatus == "unknown", "legacy receipts cannot claim enrollment or deletion")
+        let undoWire = HeldNamingReceipt(["kind": .string("undone"), "partial": .bool(true), "meetings": .array([
+            .object(["sessionId": .string("m"), "status": .string("reverted"), "labelled": .number(8)]),
+            .object(["sessionId": .string("n"), "status": .string("applied"), "labelled": .number(4), "error": .string("Later batch touched positions")])])])
+        precondition(undoWire.restoredSegments == 8 && undoWire.labelled == 4 && undoWire.partial, "partial Undo separates restored and remaining labels")
         print("COS Control: held naming 239-row, playback, preview, partial-copy and undo contracts passed")
 
         print("COS Control: Swift attachment parsing and owned-image decoding passed")
