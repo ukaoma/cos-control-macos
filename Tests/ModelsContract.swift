@@ -4901,7 +4901,28 @@ struct ModelsContract {
                      "a disagreement names what each side reads, because nothing else can see it")
         precondition(mismatch.mismatchWarning?.contains("refresh this") == true,
                      "and it points at the refresh that settles it")
-        precondition(mismatch.appliedMergeCount == 6, "applied merges are what Undo all has to act on")
+        // UNDO ALL COUNTS APPLIED MERGES, NEVER OPEN SUGGESTIONS (QA round 2
+        // blocker 5). This line used to assert 6 here, the sum auto 4 +
+        // suggested 2, so the contract test pinned the bug: two open suggestions
+        // counted as merges to undo.
+        precondition(mismatch.appliedMergeCount == 4,
+                     "a server with no counts.applied falls back to auto; its 2 open suggestions are not merges")
+        let freshMac = MeetingEngineStatus([
+            "routeState": .string("ready"), "mode": .string("advise"), "isPipelineMac": .bool(true),
+            "counts": .object(["auto": .number(0), "suggested": .number(21), "reverted": .number(0)]),
+        ])
+        precondition(freshMac.appliedMergeCount == 0 && !freshMac.mergesRemainApplied,
+                     "a fresh Mac with 21 open suggestions and nothing applied offers no Undo all merges")
+        precondition(MeetingEngineStatus([
+            "routeState": .string("ready"), "mode": .string("apply"),
+            "counts": .object(["auto": .number(2), "suggested": .number(21), "applied": .number(5)]),
+        ]).appliedMergeCount == 5,
+        "counts.applied is every applied action, any tier, and wins over auto when the server sends it")
+        precondition(MeetingEngineStatus([
+            "routeState": .string("ready"), "mode": .string("apply"),
+            "counts": .object(["auto": .number(3), "suggested": .number(4), "applied": .number(0)]),
+        ]).appliedMergeCount == 0,
+        "a served applied of zero is zero, not a reason to fall back to auto")
         precondition(mismatch.firstRunLine?.contains("198 recordings read") == true, "the first look reports what it scanned")
         precondition(mismatch.firstRunCompleted && !mismatch.firstRunInProgress, "a finished first look is not still running")
         precondition(mismatch.lastRunLine == "Last run 2026-09-14T10:00:00.000Z · tick", "the last run says when and why")

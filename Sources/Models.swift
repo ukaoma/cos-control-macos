@@ -8191,8 +8191,20 @@ struct MeetingEngineStatus: Sendable, Equatable {
     /// waits on this rather than acting on a default.
     var modeKnown: Bool { mode != nil }
 
-    /// Merges COS made and has not undone, as the engine counts them.
-    var appliedMergeCount: Int { max(auto + suggested - reverted, 0) }
+    /// `counts.applied`: every applied action, any tier. Nil on a server that
+    /// does not send it, which is not the same as zero.
+    var appliedActions: Int?
+
+    /// Merges COS made and has not undone, as the ENGINE counts them.
+    ///
+    /// `counts.applied` IS THE WHOLE ANSWER when the server sends it. 0.5.230
+    /// summed `auto + suggested - reverted`, and `counts.suggested` is the number
+    /// of OPEN suggestions: things nobody has answered, which are not merges and
+    /// have nothing to undo. A fresh Mac with 21 suggestions and no applied
+    /// action offered "Undo all merges" and then previewed "Undo 0 merges."
+    /// (QA round 2 blocker 5). A server with no `applied` leaves `auto`, the
+    /// nearest count it has. AN OPEN SUGGESTION NEVER ENTERS THIS NUMBER.
+    var appliedMergeCount: Int { max(appliedActions ?? auto, 0) }
 
     var modeLine: String {
         if routeAbsent { return "Needs COS server 6.47.0" }
@@ -8318,6 +8330,9 @@ struct MeetingEngineStatus: Sendable, Equatable {
         pending = counts?["pending"]?.int ?? 0
         revertPending = counts?["revertPending"]?.int ?? 0
         failed = counts?["failed"]?.int ?? 0
+        // NOT DEFAULTED: an absent `applied` is an older server, and zero would
+        // hide its `auto` count.
+        appliedActions = counts?["applied"]?.int
         if let first = details["firstRun"]?.object {
             firstRunScanned = first["scanned"]?.int ?? 0
             firstRunAuto = first["auto"]?.int ?? 0
