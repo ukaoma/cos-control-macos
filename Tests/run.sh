@@ -17,7 +17,7 @@ node "$ROOT/Tests/MemoriesAppliedCanary.cjs"
 
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/HelperSources/main.swift" \
-  -framework Security \
+  -framework Security -framework AppKit \
   -o "$TMP/cos-control-helper"
 
 # The helper prints WHICH expectation failed. Capturing that into a variable
@@ -39,8 +39,8 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 605:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 605 (605 at 0.5.229)")
+if count < 664:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 664 (664 at 0.5.230)")
 ' "$SELF_TEST"
 
 python3 "$ROOT/Tests/HeldNamingTransport.py" "$TMP/cos-control-helper"
@@ -4094,7 +4094,10 @@ for name, start, end in (("sessionRow", "    private func sessionRow(", "    pri
     need(row.count(".font(.system(size:") == row.count('Image(systemName: "chevron.right")'), f"{name} still sets prose in the system font")
 need("stats: meetingsStats" in activity and "stats: sessionsStats" in activity and "stats: tasksStats" in activity, "each pane must pass its stat strip")
 meetings_src = (root / "Sources/ActivityMeetings.swift").read_text()
-need(meetings_src.count(".cosRowCard()") == 2 and "List(" not in meetings_src, "the meeting rows must be cards in the shared scroll list, not a List")
+# 3 from 0.5.230: the library row, the search hit, and the suggestion row. The
+# rule is "cards in a shared scroll list, never a List"; the count is how it is
+# expressed, so a new row surface raises it rather than relaxing it.
+need(meetings_src.count(".cosRowCard()") == 3 and "List(" not in meetings_src, "the meeting rows must be cards in the shared scroll list, not a List")
 need("COSType.display(22, weight: .medium)" in meetings_src and "COSType.display(15, weight: .medium)" in meetings_src, "the meeting detail title and the calendar month must be Fraunces")
 need("Search topics, ideas" in meetings_src, "the meetings search placeholder changed")
 # 0.5.194: the Knowledge setup path. Six bounded ops plus one native folder
@@ -5087,5 +5090,318 @@ if "rows.filter({ !$0.isScheduledJob })" not in body(models, "static func canoni
     fail("job rows must never be prefix-merged")
 print("COS Control: scheduled jobs pinned (0.5.229)")
 SCHEDJOBS
+
+/usr/bin/python3 - "$ROOT" <<'MERGEUI'
+import re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+
+def code(path):
+    # Comments are stripped: a clause that matches its own explanatory comment
+    # cannot fail, and every check below is meant to be able to fail.
+    return re.sub(r"//[^\n]*", "", (root / path).read_text())
+
+helper = code("HelperSources/main.swift")
+helper_raw = (root / "HelperSources/main.swift").read_text()
+model = code("Sources/ControllerModel.swift")
+models = code("Sources/Models.swift")
+activity = code("Sources/ActivityWindow.swift")
+meetings = code("Sources/ActivityMeetings.swift")
+
+def fail(message):
+    sys.exit(f"import-and-merge: {message}")
+
+def body(text, marker):
+    start = text.find(marker)
+    if start < 0:
+        fail(f"missing {marker}")
+    depth = 0
+    for j in range(text.index("{", start), len(text)):
+        if text[j] == "{":
+            depth += 1
+        elif text[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:j + 1]
+    fail(f"unterminated {marker}")
+
+# 1. EVERY VERB IS DISPATCHED. A helper function nothing routes to is a feature
+#    that does not exist, and the Swift side would fail with "unknown command".
+for verb, fn in (
+    ("meeting-recorders-detect", "emitMeetingRecordersDetect()"),
+    ("fireflies-key-set", "emitFirefliesKeySet()"),
+    ("fireflies-key-status", "emitFirefliesKeyStatus()"),
+    ("fireflies-key-check", "emitFirefliesKeyCheck()"),
+    ("fireflies-key-delete", "emitFirefliesKeyDelete()"),
+    ("meeting-import-run", "emitMeetingImportRun(args: args)"),
+    ("meeting-import-status", "emitMeetingImportStatus()"),
+    ("meeting-import-settings", "emitMeetingImportSettings(args: args)"),
+    ("meeting-suggestions", "emitMeetingSuggestions(args: args)"),
+    ("meeting-suggestion-accept", 'emitMeetingSuggestionDecision(args: args, verb: "accept")'),
+    ("meeting-suggestion-confirm", 'emitMeetingSuggestionDecision(args: args, verb: "confirm")'),
+    ("meeting-suggestion-dismiss", 'emitMeetingSuggestionDecision(args: args, verb: "dismiss")'),
+    ("meeting-actions", "emitMeetingActions(args: args)"),
+    ("meeting-action-revert", "emitMeetingActionRevert(args: args)"),
+    ("meeting-actions-revert-all", "emitMeetingActionsRevertAll(args: args)"),
+    ("meeting-engine-status", "emitMeetingEngineStatus()"),
+    ("meeting-engine-mode", "emitMeetingEngineMode(args: args)"),
+):
+    if f'case "{verb}": try {fn}' not in helper:
+        fail(f"the helper must dispatch {verb} to {fn}")
+
+# 2. THE KEY NEVER TOUCHES argv. `ps` shows every argument of every process on
+#    this Mac to every user on it, and HelperClient logs its argument list.
+key_set = body(helper, "private func emitFirefliesKeySet(")
+if "FileHandle.standardInput.readDataToEndOfFile()" not in key_set:
+    fail("fireflies-key-set must read the key from stdin")
+if 'case "fireflies-key-set": try emitFirefliesKeySet()' not in helper:
+    fail("fireflies-key-set must take no arguments at all, so there is no argument for a key to arrive in")
+if "private func emitFirefliesKeySet() throws" not in helper:
+    fail("emitFirefliesKeySet must take no args parameter")
+for banned in ('option("--key"', "--key ", "--api-key", "--token"):
+    if banned in key_set:
+        fail(f"fireflies-key-set reads {banned!r}; a key in argv is a key published to this Mac")
+save = body(model, "func saveFirefliesKey(")
+if 'helper.run(["fireflies-key-set"], timeout: 60, stdinData: Data(trimmed.utf8))' not in save:
+    fail("Control must send the key as stdinData with an argument list of exactly the verb")
+if re.search(r'"fireflies-key-set",\s*"', save):
+    fail("Control appends an argument to fireflies-key-set; the key must ride on stdin alone")
+# And it must never be echoed back.
+for surface in (key_set, save, body(meetings, "private var connectCard: some View {")):
+    if "keyDraft" in surface and "SecureField" not in surface:
+        fail("the key field must be a SecureField, and the key must never be rendered back")
+if 'emit(ok: true, message: "Key saved"' not in helper:
+    fail("the save confirmation must not quote what was typed")
+
+# 3. ROUTE FLAGS AND OPENERS. 0.5.17 shipped two dead buttons because the opener
+#    set one thing and the mount condition read another.
+for flag, pane, opener, writes in (
+    ("meetingImportRouteActive", "MeetingImportPane(model: model)", "func openMeetingImport()", "meetingImportOpen"),
+    ("meetingSuggestionsRouteActive", "MeetingSuggestionsPane(model: model)", "func openMeetingSuggestions()", "meetingSuggestionsOpen"),
+):
+    if re.search(rf"else if section == \.meetings, model\.{flag} \{{\s*{re.escape(pane)}", activity) is None:
+        fail(f"{pane} must sit on its own else if whose condition is exactly model.{flag}")
+    route = re.search(rf"var {flag}: Bool \{{[^}}]*\}}", model, re.S)
+    if route is None:
+        fail(f"{flag} not found")
+    # Word boundary: `meetingImportOpen` is a prefix of nothing here today, but
+    # `contextDetailLoading` CONTAINS `contextDetail` and a substring check once
+    # passed a flag reduced to its loading bool.
+    if re.search(rf"\b{writes}\b", route.group(0)) is None:
+        fail(f"{flag} does not read {writes}, the var its opener writes")
+    body_opener = body(model, opener)
+    if re.search(rf"\b{writes} = true\b", body_opener) is None:
+        fail(f"{opener} does not set {writes}")
+    if f"model.{flag}" not in activity:
+        fail(f"{flag} is never read by ActivityWindow.swift")
+
+# The openers are reachable, and they are mutually exclusive: opening one closes
+# the other and the detail, or two panes claim the same route.
+toolbar = body(meetings, "private var toolbar: some View {")
+if 'Button("Import meetings") { model.openMeetingImport() }' not in toolbar:
+    fail("Meetings must carry the Import meetings doorway")
+if "model.openMeetingSuggestions() }" not in toolbar:
+    fail("Meetings must carry the Suggested merges doorway")
+for opener, closes in (("func openMeetingImport()", "meetingSuggestionsOpen = false"),
+                       ("func openMeetingSuggestions()", "meetingImportOpen = false")):
+    o = body(model, opener)
+    if closes not in o or "closeLibraryDetail()" not in o:
+        fail(f"{opener} must close the other pane and the detail")
+# Back must leave each pane, or a person is stuck in it.
+back = body(activity, "private func goBack() {")
+for flag, closer in (("meetingImportRouteActive", "model.closeMeetingImport()"),
+                     ("meetingSuggestionsRouteActive", "model.closeMeetingSuggestions()")):
+    if re.search(rf"section == \.meetings, model\.{flag} \{{\s*{re.escape(closer)}", back) is None:
+        fail(f"Back must leave the {flag} pane through {closer}")
+if "model.meetingImportRouteActive || model.meetingSuggestionsRouteActive" not in activity:
+    fail("hasDetail must count the new panes, or Back is not offered at all")
+
+# 4. COPY. Each of these is the sentence the release plan specifies, verbatim.
+for needle, why in (
+    ('"Update the COS server to 6.47.0"', "route_absent names the version"),
+    ('Button("Update Server") { model.perform("update") }', "route_absent carries the Update Server affordance"),
+    ('"Your COS pipeline already brings in Fireflies meetings."', "a pipeline Mac says why it does not import"),
+    ('"COS does not change your pipeline\'s files in this version. Your answers are saved."',
+     "an advise-mode answer must not look like one that changed something"),
+    ('"Would merge automatically"', "the advise-mode group title"),
+    ('"Suggestions"', "the advise-mode undecided group title"),
+    ('"Not the same meeting"', "the refuse action"),
+    ('"Looks right"', "the advise-mode agree action"),
+    ('"Merge"', "the imports-mode agree action"),
+    ('"Import meetings"', "the import doorway"),
+    ('"Suggested merges"', "the suggestions doorway"),
+):
+    if needle not in meetings:
+        fail(f"copy lost {needle}: {why}")
+for needle in ('"Merged automatically: G2 + Fireflies"', '"Merged from your suggestion"',
+               '"Split from a longer recording"', '"Merged by your COS pipeline"'):
+    if needle not in models:
+        fail(f"a derived record's headline lost {needle}")
+# 0.5.75: a case-sensitive test against prose is invisible when broken. The agree
+# label is chosen by the MODE, never by a string match on server copy.
+agree = body(meetings, "private func agreeLabel(")
+if "model.meetingEngineStatus.mode == .imports" not in agree:
+    fail("the agree label must follow the mode, because only imports mode writes anything")
+# No em dashes or arrows in the copy THIS release writes. Scoped to the new
+# views and models: pre-existing copy elsewhere is not this change's to rewrite.
+raw_meetings = (root / "Sources/ActivityMeetings.swift").read_text()
+new_copy = "".join(
+    body(raw_meetings, marker)
+    for marker in ("struct MeetingImportPane", "struct MeetingEngineStatusRow",
+                   "struct MeetingSuggestionsPane", "struct MergedRecordActions")
+)
+raw_models = (root / "Sources/Models.swift").read_text()
+new_copy += "".join(
+    body(raw_models, marker)
+    for marker in ("struct MeetingImportState", "struct MeetingSuggestion:", "struct MergeAction",
+                   "struct MergeRevertPreview", "struct MeetingEngineStatus")
+)
+for line in new_copy.splitlines():
+    stripped = line.lstrip()
+    if stripped.startswith("//"):
+        continue
+    if "Text(" not in line and "return \"" not in line and ": \"" not in line:
+        continue
+    for bad in ("\u2014", "->", "\u2192"):
+        if bad in line:
+            fail(f"new copy renders {bad!r}: {stripped[:90]}")
+
+# 5. THE MUTABLE GUARD. An imported meeting has no audio and a split piece is a
+#    span; offering Review voices on either is an action the server refuses.
+guard = body(models, "var canReviewVoices: Bool")
+for need in ("!sessionId.isEmpty", "!isImported", "!isSplitPiece"):
+    if need not in guard:
+        fail(f"canReviewVoices lost {need}")
+detail = body(meetings, "struct MeetingLibraryDetailPane")
+if "if let row = model.openLibraryRow, row.canReviewVoices {" not in detail:
+    fail("the detail's Review voices button must be gated on canReviewVoices")
+if "MergedRecordActions(model: model, row: row, onOpenSource: onOpenSource)" not in detail:
+    fail("a derived or imported record must show how it was made")
+if "if row.isDerived || row.isImported {" not in detail:
+    fail("only a derived or imported record shows the merge actions")
+
+# 6. UNDO IS TWO CALLS, and the second sends back the hash the first returned.
+preview_fn = body(model, "func previewMergeRevert(")
+apply_fn = body(model, "func applyMergeRevert() async {")
+if '"--dry-run"' not in preview_fn:
+    fail("the Undo preview must ask for the dry run")
+if "--preview-hash" in preview_fn:
+    fail("the preview call must not send a hash; there is nothing to confirm yet")
+if 'args += ["--preview-hash", preview.previewHash]' not in apply_fn:
+    fail("applying an Undo must send back the preview's own hash")
+if "--dry-run" in apply_fn:
+    fail("the apply call must not be a dry run")
+if "guard let preview = mergeRevertPreview else { return }" not in apply_fn:
+    fail("an Undo may only apply a preview that is on screen")
+revert_payload = body(helper, "private func revertPayload(")
+if 'if args.contains("--dry-run") { return ["dryRun": true] }' not in revert_payload:
+    fail("the helper must send dryRun for a preview")
+if "Self.validPreviewHash(hash)" not in revert_payload:
+    fail("a mangled preview hash must be refused here, not silently omitted and read as no preview at all")
+actions_block = body(meetings, "struct MergedRecordActions")
+if "if let preview = model.mergeRevertPreview, preview.actionId == (row.actionId ?? \"\") {" not in actions_block:
+    fail("the preview must be shown before the second click, and only for the record it belongs to")
+if "model.previewMergeRevert(actionId: action.id)" not in actions_block:
+    fail("Undo's first click asks for the preview")
+if "model.applyMergeRevert()" not in actions_block:
+    fail("the preview block must carry the button that applies it")
+if "if let action, action.isRevertible {" not in actions_block:
+    fail("a legacy pipeline merge must not be offered an Undo")
+if "action.isLegacy" not in actions_block:
+    fail("a merge the pipeline made must say who made it, rather than silently offering nothing")
+for need in ('Button("Retry")', 'Button("Copy diagnostics")'):
+    if need not in actions_block:
+        fail(f"a failed merge lost {need}")
+
+# 7. A DERIVED ROW IS NOT A CAPTURE. Its source reads "G2 Glasses + Fireflies",
+#    so the string test says yes and would blame the glasses for a missing id.
+if 'static func isG2Source(_ row: [String: Any]) -> Bool' not in helper:
+    fail("isG2Source must have a row overload that can see derivedKind")
+row_overload = body(helper, "static func isG2Source(_ row: [String: Any]) -> Bool")
+if 'row["derivedKind"] as? String' not in row_overload or "return false" not in row_overload:
+    fail("the row overload must answer false for a derived row")
+if 'Self.isG2Source(row["source"] as? String ?? ""),' in helper:
+    fail("the skipped-rows line must pass the ROW, so a merged record is not reported as a capture without a session id")
+if '"isG2": Self.isG2Source(row),' not in helper:
+    fail("the skipped-rows line must call the row overload")
+
+# 7b. A RECORD 404 IS NOT AN UPDATE PROMPT. suggestion_not_found and
+#     action_not_found come from a route that IS there.
+absent = body(helper, "private func isRouteAbsent(")
+if 'answer.body?["error"] == nil' not in absent or "answer.status == 404" not in absent:
+    fail("isRouteAbsent must require BOTH a 404 and no error block")
+# `helper` has its comments stripped, so the section is found by CODE.
+merge_block = helper[helper.index("static let meetingMergeNeeds"):helper.index("private func queryEscape(")]
+if "if answer.status == 404 {" in merge_block:
+    fail("a raw 404 branch would tell a person to update their server because a record is gone")
+if merge_block.count("isRouteAbsent(answer)") < 6:
+    fail("every route-absent branch must go through the discriminator")
+
+# 8. SERVER-FED LISTS SCROLL IN PLACE, inside a flexible frame with a floor. A
+#    fixed cap bounds the list, not the card that holds it (0.5.222).
+content = body(meetings, "private var content: some View {\n        if model.meetingSuggestionsState")
+if re.search(r"ScrollView \{[\s\S]*?\.frame\(minHeight: MERGE_LIST_MIN_HEIGHT, maxHeight: \.infinity\)", content) is None:
+    fail("the suggestions list must scroll inside a flexible frame with a floor")
+if re.search(r"\.frame\(height: ", content):
+    fail("the suggestions list must have no fixed height")
+if "let MERGE_LIST_MIN_HEIGHT: CGFloat = 88" not in meetings:
+    fail("the list floor is 88 pt, the same as the Speakers panes")
+if "let MERGE_CARD_MIN_WIDTH: CGFloat = 390" not in meetings:
+    fail("every card is laid out for the 390 pt panel width")
+# NO minWidth ANYWHERE. A 390 pt minimum inside 22 pt of padding makes the
+# content 434 pt wide in a 390 pt window: the card escapes instead of the list,
+# which is the 0.5.222 mistake one layer out. `Tests/run-merge-ui.sh` renders
+# every surface at exactly 390 pt and asserts the content stays inside it.
+for view in ("struct MeetingImportPane", "struct MeetingSuggestionsPane", "struct MergedRecordActions",
+             "struct MeetingEngineStatusRow"):
+    # `minWidth: 0` is the 0.5.222 clamp and is required; any OTHER minimum is
+    # the thing that broke, so the check names the value rather than the key.
+    for match in re.findall(r"minWidth: ([^,)]+)", body(meetings, view)):
+        if match.strip() != "0":
+            fail(f"{view} sets minWidth: {match.strip()}; nothing here may be wider than the narrowest window")
+for view in ("struct MeetingImportPane", "struct MeetingSuggestionsPane"):
+    if "minHeight: 0, maxHeight: .infinity, alignment: .top)" not in body(meetings, view):
+        fail(f"{view} must clamp itself; maxHeight alone leaves the ideal height and the header slides off the top")
+if "minWidth" in body(meetings, "private struct MergeCard: ViewModifier"):
+    fail("the shared card must not set a minWidth")
+
+# 9. EVERY NEW MODEL FIELD HAS A WRITER. A field read in four places and assigned
+#    nowhere is a feature that does not exist (glasses 0.5.229, taskLensStage).
+for field in ("meetingImportOpen", "meetingSuggestionsOpen", "meetingSuggestions", "meetingSuggestionsState",
+              "meetingSuggestionsLoading", "meetingSuggestionsError", "decidingSuggestion", "meetingEngineStatus",
+              "meetingImport", "firefliesKey", "meetingRecorders", "mergeActions", "mergeRevertPreview",
+              "pendingEngineMode", "meetingImportWindow", "meetingSuggestionsUnresolved", "meetingEngineError",
+              "mergeActionsError", "mergeRevertNote", "firefliesKeyNote", "meetingImportError", "meetingImportLoading",
+              "firefliesKeyBusy", "meetingEngineBusy", "mergeRevertBusy", "mergeActionsLoading"):
+    if f"@Published var {field}" not in model:
+        fail(f"{field} is not declared")
+    writers = len(re.findall(rf"(?<![\w.]){field}\s*=(?!=)", model))
+    if writers < 1:
+        fail(f"{field} has no writer in ControllerModel; it is read-only state that nothing can ever change")
+
+# 10. THE MODE SWITCH IS CONFIRMED, and the confirmation names what apply does.
+mode_row = body(meetings, "struct MeetingEngineStatusRow")
+if "model.armEngineMode(.apply)" not in mode_row or "model.armEngineMode(.advise)" not in mode_row:
+    fail("the mode switch must arm a confirmation, never change the mode directly")
+if "model.setEngineMode(pending)" not in mode_row:
+    fail("only the confirmation may change the mode")
+if "writes merged scribes into your operations tree" not in mode_row or "can be undone" not in mode_row:
+    fail("the apply confirmation must name what apply does")
+if "model.meetingEngineStatus.isPipelineMac" not in mode_row:
+    fail("the mode switch belongs to a pipeline Mac only; there is nothing to choose elsewhere")
+# cosConfirm dismisses BEFORE it runs the action, and dismissal nils the binding.
+confirm_actions = body(meetings, "private var confirmActions: [COSConfirmAction] {")
+if "let pending = model.pendingEngineMode" not in confirm_actions or "guard let pending else { return }" not in confirm_actions:
+    fail("the confirmation action must capture its target before dismissal clears it")
+if re.search(r"model\.pendingEngineMode", confirm_actions.split("return [", 1)[1]):
+    fail("the confirmation action reads pendingEngineMode, which dismissal has already cleared")
+# A 409 while a run is in flight is a wait message, not a failure.
+set_mode = body(model, "func setEngineMode(")
+if "state == .refused" not in set_mode or "meetingEngineError = " not in set_mode:
+    fail("a refused mode change must land in meetingEngineError where the row renders it")
+if "COS is working on meetings right now" not in (root / "Tests/run.sh").read_text():
+    pass  # the wait sentence is the server's; Control renders it verbatim.
+
+print("COS Control: import and merge routes, openers, copy, mutable guard and Undo preview pinned (0.5.230)")
+MERGEUI
 
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"

@@ -1765,6 +1765,405 @@ final class ControllerModel: ObservableObject {
         openLibraryRow != nil || libraryDetail != nil || libraryDetailLoading || libraryDetailError != nil
     }
 
+    // MARK: - Import and merge meetings (server 6.47.0, WS6)
+    //
+    // EVERY FIELD BELOW HAS A WRITER, and a run.sh pin counts them. 0.5.229's
+    // `state.taskLensStage` on the glasses was read in four places and assigned
+    // nowhere, so a whole three-stage board rendered one stage forever; a
+    // @Published var with no assignment site is a feature that does not exist.
+
+    /// True while the Import meetings pane should be the Meetings route.
+    /// Written by `openMeetingImport()` / `closeMeetingImport()`, and by nothing else.
+    @Published var meetingImportOpen = false
+    @Published var meetingImport = MeetingImportState()
+    @Published var meetingImportLoading = false
+    @Published var meetingImportError: String?
+    @Published var firefliesKey = FirefliesKeyState()
+    @Published var firefliesKeyBusy = false
+    /// What the last key check or save said, shown on the card rather than as a dialog.
+    @Published var firefliesKeyNote: String?
+    @Published var meetingRecorders: [MeetingRecorder] = []
+    /// The window the next Import now uses. 7, 30 or 90, the only ones the server takes.
+    @Published var meetingImportWindow = 30
+
+    /// True while the Suggested merges pane should be the Meetings route.
+    @Published var meetingSuggestionsOpen = false
+    @Published var meetingSuggestions: [MeetingSuggestion] = []
+    /// `ready`, `route_absent` or `refused`. Nil until the first load, so the
+    /// pane can tell "not asked yet" from "asked, and there is nothing".
+    @Published var meetingSuggestionsState: String?
+    @Published var meetingSuggestionsLoading = false
+    @Published var meetingSuggestionsError: String?
+    /// The suggestion whose answer is in flight, so one row at a time is busy.
+    @Published var decidingSuggestion: String?
+    /// Set when the suggestions list could not resolve its sides against the
+    /// recent library, so the pane can say why a row shows an id.
+    @Published var meetingSuggestionsUnresolved = false
+
+    @Published var meetingEngineStatus = MeetingEngineStatus()
+    @Published var meetingEngineBusy = false
+    @Published var meetingEngineError: String?
+    /// The mode change awaiting confirmation, or nil. The sheet reads THIS rather
+    /// than the picker, so dismissing the sheet cannot leave a half-applied switch.
+    @Published var pendingEngineMode: MeetingEngineMode?
+
+    @Published var mergeActions: [MergeAction] = []
+    @Published var mergeActionsLoading = false
+    @Published var mergeActionsError: String?
+    /// The dry run an Undo is showing. Applying requires its `previewHash`.
+    @Published var mergeRevertPreview: MergeRevertPreview?
+    @Published var mergeRevertBusy = false
+    @Published var mergeRevertNote: String?
+
+    /// Mounted when the Import meetings pane is open, or loading, or failed.
+    /// INCLUDES THE ERROR CASE on purpose: a failed load has to be visible in
+    /// place rather than looking like a click that did nothing.
+    var meetingImportRouteActive: Bool {
+        meetingImportOpen || (meetingImportLoading && meetingImportError == nil) || meetingImportError != nil
+    }
+
+    /// Mounted when the Suggested merges pane is open, or loading, or failed.
+    var meetingSuggestionsRouteActive: Bool {
+        meetingSuggestionsOpen || meetingSuggestionsLoading || meetingSuggestionsError != nil
+    }
+
+    /// The suggestions the pane lists: open ones, newest first.
+    var pendingMeetingSuggestions: [MeetingSuggestion] {
+        meetingSuggestions.filter(\.isOpen).sorted { $0.at > $1.at }
+    }
+
+    /// Advise mode splits the list in two: what COS would have merged on its own,
+    /// and what it is unsure about. They ask for different things from a reader.
+    var wouldMergeSuggestions: [MeetingSuggestion] {
+        pendingMeetingSuggestions.filter(\.isWouldMerge)
+    }
+
+    var undecidedSuggestions: [MeetingSuggestion] {
+        pendingMeetingSuggestions.filter { !$0.isWouldMerge }
+    }
+
+    /// The action behind an open merged or split record, when COS made it.
+    func mergeAction(for row: LibraryMeeting?) -> MergeAction? {
+        guard let id = row?.actionId, !id.isEmpty else { return nil }
+        return mergeActions.first { $0.id == id }
+    }
+
+    func openMeetingImport() {
+        meetingSuggestionsOpen = false
+        closeLibraryDetail()
+        meetingImportOpen = true
+        meetingImportError = nil
+        Task { await loadMeetingImport() }
+    }
+
+    func closeMeetingImport() {
+        meetingImportOpen = false
+        meetingImportError = nil
+        firefliesKeyNote = nil
+    }
+
+    func openMeetingSuggestions() {
+        meetingImportOpen = false
+        closeLibraryDetail()
+        meetingSuggestionsOpen = true
+        meetingSuggestionsError = nil
+        Task { await loadMeetingSuggestions() }
+    }
+
+    func closeMeetingSuggestions() {
+        meetingSuggestionsOpen = false
+        meetingSuggestionsError = nil
+        decidingSuggestion = nil
+    }
+
+    /// Everything the Import card needs: which recorders are on this Mac, the key,
+    /// the importer, and the engine's mode.
+    func loadMeetingImport() async {
+        meetingImportLoading = true
+        defer { meetingImportLoading = false }
+        await loadMeetingRecorders()
+        await loadFirefliesKey()
+        do {
+            let response = try await helper.run(["meeting-import-status"], timeout: 40)
+            meetingImport = MeetingImportState(response.details)
+            meetingImportWindow = meetingImport.windowDays
+            meetingImportError = nil
+        } catch {
+            meetingImportError = error.localizedDescription
+        }
+        await loadMeetingEngineStatus()
+    }
+
+    func loadMeetingRecorders() async {
+        do {
+            let response = try await helper.run(["meeting-recorders-detect"], timeout: 15)
+            meetingRecorders = (response.details["recorders"]?.array ?? []).compactMap(MeetingRecorder.init)
+        } catch {
+            // A failed LaunchServices lookup is not worth an error banner: the card
+            // simply does not claim anything about what is installed.
+            meetingRecorders = []
+        }
+    }
+
+    func loadFirefliesKey() async {
+        do {
+            let response = try await helper.run(["fireflies-key-status"], timeout: 25)
+            firefliesKey = FirefliesKeyState(response.details)
+        } catch {
+            firefliesKey = FirefliesKeyState()
+            meetingImportError = error.localizedDescription
+        }
+    }
+
+    /// Store a key. IT GOES OVER STDIN, never as an argument: `ps` shows every
+    /// argument of every process on this Mac to every user on it.
+    func saveFirefliesKey(_ key: String) async {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 8 else {
+            firefliesKeyNote = "That does not look like a Fireflies API key."
+            return
+        }
+        firefliesKeyBusy = true
+        defer { firefliesKeyBusy = false }
+        do {
+            let response = try await helper.run(["fireflies-key-set"], timeout: 60, stdinData: Data(trimmed.utf8))
+            firefliesKeyNote = response.message
+            await loadFirefliesKey()
+            await loadMeetingImportStatusOnly()
+        } catch {
+            firefliesKeyNote = error.localizedDescription
+        }
+    }
+
+    func checkFirefliesKey() async {
+        firefliesKeyBusy = true
+        defer { firefliesKeyBusy = false }
+        do {
+            let response = try await helper.run(["fireflies-key-check"], timeout: 60)
+            firefliesKeyNote = response.message
+            await loadFirefliesKey()
+        } catch {
+            firefliesKeyNote = error.localizedDescription
+        }
+    }
+
+    func deleteFirefliesKey() async {
+        firefliesKeyBusy = true
+        defer { firefliesKeyBusy = false }
+        do {
+            let response = try await helper.run(["fireflies-key-delete"], timeout: 25)
+            firefliesKeyNote = response.message
+            await loadFirefliesKey()
+            await loadMeetingImportStatusOnly()
+        } catch {
+            firefliesKeyNote = error.localizedDescription
+        }
+    }
+
+    private func loadMeetingImportStatusOnly() async {
+        do {
+            let response = try await helper.run(["meeting-import-status"], timeout: 40)
+            meetingImport = MeetingImportState(response.details)
+            meetingImportError = nil
+        } catch {
+            meetingImportError = error.localizedDescription
+        }
+    }
+
+    func runMeetingImport() async {
+        meetingImportLoading = true
+        defer { meetingImportLoading = false }
+        do {
+            let response = try await helper.run(
+                ["meeting-import-run", "--window", String(meetingImportWindow)], timeout: 60)
+            firefliesKeyNote = response.message
+            meetingImportError = nil
+        } catch {
+            meetingImportError = error.localizedDescription
+        }
+        await loadMeetingImportStatusOnly()
+    }
+
+    func setMeetingImportSettings(keepImporting: Bool? = nil, planCap: String? = nil) async {
+        var args = ["meeting-import-settings"]
+        if let keepImporting { args += ["--keep-importing", keepImporting ? "true" : "false"] }
+        if let planCap { args += ["--plan", planCap] }
+        guard args.count > 1 else { return }
+        do {
+            let response = try await helper.run(args, timeout: 25)
+            meetingImport = MeetingImportState(response.details)
+            firefliesKeyNote = response.message
+        } catch {
+            meetingImportError = error.localizedDescription
+        }
+    }
+
+    func loadMeetingSuggestions() async {
+        meetingSuggestionsLoading = true
+        defer { meetingSuggestionsLoading = false }
+        do {
+            let response = try await helper.run(["meeting-suggestions", "--state", "open"], timeout: 60)
+            meetingSuggestions = (response.details["suggestions"]?.array ?? []).compactMap(MeetingSuggestion.init)
+            meetingSuggestionsState = response.details["routeState"]?.string ?? "ready"
+            meetingSuggestionsUnresolved = response.details["resolved"]?.bool == false && !meetingSuggestions.isEmpty
+            meetingSuggestionsError = nil
+        } catch {
+            meetingSuggestions = []
+            meetingSuggestionsState = nil
+            meetingSuggestionsError = error.localizedDescription
+        }
+        await loadMeetingEngineStatus()
+    }
+
+    /// Answer one suggestion.
+    ///
+    /// THE VERB IS CHOSEN BY THE MODE, not by the button. In imports mode "yes"
+    /// writes a merged record (accept); in advise mode the server may not write
+    /// into the operations tree at all, so "yes" is remembered (confirm). One verb
+    /// doing both would make an advise answer look like it did something.
+    func decideSuggestion(_ suggestion: MeetingSuggestion, agree: Bool) async {
+        let verb: String
+        if !agree {
+            verb = "meeting-suggestion-dismiss"
+        } else {
+            verb = meetingEngineStatus.mode == .imports ? "meeting-suggestion-accept" : "meeting-suggestion-confirm"
+        }
+        decidingSuggestion = suggestion.id
+        defer { decidingSuggestion = nil }
+        do {
+            let response = try await helper.run([verb, "--id", suggestion.id], timeout: 120)
+            let state = MergeRouteState(response.details["routeState"]?.string)
+            if state == .refused || state == .routeAbsent {
+                meetingSuggestionsError = response.message
+            } else {
+                meetingSuggestionsError = nil
+            }
+        } catch {
+            meetingSuggestionsError = error.localizedDescription
+        }
+        await loadMeetingSuggestions()
+        await loadMergeActions()
+    }
+
+    func loadMeetingEngineStatus() async {
+        do {
+            let response = try await helper.run(["meeting-engine-status"], timeout: 90)
+            // A REFUSAL CARRIES NO MODE, so decoding it would read as imports —
+            // and the row would tell a pipeline Mac that COS merges what it
+            // imports. Keep the last known status and show why it is stale.
+            if MergeRouteState(response.details["routeState"]?.string) == .refused {
+                meetingEngineError = response.message
+                return
+            }
+            meetingEngineStatus = MeetingEngineStatus(response.details)
+            meetingEngineError = nil
+        } catch {
+            meetingEngineError = error.localizedDescription
+        }
+    }
+
+    /// Arm the confirmation. The switch itself never happens from the picker.
+    func armEngineMode(_ mode: MeetingEngineMode) {
+        guard mode != meetingEngineStatus.mode, mode != .imports else { return }
+        pendingEngineMode = mode
+    }
+
+    func cancelEngineMode() {
+        pendingEngineMode = nil
+    }
+
+    func setEngineMode(_ mode: MeetingEngineMode) async {
+        meetingEngineBusy = true
+        defer { meetingEngineBusy = false }
+        do {
+            let response = try await helper.run(["meeting-engine-mode", "--mode", mode.rawValue], timeout: 45)
+            let state = MergeRouteState(response.details["routeState"]?.string)
+            meetingEngineError = (state == .refused || state == .routeAbsent) ? response.message : nil
+        } catch {
+            meetingEngineError = error.localizedDescription
+        }
+        await loadMeetingEngineStatus()
+    }
+
+    func loadMergeActions() async {
+        mergeActionsLoading = true
+        defer { mergeActionsLoading = false }
+        do {
+            let response = try await helper.run(["meeting-actions", "--limit", "100"], timeout: 40)
+            mergeActions = (response.details["actions"]?.array ?? []).compactMap(MergeAction.init)
+            mergeActionsError = nil
+        } catch {
+            mergeActionsError = error.localizedDescription
+        }
+    }
+
+    /// Step one of Undo: ask for the dry run and SHOW it.
+    ///
+    /// Never merged with step two. The preview hash covers the outputs' current
+    /// bytes, so a person confirms the thing they were shown or nothing at all.
+    func previewMergeRevert(actionId: String) async {
+        mergeRevertBusy = true
+        defer { mergeRevertBusy = false }
+        var args = actionId.isEmpty ? ["meeting-actions-revert-all"] : ["meeting-action-revert", "--id", actionId]
+        args.append("--dry-run")
+        do {
+            let response = try await helper.run(args, timeout: 120)
+            let state = MergeRouteState(response.details["routeState"]?.string)
+            guard state == .preview || state == .ready,
+                  let preview = MergeRevertPreview(response.details, actionId: actionId) else {
+                mergeRevertNote = response.message
+                mergeRevertPreview = nil
+                return
+            }
+            mergeRevertPreview = preview
+            mergeRevertNote = nil
+        } catch {
+            mergeRevertPreview = nil
+            mergeRevertNote = error.localizedDescription
+        }
+    }
+
+    func cancelMergeRevert() {
+        mergeRevertPreview = nil
+        mergeRevertNote = nil
+    }
+
+    /// Step two: apply the preview that is on screen.
+    func applyMergeRevert() async {
+        guard let preview = mergeRevertPreview else { return }
+        mergeRevertBusy = true
+        defer { mergeRevertBusy = false }
+        var args = preview.isAll ? ["meeting-actions-revert-all"] : ["meeting-action-revert", "--id", preview.actionId]
+        args += ["--preview-hash", preview.previewHash]
+        do {
+            let response = try await helper.run(args, timeout: 300)
+            mergeRevertNote = response.message
+            mergeRevertPreview = nil
+        } catch {
+            mergeRevertNote = error.localizedDescription
+        }
+        await loadMergeActions()
+        await loadMeetingEngineStatus()
+        if let row = openLibraryRow { openLibraryMeeting(row) }
+        await loadLibraryMeetings()
+    }
+
+    /// Retry a pipeline apply that failed. The runner re-drives a failed action on
+    /// its next pass, so this is the same trigger a person can reach for now.
+    func retryMergeAction(_ action: MergeAction) async {
+        mergeRevertBusy = true
+        defer { mergeRevertBusy = false }
+        await loadMeetingEngineStatus()
+        await loadMergeActions()
+        mergeRevertNote = mergeActions.first { $0.id == action.id }?.stateLine
+    }
+
+    func copyMergeDiagnostics(_ action: MergeAction) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(action.diagnostics, forType: .string)
+        mergeRevertNote = "Diagnostics copied."
+    }
+
     var visibleLibraryMeetings: [LibraryMeeting] {
         libraryMeetings.filter { meeting in
             if let libraryDay, meeting.date != libraryDay { return false }

@@ -4474,6 +4474,315 @@ struct ModelsContract {
             "minutes round to the nearest minute and never read 0")
         print("COS Control: meeting audio watch rows and one notification per drop passed")
 
+        checkImportAndMergeDecoders()
         print("COS Control: Swift attachment parsing and owned-image decoding passed")
+    }
+
+    // MARK: - Import and merge meetings (0.5.230, server 6.47.0)
+
+    /// The five `librarySource` values, decoded by every decoder that carries one.
+    ///
+    /// EXECUTED, not grepped. Each of these decoders defaults its fields, so a
+    /// dropped or mistyped one surfaces as an empty string or a silent `true`
+    /// rather than as an error — exactly the failure `meetingRowFields` had before
+    /// it was extracted and tested.
+    private static let librarySources = ["cos_operations", "direct_library", "standalone_recordings", "imported", "blended"]
+
+    private static func libraryRow(
+        _ source: String, derivedKind: String? = nil, sessionId: String = "meeting_1789_abc",
+        pieceIndex: Int? = nil, extra: [String: JSONValue] = [:]
+    ) -> [String: JSONValue] {
+        var row: [String: JSONValue] = [
+            "sessionId": .string(sessionId),
+            "title": .string("Quilt weekly"),
+            "date": .string("2026-09-10"),
+            "time": .string("14:30"),
+            "domain": .string(source == "imported" || source == "blended" ? "imported" : "quilt"),
+            "month": .string("2026-09"),
+            "filename": .string("2026-09-10_merged_0123456789abcdef.md"),
+            "recordId": .string("blended:0123456789abcdef"),
+            "librarySource": .string(source),
+            // EVERY ROW HERE IS IMMUTABLE. `mutable` defaults to true, so a decoder
+            // that dropped it would read as correctable and the panel would offer
+            // an action the server refuses.
+            "mutable": .bool(false),
+            "source": .string("G2 Glasses + Fireflies"),
+            "originDomain": .string("quilt"),
+        ]
+        if let derivedKind {
+            row["derivedKind"] = .string(derivedKind)
+            row["actionId"] = .string("a_0123456789abcdef")
+        }
+        if let pieceIndex {
+            row["pieceIndex"] = .number(Double(pieceIndex))
+            row["sourceSessionId"] = .string("meeting_1789_abc")
+        }
+        row["g2SessionIds"] = .array([.string("meeting_1789_abc"), .string("meeting_1790_def")])
+        for (key, value) in extra { row[key] = value }
+        return row
+    }
+
+    private static func checkImportAndMergeDecoders() {
+        for source in librarySources {
+            let object = JSONValue.object(libraryRow(source, derivedKind: source == "blended" ? "merge" : nil))
+            guard let reviewable = ReviewableMeeting(object) else { preconditionFailure("ReviewableMeeting refused \(source)") }
+            precondition(reviewable.librarySource == source, "ReviewableMeeting lost librarySource \(source)")
+            precondition(reviewable.mutable == false, "ReviewableMeeting must not default an immutable row to correctable (\(source))")
+            precondition(reviewable.originDomain == "quilt", "ReviewableMeeting lost originDomain (\(source))")
+
+            guard let library = LibraryMeeting(object) else { preconditionFailure("LibraryMeeting refused \(source)") }
+            precondition(library.librarySource == source, "LibraryMeeting lost librarySource \(source)")
+            precondition(library.mutable == false, "LibraryMeeting must not default an immutable row to correctable (\(source))")
+            precondition(library.g2SessionIds.count == 2, "LibraryMeeting lost the captures a merged record holds (\(source))")
+
+            var hitRow = libraryRow(source, derivedKind: source == "blended" ? "merge" : nil)
+            hitRow["snippet"] = .string("budget")
+            hitRow["match"] = .string("both")
+            guard let hit = LibrarySearchHit(.object(hitRow)) else { preconditionFailure("LibrarySearchHit refused \(source)") }
+            precondition(hit.meeting.librarySource == source, "LibrarySearchHit lost librarySource \(source)")
+            precondition(hit.meeting.mutable == false, "LibrarySearchHit lost mutable (\(source))")
+
+            var detailRow = libraryRow(source, derivedKind: source == "blended" ? "merge" : nil)
+            detailRow["summary"] = .string("We agreed the plan.")
+            detailRow["sources"] = .array([
+                .object(["kind": .string("g2"), "id": .string("meeting_1789_abc"), "recordId": .string("standalone:meeting_1789_abc")]),
+                .object(["kind": .string("fireflies"), "id": .string("01K4EXAMPLE"), "recordId": .string("imported:fireflies:0123456789abcdef")]),
+            ])
+            guard let detail = LibraryMeetingDetail(.object(detailRow)) else { preconditionFailure("LibraryMeetingDetail refused \(source)") }
+            precondition(detail.librarySource == source, "LibraryMeetingDetail lost librarySource \(source)")
+            precondition(detail.mutable == false, "LibraryMeetingDetail lost mutable (\(source))")
+            precondition(detail.sources.count == 2, "a merged detail must keep every source reachable (\(source))")
+
+            guard let review = SpeakerReview(.object([
+                "sessionId": .string("meeting_1789_abc"),
+                "source": .string(source),
+                "mutable": .bool(false),
+                "recordId": .string("standalone:meeting_1789_abc"),
+                "blendedRecordId": .string("blended:0123456789abcdef"),
+                "voices": .array([]),
+                "timeline": .array([]),
+            ])) else { preconditionFailure("SpeakerReview refused \(source)") }
+            precondition(review.librarySource == source, "SpeakerReview lost librarySource \(source)")
+            precondition(review.mutable == false, "SpeakerReview lost mutable (\(source))")
+            precondition(review.blendedRecordId == "blended:0123456789abcdef", "SpeakerReview lost blendedRecordId (\(source))")
+        }
+
+        // A row that says nothing about being derived IS NOT DERIVED. An optional
+        // is the difference between "the server did not claim this" and a claim.
+        let plain = LibraryMeeting(.object([
+            "sessionId": .string("meeting_1"), "title": .string("T"), "month": .string("2026-09"),
+            "filename": .string("a.md"), "domain": .string("quilt"),
+        ]))
+        precondition(plain?.derivedKind == nil && plain?.isDerived == false, "a plain row must not read as derived")
+        precondition(plain?.mutable == true, "a row from an older server stays correctable")
+        precondition(plain?.canReviewVoices == true, "a plain capture keeps Review voices")
+
+        // THE MUTABLE GUARD, as behaviour.
+        //
+        // EACH TERM IS TESTED WHERE IT DECIDES. An import and a split piece both
+        // arrive with no sessionId today, so a fixture built that way is answered
+        // by `!sessionId.isEmpty` alone and the other two terms are never reached
+        // — which is exactly what the mutation gate found. These fixtures carry a
+        // sessionId, which is the case the kind terms exist for: a server that
+        // sends one anyway must not make a read-only record correctable.
+        let imported = LibraryMeeting(.object(libraryRow("imported", sessionId: "")))
+        precondition(imported?.canReviewVoices == false, "an imported meeting has no audio, so it never offers Review voices")
+        let importedWithSession = LibraryMeeting(.object(libraryRow("imported", sessionId: "meeting_1789_abc")))
+        precondition(importedWithSession?.isImported == true, "an imported row knows which library it came from")
+        precondition(importedWithSession?.canReviewVoices == false,
+                     "an imported meeting stays read-only even if a session id arrives on its row")
+        let piece = LibraryMeeting(.object(libraryRow("blended", derivedKind: "split", sessionId: "", pieceIndex: 2)))
+        precondition(piece?.isSplitPiece == true && piece?.pieceIndex == 2, "a split piece knows which piece it is")
+        precondition(piece?.canReviewVoices == false, "a split piece is a span, not a capture")
+        let pieceWithSession = LibraryMeeting(.object(libraryRow("blended", derivedKind: "split",
+                                                                sessionId: "meeting_1789_abc", pieceIndex: 2)))
+        precondition(pieceWithSession?.canReviewVoices == false,
+                     "a split piece is a span even if a session id arrives on its row; two pieces would share one capture")
+        let merged = LibraryMeeting(.object(libraryRow("blended", derivedKind: "merge")))
+        precondition(merged?.isMerged == true, "a merged row knows it is merged")
+        precondition(merged?.canReviewVoices == true,
+                     "a merged row's session is a real capture with real audio, and relabelling it is how its profile gets better")
+        precondition(merged?.domainLabel == "Quilt",
+                     "an imported row shows where the meeting came from, not the routing word")
+
+        // IDENTITY IS recordId. Two pieces of one recording share a source session
+        // and would collapse onto each other under a session key.
+        var secondRow = libraryRow("blended", derivedKind: "split", sessionId: "", pieceIndex: 3)
+        secondRow["recordId"] = .string("blended:fedcba9876543210")
+        let second = LibraryMeeting(.object(secondRow))
+        precondition(piece?.id != second?.id, "two pieces of one recording must not share an identity")
+
+        // Route absence is a state with copy, not a failure.
+        let absentImport = MeetingImportState(["routeState": .string("route_absent")])
+        precondition(absentImport.routeAbsent, "a 404 answer is route_absent")
+        precondition(absentImport.headline == "Update the COS server to 6.47.0", "route_absent names the version to update to")
+        precondition(!absentImport.guidance.isEmpty, "every state has a second line saying what to do")
+        let absentEngine = MeetingEngineStatus(["routeState": .string("route_absent")])
+        precondition(absentEngine.routeAbsent && absentEngine.modeLine.contains("6.47.0"), "the engine row says the same thing")
+        let absentKey = FirefliesKeyState(["routeState": .string("route_absent")])
+        precondition(absentKey.routeAbsent && absentKey.summary.contains("6.47.0"), "so does the key row")
+
+        // TWO STATES, TWO KEYS. `routeState` is the helper's verdict about the
+        // route; `state` is the importer's own run state. One key for both is how
+        // a 6.46.x server would have read as an importer that is merely idle.
+        let running = MeetingImportState([
+            "routeState": .string("ready"), "state": .string("running"), "mode": .string("imports"),
+            "running": .bool(true), "keyConfigured": .bool(true), "planCap": .string("pro"),
+            "windowDays": .number(90),
+            "counts": .object(["imported": .number(12), "vendorSeen": .number(40), "retryable": .number(2)]),
+            "budget": .object(["calls": .number(30), "cap": .number(500), "remaining": .number(470)]),
+        ])
+        precondition(running.state == "running" && !running.routeAbsent, "the importer's own state survives the route state")
+        precondition(running.headline.contains("Bringing in"), "a running import says so")
+        precondition(running.budgetLine == "30 of 500 Fireflies calls used today. 470 left.", "the budget line counts calls against the plan cap")
+        precondition(running.windowDays == 90 && running.planCap == "pro", "the window and the plan survive")
+
+        let business = MeetingImportState(["routeState": .string("ready"), "budget": .object(["calls": .number(9)])])
+        precondition(business.budgetCap == nil && business.budgetLine.contains("no daily call limit"),
+                     "a Business plan has no cap, and nil must not read as a cap of zero")
+
+        let refusedPipeline = MeetingImportState([
+            "routeState": .string("ready"), "state": .string("refused_pipeline"), "mode": .string("advise"),
+        ])
+        precondition(refusedPipeline.headline == "Your COS pipeline already brings in Fireflies meetings.",
+                     "a pipeline Mac reads the exact sentence the plan specifies")
+        precondition(!refusedPipeline.importsHere, "advise mode does not import here")
+        for state in ["invalid_key", "rate_limited", "vendor_down", "unreachable", "write_unlisted", "partial", "ok", "idle"] {
+            let row = MeetingImportState(["routeState": .string("ready"), "state": .string(state)])
+            precondition(!row.headline.isEmpty && !row.guidance.isEmpty, "importer state \(state) has copy on both lines")
+        }
+
+        // Suggestions: the evidence, the sides, and the labels that differ by mode.
+        let suggestion = MeetingSuggestion(.object([
+            "id": .string("s_0123456789abcdef"), "kind": .string("would_merge"),
+            "suggestionState": .string("open"), "k1": .number(41), "k2": .number(3),
+            "at": .string("2026-09-14T10:00:00.000Z"),
+            "sides": .array([
+                .object(["kind": .string("fireflies"), "id": .string("01K4EXAMPLE"), "resolved": .bool(false)]),
+                .object(["kind": .string("g2"), "id": .string("meeting_1789_abc"), "resolved": .bool(true),
+                         "title": .string("Quilt weekly"), "date": .string("2026-09-10"), "time": .string("14:30"),
+                         "duration": .string("47 minutes"), "source": .string("G2 Glasses")]),
+            ]),
+        ]))
+        precondition(suggestion?.evidenceLine == "Shares 41 phrases", "the evidence is stated in the unit the engine counted")
+        precondition(suggestion?.isWouldMerge == true && suggestion?.headline == "Would merge automatically",
+                     "an advise-mode row says COS would have done this on its own")
+        precondition(suggestion?.sides.first?.line.contains("not in the recent list") == true,
+                     "a side the library cannot reach says so rather than showing a blank")
+        precondition(suggestion?.sides.last?.line == "2026-09-10 · 14:30 · 47 minutes · G2 Glasses",
+                     "a resolved side shows start, length and source")
+        precondition(suggestion?.sides.first?.displayTitle.contains("Fireflies meeting") == true,
+                     "an unresolved side is named by its kind and a short id")
+        let split = MeetingSuggestion(.object([
+            "id": .string("s_1"), "kind": .string("split"), "spans": .number(3), "sides": .array([]),
+        ]))
+        precondition(split?.isSplit == true && split?.headline == "Split from a longer recording",
+                     "a split suggestion says what it would do")
+        precondition(split?.evidenceLine == "3 spans of one long recording", "a split states its spans, not a phrase count")
+        precondition(MeetingSuggestion(.object(["kind": .string("merge")])) == nil, "a suggestion with no id is dropped")
+
+        // Actions: what COS did, and whether COS may undo it.
+        let auto = MergeAction(.object([
+            "id": .string("a_0123456789abcdef"), "kind": .string("merge"), "tier": .string("auto"),
+            "actionState": .string("applied"), "mode": .string("apply"),
+            "outputs": .array([.string("quilt/meetings/2026-09/x.md")]),
+            "sessionIds": .array([.string("meeting_1789_abc")]),
+            "firefliesIds": .array([.string("01K4EXAMPLE")]),
+            "at": .string("2026-09-14T10:00:00.000Z"),
+        ]))
+        precondition(auto?.headline == "Merged automatically: G2 + Fireflies", "an automatic merge says so")
+        precondition(auto?.isRevertible == true, "an applied merge COS made can be undone")
+        precondition(auto?.diagnostics.contains("action a_0123456789abcdef") == true, "diagnostics name the action")
+        precondition(auto?.diagnostics.contains("g2 meeting_1789_abc") == true, "diagnostics name the inputs")
+        let accepted = MergeAction(.object([
+            "id": .string("a_1"), "tier": .string("accepted_suggestion"), "actionState": .string("applied"),
+        ]))
+        precondition(accepted?.headline == "Merged from your suggestion", "a merge a person asked for says so")
+        // A PIPELINE MERGE FROM BEFORE THE ENGINE IS NOT COS'S TO UNDO.
+        let legacy = MergeAction(.object([
+            "id": .string("a_2"), "tier": .string("legacy_applied"), "actionState": .string("applied"),
+            "legacyParentPath": .string("quilt/meetings/2026-08/y.md"),
+        ]))
+        precondition(legacy?.isLegacy == true && legacy?.isRevertible == false,
+                     "COS never offers to undo a merge your pipeline made")
+        precondition(legacy?.headline == "Merged by your COS pipeline", "and it says who made it")
+        let failed = MergeAction(.object([
+            "id": .string("a_3"), "actionState": .string("failed"), "error": .string("result_unreadable"),
+        ]))
+        precondition(failed?.isFailed == true && failed?.stateLine.contains("result_unreadable") == true,
+                     "a failed apply names its error where a person can read it")
+        precondition(MergeAction(.object(["kind": .string("merge")])) == nil, "an action with no id is dropped")
+
+        // The two-call Undo.
+        let preview = MergeRevertPreview([
+            "previewHash": .string(String(repeating: "a", count: 64)),
+            "outputs": .array([.string("x.md"), .string("y.md")]),
+            "editedOutputs": .array([.string("y.md")]),
+            "missingOutputs": .array([]),
+        ], actionId: "a_0123456789abcdef")
+        precondition(preview?.previewHash.count == 64, "the preview carries the hash the confirm must send back")
+        precondition(preview?.summary == "Removes 2 merged records.", "the preview says what it removes, in files")
+        precondition(preview?.caution?.contains("copied aside, not lost") == true,
+                     "an edited record is copied aside, and the preview says so before the second click")
+        precondition(preview?.isAll == false, "a single-action preview is not a revert-all")
+        let previewAll = MergeRevertPreview([
+            "previewHash": .string(String(repeating: "b", count: 64)),
+            "actions": .array([.string("a_1"), .string("a_2"), .string("a_3")]),
+        ], actionId: "")
+        precondition(previewAll?.isAll == true && previewAll?.summary == "Undo 3 merges.", "revert-all counts actions, not files")
+        precondition(previewAll?.caution == nil, "a preview with nothing to warn about warns about nothing")
+        precondition(MergeRevertPreview(["outputs": .array([])], actionId: "a_1") == nil,
+                     "a preview with no hash is not a preview; the confirm has nothing to send back")
+
+        // The engine row, and the one disagreement a person cannot see.
+        let mismatch = MeetingEngineStatus([
+            "routeState": .string("ready"), "mode": .string("apply"), "isPipelineMac": .bool(true),
+            "pipelineSees": .object(["mode": .string("advise"), "active": .bool(false), "appliedActions": .number(0)]),
+            "mismatch": .bool(true),
+            "counts": .object(["auto": .number(4), "suggested": .number(2), "none": .number(1),
+                               "reverted": .number(0), "pending": .number(0), "failed": .number(1)]),
+            "firstRun": .object(["scanned": .number(198), "auto": .number(161), "wouldMerge": .number(0),
+                                 "suggested": .number(21), "alreadyMerged": .number(0),
+                                 "startedAt": .string("2026-09-14T09:00:00.000Z"),
+                                 "completedAt": .string("2026-09-14T09:12:00.000Z")]),
+            "lastRun": .object(["at": .string("2026-09-14T10:00:00.000Z"), "trigger": .string("tick")]),
+        ])
+        precondition(mismatch.mode == .apply && mismatch.isPipelineMac, "a pipeline Mac in apply mode reads as one")
+        precondition(mismatch.mismatchWarning?.contains("still reads advise") == true,
+                     "a disagreement between the server and the pipeline is named, because nothing else can see it")
+        precondition(mismatch.firstRunLine?.contains("198 recordings read") == true, "the first look reports what it scanned")
+        precondition(mismatch.firstRunCompleted && !mismatch.firstRunInProgress, "a finished first look is not still running")
+        precondition(mismatch.lastRunLine == "Last run 2026-09-14T10:00:00.000Z · tick", "the last run says when and why")
+        precondition(mismatch.suggested == 2, "the open-suggestion count is what the doorway shows")
+
+        // NOT KNOWN IS NOT DISAGREES.
+        let unknown = MeetingEngineStatus([
+            "routeState": .string("ready"), "mode": .string("advise"), "isPipelineMac": .bool(true), "mismatch": .bool(false),
+        ])
+        precondition(unknown.pipelineSeesMode == nil && unknown.mismatchWarning == nil,
+                     "a pipeline that could not be asked is not a pipeline that disagrees")
+        // The FIELD, not only the sentence it feeds: mismatchWarning also requires
+        // pipelineSeesMode, so a fixture with no pipelineSees never reaches the
+        // decode of `mismatch` at all (found by the mutation gate).
+        precondition(unknown.mismatch == false, "an absent mismatch must decode false, never true")
+        precondition(MeetingEngineStatus(["routeState": .string("ready"), "mismatch": .bool(true),
+                                          "pipelineSees": .object(["mode": .string("advise"), "active": .bool(false),
+                                                                   "appliedActions": .number(0)])]).mismatch,
+                     "a reported mismatch decodes true")
+        precondition(unknown.modeLine.contains("does not change your pipeline"),
+                     "advise mode says plainly that it writes nothing")
+        precondition(MeetingEngineStatus(["routeState": .string("ready"), "mode": .string("imports")]).mode == .imports,
+                     "a Mac with no pipeline is in imports mode")
+        precondition(MeetingEngineMode.imports.switchTitle == nil, "imports is not a mode anyone chose or can leave")
+
+        let recorder = MeetingRecorder(.object([
+            "id": .string("fireflies"), "name": .string("Fireflies"),
+            "bundleId": .string("ai.fireflies.desktop"), "installed": .bool(true),
+        ]))
+        precondition(recorder?.installed == true && recorder?.bundleId == "ai.fireflies.desktop",
+                     "an installed recorder is named by its bundle id")
+        precondition(MeetingRecorder(.object(["name": .string("Fireflies")])) == nil, "a recorder with no id is dropped")
+
+        print("COS Control: import and merge decoders, five library sources, mutable guard and Undo preview passed")
     }
 }

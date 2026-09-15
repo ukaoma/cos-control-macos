@@ -33,6 +33,9 @@ struct MeetingLibraryBody: View {
             if model.isLibraryQueryActive { model.scheduleLibrarySearch() }
         }
         .task { await model.loadOrphans(quiet: true) }
+        // The suggestion count on the doorway comes from the engine, so it is
+        // fetched when Meetings opens rather than only once the pane is entered.
+        .task { await model.loadMeetingEngineStatus() }
         .confirmationDialog(
             "Recover all unsaved captures?",
             isPresented: $confirmRecoverAllOrphans,
@@ -158,10 +161,28 @@ struct MeetingLibraryBody: View {
                     .font(COSType.body(11))
                     .foregroundStyle(.secondary)
             }
+            // 6.47.0 — the two doorways into import and merge. THESE ARE THE
+            // OPENERS the route flags read: each writes its own pane's flag and
+            // nothing else, which is the link 0.5.17 was missing.
+            ChipFlowLayout(spacing: 8) {
+                Button("Import meetings") { model.openMeetingImport() }
+                    .buttonStyle(COSQuietButtonStyle())
+                    .controlSize(.small)
+                Button(suggestionsLabel) { model.openMeetingSuggestions() }
+                    .buttonStyle(COSQuietButtonStyle())
+                    .controlSize(.small)
+            }
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 8)
         .overlay(alignment: .bottom) { Divider() }
+    }
+
+    /// The count earns its place: a suggestion nobody looks at is a merge that
+    /// never happens, and a bare label gives no reason to open the pane.
+    private var suggestionsLabel: String {
+        let open = model.meetingEngineStatus.suggested
+        return open > 0 ? "Suggested merges · \(open)" : "Suggested merges"
     }
 
     @ViewBuilder
@@ -439,6 +460,7 @@ private struct DayCell {
 struct MeetingLibraryDetailPane: View {
     @ObservedObject var model: ControllerModel
     var onReviewVoices: (String) -> Void
+    var onOpenSource: (LibraryMeetingSource) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -450,6 +472,12 @@ struct MeetingLibraryDetailPane: View {
                     Text(row.subtitle)
                         .font(COSType.body(12))
                         .foregroundStyle(.secondary)
+                    // 6.47.0 — a record COS derived says so, and offers the way
+                    // back out. A row COS did not derive gets nothing here.
+                    if row.isDerived || row.isImported {
+                        MergedRecordActions(model: model, row: row, onOpenSource: onOpenSource)
+                            .padding(.top, 4)
+                    }
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 18)
@@ -502,11 +530,17 @@ struct MeetingLibraryDetailPane: View {
                         Button("Reveal in Finder") { model.revealLibraryMeeting() }
                     }
                     Spacer()
-                    if let sessionId = model.openLibraryRow?.sessionId, !sessionId.isEmpty {
-                        Button("Review voices") { onReviewVoices(sessionId) }
+                    // THE MUTABLE GUARD. `canReviewVoices` is false for an
+                    // imported meeting (no audio) and for a split piece (a span,
+                    // not a capture); the server refuses both by id kind, and
+                    // offering a button it will refuse is an action that does
+                    // nothing. A merged row keeps it: its session is a real
+                    // capture with real audio.
+                    if let row = model.openLibraryRow, row.canReviewVoices {
+                        Button("Review voices") { onReviewVoices(row.sessionId) }
                         MeetingStatusPills(
-                            isNew: model.isInboxNew(sessionId),
-                            tag: model.voiceTag(sessionId: sessionId)
+                            isNew: model.isInboxNew(row.sessionId),
+                            tag: model.voiceTag(sessionId: row.sessionId)
                         )
                     }
                 }
@@ -539,4 +573,735 @@ struct MeetingLibraryDetailPane: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
+}
+
+// MARK: - Import and merge meetings (server 6.47.0, WS6)
+//
+// Three surfaces, each mounted on its OWN route flag written by its own opener.
+// 0.5.17 shipped two buttons that did nothing because the opener set one thing
+// and the mount condition read another; the shape that works is
+// `reviewableMeetingsCard` + `reviewRouteActive` + `openSpeakerReview`, and these
+// copy it.
+//
+// WIDTH. Every card below is laid out to hold at 390 pt, the menu-bar panel's
+// width, because that is the narrowest surface a Control card ever renders in and
+// a row that only works at 760 is a row that silently truncates. Lists scroll in
+// place inside a flexible frame with a floor (0.5.222): a fixed cap bounds the
+// list, not the card that holds it, and a server-fed list is an unbounded input.
+
+/// The narrowest width these cards are laid out for: the menu-bar panel's own.
+///
+/// A CONSTRAINT, NOT A `minWidth`. Setting a minimum of 390 inside 22 pt of
+/// padding makes the content 434 pt wide in a 390 pt window, which is the same
+/// mistake one layer out — the card escapes instead of the list. Nothing here
+/// sets a minWidth at all; rows wrap, and `Tests/run-merge-ui.sh` renders every
+/// surface at exactly this width to prove it holds.
+let MERGE_CARD_MIN_WIDTH: CGFloat = 390
+/// Floor for a scrolling server-fed list, matching the Speakers panes.
+let MERGE_LIST_MIN_HEIGHT: CGFloat = 88
+
+/// Bring in meetings another recorder made, and say what is happening when COS
+/// cannot.
+///
+/// EVERY IMPORTER STATE HAS COPY AND AN AFFORDANCE. That is principle 6 of this
+/// release: a failure a person can read but not act on is the 0.5.75 shape, where
+/// Control rendered "or fork it" with no fork control anywhere.
+struct MeetingImportPane: View {
+    @ObservedObject var model: ControllerModel
+    /// Fixture renders set this false. The pane's own `.task` would otherwise run
+    /// the helper and overwrite the fixture with a failed load, which is how an
+    /// offscreen render can silently stop rendering the thing it is testing.
+    var autoLoads = true
+    @State private var keyDraft = ""
+    @State private var confirmDeleteKey = false
+
+    /// Fixture-only: the real view, with its loading task off.
+    static func canary(model: ControllerModel) -> MeetingImportPane {
+        MeetingImportPane(model: model, autoLoads: false)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                header
+                if model.meetingImport.routeAbsent {
+                    routeAbsentCard
+                } else if !model.meetingImport.importsHere {
+                    pipelineOwnsCard
+                } else {
+                    connectCard
+                    runCard
+                }
+                if let error = model.meetingImportError {
+                    Text(error)
+                        .font(COSType.body(11))
+                        .foregroundStyle(COSPalette.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                MeetingEngineStatusRow(model: model)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(22)
+        }
+        // THE PANE CLAMPS ITSELF. `maxHeight: .infinity` alone leaves the ideal
+        // height intact, so a long card is taller than the window and the window
+        // centers the overflow: the header slides off the top (0.5.222, twice).
+        // `minHeight: 0` is what lets it take the height it is offered, and this
+        // pane also renders inside the 390 pt panel, which has no outer clamp.
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
+        .clipped()
+        .background(COSPalette.panel)
+        .task { if autoLoads { await model.loadMeetingImport() } }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Import meetings")
+                    .font(COSType.display(20, weight: .medium))
+                Spacer()
+                if model.meetingImportLoading {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Refresh") { Task { await model.loadMeetingImport() } }
+                        .buttonStyle(COSQuietButtonStyle())
+                        .controlSize(.small)
+                }
+                Button("Close") { model.closeMeetingImport() }
+                    .buttonStyle(COSQuietButtonStyle())
+                    .controlSize(.small)
+            }
+            Text(model.meetingImport.headline)
+                .font(COSType.body(12.5))
+                .fixedSize(horizontal: false, vertical: true)
+            Text(model.meetingImport.guidance)
+                .font(COSType.body(11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// A 6.46.x server. NOT AN ERROR: COS Control and the npm server ship on
+    /// separate trains, and this pairing is expected.
+    private var routeAbsentCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Update the COS server to 6.47.0", systemImage: "arrow.down.circle")
+                .font(COSType.body(12, weight: .medium))
+                .foregroundStyle(COSPalette.amber)
+            Text("This Mac's COS server does not bring in meetings from other recorders yet.")
+                .font(COSType.body(11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Update Server") { model.perform("update") }
+                .buttonStyle(COSQuietButtonStyle())
+                .controlSize(.small)
+                .disabled(model.busy)
+        }
+        .mergeCard()
+    }
+
+    /// A pipeline Mac. The server refuses to import here, and that refusal is
+    /// correct: two writers producing near-identical records is how one meeting
+    /// becomes two rows that each look canonical.
+    private var pipelineOwnsCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Your COS pipeline already brings in Fireflies meetings.")
+                .font(COSType.body(12, weight: .medium))
+                .fixedSize(horizontal: false, vertical: true)
+            Text("COS files them into your meetings tree, so the server does not import them a second time. What COS can still do here is spot the ones that are the same meeting as a G2 recording.")
+                .font(COSType.body(11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("See suggested merges") { model.openMeetingSuggestions() }
+                .buttonStyle(COSQuietButtonStyle())
+                .controlSize(.small)
+        }
+        .mergeCard()
+    }
+
+    private var connectCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("FIREFLIES")
+                .font(COSType.mono(9.5, weight: .semibold))
+                .tracking(1.2)
+                .foregroundStyle(.secondary)
+            if let fireflies = model.meetingRecorders.first(where: { $0.id == "fireflies" }), fireflies.installed {
+                Text("Fireflies is on this Mac. Its API key is in Fireflies under Integrations.")
+                    .font(COSType.body(11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(model.firefliesKey.summary)
+                .font(COSType.body(12))
+                .foregroundStyle(model.firefliesKey.needsNewKey ? COSPalette.danger : .primary)
+            if model.firefliesKey.source == "env" {
+                Text("This key comes from FIREFLIES_API_KEY in the environment and wins over a stored one.")
+                    .font(COSType.body(10.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                SecureField("Paste your Fireflies API key", text: $keyDraft)
+                    .textFieldStyle(.plain)
+                    .cosField()
+                Button("Save") {
+                    let key = keyDraft
+                    keyDraft = ""
+                    Task { await model.saveFirefliesKey(key) }
+                }
+                .buttonStyle(COSQuietButtonStyle())
+                .controlSize(.small)
+                .disabled(model.firefliesKeyBusy || keyDraft.trimmingCharacters(in: .whitespacesAndNewlines).count < 8)
+            }
+            Text("The key is stored on this Mac and never shown again.")
+                .font(COSType.body(10.5))
+                .foregroundStyle(.tertiary)
+            HStack(spacing: 8) {
+                Button("Check") { Task { await model.checkFirefliesKey() } }
+                    .buttonStyle(COSQuietButtonStyle())
+                    .controlSize(.small)
+                    .disabled(model.firefliesKeyBusy || !model.firefliesKey.configured)
+                Button("Remove key") { confirmDeleteKey = true }
+                    .buttonStyle(COSTextButtonStyle(tone: .destructive))
+                    .controlSize(.small)
+                    .disabled(model.firefliesKeyBusy || !model.firefliesKey.configured)
+                if model.firefliesKeyBusy { ProgressView().controlSize(.mini) }
+            }
+            if let note = model.firefliesKeyNote {
+                Text(note)
+                    .font(COSType.body(11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .mergeCard()
+        .cosConfirm(
+            "Remove the Fireflies key?",
+            isPresented: $confirmDeleteKey,
+            message: "COS stops bringing in Fireflies meetings. Meetings already brought in stay where they are.",
+            actions: [
+                .destructive("Remove") { Task { await model.deleteFirefliesKey() } },
+                .cancel(),
+            ]
+        )
+    }
+
+    private var runCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("BRING THEM IN")
+                .font(COSType.mono(9.5, weight: .semibold))
+                .tracking(1.2)
+                .foregroundStyle(.secondary)
+            // Wraps rather than truncating: at 390 pt a picker row plus a button
+            // plus a plan menu does not fit on one line.
+            ChipFlowLayout(spacing: 8) {
+                Picker("How far back", selection: $model.meetingImportWindow) {
+                    Text("Last 7 days").tag(7)
+                    Text("Last 30 days").tag(30)
+                    Text("Last 90 days").tag(90)
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(maxWidth: 160)
+                Picker("Plan", selection: planBinding) {
+                    Text("Free").tag("free")
+                    Text("Pro").tag("pro")
+                    Text("Business").tag("business")
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(maxWidth: 130)
+                Button("Import now") { Task { await model.runMeetingImport() } }
+                    .buttonStyle(COSQuietButtonStyle())
+                    .controlSize(.small)
+                    .disabled(!model.firefliesKey.configured || model.meetingImport.running || model.meetingImportLoading)
+            }
+            Text("Your plan sets how many calls a day COS may make. Free is 50, Pro is 500, Business has no limit.")
+                .font(COSType.body(10.5))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            Toggle("Keep bringing in new meetings", isOn: keepImportingBinding)
+                .toggleStyle(.switch)
+                .font(COSType.body(11.5))
+                .disabled(!model.firefliesKey.configured)
+            Text(model.meetingImport.budgetLine)
+                .font(COSType.body(10.5))
+                .foregroundStyle(.tertiary)
+            if model.meetingImport.imported > 0 {
+                Button("See suggested merges") { model.openMeetingSuggestions() }
+                    .buttonStyle(COSQuietButtonStyle())
+                    .controlSize(.small)
+            }
+        }
+        .mergeCard()
+    }
+
+    private var planBinding: Binding<String> {
+        Binding(
+            get: { model.meetingImport.planCap },
+            set: { next in Task { await model.setMeetingImportSettings(planCap: next) } }
+        )
+    }
+
+    private var keepImportingBinding: Binding<Bool> {
+        Binding(
+            get: { model.meetingImport.keepImporting },
+            set: { next in Task { await model.setMeetingImportSettings(keepImporting: next) } }
+        )
+    }
+}
+
+/// Mode, what the pipeline sees, first-run progress, last run.
+///
+/// The mode SWITCH only appears on a pipeline Mac, because there is nothing to
+/// choose anywhere else, and it always goes through a confirmation that names
+/// what apply does.
+struct MeetingEngineStatusRow: View {
+    @ObservedObject var model: ControllerModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("HOW COS MERGES")
+                .font(COSType.mono(9.5, weight: .semibold))
+                .tracking(1.2)
+                .foregroundStyle(.secondary)
+            Text(model.meetingEngineStatus.modeLine)
+                .font(COSType.body(12))
+                .fixedSize(horizontal: false, vertical: true)
+            if let warning = model.meetingEngineStatus.mismatchWarning {
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(COSType.body(11))
+                    .foregroundStyle(COSPalette.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let first = model.meetingEngineStatus.firstRunLine {
+                Text(first)
+                    .font(COSType.body(11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if model.meetingEngineStatus.firstRunInProgress {
+                ProgressView().controlSize(.mini)
+            }
+            if let last = model.meetingEngineStatus.lastRunLine {
+                Text(last)
+                    .font(COSType.body(10.5))
+                    .foregroundStyle(.tertiary)
+            }
+            if model.meetingEngineStatus.isPipelineMac, !model.meetingEngineStatus.routeAbsent {
+                modeSwitch
+            }
+            if let error = model.meetingEngineError {
+                Text(error)
+                    .font(COSType.body(11))
+                    .foregroundStyle(COSPalette.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .mergeCard()
+        .cosConfirm(
+            model.pendingEngineMode == .apply ? "Let COS merge into your meetings?" : "Go back to suggesting only?",
+            isPresented: Binding(
+                get: { model.pendingEngineMode != nil },
+                set: { if !$0 { model.cancelEngineMode() } }
+            ),
+            message: model.pendingEngineMode == .apply
+                ? "COS writes merged scribes into your operations tree. Each original is copied to the archive first and every merge can be undone. Your pipeline stops blending G2 recordings while this is on."
+                : "COS stops writing into your operations tree. Merges already made stay where they are, and each one can still be undone.",
+            actions: confirmActions
+        )
+    }
+
+    /// Built while the confirmation is on screen, so the target is captured HERE
+    /// rather than read inside the action: `cosConfirm` dismisses BEFORE it runs
+    /// the action, and dismissal nils `pendingEngineMode`.
+    private var confirmActions: [COSConfirmAction] {
+        let pending = model.pendingEngineMode
+        return [
+            .normal(pending == .apply ? "Merge into my meetings" : "Suggest only") {
+                guard let pending else { return }
+                Task { await model.setEngineMode(pending) }
+            },
+            .cancel(),
+        ]
+    }
+
+    private var modeSwitch: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(model.meetingEngineStatus.mode.switchTitle ?? "")
+                    .font(COSType.body(11.5, weight: .medium))
+                Spacer(minLength: 4)
+                if model.meetingEngineBusy {
+                    ProgressView().controlSize(.mini)
+                } else if model.meetingEngineStatus.mode == .advise {
+                    Button("Merge into my meetings") { model.armEngineMode(.apply) }
+                        .buttonStyle(COSQuietButtonStyle())
+                        .controlSize(.small)
+                } else {
+                    Button("Suggest only") { model.armEngineMode(.advise) }
+                        .buttonStyle(COSQuietButtonStyle())
+                        .controlSize(.small)
+                }
+            }
+            if model.meetingEngineStatus.mode == .advise, model.meetingEngineStatus.firstRunLine != nil {
+                Button("Read the report first") { model.openMeetingSuggestions() }
+                    .buttonStyle(COSTextButtonStyle())
+                    .controlSize(.small)
+            }
+        }
+    }
+}
+
+/// What COS wants a person to decide, laid out like Samples to review.
+///
+/// SCROLLS IN PLACE inside a flexible frame with a floor. The server holds
+/// suggestions until they are answered, so the row count is unbounded by design
+/// and a card that grows with it carries the header off the window (0.5.222).
+struct MeetingSuggestionsPane: View {
+    @ObservedObject var model: ControllerModel
+    /// Fixture renders set this false, for the same reason `MeetingImportPane` does.
+    var autoLoads = true
+
+    /// Fixture-only: the real view, with its loading task off.
+    static func canary(model: ControllerModel) -> MeetingSuggestionsPane {
+        MeetingSuggestionsPane(model: model, autoLoads: false)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Divider()
+            content
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
+        .clipped()
+        .background(COSPalette.panel)
+        .task { if autoLoads { await model.loadMeetingSuggestions() } }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Suggested merges")
+                    .font(COSType.display(20, weight: .medium))
+                Spacer()
+                if model.meetingSuggestionsLoading {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Refresh") { Task { await model.loadMeetingSuggestions() } }
+                        .buttonStyle(COSQuietButtonStyle())
+                        .controlSize(.small)
+                }
+                Button("Close") { model.closeMeetingSuggestions() }
+                    .buttonStyle(COSQuietButtonStyle())
+                    .controlSize(.small)
+            }
+            // ADVISE MODE SAYS SO, IN THE HEADER. An answer that changes nothing
+            // must not look like one that did.
+            if model.meetingEngineStatus.mode != .imports {
+                Text("COS does not change your pipeline's files in this version. Your answers are saved.")
+                    .font(COSType.body(11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if model.meetingSuggestionsUnresolved {
+                Text("Some of these are older than the recent list, so they show a recording id instead of a title.")
+                    .font(COSType.body(10.5))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 14)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if model.meetingSuggestionsState == "route_absent" {
+            emptyState(
+                "Update the COS server to 6.47.0",
+                detail: "This Mac's COS server does not look for meetings that are the same meeting yet.",
+                button: ("Update Server", { model.perform("update") })
+            )
+        } else if let error = model.meetingSuggestionsError {
+            emptyState(error, detail: "", button: ("Retry", { Task { await model.loadMeetingSuggestions() } }))
+        } else if model.meetingSuggestionsState == nil && model.meetingSuggestionsLoading {
+            ProgressView("Looking…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if model.pendingMeetingSuggestions.isEmpty {
+            emptyState(
+                "Nothing to decide",
+                detail: "COS asks here when a recording and a meeting look like the same conversation and it is not sure.",
+                button: nil
+            )
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    if !model.wouldMergeSuggestions.isEmpty {
+                        group("Would merge automatically", rows: model.wouldMergeSuggestions)
+                    }
+                    if !model.undecidedSuggestions.isEmpty {
+                        group(model.meetingEngineStatus.mode == .imports ? "Same meeting?" : "Suggestions",
+                              rows: model.undecidedSuggestions)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 22)
+                .padding(.vertical, 14)
+            }
+            // A FLEXIBLE FRAME WITH A FLOOR, never a fixed height: a fixed cap
+            // bounds the list and not the card that holds it.
+            .frame(minHeight: MERGE_LIST_MIN_HEIGHT, maxHeight: .infinity)
+        }
+    }
+
+    private func group(_ title: String, rows: [MeetingSuggestion]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title.uppercased())
+                .font(COSType.mono(9.5, weight: .semibold))
+                .tracking(1.2)
+                .foregroundStyle(.secondary)
+            ForEach(rows) { suggestion in
+                // The group already said it. A row repeating its own group's
+                // title is noise in a list a person is reading forty of.
+                suggestionRow(suggestion, showHeadline: suggestion.headline.caseInsensitiveCompare(title) != .orderedSame)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func suggestionRow(_ suggestion: MeetingSuggestion, showHeadline: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            if showHeadline {
+                Text(suggestion.headline)
+                    .font(COSType.body(11.5, weight: .semibold))
+            }
+            ForEach(suggestion.sides) { side in
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(side.displayTitle)
+                        .font(COSType.body(12))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(side.line)
+                        .font(COSType.mono(10))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Text(suggestion.evidenceLine)
+                .font(COSType.body(11))
+                .foregroundStyle(.secondary)
+            ChipFlowLayout(spacing: 8) {
+                Button(agreeLabel(suggestion)) {
+                    Task { await model.decideSuggestion(suggestion, agree: true) }
+                }
+                .buttonStyle(COSQuietButtonStyle())
+                .controlSize(.small)
+                .disabled(model.decidingSuggestion != nil)
+                Button("Not the same meeting") {
+                    Task { await model.decideSuggestion(suggestion, agree: false) }
+                }
+                .buttonStyle(COSTextButtonStyle(tone: .destructive))
+                .controlSize(.small)
+                .disabled(model.decidingSuggestion != nil)
+                if model.decidingSuggestion == suggestion.id {
+                    ProgressView().controlSize(.mini)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cosRowCard()
+    }
+
+    /// IMPORTS MODE MERGES; ADVISE MODE REMEMBERS. The label says which, because
+    /// "Merge" on a surface that writes nothing is a lie a person only finds out
+    /// about later.
+    private func agreeLabel(_ suggestion: MeetingSuggestion) -> String {
+        model.meetingEngineStatus.mode == .imports ? "Merge" : "Looks right"
+    }
+
+    private func emptyState(_ title: String, detail: String, button: (String, () -> Void)?) -> some View {
+        VStack(spacing: 10) {
+            Text(title)
+                .font(COSType.body(12.5))
+                .multilineTextAlignment(.center)
+            if !detail.isEmpty {
+                Text(detail)
+                    .font(COSType.body(11))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            if let button {
+                Button(button.0) { button.1() }
+                    .buttonStyle(COSQuietButtonStyle())
+                    .controlSize(.small)
+            }
+        }
+        .frame(maxWidth: 420)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(30)
+    }
+}
+
+/// What COS did to the record on screen, and how to undo it.
+///
+/// UNDO IS TWO CALLS. The dry run is shown first and applying sends back the hash
+/// that preview covered, so a person confirms the thing they were shown or
+/// nothing at all. This is the held-groups enroll gate, for the same reason.
+struct MergedRecordActions: View {
+    @ObservedObject var model: ControllerModel
+    let row: LibraryMeeting
+    let onOpenSource: (LibraryMeetingSource) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(headline)
+                .font(COSType.body(11.5, weight: .semibold))
+            if let action = model.mergeAction(for: row) {
+                Text(action.stateLine)
+                    .font(COSType.body(11))
+                    .foregroundStyle(action.isFailed ? COSPalette.danger : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let preview = model.mergeRevertPreview, preview.actionId == (row.actionId ?? "") {
+                previewBlock(preview)
+            } else {
+                controls
+            }
+            if let note = model.mergeRevertNote {
+                Text(note)
+                    .font(COSType.body(10.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            sourceLinks
+        }
+        .mergeCard()
+        .task(id: row.actionId) { if model.mergeActions.isEmpty { await model.loadMergeActions() } }
+    }
+
+    private var headline: String {
+        if let action = model.mergeAction(for: row) { return action.headline }
+        if row.isSplitPiece { return "Split from a longer recording" }
+        if row.isMerged { return "Merged automatically: G2 + Fireflies" }
+        return "Brought in from Fireflies"
+    }
+
+    @ViewBuilder
+    private var controls: some View {
+        let action = model.mergeAction(for: row)
+        ChipFlowLayout(spacing: 8) {
+            // UNDO NEEDS AN ACTION COS OWNS. A merge the pipeline made before this
+            // release is real and COS did not make it, so COS does not offer to
+            // take it apart; `isRevertible` is false for it and for anything not
+            // currently applied.
+            if let action, action.isRevertible {
+                Button(row.isSplitPiece ? "Revert" : "Undo") {
+                    Task { await model.previewMergeRevert(actionId: action.id) }
+                }
+                .buttonStyle(COSQuietButtonStyle())
+                .controlSize(.small)
+                .disabled(model.mergeRevertBusy)
+            } else if let action, action.isLegacy {
+                Text("Your COS pipeline made this merge, so COS does not undo it.")
+                    .font(COSType.body(10.5))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let action, action.isFailed {
+                Button("Retry") { Task { await model.retryMergeAction(action) } }
+                    .buttonStyle(COSQuietButtonStyle())
+                    .controlSize(.small)
+                    .disabled(model.mergeRevertBusy)
+            }
+            if let action {
+                Button("Copy diagnostics") { model.copyMergeDiagnostics(action) }
+                    .buttonStyle(COSTextButtonStyle())
+                    .controlSize(.small)
+            }
+            if model.mergeRevertBusy { ProgressView().controlSize(.mini) }
+        }
+    }
+
+    private func previewBlock(_ preview: MergeRevertPreview) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(preview.summary)
+                .font(COSType.body(11.5))
+                .fixedSize(horizontal: false, vertical: true)
+            if let caution = preview.caution {
+                Label(caution, systemImage: "exclamationmark.triangle")
+                    .font(COSType.body(11))
+                    .foregroundStyle(COSPalette.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text("The G2 recording and the Fireflies meeting stay where they are.")
+                .font(COSType.body(10.5))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            ChipFlowLayout(spacing: 8) {
+                Button(row.isSplitPiece ? "Revert it" : "Undo it") {
+                    Task { await model.applyMergeRevert() }
+                }
+                .buttonStyle(COSQuietButtonStyle())
+                .controlSize(.small)
+                .disabled(model.mergeRevertBusy)
+                Button("Cancel") { model.cancelMergeRevert() }
+                    .buttonStyle(COSTextButtonStyle())
+                    .controlSize(.small)
+                if model.mergeRevertBusy { ProgressView().controlSize(.mini) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var sourceLinks: some View {
+        let sources = model.libraryDetail?.sources ?? []
+        if !sources.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("MADE FROM")
+                    .font(COSType.mono(9, weight: .semibold))
+                    .tracking(1.1)
+                    .foregroundStyle(.secondary)
+                ForEach(sources) { source in
+                    Button {
+                        onOpenSource(source)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(source.label)
+                                .font(COSType.body(11))
+                            Text(source.sourceId)
+                                .font(COSType.mono(9.5))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(source.recordId.isEmpty)
+                }
+            }
+        }
+    }
+}
+
+private struct MergeCard: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(13)
+            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
+    }
+}
+
+extension View {
+    func mergeCard() -> some View { modifier(MergeCard()) }
 }

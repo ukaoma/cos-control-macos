@@ -3223,6 +3223,14 @@ struct ReviewableMeeting: Identifiable, Sendable, Hashable {
     let recordId: String
     let mutable: Bool
     let librarySource: String
+    /// 6.47.0. "merge" or "split" on a record COS derived; nil on a real capture.
+    /// NIL AND "" ARE DIFFERENT HERE: an optional says the server did not claim
+    /// this row is derived, which an empty string would quietly make into a claim.
+    let derivedKind: String?
+    /// The action that made this record, so a detail can offer Undo.
+    let actionId: String?
+    /// Where the meeting actually came from, when `domain` reads "imported".
+    let originDomain: String?
     /// Additive 6.36.18+. Nil on older servers — do not treat as zero unnamed.
     let voiceCount: Int?
     let unattributedVoices: Int?
@@ -3276,6 +3284,9 @@ struct ReviewableMeeting: Identifiable, Sendable, Hashable {
         recordId = o["recordId"]?.string ?? ""
         mutable = o["mutable"]?.bool ?? true
         librarySource = o["librarySource"]?.string ?? "standalone_recordings"
+        derivedKind = o["derivedKind"]?.string
+        actionId = o["actionId"]?.string
+        originDomain = o["originDomain"]?.string
         let review = o["voiceReview"]?.object
         voiceCount = review?["voices"]?.int
         unattributedVoices = review?["unattributedVoices"]?.int
@@ -3463,17 +3474,44 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
     let month: String
     let filename: String
     let source: String
+    /// One of five values from 6.47.0 on: `cos_operations`, `direct_library`,
+    /// `standalone_recordings`, `imported`, `blended`. Empty on an older server.
     let librarySource: String
     let topicCount: Int
     let decisionCount: Int
     let actionCount: Int
     let attendeeCount: Int
+    /// 6.47.0 derived records. Nil on a capture, an import, or an older server.
+    let derivedKind: String?
+    let actionId: String?
+    /// Every G2 capture a merged record holds, earliest first.
+    let g2SessionIds: [String]
+    /// The long recording a split piece came out of.
+    let sourceSessionId: String?
+    /// Which piece of that recording this is. Nil on anything but a split.
+    let pieceIndex: Int?
+    /// Where an imported or derived meeting actually came from.
+    let originDomain: String?
+    /// False on an imported or derived record: nothing here may be corrected in
+    /// place, because the capture that could be corrected is a different file.
+    let mutable: Bool
 
+    /// IDENTITY IS `recordId`, and that is load-bearing for split pieces. Two
+    /// pieces of one recording share a source session and differ only by their
+    /// own record id; keying on the session would collapse them onto each other.
     var id: String { recordId }
+
+    var isDerived: Bool { !(derivedKind ?? "").isEmpty }
+    var isMerged: Bool { derivedKind == "merge" }
+    var isSplitPiece: Bool { derivedKind == "split" }
+    var isImported: Bool { librarySource == "imported" }
 
     var domainLabel: String {
         if !domainAbbr.isEmpty { return domainAbbr }
-        let spaced = domain.replacingOccurrences(of: "_", with: " ")
+        // An imported row's `domain` is the literal routing word "imported"; the
+        // domain a reader recognizes is where the meeting came from.
+        let name = domain == "imported" ? (originDomain ?? domain) : domain
+        let spaced = name.replacingOccurrences(of: "_", with: " ")
         return spaced.localizedCapitalized
     }
 
@@ -3488,7 +3526,16 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
         return parts.joined(separator: " · ")
     }
 
-    var canReviewVoices: Bool { !sessionId.isEmpty }
+    /// Whether this row can offer Review voices.
+    ///
+    /// THE MUTABLE GUARD, stated once. An imported meeting has no audio at all,
+    /// and a split piece is a span rather than a capture — neither has anything a
+    /// correction could rewrite, and the server refuses both by id kind
+    /// (`imported_read_only`, `blended_derived_record`). A MERGED row is
+    /// different and deliberately allowed: its `sessionId` is the earliest G2
+    /// capture it holds, that capture is a real recording with real audio, and
+    /// relabelling it is how its voice profile gets better.
+    var canReviewVoices: Bool { !sessionId.isEmpty && !isImported && !isSplitPiece }
 
     init?(_ value: JSONValue?) {
         guard let o = value?.object else { return nil }
@@ -3514,6 +3561,16 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
         decisionCount = o["decisionCount"]?.int ?? Int(o["decisionCount"]?.string ?? "") ?? 0
         actionCount = o["actionCount"]?.int ?? Int(o["actionCount"]?.string ?? "") ?? 0
         attendeeCount = o["attendeeCount"]?.int ?? Int(o["attendeeCount"]?.string ?? "") ?? 0
+        derivedKind = o["derivedKind"]?.string
+        actionId = o["actionId"]?.string
+        g2SessionIds = o["g2SessionIds"]?.array?.compactMap(\.string) ?? []
+        sourceSessionId = o["sourceSessionId"]?.string
+        pieceIndex = o["pieceIndex"]?.int ?? Int(o["pieceIndex"]?.string ?? "")
+        originDomain = o["originDomain"]?.string
+        // DEFAULTS TRUE, because every row before 6.47.0 was correctable and a
+        // false default would take Review voices away from the whole library on
+        // an older server.
+        mutable = o["mutable"]?.bool ?? true
     }
 
     var recencyDate: Date? {
@@ -3629,6 +3686,17 @@ struct LibraryMeetingDetail: Sendable {
     let topics: [String]
     let decisions: [String]
     let actionItems: [(task: String, owner: String)]
+    /// 6.47.0. The five `librarySource` values; empty on an older server.
+    let librarySource: String
+    /// "merge" or "split" on a derived record; nil on anything else.
+    let derivedKind: String?
+    let actionId: String?
+    let recordId: String
+    let mutable: Bool
+    /// One row per input a merged record holds, so its sources stay reachable.
+    let sources: [LibraryMeetingSource]
+
+    var isDerived: Bool { !(derivedKind ?? "").isEmpty }
 
     init?(_ value: JSONValue?) {
         guard let o = value?.object else { return nil }
@@ -3651,6 +3719,44 @@ struct LibraryMeetingDetail: Sendable {
             guard !task.isEmpty else { return nil }
             return (task, object["owner"]?.string ?? "")
         } ?? []
+        librarySource = o["librarySource"]?.string ?? ""
+        derivedKind = o["derivedKind"]?.string
+        actionId = o["actionId"]?.string
+        recordId = o["recordId"]?.string ?? ""
+        mutable = o["mutable"]?.bool ?? true
+        sources = o["sources"]?.array?.compactMap(LibraryMeetingSource.init) ?? []
+    }
+}
+
+/// One input a merged record holds: the G2 capture or the Fireflies meeting it
+/// was built from, and the record that still holds it.
+///
+/// A merge is ADDITIVE. Nothing is deleted, so the detail can always offer a way
+/// back to each original, and a reader who disagrees with a merge can look at
+/// what went into it before undoing anything.
+struct LibraryMeetingSource: Identifiable, Sendable, Hashable {
+    let kind: String
+    let sourceId: String
+    let recordId: String
+
+    var id: String { recordId.isEmpty ? "\(kind):\(sourceId)" : recordId }
+
+    var label: String {
+        switch kind {
+        case "g2": "G2 recording"
+        case "fireflies": "Fireflies meeting"
+        default: kind.localizedCapitalized
+        }
+    }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object else { return nil }
+        let kind = o["kind"]?.string ?? ""
+        let sourceId = o["id"]?.string ?? ""
+        guard !kind.isEmpty, !sourceId.isEmpty else { return nil }
+        self.kind = kind
+        self.sourceId = sourceId
+        recordId = o["recordId"]?.string ?? ""
     }
 }
 
@@ -3848,6 +3954,14 @@ struct SpeakerReview: Sendable {
     let recordId: String
     let mutable: Bool
     let librarySource: String
+    /// 6.47.0. The merged record that holds this capture, when the panel asked
+    /// through one.
+    ///
+    /// `recordId`, `mutable` and `librarySource` keep describing the CAPTURE —
+    /// the file that holds the chunks and the one a correction rewrites — because
+    /// a merge does not make a real recording uncorrectable. This field is the
+    /// merged record beside it, not a replacement for any of them.
+    let blendedRecordId: String?
 
     init?(_ value: JSONValue?) {
         guard let o = value?.object, let sessionId = o["sessionId"]?.string else { return nil }
@@ -3866,6 +3980,7 @@ struct SpeakerReview: Sendable {
         recordId = o["recordId"]?.string ?? ""
         mutable = o["mutable"]?.bool ?? true
         librarySource = o["source"]?.string ?? "standalone_recordings"
+        blendedRecordId = o["blendedRecordId"]?.string
     }
 
     /// Whether a name may be shown for a label, from the voice rows. The ribbon
@@ -7435,5 +7550,525 @@ struct MorningBriefSettings: Sendable {
         formatter.timeZone = TimeZone(identifier: timezone) ?? .current
         formatter.dateFormat = "EEE h:mm a"
         return formatter.string(from: date)
+    }
+}
+
+// MARK: - Import and merge meetings (server 6.47.0)
+//
+// Three surfaces share these: the Import meetings card, the Suggested merges
+// list, and the merged-record CTAs on a meeting detail.
+//
+// EVERY TYPE HERE CARRIES ITS OWN "the server does not have this route" STATE.
+// COS Control ships on its own appcast and @gotcos/glasses-server ships on npm,
+// so a Mac running 0.5.230 against 6.46.x is an ordinary, expected pairing. It
+// has to read as "Update the COS server to 6.47.0" with a button, never as a
+// failure and never as an empty list that looks like nothing to do.
+
+/// What this Mac does with Fireflies meetings and G2 recordings.
+///
+/// `imports` is a Mac with no COS pipeline: the server imports and merges on its
+/// own. `advise` and `apply` are a pipeline Mac, and the difference between them
+/// is whether anything is written into the operations tree.
+enum MeetingEngineMode: String, Sendable, CaseIterable {
+    case imports
+    case advise
+    case apply
+
+    /// Nil for `imports`: that is not a mode anyone chose and not one they can leave.
+    var switchTitle: String? {
+        switch self {
+        case .imports: nil
+        case .advise: "Suggesting only"
+        case .apply: "Merging into your meetings"
+        }
+    }
+}
+
+/// How a merge route answered.
+///
+/// `routeAbsent` and `refused` are deliberately separate from a thrown error:
+/// both have copy and an affordance, and an error has neither.
+enum MergeRouteState: String, Sendable {
+    case ready
+    case preview
+    case routeAbsent = "route_absent"
+    case refused
+
+    init(_ raw: String?) {
+        self = MergeRouteState(rawValue: raw ?? "") ?? .ready
+    }
+}
+
+/// A meeting recorder this Mac has installed.
+///
+/// Answered by a LaunchServices registry lookup, which opens no app and reads no
+/// app data. The card uses it for one sentence — "Fireflies is on this Mac" —
+/// because a person who has the app is a person who has a key to paste.
+struct MeetingRecorder: Identifiable, Sendable, Hashable {
+    let id: String
+    let name: String
+    let bundleId: String
+    let installed: Bool
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let id = o["id"]?.string, !id.isEmpty else { return nil }
+        self.id = id
+        name = o["name"]?.string ?? id.localizedCapitalized
+        bundleId = o["bundleId"]?.string ?? ""
+        installed = o["installed"]?.bool ?? false
+    }
+}
+
+struct FirefliesKeyState: Sendable, Equatable {
+    var configured = false
+    /// "config" for the stored file, "env" for FIREFLIES_API_KEY, "none".
+    var source = "none"
+    var savedAt = ""
+    var validatedAt = ""
+    /// "ok", "invalid_key", "rate_limited", "vendor_down", "unreachable",
+    /// "not_configured". Empty when the key has never been checked.
+    var lastCheck = ""
+    var lastCheckAt = ""
+    var routeAbsent = false
+
+    /// The one line the card shows about the key.
+    var summary: String {
+        if routeAbsent { return "Needs COS server 6.47.0" }
+        if !configured { return "No key yet" }
+        switch lastCheck {
+        case "ok": return source == "env" ? "Key from the environment, accepted" : "Key accepted"
+        case "invalid_key": return "Fireflies refused this key"
+        case "rate_limited": return "Fireflies is rate limiting this key"
+        case "vendor_down": return "Fireflies is down"
+        case "unreachable": return "Fireflies could not be reached"
+        default: return "Key stored, not checked yet"
+        }
+    }
+
+    /// True when the only way forward is a different key.
+    var needsNewKey: Bool { configured && lastCheck == "invalid_key" }
+
+    init() {}
+
+    init(_ details: [String: JSONValue]) {
+        routeAbsent = MergeRouteState(details["routeState"]?.string) == .routeAbsent
+        configured = details["configured"]?.bool ?? false
+        source = details["source"]?.string ?? "none"
+        savedAt = details["savedAt"]?.string ?? ""
+        validatedAt = details["validatedAt"]?.string ?? ""
+        let check = details["lastCheck"]?.object
+        lastCheck = check?["state"]?.string ?? ""
+        lastCheckAt = check?["checkedAt"]?.string ?? ""
+    }
+}
+
+/// What the importer is doing, and what it has brought in.
+struct MeetingImportState: Sendable, Equatable {
+    var routeAbsent = false
+    /// `idle`, `running`, `ok`, `partial`, `invalid_key`, `rate_limited`,
+    /// `vendor_down`, `unreachable`, `write_unlisted`, `refused_pipeline`.
+    var state = "idle"
+    var mode: MeetingEngineMode = .imports
+    var running = false
+    var keyConfigured = false
+    var keepImporting = false
+    var planCap = "free"
+    var windowDays = 30
+    var imported = 0
+    var vendorSeen = 0
+    var retryable = 0
+    var budgetCalls = 0
+    /// Nil on a Business plan, which has no daily cap.
+    var budgetCap: Int?
+    var budgetRemaining: Int?
+    var lastRunWritten = 0
+    var lastRunFinishedAt = ""
+    var nextAttemptAt = ""
+
+    /// The headline the card shows. ONE SENTENCE PER STATE, and every one of them
+    /// is followed by an affordance in the card: a state with no way forward is
+    /// the failure this release's principle 6 exists to prevent.
+    var headline: String {
+        if routeAbsent { return "Update the COS server to 6.47.0" }
+        switch state {
+        case "refused_pipeline": return "Your COS pipeline already brings in Fireflies meetings."
+        case "running": return "Bringing in your Fireflies meetings"
+        case "invalid_key": return "Fireflies refused this key"
+        case "rate_limited": return "Fireflies is rate limiting this key"
+        case "vendor_down": return "Fireflies is down"
+        case "unreachable": return "Fireflies could not be reached"
+        case "write_unlisted": return "A meeting was written that Fireflies then did not list"
+        case "partial": return "Some meetings are still to come"
+        case "ok": return imported == 0 ? "Nothing to bring in yet" : "\(imported) meeting\(imported == 1 ? "" : "s") brought in"
+        default: return keyConfigured ? "Ready to bring in your meetings" : "Connect Fireflies to bring in meetings it recorded"
+        }
+    }
+
+    /// The second line: what a person can do about the headline.
+    var guidance: String {
+        if routeAbsent { return "This Mac's COS server does not have the import routes yet." }
+        switch state {
+        case "refused_pipeline": return "COS files them into your meetings tree, so the server does not import them a second time."
+        case "invalid_key": return "Paste a new key and check it."
+        case "rate_limited": return nextAttemptAt.isEmpty ? "COS waits and tries again." : "COS tries again at \(nextAttemptAt)."
+        case "vendor_down", "unreachable": return "COS tries again on its own. Import now retries straight away."
+        case "write_unlisted": return "COS stopped rather than write more. Import now tries again."
+        case "partial": return retryable > 0 ? "\(retryable) still processing at Fireflies. COS retries them." : "COS reached its daily call limit and resumes tomorrow."
+        default: return budgetLine
+        }
+    }
+
+    /// Calls used against the plan's daily cap, or nothing on Business.
+    var budgetLine: String {
+        guard let cap = budgetCap else { return "Business plan: no daily call limit." }
+        let left = budgetRemaining ?? max(0, cap - budgetCalls)
+        return "\(budgetCalls) of \(cap) Fireflies calls used today. \(left) left."
+    }
+
+    /// Whether this Mac's server will import at all. False in advise and apply.
+    var importsHere: Bool { mode == .imports }
+
+    init() {}
+
+    init(_ details: [String: JSONValue]) {
+        // TWO STATES, TWO KEYS. `routeState` is the helper's verdict about the
+        // ROUTE (present, absent, refused); `state` is the importer's own run
+        // state. One key for both is how a 6.46.x server's "route_absent" would
+        // have read as an importer that is merely idle.
+        routeAbsent = MergeRouteState(details["routeState"]?.string) == .routeAbsent
+        state = routeAbsent ? "idle" : (details["state"]?.string ?? "idle")
+        mode = MeetingEngineMode(rawValue: details["mode"]?.string ?? "") ?? .imports
+        running = details["running"]?.bool ?? false
+        keyConfigured = details["keyConfigured"]?.bool ?? false
+        keepImporting = details["keepImporting"]?.bool ?? false
+        planCap = details["planCap"]?.string ?? "free"
+        windowDays = details["windowDays"]?.int ?? 30
+        let counts = details["counts"]?.object
+        imported = counts?["imported"]?.int ?? 0
+        vendorSeen = counts?["vendorSeen"]?.int ?? 0
+        retryable = counts?["retryable"]?.int ?? 0
+        let budget = details["budget"]?.object
+        budgetCalls = budget?["calls"]?.int ?? 0
+        budgetCap = budget?["cap"]?.int
+        budgetRemaining = budget?["remaining"]?.int
+        let lastRun = details["lastRun"]?.object
+        lastRunWritten = lastRun?["written"]?.int ?? 0
+        lastRunFinishedAt = lastRun?["finishedAt"]?.string ?? ""
+        nextAttemptAt = details["nextAttemptAt"]?.string ?? ""
+    }
+}
+
+/// One side of a suggestion: a Fireflies meeting or a G2 recording.
+struct MeetingSuggestionSide: Identifiable, Sendable, Hashable {
+    let kind: String
+    let sourceId: String
+    let resolved: Bool
+    let title: String
+    let date: String
+    let time: String
+    let duration: String
+    let source: String
+    let recordId: String
+
+    var id: String { "\(kind):\(sourceId)" }
+
+    var kindLabel: String { kind == "g2" ? "G2 recording" : "Fireflies meeting" }
+
+    /// "2026-09-10 · 14:30 · 47 minutes · Fireflies", or an honest fallback.
+    ///
+    /// THE FALLBACK IS THE POINT. The suggestions route sends canonical ids and no
+    /// meeting fields, so a side outside the library window cannot be described.
+    /// Saying "not in the recent list" beats inventing a title.
+    var line: String {
+        guard resolved else { return "\(kindLabel) \(shortId) · not in the recent list" }
+        var parts: [String] = []
+        if !date.isEmpty { parts.append(date) }
+        if !time.isEmpty { parts.append(time) }
+        if !duration.isEmpty { parts.append(duration) }
+        if !source.isEmpty { parts.append(source) }
+        return parts.joined(separator: " · ")
+    }
+
+    var displayTitle: String { resolved && !title.isEmpty ? title : "\(kindLabel) \(shortId)" }
+
+    var shortId: String { sourceId.count <= 12 ? sourceId : String(sourceId.suffix(8)) }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let kind = o["kind"]?.string, let sourceId = o["id"]?.string,
+              !kind.isEmpty, !sourceId.isEmpty else { return nil }
+        self.kind = kind
+        self.sourceId = sourceId
+        resolved = o["resolved"]?.bool ?? false
+        title = o["title"]?.string ?? ""
+        date = o["date"]?.string ?? ""
+        time = o["time"]?.string ?? ""
+        duration = o["duration"]?.string ?? ""
+        source = o["source"]?.string ?? ""
+        recordId = o["recordId"]?.string ?? ""
+    }
+}
+
+/// Something the engine wants a person to decide.
+struct MeetingSuggestion: Identifiable, Sendable, Hashable {
+    let id: String
+    /// `merge` (imports mode), `would_merge` (advise mode), `split`.
+    let kind: String
+    let suggestionState: String
+    let k1: Int
+    let k2: Int
+    let spans: Int
+    let at: String
+    let sides: [MeetingSuggestionSide]
+
+    /// An advise-mode row the engine WOULD have merged on its own.
+    var isWouldMerge: Bool { kind == "would_merge" }
+    var isSplit: Bool { kind == "split" }
+    var isOpen: Bool { suggestionState == "open" }
+
+    /// "Shares 41 phrases". The evidence, in the unit the engine actually counted.
+    var evidenceLine: String {
+        if isSplit { return spans > 0 ? "\(spans) span\(spans == 1 ? "" : "s") of one long recording" : "One long recording" }
+        return "Shares \(k1) phrase\(k1 == 1 ? "" : "s")"
+    }
+
+    var headline: String {
+        if isSplit { return "Split from a longer recording" }
+        return isWouldMerge ? "Would merge automatically" : "Same meeting?"
+    }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let id = o["id"]?.string, !id.isEmpty else { return nil }
+        self.id = id
+        kind = o["kind"]?.string ?? "merge"
+        suggestionState = o["suggestionState"]?.string ?? "open"
+        k1 = o["k1"]?.int ?? 0
+        k2 = o["k2"]?.int ?? 0
+        spans = o["spans"]?.int ?? 0
+        at = o["at"]?.string ?? ""
+        sides = (o["sides"]?.array ?? []).compactMap(MeetingSuggestionSide.init)
+    }
+}
+
+/// What the engine did, and whether it can still be undone.
+struct MergeAction: Identifiable, Sendable, Hashable {
+    let id: String
+    let kind: String
+    /// `auto`, `accepted_suggestion`, or `legacy_applied` for a merge the COS
+    /// pipeline made before the engine existed.
+    let tier: String
+    /// `pending`, `applied`, `failed`, `revert_pending`, `reverted`.
+    let actionState: String
+    /// `imports` or `apply` — where the effect landed.
+    let mode: String
+    let outputs: [String]
+    let recordIds: [String]
+    let error: String
+    let at: String
+    let attempts: Int
+    let sessionIds: [String]
+    let firefliesIds: [String]
+    let legacyParentPath: String
+
+    /// A pipeline merge from before the engine. It is real, and COS did not make
+    /// it, so COS does not offer to undo it.
+    var isLegacy: Bool { tier == "legacy_applied" }
+    var isRevertible: Bool { actionState == "applied" && !isLegacy }
+    var isFailed: Bool { actionState == "failed" }
+    var isPending: Bool { actionState == "pending" || actionState == "revert_pending" }
+
+    /// The line a merged detail shows above its Undo.
+    var headline: String {
+        if kind == "split" { return "Split from a longer recording" }
+        if isLegacy { return "Merged by your COS pipeline" }
+        return tier == "accepted_suggestion" ? "Merged from your suggestion" : "Merged automatically: G2 + Fireflies"
+    }
+
+    var stateLine: String {
+        switch actionState {
+        case "pending": "Still finishing"
+        case "revert_pending": "Undo running"
+        case "reverted": "Undone"
+        case "failed": error.isEmpty ? "This merge did not finish" : "This merge did not finish: \(error)"
+        default: at.isEmpty ? "Applied" : "Applied \(at)"
+        }
+    }
+
+    /// Everything a person would paste into a bug report, and nothing they would
+    /// not: ids, state and paths this Mac already shows, never file content.
+    var diagnostics: String {
+        var lines = ["action \(id)", "kind \(kind)", "tier \(tier)", "state \(actionState)", "mode \(mode)"]
+        if attempts > 0 { lines.append("attempts \(attempts)") }
+        if !at.isEmpty { lines.append("at \(at)") }
+        if !error.isEmpty { lines.append("error \(error)") }
+        if !sessionIds.isEmpty { lines.append("g2 \(sessionIds.joined(separator: ", "))") }
+        if !firefliesIds.isEmpty { lines.append("fireflies \(firefliesIds.joined(separator: ", "))") }
+        if !outputs.isEmpty { lines.append("outputs \(outputs.joined(separator: ", "))") }
+        if !legacyParentPath.isEmpty { lines.append("pipeline parent \(legacyParentPath)") }
+        return lines.joined(separator: "\n")
+    }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let id = o["id"]?.string, !id.isEmpty else { return nil }
+        self.id = id
+        kind = o["kind"]?.string ?? "merge"
+        tier = o["tier"]?.string ?? "auto"
+        actionState = o["actionState"]?.string ?? "applied"
+        mode = o["mode"]?.string ?? "imports"
+        outputs = o["outputs"]?.array?.compactMap(\.string) ?? []
+        recordIds = o["recordIds"]?.array?.compactMap(\.string) ?? []
+        error = o["error"]?.string ?? ""
+        at = o["at"]?.string ?? ""
+        attempts = o["attempts"]?.int ?? 0
+        sessionIds = o["sessionIds"]?.array?.compactMap(\.string) ?? []
+        firefliesIds = o["firefliesIds"]?.array?.compactMap(\.string) ?? []
+        legacyParentPath = o["legacyParentPath"]?.string ?? ""
+    }
+}
+
+/// The dry run an Undo must show before it may apply.
+///
+/// TWO CALLS, ALWAYS. `previewHash` covers the outputs' CURRENT bytes, so an edit
+/// that lands between the preview and the confirm invalidates the confirm rather
+/// than silently deleting the edit. This mirrors the held-groups enroll gate.
+struct MergeRevertPreview: Sendable, Equatable {
+    let actionId: String
+    let previewHash: String
+    let outputs: [String]
+    let editedOutputs: [String]
+    let missingOutputs: [String]
+    /// Set only by revert-all, which previews every applied action at once.
+    let actions: [String]
+
+    var isAll: Bool { actionId.isEmpty }
+
+    /// What Undo is about to do, in files rather than ids.
+    var summary: String {
+        if isAll {
+            return actions.count == 1
+                ? "Undo 1 merge."
+                : "Undo \(actions.count) merges."
+        }
+        return outputs.count == 1 ? "Removes 1 merged record." : "Removes \(outputs.count) merged records."
+    }
+
+    /// The warning that earns the second click, or nil when there is nothing to warn about.
+    var caution: String? {
+        var notes: [String] = []
+        if !editedOutputs.isEmpty {
+            notes.append(editedOutputs.count == 1
+                ? "1 record changed since COS wrote it and is copied aside, not lost."
+                : "\(editedOutputs.count) records changed since COS wrote them and are copied aside, not lost.")
+        }
+        if !missingOutputs.isEmpty {
+            notes.append(missingOutputs.count == 1 ? "1 record is already gone." : "\(missingOutputs.count) records are already gone.")
+        }
+        return notes.isEmpty ? nil : notes.joined(separator: " ")
+    }
+
+    init?(_ details: [String: JSONValue], actionId: String) {
+        guard let hash = details["previewHash"]?.string, !hash.isEmpty else { return nil }
+        self.actionId = actionId
+        previewHash = hash
+        outputs = details["outputs"]?.array?.compactMap(\.string) ?? []
+        editedOutputs = details["editedOutputs"]?.array?.compactMap(\.string) ?? []
+        missingOutputs = details["missingOutputs"]?.array?.compactMap(\.string) ?? []
+        actions = details["actions"]?.array?.compactMap(\.string) ?? []
+    }
+}
+
+/// Mode, first-run progress, counts, and the one disagreement a person cannot see
+/// for themselves.
+struct MeetingEngineStatus: Sendable, Equatable {
+    var routeAbsent = false
+    var mode: MeetingEngineMode = .imports
+    var isPipelineMac = false
+    var running = false
+    /// What `sync_meetings.py --merge-engine-status` answered, or nil when it
+    /// could not be asked. NOT KNOWN IS NOT DISAGREES.
+    var pipelineSeesMode: String?
+    var pipelineSeesActive = false
+    var mismatch = false
+    var auto = 0
+    var suggested = 0
+    var reverted = 0
+    var pending = 0
+    var failed = 0
+    var firstRunScanned = 0
+    var firstRunAuto = 0
+    var firstRunWouldMerge = 0
+    var firstRunSuggested = 0
+    var firstRunAlreadyMerged = 0
+    var firstRunCompleted = false
+    var lastRunAt = ""
+    var lastRunTrigger = ""
+
+    /// True while the one-per-install first run is still going.
+    var firstRunInProgress: Bool { firstRunScanned > 0 && !firstRunCompleted }
+
+    var modeLine: String {
+        if routeAbsent { return "Needs COS server 6.47.0" }
+        switch mode {
+        case .imports: return "COS merges the meetings it imports"
+        case .advise: return "Suggesting only. COS does not change your pipeline's files."
+        case .apply: return "Merging into your meetings, archived and revertible"
+        }
+    }
+
+    /// The warning the status row must carry, or nil.
+    ///
+    /// A MISMATCH IS THE ONE THING A PERSON CANNOT SEE. The server acting on apply
+    /// while the pipeline on the same Mac still believes it owns the blend means
+    /// two writers on one file.
+    var mismatchWarning: String? {
+        guard mismatch, let seen = pipelineSeesMode else { return nil }
+        return "Your COS pipeline still reads \(seen). Until both agree, leave the mode where it is and run a meeting sync."
+    }
+
+    var firstRunLine: String? {
+        guard firstRunScanned > 0 else { return nil }
+        let head = firstRunCompleted ? "First look finished" : "First look running"
+        var parts = ["\(head): \(firstRunScanned) recording\(firstRunScanned == 1 ? "" : "s") read"]
+        if firstRunAuto > 0 { parts.append("\(firstRunAuto) merged") }
+        if firstRunWouldMerge > 0 { parts.append("\(firstRunWouldMerge) would merge") }
+        if firstRunSuggested > 0 { parts.append("\(firstRunSuggested) to decide") }
+        if firstRunAlreadyMerged > 0 { parts.append("\(firstRunAlreadyMerged) already merged") }
+        return parts.joined(separator: " · ")
+    }
+
+    var lastRunLine: String? {
+        guard !lastRunAt.isEmpty else { return nil }
+        return lastRunTrigger.isEmpty ? "Last run \(lastRunAt)" : "Last run \(lastRunAt) · \(lastRunTrigger)"
+    }
+
+    init() {}
+
+    init(_ details: [String: JSONValue]) {
+        routeAbsent = MergeRouteState(details["routeState"]?.string) == .routeAbsent
+        mode = MeetingEngineMode(rawValue: details["mode"]?.string ?? "") ?? .imports
+        isPipelineMac = details["isPipelineMac"]?.bool ?? false
+        running = details["running"]?.bool ?? false
+        if let sees = details["pipelineSees"]?.object {
+            pipelineSeesMode = sees["mode"]?.string
+            pipelineSeesActive = sees["active"]?.bool ?? false
+        }
+        mismatch = details["mismatch"]?.bool ?? false
+        let counts = details["counts"]?.object
+        auto = counts?["auto"]?.int ?? 0
+        suggested = counts?["suggested"]?.int ?? 0
+        reverted = counts?["reverted"]?.int ?? 0
+        pending = counts?["pending"]?.int ?? 0
+        failed = counts?["failed"]?.int ?? 0
+        if let first = details["firstRun"]?.object {
+            firstRunScanned = first["scanned"]?.int ?? 0
+            firstRunAuto = first["auto"]?.int ?? 0
+            firstRunWouldMerge = first["wouldMerge"]?.int ?? 0
+            firstRunSuggested = first["suggested"]?.int ?? 0
+            firstRunAlreadyMerged = first["alreadyMerged"]?.int ?? 0
+            firstRunCompleted = !(first["completedAt"]?.string ?? "").isEmpty
+        }
+        if let last = details["lastRun"]?.object {
+            lastRunAt = last["at"]?.string ?? ""
+            lastRunTrigger = last["trigger"]?.string ?? ""
+        }
     }
 }

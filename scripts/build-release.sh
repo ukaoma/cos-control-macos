@@ -22,7 +22,7 @@ mkdir -p "$BUILD_DIR" "$APP/Contents/MacOS" "$APP/Contents/Resources" "$DIST_DIR
 
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/HelperSources/main.swift" \
-  -framework Security \
+  -framework Security -framework AppKit \
   -o "$APP/Contents/Resources/cos-control-helper"
 
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \

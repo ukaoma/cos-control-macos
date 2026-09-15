@@ -1,3 +1,15 @@
+## 0.5.230 (build 268)
+
+Meetings another recorder made come in, and COS says which ones are the same meeting.
+
+- Meetings has two new doorways: Import meetings and Suggested merges. Import meetings connects Fireflies with an API key, picks how far back to look (7, 30 or 90 days), sets the plan so COS stays inside its daily call limit, and can keep bringing new meetings in on its own. The key is typed once, stored on this Mac and never shown again; it is handed to the helper over stdin, so it never appears in a process list.
+- Every importer state says what happened and offers something to do about it: a refused key, a rate limit, Fireflies being down or unreachable, a daily call limit reached, meetings still processing at Fireflies. On a Mac whose COS pipeline already brings Fireflies meetings in, the card says so and points at suggested merges instead of importing them a second time.
+- Suggested merges lists what COS thinks is one meeting recorded twice, with both sides and how many phrases they share. Merge or Not the same meeting in imports mode; Looks right or Not the same meeting where COS only advises, with the line "COS does not change your pipeline's files in this version. Your answers are saved." The list scrolls in place, so a long queue never pushes the header off the window.
+- A merged or split record says how it was made and can be undone. Undo shows a dry run first, naming what it removes and anything that changed since COS wrote it, and applies only that preview. The originals stay reachable from the record, and a merge COS did not make (one your pipeline made before this release) is listed without an Undo, because COS did not make it.
+- A Mac with the COS pipeline can switch COS from suggesting to merging into its meetings tree. The switch is behind a confirmation that names what it does, the status row shows what the pipeline itself reads, and it warns when the two disagree.
+- A merged record no longer counts as a recording that lost its session id, and a split piece keeps its own row instead of collapsing onto its sibling.
+- Against a COS server older than 6.47.0 all of this reads "Update the COS server to 6.47.0" with the Update Server button, not an error.
+
 ## 0.5.229 (build 267)
 
 COS's own background Claude runs show as scheduled jobs.

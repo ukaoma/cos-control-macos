@@ -330,7 +330,8 @@ struct ActivityWindow: View {
             model.selectedMediaPreview != nil || selectedTurnID != nil
                 || selectedArchiveDate != nil || selectedArchiveChat != nil
         case .speakers: selectedVoiceName != nil || selectedSpeakerSessionID != nil
-        case .meetings: selectedLibraryRecordID != nil
+        case .meetings:
+            selectedLibraryRecordID != nil || model.meetingImportRouteActive || model.meetingSuggestionsRouteActive
         case .memories: selectedContextID != nil || selectedLearningID != nil || selectedGraphEntityID != nil
         case .threads: selectedContextID != nil
         case .sessions: selectedSessionID != nil
@@ -394,10 +395,22 @@ struct ActivityWindow: View {
                     }
                 } else if section == .meetings, selectedLibraryRecordID != nil {
                     if model.libraryRouteActive {
-                        MeetingLibraryDetailPane(model: model, onReviewVoices: openVoiceReviewFromLibrary)
+                        MeetingLibraryDetailPane(
+                            model: model,
+                            onReviewVoices: openVoiceReviewFromLibrary,
+                            onOpenSource: openLibrarySource
+                        )
                     } else {
                         centeredProgress("Loading meeting…")
                     }
+                // 6.47.0 — each of these is mounted on its OWN flag, which its own
+                // opener writes. Placed after the detail so a meeting a person
+                // actually opened wins; the model openers close the detail first,
+                // so the two can never both be true.
+                } else if section == .meetings, model.meetingImportRouteActive {
+                    MeetingImportPane(model: model)
+                } else if section == .meetings, model.meetingSuggestionsRouteActive {
+                    MeetingSuggestionsPane(model: model)
                 } else if section == .sessions, selectedSessionID != nil {
                     if model.claudeSessionRouteActive {
                         ClaudeSessionDetailPane(model: model)
@@ -694,6 +707,10 @@ struct ActivityWindow: View {
         } else if section == .meetings, selectedLibraryRecordID != nil {
             selectedLibraryRecordID = nil
             model.closeLibraryDetail()
+        } else if section == .meetings, model.meetingImportRouteActive {
+            model.closeMeetingImport()
+        } else if section == .meetings, model.meetingSuggestionsRouteActive {
+            model.closeMeetingSuggestions()
         } else if section == .sessions, selectedSessionID != nil {
             selectedSessionID = nil
             model.closeClaudeSession()
@@ -1806,6 +1823,26 @@ struct ActivityWindow: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(Capsule().fill(providerTint(session.provider).opacity(0.14)))
+    }
+
+    /// Open one of a merged record's originals from its detail.
+    ///
+    /// A merge is additive, so every source is still a real row; this is the way
+    /// back to it. A source the server could not name a record for (a G2 capture
+    /// whose scribe the pipeline retired) leaves the detail where it is rather
+    /// than opening a row that does not exist.
+    private func openLibrarySource(_ source: LibraryMeetingSource) {
+        guard !source.recordId.isEmpty else { return }
+        if let row = model.libraryMeetings.first(where: { $0.recordId == source.recordId }) {
+            selectedLibraryRecordID = row.id
+            model.openLibraryMeeting(row)
+            return
+        }
+        // Not in the loaded month. A G2 source still has a session, and the
+        // speaker review is the surface that owns it.
+        if source.kind == "g2" {
+            openVoiceReviewFromLibrary(source.sourceId)
+        }
     }
 
     private func openVoiceReviewFromLibrary(_ sessionId: String) {

@@ -2,6 +2,12 @@ import Foundation
 import Darwin
 import Security
 import CryptoKit
+// AppKit, for ONE call: NSWorkspace.urlForApplication(withBundleIdentifier:).
+// That is a LaunchServices registry lookup — it opens no app and reads no app
+// data, so the Import card can say whether Fireflies is on this Mac without a
+// TCC grant. The helper stays a plain command-line executable; nothing here
+// starts a run loop or an NSApplication.
+import AppKit
 
 private let supportedManagedContractVersions = Set([1, 2])
 private let leaseManagedContractVersion = 2
@@ -577,6 +583,24 @@ final class COSControlHelper {
         case "meeting-relabel": try emitMeetingRelabel(args: args)
         case "meeting-deattribute": try emitMeetingDeattribute(args: args)
         case "meeting-confirm": try emitMeetingConfirm(args: args)
+        // ── Import and merge meetings (server 6.47.0, WS6) ───────────────────
+        case "meeting-recorders-detect": try emitMeetingRecordersDetect()
+        case "fireflies-key-set": try emitFirefliesKeySet()
+        case "fireflies-key-status": try emitFirefliesKeyStatus()
+        case "fireflies-key-check": try emitFirefliesKeyCheck()
+        case "fireflies-key-delete": try emitFirefliesKeyDelete()
+        case "meeting-import-run": try emitMeetingImportRun(args: args)
+        case "meeting-import-status": try emitMeetingImportStatus()
+        case "meeting-import-settings": try emitMeetingImportSettings(args: args)
+        case "meeting-suggestions": try emitMeetingSuggestions(args: args)
+        case "meeting-suggestion-accept": try emitMeetingSuggestionDecision(args: args, verb: "accept")
+        case "meeting-suggestion-confirm": try emitMeetingSuggestionDecision(args: args, verb: "confirm")
+        case "meeting-suggestion-dismiss": try emitMeetingSuggestionDecision(args: args, verb: "dismiss")
+        case "meeting-actions": try emitMeetingActions(args: args)
+        case "meeting-action-revert": try emitMeetingActionRevert(args: args)
+        case "meeting-actions-revert-all": try emitMeetingActionsRevertAll(args: args)
+        case "meeting-engine-status": try emitMeetingEngineStatus()
+        case "meeting-engine-mode": try emitMeetingEngineMode(args: args)
         case "review-audio": try emitReviewAudio(args: args)
         case "review-audio-list": try emitReviewAudioList(args: args)
         case "fetch-media": try emitFetchedMedia(args: args)
@@ -11274,6 +11298,30 @@ final class COSControlHelper {
             "actionCount": Self.meetingCount(row["actionCount"]),
             "attendeeCount": Self.meetingCount(row["attendeeCount"]),
         ]
+        // 6.47.0 derived rows. PASSED THROUGH, never defaulted into existence: a
+        // row with no `derivedKind` is an ordinary meeting, and inventing "merge"
+        // here would make every capture look like something COS had rewritten.
+        if let originDomain = row["originDomain"] as? String, !originDomain.isEmpty {
+            fields["originDomain"] = originDomain
+        }
+        if let derivedKind = row["derivedKind"] as? String, !derivedKind.isEmpty {
+            fields["derivedKind"] = derivedKind
+        }
+        if let actionId = row["actionId"] as? String, !actionId.isEmpty {
+            fields["actionId"] = actionId
+        }
+        if let sessionIds = row["g2SessionIds"] as? [String], !sessionIds.isEmpty {
+            fields["g2SessionIds"] = sessionIds
+        }
+        if let sourceSessionId = row["sourceSessionId"] as? String, !sourceSessionId.isEmpty {
+            fields["sourceSessionId"] = sourceSessionId
+        }
+        if row["pieceIndex"] != nil {
+            fields["pieceIndex"] = Self.meetingCount(row["pieceIndex"])
+        }
+        if let sources = row["sources"] as? [[String: Any]], !sources.isEmpty {
+            fields["sources"] = sources
+        }
         if let review = row["voiceReview"] as? [String: Any] {
             fields["voiceReview"] = [
                 "voices": Self.meetingCount(review["voices"]),
@@ -11291,6 +11339,23 @@ final class COSControlHelper {
         source.lowercased().contains("g2") || source.lowercased().contains("glasses")
     }
 
+    /// Whether a ROW is a G2 capture.
+    ///
+    /// A 6.47.0 merged record's `source` reads "G2 Glasses + Fireflies", so the
+    /// string test above says yes — and it is wrong: a derived record holds no
+    /// chunks, has no audio of its own, and the "no session id" line that quotes
+    /// this would tell a reader their glasses had saved a meeting without its
+    /// sidecar. Any row carrying `derivedKind` is something COS derived, never a
+    /// capture.
+    static func isG2Source(_ row: [String: Any]) -> Bool {
+        if let derivedKind = row["derivedKind"] as? String, !derivedKind.isEmpty { return false }
+        return isG2Source(row["source"] as? String ?? "")
+    }
+
+    /// The review-list projection. KEEPS ITS SESSION REQUIREMENT: speaker review is
+    /// keyed on the session, so a row without one would offer an action that does
+    /// nothing. A 6.47.0 split piece has no session by design and is dropped here,
+    /// while the library list below keeps it.
     static func meetingRowProjection(_ row: [String: Any]) -> [String: Any]? {
         guard let sessionId = row["sessionId"] as? String, !sessionId.isEmpty else { return nil }
         var fields = meetingRowFields(row)
@@ -11311,6 +11376,559 @@ final class COSControlHelper {
             fields["recordId"] = "\(domain):\(month):\(filename)"
         }
         return fields
+    }
+
+    // MARK: - Import and merge meetings (server 6.47.0, WS6)
+    //
+    // Every verb below proxies one 6.47.0 route. A 404 IS NOT AN ERROR HERE. COS
+    // Control updates on its own appcast and @gotcos/glasses-server updates
+    // separately, so a Mac on 6.46.x has to read `route_absent` and be offered
+    // Update Server — not a red failure for a feature its server never shipped.
+    //
+    // A REFUSAL IS NOT AN ERROR EITHER. `operations_pipeline_owns_fireflies`,
+    // `run_in_progress`, `revert_stale` and the rest are states this surface has
+    // copy for, and flattening them into a thrown message would leave the panel
+    // with a sentence and no affordance. Every verb emits `ok: true` with a
+    // `refusal` code and the server's own message, and the panel decides.
+
+    /// The first server carrying the import, suggestion, action and engine routes.
+    /// A 404 message names the route's OWN requirement, never a blanket version.
+    static let meetingMergeNeeds = "6.47.0"
+    static func meetingMergeUpdateMessage() -> String {
+        "Update the COS server to \(meetingMergeNeeds)"
+    }
+
+    /// The server's own words for a refusal, with the code that chooses the copy.
+    static func mergeRouteRefusal(_ body: [String: Any]?, status: Int) -> (code: String, message: String) {
+        let error = body?["error"] as? [String: Any]
+        let code = (error?["code"] as? String) ?? (body?["error"] as? String) ?? "request_failed"
+        let message = (error?["message"] as? String)
+            ?? (body?["message"] as? String)
+            ?? "Request failed (\(status))."
+        return (code, message)
+    }
+
+    /// A 404 IS TWO DIFFERENT ANSWERS, and only one of them is "update your server".
+    ///
+    /// An unmounted route is Express's own HTML 404, so no JSON parses out of it.
+    /// A route that IS there and answers 404 sends `{error: {code, message}}`:
+    /// `suggestion_not_found` for a suggestion someone already answered,
+    /// `action_not_found` for an action that is gone. Telling a person to update
+    /// their COS server because a suggestion is gone is the same mistake the
+    /// learning routes made with a blanket version, which Tests/run.sh records.
+    private func isRouteAbsent(_ answer: (status: Int, body: [String: Any]?)) -> Bool {
+        answer.status == 404 && answer.body?["error"] == nil
+    }
+
+    /// One call against a 6.47.0 merge route.
+    ///
+    /// `status` 404 means the route is absent. Anything else comes back whole so
+    /// the caller can tell a refusal it has copy for from a genuine failure.
+    private func mergeRoute(
+        _ path: String, method: String = "GET", payload: [String: Any]? = nil, timeout: Int = 30
+    ) throws -> (status: Int, body: [String: Any]?) {
+        let token = try speakerReviewToken()
+        var json: String?
+        if let payload {
+            json = String(decoding: try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]), as: UTF8.self)
+        }
+        guard let response = request(path, method: method, token: token, body: json, timeout: timeout) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        return (response.status, response.body)
+    }
+
+    /// Emit a GET route's body, or `route_absent` on a 6.46.x server.
+    private func emitMergeRead(
+        _ path: String, message: String, absentWhat: String, timeout: Int = 30,
+        decorate: ([String: Any]) -> [String: Any] = { $0 }
+    ) throws {
+        let answer = try mergeRoute(path, timeout: timeout)
+        if isRouteAbsent(answer) {
+            emit(ok: true, message: Self.meetingMergeUpdateMessage(), details: [
+                "routeState": "route_absent", "needs": Self.meetingMergeNeeds, "what": absentWhat,
+            ])
+            return
+        }
+        guard answer.status == 200, let body = answer.body else {
+            let refusal = Self.mergeRouteRefusal(answer.body, status: answer.status)
+            emit(ok: true, message: refusal.message, details: [
+                "routeState": "refused", "refusal": refusal.code, "status": answer.status,
+            ])
+            return
+        }
+        var details = decorate(body)
+        details["routeState"] = "ready"
+        emit(ok: true, message: message, details: details)
+    }
+
+    /// Which meeting recorders are installed on this Mac.
+    ///
+    /// READS NO APP DATA. `urlForApplication(withBundleIdentifier:)` asks
+    /// LaunchServices whether a bundle id is registered and answers with a path;
+    /// it opens nothing, and it needs no TCC grant. That is the whole point: the
+    /// Import card can say "Fireflies is on this Mac" without touching a single
+    /// byte the other app owns.
+    static let knownMeetingRecorders: [(id: String, name: String, bundleId: String)] = [
+        ("fireflies", "Fireflies", "ai.fireflies.desktop"),
+    ]
+
+    private func emitMeetingRecordersDetect() throws {
+        let workspace = NSWorkspace.shared
+        let rows: [[String: Any]] = Self.knownMeetingRecorders.map { recorder in
+            let installed = workspace.urlForApplication(withBundleIdentifier: recorder.bundleId) != nil
+            return [
+                "id": recorder.id,
+                "name": recorder.name,
+                "bundleId": recorder.bundleId,
+                "installed": installed,
+            ]
+        }
+        let installed = rows.filter { ($0["installed"] as? Bool) == true }
+        emit(ok: true, message: installed.isEmpty ? "No meeting recorder found" : "\(installed.count) meeting recorder(s) found", details: [
+            "routeState": "ready",
+            "recorders": rows,
+            "installedCount": installed.count,
+        ])
+    }
+
+    /// The largest key this helper will forward. Fireflies keys are ~40 characters;
+    /// the cap is here so a paste of a whole file cannot become a request body.
+    static let firefliesKeyMaxBytes = 4_096
+
+    /// A pasted key, cleaned. Returns nil when there is nothing usable left.
+    ///
+    /// Trimmed of whitespace and newlines because a paste from a web page carries
+    /// both, and a trailing newline in an Authorization header is a key the vendor
+    /// refuses for a reason nobody can see.
+    static func firefliesKeyFromStdin(_ data: Data) -> String? {
+        guard !data.isEmpty, data.count <= firefliesKeyMaxBytes else { return nil }
+        let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.count >= 8, !text.contains("\n") else { return nil }
+        return text
+    }
+
+    /// THE KEY ARRIVES ON STDIN AND NEVER ON argv.
+    ///
+    /// `ps` shows every argument of every process on this Mac to every user on it,
+    /// and Control's own helper transport logs its argument list. A secret passed
+    /// as `--key <value>` is a secret published to the machine. stdin is the same
+    /// door `set-morning-brief` and the chat prompts already use.
+    private func emitFirefliesKeySet() throws {
+        let data = FileHandle.standardInput.readDataToEndOfFile()
+        guard let key = Self.firefliesKeyFromStdin(data) else {
+            throw HelperError.message("Paste your Fireflies API key. It arrives on stdin and is never shown again.")
+        }
+        let answer = try mergeRoute("/api/fireflies-key/set", method: "POST", payload: ["key": key])
+        if isRouteAbsent(answer) {
+            emit(ok: true, message: Self.meetingMergeUpdateMessage(), details: [
+                "routeState": "route_absent", "needs": Self.meetingMergeNeeds, "what": "store a Fireflies key",
+            ])
+            return
+        }
+        guard answer.status == 200, let body = answer.body else {
+            let refusal = Self.mergeRouteRefusal(answer.body, status: answer.status)
+            emit(ok: true, message: refusal.message, details: [
+                "routeState": "refused", "refusal": refusal.code, "status": answer.status,
+            ])
+            return
+        }
+        // The body carries `status` and `check`; neither holds the key, and this
+        // message must never quote what was typed.
+        emit(ok: true, message: "Key saved", details: [
+            "routeState": "ready",
+            "status": body["status"] ?? [:],
+            "check": body["check"] ?? [:],
+        ])
+    }
+
+    private func emitFirefliesKeyStatus() throws {
+        try emitMergeRead("/api/fireflies-key/status", message: "Fireflies key status", absentWhat: "check a Fireflies key", timeout: 15)
+    }
+
+    private func emitFirefliesKeyCheck() throws {
+        let answer = try mergeRoute("/api/fireflies-key/check", method: "POST", timeout: 45)
+        if isRouteAbsent(answer) {
+            emit(ok: true, message: Self.meetingMergeUpdateMessage(), details: [
+                "routeState": "route_absent", "needs": Self.meetingMergeNeeds, "what": "check a Fireflies key",
+            ])
+            return
+        }
+        guard answer.status == 200, let body = answer.body else {
+            let refusal = Self.mergeRouteRefusal(answer.body, status: answer.status)
+            emit(ok: true, message: refusal.message, details: ["routeState": "refused", "refusal": refusal.code])
+            return
+        }
+        var details = body
+        details["routeState"] = "ready"
+        emit(ok: true, message: Self.firefliesCheckMessage(body["state"] as? String ?? ""), details: details)
+    }
+
+    static func firefliesCheckMessage(_ state: String) -> String {
+        switch state {
+        case "ok": "Fireflies accepted this key"
+        case "not_configured": "No Fireflies key stored"
+        case "invalid_key": "Fireflies refused this key"
+        case "rate_limited": "Fireflies is rate limiting this key"
+        case "vendor_down": "Fireflies is down"
+        case "unreachable": "Fireflies could not be reached"
+        default: "Fireflies key checked"
+        }
+    }
+
+    private func emitFirefliesKeyDelete() throws {
+        let answer = try mergeRoute("/api/fireflies-key", method: "DELETE", timeout: 15)
+        if isRouteAbsent(answer) {
+            emit(ok: true, message: Self.meetingMergeUpdateMessage(), details: [
+                "routeState": "route_absent", "needs": Self.meetingMergeNeeds, "what": "remove a Fireflies key",
+            ])
+            return
+        }
+        guard answer.status == 200, let body = answer.body else {
+            let refusal = Self.mergeRouteRefusal(answer.body, status: answer.status)
+            emit(ok: true, message: refusal.message, details: ["routeState": "refused", "refusal": refusal.code])
+            return
+        }
+        emit(ok: true, message: "Key removed", details: ["routeState": "ready", "status": body["status"] ?? [:]])
+    }
+
+    /// Windows the importer accepts. Anything else is refused here rather than
+    /// spending a round trip to learn the same thing.
+    static let importWindowDays = [7, 30, 90]
+
+    private func emitMeetingImportRun(args: [String]) throws {
+        let requested = Int(option("--window", in: args) ?? "30") ?? 30
+        guard Self.importWindowDays.contains(requested) else {
+            throw HelperError.message("--window must be one of \(Self.importWindowDays.map(String.init).joined(separator: ", "))")
+        }
+        let answer = try mergeRoute("/api/meeting-import/fireflies/run", method: "POST", payload: ["windowDays": requested])
+        if isRouteAbsent(answer) {
+            emit(ok: true, message: Self.meetingMergeUpdateMessage(), details: [
+                "routeState": "route_absent", "needs": Self.meetingMergeNeeds, "what": "import meetings",
+            ])
+            return
+        }
+        guard answer.status == 202, let body = answer.body else {
+            let refusal = Self.mergeRouteRefusal(answer.body, status: answer.status)
+            emit(ok: true, message: refusal.message, details: [
+                "routeState": "refused", "refusal": refusal.code, "status": answer.status,
+            ])
+            return
+        }
+        emit(ok: true, message: "Import started", details: [
+            "routeState": "ready",
+            "runId": body["runId"] as? String ?? "",
+            "status": body["status"] ?? [:],
+        ])
+    }
+
+    private func emitMeetingImportStatus() throws {
+        try emitMergeRead("/api/meeting-import/fireflies/status", message: "Import status", absentWhat: "import meetings", timeout: 20)
+    }
+
+    private func emitMeetingImportSettings(args: [String]) throws {
+        var payload: [String: Any] = [:]
+        if let keep = option("--keep-importing", in: args) {
+            guard keep == "true" || keep == "false" else {
+                throw HelperError.message("--keep-importing must be true or false")
+            }
+            payload["keepImporting"] = keep == "true"
+        }
+        if let plan = option("--plan", in: args) {
+            guard plan == "free" || plan == "pro" || plan == "business" else {
+                throw HelperError.message("--plan must be free, pro or business")
+            }
+            payload["planCap"] = plan
+        }
+        guard !payload.isEmpty else { throw HelperError.message("--keep-importing or --plan is required") }
+        let answer = try mergeRoute("/api/meeting-import/fireflies/settings", method: "POST", payload: payload, timeout: 20)
+        if isRouteAbsent(answer) {
+            emit(ok: true, message: Self.meetingMergeUpdateMessage(), details: [
+                "routeState": "route_absent", "needs": Self.meetingMergeNeeds, "what": "change import settings",
+            ])
+            return
+        }
+        guard answer.status == 200, let body = answer.body else {
+            let refusal = Self.mergeRouteRefusal(answer.body, status: answer.status)
+            emit(ok: true, message: refusal.message, details: ["routeState": "refused", "refusal": refusal.code])
+            return
+        }
+        var details = body
+        details["routeState"] = "ready"
+        emit(ok: true, message: "Import settings saved", details: details)
+    }
+
+    static let suggestionStates = ["open", "confirmed", "accepted", "dismissed", "all"]
+
+    private func emitMeetingSuggestions(args: [String]) throws {
+        let state = option("--state", in: args) ?? "open"
+        guard Self.suggestionStates.contains(state) else {
+            throw HelperError.message("--state must be one of \(Self.suggestionStates.joined(separator: ", "))")
+        }
+        let answer = try mergeRoute("/api/meeting-suggestions?state=\(queryEscape(state))", timeout: 20)
+        if isRouteAbsent(answer) {
+            emit(ok: true, message: Self.meetingMergeUpdateMessage(), details: [
+                "routeState": "route_absent", "needs": Self.meetingMergeNeeds, "what": "suggest merges",
+            ])
+            return
+        }
+        guard answer.status == 200, let body = answer.body else {
+            let refusal = Self.mergeRouteRefusal(answer.body, status: answer.status)
+            emit(ok: true, message: refusal.message, details: ["routeState": "refused", "refusal": refusal.code])
+            return
+        }
+        let rows = (body["suggestions"] as? [[String: Any]]) ?? []
+        // THE SUGGESTION ROUTE SENDS IDS, NOT MEETINGS (verified against
+        // server/lib/meeting-actions.ts `listSuggestions`, which returns the stored
+        // record whole: id, kind, inputs, fingerprints, evidence, state, at). A row
+        // reading "g2:meeting_1789… and ff:01K4…" asks a person to decide something
+        // they cannot see, so the two sides are resolved here against the library.
+        // A side the library cannot reach keeps its id and says so.
+        let index = rows.isEmpty ? [:] : ((try? meetingRowIndex()) ?? [:])
+        let projected = rows.compactMap { Self.suggestionProjection($0, index: index) }
+        emit(ok: true, message: projected.isEmpty ? "No suggestions" : "Suggestions ready", details: [
+            "routeState": "ready",
+            "suggestions": projected,
+            "count": projected.count,
+            "resolved": index.isEmpty ? false : true,
+        ])
+    }
+
+    /// Recent library rows, keyed by the two identities a suggestion can name.
+    ///
+    /// ONE bounded read, and the bound is the SERVER'S. An unscoped
+    /// `GET /api/meetings` caps at 50 rows (`meetingListLimit(rawLimit, scoped:
+    /// false)`, `server/routes/meetings.ts:191`), so asking for more returns the
+    /// same 50; the number below says what is actually requested rather than
+    /// implying a page that does not exist. Anything older falls outside it and
+    /// renders as an id, which the pane says out loud. A per-suggestion lookup
+    /// would be one request each, against a list a person is reading forty of.
+    private func meetingRowIndex() throws -> [String: [String: Any]] {
+        let answer = try mergeRoute("/api/meetings?limit=50&domain=all", timeout: 30)
+        guard answer.status == 200, let rows = answer.body?["meetings"] as? [[String: Any]] else { return [:] }
+        var index: [String: [String: Any]] = [:]
+        for row in rows {
+            guard let fields = Self.libraryMeetingProjection(row) else { continue }
+            if let session = fields["sessionId"] as? String, !session.isEmpty { index["g2:\(session)"] = fields }
+            if let recordId = fields["recordId"] as? String, !recordId.isEmpty { index[recordId] = fields }
+        }
+        return index
+    }
+
+    /// `imported:fireflies:<h16>` — the record id the server mints for one vendor id.
+    ///
+    /// Derived here because a suggestion names only the vendor id while the list
+    /// names the record. Same construction as the server's `importRecordId` over
+    /// `importHash`: the first 16 hex of sha256("fireflies:" + id). It resolves an
+    /// IMPORTED record only; on a pipeline Mac in advise mode the Fireflies meeting
+    /// is an operations scribe whose id is its path, and that side keeps its id.
+    static func importedRecordID(firefliesId: String) -> String {
+        let digest = SHA256.hash(data: Data("fireflies:\(firefliesId)".utf8))
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        return "imported:fireflies:\(hex.prefix(16))"
+    }
+
+    /// One side of a suggestion, resolved against the library where it can be.
+    static func suggestionSide(kind: String, id: String, index: [String: [String: Any]]) -> [String: Any] {
+        let key = kind == "g2" ? "g2:\(id)" : importedRecordID(firefliesId: id)
+        var side: [String: Any] = ["kind": kind, "id": id, "resolved": false]
+        guard let row = index[key] else { return side }
+        side["resolved"] = true
+        side["title"] = row["title"] as? String ?? ""
+        side["date"] = row["date"] as? String ?? ""
+        side["time"] = row["time"] as? String ?? ""
+        side["duration"] = row["duration"] as? String ?? ""
+        side["source"] = row["source"] as? String ?? ""
+        side["recordId"] = row["recordId"] as? String ?? ""
+        return side
+    }
+
+    /// One suggestion row, flattened for the panel.
+    ///
+    /// EXTRACTED so it can be tested. Inline it would have no coverage: the Swift
+    /// side builds its fixtures from literals and would never run this code, and a
+    /// dropped field surfaces as an empty string rather than as an error.
+    static func suggestionProjection(_ row: [String: Any], index: [String: [String: Any]] = [:]) -> [String: Any]? {
+        guard let id = row["id"] as? String, !id.isEmpty else { return nil }
+        let inputs = row["inputs"] as? [String: Any]
+        let evidence = row["evidence"] as? [String: Any]
+        let sessionIds = (inputs?["sessionIds"] as? [String]) ?? []
+        let firefliesIds = (inputs?["firefliesIds"] as? [String]) ?? []
+        let spans = (evidence?["spans"] as? [[String: Any]]) ?? []
+        return [
+            "id": id,
+            "kind": row["kind"] as? String ?? "merge",
+            "suggestionState": row["state"] as? String ?? "open",
+            "sessionIds": sessionIds,
+            "firefliesIds": firefliesIds,
+            "k1": Self.meetingCount(evidence?["K1"]),
+            "k2": Self.meetingCount(evidence?["K2"]),
+            "spans": spans.count,
+            "at": row["at"] as? String ?? "",
+            "decidedAt": row["decidedAt"] as? String ?? "",
+            // Fireflies first: it is the meeting a person recognizes, and the G2
+            // recordings are what COS wants to fold into it.
+            "sides": firefliesIds.map { Self.suggestionSide(kind: "fireflies", id: $0, index: index) }
+                + sessionIds.map { Self.suggestionSide(kind: "g2", id: $0, index: index) },
+        ]
+    }
+
+    /// `s_` plus 16 hex. Checked here so a malformed id never reaches a POST.
+    static func validSuggestionID(_ value: String) -> Bool {
+        value.count == 18 && value.hasPrefix("s_")
+            && value.dropFirst(2).allSatisfy { $0.isHexDigit && !$0.isUppercase }
+    }
+
+    /// `a_` plus 16 hex, the same shape rule as a suggestion id.
+    static func validMergeActionID(_ value: String) -> Bool {
+        value.count == 18 && value.hasPrefix("a_")
+            && value.dropFirst(2).allSatisfy { $0.isHexDigit && !$0.isUppercase }
+    }
+
+    private func emitMeetingSuggestionDecision(args: [String], verb: String) throws {
+        guard let id = option("--id", in: args), Self.validSuggestionID(id) else {
+            throw HelperError.message("--id must be a suggestion id (s_ plus 16 hex)")
+        }
+        let answer = try mergeRoute("/api/meeting-suggestions/\(queryEscape(id))/\(verb)", method: "POST", payload: [:])
+        if isRouteAbsent(answer) {
+            emit(ok: true, message: Self.meetingMergeUpdateMessage(), details: [
+                "routeState": "route_absent", "needs": Self.meetingMergeNeeds, "what": "answer a suggestion",
+            ])
+            return
+        }
+        guard answer.status == 200, let body = answer.body else {
+            let refusal = Self.mergeRouteRefusal(answer.body, status: answer.status)
+            emit(ok: true, message: refusal.message, details: [
+                "routeState": "refused", "refusal": refusal.code, "status": answer.status, "id": id,
+            ])
+            return
+        }
+        var details = body
+        details["routeState"] = "ready"
+        details["id"] = id
+        emit(ok: true, message: Self.suggestionDecisionMessage(verb), details: details)
+    }
+
+    static func suggestionDecisionMessage(_ verb: String) -> String {
+        switch verb {
+        case "accept": "Merged"
+        case "confirm": "Answer saved"
+        default: "Marked as different meetings"
+        }
+    }
+
+    private func emitMeetingActions(args: [String]) throws {
+        let limit = min(max(Int(option("--limit", in: args) ?? "50") ?? 50, 1), 200)
+        try emitMergeRead("/api/meeting-actions?limit=\(limit)", message: "Actions ready", absentWhat: "list merges", timeout: 20) { body in
+            let rows = (body["actions"] as? [[String: Any]]) ?? []
+            return ["actions": rows.compactMap(Self.mergeActionProjection), "count": rows.count]
+        }
+    }
+
+    /// One action record, flattened for the panel. Extracted for the same reason
+    /// `suggestionProjection` is.
+    static func mergeActionProjection(_ row: [String: Any]) -> [String: Any]? {
+        guard let id = row["id"] as? String, !id.isEmpty else { return nil }
+        let inputs = row["inputs"] as? [String: Any]
+        let outputs = (row["outputs"] as? [[String: Any]]) ?? []
+        return [
+            "id": id,
+            "kind": row["kind"] as? String ?? "merge",
+            "tier": row["tier"] as? String ?? "auto",
+            "actionState": row["state"] as? String ?? "applied",
+            "mode": row["mode"] as? String ?? "imports",
+            "sessionIds": (inputs?["sessionIds"] as? [String]) ?? [],
+            "firefliesIds": (inputs?["firefliesIds"] as? [String]) ?? [],
+            "outputs": outputs.compactMap { $0["path"] as? String },
+            "recordIds": outputs.compactMap { $0["recordId"] as? String },
+            "error": row["error"] as? String ?? "",
+            "at": row["at"] as? String ?? "",
+            "attempts": Self.meetingCount(row["attempts"]),
+            "pieceIndex": Self.meetingCount(row["pieceIndex"]),
+            "legacyParentPath": row["legacyParentPath"] as? String ?? "",
+        ]
+    }
+
+    /// 64 lowercase hex. The preview hash is the whole point of the two-call
+    /// revert, so a mangled one must be refused here rather than silently
+    /// omitted from the body and read by the server as "no preview at all".
+    static func validPreviewHash(_ value: String) -> Bool {
+        value.count == 64 && value.allSatisfy { $0.isHexDigit && !$0.isUppercase }
+    }
+
+    /// `--dry-run` asks for the preview; `--preview-hash` applies the thing that
+    /// preview described. Sending neither is a 400 from the server, and sending
+    /// both is the dry run, exactly as the route reads them.
+    private func revertPayload(args: [String]) throws -> [String: Any] {
+        if args.contains("--dry-run") { return ["dryRun": true] }
+        guard let hash = option("--preview-hash", in: args), Self.validPreviewHash(hash) else {
+            throw HelperError.message("--dry-run, or --preview-hash from the preview, is required")
+        }
+        return ["previewHash": hash]
+    }
+
+    private func emitMeetingActionRevert(args: [String]) throws {
+        guard let id = option("--id", in: args), Self.validMergeActionID(id) else {
+            throw HelperError.message("--id must be an action id (a_ plus 16 hex)")
+        }
+        let payload = try revertPayload(args: args)
+        let answer = try mergeRoute("/api/meeting-actions/\(queryEscape(id))/revert", method: "POST", payload: payload, timeout: 90)
+        try emitRevertAnswer(answer, dryRun: payload["dryRun"] != nil, id: id)
+    }
+
+    private func emitMeetingActionsRevertAll(args: [String]) throws {
+        let payload = try revertPayload(args: args)
+        let answer = try mergeRoute("/api/meeting-actions/revert-all", method: "POST", payload: payload, timeout: 180)
+        try emitRevertAnswer(answer, dryRun: payload["dryRun"] != nil, id: "")
+    }
+
+    private func emitRevertAnswer(_ answer: (status: Int, body: [String: Any]?), dryRun: Bool, id: String) throws {
+        if isRouteAbsent(answer) {
+            emit(ok: true, message: Self.meetingMergeUpdateMessage(), details: [
+                "routeState": "route_absent", "needs": Self.meetingMergeNeeds, "what": "undo a merge",
+            ])
+            return
+        }
+        guard answer.status == 200, let body = answer.body else {
+            let refusal = Self.mergeRouteRefusal(answer.body, status: answer.status)
+            emit(ok: true, message: refusal.message, details: [
+                "routeState": "refused", "refusal": refusal.code, "status": answer.status, "id": id,
+            ])
+            return
+        }
+        var details = body
+        details["routeState"] = dryRun ? "preview" : "ready"
+        if !id.isEmpty { details["id"] = id }
+        emit(ok: true, message: dryRun ? "Undo preview" : "Undone", details: details)
+    }
+
+    private func emitMeetingEngineStatus() throws {
+        try emitMergeRead("/api/meeting-engine/status", message: "Engine status", absentWhat: "show merge status", timeout: 45)
+    }
+
+    private func emitMeetingEngineMode(args: [String]) throws {
+        guard let mode = option("--mode", in: args), mode == "advise" || mode == "apply" else {
+            throw HelperError.message("--mode must be advise or apply")
+        }
+        let answer = try mergeRoute("/api/meeting-engine/mode", method: "POST", payload: ["mode": mode], timeout: 30)
+        if isRouteAbsent(answer) {
+            emit(ok: true, message: Self.meetingMergeUpdateMessage(), details: [
+                "routeState": "route_absent", "needs": Self.meetingMergeNeeds, "what": "change the merge mode",
+            ])
+            return
+        }
+        guard answer.status == 200, let body = answer.body else {
+            let refusal = Self.mergeRouteRefusal(answer.body, status: answer.status)
+            emit(ok: true, message: refusal.message, details: [
+                "routeState": "refused", "refusal": refusal.code, "status": answer.status,
+            ])
+            return
+        }
+        emit(ok: true, message: mode == "apply" ? "Merging into your meetings" : "Suggesting only", details: [
+            "routeState": "ready",
+            "mode": body["mode"] as? String ?? mode,
+        ])
     }
 
     private func queryEscape(_ value: String) -> String {
@@ -11339,7 +11957,7 @@ final class COSControlHelper {
                 "title": row["title"] as? String ?? "Untitled meeting",
                 "date": row["date"] as? String ?? "",
                 "source": row["source"] as? String ?? "",
-                "isG2": Self.isG2Source(row["source"] as? String ?? ""),
+                "isG2": Self.isG2Source(row),
             ]
         }
         emit(ok: true, message: rows.isEmpty ? "No reviewable meetings" : "Meetings ready", details: [
@@ -16876,7 +17494,170 @@ final class COSControlHelper {
         try expect((signals["legend"] as? String) == Self.activitySignalsLegend && Self.activitySignalsLegend.contains("Number"),
                    "the legend line ships with the signals")
 
+        // ── Import and merge meetings (0.5.230, server 6.47.0) ────────────────
+        //
+        // THE STDIN RULE. `ps` shows every argument of every process on this Mac to
+        // every user on it, and the helper transport logs its argument list, so a
+        // key that reached argv would be a key published to the machine. These
+        // cover the PARSER; that the verb takes no arguments at all is pinned in
+        // Tests/run.sh, where a mutation adding one can actually go red.
+        try expect(Self.firefliesKeyFromStdin(Data("  abcd1234efgh5678  \n".utf8)) == "abcd1234efgh5678",
+                   "a pasted key is trimmed of the whitespace a web-page copy carries")
+        try expect(Self.firefliesKeyFromStdin(Data()) == nil, "an empty stdin is not a key")
+        try expect(Self.firefliesKeyFromStdin(Data("short".utf8)) == nil, "a key under 8 characters is refused")
+        try expect(Self.firefliesKeyFromStdin(Data("aaaaaaaaaa\nbbbbbbbbbb".utf8)) == nil,
+                   "a multi-line paste is refused rather than sent with an embedded newline")
+        try expect(Self.firefliesKeyFromStdin(Data(String(repeating: "k", count: Self.firefliesKeyMaxBytes + 1).utf8)) == nil,
+                   "a paste larger than the cap never becomes a request body")
+
+        // Route absence is guidance, not failure.
+        try expect(Self.meetingMergeNeeds == "6.47.0" && Self.meetingMergeUpdateMessage() == "Update the COS server to 6.47.0",
+                   "a 404 names the route's own requirement")
+        try expect(Self.mergeRouteRefusal(["error": ["code": "operations_pipeline_owns_fireflies", "message": "Your COS pipeline already brings in Fireflies meetings, so the server does not import them here."]], status: 409)
+                   == ("operations_pipeline_owns_fireflies", "Your COS pipeline already brings in Fireflies meetings, so the server does not import them here."),
+                   "a refusal keeps both its code and the server's own words")
+        try expect(Self.mergeRouteRefusal(["error": "advise_mode"], status: 409).code == "advise_mode",
+                   "the older flat error form still resolves to a code")
+        try expect(Self.mergeRouteRefusal(nil, status: 503) == ("request_failed", "Request failed (503)."),
+                   "a body-less refusal still names its status")
+        for (state, needle) in [("ok", "accepted"), ("invalid_key", "refused"), ("rate_limited", "rate limiting"),
+                                ("vendor_down", "down"), ("unreachable", "reached"), ("not_configured", "No Fireflies key")] {
+            try expect(Self.firefliesCheckMessage(state).contains(needle), "the \(state) key check has its own sentence")
+        }
+        try expect(Self.importWindowDays == [7, 30, 90], "the importer takes only the three windows the server accepts")
+        try expect(Self.suggestionDecisionMessage("accept") == "Merged" && Self.suggestionDecisionMessage("confirm") == "Answer saved"
+                   && Self.suggestionDecisionMessage("dismiss") == "Marked as different meetings",
+                   "accept and confirm say different things, because they DO different things")
+
+        // Ids are checked before a POST, so a mangled one never reaches a route.
+        try expect(Self.validSuggestionID("s_0123456789abcdef") && !Self.validSuggestionID("a_0123456789abcdef")
+                   && !Self.validSuggestionID("s_0123456789ABCDEF") && !Self.validSuggestionID("s_zzz"),
+                   "a suggestion id is s_ plus 16 lowercase hex")
+        try expect(Self.validMergeActionID("a_0123456789abcdef") && !Self.validMergeActionID("s_0123456789abcdef"),
+                   "an action id is a_ plus 16 lowercase hex")
+        try expect(Self.validPreviewHash(String(repeating: "a", count: 64))
+                   && !Self.validPreviewHash(String(repeating: "a", count: 63))
+                   && !Self.validPreviewHash(String(repeating: "A", count: 64)),
+                   "a preview hash is exactly 64 lowercase hex, or the confirm is refused here")
+
+        // The record id a suggestion's Fireflies side resolves to. Same
+        // construction as the server's importRecordId over importHash.
+        try expect(Self.importedRecordID(firefliesId: "01K4EXAMPLE") == "imported:fireflies:"
+                   + Self.sha256Hex("fireflies:01K4EXAMPLE").prefix(16),
+                   "an imported record id is the first 16 hex of sha256(\"fireflies:\" + id)")
+
+        let suggestionIndex: [String: [String: Any]] = [
+            "g2:meeting_1789_abc": ["title": "Quilt weekly", "date": "2026-09-10", "time": "14:30",
+                                    "duration": "47 minutes", "source": "G2 Glasses", "recordId": "standalone:meeting_1789_abc"],
+        ]
+        let suggestion = Self.suggestionProjection([
+            "id": "s_0123456789abcdef", "kind": "would_merge", "state": "open",
+            "inputs": ["sessionIds": ["meeting_1789_abc"], "firefliesIds": ["01K4EXAMPLE"]],
+            "evidence": ["K1": 41, "K2": 3],
+            "at": "2026-09-14T10:00:00.000Z",
+        ], index: suggestionIndex)
+        try expect(suggestion?["k1"] as? Int == 41 && suggestion?["k2"] as? Int == 3,
+                   "the evidence a person is being asked to weigh survives the projection")
+        try expect(suggestion?["suggestionState"] as? String == "open",
+                   "a suggestion's own state is not clobbered by the helper's route state")
+        let sides = (suggestion?["sides"] as? [[String: Any]]) ?? []
+        try expect(sides.count == 2 && sides.first?["kind"] as? String == "fireflies",
+                   "the Fireflies meeting comes first: it is the one a person recognizes")
+        try expect(sides.last?["resolved"] as? Bool == true && sides.last?["title"] as? String == "Quilt weekly",
+                   "a G2 side inside the recent list is resolved to its title")
+        try expect(sides.first?["resolved"] as? Bool == false && sides.first?["id"] as? String == "01K4EXAMPLE",
+                   "a side the library cannot reach keeps its id rather than inventing a title")
+        try expect(Self.suggestionProjection(["kind": "merge"]) == nil, "a suggestion with no id is dropped")
+        try expect((Self.suggestionProjection(["id": "s_1", "kind": "split",
+                                               "evidence": ["K1": 0, "K2": 0, "spans": [["startS": 0, "endS": 60], ["startS": 60, "endS": 120]]]])?["spans"] as? Int) == 2,
+                   "a split suggestion carries how many spans it would cut")
+
+        let action = Self.mergeActionProjection([
+            "id": "a_0123456789abcdef", "kind": "merge", "tier": "auto", "state": "applied", "mode": "apply",
+            "inputs": ["sessionIds": ["meeting_1789_abc"], "firefliesIds": ["01K4EXAMPLE"]],
+            "outputs": [["path": "quilt/meetings/2026-09/x.md", "recordId": "blended:abc"]],
+            "at": "2026-09-14T10:00:00.000Z", "attempts": 1,
+        ])
+        try expect(action?["actionState"] as? String == "applied",
+                   "an action's own state is carried under actionState, so the route state cannot overwrite it")
+        try expect((action?["outputs"] as? [String]) == ["quilt/meetings/2026-09/x.md"]
+                   && (action?["recordIds"] as? [String]) == ["blended:abc"],
+                   "an action's outputs and record ids both survive")
+        try expect(Self.mergeActionProjection(["kind": "merge"]) == nil, "an action with no id is dropped")
+
+        // A DERIVED ROW IS NOT A CAPTURE. Its `source` reads "G2 Glasses +
+        // Fireflies", so the string test says yes and is wrong: it holds no
+        // chunks, and the "no session id" line would blame the glasses.
+        try expect(Self.isG2Source("G2 Glasses") && !Self.isG2Source("Fireflies"),
+                   "the source string test is unchanged for a real capture")
+        try expect(!Self.isG2Source(["source": "G2 Glasses + Fireflies", "derivedKind": "merge"]),
+                   "a merged row is never counted as a G2 capture")
+        try expect(!Self.isG2Source(["source": "G2 Glasses", "derivedKind": "split"]),
+                   "a split piece is never counted as a G2 capture")
+        try expect(Self.isG2Source(["source": "G2 Glasses"]) && Self.isG2Source(["source": "G2 Glasses", "derivedKind": ""]),
+                   "a row with no derivedKind, or an empty one, is still a capture")
+
+        let mergedRow: [String: Any] = [
+            "sessionId": "meeting_1789_abc", "title": "Quilt weekly", "month": "2026-09",
+            "filename": "2026-09-10_merged_0123456789abcdef.md", "domain": "imported",
+            "originDomain": "quilt", "librarySource": "blended", "mutable": false,
+            "derivedKind": "merge", "actionId": "a_0123456789abcdef",
+            "g2SessionIds": ["meeting_1789_abc", "meeting_1790_def"],
+        ]
+        let mergedFields = Self.meetingRowFields(mergedRow)
+        for key in ["originDomain", "derivedKind", "actionId", "g2SessionIds"] {
+            try expect(mergedFields[key] != nil, "meetingRowFields passes \(key) through")
+        }
+        try expect(mergedFields["mutable"] as? Bool == false && mergedFields["librarySource"] as? String == "blended",
+                   "a derived row arrives immutable and says which library it came from")
+        try expect((mergedFields["g2SessionIds"] as? [String])?.count == 2,
+                   "every capture a merged record holds survives, not just the first")
+        let plainFields = Self.meetingRowFields(["sessionId": "meeting_1", "title": "T"])
+        for key in ["derivedKind", "actionId", "g2SessionIds", "sourceSessionId", "pieceIndex", "originDomain", "sources"] {
+            try expect(plainFields[key] == nil, "an ordinary capture claims nothing about \(key)")
+        }
+        try expect(plainFields["mutable"] as? Bool == true, "an ordinary capture stays correctable")
+
+        // A SPLIT PIECE HAS NO SESSION, deliberately: it is a span, not a capture,
+        // and two pieces of one recording would collapse onto each other.
+        let pieceRow: [String: Any] = [
+            "title": "Piece 2", "month": "2026-09", "filename": "2026-09-10_piece_0123456789abcdef.md",
+            "domain": "imported", "recordId": "blended:0123456789abcdef", "librarySource": "blended",
+            "derivedKind": "split", "sourceSessionId": "meeting_1789_abc", "pieceIndex": 2, "mutable": false,
+        ]
+        try expect(Self.meetingRowProjection(pieceRow) == nil,
+                   "the review list keeps its session requirement, so a piece is not offered for speaker review")
+        let pieceFields = Self.libraryMeetingProjection(pieceRow)
+        try expect(pieceFields?["recordId"] as? String == "blended:0123456789abcdef",
+                   "the library keeps a piece row, identified by its own record id")
+        try expect(pieceFields?["pieceIndex"] as? Int == 2 && pieceFields?["sourceSessionId"] as? String == "meeting_1789_abc",
+                   "a piece says which piece it is and what it came out of")
+        try expect(Self.libraryMeetingProjection(["month": "2026-09", "filename": "a.md",
+                                                  "domain": "imported", "pieceIndex": 0])?["pieceIndex"] as? Int == 0,
+                   "piece 0 is a piece; a present zero must not read as absent")
+
+        try expect(Self.knownMeetingRecorders.contains { $0.bundleId == "ai.fireflies.desktop" },
+                   "Fireflies is the recorder this release detects")
+
+        // A RECORD 404 IS NOT AN UPDATE PROMPT. An unmounted route is Express's own
+        // HTML 404 and nothing parses out of it; a route that IS there answers 404
+        // with its own code. Reading both as route_absent tells a person to update
+        // their server because a suggestion they already answered is gone.
+        try expect(isRouteAbsent((status: 404, body: nil)), "an unmounted route has no JSON to parse")
+        try expect(isRouteAbsent((status: 404, body: ["message": "Not Found"])),
+                   "a 404 with no error block is still a missing route")
+        try expect(!isRouteAbsent((status: 404, body: ["error": ["code": "suggestion_not_found", "message": "That suggestion is gone."]])),
+                   "a suggestion that is gone must never read as a server that needs updating")
+        try expect(!isRouteAbsent((status: 404, body: ["error": ["code": "action_not_found", "message": "That action is gone."]])),
+                   "neither must an action that is gone")
+        try expect(!isRouteAbsent((status: 409, body: nil)) && !isRouteAbsent((status: 200, body: [:])),
+                   "only a 404 can be a missing route")
+
         emit(ok: true, message: "\(passed) deterministic helper tests passed", details: ["tests": passed])
+    }
+
+    static func sha256Hex(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     private func cleanupGenerations(keeping: Set<String>) {
