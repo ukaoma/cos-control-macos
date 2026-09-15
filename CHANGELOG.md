@@ -1,3 +1,12 @@
+## 0.5.231 (build 269)
+
+A thread opens with everything COS holds for it, and Copy as Context carries all of it.
+
+- Thread detail showed only the thread's first note. Stakeholders, linked meetings, milestones and sources all reached COS Control and were dropped before the pane drew, so Project Mainstreet, which holds 42 sources, 17 milestones and 6 meetings, opened as one paragraph. The pane now shows the note, then the target date, when the thread was seen, its topics, and a section each for stakeholders, meetings, milestones and sources, in the order the glasses already use.
+- Copy as Context copies that same body, so a pasted thread brings its sources and meetings with it.
+- Each section counts what arrived. The COS server sends at most 30 sources and 30 milestones per thread, each shortened to 500 characters; Meetings says "6 of 9" when the thread links more than were sent.
+- With the COS pipeline as of 2026-09-15, meetings show their date and title instead of an id, and the 30 sources kept are the newest.
+
 ## 0.5.230 (build 268)
 
 Meetings another recorder made come in, and COS says which ones are the same meeting.

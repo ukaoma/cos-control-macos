@@ -4020,7 +4020,62 @@ struct ModelsContract {
         print("COS Control: Activity hotkey combo (display, modifier rule, defaults round trip) passed")
     }
 
+    /// A thread's detail body carries every section the server sends.
+    ///
+    /// Regression: through 0.5.230 the body was `manual_updates` alone, so Project
+    /// Mainstreet (42 sources, 17 milestones, 6 meetings) opened and copied as one note.
+    private static func checkThreadBody() {
+        let raw: [String: JSONValue] = [
+            "id": .string("mth_20260209_120517"),
+            "name": .string("Project Mainstreet"),
+            "meeting_count": .number(6),
+            "topics": .array([.string("project mainstreet"), .string("recapitalization"), .string("deal team"), .string("data room")]),
+            "target_date": .string("2026-05-31"),
+            "first_seen": .string("2026-02-09"),
+            "last_seen": .string("2026-09-01"),
+            "manual_updates": .array([.object([
+                "content": .string("Quilt recapitalization deal team."), "timestamp": .string(""), "source": .string("initial note"),
+            ])]),
+            "stakeholders": .array([.string("Andrew Stern"), .string("Jeremy Sokolic")]),
+            "meetings": .array([
+                .object(["name": .string("Payment Strategies and Marketing Updates Meeting"), "date": .string("2026-05-12")]),
+                .object(["name": .string("0e7f16b4f4fa"), "date": .string("")]),
+            ]),
+            "milestones": .array([.string("Data room opened (2026-03-01)")]),
+            "sources": .array([
+                .string("WB agenda shared (William Blair preliminary agenda)"),
+                .string("Andrew adds Miles to insider group (Slack DM)"),
+            ]),
+        ]
+        let record = ContextRecord.thread(raw)
+        let body = record.body
+        for needle in [
+            "Quilt recapitalization deal team.",
+            "Target: 2026-05-31",
+            "Seen: 2026-02-09 to 2026-09-01",
+            "Topics: project mainstreet, recapitalization, deal team, data room",
+            "Stakeholders (2)\n- Andrew Stern\n- Jeremy Sokolic",
+            "Meetings (2 of 6)\n- 2026-05-12 Payment Strategies and Marketing Updates Meeting\n- 0e7f16b4f4fa",
+            "Milestones (1)\n- Data room opened (2026-03-01)",
+            "Sources (2)\n- WB agenda shared (William Blair preliminary agenda)\n- Andrew adds Miles to insider group (Slack DM)",
+        ] {
+            precondition(body.contains(needle), "thread body is missing: \(needle)")
+        }
+        // Same order as the lens: note, facts, stakeholders, meetings, milestones, sources.
+        let order = ["Quilt recapitalization", "Target:", "Stakeholders (", "Meetings (", "Milestones (", "Sources ("]
+            .map { body.range(of: $0)!.lowerBound }
+        precondition(order == order.sorted(), "thread body sections are out of order")
+        // The subtitle keeps three topics; the body carries all of them.
+        precondition(record.subtitle == "6 meetings · project mainstreet, recapitalization, deal team",
+                     "thread subtitle changed: \(record.subtitle)")
+        // Nothing stored stays empty, so the pane still says "(no stored body)".
+        precondition(ContextRecord.thread(["id": .string("t1"), "name": .string("Empty")]).body.isEmpty,
+                     "thread body must be empty when the thread stores nothing")
+        print("COS Control: thread detail body (every section, counts, order, empty) passed")
+    }
+
     static func main() throws {
+        checkThreadBody()
         checkHotKeyCombo()
         checkLearningModels()
         checkPetRowOutcome()

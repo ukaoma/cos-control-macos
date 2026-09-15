@@ -440,12 +440,58 @@ struct ContextRecord: Identifiable, Equatable {
                 topics.isEmpty ? nil : topics.prefix(3).joined(separator: ", "),
                 raw["is_resolved"]?.bool == true ? "resolved" : nil,
             ].compactMap { $0 }.joined(separator: " · "),
-            body: (raw["manual_updates"]?.array?.compactMap { $0.object?["content"]?.string } ?? []).joined(separator: "\n\n"),
+            body: threadBody(raw, topics: topics, meetingCount: meetings),
             createdAt: raw["last_seen"]?.string ?? raw["created_at"]?.string ?? "",
             filePath: raw["filePath"]?.string,
             meetingCount: meetings,
             isResolved: raw["is_resolved"]?.bool == true
         )
+    }
+
+    /// Everything the server sends for a thread, as one selectable body that Copy as
+    /// Context copies whole.
+    ///
+    /// Through 0.5.230 this was `manual_updates` alone. Stakeholders, meetings,
+    /// milestones and sources crossed the helper and were dropped here, so a thread
+    /// holding 42 sources rendered and copied as its one-line initial note. Section
+    /// order follows the lens (`formatThreadDetailBody` in cos-glasses-app
+    /// display-pages.ts) without its caps. A count is what arrived, not what the
+    /// thread holds, except Meetings, where the server sends both.
+    static func threadBody(_ raw: [String: JSONValue], topics: [String], meetingCount: Int) -> String {
+        func trimmed(_ value: String?) -> String? {
+            guard let text = value?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+            return text
+        }
+        var sections: [String] = []
+        let notes = (raw["manual_updates"]?.array ?? []).compactMap { trimmed($0.object?["content"]?.string) }
+        if !notes.isEmpty { sections.append(notes.joined(separator: "\n\n")) }
+
+        var facts: [String] = []
+        if let target = trimmed(raw["target_date"]?.string) { facts.append("Target: \(target)") }
+        if let goal = trimmed(raw["serves_goal"]?.string) { facts.append("Goal: \(goal)") }
+        let first = trimmed(raw["first_seen"]?.string)
+        let last = trimmed(raw["last_seen"]?.string)
+        if first != nil || last != nil { facts.append("Seen: \(first ?? "?") to \(last ?? "?")") }
+        if !topics.isEmpty { facts.append("Topics: \(topics.joined(separator: ", "))") }
+        if !facts.isEmpty { sections.append(facts.joined(separator: "\n")) }
+
+        func section(_ title: String, _ items: [String], total: Int = 0) {
+            guard !items.isEmpty else { return }
+            let count = total > items.count ? "\(items.count) of \(total)" : "\(items.count)"
+            sections.append("\(title) (\(count))\n" + items.map { "- \($0)" }.joined(separator: "\n"))
+        }
+        func strings(_ key: String) -> [String] {
+            (raw[key]?.array ?? []).compactMap { trimmed($0.string) }
+        }
+        section("Stakeholders", strings("stakeholders"))
+        let meetingRows = (raw["meetings"]?.array ?? []).compactMap { value -> String? in
+            guard let meeting = value.object, let name = trimmed(meeting["name"]?.string) else { return nil }
+            return trimmed(meeting["date"]?.string).map { "\($0) \(name)" } ?? name
+        }
+        section("Meetings", meetingRows, total: meetingCount)
+        section("Milestones", strings("milestones"))
+        section("Sources", strings("sources"))
+        return sections.joined(separator: "\n\n")
     }
 }
 
