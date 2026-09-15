@@ -1796,9 +1796,6 @@ final class ControllerModel: ObservableObject {
     @Published var meetingSuggestionsError: String?
     /// The suggestion whose answer is in flight, so one row at a time is busy.
     @Published var decidingSuggestion: String?
-    /// Set when the suggestions list could not resolve its sides against the
-    /// recent library, so the pane can say why a row shows an id.
-    @Published var meetingSuggestionsUnresolved = false
 
     @Published var meetingEngineStatus = MeetingEngineStatus()
     @Published var meetingEngineBusy = false
@@ -1998,21 +1995,26 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    /// THE MODE IS READ FIRST, then the rows.
+    ///
+    /// Every label on this pane is chosen by the mode: "Merge" writes a record,
+    /// "Looks right" remembers an answer. Loading the rows first and the status
+    /// after meant one render with the rows on screen and no mode, which drew the
+    /// imports surface on a pipeline Mac in advise mode.
     func loadMeetingSuggestions() async {
         meetingSuggestionsLoading = true
         defer { meetingSuggestionsLoading = false }
+        await loadMeetingEngineStatus()
         do {
             let response = try await helper.run(["meeting-suggestions", "--state", "open"], timeout: 60)
             meetingSuggestions = (response.details["suggestions"]?.array ?? []).compactMap(MeetingSuggestion.init)
             meetingSuggestionsState = response.details["routeState"]?.string ?? "ready"
-            meetingSuggestionsUnresolved = response.details["resolved"]?.bool == false && !meetingSuggestions.isEmpty
             meetingSuggestionsError = nil
         } catch {
             meetingSuggestions = []
             meetingSuggestionsState = nil
             meetingSuggestionsError = error.localizedDescription
         }
-        await loadMeetingEngineStatus()
     }
 
     /// Answer one suggestion.
@@ -2063,8 +2065,11 @@ final class ControllerModel: ObservableObject {
     }
 
     /// Arm the confirmation. The switch itself never happens from the picker.
+    ///
+    /// AN UNKNOWN MODE ARMS NOTHING. Switching away from a mode COS could not
+    /// read is a change whose starting point nobody knows.
     func armEngineMode(_ mode: MeetingEngineMode) {
-        guard mode != meetingEngineStatus.mode, mode != .imports else { return }
+        guard let current = meetingEngineStatus.mode, mode != current, mode != .imports else { return }
         pendingEngineMode = mode
     }
 
@@ -2095,6 +2100,50 @@ final class ControllerModel: ObservableObject {
         } catch {
             mergeActionsError = error.localizedDescription
         }
+    }
+
+    /// One action by id, for a merge older than the list's 100-row window.
+    ///
+    /// The list is the cheap read and it is bounded. A detail whose action fell
+    /// off the end of it rendered with no state line and no Undo, which reads as
+    /// "COS did not make this" rather than "COS has not fetched it yet".
+    func loadMergeAction(id: String) async {
+        guard !id.isEmpty, !mergeActions.contains(where: { $0.id == id }) else { return }
+        mergeActionsLoading = true
+        defer { mergeActionsLoading = false }
+        do {
+            let response = try await helper.run(["meeting-action", "--id", id], timeout: 30)
+            let state = MergeRouteState(response.details["routeState"]?.string)
+            guard state == .ready, let action = MergeAction(response.details["action"]) else {
+                mergeActionsError = state == .ready ? nil : response.message
+                return
+            }
+            mergeActions.removeAll { $0.id == action.id }
+            mergeActions.append(action)
+            mergeActionsError = nil
+        } catch {
+            mergeActionsError = error.localizedDescription
+        }
+    }
+
+    /// Whether "Undo all merges" has anything to act on.
+    ///
+    /// The engine's own counts first, because the action list is capped at 100
+    /// rows and an install with more merges than that would otherwise lose the
+    /// affordance exactly when it is most wanted.
+    var canRevertAllMerges: Bool {
+        guard !meetingEngineStatus.routeAbsent else { return false }
+        return meetingEngineStatus.appliedMergeCount > 0
+            || meetingEngineStatus.mergesRemainApplied
+            || mergeActions.contains(where: \.isRevertible)
+    }
+
+    /// Step one of Undo all, from the engine status row. THE SAME TWO-CALL FLOW:
+    /// the dry run names every record it would remove, and only that preview can
+    /// be applied. Rollback tells a person to run this before downgrading, and
+    /// 0.5.230 shipped the code path with no way to reach it.
+    func previewRevertAllMerges() async {
+        await previewMergeRevert(actionId: "")
     }
 
     /// Step one of Undo: ask for the dry run and SHOW it.
@@ -2148,14 +2197,31 @@ final class ControllerModel: ObservableObject {
         await loadLibraryMeetings()
     }
 
-    /// Retry a pipeline apply that failed. The runner re-drives a failed action on
-    /// its next pass, so this is the same trigger a person can reach for now.
+    /// Re-drive an action that failed, or an undo the server parked.
+    ///
+    /// THIS IS A ROUTE, NOT A RELOAD. 0.5.230 shipped a Retry that only refreshed
+    /// the list, under a comment claiming the runner re-drove failed actions on
+    /// its next pass. It did not: a merge that failed twice was terminal from the
+    /// UI, and a deferred undo sat until the server restarted. `POST
+    /// /api/meeting-actions/:id/retry` returns the action to ITS OWN direction's
+    /// pending state, so a failed undo is queued as an undo, and it answers 409
+    /// `apply_in_flight` while a run is going, which is a wait, not a failure.
     func retryMergeAction(_ action: MergeAction) async {
         mergeRevertBusy = true
         defer { mergeRevertBusy = false }
-        await loadMeetingEngineStatus()
+        do {
+            let response = try await helper.run(["meeting-action-retry", "--id", action.id], timeout: 90)
+            let state = MergeRouteState(response.details["routeState"]?.string)
+            mergeRevertNote = response.message
+            if state == .ready, let updated = MergeAction(response.details["action"]) {
+                mergeActions.removeAll { $0.id == updated.id }
+                mergeActions.append(updated)
+            }
+        } catch {
+            mergeRevertNote = error.localizedDescription
+        }
         await loadMergeActions()
-        mergeRevertNote = mergeActions.first { $0.id == action.id }?.stateLine
+        await loadMeetingEngineStatus()
     }
 
     func copyMergeDiagnostics(_ action: MergeAction) {

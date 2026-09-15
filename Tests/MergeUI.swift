@@ -64,11 +64,12 @@ struct MergeUIContract {
                 .object(["kind": .string("fireflies"), "id": .string("01K4EXAMPLE\(index)"),
                          "resolved": .bool(index % 3 != 0), "title": .string("Quilt weekly sync"),
                          "date": .string("2026-09-10"), "time": .string("14:30"),
-                         "duration": .string("47 minutes"), "source": .string("Fireflies")]),
+                         "duration": .string("47 minutes"), "source": .string("cos_operations"),
+                         "recordId": .string("quilt:2026-09:2026-09-10_quilt_weekly.md")]),
                 .object(["kind": .string("g2"), "id": .string("meeting_178913171\(index)_abc"),
                          "resolved": .bool(true), "title": .string("G2 Recording 2026-09-10 1430"),
                          "date": .string("2026-09-10"), "time": .string("14:31"),
-                         "duration": .string("44 minutes"), "source": .string("G2 Glasses")]),
+                         "duration": .string("44 minutes"), "source": .string("standalone_recordings")]),
             ]),
         ])
     }
@@ -88,31 +89,57 @@ struct MergeUIContract {
         model.meetingSuggestions = (0..<40).compactMap { MeetingSuggestion(suggestion($0, wouldMerge: $0 % 2 == 0)) }
         precondition(model.meetingSuggestions.count == 40)
         model.meetingSuggestionsState = "ready"
-        model.meetingSuggestionsUnresolved = true
         model.meetingEngineStatus = MeetingEngineStatus([
             "routeState": .string("ready"), "mode": .string("advise"), "isPipelineMac": .bool(true),
-            "pipelineSees": .object(["mode": .string("advise"), "active": .bool(false), "appliedActions": .number(0)]),
-            "counts": .object(["auto": .number(0), "suggested": .number(40), "none": .number(3),
-                               "reverted": .number(0), "pending": .number(0), "failed": .number(0)]),
+            "pipelineSees": .object(["mode": .string("apply"), "active": .bool(true), "appliedActions": .number(6)]),
+            "mismatch": .bool(true),
+            "mergesRemainApplied": .bool(true),
+            "macClass": .object(["observed": .string("pipeline"), "recorded": .string("standalone"),
+                                 "changed": .bool(true)]),
+            "counts": .object(["auto": .number(6), "suggested": .number(40), "none": .number(3),
+                               "reverted": .number(0), "pending": .number(0), "revertPending": .number(1),
+                               "failed": .number(0)]),
             "firstRun": .object(["scanned": .number(478), "auto": .number(0), "wouldMerge": .number(161),
                                  "suggested": .number(21), "alreadyMerged": .number(198),
                                  "startedAt": .string("2026-09-14T09:00:00.000Z")]),
-            "lastRun": .object(["at": .string("2026-09-14T10:00:00.000Z"), "trigger": .string("tick")]),
+            "lastRun": .object(["at": .string("2026-09-14T10:00:00.000Z"), "trigger": .string("tick"),
+                                "skippedReason": .string("capture_active")]),
         ])
         precondition(model.wouldMergeSuggestions.count == 20 && model.undecidedSuggestions.count == 20)
+        precondition(model.meetingSuggestions[1].sides.first?.line.contains("In your meetings tree") == true,
+                     "the row renders the server's store name as a word, never as cos_operations")
+        precondition(model.meetingEngineStatus.modeKnown)
+        precondition(model.meetingEngineStatus.macClassAlarm != nil
+                     && model.meetingEngineStatus.skippedReasonLine != nil
+                     && model.meetingEngineStatus.mismatchWarning != nil
+                     && model.meetingEngineStatus.mergesRemainAppliedLine != nil,
+                     "the status row's four new lines must all have something to render")
+        precondition(model.canRevertAllMerges, "and Undo all merges must have something to act on")
 
-        // 390 pt is the menu-bar panel's width and the narrowest surface a Control
-        // card renders in; 920x680 is the Activity window.
-        for size in [NSSize(width: 390, height: 640), NSSize(width: 920, height: 680)] {
+        // `MERGE_PANEL_WIDTH` is the menu-bar panel's width and the narrowest
+        // surface a Control card renders in; 920x680 is the Activity window.
+        for size in [NSSize(width: MERGE_PANEL_WIDTH, height: 640), NSSize(width: 920, height: 680)] {
             for dark in [false, true] {
                 let name = "suggestions-\(Int(size.width))"
                 let (window, host) = try render(MeetingSuggestionsPane.canary(model: model), size: size, name: name, output: output, dark: dark)
                 let lists = scrolls(host)
                 precondition(!lists.isEmpty, "40 suggestions need a native scrolling surface at \(Int(size.width)) pt")
                 let list = lists.max { ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0) }!
-                precondition((list.documentView?.frame.height ?? 0) > list.contentSize.height,
+                let documentHeight = list.documentView?.frame.height ?? 0
+                precondition(documentHeight > list.contentSize.height * 3,
                              "all 40 suggestions must scroll inside the view, not push the header off it")
-                precondition(list.contentSize.height >= 88, "the suggestions list lost its visible floor")
+                precondition(list.contentSize.height >= MERGE_LIST_MIN_HEIGHT, "the suggestions list lost its visible floor")
+                // IT MUST ACTUALLY SCROLL. A document taller than its viewport is
+                // the geometry; a clip view that moves is the behaviour, and the
+                // held-samples harness pins it this way because the two came
+                // apart in 0.5.222.
+                let resting = list.contentView.bounds.origin.y
+                list.contentView.scroll(to: NSPoint(x: 0, y: min(400, documentHeight - list.contentSize.height)))
+                list.reflectScrolledClipView(list.contentView)
+                pump()
+                precondition(list.contentView.bounds.origin.y != resting,
+                             "the suggestions list cannot stay frozen on the first rows at \(Int(size.width)) pt")
+                precondition(host.bounds.size == size, "scrolling the suggestions moved the window chrome")
                 window.orderOut(nil)
             }
         }
@@ -122,7 +149,8 @@ struct MergeUIContract {
             "routeState": .string("route_absent"),
         ])
         for dark in [false, true] {
-            let (window, _) = try render(MeetingImportPane.canary(model: model), size: NSSize(width: 390, height: 640),
+            let (window, _) = try render(MeetingImportPane.canary(model: model),
+                                         size: NSSize(width: MERGE_PANEL_WIDTH, height: 640),
                                          name: "import-route-absent", output: output, dark: dark)
             window.orderOut(nil)
         }
@@ -141,7 +169,12 @@ struct MergeUIContract {
             "id": .string("fireflies"), "name": .string("Fireflies"),
             "bundleId": .string("ai.fireflies.desktop"), "installed": .bool(true),
         ]))].compactMap { $0 }
-        for size in [NSSize(width: 390, height: 640), NSSize(width: 920, height: 680)] {
+        precondition(model.meetingImport.planCapLine.contains("Free is 50")
+                     && model.meetingImport.planCapLine.contains("Business has no limit"),
+                     "the plan sentence is BUILT from the caps in force, never typed into the view")
+        precondition(model.meetingImport.windowOptions == [7, 30, 90],
+                     "a server that sends no window list falls back to the three the importer takes")
+        for size in [NSSize(width: MERGE_PANEL_WIDTH, height: 640), NSSize(width: 920, height: 680)] {
             for dark in [false, true] {
                 let (window, _) = try render(MeetingImportPane.canary(model: model), size: size,
                                              name: "import-\(Int(size.width))", output: output, dark: dark)
@@ -166,6 +199,7 @@ struct MergeUIContract {
             "sessionIds": .array([.string("meeting_1789_abc")]),
             "firefliesIds": .array([.string("01K4EXAMPLE")]),
             "at": .string("2026-09-14T10:00:00.000Z"),
+            "direction": .string("apply"),
         ]))!]
         precondition(model.mergeAction(for: mergedRow)?.isRevertible == true)
         model.mergeRevertPreview = MergeRevertPreview([
@@ -178,13 +212,43 @@ struct MergeUIContract {
         for dark in [false, true] {
             let (window, _) = try render(
                 MergedRecordActions(model: model, row: mergedRow, onOpenSource: { _ in })
-                    .frame(width: 390).padding(16),
-                size: NSSize(width: 422, height: 320), name: "undo-preview", output: output, dark: dark, fills: false)
+                    .frame(width: MERGE_PANEL_WIDTH).padding(16),
+                size: NSSize(width: MERGE_PANEL_WIDTH + 32, height: 320),
+                name: "undo-preview", output: output, dark: dark, fills: false)
             window.orderOut(nil)
         }
 
-        print("PASS merge UI: 40 suggestions scroll in place at 390 and 920 pt, light and dark;")
-        print("PASS import card holds every state at 390 pt; the Undo preview renders its caution")
+        // A FAILED UNDO, with its own words and its own Retry. The 0.5.230 card
+        // said "This merge did not finish" and offered a Retry that only
+        // reloaded, so an undo that failed read as a merge to try again.
+        model.mergeRevertPreview = nil
+        model.mergeActions = [MergeAction(.object([
+            "id": .string("a_0123456789abcdef"), "kind": .string("merge"), "tier": .string("auto"),
+            "actionState": .string("failed"), "direction": .string("revert"), "mode": .string("apply"),
+            "error": .string("The meeting sync held the lock."),
+            "sessionIds": .array([.string("meeting_1789_abc")]),
+            "at": .string("2026-09-14T10:00:00.000Z"),
+            "diagnostics": .object(["code": .number(0), "signal": .string("SIGTERM"),
+                                    "timedOut": .bool(true), "elapsedMs": .number(60_000)]),
+        ]))!]
+        precondition(model.mergeAction(for: mergedRow)?.diagnostics.contains("timedOut true") == true,
+                     "Copy diagnostics carries the spawn detail a timeout kill is told apart by")
+        precondition(model.mergeAction(for: mergedRow)?.stateLine.hasPrefix("Undo failed") == true)
+        precondition(model.mergeAction(for: mergedRow)?.retryLabel == "Try the undo again")
+        precondition(model.mergeAction(for: mergedRow)?.isRetryable == true)
+        model.mergeActionsError = "Server stopped"
+        for dark in [false, true] {
+            let (window, _) = try render(
+                MergedRecordActions(model: model, row: mergedRow, onOpenSource: { _ in })
+                    .frame(width: MERGE_PANEL_WIDTH).padding(16),
+                size: NSSize(width: MERGE_PANEL_WIDTH + 32, height: 320),
+                name: "undo-failed", output: output, dark: dark, fills: false)
+            window.orderOut(nil)
+        }
+
+        print("PASS merge UI: 40 suggestions scroll in place at \(Int(MERGE_PANEL_WIDTH)) and 920 pt, light and dark;")
+        print("PASS import card holds every state at \(Int(MERGE_PANEL_WIDTH)) pt; the Undo preview renders its caution;")
+        print("PASS a failed undo says Undo failed and offers Try the undo again")
         print("COS Control: merge fixtures rendered to \(output.path)")
     }
 }

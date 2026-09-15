@@ -7662,8 +7662,31 @@ struct FirefliesKeyState: Sendable, Equatable {
     }
 }
 
+/// One Fireflies plan and the calls a day it allows. `calls` is nil for a plan
+/// with no cap.
+struct FirefliesPlanCap: Sendable, Equatable, Hashable {
+    let id: String
+    let label: String
+    let calls: Int?
+}
+
 /// What the importer is doing, and what it has brought in.
 struct MeetingImportState: Sendable, Equatable {
+    /// THE SERVER OWNS BOTH OF THESE. They are restated here only as the answer
+    /// for a server that does not send them, and `Tests/run.sh` pins the values
+    /// against their definitions:
+    ///   `IMPORT_WINDOW_DAYS`     — server/lib/meeting-import.ts
+    ///   `FIREFLIES_PLAN_CAPS`    — server/lib/fireflies-client.ts
+    /// A number typed into a sentence is the thing that goes stale silently, so
+    /// nothing below renders a literal: the picker and the budget line are both
+    /// built from whichever list is in force.
+    static let fallbackWindowOptions = [7, 30, 90]
+    static let fallbackPlanCaps = [
+        FirefliesPlanCap(id: "free", label: "Free", calls: 50),
+        FirefliesPlanCap(id: "pro", label: "Pro", calls: 500),
+        FirefliesPlanCap(id: "business", label: "Business", calls: nil),
+    ]
+
     var routeAbsent = false
     /// `idle`, `running`, `ok`, `partial`, `invalid_key`, `rate_limited`,
     /// `vendor_down`, `unreachable`, `write_unlisted`, `refused_pipeline`.
@@ -7674,6 +7697,10 @@ struct MeetingImportState: Sendable, Equatable {
     var keepImporting = false
     var planCap = "free"
     var windowDays = 30
+    /// The windows this server accepts, and the plans it knows, as IT reports
+    /// them. Both fall back to the pinned lists above for a server that is quiet.
+    var windowOptions = MeetingImportState.fallbackWindowOptions
+    var planCaps = MeetingImportState.fallbackPlanCaps
     var imported = 0
     var vendorSeen = 0
     var retryable = 0
@@ -7718,11 +7745,22 @@ struct MeetingImportState: Sendable, Equatable {
         }
     }
 
-    /// Calls used against the plan's daily cap, or nothing on Business.
+    /// Calls used against the plan's daily cap, or nothing on an uncapped plan.
     var budgetLine: String {
-        guard let cap = budgetCap else { return "Business plan: no daily call limit." }
+        guard let cap = budgetCap else { return "This plan has no daily call limit." }
         let left = budgetRemaining ?? max(0, cap - budgetCalls)
         return "\(budgetCalls) of \(cap) Fireflies calls used today. \(left) left."
+    }
+
+    /// "Your plan sets how many calls a day COS may make. Free is 50, Pro is 500,
+    /// Business has no limit." BUILT, never typed: the caps belong to the server,
+    /// and a sentence with them spelled into it goes stale without a word.
+    var planCapLine: String {
+        guard !planCaps.isEmpty else { return "Your plan sets how many calls a day COS may make." }
+        let parts = planCaps.map { plan in
+            plan.calls.map { "\(plan.label) is \($0)" } ?? "\(plan.label) has no limit"
+        }
+        return "Your plan sets how many calls a day COS may make. " + parts.joined(separator: ", ") + "."
     }
 
     /// Whether this Mac's server will import at all. False in advise and apply.
@@ -7755,10 +7793,33 @@ struct MeetingImportState: Sendable, Equatable {
         lastRunWritten = lastRun?["written"]?.int ?? 0
         lastRunFinishedAt = lastRun?["finishedAt"]?.string ?? ""
         nextAttemptAt = details["nextAttemptAt"]?.string ?? ""
+        // THE SERVER'S LISTS WIN, and the pinned fallbacks are for a server that
+        // does not send them. Last, because an unknown plan borrows the budget's
+        // own cap, which is decoded above.
+        let servedWindows = (details["windowOptions"]?.array ?? []).compactMap(\.int).filter { $0 > 0 }
+        windowOptions = servedWindows.isEmpty ? Self.fallbackWindowOptions : servedWindows
+        let servedPlans = (details["planCaps"]?.array ?? []).compactMap { entry -> FirefliesPlanCap? in
+            guard let o = entry.object, let id = o["id"]?.string, !id.isEmpty else { return nil }
+            return FirefliesPlanCap(id: id, label: o["label"]?.string ?? id.localizedCapitalized,
+                                    calls: o["calls"]?.int)
+        }
+        planCaps = servedPlans.isEmpty ? Self.fallbackPlanCaps : servedPlans
+        // A picker must hold the value it is bound to, or SwiftUI renders an
+        // empty menu and a person cannot get back to what they had.
+        if !windowOptions.contains(windowDays) { windowOptions = (windowOptions + [windowDays]).sorted() }
+        if !planCaps.contains(where: { $0.id == planCap }) {
+            planCaps.append(FirefliesPlanCap(id: planCap, label: planCap.localizedCapitalized, calls: budgetCap))
+        }
     }
 }
 
 /// One side of a suggestion: a Fireflies meeting or a G2 recording.
+///
+/// THE SERVER RESOLVES BOTH SIDES. Only it can see a pipeline Mac's operations
+/// tree, so `resolved` is its answer and not a guess made from a list Control
+/// happened to hold. 0.5.230 re-derived an imported record id here and joined it
+/// against the recent list, which resolved imported records only: on a pipeline
+/// Mac, the Mac this pane exists for, every Fireflies side rendered as an id.
 struct MeetingSuggestionSide: Identifiable, Sendable, Hashable {
     let kind: String
     let sourceId: String
@@ -7774,19 +7835,40 @@ struct MeetingSuggestionSide: Identifiable, Sendable, Hashable {
 
     var kindLabel: String { kind == "g2" ? "G2 recording" : "Fireflies meeting" }
 
-    /// "2026-09-10 · 14:30 · 47 minutes · Fireflies", or an honest fallback.
+    /// Which library the server found this side in, IN WORDS.
     ///
-    /// THE FALLBACK IS THE POINT. The suggestions route sends canonical ids and no
-    /// meeting fields, so a side outside the library window cannot be described.
-    /// Saying "not in the recent list" beats inventing a title.
+    /// The server sends a store name: `imported`, `cos_operations` or
+    /// `standalone_recordings` (`SuggestionSide` in
+    /// server/lib/meeting-suggestion-sides.ts). Those are not something to put in
+    /// front of a person. Anything else passes through unchanged, so a store COS
+    /// has no word for still reads as itself rather than vanishing.
+    var sourceLabel: String {
+        switch source {
+        case "imported": "Brought in from Fireflies"
+        case "cos_operations": "In your meetings tree"
+        case "standalone_recordings": "Recorded on this Mac"
+        default: source
+        }
+    }
+
+    /// "2026-09-10 · 14:30 · 47 minutes · Fireflies", or nothing.
+    ///
+    /// EMPTY WHEN THERE IS NOTHING TO SAY, and the row leaves it out. A side the
+    /// server could not place already reads as its kind and a short id in
+    /// `displayTitle`, so a fallback here printed that same string twice.
     var line: String {
-        guard resolved else { return "\(kindLabel) \(shortId) · not in the recent list" }
         var parts: [String] = []
         if !date.isEmpty { parts.append(date) }
         if !time.isEmpty { parts.append(time) }
         if !duration.isEmpty { parts.append(duration) }
-        if !source.isEmpty { parts.append(source) }
+        if !sourceLabel.isEmpty { parts.append(sourceLabel) }
         return parts.joined(separator: " · ")
+    }
+
+    /// Shown under an unresolved side, and under nothing else. 0.5.230 put this
+    /// on the pane's header, where it spoke for rows that were perfectly fine.
+    var unresolvedNote: String? {
+        resolved ? nil : "Not in the library"
     }
 
     var displayTitle: String { resolved && !title.isEmpty ? title : "\(kindLabel) \(shortId)" }
@@ -7858,6 +7940,12 @@ struct MergeAction: Identifiable, Sendable, Hashable {
     let tier: String
     /// `pending`, `applied`, `failed`, `revert_pending`, `reverted`.
     let actionState: String
+    /// `apply` or `revert`: which way the last attempt was going.
+    ///
+    /// A FAILED REVERT IS NOT A FAILED MERGE. Without this, "This merge did not
+    /// finish" sat on a row whose undo failed, and Retry read as "try the merge
+    /// again" — the opposite of what the person asked for.
+    let direction: String
     /// `imports` or `apply` — where the effect landed.
     let mode: String
     let outputs: [String]
@@ -7868,6 +7956,13 @@ struct MergeAction: Identifiable, Sendable, Hashable {
     let sessionIds: [String]
     let firefliesIds: [String]
     let legacyParentPath: String
+    /// A failed action's spawn detail, one `name value` line each, as the server
+    /// recorded it: `{ code, signal, timedOut, elapsedMs, stderr?,
+    /// decisionInvalid?, spawnError? }`. "Command failed" with an empty stderr is
+    /// three different bugs (a non-zero exit, a timeout kill, a failed fork) and
+    /// each is its own field, so Copy diagnostics carries all of them rather than
+    /// whichever one happened to be non-empty.
+    let diagnosticLines: [String]
 
     /// A pipeline merge from before the engine. It is real, and COS did not make
     /// it, so COS does not offer to undo it.
@@ -7875,6 +7970,17 @@ struct MergeAction: Identifiable, Sendable, Hashable {
     var isRevertible: Bool { actionState == "applied" && !isLegacy }
     var isFailed: Bool { actionState == "failed" }
     var isPending: Bool { actionState == "pending" || actionState == "revert_pending" }
+    /// An undo the server accepted but has not run yet.
+    var isRevertPending: Bool { actionState == "revert_pending" }
+    var isUndoing: Bool { direction == "revert" }
+
+    /// Retry is offered for a state a person can actually get out of.
+    ///
+    /// `revert_pending` IS ONE OF THEM. The server defers an undo behind the sync
+    /// lock or a drain, and before 6.47.0's retry route nothing re-drove it until
+    /// the server restarted: the row sat there and the mode switch stayed frozen,
+    /// with no affordance anywhere.
+    var isRetryable: Bool { isFailed || isRevertPending }
 
     /// The line a merged detail shows above its Undo.
     var headline: String {
@@ -7885,18 +7991,49 @@ struct MergeAction: Identifiable, Sendable, Hashable {
 
     var stateLine: String {
         switch actionState {
-        case "pending": "Still finishing"
-        case "revert_pending": "Undo running"
-        case "reverted": "Undone"
-        case "failed": error.isEmpty ? "This merge did not finish" : "This merge did not finish: \(error)"
-        default: at.isEmpty ? "Applied" : "Applied \(at)"
+        case "pending": return "Still finishing"
+        // NOT "Undo running". The server parks a deferred undo here when the
+        // meeting sync holds the lock, and a line that claims it is running is
+        // why a stuck row looked like a slow one.
+        case "revert_pending": return "Undo waiting for the meeting sync"
+        case "reverted": return "Undone"
+        case "failed":
+            let head = isUndoing ? "Undo failed" : "This merge did not finish"
+            return error.isEmpty ? head : "\(head): \(error)"
+        default: return at.isEmpty ? "Applied" : "Applied \(at)"
         }
+    }
+
+    /// The direction to display, for a row that may not carry one.
+    ///
+    /// THE SERVER DOES NOT DERIVE THIS, and says why: a retryable failure sends
+    /// an action back to a waiting state, so reading the direction out of the
+    /// state turned the retry of an undo into a redo. This is the display-only
+    /// fallback for a row written BEFORE the field existed, and it derives only
+    /// from the two states nothing but an undo can produce. A legacy `failed`
+    /// row stays an apply, because that is the ambiguous case and guessing it
+    /// wrong is exactly the bug the server's rule exists to prevent.
+    static func resolvedDirection(_ served: String?, actionState: String) -> String {
+        if let served, !served.isEmpty { return served }
+        return (actionState == "revert_pending" || actionState == "reverted") ? "revert" : "apply"
+    }
+
+    /// The word on the button that re-drives it.
+    ///
+    /// FOLLOWS THE DIRECTION, and a parked undo gets its own word: the server
+    /// refuses a retry on anything that is not `failed` with "That one is already
+    /// queued. Give it a moment." so "Try the undo again" would promise something
+    /// the button cannot do. What it CAN do is ask, and say what came back.
+    var retryLabel: String {
+        if isRevertPending { return "Check on it" }
+        return isUndoing ? "Try the undo again" : "Try the merge again"
     }
 
     /// Everything a person would paste into a bug report, and nothing they would
     /// not: ids, state and paths this Mac already shows, never file content.
     var diagnostics: String {
-        var lines = ["action \(id)", "kind \(kind)", "tier \(tier)", "state \(actionState)", "mode \(mode)"]
+        var lines = ["action \(id)", "kind \(kind)", "tier \(tier)", "state \(actionState)",
+                     "direction \(direction)", "mode \(mode)"]
         if attempts > 0 { lines.append("attempts \(attempts)") }
         if !at.isEmpty { lines.append("at \(at)") }
         if !error.isEmpty { lines.append("error \(error)") }
@@ -7904,6 +8041,7 @@ struct MergeAction: Identifiable, Sendable, Hashable {
         if !firefliesIds.isEmpty { lines.append("fireflies \(firefliesIds.joined(separator: ", "))") }
         if !outputs.isEmpty { lines.append("outputs \(outputs.joined(separator: ", "))") }
         if !legacyParentPath.isEmpty { lines.append("pipeline parent \(legacyParentPath)") }
+        lines += diagnosticLines
         return lines.joined(separator: "\n")
     }
 
@@ -7913,6 +8051,8 @@ struct MergeAction: Identifiable, Sendable, Hashable {
         kind = o["kind"]?.string ?? "merge"
         tier = o["tier"]?.string ?? "auto"
         actionState = o["actionState"]?.string ?? "applied"
+        direction = Self.resolvedDirection(o["direction"]?.string,
+                                          actionState: o["actionState"]?.string ?? "applied")
         mode = o["mode"]?.string ?? "imports"
         outputs = o["outputs"]?.array?.compactMap(\.string) ?? []
         recordIds = o["recordIds"]?.array?.compactMap(\.string) ?? []
@@ -7922,6 +8062,28 @@ struct MergeAction: Identifiable, Sendable, Hashable {
         sessionIds = o["sessionIds"]?.array?.compactMap(\.string) ?? []
         firefliesIds = o["firefliesIds"]?.array?.compactMap(\.string) ?? []
         legacyParentPath = o["legacyParentPath"]?.string ?? ""
+        diagnosticLines = Self.diagnosticLines(o["diagnostics"]?.object)
+    }
+
+    /// EVERY FIELD, including the ones that are zero or false.
+    ///
+    /// `code 0` with `timedOut true` is a different bug from `code 1`, and a
+    /// diagnostics block that prints only the truthy fields cannot tell them
+    /// apart. `stderr` is the server's own capture of the child's output and is
+    /// carried whole; nothing here reads a file.
+    static func diagnosticLines(_ diagnostics: [String: JSONValue]?) -> [String] {
+        guard let diagnostics, !diagnostics.isEmpty else { return [] }
+        var lines: [String] = []
+        for key in ["code", "signal", "timedOut", "elapsedMs", "spawnError", "decisionInvalid"] {
+            guard let value = diagnostics[key] else { continue }
+            if let text = value.string { lines.append("\(key) \(text)") }
+            else if let number = value.int { lines.append("\(key) \(number)") }
+            else if let flag = value.bool { lines.append("\(key) \(flag)") }
+        }
+        if let stderr = diagnostics["stderr"]?.string, !stderr.isEmpty {
+            lines.append("stderr \(stderr)")
+        }
+        return lines
     }
 }
 
@@ -7980,7 +8142,10 @@ struct MergeRevertPreview: Sendable, Equatable {
 /// for themselves.
 struct MeetingEngineStatus: Sendable, Equatable {
     var routeAbsent = false
-    var mode: MeetingEngineMode = .imports
+    /// NIL UNTIL THE SERVER SAYS. A failed status load used to leave the default
+    /// `.imports` in place, so a pipeline Mac in advise mode rendered the imports
+    /// surface: "Merge", on a screen where agreeing writes nothing.
+    var mode: MeetingEngineMode?
     var isPipelineMac = false
     var running = false
     /// What `sync_meetings.py --merge-engine-status` answered, or nil when it
@@ -7988,10 +8153,27 @@ struct MeetingEngineStatus: Sendable, Equatable {
     var pipelineSeesMode: String?
     var pipelineSeesActive = false
     var mismatch = false
+    /// Advise mode with merges still applied. THE EXPECTED STATE AFTER A
+    /// ROLLBACK, not a disagreement: `merge_engine_active()` stays true while any
+    /// applied action exists, precisely so the old blend does not restart over
+    /// merged scribes. A FLAG, not a count: the server reports the state, not how
+    /// many (`mergesRemainApplied: true`, docs/meeting-merge-contract.md).
+    var mergesRemainApplied = false
+    /// What kind of Mac the server has OBSERVED this to be, what it had on
+    /// record, and whether those differ. An OBJECT on the wire
+    /// (`{ observed, recorded?, changed }`), and absent on a server without it.
+    var macClassObserved = ""
+    var macClassRecorded = ""
+    var macClassChanged = false
+    /// Why the last run did nothing, when it did nothing.
+    var lastRunSkippedReason = ""
     var auto = 0
     var suggested = 0
     var reverted = 0
     var pending = 0
+    /// SEPARATE FROM `pending` on purpose. An undo that cannot finish is the
+    /// state a mode change is refused on, and folding it into `pending` hid it.
+    var revertPending = 0
     var failed = 0
     var firstRunScanned = 0
     var firstRunAuto = 0
@@ -8005,12 +8187,20 @@ struct MeetingEngineStatus: Sendable, Equatable {
     /// True while the one-per-install first run is still going.
     var firstRunInProgress: Bool { firstRunScanned > 0 && !firstRunCompleted }
 
+    /// False until a status load succeeds. Everything that depends on the mode
+    /// waits on this rather than acting on a default.
+    var modeKnown: Bool { mode != nil }
+
+    /// Merges COS made and has not undone, as the engine counts them.
+    var appliedMergeCount: Int { max(auto + suggested - reverted, 0) }
+
     var modeLine: String {
         if routeAbsent { return "Needs COS server 6.47.0" }
         switch mode {
         case .imports: return "COS merges the meetings it imports"
         case .advise: return "Suggesting only. COS does not change your pipeline's files."
         case .apply: return "Merging into your meetings, archived and revertible"
+        case nil: return "COS could not say how it is merging right now."
         }
     }
 
@@ -8018,10 +8208,68 @@ struct MeetingEngineStatus: Sendable, Equatable {
     ///
     /// A MISMATCH IS THE ONE THING A PERSON CANNOT SEE. The server acting on apply
     /// while the pipeline on the same Mac still believes it owns the blend means
-    /// two writers on one file.
+    /// two writers on one file. The sentence NAMES BOTH SIDES, because "still
+    /// reads advise" without saying what the server reads describes half of a
+    /// disagreement.
     var mismatchWarning: String? {
-        guard mismatch, let seen = pipelineSeesMode else { return nil }
-        return "Your COS pipeline still reads \(seen). Until both agree, leave the mode where it is and run a meeting sync."
+        guard mismatch else { return nil }
+        let seen = (pipelineSeesMode?.isEmpty == false) ? pipelineSeesMode! : "something else"
+        let here = mode?.rawValue ?? "an unknown mode"
+        return "COS's server is on \(here) and your COS pipeline reads \(seen). "
+            + "Until both agree, leave the mode where it is, run a meeting sync, then refresh this."
+    }
+
+    /// Applied merges under advise mode. NOT A MISMATCH: this is what a rollback
+    /// to advise looks like, and the merges stay until someone undoes them.
+    var mergesRemainAppliedLine: String? {
+        guard mergesRemainApplied, mode == .advise else { return nil }
+        return "Merges COS already made stay in your meetings tree. Suggesting only does not undo them, "
+            + "and your pipeline leaves them alone while they are there."
+    }
+
+    /// The one alarm on this row. A Mac that changed class changed which writer
+    /// owns the blend, and nothing else on screen says so.
+    var macClassAlarm: String? {
+        guard macClassChanged else { return nil }
+        let now = Self.macClassLabel(macClassObserved) ?? "a different kind of Mac"
+        let was = Self.macClassLabel(macClassRecorded)
+        let head = was == nil
+            ? "This Mac now looks like \(now) to COS."
+            : "This Mac looked like \(was!) to COS and now looks like \(now)."
+        return head + " How meetings are merged here has changed. Check the mode before the next sync."
+    }
+
+    /// `pipeline` or `standalone` on the wire. Anything else is passed through,
+    /// and an empty one is nothing to say rather than a blank in a sentence.
+    static func macClassLabel(_ raw: String) -> String? {
+        switch raw {
+        case "": nil
+        case "pipeline": "a Mac with the COS pipeline"
+        case "standalone": "a Mac with no COS pipeline"
+        default: raw
+        }
+    }
+
+    /// One sentence per reason the last run did nothing, so a quiet engine is
+    /// legible rather than indistinguishable from a broken one. The five reasons
+    /// are the server's (`lastRun.skippedReason`,
+    /// docs/meeting-merge-contract.md); an unknown one is shown, never swallowed.
+    var skippedReasonLine: String? {
+        guard !lastRunSkippedReason.isEmpty else { return nil }
+        switch lastRunSkippedReason {
+        case "maintenance_deferred":
+            return "Last run did nothing: COS Control was working on the server. COS tries again on its next pass."
+        case "capture_active":
+            return "Last run did nothing: a recording was going. COS waits rather than read a meeting mid-capture."
+        case "inputs_unchanged":
+            return "Last run found nothing new to look at."
+        case "inputs_unreadable":
+            return "Last run stopped: COS could not read some of your meeting files. Check Copy diagnostics on a failed merge."
+        case "too_many_inputs":
+            return "Last run stopped: more meetings changed at once than COS reads in one pass. It continues on its next pass."
+        default:
+            return "Last run did nothing: \(lastRunSkippedReason)."
+        }
     }
 
     var firstRunLine: String? {
@@ -8044,19 +8292,31 @@ struct MeetingEngineStatus: Sendable, Equatable {
 
     init(_ details: [String: JSONValue]) {
         routeAbsent = MergeRouteState(details["routeState"]?.string) == .routeAbsent
-        mode = MeetingEngineMode(rawValue: details["mode"]?.string ?? "") ?? .imports
+        // NO DEFAULT. A body with no mode leaves it unknown, and the pane says so.
+        mode = MeetingEngineMode(rawValue: details["mode"]?.string ?? "")
         isPipelineMac = details["isPipelineMac"]?.bool ?? false
         running = details["running"]?.bool ?? false
+        // `pipelineSees` is null when the pipeline could not be asked, and both
+        // flags stay false: NOT KNOWN IS NOT DISAGREES.
         if let sees = details["pipelineSees"]?.object {
             pipelineSeesMode = sees["mode"]?.string
             pipelineSeesActive = sees["active"]?.bool ?? false
         }
         mismatch = details["mismatch"]?.bool ?? false
+        mergesRemainApplied = details["mergesRemainApplied"]?.bool ?? false
+        // AN OBJECT, and absent on a 6.47.0 server without it. Decoding it as a
+        // string left the observed class empty and the alarm nameless.
+        if let macClass = details["macClass"]?.object {
+            macClassObserved = macClass["observed"]?.string ?? ""
+            macClassRecorded = macClass["recorded"]?.string ?? ""
+            macClassChanged = macClass["changed"]?.bool ?? false
+        }
         let counts = details["counts"]?.object
         auto = counts?["auto"]?.int ?? 0
         suggested = counts?["suggested"]?.int ?? 0
         reverted = counts?["reverted"]?.int ?? 0
         pending = counts?["pending"]?.int ?? 0
+        revertPending = counts?["revertPending"]?.int ?? 0
         failed = counts?["failed"]?.int ?? 0
         if let first = details["firstRun"]?.object {
             firstRunScanned = first["scanned"]?.int ?? 0
@@ -8069,6 +8329,7 @@ struct MeetingEngineStatus: Sendable, Equatable {
         if let last = details["lastRun"]?.object {
             lastRunAt = last["at"]?.string ?? ""
             lastRunTrigger = last["trigger"]?.string ?? ""
+            lastRunSkippedReason = last["skippedReason"]?.string ?? ""
         }
     }
 }

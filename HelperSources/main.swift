@@ -597,6 +597,8 @@ final class COSControlHelper {
         case "meeting-suggestion-confirm": try emitMeetingSuggestionDecision(args: args, verb: "confirm")
         case "meeting-suggestion-dismiss": try emitMeetingSuggestionDecision(args: args, verb: "dismiss")
         case "meeting-actions": try emitMeetingActions(args: args)
+        case "meeting-action": try emitMeetingAction(args: args)
+        case "meeting-action-retry": try emitMeetingActionRetry(args: args)
         case "meeting-action-revert": try emitMeetingActionRevert(args: args)
         case "meeting-actions-revert-all": try emitMeetingActionsRevertAll(args: args)
         case "meeting-engine-status": try emitMeetingEngineStatus()
@@ -11679,69 +11681,57 @@ final class COSControlHelper {
             return
         }
         let rows = (body["suggestions"] as? [[String: Any]]) ?? []
-        // THE SUGGESTION ROUTE SENDS IDS, NOT MEETINGS (verified against
-        // server/lib/meeting-actions.ts `listSuggestions`, which returns the stored
-        // record whole: id, kind, inputs, fingerprints, evidence, state, at). A row
-        // reading "g2:meeting_1789… and ff:01K4…" asks a person to decide something
-        // they cannot see, so the two sides are resolved here against the library.
-        // A side the library cannot reach keeps its id and says so.
-        let index = rows.isEmpty ? [:] : ((try? meetingRowIndex()) ?? [:])
-        let projected = rows.compactMap { Self.suggestionProjection($0, index: index) }
+        let projected = rows.compactMap(Self.suggestionProjection)
         emit(ok: true, message: projected.isEmpty ? "No suggestions" : "Suggestions ready", details: [
             "routeState": "ready",
             "suggestions": projected,
             "count": projected.count,
-            "resolved": index.isEmpty ? false : true,
         ])
     }
 
-    /// Recent library rows, keyed by the two identities a suggestion can name.
+    /// `startMs` in this Mac's own time zone, the way the library's rows read.
     ///
-    /// ONE bounded read, and the bound is the SERVER'S. An unscoped
-    /// `GET /api/meetings` caps at 50 rows (`meetingListLimit(rawLimit, scoped:
-    /// false)`, `server/routes/meetings.ts:191`), so asking for more returns the
-    /// same 50; the number below says what is actually requested rather than
-    /// implying a page that does not exist. Anything older falls outside it and
-    /// renders as an id, which the pane says out loud. A per-suggestion lookup
-    /// would be one request each, against a list a person is reading forty of.
-    private func meetingRowIndex() throws -> [String: [String: Any]] {
-        let answer = try mergeRoute("/api/meetings?limit=50&domain=all", timeout: 30)
-        guard answer.status == 200, let rows = answer.body?["meetings"] as? [[String: Any]] else { return [:] }
-        var index: [String: [String: Any]] = [:]
-        for row in rows {
-            guard let fields = Self.libraryMeetingProjection(row) else { continue }
-            if let session = fields["sessionId"] as? String, !session.isEmpty { index["g2:\(session)"] = fields }
-            if let recordId = fields["recordId"] as? String, !recordId.isEmpty { index[recordId] = fields }
-        }
-        return index
+    /// POSIX locale, because a person's region can otherwise turn "2026-09-10"
+    /// into a Buddhist-calendar year and the pane would show it.
+    static func suggestionSideStamp(startMs: Int) -> (date: String, time: String) {
+        guard startMs > 0 else { return ("", "") }
+        let moment = Date(timeIntervalSince1970: Double(startMs) / 1000)
+        let day = DateFormatter()
+        day.locale = Locale(identifier: "en_US_POSIX")
+        day.dateFormat = "yyyy-MM-dd"
+        let clock = DateFormatter()
+        clock.locale = Locale(identifier: "en_US_POSIX")
+        clock.dateFormat = "HH:mm"
+        return (day.string(from: moment), clock.string(from: moment))
     }
 
-    /// `imported:fireflies:<h16>` — the record id the server mints for one vendor id.
+    /// One side of a suggestion, as the SERVER resolved it.
     ///
-    /// Derived here because a suggestion names only the vendor id while the list
-    /// names the record. Same construction as the server's `importRecordId` over
-    /// `importHash`: the first 16 hex of sha256("fireflies:" + id). It resolves an
-    /// IMPORTED record only; on a pipeline Mac in advise mode the Fireflies meeting
-    /// is an operations scribe whose id is its path, and that side keeps its id.
-    static func importedRecordID(firefliesId: String) -> String {
-        let digest = SHA256.hash(data: Data("fireflies:\(firefliesId)".utf8))
-        let hex = digest.map { String(format: "%02x", $0) }.joined()
-        return "imported:fireflies:\(hex.prefix(16))"
-    }
-
-    /// One side of a suggestion, resolved against the library where it can be.
-    static func suggestionSide(kind: String, id: String, index: [String: [String: Any]]) -> [String: Any] {
-        let key = kind == "g2" ? "g2:\(id)" : importedRecordID(firefliesId: id)
-        var side: [String: Any] = ["kind": kind, "id": id, "resolved": false]
-        guard let row = index[key] else { return side }
-        side["resolved"] = true
-        side["title"] = row["title"] as? String ?? ""
-        side["date"] = row["date"] as? String ?? ""
-        side["time"] = row["time"] as? String ?? ""
-        side["duration"] = row["duration"] as? String ?? ""
-        side["source"] = row["source"] as? String ?? ""
-        side["recordId"] = row["recordId"] as? String ?? ""
-        return side
+    /// 6.47.0 resolves both sides itself, an imported record and an operations
+    /// scribe alike, because only the server can see a pipeline Mac's meetings
+    /// tree. The helper used to re-derive the Fireflies record id here and join it
+    /// against `GET /api/meetings`, which could only ever resolve an IMPORTED
+    /// record: on a pipeline Mac, the Mac this pane exists for, every Fireflies
+    /// side rendered as an id. Formatting is all that happens here now, and a
+    /// field the server did not send stays empty rather than becoming an
+    /// invented one.
+    static func suggestionSide(_ raw: [String: Any]) -> [String: Any]? {
+        guard let kind = raw["kind"] as? String, !kind.isEmpty,
+              let id = raw["id"] as? String, !id.isEmpty else { return nil }
+        let stamp = Self.suggestionSideStamp(startMs: Self.meetingCount(raw["startMs"]))
+        let minutes = Self.meetingCount(raw["durationMinutes"])
+        return [
+            "kind": kind,
+            "id": id,
+            "resolved": raw["resolved"] as? Bool ?? false,
+            "title": raw["title"] as? String ?? "",
+            "source": raw["source"] as? String ?? "",
+            "recordId": raw["recordId"] as? String ?? "",
+            "date": raw["date"] as? String ?? stamp.date,
+            "time": raw["time"] as? String ?? stamp.time,
+            "duration": raw["duration"] as? String
+                ?? (minutes > 0 ? "\(minutes) minute\(minutes == 1 ? "" : "s")" : ""),
+        ]
     }
 
     /// One suggestion row, flattened for the panel.
@@ -11749,13 +11739,21 @@ final class COSControlHelper {
     /// EXTRACTED so it can be tested. Inline it would have no coverage: the Swift
     /// side builds its fixtures from literals and would never run this code, and a
     /// dropped field surfaces as an empty string rather than as an error.
-    static func suggestionProjection(_ row: [String: Any], index: [String: [String: Any]] = [:]) -> [String: Any]? {
+    static func suggestionProjection(_ row: [String: Any]) -> [String: Any]? {
         guard let id = row["id"] as? String, !id.isEmpty else { return nil }
         let inputs = row["inputs"] as? [String: Any]
         let evidence = row["evidence"] as? [String: Any]
         let sessionIds = (inputs?["sessionIds"] as? [String]) ?? []
         let firefliesIds = (inputs?["firefliesIds"] as? [String]) ?? []
         let spans = (evidence?["spans"] as? [[String: Any]]) ?? []
+        // TOLERANT, NEVER INVENTIVE. A 6.47.0 server from before side resolution
+        // sends ids and no `sides`; those ids become unresolved sides, which the
+        // pane already has a line for. Nothing here fabricates a title.
+        let served = (row["sides"] as? [[String: Any]]) ?? []
+        let sides: [[String: Any]] = served.isEmpty
+            ? firefliesIds.map { ["kind": "fireflies", "id": $0, "resolved": false] }
+                + sessionIds.map { ["kind": "g2", "id": $0, "resolved": false] }
+            : served
         return [
             "id": id,
             "kind": row["kind"] as? String ?? "merge",
@@ -11767,10 +11765,9 @@ final class COSControlHelper {
             "spans": spans.count,
             "at": row["at"] as? String ?? "",
             "decidedAt": row["decidedAt"] as? String ?? "",
-            // Fireflies first: it is the meeting a person recognizes, and the G2
-            // recordings are what COS wants to fold into it.
-            "sides": firefliesIds.map { Self.suggestionSide(kind: "fireflies", id: $0, index: index) }
-                + sessionIds.map { Self.suggestionSide(kind: "g2", id: $0, index: index) },
+            // The server orders them Fireflies first: it is the meeting a person
+            // recognizes, and the G2 recordings are what COS folds into it.
+            "sides": sides.compactMap(Self.suggestionSide),
         ]
     }
 
@@ -11826,13 +11823,78 @@ final class COSControlHelper {
         }
     }
 
+    /// One action by id, for a merge older than the list's 100-row window.
+    ///
+    /// A detail whose action is off the end of the list used to render with no
+    /// state line and no Undo, which reads as "COS did not make this" rather than
+    /// "COS has not fetched it".
+    private func emitMeetingAction(args: [String]) throws {
+        guard let id = option("--id", in: args), Self.validMergeActionID(id) else {
+            throw HelperError.message("--id must be an action id (a_ plus 16 hex)")
+        }
+        try emitMergeRead("/api/meeting-actions/\(queryEscape(id))", message: "Action ready",
+                          absentWhat: "show one merge", timeout: 20) { body in
+            let raw = (body["action"] as? [String: Any]) ?? body
+            guard let action = Self.mergeActionProjection(raw) else { return ["id": id] }
+            return ["id": id, "action": action]
+        }
+    }
+
+    /// Re-drive an action that failed.
+    ///
+    /// THE SERVER DECIDES, AND IT KNOWS THE DIRECTION. A failed revert returns to
+    /// its own pending state rather than re-applying the merge it was undoing,
+    /// which is why this is a route and not a reload: 0.5.230 shipped a Retry
+    /// that only refreshed, with a comment claiming the runner re-drove failed
+    /// actions on its next pass. It did not, so a merge that failed twice was
+    /// terminal from the UI.
+    private func emitMeetingActionRetry(args: [String]) throws {
+        guard let id = option("--id", in: args), Self.validMergeActionID(id) else {
+            throw HelperError.message("--id must be an action id (a_ plus 16 hex)")
+        }
+        let answer = try mergeRoute("/api/meeting-actions/\(queryEscape(id))/retry",
+                                    method: "POST", payload: [:], timeout: 60)
+        if isRouteAbsent(answer) {
+            emit(ok: true, message: Self.meetingMergeUpdateMessage(), details: [
+                "routeState": "route_absent", "needs": Self.meetingMergeNeeds, "what": "try a merge again",
+            ])
+            return
+        }
+        guard answer.status == 200, let body = answer.body else {
+            let refusal = Self.mergeRouteRefusal(answer.body, status: answer.status)
+            emit(ok: true, message: refusal.message, details: [
+                "routeState": "refused", "refusal": refusal.code, "status": answer.status, "id": id,
+            ])
+            return
+        }
+        // THE ROUTE ANSWERS WITH THE NEW STATE AND THE DIRECTION, not with the
+        // record: `retryAction` returns `{ ok, state, direction }`
+        // (server/routes/meeting-actions.ts, server/lib/meeting-actions.ts).
+        // Reading a nested `action` here would find nothing and report every
+        // retry as a merge, including the undos.
+        let direction = body["direction"] as? String ?? ""
+        var details: [String: Any] = ["routeState": "ready", "id": id, "direction": direction]
+        if let state = body["state"] as? String, !state.isEmpty { details["actionState"] = state }
+        // Tolerated, not required: a server that also sends the whole row saves
+        // Control a reload.
+        if let action = (body["action"] as? [String: Any]).flatMap(Self.mergeActionProjection) {
+            details["action"] = action
+        }
+        emit(ok: true, message: Self.retryQueuedMessage(direction: direction), details: details)
+    }
+
+    /// What Retry says it queued. An undo that failed is queued as an UNDO.
+    static func retryQueuedMessage(direction: String) -> String {
+        direction == "revert" ? "Undo queued again" : "Merge queued again"
+    }
+
     /// One action record, flattened for the panel. Extracted for the same reason
     /// `suggestionProjection` is.
     static func mergeActionProjection(_ row: [String: Any]) -> [String: Any]? {
         guard let id = row["id"] as? String, !id.isEmpty else { return nil }
         let inputs = row["inputs"] as? [String: Any]
         let outputs = (row["outputs"] as? [[String: Any]]) ?? []
-        return [
+        var fields: [String: Any] = [
             "id": id,
             "kind": row["kind"] as? String ?? "merge",
             "tier": row["tier"] as? String ?? "auto",
@@ -11848,6 +11910,20 @@ final class COSControlHelper {
             "pieceIndex": Self.meetingCount(row["pieceIndex"]),
             "legacyParentPath": row["legacyParentPath"] as? String ?? "",
         ]
+        // PASSED THROUGH, NEVER DEFAULTED. `direction` is absent on a row written
+        // before the field existed, and the Swift side derives a display value
+        // from the state for exactly the two states only an undo can produce.
+        // Stamping "apply" here would erase that distinction before it arrives.
+        if let direction = row["direction"] as? String, !direction.isEmpty {
+            fields["direction"] = direction
+        }
+        // `{ code, signal, timedOut, elapsedMs, stderr?, decisionInvalid?,
+        // spawnError? }`. "Command failed" with an empty stderr is three separate
+        // bugs, so the whole block travels rather than the one readable field.
+        if let diagnostics = row["diagnostics"] as? [String: Any], !diagnostics.isEmpty {
+            fields["diagnostics"] = diagnostics
+        }
+        return fields
     }
 
     /// 64 lowercase hex. The preview hash is the whole point of the two-call
@@ -17540,33 +17616,65 @@ final class COSControlHelper {
                    && !Self.validPreviewHash(String(repeating: "A", count: 64)),
                    "a preview hash is exactly 64 lowercase hex, or the confirm is refused here")
 
-        // The record id a suggestion's Fireflies side resolves to. Same
-        // construction as the server's importRecordId over importHash.
-        try expect(Self.importedRecordID(firefliesId: "01K4EXAMPLE") == "imported:fireflies:"
-                   + Self.sha256Hex("fireflies:01K4EXAMPLE").prefix(16),
-                   "an imported record id is the first 16 hex of sha256(\"fireflies:\" + id)")
-
-        let suggestionIndex: [String: [String: Any]] = [
-            "g2:meeting_1789_abc": ["title": "Quilt weekly", "date": "2026-09-10", "time": "14:30",
-                                    "duration": "47 minutes", "source": "G2 Glasses", "recordId": "standalone:meeting_1789_abc"],
-        ]
+        // BOTH SIDES COME FROM THE SERVER. Control re-deriving the Fireflies
+        // record id and joining `GET /api/meetings` could only resolve an
+        // IMPORTED record, so on a pipeline Mac every Fireflies side rendered as
+        // an id. The helper formats what the server resolved and invents nothing.
         let suggestion = Self.suggestionProjection([
             "id": "s_0123456789abcdef", "kind": "would_merge", "state": "open",
             "inputs": ["sessionIds": ["meeting_1789_abc"], "firefliesIds": ["01K4EXAMPLE"]],
             "evidence": ["K1": 41, "K2": 3],
             "at": "2026-09-14T10:00:00.000Z",
-        ], index: suggestionIndex)
+            "sides": [
+                ["kind": "fireflies", "id": "01K4EXAMPLE", "resolved": true, "title": "Quilt weekly",
+                 "startMs": 1_789_050_600_000, "durationMinutes": 47, "source": "Fireflies",
+                 "recordId": "quilt:2026-09:2026-09-10_quilt_weekly.md"],
+                ["kind": "g2", "id": "meeting_1789_abc", "resolved": false],
+            ],
+        ])
         try expect(suggestion?["k1"] as? Int == 41 && suggestion?["k2"] as? Int == 3,
                    "the evidence a person is being asked to weigh survives the projection")
         try expect(suggestion?["suggestionState"] as? String == "open",
                    "a suggestion's own state is not clobbered by the helper's route state")
         let sides = (suggestion?["sides"] as? [[String: Any]]) ?? []
         try expect(sides.count == 2 && sides.first?["kind"] as? String == "fireflies",
-                   "the Fireflies meeting comes first: it is the one a person recognizes")
-        try expect(sides.last?["resolved"] as? Bool == true && sides.last?["title"] as? String == "Quilt weekly",
-                   "a G2 side inside the recent list is resolved to its title")
-        try expect(sides.first?["resolved"] as? Bool == false && sides.first?["id"] as? String == "01K4EXAMPLE",
-                   "a side the library cannot reach keeps its id rather than inventing a title")
+                   "the server's own order survives: the Fireflies meeting is the one a person recognizes")
+        try expect(sides.first?["resolved"] as? Bool == true && sides.first?["title"] as? String == "Quilt weekly"
+                   && sides.first?["recordId"] as? String == "quilt:2026-09:2026-09-10_quilt_weekly.md",
+                   "an operations scribe resolves as a Fireflies side, which the old record-id join could never do")
+        try expect(sides.first?["duration"] as? String == "47 minutes",
+                   "durationMinutes becomes the sentence the pane shows")
+        try expect((sides.first?["date"] as? String ?? "").count == 10
+                   && (sides.first?["time"] as? String ?? "").count == 5,
+                   "startMs becomes a date and a clock time")
+        try expect(sides.last?["resolved"] as? Bool == false && sides.last?["title"] as? String == ""
+                   && sides.last?["id"] as? String == "meeting_1789_abc",
+                   "a side the server could not resolve keeps its id and gains no invented title")
+        // A 6.47.0 server from before side resolution sends ids and no `sides`.
+        let older = Self.suggestionProjection([
+            "id": "s_0123456789abcdef", "kind": "merge", "state": "open",
+            "inputs": ["sessionIds": ["meeting_1789_abc"], "firefliesIds": ["01K4EXAMPLE"]],
+        ])
+        let olderSides = (older?["sides"] as? [[String: Any]]) ?? []
+        try expect(olderSides.count == 2 && olderSides.allSatisfy { $0["resolved"] as? Bool == false },
+                   "a server that sends no sides degrades to two unresolved ids, never to an empty row")
+        try expect(olderSides.first?["kind"] as? String == "fireflies",
+                   "the fallback keeps Fireflies first, the same order the server uses")
+        try expect(Self.suggestionSide(["kind": "g2"]) == nil && Self.suggestionSide(["id": "x"]) == nil,
+                   "a side with no kind or no id is dropped rather than rendered blank")
+        // THE DEFAULT, exercised on a side that carries no `resolved` key at all.
+        // Every case above states it explicitly, so the default was unreached and
+        // flipping it to true changed nothing any test could see (QA round 1).
+        try expect(Self.suggestionSide(["kind": "g2", "id": "meeting_1789_abc"])?["resolved"] as? Bool == false,
+                   "a side the server said nothing about is NOT resolved; silence must not read as a match")
+        try expect(Self.suggestionSideStamp(startMs: 0) == ("", ""),
+                   "no start time renders as nothing, never as 1970")
+        let sideStampReader = DateFormatter()
+        sideStampReader.locale = Locale(identifier: "en_US_POSIX")
+        sideStampReader.dateFormat = "yyyy-MM-dd HH:mm"
+        let sideStamp = Self.suggestionSideStamp(startMs: 1_789_050_600_000)
+        try expect(sideStampReader.date(from: "\(sideStamp.date) \(sideStamp.time)")?.timeIntervalSince1970
+                   == 1_789_050_600, "a formatted side stamp parses back to the instant the server sent")
         try expect(Self.suggestionProjection(["kind": "merge"]) == nil, "a suggestion with no id is dropped")
         try expect((Self.suggestionProjection(["id": "s_1", "kind": "split",
                                                "evidence": ["K1": 0, "K2": 0, "spans": [["startS": 0, "endS": 60], ["startS": 60, "endS": 120]]]])?["spans"] as? Int) == 2,
@@ -17583,7 +17691,35 @@ final class COSControlHelper {
         try expect((action?["outputs"] as? [String]) == ["quilt/meetings/2026-09/x.md"]
                    && (action?["recordIds"] as? [String]) == ["blended:abc"],
                    "an action's outputs and record ids both survive")
+        // PASSED THROUGH, NEVER DEFAULTED. Stamping "apply" on a row written
+        // before the field existed would erase the one distinction the Swift
+        // side derives from the state.
+        try expect(action?["direction"] == nil,
+                   "a row with no direction carries none; the helper must not invent one")
+        try expect(Self.mergeActionProjection(["id": "a_1", "direction": "revert"])?["direction"] as? String == "revert",
+                   "a revert carries its direction, so a failure says Undo failed rather than Merge failed")
+        try expect(Self.mergeActionProjection(["id": "a_1", "direction": ""])?["direction"] == nil,
+                   "an empty direction is no direction, not a direction of empty string")
+        // THE WHOLE DIAGNOSTICS BLOCK TRAVELS. "Command failed" with an empty
+        // stderr is a non-zero exit, a timeout kill and a failed fork, and the
+        // three are told apart only by fields that are individually falsy.
+        let diagnosed = Self.mergeActionProjection([
+            "id": "a_2", "state": "failed",
+            "diagnostics": ["code": 0, "signal": "SIGTERM", "timedOut": true, "elapsedMs": 60_000],
+        ])
+        let block = diagnosed?["diagnostics"] as? [String: Any]
+        try expect(block?["code"] as? Int == 0 && block?["timedOut"] as? Bool == true
+                   && block?["signal"] as? String == "SIGTERM" && block?["elapsedMs"] as? Int == 60_000,
+                   "a timeout kill keeps every field, including the zero exit code that makes it one")
+        try expect(Self.mergeActionProjection(["id": "a_3"])?["diagnostics"] == nil,
+                   "an action that did not fail carries no diagnostics block")
+        try expect(Self.mergeActionProjection(["id": "a_4", "diagnostics": [String: Any]()])?["diagnostics"] == nil,
+                   "an empty block is no block")
         try expect(Self.mergeActionProjection(["kind": "merge"]) == nil, "an action with no id is dropped")
+        try expect(Self.retryQueuedMessage(direction: "revert") == "Undo queued again"
+                   && Self.retryQueuedMessage(direction: "apply") == "Merge queued again"
+                   && Self.retryQueuedMessage(direction: "") == "Merge queued again",
+                   "Retry says which direction it queued, because a failed undo must not retry as a merge")
 
         // A DERIVED ROW IS NOT A CAPTURE. Its `source` reads "G2 Glasses +
         // Fireflies", so the string test says yes and is wrong: it holds no

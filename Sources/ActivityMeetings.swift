@@ -596,7 +596,10 @@ struct MeetingLibraryDetailPane: View {
 /// mistake one layer out — the card escapes instead of the list. Nothing here
 /// sets a minWidth at all; rows wrap, and `Tests/run-merge-ui.sh` renders every
 /// surface at exactly this width to prove it holds.
-let MERGE_CARD_MIN_WIDTH: CGFloat = 390
+/// The width `Tests/run-merge-ui.sh` renders every one of these surfaces at.
+/// Read there, not here: it is the number the layout is proven against, and a
+/// constant nothing uses is a claim nothing checks.
+let MERGE_PANEL_WIDTH: CGFloat = 390
 /// Floor for a scrolling server-fed list, matching the Speakers panes.
 let MERGE_LIST_MIN_HEIGHT: CGFloat = 88
 
@@ -795,19 +798,22 @@ struct MeetingImportPane: View {
                 .foregroundStyle(.secondary)
             // Wraps rather than truncating: at 390 pt a picker row plus a button
             // plus a plan menu does not fit on one line.
+            // NEITHER LIST IS TYPED HERE. The windows the server accepts and the
+            // plans it knows are the server's, and a menu built from literals
+            // goes stale silently when it changes them.
             ChipFlowLayout(spacing: 8) {
                 Picker("How far back", selection: $model.meetingImportWindow) {
-                    Text("Last 7 days").tag(7)
-                    Text("Last 30 days").tag(30)
-                    Text("Last 90 days").tag(90)
+                    ForEach(model.meetingImport.windowOptions, id: \.self) { days in
+                        Text("Last \(days) days").tag(days)
+                    }
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
                 .frame(maxWidth: 160)
                 Picker("Plan", selection: planBinding) {
-                    Text("Free").tag("free")
-                    Text("Pro").tag("pro")
-                    Text("Business").tag("business")
+                    ForEach(model.meetingImport.planCaps, id: \.id) { plan in
+                        Text(plan.label).tag(plan.id)
+                    }
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
@@ -817,7 +823,7 @@ struct MeetingImportPane: View {
                     .controlSize(.small)
                     .disabled(!model.firefliesKey.configured || model.meetingImport.running || model.meetingImportLoading)
             }
-            Text("Your plan sets how many calls a day COS may make. Free is 50, Pro is 500, Business has no limit.")
+            Text(model.meetingImport.planCapLine)
                 .font(COSType.body(10.5))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -869,10 +875,32 @@ struct MeetingEngineStatusRow: View {
             Text(model.meetingEngineStatus.modeLine)
                 .font(COSType.body(12))
                 .fixedSize(horizontal: false, vertical: true)
+            // THE ONE ALARM ON THIS ROW. A Mac that changed kind changed which
+            // writer owns the blend, and nothing else on screen says so.
+            if let alarm = model.meetingEngineStatus.macClassAlarm {
+                Label(alarm, systemImage: "exclamationmark.octagon")
+                    .font(COSType.body(11, weight: .medium))
+                    .foregroundStyle(COSPalette.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let warning = model.meetingEngineStatus.mismatchWarning {
-                Label(warning, systemImage: "exclamationmark.triangle")
+                VStack(alignment: .leading, spacing: 5) {
+                    Label(warning, systemImage: "exclamationmark.triangle")
+                        .font(COSType.body(11))
+                        .foregroundStyle(COSPalette.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Check again") { Task { await model.loadMeetingEngineStatus() } }
+                        .buttonStyle(COSQuietButtonStyle())
+                        .controlSize(.small)
+                        .disabled(model.meetingEngineBusy)
+                }
+            }
+            // ADVISE WITH MERGES STILL APPLIED IS THE EXPECTED POST-ROLLBACK
+            // STATE, not a disagreement. It reads as a plain fact, not a warning.
+            if let remain = model.meetingEngineStatus.mergesRemainAppliedLine {
+                Text(remain)
                     .font(COSType.body(11))
-                    .foregroundStyle(COSPalette.amber)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let first = model.meetingEngineStatus.firstRunLine {
@@ -889,9 +917,19 @@ struct MeetingEngineStatusRow: View {
                     .font(COSType.body(10.5))
                     .foregroundStyle(.tertiary)
             }
-            if model.meetingEngineStatus.isPipelineMac, !model.meetingEngineStatus.routeAbsent {
+            // A RUN THAT DID NOTHING SAYS WHY. Silence and a broken engine read
+            // the same on this row otherwise.
+            if let skipped = model.meetingEngineStatus.skippedReasonLine {
+                Text(skipped)
+                    .font(COSType.body(10.5))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if model.meetingEngineStatus.isPipelineMac, !model.meetingEngineStatus.routeAbsent,
+               model.meetingEngineStatus.modeKnown {
                 modeSwitch
             }
+            revertAll
             if let error = model.meetingEngineError {
                 Text(error)
                     .font(COSType.body(11))
@@ -927,10 +965,57 @@ struct MeetingEngineStatusRow: View {
         ]
     }
 
+    /// Undo every merge COS made, behind the SAME preview-then-apply flow a single
+    /// Undo uses. Rollback tells a person to run this before downgrading, and
+    /// 0.5.230 shipped the whole code path with nothing anywhere that reached it.
+    @ViewBuilder
+    private var revertAll: some View {
+        if model.canRevertAllMerges {
+            if let preview = model.mergeRevertPreview, preview.isAll {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(preview.summary)
+                        .font(COSType.body(11.5))
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let caution = preview.caution {
+                        Label(caution, systemImage: "exclamationmark.triangle")
+                            .font(COSType.body(11))
+                            .foregroundStyle(COSPalette.amber)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Text("Every G2 recording and Fireflies meeting stays where it is.")
+                        .font(COSType.body(10.5))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ChipFlowLayout(spacing: 8) {
+                        Button("Undo them all") { Task { await model.applyMergeRevert() } }
+                            .buttonStyle(COSQuietButtonStyle())
+                            .controlSize(.small)
+                            .disabled(model.mergeRevertBusy)
+                        Button("Cancel") { model.cancelMergeRevert() }
+                            .buttonStyle(COSTextButtonStyle())
+                            .controlSize(.small)
+                        if model.mergeRevertBusy { ProgressView().controlSize(.mini) }
+                    }
+                }
+            } else {
+                Button("Undo all merges") { Task { await model.previewRevertAllMerges() } }
+                    .buttonStyle(COSTextButtonStyle(tone: .destructive))
+                    .controlSize(.small)
+                    .disabled(model.mergeRevertBusy)
+            }
+            if let note = model.mergeRevertNote, model.mergeRevertPreview == nil {
+                Text(note)
+                    .font(COSType.body(10.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     private var modeSwitch: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Text(model.meetingEngineStatus.mode.switchTitle ?? "")
+                Text(model.meetingEngineStatus.mode?.switchTitle ?? "")
                     .font(COSType.body(11.5, weight: .medium))
                 Spacer(minLength: 4)
                 if model.meetingEngineBusy {
@@ -998,18 +1083,32 @@ struct MeetingSuggestionsPane: View {
                     .buttonStyle(COSQuietButtonStyle())
                     .controlSize(.small)
             }
-            // ADVISE MODE SAYS SO, IN THE HEADER. An answer that changes nothing
-            // must not look like one that did.
-            if model.meetingEngineStatus.mode != .imports {
-                Text("COS does not change your pipeline's files in this version. Your answers are saved.")
+            // THE MODE DECIDES EVERY LABEL BELOW, so when it is not known the
+            // header says that and the agree buttons stay off. 0.5.230 defaulted
+            // an unread mode to imports and drew "Merge" on a pane where agreeing
+            // writes nothing.
+            if let engineError = model.meetingEngineError, !model.meetingEngineStatus.modeKnown {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("COS could not say how it is merging right now, so answering is off.")
+                        .font(COSType.body(11))
+                        .foregroundStyle(COSPalette.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(engineError)
+                        .font(COSType.body(10.5))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Check again") { Task { await model.loadMeetingEngineStatus() } }
+                        .buttonStyle(COSQuietButtonStyle())
+                        .controlSize(.small)
+                        .disabled(model.meetingEngineBusy)
+                }
+            } else if model.meetingEngineStatus.modeKnown, model.meetingEngineStatus.mode != .imports {
+                // ADVISE MODE SAYS SO, IN THE HEADER. An answer that changes
+                // nothing must not look like one that did. "in advise mode", not
+                // "in this version": the version is not what decides it.
+                Text("COS does not change your pipeline's files in advise mode. Your answers are saved.")
                     .font(COSType.body(11))
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if model.meetingSuggestionsUnresolved {
-                Text("Some of these are older than the recent list, so they show a recording id instead of a title.")
-                    .font(COSType.body(10.5))
-                    .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -1079,34 +1178,56 @@ struct MeetingSuggestionsPane: View {
                 Text(suggestion.headline)
                     .font(COSType.body(11.5, weight: .semibold))
             }
+            // BOTH SIDES COME FROM THE SERVER, and only a side it could not place
+            // in the library carries the caption. 0.5.230 put one sentence on the
+            // header that spoke for every row, resolved or not.
             ForEach(suggestion.sides) { side in
                 VStack(alignment: .leading, spacing: 1) {
                     Text(side.displayTitle)
                         .font(COSType.body(12))
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(side.line)
-                        .font(COSType.mono(10))
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if !side.line.isEmpty {
+                        Text(side.line)
+                            .font(COSType.mono(10))
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let note = side.unresolvedNote {
+                        Text(note)
+                            .font(COSType.body(10))
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             Text(suggestion.evidenceLine)
                 .font(COSType.body(11))
                 .foregroundStyle(.secondary)
+            // A SPLIT IS ONLY ACCEPTABLE WHERE THE SERVER CAN WRITE PIECES. In
+            // apply mode it refuses with `split_not_supported_in_apply_mode`, so
+            // the button is not offered and the row says why.
+            if splitIsUnavailable(suggestion) {
+                Text("Splits arrive as suggestions in apply mode.")
+                    .font(COSType.body(10.5))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             ChipFlowLayout(spacing: 8) {
-                Button(agreeLabel(suggestion)) {
-                    Task { await model.decideSuggestion(suggestion, agree: true) }
+                if !splitIsUnavailable(suggestion) {
+                    Button(agreeLabel(suggestion)) {
+                        Task { await model.decideSuggestion(suggestion, agree: true) }
+                    }
+                    .buttonStyle(COSQuietButtonStyle())
+                    .controlSize(.small)
+                    .disabled(model.decidingSuggestion != nil || !model.meetingEngineStatus.modeKnown)
                 }
-                .buttonStyle(COSQuietButtonStyle())
-                .controlSize(.small)
-                .disabled(model.decidingSuggestion != nil)
                 Button("Not the same meeting") {
                     Task { await model.decideSuggestion(suggestion, agree: false) }
                 }
                 .buttonStyle(COSTextButtonStyle(tone: .destructive))
                 .controlSize(.small)
-                .disabled(model.decidingSuggestion != nil)
+                .disabled(model.decidingSuggestion != nil || !model.meetingEngineStatus.modeKnown)
                 if model.decidingSuggestion == suggestion.id {
                     ProgressView().controlSize(.mini)
                 }
@@ -1122,6 +1243,13 @@ struct MeetingSuggestionsPane: View {
     /// about later.
     private func agreeLabel(_ suggestion: MeetingSuggestion) -> String {
         model.meetingEngineStatus.mode == .imports ? "Merge" : "Looks right"
+    }
+
+    /// True for a split the server will refuse. Imports mode writes the pieces;
+    /// apply mode answers 409 `split_not_supported_in_apply_mode`, and a button
+    /// that can only fail is worse than one that is not there.
+    private func splitIsUnavailable(_ suggestion: MeetingSuggestion) -> Bool {
+        suggestion.isSplit && model.meetingEngineStatus.mode != .imports
     }
 
     private func emptyState(_ title: String, detail: String, button: (String, () -> Void)?) -> some View {
@@ -1167,7 +1295,13 @@ struct MergedRecordActions: View {
                     .foregroundStyle(action.isFailed ? COSPalette.danger : .secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if let preview = model.mergeRevertPreview, preview.actionId == (row.actionId ?? "") {
+            if row.isSplitPiece {
+                Text("Split from a longer recording")
+                    .font(COSType.body(10.5))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let preview = model.mergeRevertPreview, !preview.isAll, preview.actionId == (row.actionId ?? "") {
                 previewBlock(preview)
             } else {
                 controls
@@ -1178,10 +1312,24 @@ struct MergedRecordActions: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // A FAILED LOAD IS WHY THE CONTROLS ARE MISSING, and until now it was
+            // recorded in a field nothing rendered: the card silently looked like
+            // a record COS had not made.
+            if let error = model.mergeActionsError {
+                Text(error)
+                    .font(COSType.body(10.5))
+                    .foregroundStyle(COSPalette.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             sourceLinks
         }
         .mergeCard()
-        .task(id: row.actionId) { if model.mergeActions.isEmpty { await model.loadMergeActions() } }
+        // The list is capped at 100 rows, so an older merge is not in it. Fetch
+        // THIS action by id rather than leaving the card blank.
+        .task(id: row.actionId) {
+            if model.mergeActions.isEmpty { await model.loadMergeActions() }
+            if let id = row.actionId, !id.isEmpty { await model.loadMergeAction(id: id) }
+        }
     }
 
     private var headline: String {
@@ -1212,8 +1360,10 @@ struct MergedRecordActions: View {
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if let action, action.isFailed {
-                Button("Retry") { Task { await model.retryMergeAction(action) } }
+            // RETRY IS A ROUTE AND IT KNOWS THE DIRECTION. A parked undo gets one
+            // too: before 6.47.0 nothing re-drove it until the server restarted.
+            if let action, action.isRetryable {
+                Button(action.retryLabel) { Task { await model.retryMergeAction(action) } }
                     .buttonStyle(COSQuietButtonStyle())
                     .controlSize(.small)
                     .disabled(model.mergeRevertBusy)
@@ -1223,6 +1373,13 @@ struct MergedRecordActions: View {
                     .buttonStyle(COSTextButtonStyle())
                     .controlSize(.small)
             }
+            // SEPARATE FROM RETRY. Refresh re-reads; Retry asks the server to run
+            // the thing again. 0.5.230 had one button doing the first under the
+            // second's name.
+            Button("Refresh") { Task { await model.loadMergeActions() } }
+                .buttonStyle(COSTextButtonStyle())
+                .controlSize(.small)
+                .disabled(model.mergeActionsLoading)
             if model.mergeRevertBusy { ProgressView().controlSize(.mini) }
         }
     }

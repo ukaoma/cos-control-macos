@@ -4641,6 +4641,45 @@ struct ModelsContract {
         precondition(business.budgetCap == nil && business.budgetLine.contains("no daily call limit"),
                      "a Business plan has no cap, and nil must not read as a cap of zero")
 
+        // THE WINDOWS AND THE PLAN CAPS ARE THE SERVER'S. Control restates them
+        // only as the fallback for a server that does not send them, and builds
+        // its sentence from whichever list is in force. A cap typed into the copy
+        // is the thing that goes stale without a word.
+        // THE CONSTANT ITSELF. `running` is bound to windowDays 90, and the
+        // "a picker must hold its bound value" repair puts 90 back into any list
+        // missing it — so shortening the fallback to [7, 30] left this assertion
+        // passing on a repaired list (QA round 1). Pin the list, then the use.
+        precondition(MeetingImportState.fallbackWindowOptions == [7, 30, 90],
+                     "the fallback window list must match IMPORT_WINDOW_DAYS in server/lib/meeting-import.ts")
+        precondition(MeetingImportState(["routeState": .string("ready")]).windowOptions == [7, 30, 90],
+                     "a status with no window list and no unusual binding falls back to exactly those three")
+        precondition(running.windowOptions == [7, 30, 90],
+                     "no window list from the server falls back to the three IMPORT_WINDOW_DAYS holds")
+        precondition(running.planCapLine == "Your plan sets how many calls a day COS may make. "
+                     + "Free is 50, Pro is 500, Business has no limit.",
+                     "the fallback caps render the sentence FIREFLIES_PLAN_CAPS describes")
+        let served = MeetingImportState([
+            "routeState": .string("ready"), "planCap": .string("team"), "windowDays": .number(14),
+            "windowOptions": .array([.number(14), .number(60)]),
+            "planCaps": .array([
+                .object(["id": .string("team"), "label": .string("Team"), "calls": .number(1_000)]),
+                .object(["id": .string("enterprise"), "label": .string("Enterprise")]),
+            ]),
+        ])
+        precondition(served.windowOptions == [14, 60], "a server that names its windows wins over the fallback")
+        precondition(served.planCapLine.contains("Team is 1000") && served.planCapLine.contains("Enterprise has no limit"),
+                     "a server that names its plans wins over the fallback, uncapped plans included")
+        precondition(served.planCaps.contains { $0.id == "team" }, "the bound plan is always in its own picker")
+        // A picker that does not hold its bound value renders empty, and a person
+        // cannot get back to what they had.
+        let strayBindings = MeetingImportState([
+            "routeState": .string("ready"), "planCap": .string("legacy"), "windowDays": .number(45),
+            "windowOptions": .array([.number(7), .number(30)]),
+            "planCaps": .array([.object(["id": .string("free"), "label": .string("Free"), "calls": .number(50)])]),
+        ])
+        precondition(strayBindings.windowOptions == [7, 30, 45], "an unlisted window joins its own picker, in order")
+        precondition(strayBindings.planCaps.contains { $0.id == "legacy" }, "an unlisted plan joins its own picker")
+
         let refusedPipeline = MeetingImportState([
             "routeState": .string("ready"), "state": .string("refused_pipeline"), "mode": .string("advise"),
         ])
@@ -4667,12 +4706,55 @@ struct ModelsContract {
         precondition(suggestion?.evidenceLine == "Shares 41 phrases", "the evidence is stated in the unit the engine counted")
         precondition(suggestion?.isWouldMerge == true && suggestion?.headline == "Would merge automatically",
                      "an advise-mode row says COS would have done this on its own")
-        precondition(suggestion?.sides.first?.line.contains("not in the recent list") == true,
-                     "a side the library cannot reach says so rather than showing a blank")
         precondition(suggestion?.sides.last?.line == "2026-09-10 · 14:30 · 47 minutes · G2 Glasses",
                      "a resolved side shows start, length and source")
+        // THE SERVER SENDS A STORE NAME, not a word. `imported`, `cos_operations`
+        // and `standalone_recordings` are what SuggestionSide carries, and putting
+        // one of those in front of a person is the machine talking to itself.
+        for (token, word) in [("imported", "Brought in from Fireflies"),
+                              ("cos_operations", "In your meetings tree"),
+                              ("standalone_recordings", "Recorded on this Mac")] {
+            let side = MeetingSuggestion(.object([
+                "id": .string("s_3"), "sides": .array([
+                    .object(["kind": .string("g2"), "id": .string("x"), "resolved": .bool(true),
+                             "date": .string("2026-09-10"), "source": .string(token)]),
+                ]),
+            ]))?.sides.first
+            precondition(side?.sourceLabel == word, "the \(token) store reads as \(word)")
+            precondition(side?.line == "2026-09-10 · \(word)", "and the row shows the word, not the token")
+        }
+        precondition(MeetingSuggestion(.object([
+            "id": .string("s_4"), "sides": .array([
+                .object(["kind": .string("g2"), "id": .string("x"), "resolved": .bool(true),
+                         "source": .string("some_new_store")]),
+            ]),
+        ]))?.sides.first?.sourceLabel == "some_new_store",
+        "a store COS has no word for reads as itself rather than vanishing")
         precondition(suggestion?.sides.first?.displayTitle.contains("Fireflies meeting") == true,
                      "an unresolved side is named by its kind and a short id")
+        // THE CAPTION IS PER SIDE. 0.5.230 put one sentence on the pane's header
+        // and it spoke for every row, resolved or not.
+        precondition(suggestion?.sides.first?.unresolvedNote == "Not in the library",
+                     "a side the server could not place says so, on that side")
+        precondition(suggestion?.sides.last?.unresolvedNote == nil,
+                     "a resolved side carries no caption at all")
+        precondition(suggestion?.sides.first?.line.contains("Not in the library") == false,
+                     "the caption is its own line, not smuggled into the detail line")
+        // A side with nothing to describe has an EMPTY detail line, and the row
+        // leaves it out: its title already reads "Fireflies meeting 01K4EXAMPLE",
+        // and a fallback here printed that same string twice, one under the other.
+        precondition(suggestion?.sides.first?.line == "",
+                     "an unresolved side has no detail line to render")
+        precondition(suggestion?.sides.first?.displayTitle.contains("01K4EXAMPLE") == true,
+                     "and its title is where the id is shown, once")
+        let bareResolved = MeetingSuggestion(.object([
+            "id": .string("s_2"), "sides": .array([
+                .object(["kind": .string("g2"), "id": .string("meeting_1789_abc"), "resolved": .bool(true),
+                         "date": .string("2026-09-10")]),
+            ]),
+        ]))
+        precondition(bareResolved?.sides.first?.line == "2026-09-10",
+                     "a side describes itself with whatever fields it has, and joins nothing it does not")
         let split = MeetingSuggestion(.object([
             "id": .string("s_1"), "kind": .string("split"), "spans": .number(3), "sides": .array([]),
         ]))
@@ -4713,6 +4795,70 @@ struct ModelsContract {
                      "a failed apply names its error where a person can read it")
         precondition(MergeAction(.object(["kind": .string("merge")])) == nil, "an action with no id is dropped")
 
+        // A FAILED REVERT IS NOT A FAILED MERGE. Without the direction, "This
+        // merge did not finish" sat on a row whose undo failed, and Retry read as
+        // "try the merge again" — the opposite of what was asked for.
+        // THE SERVER DOES NOT DERIVE THIS, and says why: a retryable failure sends
+        // an action back to a waiting state, so reading the direction out of the
+        // state turned the retry of an undo into a redo. Control's fallback is
+        // display-only and covers only the two states nothing but an undo makes.
+        precondition(failed?.direction == "apply" && failed?.isUndoing == false,
+                     "a legacy FAILED row stays an apply; that is the ambiguous case, and guessing it "
+                     + "wrong is the redo bug in reverse")
+        precondition(MergeAction(.object(["id": .string("a_6"), "actionState": .string("revert_pending")]))?.direction == "revert",
+                     "a legacy revert_pending row can only have been an undo")
+        precondition(MergeAction(.object(["id": .string("a_7"), "actionState": .string("reverted")]))?.direction == "revert",
+                     "and so can a legacy reverted one")
+        precondition(MergeAction(.object(["id": .string("a_8"), "actionState": .string("revert_pending"),
+                                          "direction": .string("apply")]))?.direction == "apply",
+                     "a direction the server DID send always wins over the fallback")
+        precondition(failed?.stateLine.hasPrefix("This merge did not finish") == true
+                     && failed?.retryLabel == "Try the merge again",
+                     "a failed apply keeps its own words")
+        let failedUndo = MergeAction(.object([
+            "id": .string("a_4"), "actionState": .string("failed"), "direction": .string("revert"),
+            "error": .string("sync_lock"),
+        ]))
+        precondition(failedUndo?.isUndoing == true && failedUndo?.stateLine == "Undo failed: sync_lock",
+                     "a failed undo says Undo failed, and names why")
+        precondition(failedUndo?.retryLabel == "Try the undo again", "and its button offers the undo, not the merge")
+        precondition(failedUndo?.diagnostics.contains("direction revert") == true,
+                     "diagnostics carry the direction, so a bug report cannot lose it")
+        // EVERY FIELD, including the falsy ones. `code 0` with `timedOut true` is
+        // a timeout kill; `code 1` is a non-zero exit; a `spawnError` is a failed
+        // fork. A block that prints only what is truthy cannot tell them apart.
+        let timedOut = MergeAction(.object([
+            "id": .string("a_9"), "actionState": .string("failed"), "direction": .string("apply"),
+            "diagnostics": .object(["code": .number(0), "signal": .string("SIGTERM"),
+                                    "timedOut": .bool(true), "elapsedMs": .number(60_000),
+                                    "stderr": .string("")]),
+        ]))
+        precondition(timedOut?.diagnosticLines == ["code 0", "signal SIGTERM", "timedOut true", "elapsedMs 60000"],
+                     "a timeout kill keeps its zero exit code, which is the field that makes it one")
+        precondition(timedOut?.diagnostics.contains("timedOut true") == true,
+                     "and Copy diagnostics carries the block, not just the summary line")
+        precondition(MergeAction(.object([
+            "id": .string("a_10"), "actionState": .string("failed"),
+            "diagnostics": .object(["code": .number(1), "spawnError": .string("ENOENT"),
+                                    "stderr": .string("boom")]),
+        ]))?.diagnosticLines == ["code 1", "spawnError ENOENT", "stderr boom"],
+        "a failed fork and its stderr both survive, in that order")
+        precondition(auto?.diagnosticLines.isEmpty == true,
+                     "an action that did not fail carries no spawn detail at all")
+        // A DEFERRED UNDO IS RECOVERABLE FROM THE UI. The server parks one behind
+        // the sync lock, and before 6.47.0's retry route nothing re-drove it until
+        // the server restarted: the row sat there with no affordance anywhere.
+        let parked = MergeAction(.object([
+            "id": .string("a_5"), "actionState": .string("revert_pending"), "direction": .string("revert"),
+        ]))
+        precondition(parked?.stateLine == "Undo waiting for the meeting sync",
+                     "a parked undo says it is waiting, never that it is running")
+        precondition(parked?.isRetryable == true && parked?.retryLabel == "Check on it",
+                     "and it carries a button, worded for what the server will actually answer: "
+                     + "a retry on anything but a failure comes back \"already queued\"")
+        precondition(failedUndo?.isRetryable == true && auto?.isRetryable == false,
+                     "Retry is offered for a failure or a parked undo, and for nothing that is simply applied")
+
         // The two-call Undo.
         let preview = MergeRevertPreview([
             "previewHash": .string(String(repeating: "a", count: 64)),
@@ -4748,8 +4894,14 @@ struct ModelsContract {
             "lastRun": .object(["at": .string("2026-09-14T10:00:00.000Z"), "trigger": .string("tick")]),
         ])
         precondition(mismatch.mode == .apply && mismatch.isPipelineMac, "a pipeline Mac in apply mode reads as one")
-        precondition(mismatch.mismatchWarning?.contains("still reads advise") == true,
-                     "a disagreement between the server and the pipeline is named, because nothing else can see it")
+        // THE SENTENCE NAMES BOTH SIDES. "still reads advise" describes half of a
+        // disagreement, and leaves the reader to guess the other half.
+        precondition(mismatch.mismatchWarning?.contains("server is on apply") == true
+                     && mismatch.mismatchWarning?.contains("pipeline reads advise") == true,
+                     "a disagreement names what each side reads, because nothing else can see it")
+        precondition(mismatch.mismatchWarning?.contains("refresh this") == true,
+                     "and it points at the refresh that settles it")
+        precondition(mismatch.appliedMergeCount == 6, "applied merges are what Undo all has to act on")
         precondition(mismatch.firstRunLine?.contains("198 recordings read") == true, "the first look reports what it scanned")
         precondition(mismatch.firstRunCompleted && !mismatch.firstRunInProgress, "a finished first look is not still running")
         precondition(mismatch.lastRunLine == "Last run 2026-09-14T10:00:00.000Z · tick", "the last run says when and why")
@@ -4774,6 +4926,86 @@ struct ModelsContract {
         precondition(MeetingEngineStatus(["routeState": .string("ready"), "mode": .string("imports")]).mode == .imports,
                      "a Mac with no pipeline is in imports mode")
         precondition(MeetingEngineMode.imports.switchTitle == nil, "imports is not a mode anyone chose or can leave")
+
+        // AN UNREAD MODE IS NIL, NEVER imports. 0.5.230 defaulted it, so a failed
+        // status load on a pipeline Mac in advise mode rendered the imports
+        // surface: "Merge", on a screen where agreeing writes nothing.
+        let noMode = MeetingEngineStatus(["routeState": .string("ready"), "isPipelineMac": .bool(true)])
+        precondition(noMode.mode == nil && !noMode.modeKnown, "a body with no mode leaves the mode unknown")
+        precondition(noMode.mode != .imports, "and an unknown mode is not imports mode")
+        precondition(noMode.modeLine.contains("could not say"), "the row says the mode is unknown rather than guessing one")
+        precondition(MeetingEngineStatus().mode == nil, "a status nobody has loaded knows no mode either")
+
+        // ADVISE WITH MERGES STILL APPLIED IS THE EXPECTED POST-ROLLBACK STATE.
+        let rolledBack = MeetingEngineStatus([
+            "routeState": .string("ready"), "mode": .string("advise"), "isPipelineMac": .bool(true),
+            "mergesRemainApplied": .bool(true), "mismatch": .bool(false),
+        ])
+        precondition(rolledBack.mismatchWarning == nil, "merges left applied under advise are not a disagreement")
+        precondition(rolledBack.mergesRemainAppliedLine?.contains("does not undo them") == true
+                     && rolledBack.mergesRemainAppliedLine?.contains("pipeline leaves them alone") == true,
+                     "the row says the merges stay, that suggesting only will not remove them, "
+                     + "and that the old blend will not restart over them")
+        precondition(MeetingEngineStatus(["routeState": .string("ready"), "mode": .string("apply"),
+                                          "mergesRemainApplied": .bool(true)]).mergesRemainAppliedLine == nil,
+                     "apply mode with applied merges is just apply mode, and says nothing extra")
+        precondition(MeetingEngineStatus(["routeState": .string("ready"), "mode": .string("advise")])
+                     .mergesRemainApplied == false,
+                     "a server that does not report the flag leaves it false, never true")
+        precondition(rolledBack.revertPending == 0 && MeetingEngineStatus([
+            "routeState": .string("ready"), "mode": .string("apply"),
+            "counts": .object(["pending": .number(1), "revertPending": .number(2)]),
+        ]).revertPending == 2,
+        "an undo that cannot finish is counted on its own; folding it into pending hid it")
+
+        // A MAC THAT CHANGED KIND CHANGED WHICH WRITER OWNS THE BLEND.
+        // AN OBJECT ON THE WIRE, `{ observed, recorded?, changed }`. Decoding it
+        // as a string left the observed class empty and the alarm nameless.
+        let reclassified = MeetingEngineStatus([
+            "routeState": .string("ready"), "mode": .string("advise"),
+            "macClass": .object(["observed": .string("pipeline"), "recorded": .string("standalone"),
+                                 "changed": .bool(true)]),
+        ])
+        precondition(reclassified.macClassObserved == "pipeline" && reclassified.macClassChanged,
+                     "the observed class and the change flag both come out of the object")
+        precondition(reclassified.macClassAlarm?.contains("a Mac with no COS pipeline") == true
+                     && reclassified.macClassAlarm?.contains("a Mac with the COS pipeline") == true,
+                     "the alarm names what this Mac WAS and what it is now, in words, not in wire tokens")
+        precondition(reclassified.macClassAlarm?.contains("standalone") == false,
+                     "and never shows the token itself")
+        precondition(MeetingEngineStatus([
+            "routeState": .string("ready"), "mode": .string("advise"),
+            "macClass": .object(["observed": .string("pipeline"), "changed": .bool(true)]),
+        ]).macClassAlarm?.hasPrefix("This Mac now looks like") == true,
+        "with nothing on record, the alarm says only what it is now")
+        precondition(MeetingEngineStatus([
+            "routeState": .string("ready"), "mode": .string("advise"),
+            "macClass": .object(["observed": .string("pipeline"), "changed": .bool(false)]),
+        ]).macClassAlarm == nil, "a Mac whose class did not change raises no alarm")
+        precondition(MeetingEngineStatus(["routeState": .string("ready"), "mode": .string("advise")])
+                     .macClassAlarm == nil, "and a server that sends no macClass at all raises none either")
+
+        // A RUN THAT DID NOTHING SAYS WHY, in one sentence per reason. Silence and
+        // a broken engine read the same on this row otherwise.
+        for (reason, needle) in [("maintenance_deferred", "working on the server"),
+                                 ("capture_active", "a recording was going"),
+                                 ("inputs_unchanged", "nothing new"),
+                                 ("inputs_unreadable", "could not read"),
+                                 ("too_many_inputs", "more meetings changed at once")] {
+            let skipped = MeetingEngineStatus([
+                "routeState": .string("ready"), "mode": .string("advise"),
+                "lastRun": .object(["at": .string("2026-09-14T10:00:00.000Z"), "skippedReason": .string(reason)]),
+            ])
+            precondition(skipped.skippedReasonLine?.contains(needle) == true,
+                         "the \(reason) skip has its own sentence")
+        }
+        let unknownSkip = MeetingEngineStatus([
+            "routeState": .string("ready"), "mode": .string("advise"),
+            "lastRun": .object(["at": .string("x"), "skippedReason": .string("something_new")]),
+        ])
+        precondition(unknownSkip.skippedReasonLine?.contains("something_new") == true,
+                     "a reason COS has no sentence for is still shown, not swallowed")
+        precondition(mismatch.skippedReasonLine == nil, "a run that did something says nothing about skipping")
 
         let recorder = MeetingRecorder(.object([
             "id": .string("fireflies"), "name": .string("Fireflies"),
