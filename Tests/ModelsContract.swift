@@ -4917,7 +4917,7 @@ struct ModelsContract {
             "routeState": .string("ready"), "mode": .string("apply"),
             "counts": .object(["auto": .number(2), "suggested": .number(21), "applied": .number(5)]),
         ]).appliedMergeCount == 5,
-        "counts.applied is every applied action, any tier, and wins over auto when the server sends it")
+        "counts.applied is every merge Undo all would remove (auto or accepted, never legacy), and wins over auto")
         precondition(MeetingEngineStatus([
             "routeState": .string("ready"), "mode": .string("apply"),
             "counts": .object(["auto": .number(3), "suggested": .number(4), "applied": .number(0)]),

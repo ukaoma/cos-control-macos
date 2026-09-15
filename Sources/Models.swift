@@ -8191,8 +8191,11 @@ struct MeetingEngineStatus: Sendable, Equatable {
     /// waits on this rather than acting on a default.
     var modeKnown: Bool { mode != nil }
 
-    /// `counts.applied`: every applied action, any tier. Nil on a server that
-    /// does not send it, which is not the same as zero.
+    /// `counts.applied`: every action in the `applied` state, auto or
+    /// accepted_suggestion, and NEVER `legacy_applied` (a merge the pipeline made
+    /// itself, which COS does not undo). It is exactly the set Undo all removes:
+    /// the server pins revert-all's dry-run `actions.length` to this count. Nil
+    /// on a server that does not send it, which is not the same as zero.
     var appliedActions: Int?
 
     /// Merges COS made and has not undone, as the ENGINE counts them.
