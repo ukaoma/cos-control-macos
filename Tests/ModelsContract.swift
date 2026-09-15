@@ -4976,7 +4976,7 @@ struct ModelsContract {
         precondition(MeetingEngineStatus([
             "routeState": .string("ready"), "mode": .string("advise"),
             "macClass": .object(["observed": .string("pipeline"), "changed": .bool(true)]),
-        ]).macClassAlarm?.hasPrefix("This Mac now looks like") == true,
+        ]).macClassAlarm?.hasPrefix("COS now sees this Mac as") == true,
         "with nothing on record, the alarm says only what it is now")
         precondition(MeetingEngineStatus([
             "routeState": .string("ready"), "mode": .string("advise"),

@@ -8234,8 +8234,8 @@ struct MeetingEngineStatus: Sendable, Equatable {
         let now = Self.macClassLabel(macClassObserved) ?? "a different kind of Mac"
         let was = Self.macClassLabel(macClassRecorded)
         let head = was == nil
-            ? "This Mac now looks like \(now) to COS."
-            : "This Mac looked like \(was!) to COS and now looks like \(now)."
+            ? "COS now sees this Mac as \(now)."
+            : "COS saw this Mac as \(was!) and now sees it as \(now)."
         return head + " How meetings are merged here has changed. Check the mode before the next sync."
     }
 
