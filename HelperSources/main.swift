@@ -8359,10 +8359,49 @@ final class COSControlHelper {
     ///
     /// `project` already arrives as a workspace label, so it is NOT run through
     /// `workspaceLabel` a second time.
+    // MARK: - Server-derived session state (0.5.232, glasses-server 6.48.0+)
+    //
+    // Since 6.48.0 every session row and peer carries ONE derived state with its source:
+    // `agent_state` (running | waiting | idle | failed | ended), `state_source` (hook |
+    // registry | transcript), `state_since`, the waiting kind and detail, the failure word,
+    // the last reply and `queued_turns`. The wire key is `agent_state`, never `state`:
+    // `state` on the same row is the older `running | recent` and `stateLabel` renders
+    // anything unknown there as "Running". These eight ride every projection below, so the
+    // Sessions list, the pet, the overlay and search all see them; an older server sends
+    // none and the helper's own transcript reading stands, unchanged.
+    static let serverStateKeys: [(wire: String, key: String)] = [
+        ("agent_state", "agentState"), ("state_source", "stateSource"), ("state_since", "stateSince"),
+        ("waiting_kind", "waitingKind"), ("waiting_detail", "waitingDetail"), ("failure", "failure"),
+        ("last_reply", "lastReply"), ("queued_turns", "queuedTurns"),
+    ]
+
+    static func serverStateProjection(_ row: [String: Any]) -> [String: Any] {
+        var out: [String: Any] = [:]
+        for (wire, key) in serverStateKeys {
+            if let value = row[wire] { out[key] = value } else if let value = row[key] { out[key] = value }
+        }
+        return out
+    }
+
+    /// The helper's own vocabulary for a server `agent_state`, used only when the server's
+    /// source is the hooks or the registry (positive evidence). `failed` is `error`, the
+    /// pet's dormant word, so the sprite pose and the tint come for free.
+    static func sessionStateFromServer(agentState: String, stateSource: String) -> String? {
+        guard stateSource == "hook" || stateSource == "registry" else { return nil }
+        switch agentState {
+        case "running": return "running"
+        case "waiting": return "waiting"
+        case "idle": return "recent"
+        case "ended": return "stale"
+        case "failed": return "error"
+        default: return nil
+        }
+    }
+
     static func agentSessionRowProjection(_ row: [String: Any]) -> [String: Any]? {
         guard let id = row["session_id"] as? String, !id.isEmpty else { return nil }
         let alive = row["alive"] as? Bool ?? false
-        return [
+        var out: [String: Any] = [
             "id": id,
             "provider": row["provider"] as? String ?? "claude",
             "name": row["display_label"] as? String ?? "",
@@ -8377,6 +8416,8 @@ final class COSControlHelper {
             "pinned": row["pinned"] as? Bool ?? false,
             "discussion_summary": row["discussion_summary"] as? String ?? "",
         ]
+        out.merge(serverStateProjection(row)) { _, new in new }
+        return out
     }
 
     // MARK: - Scheduled jobs (0.5.229)
@@ -8706,6 +8747,9 @@ final class COSControlHelper {
             merged[index]["state"] = peer["state"] ?? merged[index]["state"]
             merged[index]["waitingFor"] = peer["waitingFor"] ?? ""
             merged[index]["status"] = peer["status"] ?? ""
+            // 0.5.232: the peer's server-derived state is the freshest; a row that carried
+            // its own (the list route stamps the same fields) keeps it only where the peer has none.
+            for (_, key) in serverStateKeys where peer[key] != nil { merged[index][key] = peer[key] }
         }
         // A running session the list route did not return still belongs on screen.
         for peer in live {
@@ -8730,7 +8774,7 @@ final class COSControlHelper {
         let alive = row["alive"] as? Bool ?? false
         let status = row["status"] as? String ?? ""
         let waitingFor = row["waitingFor"] as? String ?? ""
-        return [
+        var out: [String: Any] = [
             "id": id,
             "provider": "claude",
             "name": row["name"] as? String ?? "",
@@ -8748,6 +8792,8 @@ final class COSControlHelper {
             "createdAt": peerTimeISO(row["startedAt"]),
             "updatedAt": peerTimeISO(row["lastActiveAt"]),
         ]
+        out.merge(serverStateProjection(row)) { _, new in new }
+        return out
     }
 
     /// Claude Code writes `/rename` titles as `custom-title` lines in the project jsonl,
@@ -10082,6 +10128,16 @@ final class COSControlHelper {
                 continue
             }
             if provider != "claude" { continue }
+            // 0.5.232: FIRST, the server's own derivation when its source is the hooks or
+            // the registry (glasses-server 6.48.0+). The transcript branch below stays for
+            // an older server and for a row the server could only read from its transcript.
+            if let serverState = sessionStateFromServer(
+                agentState: out[index]["agentState"] as? String ?? "",
+                stateSource: out[index]["stateSource"] as? String ?? ""
+            ) {
+                out[index]["state"] = serverState
+                continue
+            }
             var state = claudePeerState(
                 alive: out[index]["alive"] as? Bool ?? false,
                 status: out[index]["status"] as? String ?? "",
@@ -12609,7 +12665,7 @@ final class COSControlHelper {
             ?? row["custom_title"] as? String
             ?? row["name"] as? String
             ?? ""
-        return [
+        var out: [String: Any] = [
             "id": id,
             "provider": row["provider"] as? String ?? "claude",
             "name": name,
@@ -12628,6 +12684,8 @@ final class COSControlHelper {
             "semanticScore": semantic,
             "score": max(keyword, semantic),
         ]
+        out.merge(serverStateProjection(row)) { _, new in new }
+        return out
     }
 
     static let sessionSearchStopwords: Set<String> = [
@@ -16174,6 +16232,46 @@ final class COSControlHelper {
         try expect(liveActDirect.first?["updatedAt"] as? String == "2026-09-14T02:00:00Z" && liveActDirect.first?["activitySource"] as? String == "cache"
                    && liveActDirect.first?["turnInFlight"] == nil && liveActDirect.first?["waitingOnUser"] == nil,
                    "a dead Claude PID takes no activity from a transcript, and cached turn flags are cleared")
+        // 0.5.232: the server's derived state rides every projection and, when its source
+        // is the hooks or the registry, decides the row over the transcript reading.
+        let serverRow: [String: Any] = [
+            "session_id": "9a9a9a9a-1111-4222-8333-444444444444", "provider": "claude", "alive": true,
+            "state": "running", "display_label": "Sessions hardening", "project": "MU-Chief-Staff",
+            "agent_state": "waiting", "state_source": "hook", "state_since": "2026-09-15T23:00:00.000Z",
+            "waiting_kind": "permission", "waiting_detail": "Bash git push", "last_reply": "done", "queued_turns": 2,
+        ]
+        let projectedRow = Self.agentSessionRowProjection(serverRow)
+        try expect(projectedRow?["agentState"] as? String == "waiting" && projectedRow?["stateSource"] as? String == "hook"
+                   && projectedRow?["waitingKind"] as? String == "permission" && projectedRow?["waitingDetail"] as? String == "Bash git push"
+                   && projectedRow?["queuedTurns"] as? Int == 2 && projectedRow?["lastReply"] as? String == "done"
+                   && projectedRow?["stateSince"] as? String == "2026-09-15T23:00:00.000Z",
+                   "the row projection carries the eight server state fields camelCase")
+        let projectedPeer = Self.claudePeerProjection(["id": "9a9a9a9a", "alive": true, "status": "busy", "agent_state": "running", "state_source": "registry", "queued_turns": 1])
+        try expect(projectedPeer?["agentState"] as? String == "running" && projectedPeer?["stateSource"] as? String == "registry" && projectedPeer?["queuedTurns"] as? Int == 1,
+                   "the peer projection carries the server state too")
+        let projectedHit = Self.sessionSearchHitProjection(["session_id": "9a9a9a9a-1111-4222-8333-444444444444", "agent_state": "idle", "state_source": "hook", "queued_turns": 0])
+        try expect(projectedHit?["agentState"] as? String == "idle" && projectedHit?["queuedTurns"] as? Int == 0, "a search hit carries the server state")
+        let overlaid = Self.overlayLiveState(onto: [projectedRow!], live: [projectedPeer!])
+        try expect(overlaid.first?["agentState"] as? String == "running" && overlaid.first?["stateSource"] as? String == "registry" && overlaid.first?["queuedTurns"] as? Int == 1,
+                   "the overlay takes the peer's server state onto the listed row")
+        try expect(Self.sessionStateFromServer(agentState: "waiting", stateSource: "hook") == "waiting"
+                   && Self.sessionStateFromServer(agentState: "idle", stateSource: "registry") == "recent"
+                   && Self.sessionStateFromServer(agentState: "ended", stateSource: "hook") == "stale"
+                   && Self.sessionStateFromServer(agentState: "failed", stateSource: "hook") == "error"
+                   && Self.sessionStateFromServer(agentState: "running", stateSource: "transcript") == nil
+                   && Self.sessionStateFromServer(agentState: "", stateSource: "") == nil,
+                   "server states map into the helper's words; a transcript-sourced or absent state maps to nothing")
+        // applyLiveWorkingState: the hook-sourced state outranks the transcript reading of a live PID.
+        let serverDecided = Self.applyLiveWorkingState([
+            ["id": "9a9a9a9a-1111-4222-8333-444444444444", "provider": "claude", "alive": true, "status": "busy",
+             "updatedAt": "2026-09-14T03:24:30Z", "activitySource": "transcript", "turnInFlight": false, "waitingOnUser": false,
+             "agentState": "waiting", "stateSource": "hook"],
+            ["id": "8b8b8b8b-1111-4222-8333-444444444444", "provider": "claude", "alive": true, "status": "busy",
+             "updatedAt": "2026-09-14T03:24:30Z", "activitySource": "transcript", "turnInFlight": true, "waitingOnUser": false,
+             "agentState": "idle", "stateSource": "transcript"],
+        ], now: ISO8601DateFormatter().date(from: "2026-09-14T03:24:40Z")!)
+        try expect(serverDecided[0]["state"] as? String == "waiting", "a hook-sourced waiting wins over a transcript that read the turn as finished")
+        try expect(serverDecided[1]["state"] as? String == "running", "a transcript-sourced server state leaves the helper's own reading in charge")
         let liveActTmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("cos-pet-live \(UUID().uuidString).d", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: liveActTmp) }

@@ -3280,17 +3280,27 @@ struct ContextDetailPane: View {
                     .foregroundStyle(.tertiary)
                     .textSelection(.enabled)
                 ScrollView {
-                    Text(record.body.isEmpty ? "(no stored body)" : record.body)
-                        .font(COSType.body(12))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
+                    // 0.5.232: the note is Markdown (a thread's sections, a memory's
+                    // content) and renders as one, with the title already above it.
+                    if record.body.isEmpty {
+                        Text("(no stored body)")
+                            .font(COSType.body(12))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        COSMarkdownView(text: record.body, dropLeadingTitle: true, bodySize: 12)
+                            .frame(maxWidth: 760, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 .frame(maxHeight: .infinity)
-                HStack {
-                    Button("Copy as Context", systemImage: "doc.on.doc") { model.copyContextRecord(record) }
+                // Actions by weight (0.5.232): Copy as Context is what this pane is for.
+                HStack(spacing: 8) {
+                    Button("Copy as Context") { model.copyContextRecord(record) }
+                        .buttonStyle(COSPrimaryButtonStyle())
+                        .keyboardShortcut("c", modifiers: .command)
                     if record.filePath != nil {
-                        Button("Reveal in Finder", systemImage: "folder") { model.revealContextRecord(record) }
+                        Button("Reveal in Finder") { model.revealContextRecord(record) }
                     }
                 }
                 .buttonStyle(COSQuietButtonStyle())

@@ -1443,16 +1443,50 @@ struct ClaudeSession: Identifiable, Sendable {
     let origin: String
     let jobLabel: String
     let jobScript: String
+    /// 0.5.232, glasses-server 6.48.0+: the server's one derived state and its source
+    /// (`agent_state`/`state_source` on the wire; the helper carries them camelCase). Empty
+    /// on an older server, where `state` is the helper's own reading.
+    let agentState: String
+    let stateSource: String
+    let stateSince: String
+    let waitingKind: String
+    let waitingDetail: String
+    let failure: String
+    let lastReply: String
+    /// Follow-ups queued at this session and not yet delivered (6.48.1's `queued_turns`).
+    let queuedTurns: Int
 
     var isScheduledJob: Bool { origin == "job" }
 
+    /// The chip word. `error` is the failed state (a rate limit, an overloaded engine),
+    /// which reads FAILED and never "Running"; `waiting` names what it waits on when the
+    /// server said (a permission, a question, a plan); a queued follow-up is counted.
     var stateLabel: String {
-        switch state {
-        case "waiting": "Waiting"
+        let base: String = switch state {
+        case "waiting": waitingKindLabel.isEmpty ? "Waiting" : "Waiting · \(waitingKindLabel)"
         case "stale": "Stale"
         case "running": "Running"
+        case "error": failure.isEmpty ? "Failed" : "Failed · \(failure.replacingOccurrences(of: "_", with: " "))"
         case "recent": ""
         default: "Running"
+        }
+        if queuedTurns > 0 {
+            let queued = "\(queuedTurns) queued"
+            return base.isEmpty ? queued : base + " · " + queued
+        }
+        return base
+    }
+
+    /// "Permission: Bash git push", "Question", "Plan approval", "Input".
+    var waitingKindLabel: String {
+        let detail = waitingDetail.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch waitingKind {
+        case "permission": return detail.isEmpty ? "Permission" : "Permission: \(detail)"
+        case "question": return "Question"
+        case "plan": return "Plan approval"
+        case "mcp_input": return "Input"
+        case "": return detail.isEmpty ? "" : detail
+        default: return detail.isEmpty ? waitingKind.capitalized : "\(waitingKind.capitalized): \(detail)"
         }
     }
 
@@ -1512,7 +1546,7 @@ struct ClaudeSession: Identifiable, Sendable {
     var isPetVisible: Bool {
         if isKeepWarm { return false }
         if alive { return true }
-        return state == "running" || state == "waiting"
+        return state == "running" || state == "waiting" || state == "error"
     }
 
     var petSubtitle: String {
@@ -1530,6 +1564,7 @@ struct ClaudeSession: Identifiable, Sendable {
         case "running": "Running"
         case "waiting": "Waiting"
         case "stale": "Stale"
+        case "error": "Failed"      // 0.5.232: never "Idle" for a failed turn
         default: "Idle"
         }
     }
@@ -1557,7 +1592,7 @@ struct ClaudeSession: Identifiable, Sendable {
     /// exactly the state where you most need to choose — so the pill opens
     /// the live list instead, where WAITING has its own amber section.
     static func petWaitingJumpTarget(_ sessions: [ClaudeSession]) -> ClaudeSession? {
-        let waiting = sessions.filter { $0.state == "waiting" }
+        let waiting = sessions.filter(needsAPerson)
         return waiting.count == 1 ? waiting[0] : nil
     }
 
@@ -1565,17 +1600,23 @@ struct ClaudeSession: Identifiable, Sendable {
     /// weight — running rich, waiting amber, idle receded. Pure so the
     /// contract executes the grouping; within each section the sorted input
     /// order (petVisibleSessions) is preserved.
+    /// 0.5.232: a failed turn (`error`) rides the WAITING channel. It needs a person
+    /// the way a question does, and the idle bucket would print it as idle.
+    static func needsAPerson(_ session: ClaudeSession) -> Bool {
+        session.state == "waiting" || session.state == "error"
+    }
+
     static func petSections(_ sessions: [ClaudeSession])
         -> (running: [ClaudeSession], waiting: [ClaudeSession], idle: [ClaudeSession]) {
         (sessions.filter(\.isPetWorking),
-         sessions.filter { $0.state == "waiting" },
-         sessions.filter { !$0.isPetWorking && $0.state != "waiting" })
+         sessions.filter(needsAPerson),
+         sessions.filter { !$0.isPetWorking && !needsAPerson($0) })
     }
 
     private static func petLiveRank(_ session: ClaudeSession) -> Int {
         switch session.state {
         case "running": 0
-        case "waiting": 1
+        case "waiting", "error": 1
         default: 2
         }
     }
@@ -1604,8 +1645,14 @@ struct ClaudeSession: Identifiable, Sendable {
         // 0.5.229: a scheduled job's live line is the script it runs.
         if isScheduledJob { return jobScript.isEmpty ? "running" : jobScript }
         if state == "waiting" {
+            // 0.5.232: the server names the kind (a permission with its command, a
+            // question, a plan); the registry's `waitingFor` and "needs you" stay as before.
+            if !waitingKindLabel.isEmpty { return waitingKindLabel.lowercased() }
             let need = waitingFor.trimmingCharacters(in: .whitespacesAndNewlines)
             return need.isEmpty || need == "user" ? "needs you" : need
+        }
+        if state == "error" {
+            return failure.isEmpty ? "failed" : "failed · " + failure.replacingOccurrences(of: "_", with: " ")
         }
         let summary = discussionSummary.trimmingCharacters(in: .whitespacesAndNewlines)
         return summary.isEmpty ? "working" : summary
@@ -1698,6 +1745,14 @@ struct ClaudeSession: Identifiable, Sendable {
         origin = o["origin"]?.string ?? ""
         jobLabel = o["jobLabel"]?.string ?? ""
         jobScript = o["jobScript"]?.string ?? ""
+        agentState = o["agentState"]?.string ?? ""
+        stateSource = o["stateSource"]?.string ?? ""
+        stateSince = o["stateSince"]?.string ?? ""
+        waitingKind = o["waitingKind"]?.string ?? ""
+        waitingDetail = o["waitingDetail"]?.string ?? ""
+        failure = o["failure"]?.string ?? ""
+        lastReply = o["lastReply"]?.string ?? ""
+        queuedTurns = o["queuedTurns"]?.int ?? 0
     }
 
     static func isKeepWarmSessionTitle(_ title: String) -> Bool {
@@ -2203,7 +2258,7 @@ struct PetLedger: Equatable {
     static func resolve(sessions: [ClaudeSession], completions: [PetCompletion]) -> PetLedger {
         PetLedger(
             running: sessions.filter(\.isPetWorking).count,
-            waiting: sessions.filter { $0.state == "waiting" }.count,
+            waiting: sessions.filter(ClaudeSession.needsAPerson).count,
             done: completions.count,
             unseen: completions.filter { !$0.seen }.count
         )
@@ -2293,7 +2348,7 @@ enum PetCompletionDetector {
         current: [ClaudeSession],
         now: Date = Date()
     ) -> [PetCompletion] {
-        let active = Set(current.filter { $0.isPetWorking || $0.state == "waiting" }.map(\.id))
+        let active = Set(current.filter { $0.isPetWorking || ClaudeSession.needsAPerson($0) }.map(\.id))
         let workingBefore = Set(previous.filter(\.isPetWorking).map(\.id))
         var rows = existing.filter { !active.contains($0.id) }
         for row in fresh {

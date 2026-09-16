@@ -2857,7 +2857,7 @@ final class ControllerModel: ObservableObject {
         PetSpritePose.resolve(
             sessionCount: petSessions.count,
             workingCount: petSessions.filter(\.isPetWorking).count,
-            waitingCount: petSessions.filter { $0.state == "waiting" }.count,
+            waitingCount: petSessions.filter(ClaudeSession.needsAPerson).count,
             focusState: petFocusSession?.state,
             completing: petCompleting,
             attention: !(petNotice ?? "").isEmpty,
@@ -3153,7 +3153,7 @@ final class ControllerModel: ObservableObject {
                     saveScheduledJobRuns()
                 }
                 let working = sessions.filter(\.isPetWorking).count
-                let waiting = sessions.filter { $0.state == "waiting" }.count
+                let waiting = sessions.filter(ClaudeSession.needsAPerson).count
                 if !fresh.isEmpty && working == 0 && waiting == 0 {
                     beginPetCompletion()
                 } else if working > 0 {
@@ -3195,7 +3195,7 @@ final class ControllerModel: ObservableObject {
     /// Launch-time seed: chips whose session is running or waiting again are
     /// stale — drop them. No new emits from a seed.
     private func reconcilePersistedChips(with sessions: [ClaudeSession]) {
-        let active = Set(sessions.filter { $0.isPetWorking || $0.state == "waiting" }.map(\.id))
+        let active = Set(sessions.filter { $0.isPetWorking || ClaudeSession.needsAPerson($0) }.map(\.id))
         let before = petCompletions.count
         petCompletions.removeAll { active.contains($0.id) }
         if petCompletions.count != before { savePetCompletions() }

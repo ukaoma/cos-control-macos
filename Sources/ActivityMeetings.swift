@@ -499,16 +499,28 @@ struct MeetingLibraryDetailPane: View {
                 }
                 Spacer()
             } else if let detail = model.libraryDetail {
+                // 0.5.232: THE FILE IS THE BODY. The scribe's `.md` already carries the
+                // attendees, the summary, the topics, decisions, action items and the
+                // transcript as one document; through 0.5.231 the pane printed Attendees
+                // and Summary as fields and then the whole file again, raw, under a
+                // Transcript label. A record whose transcript is not a document (an
+                // import with a bare transcript, a legacy record) keeps its labelled
+                // fields, each rendered as Markdown too.
+                let isDocument = COSMarkdownParser.looksLikeDocument(detail.transcript)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        if !detail.attendees.isEmpty {
-                            labeled("Attendees", detail.attendees.joined(separator: ", "))
-                        }
-                        if !detail.summary.isEmpty {
-                            labeled("Summary", detail.summary)
-                        }
-                        if !detail.transcript.isEmpty {
-                            labeled("Transcript", detail.transcript)
+                        if isDocument {
+                            COSMarkdownView(text: detail.transcript, dropLeadingTitle: true)
+                        } else {
+                            if !detail.attendees.isEmpty {
+                                labeled("Attendees", detail.attendees.joined(separator: ", "))
+                            }
+                            if !detail.summary.isEmpty {
+                                labeled("Summary", detail.summary)
+                            }
+                            if !detail.transcript.isEmpty {
+                                labeled("Transcript", detail.transcript)
+                            }
                         }
                         if detail.summary.isEmpty && detail.transcript.isEmpty {
                             Text("This record has no summary or transcript stored.")
@@ -517,15 +529,22 @@ struct MeetingLibraryDetailPane: View {
                     }
                     .font(COSType.body(12.5))
                     .padding(24)
+                    .frame(maxWidth: 760, alignment: .leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 Divider()
-                HStack(spacing: 10) {
+                // Actions by weight (0.5.232): Copy as context is what this pane is for,
+                // so it is the one filled button and it takes ⌘C; the other copies and
+                // Reveal are quiet; Review voices is featured while it is new to this
+                // record, with the pill inside the button rather than beside it.
+                HStack(spacing: 8) {
+                    Button("Copy as context") { model.copyLibraryMeeting(kind: .context) }
+                        .buttonStyle(COSPrimaryButtonStyle())
+                        .keyboardShortcut("c", modifiers: .command)
                     Button("Copy summary") { model.copyLibraryMeeting(kind: .summary) }
                         .disabled(detail.summary.isEmpty)
                     Button("Copy transcript") { model.copyLibraryMeeting(kind: .transcript) }
                         .disabled(detail.transcript.isEmpty)
-                    Button("Copy as context") { model.copyLibraryMeeting(kind: .context) }
                     if model.canRevealLibraryMeeting {
                         Button("Reveal in Finder") { model.revealLibraryMeeting() }
                     }
@@ -537,9 +556,16 @@ struct MeetingLibraryDetailPane: View {
                     // nothing. A merged row keeps it: its session is a real
                     // capture with real audio.
                     if let row = model.openLibraryRow, row.canReviewVoices {
-                        Button("Review voices") { onReviewVoices(row.sessionId) }
+                        let isNew = model.isInboxNew(row.sessionId)
+                        Button { onReviewVoices(row.sessionId) } label: {
+                            HStack(spacing: 8) {
+                                Text("Review voices")
+                                if isNew { COSNewPill() }
+                            }
+                        }
+                        .buttonStyle(COSQuietButtonStyle(tone: isNew ? .featured : .standard))
                         MeetingStatusPills(
-                            isNew: model.isInboxNew(row.sessionId),
+                            isNew: false,
                             tag: model.voiceTag(sessionId: row.sessionId)
                         )
                     }
@@ -568,9 +594,7 @@ struct MeetingLibraryDetailPane: View {
                 .font(COSType.mono(10, weight: .semibold))
                 .tracking(0.8)
                 .foregroundStyle(.secondary)
-            Text(body)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            COSMarkdownView(text: body)
         }
     }
 }

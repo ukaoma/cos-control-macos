@@ -1006,7 +1006,7 @@ struct ActivityWindow: View {
 
     private var sessionsStats: [(value: String, label: String)] {
         guard !visibleSessions.isEmpty else { return [] }
-        let waiting = visibleSessions.filter { $0.state == "waiting" }.count
+        let waiting = visibleSessions.filter(ClaudeSession.needsAPerson).count
         let pinned = visibleSessions.filter(\.pinned).count
         return [(formatted(visibleSessions.count), "ON DISK"), (formatted(waiting), "WAITING"), (formatted(pinned), "PINNED")]
     }
@@ -5034,10 +5034,16 @@ struct ClaudeSessionDetailPane: View {
                                 Text(turn.isUser ? "YOU" : "ASSISTANT")
                                     .font(COSType.mono(9.5, weight: .semibold))
                                     .tracking(1.2)
-                                Text(turn.text)
-                                    .font(COSType.body(12.5))
-                                    .textSelection(.enabled)
-                                    .fixedSize(horizontal: false, vertical: true)
+                                // 0.5.232: a reply is Markdown (headings, lists, tables,
+                                // code); what you typed is shown as you typed it.
+                                if turn.isUser {
+                                    Text(turn.text)
+                                        .font(COSType.body(12.5))
+                                        .textSelection(.enabled)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                } else {
+                                    COSMarkdownView(text: turn.text)
+                                }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(16)

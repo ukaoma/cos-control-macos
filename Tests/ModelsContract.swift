@@ -3502,10 +3502,18 @@ struct ModelsContract {
         let quiet = PetLedger.resolve(sessions: [live("i", "recent")], completions: [])
         precondition(quiet.isQuiet && quiet.caption == "IDLE" && quiet.segments.isEmpty)
 
-        // Same predicates as the pose ladder: "error" is neither running nor
-        // waiting, so the bar and the fight ladder can never disagree.
+        // 0.5.232: "error" is a FAILED turn (a rate limit, an overloaded engine) now
+        // that the server reports one (glasses-server 6.48.0 StopFailure). It needs a
+        // person the way a question does, so it rides the WAITING channel: the bar's
+        // waiting count, the pet's WAITING ON YOU section, rank 1. The pose ladder still
+        // answers `.error` for it first, so the two agree: an error is never running,
+        // and it is counted where a person will look. (Until 0.5.231 the word was dormant
+        // and counted nowhere.)
         let err = PetLedger.resolve(sessions: [live("e", "error")], completions: [])
-        precondition(err.running == 0 && err.waiting == 0)
+        precondition(err.running == 0 && err.waiting == 1)
+        precondition(ClaudeSession.petSections([live("e", "error")]).waiting.count == 1
+                     && ClaudeSession.petSections([live("e", "error")]).idle.isEmpty,
+                     "a failed session sits in WAITING ON YOU, never in the idle bucket")
 
         // Pose-aware panel viewport (0.5.145): stable envelope WIDTH so a poll
         // never re-centers the pet, CURRENT pose height so the ledger hugs the

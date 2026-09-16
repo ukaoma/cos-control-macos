@@ -139,8 +139,14 @@ private struct COSField: ViewModifier {
 /// `.destructive` (0.5.221) is for the CONFIRMING step of a destructive action:
 /// danger ink at rest and a danger hairline when hovered. Arming one stays a
 /// `COSTextButtonStyle(tone: .destructive)`, so a list of rows is not a wall of red.
+///
+/// THREE WEIGHTS OF ACTION ON A PANE (0.5.232, Miles: "create some distinction on the
+/// high use UI elements"): the one thing the pane is for is a `COSPrimaryButtonStyle`
+/// (gold fill, first in the row); everything else is this style at `.standard`; and
+/// a capability that just landed is `.featured`, a gold hairline with accent ink at
+/// rest and its `COSNewPill` inside the label, until it is familiar.
 struct COSQuietButtonStyle: ButtonStyle {
-    enum Tone { case standard, destructive }
+    enum Tone { case standard, destructive, featured }
     var tone: Tone = .standard
 
     func makeBody(configuration: Configuration) -> some View {
@@ -156,18 +162,21 @@ struct COSQuietButtonStyle: ButtonStyle {
         var body: some View {
             let hot = (hovered || configuration.isPressed) && isEnabled
             let signal = tone == .destructive ? COSPalette.danger : COSPalette.gold
-            let ink: Color = tone == .destructive
-                ? (isEnabled ? COSPalette.danger : Color.secondary)
-                : (hot ? COSPalette.gold : (isEnabled ? Color.primary : Color.secondary))
+            let ink: Color = switch tone {
+            case .destructive: isEnabled ? COSPalette.danger : Color.secondary
+            case .featured: isEnabled ? (hot ? COSPalette.gold : COSPalette.accent) : Color.secondary
+            case .standard: hot ? COSPalette.gold : (isEnabled ? Color.primary : Color.secondary)
+            }
+            let restLine: Color = tone == .featured && isEnabled ? COSPalette.gold.opacity(0.7) : COSPalette.line
             configuration.label
-                .font(COSType.body(11.5, weight: .medium))
+                .font(COSType.body(11.5, weight: tone == .featured ? .semibold : .medium))
                 .foregroundStyle(ink)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(configuration.isPressed ? signal.opacity(0.12) : COSPalette.card)
                 .clipShape(RoundedRectangle(cornerRadius: 7))
                 .overlay(RoundedRectangle(cornerRadius: 7)
-                    .stroke(hot ? signal.opacity(0.85) : COSPalette.line, lineWidth: 1))
+                    .stroke(hot ? signal.opacity(0.85) : restLine, lineWidth: 1))
                 .opacity(isEnabled ? 1 : 0.55)
                 .onHover { hovered = $0 }
         }
@@ -239,6 +248,20 @@ struct COSIconButtonStyle: ButtonStyle {
                 .opacity(isEnabled ? 1 : 0.4)
                 .onHover { hovered = $0 }
         }
+    }
+}
+
+/// The NEW marker that rides INSIDE a featured button's label (0.5.232), so the
+/// button and its newness are one object rather than a pill floating beside it.
+struct COSNewPill: View {
+    var body: some View {
+        Text("NEW")
+            .font(COSType.mono(8.5, weight: .bold))
+            .tracking(0.8)
+            .foregroundStyle(COSPalette.ink)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(COSPalette.gold))
     }
 }
 

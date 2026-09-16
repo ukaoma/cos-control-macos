@@ -39,8 +39,8 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 678:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 678 (678 at 0.5.230 after QA round 1)")
+if count < 685:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 685 (685 at 0.5.232: the server-state projections)")
 ' "$SELF_TEST"
 
 python3 "$ROOT/Tests/HeldNamingTransport.py" "$TMP/cos-control-helper"
@@ -62,6 +62,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/Views.swift" \
   "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
+  "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
@@ -77,6 +78,12 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   -framework AppKit -o "$TMP/helper-transport-contract"
 "$TMP/helper-transport-contract"
 "$TMP/models-contract"
+# 0.5.232: the Markdown parser is pure Foundation and pinned by an EXECUTED contract
+# (the scribe's meeting, lists, tasks, tables, code, quotes, details, speaker lines).
+swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+  "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Tests/MarkdownContract.swift" \
+  -o "$TMP/markdown-contract"
+"$TMP/markdown-contract"
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediUpgradeContract.swift" \
   -framework AppKit -o "$TMP/jedi-upgrade-contract"
@@ -89,6 +96,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
+  "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Tests/JediIdleContract.swift" -framework AppKit -framework SwiftUI -o "$TMP/jedi-idle-contract"
 "$TMP/jedi-idle-contract" "$ROOT/Resources"
@@ -1672,7 +1680,9 @@ ui = open(sys.argv[2]).read()
 
 proj = helper[helper.index("static func agentSessionRowProjection"):]
 proj = proj[:proj.index("static func agentSessionDroppedProjection")]
-ret = proj[proj.index("return ["): proj.rindex("]") + 1]
+# 0.5.232: the literal is built as `var out = [...]`, then the eight server-state keys
+# are merged in and `out` returned; the pinned shape is the literal itself.
+ret = proj[proj.index("var out: [String: Any] = ["): proj.index("out.merge(serverStateProjection(row))")]
 assert '"pinned"' in ret
 assert "dropped" not in ret, "dropped leaked into the 12-key row projection"
 
@@ -2028,6 +2038,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/Views.swift" \
   "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
+  "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
@@ -5694,5 +5705,112 @@ for marker in ("struct MeetingImportPane", "struct MeetingEngineStatusRow",
 
 print("COS Control: import and merge routes, openers, copy, mutable guard and Undo preview pinned (0.5.230)")
 MERGEUI
+
+# ── 0.5.232: Markdown panes, action weights, server-derived session state ─────
+#
+# The parser is EXECUTED above (markdown-contract). What is pinned here is the wiring
+# that the contract cannot see: which panes render through the view, that the meeting
+# file is the body ONCE, that the copy actions still copy the stored text, the three
+# button weights, and that the server's state reaches ClaudeSession and outranks the
+# helper's transcript guess only when its source says so.
+/usr/bin/python3 - "$ROOT" <<'MARKDOWN'
+import pathlib, re, sys
+root = pathlib.Path(sys.argv[1])
+def code(rel): return (root / rel).read_text()
+def fail(msg): sys.exit("0.5.232 pin: " + msg)
+def body(text, marker):
+    i = text.index(marker)
+    depth = 0; j = i
+    while j < len(text):
+        if text[j] == "{": depth += 1
+        elif text[j] == "}":
+            depth -= 1
+            if depth == 0: return text[i:j + 1]
+        j += 1
+    fail(f"unbalanced braces after {marker}")
+
+md = code("Sources/COSMarkdown.swift")
+parser = code("Sources/COSMarkdownParser.swift")
+meetings = code("Sources/ActivityMeetings.swift")
+views = code("Sources/Views.swift")
+activity = code("Sources/ActivityWindow.swift")
+models = code("Sources/Models.swift")
+brand = code("Sources/COSBrand.swift")
+helper = code("HelperSources/main.swift")
+
+# 1. The parser never imports SwiftUI: the contract compiles it alone, on purpose.
+if "import SwiftUI" in parser or "import AppKit" in parser:
+    fail("COSMarkdownParser.swift must stay Foundation-only so the contract can execute it")
+if "struct COSMarkdownView" not in md or "COSMarkdownParser.parse(" not in md:
+    fail("COSMarkdownView must render the parser's blocks")
+
+# 2. Every pane renders through the ONE view, and each is the body once.
+pane = body(meetings, "struct MeetingLibraryDetailPane")
+if "COSMarkdownParser.looksLikeDocument(detail.transcript)" not in pane:
+    fail("the meeting pane must decide document-vs-fields with looksLikeDocument")
+if "COSMarkdownView(text: detail.transcript, dropLeadingTitle: true)" not in pane:
+    fail("a document meeting renders the file once, title dropped")
+if 'labeled("Attendees"' not in pane or 'labeled("Summary"' not in pane:
+    fail("a non-document record keeps its labelled fields")
+if "COSMarkdownView(text: body)" not in pane:
+    fail("the labelled fields render as Markdown too")
+ctx = body(views, "struct ContextDetailPane")
+if "COSMarkdownView(text: record.body, dropLeadingTitle: true" not in ctx:
+    fail("threads and memories render their body as Markdown, title dropped")
+if 'Text(record.body.isEmpty ? "(no stored body)" : record.body)' in ctx:
+    fail("the raw thread body Text is still there")
+sessions = body(activity, "struct ClaudeSessionDetailPane")
+if "COSMarkdownView(text: turn.text)" not in sessions or "if turn.isUser {" not in sessions:
+    fail("an assistant turn renders as Markdown and a user turn as typed")
+
+# 3. Copy actions copy the stored text: no copy path goes through the renderer.
+for src in (code("Sources/ControllerModel.swift"),):
+    for name in ("func copyLibraryMeeting", "func copyContextRecord", "func copyClaudeSession"):
+        if name not in src: fail(f"{name} moved; the copy-stays-raw pin must follow it")
+        if "COSMarkdown" in body(src, name): fail(f"{name} must copy the stored Markdown, not the rendered text")
+
+# 4. The three weights, and where they sit.
+if "case standard, destructive, featured" not in brand: fail("COSQuietButtonStyle needs the featured tone")
+if "struct COSNewPill" not in brand: fail("the NEW pill is missing")
+actions = pane[pane.index("Actions by weight"):]
+first_button = re.search(r'Button\("([^"]+)"', actions).group(1)
+if first_button != "Copy as context": fail(f"the meeting pane's first action must be Copy as context, got {first_button}")
+if ".buttonStyle(COSPrimaryButtonStyle())" not in actions.split('Button("Copy summary")')[0]:
+    fail("Copy as context must be the primary button")
+if '.keyboardShortcut("c", modifiers: .command)' not in actions: fail("Copy as context takes ⌘C")
+if "COSQuietButtonStyle(tone: isNew ? .featured : .standard)" not in actions or "if isNew { COSNewPill() }" not in actions:
+    fail("Review voices is featured with its NEW pill inside the label while the meeting is new")
+if "MeetingStatusPills(\n                            isNew: false," not in actions:
+    fail("the standalone New pill beside Review voices must be off; it lives inside the button now")
+ctx_actions = ctx[ctx.index("Actions by weight"):]
+if 'Button("Copy as Context") { model.copyContextRecord(record) }\n                        .buttonStyle(COSPrimaryButtonStyle())' not in ctx_actions:
+    fail("Copy as Context is the primary on a thread or memory")
+
+# 5. Server-derived state: the eight fields, the mapping, and its precedence.
+for key in ("agentState", "stateSource", "stateSince", "waitingKind", "waitingDetail", "failure", "lastReply"):
+    if f'{key} = o["{key}"]' not in models: fail(f"ClaudeSession must decode {key}")
+if 'queuedTurns = o["queuedTurns"]?.int ?? 0' not in models: fail("ClaudeSession must decode queuedTurns as a number")
+if "static func serverStateProjection" not in helper or "static func sessionStateFromServer" not in helper:
+    fail("the helper's server-state projection and mapping are missing")
+for fn in ("agentSessionRowProjection", "claudePeerProjection", "sessionSearchHitProjection"):
+    if "serverStateProjection(row)" not in body(helper, f"static func {fn}"):
+        fail(f"{fn} must carry the server state")
+if "for (_, key) in serverStateKeys where peer[key] != nil" not in body(helper, "static func overlayLiveState"):
+    fail("the overlay must copy the server state from the peer")
+live = body(helper, "static func applyLiveWorkingState")
+if live.index("sessionStateFromServer(") > live.index('activitySource"] as? String == "transcript"'):
+    fail("the server-state branch must come BEFORE the transcript branch in applyLiveWorkingState")
+if 'stateSource == "hook" || stateSource == "registry"' not in helper:
+    fail("only a hook- or registry-sourced state may outrank the transcript")
+if '"failed": return "error"' not in helper: fail("failed maps to the pet's error word")
+if 'case "error": "Failed"' not in models: fail("a failed session never captions Idle")
+if "static func needsAPerson" not in models or "session.state == \"waiting\" || session.state == \"error\"" not in models:
+    fail("a failed turn rides the waiting channel")
+label = body(models, "var stateLabel: String")
+if 'case "error": failure.isEmpty ? "Failed"' not in label or "queued" not in label:
+    fail("stateLabel must read Failed and count queued follow-ups")
+
+print("COS Control: Markdown panes, action weights and server-derived session state pinned (0.5.232)")
+MARKDOWN
 
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"
