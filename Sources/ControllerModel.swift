@@ -366,6 +366,8 @@ final class ControllerModel: ObservableObject {
     private var contextDetailTask: Task<Void, Never>?
     private var libraryDetailTask: Task<Void, Never>?
     private var claudeSessionDetailTask: Task<Void, Never>?
+    /// 0.5.233: the live feed's helper process, one per open pane, cancelled on close.
+    private var sessionStreamTask: Task<Void, Never>?
     private var librarySearchTask: Task<Void, Never>?
     private var memorySearchTask: Task<Void, Never>?
     private var threadSearchTask: Task<Void, Never>?
@@ -1650,6 +1652,43 @@ final class ControllerModel: ObservableObject {
     @Published var openClaudeRow: ClaudeSession?
     @Published var claudeSessionDetail: ClaudeSessionDetail?
     @Published var claudeSessionDetailLoading = false
+    /// 0.5.233: the Claude Code hooks install state as the server reports it. Five
+    /// states: installed, drift, missing (show Install), route_absent (a server before
+    /// 6.48.0: say update, never "not installed"), unreachable (no banner).
+    @Published var sessionHooksState: String = "unreachable"
+    @Published var sessionHooksInstalling = false
+    @Published var sessionHooksNote: String? = nil
+    private var sessionHooksCheckedAt: Date = .distantPast
+
+    func refreshSessionHooksStatus(force: Bool = false) async {
+        if !force, Date().timeIntervalSince(sessionHooksCheckedAt) < 60 { return }
+        sessionHooksCheckedAt = Date()
+        guard let response = try? await helper.run(["session-hooks-status"], timeout: 15) else {
+            sessionHooksState = "unreachable"; return
+        }
+        sessionHooksState = response.details["state"]?.string ?? "unreachable"
+    }
+
+    func installSessionHooks() {
+        guard !sessionHooksInstalling else { return }
+        sessionHooksInstalling = true
+        sessionHooksNote = nil
+        Task { [weak self] in
+            defer { self?.sessionHooksInstalling = false }
+            do {
+                let response = try await self?.helper.run(["session-hooks-install"], timeout: 40)
+                self?.sessionHooksState = response?.details["state"]?.string ?? "installed"
+                self?.sessionHooksNote = "Hooks installed. Open tabs report from their next event; Claude may show a one-time \"hooks modified externally\" notice."
+            } catch {
+                self?.sessionHooksNote = error.localizedDescription
+            }
+        }
+    }
+
+    /// 0.5.233: what the open session is doing right now, from the server's stream.
+    /// nil until the first frame; `fallbackReason` set when the stream is not available
+    /// (an older server, `stream_capacity`, a dead socket) and the polled turns stand.
+    @Published var sessionFeed: SessionLiveFeed?
     @Published var claudeSessionDetailError: String?
     // ── Session Chat (0.5.75) ──
     @Published var chatDraft = ""
@@ -2389,6 +2428,7 @@ final class ControllerModel: ObservableObject {
     }
 
     func loadClaudeSessions(force: Bool = false) async {
+        Task { [weak self] in await self?.refreshSessionHooksStatus(force: force) }
         hydrateClaudeSessionsFromCache()
         if force {
             if let inflight = claudeSessionsLoadInFlight {
@@ -4341,6 +4381,100 @@ final class ControllerModel: ObservableObject {
             await self?.fetchClaudeSessionDetail(session)
         }
         prepareSessionChat(session)
+        startSessionStream(session)
+    }
+
+    // MARK: - Live feed (0.5.233)
+    //
+    // One helper process per open pane (`session-stream`), read line by line off the
+    // progress channel. Reconnect is bounded (three tries, 2/4/8 s) and resumes with
+    // the last `id` so the server replays only what was missed; a seed clears the feed
+    // (`SessionLiveFeed.applying`). Anything the stream cannot do (older server, capacity,
+    // a socket that died and stayed dead) leaves the polled turns in charge and says so
+    // in one line. Never a hot loop against a chatty session.
+    static let sessionStreamRetryDelays: [UInt64] = [2, 4, 8]
+
+    private func startSessionStream(_ session: ClaudeSession) {
+        sessionStreamTask?.cancel()
+        sessionFeed = nil
+        sessionStreamTask = Task { [weak self] in
+            var attempt = 0
+            var after: String? = nil
+            while !Task.isCancelled {
+                let outcome = await self?.runSessionStream(session, after: after) ?? .stop("closed")
+                guard !Task.isCancelled, self?.openClaudeRow?.id == session.id else { return }
+                switch outcome {
+                case .done:
+                    return
+                case .stop(let reason):
+                    self?.markSessionFeedFallback(reason)
+                    return
+                case .retry(let lastID):
+                    guard attempt < Self.sessionStreamRetryDelays.count else {
+                        self?.markSessionFeedFallback("stream_lost")
+                        return
+                    }
+                    after = lastID
+                    let delay = Self.sessionStreamRetryDelays[attempt]
+                    attempt += 1
+                    self?.noteSessionFeedReconnecting()
+                    try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
+                }
+            }
+        }
+    }
+
+    private enum SessionStreamOutcome { case done, stop(String), retry(lastID: String?) }
+
+    private func runSessionStream(_ session: ClaudeSession, after: String?) async -> SessionStreamOutcome {
+        var args = ["session-stream", "--provider", session.provider, "--session", session.sessionId]
+        if let after { args += ["--after", after] } else { args += ["--seed", "turn"] }
+        do {
+            let response = try await helper.run(args, timeout: nil) { [weak self] line in
+                guard let event = SessionLiveEvent(line: line) else { return }
+                Task { @MainActor [weak self] in
+                    guard let self, self.openClaudeRow?.id == session.id else { return }
+                    var feed = self.sessionFeed ?? SessionLiveFeed()
+                    feed = feed.applying(event)
+                    feed.connected = true
+                    feed.fallbackReason = nil
+                    self.sessionFeed = feed
+                }
+            }
+            let reason = response.details["reason"]?.string ?? "closed"
+            switch reason {
+            case "done": return .done
+            case "heartbeat_gap", "closed", "max_seconds": return .retry(lastID: sessionFeed?.lastID)
+            default:
+                // http_404 (an older server, or a session with no transcript), http_503
+                // (stream_capacity): the poll is the honest surface.
+                return .stop(reason)
+            }
+        } catch is CancellationError {
+            return .stop("cancelled")
+        } catch {
+            return .retry(lastID: sessionFeed?.lastID)
+        }
+    }
+
+    private func markSessionFeedFallback(_ reason: String) {
+        var feed = sessionFeed ?? SessionLiveFeed()
+        feed.connected = false
+        feed.fallbackReason = reason
+        sessionFeed = feed
+    }
+
+    private func noteSessionFeedReconnecting() {
+        var feed = sessionFeed ?? SessionLiveFeed()
+        feed.connected = false
+        feed.fallbackReason = "reconnecting"
+        sessionFeed = feed
+    }
+
+    func stopSessionStream() {
+        sessionStreamTask?.cancel()
+        sessionStreamTask = nil
+        sessionFeed = nil
     }
 
     private func fetchClaudeSessionDetail(_ session: ClaudeSession) async {
@@ -4368,6 +4502,7 @@ final class ControllerModel: ObservableObject {
     }
 
     func closeClaudeSession() {
+        stopSessionStream()
         claudeSessionDetailTask?.cancel()
         claudeSessionDetailTask = nil
         claudeSessionDetailLoading = false

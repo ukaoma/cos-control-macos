@@ -9,6 +9,7 @@ swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=compl
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
+  "$ROOT/Sources/SessionLiveFeed.swift" \
   "$ROOT/Sources/SessionPet.swift" "$ROOT/Tests/MarkdownPaneUI.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement -o "$TMP/markdown-ui"
-"$TMP/markdown-ui" "$OUT"
+"$TMP/markdown-ui" "$OUT" "$ROOT"

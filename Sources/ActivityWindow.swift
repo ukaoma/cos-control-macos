@@ -1062,6 +1062,7 @@ struct ActivityWindow: View {
                 }
             )
             sessionsSearchBar
+            sessionHooksBanner
             if model.isSessionQueryActive {
                 sessionsSearchResults
             } else if model.claudeSessionsLoading && visibleSessions.isEmpty {
@@ -1748,6 +1749,46 @@ struct ActivityWindow: View {
                 .cosRowCard()
             }
             .buttonStyle(.plain)
+        }
+    }
+
+    /// 0.5.233: a desktop app must be recoverable from its own UI. When the server says
+    /// the hooks are missing or drifted, this offers the install; a server before 6.48.0
+    /// says update; an unreachable server shows nothing.
+    @ViewBuilder private var sessionHooksBanner: some View {
+        let state = model.sessionHooksState
+        if model.claudeSessionsEnabled, state == "missing" || state == "drift" || state == "script_outdated" || state == "route_absent" {
+            HStack(spacing: 10) {
+                Circle().fill(COSPalette.amber).frame(width: 7, height: 7)
+                Text(state == "route_absent"
+                     ? "Live session state needs COS server 6.48.0 or later."
+                     : (state == "missing" ? "Claude Code hooks are not installed: sessions read from their transcripts only."
+                        : "Claude Code hooks need a refresh (\(state == "drift" ? "settings changed" : "script outdated"))."))
+                    .font(COSType.body(11.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                if state == "route_absent" {
+                    Button("Update Server") { model.perform("update") }
+                        .buttonStyle(COSQuietButtonStyle())
+                        .disabled(model.status.meetingWorkBlockingRestart)
+                } else {
+                    Button(model.sessionHooksInstalling ? "Installing…" : (state == "missing" ? "Install hooks" : "Reinstall hooks")) { model.installSessionHooks() }
+                        .buttonStyle(COSQuietButtonStyle(tone: .featured))
+                        .disabled(model.sessionHooksInstalling)
+                }
+            }
+            .controlSize(.small)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 8)
+            .background(COSPalette.raised)
+        }
+        if let note = model.sessionHooksNote {
+            Text(note)
+                .font(COSType.body(11))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 6)
         }
     }
 
@@ -5020,6 +5061,9 @@ struct ClaudeSessionDetailPane: View {
             } else if let detail = model.claudeSessionDetail {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
+                        // 0.5.233: what the session is doing RIGHT NOW, from the server's
+                        // stream; the turns below are the stored conversation.
+                        SessionActivityFeed(feed: model.sessionFeed, queued: model.openClaudeRow?.queuedTurns ?? 0)
                         if detail.truncated {
                             Text("Showing the last \(detail.turns.count) of \(detail.totalTurns) turns. Copy session keeps the original request plus the newest context.")
                                 .font(COSType.body(11.5))
@@ -5275,13 +5319,123 @@ struct SessionChatComposer: View {
                         || model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             if model.chatVerdict?.caution == true {
-                Text("Another app on this Mac has this session open. COS will ask before the first send.")
+                // 0.5.233: the documented fork mode, named on the composer. The turn lands in
+                // the session's transcript through a resume child; the open Desktop tab paints
+                // it only when that session is resumed. Queue-and-deliver (server 6.48.1) makes
+                // it land the moment the engine closes the turn.
+                Text("Another app on this Mac has this session open. COS will ask before the first send. The reply lands in the transcript; the open desk tab will not show it until you resume.")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let queued = model.openClaudeRow?.queuedTurns, queued > 0 {
+                Text(queued == 1 ? "1 follow-up queued; it lands when this turn ends." : "\(queued) follow-ups queued; they land in order when this turn ends.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(COSPalette.accent)
             }
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 12)
+    }
+}
+
+/// The live block at the top of a session pane (0.5.233): the state line with its
+/// clock, the current prompt, the last eight tool lines. Elapsed ticks locally once a
+/// second; the feed itself moves only on the server's events. When the stream is not
+/// available the block says so in one line and the polled turns below stand.
+struct SessionActivityFeed: View {
+    let feed: SessionLiveFeed?
+    var queued: Int = 0
+    @State private var now = Date()
+    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    private var tint: Color {
+        switch feed?.agentState ?? feed?.state {
+        case "running", "working": COSPalette.green
+        case "waiting": COSPalette.amber
+        case "failed": COSPalette.danger
+        default: COSPalette.muted
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("ACTIVITY")
+                .font(COSType.mono(9.5, weight: .semibold))
+                .tracking(1.2)
+                .foregroundStyle(.secondary)
+            if let feed, feed.connected || feed.lastSeq > 0 {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Circle().fill(tint).frame(width: 8, height: 8)
+                        .alignmentGuide(.firstTextBaseline) { d in d[.bottom] - 1 }
+                    Text(feed.stateWord)
+                        .font(COSType.body(13, weight: .semibold))
+                    if !feed.stateDetail.isEmpty {
+                        Text(feed.stateDetail)
+                            .font(COSType.body(12.5))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    Spacer(minLength: 8)
+                    Text(feed.elapsed(now: now))
+                        .font(COSType.mono(11))
+                        .foregroundStyle(COSPalette.muted)
+                        .monospacedDigit()
+                }
+                if !feed.prompt.isEmpty {
+                    Text(feed.prompt)
+                        .font(COSType.body(12.5))
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !feed.tools.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(feed.tools) { tool in
+                            Text(tool.line)
+                                .font(COSType.mono(10.5))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                }
+                HStack(spacing: 10) {
+                    if feed.missed > 0 {
+                        Text("missed \(feed.missed)").font(COSType.mono(9.5)).foregroundStyle(COSPalette.amber)
+                    }
+                    if queued > 0 {
+                        Text(queued == 1 ? "1 queued" : "\(queued) queued").font(COSType.mono(9.5)).foregroundStyle(COSPalette.accent)
+                    }
+                    if let reason = feed.fallbackReason, reason == "reconnecting" {
+                        Text("reconnecting…").font(COSType.mono(9.5)).foregroundStyle(COSPalette.muted)
+                    }
+                }
+            } else if let reason = feed?.fallbackReason {
+                Text(fallbackLine(reason))
+                    .font(COSType.body(11.5))
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Connecting to the live feed…")
+                    .font(COSType.body(11.5))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line, lineWidth: 1))
+        .onReceive(tick) { now = $0 }
+    }
+
+    private func fallbackLine(_ reason: String) -> String {
+        switch reason {
+        case "http_404": "No live feed for this session (no transcript to follow); showing the stored turns."
+        case "http_503": "The server has no room for another live feed right now; showing the stored turns."
+        case "reconnecting": "Reconnecting to the live feed…"
+        case "stream_lost": "The live feed stopped answering; showing the stored turns. Reopen the session to try again."
+        default: "Live feed unavailable (\(reason)); showing the stored turns."
+        }
     }
 }
 

@@ -220,7 +220,46 @@ struct MarkdownPaneUIContract {
                 size: NSSize(width: 640, height: 60), name: "action-weights", output: output, dark: dark, fills: false)
         }
 
+        // 0.5.233: the live Activity block on the recorded 6.48.2 frames, then the three
+        // fallback shapes (connecting, reconnecting, older server).
+        let fixture = URL(fileURLWithPath: CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : ".")
+            .appendingPathComponent("Tests/fixtures/session-stream-6.48.2.ndjson")
+        var recorded = SessionLiveFeed()
+        if let text = try? String(contentsOf: fixture, encoding: .utf8) {
+            for line in text.split(separator: "\n") {
+                if let event = SessionLiveEvent(line: String(line)) { recorded = recorded.applying(event) }
+            }
+        }
+        precondition(recorded.tools.count == SessionLiveFeed.toolWindow, "the recorded feed fills the tool window: \(recorded.tools.count)")
+        recorded.connected = true
+        var waiting = recorded
+        waiting.agentState = "waiting"; waiting.waitingKind = "permission"; waiting.waitingDetail = "Bash git push origin main"
+        var lost = SessionLiveFeed(); lost.fallbackReason = "http_404"
+        var reconnecting = recorded; reconnecting.connected = false; reconnecting.fallbackReason = "reconnecting"; reconnecting.missed = 3
+        for dark in [false, true] {
+            let (_, host) = try render(
+                VStack(alignment: .leading, spacing: 12) {
+                    SessionActivityFeed(feed: recorded, queued: 1)
+                    SessionActivityFeed(feed: waiting)
+                    SessionActivityFeed(feed: reconnecting)
+                    SessionActivityFeed(feed: lost)
+                    SessionActivityFeed(feed: nil)
+                }
+                .padding(16)
+                .frame(width: 920, alignment: .topLeading)
+                .background(COSPalette.panel),
+                size: NSSize(width: 920, height: 900), name: "activity-feed", output: output, dark: dark, fills: false)
+            // Only selectable Text is backed by an NSTextView the harness can read; the
+            // state word, tool lines and chips are plain Text (drawn, not enumerable), so
+            // the prompt is the one string asserted here and the PNG is the review surface.
+            let text = strings(host).joined(separator: "\n")
+            precondition(text.components(separatedBy: "Confirm the fix was server-side, then update the docs.").count == 4,
+                         "the three live feeds draw the recorded prompt once each")
+            precondition(host.bounds.height >= 700, "five feeds stack taller than one screen of chrome: \(host.bounds.height)")
+        }
+
         print("PASS markdown UI: meeting pane and thread pane render as documents at 920 pt, light and dark;")
+        print("PASS activity feed: recorded, waiting, reconnecting, older-server and connecting shapes render light and dark;")
         print("PASS action weights: primary, quiet and featured render side by side. Output: \(output.path)")
     }
 }

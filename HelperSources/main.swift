@@ -502,6 +502,9 @@ final class COSControlHelper {
         case "session-pet-live": try emitClaudeSessions(liveOnly: true)
         case "claude-sessions-search": try emitClaudeSessionsSearch(args: args)
         case "claude-session-detail": try emitClaudeSessionDetail(args: args)
+        case "session-stream": try emitSessionStream(args: args)
+        case "session-hooks-status": try emitSessionHooksStatus()
+        case "session-hooks-install": try withMutationLock { try emitSessionHooksInstall() }
         case "session-reveal": try emitSessionReveal(args: args)
         case "session-chat-attachability": try emitSessionChatAttachability(args: args)
         case "session-chat-attach": try emitSessionChatAttach(args: args)
@@ -11042,6 +11045,205 @@ final class COSControlHelper {
         ])
     }
 
+    // MARK: - session hooks (0.5.233, glasses-server 6.48.0+)
+    //
+    // `GET /api/session-hooks/status` answers `installed | drift | missing | …` with the
+    // script SHA; `POST /api/session-hooks/install` merges the fifteen subscriptions into
+    // `~/.claude/settings.json` through the RUNNING server, so the paths it bakes are the
+    // paths that server drains. Five states reach the app: installed, drift, missing (200
+    // with installed:false, which shows Install), route_absent (404: a server before
+    // 6.48.0, never "not installed"), unreachable (no answer, no banner).
+
+    private func emitSessionHooksStatus() throws {
+        let token = try speakerReviewToken()
+        guard let response = request("/api/session-hooks/status", token: token, timeout: 8) else {
+            emit(ok: true, message: "Server did not answer", details: ["state": "unreachable"]); return
+        }
+        if response.status == 404 { emit(ok: true, message: "Hooks route absent", details: ["state": "route_absent"]); return }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        guard response.status == 200, let body = response.body else {
+            emit(ok: true, message: "Hooks status unavailable", details: ["state": "unreachable", "http": response.status]); return
+        }
+        let hooks = (body["sessionHooks"] as? [String: Any]) ?? body
+        emit(ok: true, message: "Hooks status", details: [
+            "state": hooks["state"] as? String ?? "missing",
+            "installed": hooks["installed"] as? Bool ?? false,
+            "enabled": hooks["enabled"] as? Bool ?? false,
+            "signals": hooks["signals"] as? Int ?? 0,
+            "scriptOutdated": hooks["script_outdated"] as? Bool ?? false,
+        ])
+    }
+
+    private func emitSessionHooksInstall() throws {
+        let token = try speakerReviewToken()
+        guard let response = request("/api/session-hooks/install", method: "POST", token: token, body: "{}", timeout: 20) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 404 { throw HelperError.message("This server has no hooks route. Update the COS server to 6.48.0 or later.") }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        guard response.status == 200, let body = response.body, body["ok"] as? Bool == true else {
+            let reason = (response.body?["reason"] as? String) ?? "install_failed"
+            throw HelperError.message("Hooks install refused: \(reason)")
+        }
+        // Mirror `requireClaudeSessions`: the install is done only when status says so.
+        guard let check = request("/api/session-hooks/status", token: token, timeout: 8), check.status == 200,
+              let checkBody = check.body else {
+            throw HelperError.message("Hooks were written but the server did not answer the status check")
+        }
+        let hooks: [String: Any] = (checkBody["sessionHooks"] as? [String: Any]) ?? checkBody
+        guard hooks["installed"] as? Bool == true else {
+            throw HelperError.message("Hooks were written but the server does not report them installed")
+        }
+        emit(ok: true, message: "Hooks installed", details: [
+            "changed": body["changed"] as? Bool ?? true,
+            "backupPath": body["backupPath"] as? String ?? "",
+            "state": hooks["state"] as? String ?? "installed",
+        ])
+    }
+
+    // MARK: - session-stream (0.5.233)
+    //
+    // `session-stream --provider claude --session <id> [--after <epoch.cursor>] [--seed turn]`
+    // opens the server's SSE `/api/agent-sessions/:provider/:id/stream` and writes ONE
+    // NDJSON line per event to the stderr PROGRESS channel (HelperClient streams stderr
+    // live and buffers stdout until exit), then a final `{ok:true}` on stdout when the
+    // stream ends. It ends on the server's `done`, on a heartbeat gap past
+    // `sessionStreamGapSeconds` (the server heartbeats every 15 s; two missed beats plus
+    // the documented 2-3 s event-loop stalls), on `--max-seconds`, or when the app
+    // cancels the process. Reconnect is the CALLER's (bounded, with the last `id`).
+    //
+    // A frame's `id:` line (`<epoch>.<cursor>`, 6.48.1) rides along on the JSON as
+    // `"id"` so the app can resume with `--after`. Lines are kept small: the server caps
+    // tool targets and prose already, and a 256 KB line would trip the progress cap.
+
+    static let sessionStreamGapSeconds: TimeInterval = 40
+    static let sessionStreamDefaultMaxSeconds: TimeInterval = 6 * 3600
+
+    /// One SSE frame parser over a byte stream: `id:` and `data:` lines, blank-line framed.
+    /// Pure so the self-test drives it with split, joined and torn chunks.
+    struct SSEFrameParser {
+        private var buffer = ""
+        /// Feed a chunk; returns the complete frames it closed, as (id, data) pairs.
+        mutating func feed(_ chunk: String) -> [(id: String?, data: String)] {
+            buffer += chunk
+            var out: [(id: String?, data: String)] = []
+            while let range = buffer.range(of: "\n\n") {
+                let frame = String(buffer[..<range.lowerBound])
+                buffer = String(buffer[range.upperBound...])
+                var id: String? = nil
+                var data: [String] = []
+                for line in frame.split(separator: "\n", omittingEmptySubsequences: false) {
+                    if line.hasPrefix("id: ") { id = String(line.dropFirst(4)) }
+                    else if line.hasPrefix("id:") { id = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces) }
+                    else if line.hasPrefix("data: ") { data.append(String(line.dropFirst(6))) }
+                    else if line.hasPrefix("data:") { data.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)) }
+                }
+                if !data.isEmpty { out.append((id: id, data: data.joined(separator: "\n"))) }
+            }
+            return out
+        }
+    }
+
+    /// The URLSession delegate that pumps bytes into the parser and lines onto stderr.
+    final class SessionStreamPump: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+        private let lock = NSLock()
+        private var parser = SSEFrameParser()
+        private(set) var frames = 0
+        private(set) var lastFrameAt = Date()
+        private(set) var done = false
+        private(set) var httpStatus: Int? = nil
+        let finished = DispatchSemaphore(value: 0)
+        private let write: (String) -> Void
+
+        init(write: @escaping (String) -> Void) { self.write = write }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+            lock.lock(); httpStatus = (response as? HTTPURLResponse)?.statusCode; lock.unlock()
+            completionHandler(.allow)
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+            guard let text = String(data: data, encoding: .utf8) else { return }
+            lock.lock()
+            let closed = parser.feed(text)
+            lastFrameAt = Date()
+            var sawDone = false
+            var lines: [String] = []
+            for frame in closed {
+                frames += 1
+                // The frame's JSON plus the id line, as one NDJSON line.
+                guard let obj = try? JSONSerialization.jsonObject(with: Data(frame.data.utf8)) as? [String: Any] else { continue }
+                var event = obj
+                if let id = frame.id { event["id"] = id }
+                if obj["kind"] as? String == "status", obj["state"] as? String == "done" { sawDone = true }
+                if let line = try? JSONSerialization.data(withJSONObject: event, options: [.sortedKeys]) {
+                    lines.append(String(decoding: line, as: UTF8.self))
+                }
+            }
+            if sawDone { done = true }
+            lock.unlock()
+            for line in lines { write(line) }
+            if sawDone { dataTask.cancel() }
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            finished.signal()
+        }
+
+        var snapshot: (frames: Int, lastFrameAt: Date, done: Bool, status: Int?) {
+            lock.lock(); defer { lock.unlock() }
+            return (frames, lastFrameAt, done, httpStatus)
+        }
+    }
+
+    private func emitSessionStream(args: [String]) throws {
+        guard let sessionId = option("--session", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines), !sessionId.isEmpty else {
+            throw HelperError.message("--session is required")
+        }
+        let provider = (option("--provider", in: args) ?? "claude").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard ["claude", "codex", "cursor"].contains(provider) else { throw HelperError.message("Unknown provider") }
+        guard sessionId.range(of: "^[A-Za-z0-9._-]{1,128}$", options: .regularExpression) != nil else { throw HelperError.message("Invalid session id") }
+        let token = try speakerReviewToken()
+        let port = Self.loopbackAPIPort(environment: ProcessInfo.processInfo.environment)
+        var query: [String] = []
+        if let after = option("--after", in: args), after.range(of: "^[0-9]{1,16}(\\.[0-9]{1,12})?$", options: .regularExpression) != nil { query.append("after=\(after)") }
+        if option("--seed", in: args) == "turn" { query.append("seed=turn") }
+        let maxSeconds = Double(option("--max-seconds", in: args) ?? "") ?? Self.sessionStreamDefaultMaxSeconds
+        let path = "/api/agent-sessions/\(provider)/\(sessionId)/stream" + (query.isEmpty ? "" : "?" + query.joined(separator: "&"))
+        guard let url = URL(string: "http://127.0.0.1:\(port)\(path)") else { throw HelperError.message("Bad stream URL") }
+        var request = URLRequest(url: url, timeoutInterval: maxSeconds)
+        request.setValue(token, forHTTPHeaderField: "X-COS-Token")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        let pump = SessionStreamPump { [self] line in progress(line) }
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = maxSeconds
+        config.timeoutIntervalForResource = maxSeconds
+        let session = URLSession(configuration: config, delegate: pump, delegateQueue: nil)
+        let task = session.dataTask(with: request)
+        let startedAt = Date()
+        task.resume()
+        var reason = "closed"
+        // The watchdog: a heartbeat gap is a dead stream, and the app must fall back to
+        // its poll rather than sit on a socket that will never speak again.
+        while pump.finished.wait(timeout: .now() + 1) != .success {
+            let snap = pump.snapshot
+            if let status = snap.status, status != 200 {
+                reason = "http_\(status)"; task.cancel(); _ = pump.finished.wait(timeout: .now() + 2); break
+            }
+            if Date().timeIntervalSince(snap.lastFrameAt) > Self.sessionStreamGapSeconds {
+                reason = "heartbeat_gap"; task.cancel(); _ = pump.finished.wait(timeout: .now() + 2); break
+            }
+            if Date().timeIntervalSince(startedAt) > maxSeconds {
+                reason = "max_seconds"; task.cancel(); _ = pump.finished.wait(timeout: .now() + 2); break
+            }
+        }
+        let snap = pump.snapshot
+        if snap.done { reason = "done" }
+        if let status = snap.status, status != 200, reason == "closed" { reason = "http_\(status)" }
+        session.invalidateAndCancel()
+        emit(ok: true, message: "Stream ended", details: ["reason": reason, "frames": snap.frames, "status": snap.status ?? 0])
+    }
+
     private func emitClaudeSessionDetail(args: [String]) throws {
         guard let sessionId = option("--session", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !sessionId.isEmpty else {
@@ -16272,6 +16474,21 @@ final class COSControlHelper {
         ], now: ISO8601DateFormatter().date(from: "2026-09-14T03:24:40Z")!)
         try expect(serverDecided[0]["state"] as? String == "waiting", "a hook-sourced waiting wins over a transcript that read the turn as finished")
         try expect(serverDecided[1]["state"] as? String == "running", "a transcript-sourced server state leaves the helper's own reading in charge")
+        // 0.5.233 session-stream: the SSE frame parser against torn, joined and id-bearing
+        // chunks. The server writes `id: <epoch>.<cursor>\ndata: {json}\n\n`; a TCP read can
+        // split anywhere, and a heartbeat comment line carries no data.
+        var sse = Self.SSEFrameParser()
+        try expect(sse.feed("id: 1700.3\ndata: {\"seq\":3,\"kind\":\"tool\"}\n\n").map { "\($0.id ?? "-")|\($0.data)" } == ["1700.3|{\"seq\":3,\"kind\":\"tool\"}"],
+                   "a whole frame yields its id and data")
+        let torn1 = sse.feed("data: {\"seq\":4,\"ki")
+        let torn2 = sse.feed("nd\":\"prose\"}\n\ndata: {\"seq\":5,\"kind\":\"heartbeat\"}\n\n: keep-alive\n\ndata: {\"seq\":6")
+        try expect(torn1.isEmpty && torn2.map(\.data) == ["{\"seq\":4,\"kind\":\"prose\"}", "{\"seq\":5,\"kind\":\"heartbeat\"}"]
+                   && torn2.allSatisfy { $0.id == nil },
+                   "a frame torn across reads closes on the second read; a comment-only frame yields nothing; the open tail waits")
+        try expect(sse.feed("}\n\n").map(\.data) == ["{\"seq\":6}"], "the held tail closes on the next blank line")
+        try expect(sse.feed("data:{\"seq\":7}\n\n").map(\.data) == ["{\"seq\":7}"], "data: without a space still reads")
+        try expect(Self.sessionStreamGapSeconds >= 30 && Self.sessionStreamGapSeconds > 2 * 15,
+                   "the heartbeat gap is at least two missed 15 s beats with slack (never the 15 s that a 2-3 s stall false-fires)")
         let liveActTmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("cos-pet-live \(UUID().uuidString).d", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: liveActTmp) }

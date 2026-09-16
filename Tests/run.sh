@@ -39,8 +39,8 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 685:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 685 (685 at 0.5.232: the server-state projections)")
+if count < 690:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 690 (690 at 0.5.233: the SSE frame parser behind session-stream)")
 ' "$SELF_TEST"
 
 python3 "$ROOT/Tests/HeldNamingTransport.py" "$TMP/cos-control-helper"
@@ -63,6 +63,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
+  "$ROOT/Sources/SessionLiveFeed.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
@@ -84,6 +85,12 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Tests/MarkdownContract.swift" \
   -o "$TMP/markdown-contract"
 "$TMP/markdown-contract"
+# 0.5.233: the live feed reducer is pure Foundation and pinned by an EXECUTED contract
+# over recorded 6.48.2 stream frames (reseed, gap, prompt window, state line, elapsed).
+swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Tests/SessionLiveFeedContract.swift" \
+  -o "$TMP/session-live-feed-contract"
+"$TMP/session-live-feed-contract" "$ROOT"
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediUpgradeContract.swift" \
   -framework AppKit -o "$TMP/jedi-upgrade-contract"
@@ -97,6 +104,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
+  "$ROOT/Sources/SessionLiveFeed.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Tests/JediIdleContract.swift" -framework AppKit -framework SwiftUI -o "$TMP/jedi-idle-contract"
 "$TMP/jedi-idle-contract" "$ROOT/Resources"
@@ -2039,6 +2047,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
+  "$ROOT/Sources/SessionLiveFeed.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
@@ -5812,5 +5821,112 @@ if 'case "error": failure.isEmpty ? "Failed"' not in label or "queued" not in la
 
 print("COS Control: Markdown panes, action weights and server-derived session state pinned (0.5.232)")
 MARKDOWN
+
+# ── 0.5.233: live session pane, hooks banner, composer queue line ─────────────
+#
+# The reducer is EXECUTED above (session-live-feed-contract) and the helper's SSE
+# parser in its self-test. Pinned here is the wiring neither can see: the helper verb
+# exists and streams on the PROGRESS channel (stdout is buffered until exit), the app
+# reaches it only through HelperClient with no timeout and cancels it on close, the
+# reconnect is bounded and resumes with the last id, the pane draws the feed above the
+# stored turns, the composer names the fork mode and the queue, and the hooks banner
+# offers Install for missing/drift and Update Server for a pre-6.48.0 route.
+/usr/bin/python3 - "$ROOT" <<'LIVEPANE'
+import pathlib, re, sys
+root = pathlib.Path(sys.argv[1])
+def code(rel): return (root / rel).read_text()
+def fail(msg): sys.exit("0.5.233 pin: " + msg)
+def body(text, marker):
+    i = text.index(marker)
+    j = text.find("\n    // MARK:", i + 1)
+    return text[i:j if j > 0 else len(text)]
+
+helper = code("HelperSources/main.swift")
+for verb in ('case "session-stream": try emitSessionStream(args: args)',
+             'case "session-hooks-status": try emitSessionHooksStatus()',
+             'case "session-hooks-install": try withMutationLock { try emitSessionHooksInstall() }'):
+    if helper.count(verb) != 1:
+        fail("helper verb missing or duplicated: " + verb)
+stream = body(helper, "private func emitSessionStream(args: [String]) throws")
+if "progress(line)" not in stream:
+    fail("session-stream must write each event line on the progress channel (stderr), never stdout")
+if 'emit(ok: true, message: "Stream ended", details: ["reason": reason' not in stream:
+    fail("session-stream ends with one JSON on stdout carrying the reason")
+if 'reason = "heartbeat_gap"' not in stream or 'reason = "max_seconds"' not in stream or 'reason = "http_\\(status)"' not in stream:
+    fail("session-stream names heartbeat_gap, max_seconds and http_<status> as end reasons")
+if 'request.setValue(token, forHTTPHeaderField: "X-COS-Token")' not in stream:
+    fail("session-stream authenticates with the app token header")
+if r"^[0-9]{1,16}(\\.[0-9]{1,12})?$" not in stream:
+    fail("--after accepts only an <epoch>.<cursor> cursor")
+install = body(helper, "private func emitSessionHooksInstall() throws")
+if 'request("/api/session-hooks/status"' not in install or 'hooks["installed"] as? Bool == true' not in install:
+    fail("session-hooks-install re-checks status and requires installed == true (mirrors requireClaudeSessions)")
+status = body(helper, "private func emitSessionHooksStatus() throws")
+if '"state": "route_absent"' not in status or '"state": "unreachable"' not in status:
+    fail("hooks status distinguishes route_absent (404) from unreachable (no answer)")
+
+model = code("Sources/ControllerModel.swift")
+if model.count('helper.run(args, timeout: nil)') != 1 or '["session-stream", "--provider", session.provider, "--session", session.sessionId]' not in model:
+    fail("the app opens the stream through HelperClient.run with no timeout, exactly once")
+if "static let sessionStreamRetryDelays: [UInt64] = [2, 4, 8]" not in model:
+    fail("reconnect is bounded to three tries with backoff")
+if 'args += ["--after", after]' not in model or 'args += ["--seed", "turn"]' not in model:
+    fail("a reconnect resumes with --after; a first open seeds the current turn")
+if 'return .retry(lastID: sessionFeed?.lastID)' not in model:
+    fail("a retry carries the last id the feed saw")
+if 'case "heartbeat_gap", "closed", "max_seconds": return .retry' not in model or 'default:\n                // http_404' not in model:
+    fail("heartbeat_gap/closed/max_seconds retry; http_404/http_503 stop and fall back to the poll")
+close = body(model, "func closeClaudeSession()")
+if "stopSessionStream()" not in close:
+    fail("closing the pane cancels the stream process")
+if model.count("startSessionStream(session)") != 1:
+    fail("the stream starts once, when the pane opens")
+if "sessionStreamTask?.cancel()" not in body(model, "private func startSessionStream("):
+    fail("opening a second pane cancels the first stream")
+if "Task { [weak self] in await self?.refreshSessionHooksStatus(force: force) }" not in body(model, "func loadClaudeSessions(force: Bool = false) async"):
+    fail("the hooks status refreshes with the sessions list")
+if 'if !force, Date().timeIntervalSince(sessionHooksCheckedAt) < 60 { return }' not in model:
+    fail("the hooks status is cached 60 s")
+
+window = code("Sources/ActivityWindow.swift")
+pane = body(window, "struct ClaudeSessionDetailPane: View")
+if "SessionActivityFeed(feed: model.sessionFeed, queued: model.openClaudeRow?.queuedTurns ?? 0)" not in pane:
+    fail("the detail pane draws the live feed above the stored turns")
+if pane.index("SessionActivityFeed(") > pane.index("ForEach(detail.turns"):
+    fail("the feed sits ABOVE the turns")
+feedview = body(window, "struct SessionActivityFeed: View")
+if "Timer.publish(every: 1, on: .main, in: .common).autoconnect()" not in feedview or "feed.elapsed(now: now)" not in feedview:
+    fail("elapsed ticks locally once a second off the feed's clock")
+if "ForEach(feed.tools)" not in feedview or "Text(feed.stateWord)" not in feedview or "Text(feed.prompt)" not in feedview:
+    fail("the feed draws the state word, the prompt and the tool lines")
+for reason in ('case "http_404"', 'case "http_503"', 'case "stream_lost"'):
+    if reason not in feedview:
+        fail("the fallback line names " + reason)
+composer = body(window, "struct SessionChatComposer: View")
+if "The reply lands in the transcript; the open desk tab will not show it until you resume." not in composer:
+    fail("the composer names the fork mode when another app holds the session")
+if "follow-up queued; it lands when this turn ends." not in composer:
+    fail("the composer shows the queued follow-ups")
+banner = body(window, "@ViewBuilder private var sessionHooksBanner: some View")
+if 'state == "missing" || state == "drift" || state == "script_outdated" || state == "route_absent"' not in banner:
+    fail("the banner shows for missing, drift, script_outdated and route_absent only")
+if 'Button("Update Server") { model.perform("update") }' not in banner:
+    fail("a pre-6.48.0 server offers Update Server, never Install")
+if "model.installSessionHooks()" not in banner or '.buttonStyle(COSQuietButtonStyle(tone: .featured))' not in banner:
+    fail("Install hooks is the featured action")
+if "unreachable" in banner.split("if model.claudeSessionsEnabled")[1].split("{")[0]:
+    fail("an unreachable server shows no banner")
+if window.count("sessionHooksBanner") != 2:
+    fail("the banner is declared once and mounted once, under the sessions search bar")
+
+models = code("Sources/Models.swift")
+if 'queuedTurns = o["queuedTurns"]?.int ?? 0' not in models:
+    fail("ClaudeSession decodes queuedTurns")
+
+for rel in ("Tests/run.sh", "scripts/build-release.sh", "Tests/run-held-ui.sh", "Tests/run-merge-ui.sh", "Tests/run-markdown-ui.sh"):
+    if "Sources/SessionLiveFeed.swift" not in code(rel):
+        fail(rel + " must compile SessionLiveFeed.swift")
+print("COS Control: live session pane, hooks banner and composer queue line pinned (0.5.233)")
+LIVEPANE
 
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"
