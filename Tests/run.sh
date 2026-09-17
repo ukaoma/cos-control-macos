@@ -4030,6 +4030,13 @@ need("if Self.petQueueableReasons.contains(reason) { return .park(copy) }" in mo
      "a queueable refusal from the turn route no longer parks")
 need('"session-chat-queue",' in model and '"--client-turn-id", clientTurnId,' in model,
      "the model does not call the park verb with the turn id")
+# The Sessions pane parks the same way (the docs have claimed it since 6.48.1).
+refusal_src = model[model.index("private func handleChatRefusal("):]
+refusal_src = refusal_src[:refusal_src.index("\n    }\n")]
+need("if Self.petQueueableReasons.contains(reason) {" in refusal_src
+     and "parkPetTurn(session, clientTurnId: pending.clientTurnId, prompt: pending.prompt)" in refusal_src
+     and refusal_src.index("parkPetTurn(") < refusal_src.index("chatRetryAvailable = true"),
+     "the pane's wait-class refusal no longer parks before offering Retry")
 # Result never swallowed: a card that closed mid-send reports as a notice.
 settle_src = model[model.index("private func settlePetSend("):]
 settle_src = settle_src[:settle_src.index("\n    }\n")]

@@ -4995,6 +4995,22 @@ final class ControllerModel: ObservableObject {
             return
         }
         if Self.chatWaitReasons.contains(reason) {
+            // 0.5.234: park it where the lens parks it. The server's queue takes a
+            // turn behind a thread mid-turn and delivers it when the engine closes
+            // the turn (6.48.1). Retry and Fork remain for the case the queue will
+            // not take (a thread that freed in between, or a provider it cannot
+            // queue), so nothing that worked before is gone.
+            if Self.petQueueableReasons.contains(reason) {
+                switch await parkPetTurn(session, clientTurnId: pending.clientTurnId, prompt: pending.prompt) {
+                case .parked(let phase):
+                    chatMessages.append(SessionChatMessage(role: .status, text: phase.statusLine ?? "Queued."))
+                    clearPendingTurn()
+                    await loadClaudeSessions(force: true)
+                    return
+                case .threadFree, .failed:
+                    break
+                }
+            }
             chatRefusal = copy
             chatRetryAvailable = true
             chatForkAvailable = Self.chatCopyRecommendsFork(copy)
