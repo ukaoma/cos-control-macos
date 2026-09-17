@@ -2084,6 +2084,22 @@ struct ControlPanel: View {
             HotKeyRecorderRow(model: model)
             sessionPetSettings
             DisclosureGroup("Advanced") {
+                // 0.5.234: the Meetings clock. The server sends 24-hour times and
+                // the tab used to print them raw; twelve-hour is the default here
+                // and the 24-hour reading is one pick away.
+                Picker("Clock", selection: Binding(
+                    get: { model.clockStyle },
+                    set: { model.setClockStyle($0) }
+                )) {
+                    ForEach(ClockStyle.allCases, id: \.self) { style in
+                        Text(style.label).tag(style)
+                    }
+                }
+                .pickerStyle(.menu)
+                .padding(.top, 6)
+                Text("How meeting times read in Meetings and Speakers.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 HStack {
                     Button("Rollback Server") { model.perform("rollback") }
                     Button("Reconcile Change") { model.perform("reconcile") }

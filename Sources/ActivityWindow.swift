@@ -3126,7 +3126,7 @@ struct ActivityWindow: View {
                                     sectionGlyph(.speakers)
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(meeting.title).font(.system(size: 12.5, weight: .medium)).lineLimit(1)
-                                        Text(meeting.dateLine)
+                                        Text(meeting.dateLine(clock: model.clockStyle))
                                             .font(.system(size: 10.5, design: .monospaced))
                                             .foregroundStyle(.secondary)
                                         Text(meeting.countsSummary).font(.system(size: 10.5)).foregroundStyle(.tertiary)

@@ -1410,6 +1410,48 @@ struct SessionChatVerdict: Sendable {
     var caution: Bool { attachable && ownerCount > 0 }
 }
 
+/// Where a message sent from the pet is (0.5.234). One card, one phase.
+///
+/// `landed` is the live hand-off: the session's own process took the message
+/// into its window (server 6.49.0 answers 200 with `via: live`). `queued` is
+/// the 202: the server opens the thread and the reply lands in its transcript.
+/// Both are "the session has it"; the card shows the word, pulses, and closes
+/// itself after `settleSeconds`. `failed` keeps the draft so the user can fix
+/// and resend; `blocked` is the attachability probe saying no before a send,
+/// with the send disabled and the server's copy shown verbatim.
+enum PetSendPhase: Equatable, Sendable {
+    case idle
+    case sending
+    case landed(String)
+    case queued(String)
+    case failed(String)
+    case blocked(String)
+
+    /// How long an accepted card stays before it closes on its own.
+    static let settleSeconds: Double = 2.8
+
+    /// The session has the message. The card pulses on this and the draft clears.
+    var accepted: Bool {
+        switch self {
+        case .landed, .queued: true
+        default: false
+        }
+    }
+
+    var isSending: Bool { if case .sending = self { true } else { false } }
+
+    var isBlocked: Bool { if case .blocked = self { true } else { false } }
+
+    /// The one line under the field. Nothing at rest.
+    var statusLine: String? {
+        switch self {
+        case .idle: nil
+        case .sending: "Sending…"
+        case .landed(let copy), .queued(let copy), .failed(let copy), .blocked(let copy): copy
+        }
+    }
+}
+
 /// Persisted at send so a relaunched panel can resume polling the SAME
 /// clientTurnId — the idempotency key that prevents a second copy landing in a
 /// real conversation. The server's bindings listing is redacted past the point
@@ -3343,9 +3385,11 @@ struct ReviewableMeeting: Identifiable, Sendable, Hashable {
     /// "2026-08-28 · 11:51 · 52 minutes". The clock time earns its place once
     /// the list can be sorted chronologically: a dozen rows all reading
     /// "2026-08-28" give the reader no way to see that the order is real.
-    var dateLine: String {
+    var dateLine: String { dateLine(clock: .twentyFourHour) }
+
+    func dateLine(clock: ClockStyle) -> String {
         var parts = [date]
-        if !time.isEmpty { parts.append(time) }
+        if !time.isEmpty { parts.append(clock.format(time)) }
         parts.append(duration)
         return parts.joined(separator: " · ")
     }
@@ -3560,6 +3604,45 @@ enum MeetingVoiceTag: Equatable, Sendable {
     case reviewed
 }
 
+/// How a clock time reads on screen (0.5.234). The server sends every meeting
+/// time as a zero-padded 24-hour `HH:mm`, and through 0.5.233 the Meetings tab
+/// printed it as-is: "13:02" (Miles, 2026-09-17: "Rather than 13, we should see
+/// 1:02 pm"). Twelve-hour is the default; the 24-hour reading is a setting
+/// under Advanced. The wire string is never rewritten — sorting, recency and
+/// the merge sides all keep reading `time` raw — only what is drawn changes.
+enum ClockStyle: String, CaseIterable, Sendable {
+    case twelveHour
+    case twentyFourHour
+
+    static let defaultsKey = "cos.clockStyle"
+
+    static func load(_ raw: String?) -> ClockStyle {
+        raw.flatMap(ClockStyle.init(rawValue:)) ?? .twelveHour
+    }
+
+    var label: String {
+        switch self {
+        case .twelveHour: "12-hour (1:02 PM)"
+        case .twentyFourHour: "24-hour (13:02)"
+        }
+    }
+
+    /// "13:02" reads as "1:02 PM"; "00:37" as "12:37 AM"; "12:00" as "12:00 PM".
+    /// Anything that is not `H:mm` / `HH:mm` (an empty string, a stray
+    /// "14:30:12", a word) comes back untouched, so a server that changes the
+    /// shape of `time` degrades to the old rendering rather than to nothing.
+    func format(_ hhmm: String) -> String {
+        guard self == .twelveHour else { return hhmm }
+        let parts = hhmm.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[1].count == 2,
+              (1...2).contains(parts[0].count),
+              let hour = Int(parts[0]), let minute = Int(parts[1]),
+              (0...23).contains(hour), (0...59).contains(minute) else { return hhmm }
+        let twelve = hour % 12 == 0 ? 12 : hour % 12
+        return String(format: "%d:%02d %@", twelve, minute, hour < 12 ? "AM" : "PM")
+    }
+}
+
 /// A saved meeting in the Activity library. sessionId is optional — Granola and
 /// Fireflies rows still open transcript and summary.
 struct LibraryMeeting: Identifiable, Sendable, Hashable {
@@ -3616,10 +3699,14 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
         return spaced.localizedCapitalized
     }
 
-    var subtitle: String {
+    /// The wire reading, 24-hour. Views draw `subtitle(clock:)`; this stays the
+    /// stable form for tests and for anything that compares rows by text.
+    var subtitle: String { subtitle(clock: .twentyFourHour) }
+
+    func subtitle(clock: ClockStyle) -> String {
         var parts: [String] = []
         if !date.isEmpty { parts.append(date) }
-        if !time.isEmpty { parts.append(time) }
+        if !time.isEmpty { parts.append(clock.format(time)) }
         if !domainLabel.isEmpty { parts.append(domainLabel) }
         if !duration.isEmpty { parts.append(duration) }
         else if durationMinutes > 0 { parts.append("\(durationMinutes) min") }
@@ -7957,10 +8044,12 @@ struct MeetingSuggestionSide: Identifiable, Sendable, Hashable {
     /// EMPTY WHEN THERE IS NOTHING TO SAY, and the row leaves it out. A side the
     /// server could not place already reads as its kind and a short id in
     /// `displayTitle`, so a fallback here printed that same string twice.
-    var line: String {
+    var line: String { line(clock: .twentyFourHour) }
+
+    func line(clock: ClockStyle) -> String {
         var parts: [String] = []
         if !date.isEmpty { parts.append(date) }
-        if !time.isEmpty { parts.append(time) }
+        if !time.isEmpty { parts.append(clock.format(time)) }
         if !duration.isEmpty { parts.append(duration) }
         if !sourceLabel.isEmpty { parts.append(sourceLabel) }
         return parts.joined(separator: " · ")

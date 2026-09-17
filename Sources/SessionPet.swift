@@ -73,6 +73,25 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         observers.append(model.$petTerminalHint.sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
+        // 0.5.234: the composer card. Opening takes the keyboard; closing gives
+        // it back to whichever app had it (the terminal the agent runs in).
+        observers.append(model.$petComposeTarget.map { $0?.id }.removeDuplicates().sink { [weak self] id in
+            Task { @MainActor in self?.composerTargetChanged(open: id != nil) }
+        })
+        observers.append(model.$petSendPhase.removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
+        observers.append(model.$petSentText.removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
+        observers.append(model.$petComposeHint.removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
+        // The field grows to four lines; every line it gains re-fits the panel
+        // so the card unfolds upward like a list, never off the bottom edge.
+        observers.append(model.$petComposeDraft.removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
         pollTask = Task { [weak self] in
             await self?.model?.loadPetSessions()
             while !Task.isCancelled {
@@ -86,6 +105,22 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
     func openInControl(_ session: ClaudeSession) {
         model?.openPetSessionInControl(session)
         showActivity?(.sessions)
+    }
+
+    /// The pet is a NONACTIVATING panel: it may become key without activating
+    /// COS Control, which is exactly what typing into it needs — the agent's
+    /// terminal stays the active app. On close the panel drops out and back so
+    /// key status returns to that app's own window; `orderFrontRegardless`
+    /// never takes key, so the pet is back on top with the keyboard elsewhere.
+    private func composerTargetChanged(open: Bool) {
+        syncLists()
+        guard let panel else { return }
+        if open {
+            panel.makeKeyAndOrderFront(nil)
+        } else if panel.isKeyWindow {
+            panel.orderOut(nil)
+            panel.orderFrontRegardless()
+        }
     }
 
     private func syncPanel() {
@@ -172,10 +207,10 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         let host = NSHostingController(rootView: root)
         host.view.wantsLayer = true
         host.view.layer?.backgroundColor = NSColor.clear.cgColor
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 260, height: 240),
-                            styleMask: [.borderless, .nonactivatingPanel],
-                            backing: .buffered,
-                            defer: false)
+        let panel = PetPanel(contentRect: NSRect(x: 0, y: 0, width: 260, height: 240),
+                             styleMask: [.borderless, .nonactivatingPanel],
+                             backing: .buffered,
+                             defer: false)
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -243,7 +278,8 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     private func syncLists() {
-        syncOutsideClickMonitor((model?.petExpanded ?? false) || (model?.petCompletionsExpanded ?? false))
+        syncOutsideClickMonitor((model?.petExpanded ?? false) || (model?.petCompletionsExpanded ?? false)
+                                || model?.petComposeTarget != nil)
         syncPanel()
     }
 
@@ -257,9 +293,41 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
             Task { @MainActor in
                 self?.model?.petExpanded = false
                 self?.model?.petCompletionsExpanded = false
+                // An empty, idle card closes like a list; a draft or a send in
+                // flight survives a click into the terminal.
+                if self?.model?.petComposerYieldsToOutsideClick() == true {
+                    self?.model?.closePetComposer()
+                }
             }
         }
     }
+}
+
+/// Test seam (0.5.234): the pet's column for the offscreen render harness —
+/// the SAME view the panel hosts, on a model the harness drives. Nothing in
+/// the app calls this.
+@MainActor
+enum SessionPetCanary {
+    static func column(model: ControllerModel, presenter: SessionPetPresenter) -> AnyView {
+        let viewport = model.petSpriteKit.viewportSize(
+            current: model.petSpritePose,
+            pixels: model.petSize.pixels,
+            scale: model.petCharacterFactor,
+            poseScales: model.petRenderScales
+        )
+        return AnyView(SessionPetRoot(
+            model: model, presenter: presenter,
+            characterScale: model.petCharacterFactor, viewportSize: viewport
+        ))
+    }
+}
+
+/// A borderless panel answers `canBecomeKey` false, so a text field in it could
+/// never take a keystroke. This one may become key — and, being nonactivating,
+/// does so without bringing COS Control forward. It never becomes main.
+final class PetPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
 }
 
 private struct SessionPetRoot: View {
@@ -280,6 +348,7 @@ private struct SessionPetRoot: View {
     /// and starts its ticker on hover, and the pointer can only be on one row,
     /// so exactly one line ever moves.
     @State private var hoveredRowID: String?
+    @FocusState private var composerFocused: Bool
     private var pinnedList: Bool { model.petExpanded || model.petCompletionsExpanded }
     private var revealActive: Bool { model.petHoverRevealed || pinnedList }
     /// A fully quiet pet — nothing alive, nothing finished, nothing hidden by
@@ -349,6 +418,13 @@ private struct SessionPetRoot: View {
                 .help("Clear the finished list. The sessions themselves are untouched.")
                 .accessibilityLabel("Close all \(model.petCompletions.count) finished sessions")
                 .modifier(PetReveal(reduceMotion: reduceMotion))
+            }
+            // 0.5.234: the composer card. It takes the list's slot — one target,
+            // named on the card — so a message costs one card above the figure,
+            // never a card and a list.
+            if let target = model.petComposeTarget {
+                composerCard(target)
+                    .modifier(PetReveal(reduceMotion: reduceMotion))
             }
             if let hint = model.petTerminalHint, !hint.isEmpty {
                 petFloatingText(hint, style: .secondary, lines: 2)
@@ -721,6 +797,7 @@ private struct SessionPetRoot: View {
                     model.openSessionInPlatform(session)
                 },
                 openInControl: { presenter.openInControl(session) },
+                send: model.canMessagePetSession(session) ? { model.openPetComposer(for: session) } : nil,
                 clear: model.canDismissPetSession(session)
                     ? { model.dismissPetSession(session) } : nil,
                 clearLabel: "Drop from the list",
@@ -758,6 +835,7 @@ private struct SessionPetRoot: View {
                     model.openSessionInPlatform(session)
                 },
                 openInControl: { presenter.openInControl(session) },
+                send: model.canMessagePetSession(session) ? { model.openPetComposer(for: session) } : nil,
                 clear: model.canDismissPetSession(session)
                     ? { model.dismissPetSession(session) } : nil,
                 clearLabel: "Drop from the list",
@@ -771,6 +849,10 @@ private struct SessionPetRoot: View {
     private struct PetRowActions {
         var openInPlatform: (() -> Void)?
         var openInControl: (() -> Void)?
+        /// 0.5.234: message the session from the pet. Nil on a row that cannot
+        /// take one (a scheduled job, a provider the server does not bind, a
+        /// finished row), so the slot never shows a dead control.
+        var send: (() -> Void)?
         var clear: (() -> Void)?
         var clearLabel: String = "Clear this entry"
         var clearHelp: String = "Clear this finished entry"
@@ -869,6 +951,9 @@ private struct SessionPetRoot: View {
             if let control = actions.openInControl {
                 Button("Open the session view", action: control)
             }
+            if let send = actions.send {
+                Button("Message this session", action: send)
+            }
             if let clear = actions.clear {
                 Button(actions.clearLabel, action: clear)
             }
@@ -906,6 +991,9 @@ private struct SessionPetRoot: View {
                     rowAction("text.alignleft",
                               help: "Open the session view in COS Control", action: control)
                 }
+                if let send = actions.send {
+                    rowAction("paperplane", help: "Message this session", action: send)
+                }
                 if let clear = actions.clear {
                     rowAction("xmark", help: actions.clearHelp, action: clear)
                 }
@@ -917,7 +1005,10 @@ private struct SessionPetRoot: View {
             .opacity(hovered ? 1 : 0)
             .allowsHitTesting(hovered)
         }
-        .frame(width: size.length(57), alignment: .trailing)
+        // 74, not 57: four glyphs at 17pt each (9pt ink + 4pt hit padding a
+        // side) plus the shared 4pt edge. Still FIXED — a row without a send
+        // path shows three glyphs in the same frame, so hover moves nothing.
+        .frame(width: size.length(74), alignment: .trailing)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: hovered)
     }
 
@@ -1149,6 +1240,196 @@ private struct SessionPetRoot: View {
         case "cursor": Color(red: 0.42, green: 0.38, blue: 0.86)
         default: Color(red: 0.78, green: 0.45, blue: 0.22)
         }
+    }
+
+    // MARK: - Composer (0.5.234)
+
+    /// A message into ONE session, from the pet. The card names its target on
+    /// the first line, the field and the round send button sit on the second,
+    /// and one line under them says where the message is. Send moves the text
+    /// out of the field into a chip (it left), the button turns into a ring
+    /// (in flight) and then a check (the session has it); the card's edge goes
+    /// gold on acceptance and the card closes itself. A refusal keeps the card,
+    /// prints the server's copy verbatim and puts the text back in the field.
+    private func composerCard(_ target: ClaudeSession) -> some View {
+        let phase = model.petSendPhase
+        let accepted = phase.accepted
+        return VStack(alignment: .leading, spacing: size.length(6)) {
+            HStack(spacing: size.length(6)) {
+                Text("TO")
+                    .font(COSType.mono(size.typeSize(8), weight: .bold))
+                    .kerning(0.8)
+                    .foregroundStyle(.secondary)
+                providerGlyph(target.petProviderMark, tint: providerTint(target.provider))
+                Text(target.title)
+                    .font(COSType.body(size.typeSize(10), weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+                Button { model.closePetComposer() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: size.typeSize(9), weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .padding(size.length(4))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Close. A message in flight still lands.")
+                .accessibilityLabel("Close the message card")
+            }
+            if let sent = model.petSentText {
+                HStack {
+                    Spacer(minLength: size.length(40))
+                    Text(verbatim: sent)
+                        .font(COSType.body(size.typeSize(10)))
+                        .lineLimit(3)
+                        .padding(.horizontal, size.length(9))
+                        .padding(.vertical, size.length(5))
+                        .background(
+                            (accepted ? COSPalette.gold.opacity(0.18) : COSPalette.raised),
+                            in: RoundedRectangle(cornerRadius: size.length(9), style: .continuous)
+                        )
+                }
+                .transition(reduceMotion ? .opacity
+                    : .asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .opacity))
+            }
+            HStack(alignment: .bottom, spacing: size.length(6)) {
+                TextField(composerPlaceholder(target), text: $model.petComposeDraft, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(COSType.body(size.typeSize(11)))
+                    .lineLimit(1...4)
+                    .focused($composerFocused)
+                    .onSubmit { model.sendPetMessage() }
+                    .onExitCommand { model.closePetComposer() }
+                    .disabled(phase.isSending || phase.isBlocked)
+                    .padding(.horizontal, size.length(10))
+                    .padding(.vertical, size.length(6))
+                    .background(COSPalette.card, in: RoundedRectangle(cornerRadius: size.length(10), style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: size.length(10), style: .continuous)
+                            .stroke(composerFocused ? COSPalette.gold.opacity(0.7) : COSPalette.line, lineWidth: 1)
+                    )
+                    .help("Return sends. Option-Return starts a new line. Escape closes.")
+                sendButton(phase)
+            }
+            if let line = phase.statusLine {
+                Text(verbatim: line)
+                    .font(COSType.body(size.typeSize(9)))
+                    .foregroundStyle(composerStatusTint(phase))
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let hint = model.petComposeHint {
+                Text(verbatim: hint)
+                    .font(COSType.body(size.typeSize(9)))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if case .failed = phase {
+                // The pane has Fork, Retry and Continue anyway; the pet does not
+                // grow them. One quiet path to where they live.
+                Button("Open the session view") { presenter.openInControl(target) }
+                    .buttonStyle(.plain)
+                    .font(COSType.body(size.typeSize(9), weight: .semibold))
+                    .foregroundStyle(COSPalette.accent)
+            }
+        }
+        .padding(.horizontal, size.length(10))
+        .padding(.vertical, size.length(8))
+        .background(
+            .regularMaterial,
+            in: RoundedRectangle(cornerRadius: size.length(12), style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: size.length(12), style: .continuous)
+                .stroke(accepted ? COSPalette.gold : COSPalette.line, lineWidth: accepted ? 1.5 : 1)
+        )
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.28), value: model.petSentText)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: accepted)
+        .onAppear {
+            // The panel became key a moment ago; the field exists once this
+            // card has laid out, so the focus ask waits a beat.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { composerFocused = true }
+        }
+        .onDisappear { composerFocused = false }
+    }
+
+    private func composerPlaceholder(_ target: ClaudeSession) -> String {
+        switch target.provider {
+        case "codex": "Message this Codex session…"
+        case "cursor": "Message this Cursor session…"
+        default: "Message this Claude session…"
+        }
+    }
+
+    private func composerStatusTint(_ phase: PetSendPhase) -> Color {
+        switch phase {
+        case .landed, .queued: COSPalette.green
+        case .failed, .blocked: COSPalette.amber
+        case .idle, .sending: Color.secondary
+        }
+    }
+
+    /// The round control: a paperplane that can be pressed, a ring while the
+    /// turn is in flight, a check once the session has it. Same footprint in
+    /// every state so the field never shifts under the pointer. The ring and
+    /// the check are NOT buttons: a disabled Button is dimmed by the system,
+    /// and the one moment the control must read at full strength is the check.
+    private func sendButton(_ phase: PetSendPhase) -> some View {
+        let diameter = size.length(26)
+        return ZStack {
+            if phase.isSending {
+                sendRing
+            } else if phase.accepted {
+                sendCheck
+            } else {
+                sendPlane(blocked: phase.isBlocked)
+            }
+        }
+        .frame(width: diameter, height: diameter)
+        .accessibilityLabel(phase.accepted ? "Sent" : (phase.isSending ? "Sending" : "Send message"))
+        .help(phase.accepted ? "The session has it." : (phase.isSending ? "Sending…" : "Send (Return)"))
+        .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.72), value: phase)
+    }
+
+    private var sendRing: some View {
+        ZStack {
+            Circle().fill(COSPalette.card)
+            Circle().stroke(COSPalette.line, lineWidth: 1)
+            ProgressView().controlSize(.small).scaleEffect(0.65)
+        }
+        .transition(.opacity)
+    }
+
+    private var sendCheck: some View {
+        ZStack {
+            Circle().fill(COSPalette.green)
+            Image(systemName: "checkmark")
+                .font(.system(size: size.typeSize(11), weight: .bold))
+                .foregroundStyle(COSPalette.cream)
+        }
+        .transition(reduceMotion ? .opacity : .scale(scale: 0.4).combined(with: .opacity))
+    }
+
+    private func sendPlane(blocked: Bool) -> some View {
+        let draft = model.petComposeDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ready = !draft.isEmpty && !blocked
+        let fill: Color = ready ? COSPalette.gold : COSPalette.card
+        let edge: Color = ready ? Color.clear : COSPalette.line
+        let ink: Color = ready ? COSPalette.ink : Color.secondary
+        return Button { model.sendPetMessage() } label: {
+            ZStack {
+                Circle().fill(fill)
+                Circle().stroke(edge, lineWidth: 1)
+                Image(systemName: "paperplane.fill")
+                    .font(.system(size: size.typeSize(10), weight: .bold))
+                    .foregroundStyle(ink)
+            }
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!ready)
+        .transition(.opacity)
     }
 }
 

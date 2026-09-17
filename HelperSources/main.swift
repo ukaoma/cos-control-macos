@@ -13640,13 +13640,17 @@ final class COSControlHelper {
             return
         }
         // A replayed terminal result (idempotent re-send of the same
-        // clientTurnId) comes back 200 with the recorded outcome.
+        // clientTurnId) comes back 200 with the recorded outcome — and so does
+        // a LIVE hand-off (server 6.49.0): a running Claude session took the
+        // turn into its own window, `via: "live"`, terminal on the spot. The
+        // pet composer reads `via` to say "landed" rather than "recorded".
         if response.status == 200, let outcome = body["outcome"] as? String,
            ["completed", "refused", "ambiguous"].contains(outcome) {
             emit(ok: true, message: "Already recorded", details: [
                 "state": outcome,
                 "reason": body["reason"] as? String ?? "",
                 "reasonCopy": body["reasonCopy"] as? String ?? "",
+                "via": body["via"] as? String ?? "",
             ])
             return
         }

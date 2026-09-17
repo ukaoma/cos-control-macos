@@ -3400,7 +3400,11 @@ need("!reduceMotion && active" in code,
 # cross-fade; a size that keys on hover re-measures the panel through
 # sizeThatFits and reads as the jumpiness Miles rejected in the prototype.
 slot_src = code[code.index("private func petRowSlot"):code.index("private var completionsList")]
-need(".frame(width: size.length(57), alignment: .trailing)" in slot_src,
+# 74 since 0.5.234: four glyphs (a paperplane joined the three) at 17pt each
+# plus the shared 4pt edge. The number moved once, for a fourth control; the
+# rule is that it is a FIXED literal, so a row with three glyphs and a row with
+# four share one frame and hover moves nothing.
+need(".frame(width: size.length(74), alignment: .trailing)" in slot_src,
      "the trailing slot lost its fixed frame")
 need(".opacity(hovered ? 0 : 1)" in slot_src and ".opacity(hovered ? 1 : 0)" in slot_src,
      "the slot occupants no longer cross-fade")
@@ -3599,7 +3603,10 @@ need("size.length(392)" in code,
 # Every row wears its platform mark through the ONE shared builder.
 # D collapsed three row anatomies into one, so there is exactly ONE place a
 # platform mark is drawn: the shared row's identity line, plus the definition.
-need(code.count("providerGlyph(") == 2,
+# 0.5.234 adds the one other place a mark belongs: the composer card's target
+# line, which names WHERE a message goes and must wear the same mark the row
+# did. Three, and the third is pinned to the card below.
+need(code.count("providerGlyph(") == 3,
      "the platform mark is drawn somewhere other than the one shared row "
      "builder (1 call site + 1 definition)")
 need("providerGlyph(mark, tint: markTint)" in row_src,
@@ -3933,6 +3940,87 @@ for fn in ["private func mergeCompletions(", "private func reconcilePersistedChi
     fn_src = fn_src[:fn_src.index("\n    }")]
     need("if petCompletions.isEmpty { petCompletionsExpanded = false }" in fn_src,
          f"{fn.split('(')[0].split()[-1]} can empty the chips without releasing the finished-list pin")
+
+# ---- Pet composer (0.5.234): message a session from the pet -------------
+# The send path is a FOURTH row action, offered only where the model says the
+# session can take a message, on BOTH live row builders, in the slot AND the
+# context menu. It opens the card; it never sends by itself.
+for _name, _src in (("mission", mission_src), ("idle", idle_src)):
+    need("send: model.canMessagePetSession(session) ? { model.openPetComposer(for: session) } : nil" in _src,
+         f"the {_name} row no longer offers the message path through the model's gate")
+need('rowAction("paperplane", help: "Message this session", action: send)' in slot_src,
+     "the row slot lost its message control")
+need('Button("Message this session", action: send)' in row_src,
+     "the message path is pointer-only; the context menu must carry it too")
+need("send: model.canMessagePetSession" not in comp2 and "openPetComposer" not in comp2,
+     "a finished row must not offer a message path")
+# The card takes the list's slot and names its target; one card, never a card
+# and a list. The chip is what the acceptance lands on.
+card_src = code[code.index("private func composerCard"):code.index("private func composerPlaceholder")]
+need('Text("TO")' in card_src and "providerGlyph(target.petProviderMark" in card_src
+     and "Text(target.title)" in card_src,
+     "the composer card does not name its target")
+need("if let sent = model.petSentText" in card_src and ".transition(" in card_src,
+     "the sent chip is gone, or it no longer moves out of the field")
+need(".focused($composerFocused)" in card_src and ".onSubmit { model.sendPetMessage() }" in card_src
+     and ".onExitCommand { model.closePetComposer() }" in card_src,
+     "the field lost focus, Return-to-send or Escape-to-close")
+need(".stroke(accepted ? COSPalette.gold : COSPalette.line" in card_src,
+     "the card no longer goes gold on acceptance")
+need("composerCard(target)" in body_code and "petComposeTarget" in body_code,
+     "the card is not mounted in the pet's column")
+btn_src = code[code.index("private func sendButton"):code.index("private struct TickerLine")]
+for _needle, _what in (("ProgressView()", "the in-flight ring"),
+                       ('Image(systemName: "checkmark")', "the accepted check"),
+                       ('Image(systemName: "paperplane.fill")', "the resting paperplane")):
+    need(_needle in btn_src, f"the send button lost {_what}")
+need(".disabled(!ready)" in btn_src, "the send button can be pressed with nothing to send")
+open_src = model[model.index("func openPetComposer(for session: ClaudeSession)"):]
+open_src = open_src[:open_src.index("\n    }")]
+need("petExpanded = false" in open_src and "petCompletionsExpanded = false" in open_src,
+     "opening the card must close the lists; the card takes their slot")
+# The panel may become key without activating the app, and gives the keyboard
+# back on close by stepping out and in — orderFrontRegardless never takes key.
+need("final class PetPanel: NSPanel" in pet and "override var canBecomeKey: Bool { true }" in pet
+     and "PetPanel(contentRect:" in pet,
+     "the pet panel cannot take a keystroke: no key-window override, or it is not the panel in use")
+close_src = pet[pet.index("private func composerTargetChanged(open: Bool)"):]
+close_src = close_src[:close_src.index("\n    }")]
+need("panel.makeKeyAndOrderFront(nil)" in close_src and "panel.orderOut(nil)" in close_src
+     and "panel.orderFrontRegardless()" in close_src,
+     "the composer no longer takes the keyboard on open or gives it back on close")
+need("petComposerYieldsToOutsideClick()" in pet,
+     "an outside click no longer asks the model whether the card may close")
+# The Sessions pane and the pet attach through ONE cache, or one refuses the
+# other as busy against COS Control's own binding.
+need("sessionBindings[Self.bindingKey(session)] = binding" in model
+     and model.count("sessionBindings[Self.bindingKey(session)] = nil") >= 2
+     and "chatBinding = cachedBinding(session)" in model,
+     "the pane and the pet no longer share the binding cache")
+need('"via": body["via"] as? String ?? ""' in (root / "HelperSources/main.swift").read_text(),
+     "the helper dropped via; a live hand-off would read as a replay")
+need('details["via"]?.string == "live"' in model, "the pet does not read via")
+# Result never swallowed: a card that closed mid-send reports as a notice.
+settle_src = model[model.index("private func settlePetSend("):]
+settle_src = settle_src[:settle_src.index("\n    }\n")]
+need("petNotice = " in settle_src and "loadPetSessions()" in settle_src,
+     "a settled send must reach the pet even with the card closed, and refresh the rows")
+# ---- Meetings clock (0.5.234) --------------------------------------------
+views_src = (root / "Sources/Views.swift").read_text()
+adv = views_src[views_src.index('DisclosureGroup("Advanced")'):]
+adv = adv[:adv.index("}.font(.caption)")]
+need('Picker("Clock"' in adv and "model.setClockStyle($0)" in adv and "ClockStyle.allCases" in adv,
+     "the clock picker is not under Advanced, or does not persist through the model")
+meetings_src = (root / "Sources/ActivityMeetings.swift").read_text()
+for _needle in ("meeting.subtitle(clock: model.clockStyle)", "hit.meeting.subtitle(clock: model.clockStyle)",
+                "row.subtitle(clock: model.clockStyle)", "side.line(clock: model.clockStyle)"):
+    need(_needle in meetings_src, f"a Meetings surface draws the wire clock: {_needle} missing")
+need("meeting.dateLine(clock: model.clockStyle)" in (root / "Sources/ActivityWindow.swift").read_text(),
+     "Meetings to review draws the wire clock")
+need('UserDefaults.standard.set(style.rawValue, forKey: ClockStyle.defaultsKey)' in model,
+     "the clock choice does not persist")
+print("    pet composer and Meetings clock pins passed (0.5.234)")
+
 LEDGCHK
 
 # Terminal jump routing (0.5.141)

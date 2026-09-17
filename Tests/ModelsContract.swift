@@ -166,6 +166,46 @@ struct ModelsContract {
                      "a missing time must not render an empty separator segment")
     }
 
+    /// 0.5.234: the Meetings clock, executed across the hour edges. The wire
+    /// form is 24-hour `HH:mm`; twelve-hour is what the tab draws by default.
+    private static func checkClockStyle() {
+        let twelve = ClockStyle.twelveHour
+        precondition(twelve.format("13:02") == "1:02 PM", "13:02 reads 1:02 PM, got \(twelve.format("13:02"))")
+        precondition(twelve.format("00:37") == "12:37 AM", "midnight hour reads 12 AM")
+        precondition(twelve.format("12:00") == "12:00 PM", "noon reads 12 PM, never 0 PM")
+        precondition(twelve.format("09:05") == "9:05 AM", "a leading zero is dropped from the hour, kept on the minute")
+        precondition(twelve.format("23:59") == "11:59 PM", "the last minute of the day")
+        precondition(twelve.format("9:05") == "9:05 AM", "an unpadded hour still parses")
+        precondition(ClockStyle.twentyFourHour.format("13:02") == "13:02", "24-hour draws the wire string")
+        // Anything that is not H:mm comes back untouched, so a changed wire
+        // shape degrades to the old rendering and never to a blank.
+        for raw in ["", "14:30:12", "noon", "25:00", "13:60", "1302"] {
+            precondition(twelve.format(raw) == raw, "\(raw) must pass through untouched, got \(twelve.format(raw))")
+        }
+        precondition(ClockStyle.load(nil) == .twelveHour, "no stored choice means 12-hour")
+        precondition(ClockStyle.load("twentyFourHour") == .twentyFourHour, "the stored raw value round-trips")
+        precondition(ClockStyle.load("garbage") == .twelveHour, "an unknown stored value falls back to the default")
+
+        // The clock-aware forms draw the choice; the parameterless forms stay
+        // the wire reading for every comparison that already relies on them.
+        guard let row = ReviewableMeeting(.object([
+            "sessionId": .string("x"), "title": .string("Row x"),
+            "date": .string("2026-08-28"), "time": .string("13:51"),
+            "duration": .string("5 minutes"), "month": .string("2026-08"),
+        ])) else { preconditionFailure("fixture failed to parse") }
+        precondition(row.dateLine == "2026-08-28 · 13:51 · 5 minutes", "dateLine stays the wire form")
+        precondition(row.dateLine(clock: .twelveHour) == "2026-08-28 · 1:51 PM · 5 minutes",
+                     "dateLine(clock:) draws the choice, got \(row.dateLine(clock: .twelveHour))")
+        let phase = PetSendPhase.landed("Landed in the live session.")
+        precondition(phase.accepted && !phase.isSending && !phase.isBlocked && phase.statusLine == "Landed in the live session.",
+                     "a landed turn is accepted with its copy as the status line")
+        precondition(PetSendPhase.queued("x").accepted && !PetSendPhase.failed("x").accepted
+                     && !PetSendPhase.blocked("x").accepted && !PetSendPhase.sending.accepted,
+                     "only landed and queued count as the session having the message")
+        precondition(PetSendPhase.idle.statusLine == nil && PetSendPhase.sending.statusLine == "Sending…",
+                     "rest shows no line; in flight says so")
+    }
+
     /// The subtitle, including the case that would otherwise render blank.
     private static func checkCountsSummary() {
         precondition(meetingRow()?.countsSummary == "4 topics · 2 decisions · 1 action · 3 attendees")
@@ -4093,6 +4133,7 @@ struct ModelsContract {
         checkMeetingRowFields()
         checkMeetingReviewSort()
         checkCountsSummary()
+        checkClockStyle()
         checkSpeakerListMemory()
         checkReviewVoiceQueue()
         checkLibraryMeeting()

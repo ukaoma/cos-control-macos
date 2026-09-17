@@ -213,7 +213,7 @@ struct MeetingLibraryBody: View {
                 LazyVStack(spacing: 6) {
                     ForEach(model.visibleLibraryMeetings) { meeting in
                         Button { onOpen(meeting) } label: {
-                            meetingRow(meeting.title, subtitle: meeting.subtitle, sessionId: meeting.sessionId)
+                            meetingRow(meeting.title, subtitle: meeting.subtitle(clock: model.clockStyle), sessionId: meeting.sessionId)
                         }
                         .buttonStyle(.plain)
                     }
@@ -263,7 +263,7 @@ struct MeetingLibraryBody: View {
                                             .foregroundStyle(.secondary)
                                             .lineLimit(2)
                                     }
-                                    Text(hit.meeting.subtitle)
+                                    Text(hit.meeting.subtitle(clock: model.clockStyle))
                                         .font(COSType.body(11))
                                         .foregroundStyle(.tertiary)
                                         .lineLimit(1)
@@ -469,7 +469,7 @@ struct MeetingLibraryDetailPane: View {
                     Text(row.title)
                         .font(COSType.display(22, weight: .medium))
                         .textSelection(.enabled)
-                    Text(row.subtitle)
+                    Text(row.subtitle(clock: model.clockStyle))
                         .font(COSType.body(12))
                         .foregroundStyle(.secondary)
                     // 6.47.0 — a record COS derived says so, and offers the way
@@ -1211,7 +1211,7 @@ struct MeetingSuggestionsPane: View {
                         .font(COSType.body(12))
                         .fixedSize(horizontal: false, vertical: true)
                     if !side.line.isEmpty {
-                        Text(side.line)
+                        Text(side.line(clock: model.clockStyle))
                             .font(COSType.mono(10))
                             .foregroundStyle(.tertiary)
                             .fixedSize(horizontal: false, vertical: true)

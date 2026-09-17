@@ -1542,6 +1542,8 @@ final class ControllerModel: ObservableObject {
     private var tasksLoadInFlight: Task<Void, Never>?
     private var tasksLoadGeneration = 0
     @Published var petEnabled = UserDefaults.standard.object(forKey: ControllerModel.petEnabledKey) as? Bool ?? true
+    /// 0.5.234: how the Meetings tab draws a clock time. Twelve-hour by default.
+    @Published var clockStyle = ClockStyle.load(UserDefaults.standard.string(forKey: ClockStyle.defaultsKey))
     /// Character dial, independent of petSize: pet size is the card, this is
     /// the figure inside it.
     @Published var petCharacterPercent = ControllerModel.loadPetCharacterPercent()
@@ -1623,6 +1625,33 @@ final class ControllerModel: ObservableObject {
     /// concurrent completion .done.
     @Published var petTerminalHint: String?
     private var petTerminalHintTask: Task<Void, Never>?
+    // ── Pet composer (0.5.234) ──────────────────────────────────────
+    //
+    // A message typed in the pet and sent into ONE live session, over the same
+    // binding routes the Sessions pane and the glasses' Continue ride. The pet
+    // keeps its own small state rather than borrowing the pane's: the pane's
+    // state is keyed to `openClaudeRow`, and the pet targets a session that is
+    // usually NOT open in Control.
+    /// The session the pet composer is aimed at; nil closes the card.
+    @Published var petComposeTarget: ClaudeSession?
+    @Published var petComposeDraft = ""
+    @Published var petSendPhase: PetSendPhase = .idle
+    /// The message as it left the field: it rises out of the field into a chip
+    /// the moment Send is pressed, so the field is empty while the turn is in
+    /// flight and the chip is what the acceptance lands on. A refusal puts the
+    /// text back in the field to fix and resend.
+    @Published var petSentText: String?
+    /// One line from the attachability probe that a send should know before it
+    /// goes (another app holds the thread). Never a gate — the user picked the row.
+    @Published var petComposeHint: String?
+    private var petSendTask: Task<Void, Never>?
+    private var petComposeProbeTask: Task<Void, Never>?
+    private var petComposeCloseTask: Task<Void, Never>?
+    /// Bindings by `provider:sessionId`, shared with the Sessions pane. Attaching
+    /// twice to one thread is refused as `target_busy` against our OWN binding —
+    /// a self-inflicted 30-minute dead end — so both paths read this before
+    /// they attach and both drop it when the server says the binding is gone.
+    private var sessionBindings: [String: SessionChatBinding] = [:]
 
     private func postPetTerminalHint(_ text: String) {
         petTerminalHint = text
@@ -2808,6 +2837,12 @@ final class ControllerModel: ObservableObject {
         guard enabled != petCalmMotion else { return }
         petCalmMotion = enabled
         UserDefaults.standard.set(enabled, forKey: Self.petCalmMotionKey)
+    }
+
+    func setClockStyle(_ style: ClockStyle) {
+        guard style != clockStyle else { return }
+        clockStyle = style
+        UserDefaults.standard.set(style.rawValue, forKey: ClockStyle.defaultsKey)
     }
 
     func setPetAnimationSpeedPercent(_ value: Int) {
@@ -4801,9 +4836,26 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    static func bindingKey(_ session: ClaudeSession) -> String {
+        "\(session.provider):\(session.sessionId)"
+    }
+
+    /// A binding this process already holds for the session, if it is still
+    /// live. Both composers ask here before they attach.
+    private func cachedBinding(_ session: ClaudeSession) -> SessionChatBinding? {
+        guard let binding = sessionBindings[Self.bindingKey(session)], !binding.expired else {
+            sessionBindings[Self.bindingKey(session)] = nil
+            return nil
+        }
+        return binding
+    }
+
     private func performChatSend(_ session: ClaudeSession, prompt: String) async {
         defer { chatSending = false }
         if chatBinding == nil || chatBinding?.expired == true {
+            chatBinding = cachedBinding(session)
+        }
+        if chatBinding == nil {
             guard await attachChatBinding(session) else { return }
         }
         guard let binding = chatBinding else { return }
@@ -4840,6 +4892,9 @@ final class ControllerModel: ObservableObject {
                     boundTo: response.details["boundTo"]?.string ?? "",
                     expiresAt: response.details["expiresAt"]?.double ?? 0
                 )
+                if let binding = chatBinding, !binding.bindingId.isEmpty {
+                    sessionBindings[Self.bindingKey(session)] = binding
+                }
                 return chatBinding?.bindingId.isEmpty == false
             case "disabled":
                 chatRefusal = "Continue agent threads is off in Settings."
@@ -4912,6 +4967,7 @@ final class ControllerModel: ObservableObject {
         if Self.chatReattachReasons.contains(reason), !chatDidReattach {
             chatDidReattach = true
             chatBinding = nil
+            sessionBindings[Self.bindingKey(session)] = nil
             guard await attachChatBinding(session), let binding = chatBinding else { return }
             let rebased = SessionChatPendingTurn(
                 provider: pending.provider,
@@ -5037,6 +5093,278 @@ final class ControllerModel: ObservableObject {
     private func clearPendingTurn() {
         chatPendingTurn = nil
         UserDefaults.standard.removeObject(forKey: Self.chatPendingTurnKey)
+    }
+
+    // ── Pet composer: send into a session from the pet (0.5.234) ────────
+    //
+    // Same admission as the pane's send — attach once, POST the turn with a
+    // fresh clientTurnId, one silent re-attach on a binding-gone refusal — but
+    // the pet does not poll a queued turn to completion. What the pet promises
+    // is that the message REACHED the session: a live Claude session takes it
+    // into its own window (server 6.49.0, `via: live`, answered 200), anything
+    // else is queued and the server opens the thread (202). The row's live
+    // line then shows the session working, from the same poll it always ran.
+
+    /// Whether a row may offer the composer: a real session (not a scheduled
+    /// job, which has nothing to continue) whose provider the server publishes
+    /// as bindable, with Continue on. `sessionChatGateMessage` is the pane's
+    /// gate, reused so the two surfaces cannot disagree about a provider.
+    func canMessagePetSession(_ session: ClaudeSession) -> Bool {
+        !session.isScheduledJob && sessionChatGateMessage(for: session) == nil
+    }
+
+    func openPetComposer(for session: ClaudeSession) {
+        petComposeCloseTask?.cancel()
+        petComposeCloseTask = nil
+        petComposeProbeTask?.cancel()
+        // Retargeting mid-send is refused: the in-flight turn belongs to the
+        // old target and its result must land on the card that sent it.
+        if case .sending = petSendPhase, petComposeTarget?.id != session.id { return }
+        if petComposeTarget?.id != session.id {
+            petComposeDraft = ""
+            petSentText = nil
+            petSendPhase = .idle
+            petComposeHint = nil
+        } else if case .sending = petSendPhase {
+            // Same target, already sending: leave the card exactly as it is.
+        } else {
+            petSendPhase = .idle
+        }
+        petComposeTarget = session
+        petFocusID = session.id
+        // The list gives way to the card: one target, named on the card, so the
+        // pet grows by a card and not by a card AND a list (Miles: "without
+        // adding a whole bunch of additional clutter").
+        petExpanded = false
+        petCompletionsExpanded = false
+        petComposeProbeTask = Task { [weak self] in
+            await self?.probePetComposeTarget(session)
+        }
+    }
+
+    func closePetComposer() {
+        petComposeCloseTask?.cancel()
+        petComposeCloseTask = nil
+        petComposeProbeTask?.cancel()
+        petComposeProbeTask = nil
+        petComposeTarget = nil
+        petComposeHint = nil
+        if case .sending = petSendPhase {
+            // The send keeps going — its result is real whether or not the
+            // card is on screen — and lands as a notice instead.
+            return
+        }
+        petSendPhase = .idle
+        petComposeDraft = ""
+        petSentText = nil
+    }
+
+    /// Outside-click rule for the card: a card with nothing typed and nothing in
+    /// flight closes like a list; a draft or a send in progress stays.
+    func petComposerYieldsToOutsideClick() -> Bool {
+        guard petComposeTarget != nil else { return false }
+        if case .sending = petSendPhase { return false }
+        return petComposeDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func probePetComposeTarget(_ session: ClaudeSession) async {
+        do {
+            let response = try await helper.run([
+                "session-chat-attachability",
+                "--provider", session.provider,
+                "--thread-id", session.sessionId,
+            ], timeout: 20)
+            guard petComposeTarget?.id == session.id else { return }
+            let state = response.details["state"]?.string ?? ""
+            if state == "route_absent" {
+                petSendPhase = .blocked("Update the COS server to message a session from here.")
+                return
+            }
+            let attachable = response.details["attachable"]?.bool ?? false
+            let copy = response.details["reasonCopy"]?.string ?? ""
+            let owners = response.details["ownerCount"]?.int ?? 0
+            if !attachable {
+                petSendPhase = .blocked(copy.isEmpty ? "COS cannot reach this session right now." : copy)
+                return
+            }
+            if owners > 0 {
+                // The pane's caution, as a line rather than a confirm: the user
+                // aimed at this row on purpose. A live Claude session takes the
+                // turn into its own window; anything else lands in the transcript.
+                petComposeHint = session.provider == "claude"
+                    ? "Open in another app. If COS cannot hand it to the live window, the reply lands in the transcript."
+                    : "Open in another app. The reply lands in the transcript, not that window."
+            }
+        } catch {
+            // A probe that cannot run is not a verdict; the send will say.
+        }
+    }
+
+    func sendPetMessage() {
+        guard let target = petComposeTarget else { return }
+        if case .sending = petSendPhase { return }
+        if case .blocked = petSendPhase { return }
+        let prompt = petComposeDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { return }
+        guard prompt.count <= 32_000 else {
+            petSendPhase = .failed("That message is too long for one turn (32,000 characters max).")
+            return
+        }
+        petComposeCloseTask?.cancel()
+        petComposeCloseTask = nil
+        petSendPhase = .sending
+        petSentText = prompt
+        petComposeDraft = ""
+        petSendTask?.cancel()
+        petSendTask = Task { [weak self] in
+            await self?.performPetSend(target, prompt: prompt)
+        }
+    }
+
+    private func performPetSend(_ session: ClaudeSession, prompt: String) async {
+        var binding = cachedBinding(session)
+        if binding == nil {
+            switch await attachPetBinding(session) {
+            case .attached(let fresh): binding = fresh
+            case .failed(let copy): settlePetSend(session, .failed(copy)); return
+            }
+        }
+        guard let first = binding else { return }
+        var pending = SessionChatPendingTurn(
+            provider: session.provider, sessionId: session.sessionId,
+            bindingId: first.bindingId, epoch: first.epoch, boundTo: first.boundTo,
+            clientTurnId: UUID().uuidString, prompt: prompt,
+            sentAt: Date().timeIntervalSince1970
+        )
+        var outcome = await postPetTurn(pending)
+        // One silent re-attach when the server says OUR binding is gone; then
+        // the SAME clientTurnId, so a retry can never be a second copy.
+        if case .reattach = outcome {
+            sessionBindings[Self.bindingKey(session)] = nil
+            switch await attachPetBinding(session) {
+            case .attached(let fresh):
+                pending = SessionChatPendingTurn(
+                    provider: pending.provider, sessionId: pending.sessionId,
+                    bindingId: fresh.bindingId, epoch: fresh.epoch, boundTo: fresh.boundTo,
+                    clientTurnId: pending.clientTurnId, prompt: pending.prompt, sentAt: pending.sentAt
+                )
+                outcome = await postPetTurn(pending)
+            case .failed(let copy):
+                outcome = .settled(.failed(copy))
+            }
+        }
+        switch outcome {
+        case .settled(let phase): settlePetSend(session, phase)
+        case .reattach: settlePetSend(session, .failed("COS lost its hold on this session. Try again."))
+        }
+    }
+
+    private enum PetAttachResult { case attached(SessionChatBinding), failed(String) }
+    private enum PetTurnOutcome { case settled(PetSendPhase), reattach }
+
+    private func attachPetBinding(_ session: ClaudeSession) async -> PetAttachResult {
+        do {
+            let response = try await helper.run([
+                "session-chat-attach",
+                "--provider", session.provider,
+                "--thread-id", session.sessionId,
+            ], timeout: 35)
+            switch response.details["state"]?.string ?? "" {
+            case "attached":
+                let binding = SessionChatBinding(
+                    bindingId: response.details["bindingId"]?.string ?? "",
+                    epoch: response.details["epoch"]?.int ?? 0,
+                    boundTo: response.details["boundTo"]?.string ?? "",
+                    expiresAt: response.details["expiresAt"]?.double ?? 0
+                )
+                guard !binding.bindingId.isEmpty else { return .failed("COS could not attach to this session.") }
+                sessionBindings[Self.bindingKey(session)] = binding
+                return .attached(binding)
+            case "disabled":
+                return .failed("Continue agent threads is off in Settings.")
+            default:
+                return .failed(response.details["reasonCopy"]?.string ?? "COS could not attach to this session.")
+            }
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+    }
+
+    private func postPetTurn(_ pending: SessionChatPendingTurn) async -> PetTurnOutcome {
+        do {
+            let response = try await helper.run([
+                "session-chat-send",
+                "--provider", pending.provider,
+                "--thread-id", pending.sessionId,
+                "--binding-id", pending.bindingId,
+                "--epoch", String(pending.epoch),
+                "--bound-to", pending.boundTo,
+                "--client-turn-id", pending.clientTurnId,
+            ], timeout: 35, stdinData: Data(pending.prompt.utf8))
+            let details = response.details
+            let copy = details["reasonCopy"]?.string ?? ""
+            switch details["state"]?.string ?? "" {
+            case "completed":
+                // 200 on a fresh clientTurnId is the live hand-off (6.49.0): the
+                // session's own process took the message into its window.
+                let live = details["via"]?.string == "live"
+                return .settled(.landed(live
+                    ? (copy.isEmpty ? "Landed in the live session." : copy)
+                    : (copy.isEmpty ? "Sent." : copy)))
+            case "queued":
+                return .settled(.queued("Sent. COS is opening the thread; the reply lands in its transcript."))
+            case "disabled":
+                return .settled(.failed("Continue agent threads is off in Settings."))
+            case "ambiguous":
+                return .settled(.failed(copy.isEmpty
+                    ? "COS cannot tell whether this landed. Check the session before sending again." : copy))
+            default:
+                let reason = details["reason"]?.string ?? ""
+                if Self.chatReattachReasons.contains(reason) { return .reattach }
+                return .settled(.failed(copy.isEmpty ? "The message was refused." : copy))
+            }
+        } catch {
+            return .settled(.failed(error.localizedDescription))
+        }
+    }
+
+    /// The result lands on the card that sent it, or as a pet notice when that
+    /// card has since closed — a send is never silently swallowed either way.
+    private func settlePetSend(_ session: ClaudeSession, _ phase: PetSendPhase) {
+        guard petComposeTarget?.id == session.id else {
+            switch phase {
+            case .landed(let copy), .queued(let copy): petNotice = "\(session.title): \(copy)"
+            case .failed(let copy), .blocked(let copy): petNotice = "\(session.title): \(copy)"
+            case .idle, .sending: break
+            }
+            if case .sending = petSendPhase, petComposeTarget == nil { petSendPhase = .idle; petSentText = nil }
+            return
+        }
+        petSendPhase = phase
+        switch phase {
+        case .failed:
+            // Back into the field, so the fix is one edit away.
+            if petComposeDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let sent = petSentText { petComposeDraft = sent }
+            petSentText = nil
+        case .landed, .queued:
+            petComposeDraft = ""
+            petComposeHint = nil
+            // The row should read as working before the card leaves.
+            Task { [weak self] in await self?.loadPetSessions() }
+            petComposeCloseTask?.cancel()
+            petComposeCloseTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(PetSendPhase.settleSeconds))
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard let self, self.petComposeTarget?.id == session.id else { return }
+                    if case .sending = self.petSendPhase { return }
+                    self.closePetComposer()
+                }
+            }
+        case .blocked, .idle, .sending:
+            break
+        }
     }
 
     func copyClaudeSession() {
