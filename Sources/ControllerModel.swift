@@ -1646,6 +1646,11 @@ final class ControllerModel: ObservableObject {
     @Published var petComposeHint: String?
     private var petSendTask: Task<Void, Never>?
     private var petComposeProbeTask: Task<Void, Never>?
+    /// The probe said the thread is busy for a reason that clears on its own
+    /// (`native_thread_working`, `native_target_busy`). A send then goes to the
+    /// server's queue first, where the lens has always sent it, instead of
+    /// attaching into a refusal. Nil when the thread was free at probe time.
+    private var petComposeParkReason: String?
     private var petComposeCloseTask: Task<Void, Never>?
     /// Bindings by `provider:sessionId`, shared with the Sessions pane. Attaching
     /// twice to one thread is refused as `target_busy` against our OWN binding —
@@ -5120,6 +5125,7 @@ final class ControllerModel: ObservableObject {
         // Retargeting mid-send is refused: the in-flight turn belongs to the
         // old target and its result must land on the card that sent it.
         if case .sending = petSendPhase, petComposeTarget?.id != session.id { return }
+        petComposeParkReason = nil
         if petComposeTarget?.id != session.id {
             petComposeDraft = ""
             petSentText = nil
@@ -5149,6 +5155,7 @@ final class ControllerModel: ObservableObject {
         petComposeProbeTask = nil
         petComposeTarget = nil
         petComposeHint = nil
+        petComposeParkReason = nil
         if case .sending = petSendPhase {
             // The send keeps going — its result is real whether or not the
             // card is on screen — and lands as a notice instead.
@@ -5181,9 +5188,20 @@ final class ControllerModel: ObservableObject {
                 return
             }
             let attachable = response.details["attachable"]?.bool ?? false
+            let reason = response.details["reason"]?.string ?? ""
             let copy = response.details["reasonCopy"]?.string ?? ""
             let owners = response.details["ownerCount"]?.int ?? 0
             if !attachable {
+                // A thread mid-turn is not a "no": the lens parks the turn on the
+                // server's queue and the drainer delivers it when the turn ends.
+                // The pet does the same (Miles, 2026-09-17: "Why can't we use the
+                // same continue queued approach as we do on the G2?"). Only a
+                // structural refusal disables the send.
+                if Self.petQueueableReasons.contains(reason) {
+                    petComposeParkReason = reason
+                    petComposeHint = Self.petParkHint(for: session)
+                    return
+                }
                 petSendPhase = .blocked(copy.isEmpty ? "COS cannot reach this session right now." : copy)
                 return
             }
@@ -5221,19 +5239,53 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    /// The server's QUEUEABLE_REFUSALS, mirrored: a turn may be parked behind
+    /// these two and nothing else. The helper self-test pins the same pair.
+    static let petQueueableReasons: Set<String> = ["native_thread_working", "native_target_busy"]
+
+    static func petParkHint(for session: ClaudeSession) -> String {
+        session.provider == "cursor"
+            ? "Working right now. Cursor cannot queue a message; wait for the turn to end."
+            : "Working right now. A message you send waits and lands when this turn ends."
+    }
+
+    static func petParkedCopy(position: Int) -> String {
+        position > 1
+            ? "Queued, \(position) in line. It lands when this turn ends."
+            : "Queued. It lands when this turn ends."
+    }
+
     private func performPetSend(_ session: ClaudeSession, prompt: String) async {
+        let clientTurnId = UUID().uuidString
+        // THE G2 PATH FIRST when the probe saw a busy thread: park it, do not
+        // attach into the refusal the probe already predicted. The queue route
+        // re-runs the gate; a thread that freed up meanwhile answers thread_free
+        // and the ordinary send below takes over with the SAME clientTurnId.
+        if petComposeParkReason != nil {
+            switch await parkPetTurn(session, clientTurnId: clientTurnId, prompt: prompt) {
+            case .parked(let phase): settlePetSend(session, phase); return
+            case .failed(let copy): settlePetSend(session, .failed(copy)); return
+            case .threadFree: petComposeParkReason = nil
+            }
+        }
         var binding = cachedBinding(session)
         if binding == nil {
             switch await attachPetBinding(session) {
             case .attached(let fresh): binding = fresh
-            case .failed(let copy): settlePetSend(session, .failed(copy)); return
+            case .failed(let reason, let copy):
+                if Self.petQueueableReasons.contains(reason) {
+                    await parkAfterRefusal(session, clientTurnId: clientTurnId, prompt: prompt, copy: copy)
+                } else {
+                    settlePetSend(session, .failed(copy))
+                }
+                return
             }
         }
         guard let first = binding else { return }
         var pending = SessionChatPendingTurn(
             provider: session.provider, sessionId: session.sessionId,
             bindingId: first.bindingId, epoch: first.epoch, boundTo: first.boundTo,
-            clientTurnId: UUID().uuidString, prompt: prompt,
+            clientTurnId: clientTurnId, prompt: prompt,
             sentAt: Date().timeIntervalSince1970
         )
         var outcome = await postPetTurn(pending)
@@ -5249,18 +5301,63 @@ final class ControllerModel: ObservableObject {
                     clientTurnId: pending.clientTurnId, prompt: pending.prompt, sentAt: pending.sentAt
                 )
                 outcome = await postPetTurn(pending)
-            case .failed(let copy):
-                outcome = .settled(.failed(copy))
+            case .failed(let reason, let copy):
+                outcome = Self.petQueueableReasons.contains(reason) ? .park(copy) : .settled(.failed(copy))
             }
         }
         switch outcome {
         case .settled(let phase): settlePetSend(session, phase)
+        case .park(let copy): await parkAfterRefusal(session, clientTurnId: clientTurnId, prompt: prompt, copy: copy)
         case .reattach: settlePetSend(session, .failed("COS lost its hold on this session. Try again."))
         }
     }
 
-    private enum PetAttachResult { case attached(SessionChatBinding), failed(String) }
-    private enum PetTurnOutcome { case settled(PetSendPhase), reattach }
+    /// A send that met the busy thread AFTER the probe (the turn started in the
+    /// gap) parks the same turn id. If the queue route then says the thread is
+    /// free again, the honest answer is the refusal's own copy with the retry
+    /// in the user's hands, not a third attempt behind their back.
+    private func parkAfterRefusal(_ session: ClaudeSession, clientTurnId: String, prompt: String, copy: String) async {
+        switch await parkPetTurn(session, clientTurnId: clientTurnId, prompt: prompt) {
+        case .parked(let phase): settlePetSend(session, phase)
+        case .failed(let parkCopy): settlePetSend(session, .failed(parkCopy))
+        case .threadFree: settlePetSend(session, .failed(copy.isEmpty ? "The session was busy. Try again." : copy))
+        }
+    }
+
+    private enum PetParkResult { case parked(PetSendPhase), threadFree, failed(String) }
+
+    private func parkPetTurn(_ session: ClaudeSession, clientTurnId: String, prompt: String) async -> PetParkResult {
+        do {
+            let response = try await helper.run([
+                "session-chat-queue",
+                "--provider", session.provider,
+                "--thread-id", session.sessionId,
+                "--client-turn-id", clientTurnId,
+            ], timeout: 35, stdinData: Data(prompt.utf8))
+            switch response.details["state"]?.string ?? "" {
+            case "parked":
+                return .parked(.queued(Self.petParkedCopy(position: response.details["position"]?.int ?? 1)))
+            case "thread_free":
+                return .threadFree
+            case "route_absent":
+                return .failed("Update the COS server to queue a message behind a running turn.")
+            default:
+                switch response.details["reason"]?.string ?? "" {
+                case "unsupported_provider":
+                    return .failed("Cursor cannot queue a message. Wait for the turn to end, then send again.")
+                case "duplicate_turn", "already_queued":
+                    return .failed("That message is already queued for this session.")
+                case let reason:
+                    return .failed("COS could not queue this message (\(reason)).")
+                }
+            }
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+    }
+
+    private enum PetAttachResult { case attached(SessionChatBinding), failed(reason: String, copy: String) }
+    private enum PetTurnOutcome { case settled(PetSendPhase), reattach, park(String) }
 
     private func attachPetBinding(_ session: ClaudeSession) async -> PetAttachResult {
         do {
@@ -5277,16 +5374,17 @@ final class ControllerModel: ObservableObject {
                     boundTo: response.details["boundTo"]?.string ?? "",
                     expiresAt: response.details["expiresAt"]?.double ?? 0
                 )
-                guard !binding.bindingId.isEmpty else { return .failed("COS could not attach to this session.") }
+                guard !binding.bindingId.isEmpty else { return .failed(reason: "", copy: "COS could not attach to this session.") }
                 sessionBindings[Self.bindingKey(session)] = binding
                 return .attached(binding)
             case "disabled":
-                return .failed("Continue agent threads is off in Settings.")
+                return .failed(reason: "disabled", copy: "Continue agent threads is off in Settings.")
             default:
-                return .failed(response.details["reasonCopy"]?.string ?? "COS could not attach to this session.")
+                return .failed(reason: response.details["reason"]?.string ?? "",
+                               copy: response.details["reasonCopy"]?.string ?? "COS could not attach to this session.")
             }
         } catch {
-            return .failed(error.localizedDescription)
+            return .failed(reason: "", copy: error.localizedDescription)
         }
     }
 
@@ -5321,6 +5419,7 @@ final class ControllerModel: ObservableObject {
             default:
                 let reason = details["reason"]?.string ?? ""
                 if Self.chatReattachReasons.contains(reason) { return .reattach }
+                if Self.petQueueableReasons.contains(reason) { return .park(copy) }
                 return .settled(.failed(copy.isEmpty ? "The message was refused." : copy))
             }
         } catch {

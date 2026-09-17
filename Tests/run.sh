@@ -39,8 +39,8 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 690:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 690 (690 at 0.5.233: the SSE frame parser behind session-stream)")
+if count < 697:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 697 (697 at 0.5.234: the queued-turns classifier behind session-chat-queue)")
 ' "$SELF_TEST"
 
 python3 "$ROOT/Tests/HeldNamingTransport.py" "$TMP/cos-control-helper"
@@ -4000,6 +4000,36 @@ need("sessionBindings[Self.bindingKey(session)] = binding" in model
 need('"via": body["via"] as? String ?? ""' in (root / "HelperSources/main.swift").read_text(),
      "the helper dropped via; a live hand-off would read as a replay")
 need('details["via"]?.string == "live"' in model, "the pet does not read via")
+# The G2's queued approach (Miles, 2026-09-17, after the first live send read
+# "Your Mac is writing to this thread right now"): a thread mid-turn is PARKED on
+# the server's queued-turns route and delivered when the turn ends, never
+# refused. The two queueable reasons mirror the server's set, the probe turns
+# them into a hint instead of a block, the send goes to the queue FIRST when the
+# probe saw a busy thread, and a refusal met after the probe parks the same id.
+helper_src = (root / "HelperSources/main.swift").read_text()
+need('case "session-chat-queue": try emitSessionChatQueue(args: args)' in helper_src
+     and '/queued-turns", method: "POST"' in helper_src,
+     "the helper has no park verb, or it does not POST the queued-turns route")
+need('static let sessionChatQueueableReasons: Set<String> = ["native_thread_working", "native_target_busy"]' in helper_src
+     and 'static let petQueueableReasons: Set<String> = ["native_thread_working", "native_target_busy"]' in model,
+     "the queueable pair drifted between the helper and the model, or from the server's QUEUEABLE_REFUSALS")
+probe_src = model[model.index("private func probePetComposeTarget("):]
+probe_src = probe_src[:probe_src.index("\n    }\n")]
+need("if Self.petQueueableReasons.contains(reason) {" in probe_src
+     and "petComposeParkReason = reason" in probe_src
+     and probe_src.index("petComposeParkReason = reason") < probe_src.index('petSendPhase = .blocked(copy.isEmpty ? "COS cannot reach'),
+     "the probe blocks the send on a busy thread instead of arming the park path")
+perform_src = model[model.index("private func performPetSend("):]
+perform_src = perform_src[:perform_src.index("\n    }\n")]
+need("if petComposeParkReason != nil {" in perform_src
+     and perform_src.index("parkPetTurn(") < perform_src.index("cachedBinding(session)"),
+     "a send on a probed-busy thread must go to the queue BEFORE any attach")
+need("case .threadFree: petComposeParkReason = nil" in perform_src,
+     "a 409 thread_free must fall through to the ordinary send with the same turn id")
+need("if Self.petQueueableReasons.contains(reason) { return .park(copy) }" in model,
+     "a queueable refusal from the turn route no longer parks")
+need('"session-chat-queue",' in model and '"--client-turn-id", clientTurnId,' in model,
+     "the model does not call the park verb with the turn id")
 # Result never swallowed: a card that closed mid-send reports as a notice.
 settle_src = model[model.index("private func settlePetSend("):]
 settle_src = settle_src[:settle_src.index("\n    }\n")]

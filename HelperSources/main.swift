@@ -509,6 +509,7 @@ final class COSControlHelper {
         case "session-chat-attachability": try emitSessionChatAttachability(args: args)
         case "session-chat-attach": try emitSessionChatAttach(args: args)
         case "session-chat-send": try emitSessionChatSend(args: args)
+        case "session-chat-queue": try emitSessionChatQueue(args: args)
         case "session-chat-turn": try emitSessionChatTurn(args: args)
         case "session-chat-fork": try emitSessionChatFork(args: args)
         case "session-chat-reply": try emitSessionChatReply(args: args)
@@ -5795,6 +5796,26 @@ final class COSControlHelper {
         switch outcome {
         case "completed", "refused", "ambiguous": return outcome ?? "pending"
         default: return "pending"
+        }
+    }
+
+    /// The two refusals a turn may be PARKED behind rather than refused (the
+    /// server's QUEUEABLE_REFUSALS): the thread is mid-turn, or COS's own earlier
+    /// binding has not yielded yet. Both clear on their own; the drainer delivers
+    /// when the turn ends. Everything else is a real "no" and the client says so.
+    static let sessionChatQueueableReasons: Set<String> = ["native_thread_working", "native_target_busy"]
+
+    /// What the queued-turns route said. `parked` is the 202; `thread_free` is the
+    /// 409 that means "send it now instead"; `refused` carries the server's reason
+    /// (a 423 structural refusal, or a 409 duplicate); `route_absent` is a server
+    /// before 6.48.1. A 5xx or no status reads `unavailable`, never a refusal.
+    static func classifySessionChatQueue(status: Int?, error: String?, hint: String?) -> String {
+        switch status {
+        case 202: return "parked"
+        case 409: return error == "thread_free" || hint == "send_now" ? "thread_free" : "refused"
+        case 400, 423: return "refused"
+        case 404: return "route_absent"
+        default: return "unavailable"
         }
     }
 
@@ -13664,6 +13685,59 @@ final class COSControlHelper {
         ])
     }
 
+    /// Park a turn behind a busy thread (6.48.1's queued-turns route). The
+    /// glasses have done this since Continue shipped; the pet composer refused
+    /// where the lens parked until 0.5.234. The route re-runs the occupancy
+    /// gate itself: a thread that is free answers 409 `thread_free`, and the
+    /// caller sends through the ordinary attach + turn path instead. Cursor
+    /// cannot be queued (423). The prompt arrives on stdin, as for a send.
+    private func emitSessionChatQueue(args: [String]) throws {
+        let (provider, threadId) = try sessionChatIds(args: args)
+        let clientTurnId = try sessionChatHandle("--client-turn-id", in: args, pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$")
+        let promptData = FileHandle.standardInput.readDataToEndOfFile()
+        let prompt = String(decoding: promptData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { throw HelperError.message("The message is empty") }
+        guard prompt.count <= 32_000 else {
+            throw HelperError.message("That message is too long for one turn (32,000 characters max)")
+        }
+        let payload: [String: Any] = [
+            "prompt": prompt,
+            "clientTurnId": clientTurnId,
+            "cosSessionId": Self.sessionChatCosSessionId,
+        ]
+        let json = String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8) ?? "{}"
+        let token = try speakerReviewToken()
+        guard let response = request("/api/agent-sessions/\(provider)/\(threadId)/queued-turns", method: "POST", token: token, body: json, timeout: 30) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        let body = response.body ?? [:]
+        let state = Self.classifySessionChatQueue(
+            status: response.status, error: body["error"] as? String, hint: body["hint"] as? String)
+        switch state {
+        case "parked":
+            emit(ok: true, message: "Queued", details: [
+                "state": "parked",
+                "clientTurnId": body["clientTurnId"] as? String ?? clientTurnId,
+                "position": body["position"] as? Int ?? 0,
+                "waitingOn": body["waitingOn"] as? String ?? "",
+            ])
+        case "thread_free":
+            emit(ok: true, message: "Thread is free", details: ["state": "thread_free"])
+        case "route_absent":
+            emit(ok: true, message: "Queue not available", details: ["state": "route_absent"])
+        case "unavailable":
+            throw HelperError.message("Server stopped")
+        default:
+            let reason = body["error"] as? String ?? body["reason"] as? String ?? "refused"
+            emit(ok: true, message: "Queue refused", details: [
+                "state": "refused",
+                "reason": reason,
+                "queueable": body["queueable"] as? Bool ?? false,
+            ])
+        }
+    }
+
     private func emitSessionChatTurn(args: [String]) throws {
         let bindingId = try sessionChatHandle("--binding-id", in: args, pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{1,127}$")
         let clientTurnId = try sessionChatHandle("--client-turn-id", in: args, pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$")
@@ -17552,6 +17626,25 @@ final class COSControlHelper {
                    "a 200 ambiguous body is terminal")
         try expect(Self.classifyTurnPoll(status: 200, outcome: "queued") == "pending",
                    "queued is NOT terminal — treating it terminal skips the whole turn")
+
+        // The park-behind-a-busy-thread route (0.5.234). The two transient
+        // refusals are the ONLY ones a turn may be parked for; a 409 thread_free
+        // means send now, not refused; a server without the route is not a "no".
+        try expect(Self.sessionChatQueueableReasons == ["native_thread_working", "native_target_busy"],
+                   "the queueable set must mirror the server's QUEUEABLE_REFUSALS exactly")
+        try expect(Self.classifySessionChatQueue(status: 202, error: nil, hint: nil) == "parked",
+                   "a 202 is a parked turn")
+        try expect(Self.classifySessionChatQueue(status: 409, error: "thread_free", hint: "send_now") == "thread_free",
+                   "409 thread_free means the ordinary send path, now")
+        try expect(Self.classifySessionChatQueue(status: 409, error: "duplicate_turn", hint: nil) == "refused",
+                   "any other 409 is a refusal with the server's reason")
+        try expect(Self.classifySessionChatQueue(status: 423, error: "unsupported_provider", hint: nil) == "refused",
+                   "a 423 is structural: queueing can never clear it")
+        try expect(Self.classifySessionChatQueue(status: 404, error: nil, hint: nil) == "route_absent",
+                   "a 404 is a server before the queue route, never a refusal")
+        try expect(Self.classifySessionChatQueue(status: 503, error: nil, hint: nil) == "unavailable"
+                   && Self.classifySessionChatQueue(status: nil, error: nil, hint: nil) == "unavailable",
+                   "a 5xx or a dead server is unavailable, never a refusal the card would print")
 
         // Provider + thread id validation, before either reaches a URL.
         try expect(Self.sessionChatValidationError(provider: "claude", threadId: "1c45222f-038d-460f-9a86-b8ea72c424ea") == nil,

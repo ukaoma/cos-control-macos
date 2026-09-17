@@ -103,7 +103,8 @@ struct PetComposerUIContract {
             model.petSendPhase = .idle
             model.petSentText = nil
             model.petComposeDraft = "Ship the pet composer once the harness renders clean."
-            model.petComposeHint = nil
+            // The probe saw a busy thread: the hint says the message will queue.
+            model.petComposeHint = ControllerModel.petParkHint(for: claude)
             let draft = try render(SessionPetCanary.column(model: model, presenter: presenter),
                                    size: size, name: "pet-composer-draft", output: output, dark: dark)
             let draftStrings = strings(draft).joined(separator: "\n")
