@@ -93,6 +93,12 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         observers.append(model.$petQueueNote.removeDuplicates().sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
+        observers.append(model.$petExpandedTurnID.removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
+        observers.append(model.$petEditingTurn.map { $0?.clientTurnId }.removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
         // The field grows to four lines; every line it gains re-fits the panel
         // so the card unfolds upward like a list, never off the bottom edge.
         observers.append(model.$petComposeDraft.removeDuplicates().sink { [weak self] _ in
@@ -1300,22 +1306,26 @@ private struct SessionPetRoot: View {
                     : .asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .opacity))
             }
             HStack(alignment: .bottom, spacing: size.length(6)) {
-                TextField(composerPlaceholder(target), text: $model.petComposeDraft, axis: .vertical)
+                TextField(model.petEditingTurn == nil ? composerPlaceholder(target) : "Edit the queued message…",
+                          text: $model.petComposeDraft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(COSType.body(size.typeSize(11)))
-                    .lineLimit(1...4)
+                    .lineLimit(1...6)
                     .focused($composerFocused)
                     .onSubmit { model.sendPetMessage() }
-                    .onExitCommand { model.closePetComposer() }
+                    .onExitCommand { model.escapePetComposer() }
                     .disabled(phase.isSending || phase.isBlocked)
                     .padding(.horizontal, size.length(10))
                     .padding(.vertical, size.length(6))
                     .background(COSPalette.card, in: RoundedRectangle(cornerRadius: size.length(10), style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: size.length(10), style: .continuous)
-                            .stroke(composerFocused ? COSPalette.gold.opacity(0.7) : COSPalette.line, lineWidth: 1)
+                            .stroke(model.petEditingTurn != nil ? COSPalette.amber
+                                    : composerFocused ? COSPalette.gold.opacity(0.7) : COSPalette.line, lineWidth: 1)
                     )
-                    .help("Return sends. Option-Return starts a new line. Escape closes.")
+                    .help(model.petEditingTurn == nil
+                          ? "Return sends. Option-Return starts a new line. Escape closes."
+                          : "Return replaces the queued message. Escape keeps it as it was.")
                 sendButton(phase)
             }
             if let line = phase.statusLine {
@@ -1403,27 +1413,60 @@ private struct SessionPetRoot: View {
                     Spacer(minLength: 0)
                 }
                 ForEach(rows) { turn in
-                    HStack(alignment: .firstTextBaseline, spacing: size.length(6)) {
-                        Text(turn.stateLine)
-                            .font(COSType.mono(size.typeSize(8), weight: .bold))
-                            .foregroundStyle(turn.isDelivering ? COSPalette.green : COSPalette.accent)
-                            .frame(width: size.length(58), alignment: .leading)
-                        Text(verbatim: model.queuedTurnText(turn))
-                            .font(COSType.body(size.typeSize(10)))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Spacer(minLength: 0)
-                        if turn.cancellable {
-                            Button { model.cancelPetQueuedTurn(turn) } label: {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: size.typeSize(8), weight: .bold))
-                                    .foregroundStyle(.secondary)
-                                    .padding(size.length(3))
+                    let expanded = model.petExpandedTurnID == turn.clientTurnId
+                    let editing = model.petEditingTurn?.clientTurnId == turn.clientTurnId
+                    VStack(alignment: .leading, spacing: size.length(4)) {
+                        HStack(alignment: .firstTextBaseline, spacing: size.length(6)) {
+                            Text(editing ? "Editing" : turn.stateLine)
+                                .font(COSType.mono(size.typeSize(8), weight: .bold))
+                                .foregroundStyle(editing ? COSPalette.amber : turn.isDelivering ? COSPalette.green : COSPalette.accent)
+                                .frame(width: size.length(58), alignment: .leading)
+                            // The text is the disclosure: one line folded, the whole
+                            // message open. A Button, so it reads as one and VoiceOver
+                            // can say so; the × stays a sibling.
+                            Button { model.togglePetExpandedTurn(turn) } label: {
+                                Text(verbatim: model.queuedTurnText(turn))
+                                    .font(COSType.body(size.typeSize(10)))
+                                    .lineLimit(expanded ? 12 : 1)
+                                    .truncationMode(.tail)
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: expanded)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                                     .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .help("Cancel this queued message. It will not be sent.")
-                            .accessibilityLabel("Cancel queued message")
+                            .help(expanded ? "Fold" : "Show the whole message")
+                            .accessibilityLabel(expanded ? "Fold queued message" : "Show the whole queued message")
+                            if turn.cancellable {
+                                Button { model.cancelPetQueuedTurn(turn) } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: size.typeSize(8), weight: .bold))
+                                        .foregroundStyle(.secondary)
+                                        .padding(size.length(3))
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .help("Cancel this queued message. It will not be sent.")
+                                .accessibilityLabel("Cancel queued message")
+                            }
+                        }
+                        if expanded {
+                            HStack(spacing: size.length(10)) {
+                                if !model.queuedTurnHasFullText(turn) {
+                                    Text("First 80 characters; queued from the glasses or phone.")
+                                        .font(COSType.body(size.typeSize(8)))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                Spacer(minLength: 0)
+                                if turn.cancellable {
+                                    Button("Edit") { model.beginEditingPetTurn(turn) }
+                                        .buttonStyle(.plain)
+                                        .font(COSType.body(size.typeSize(9), weight: .semibold))
+                                        .foregroundStyle(COSPalette.accent)
+                                        .help("Put this message in the field. Return replaces it in the queue.")
+                                }
+                            }
+                            .padding(.leading, size.length(64))
                         }
                     }
                 }

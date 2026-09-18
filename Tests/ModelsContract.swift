@@ -236,6 +236,14 @@ struct ModelsContract {
         precondition(rows.map(\.clientTurnId) == ["w1", "w2", "w3"], "the card shows three waiting rows in queue order, got \(rows.map(\.clientTurnId))")
         precondition(QueuedSessionTurn.cardRows([delivering, turn("w1", "waiting", 0, 2)]).map(\.clientTurnId) == ["w1", "d"],
                      "with room, the delivering row follows the waiting ones")
+        // 0.5.236: a cancel's meaning, for the edit built on it.
+        precondition(QueuedSessionTurn.cancelVerdict(state: "cancelled", status: "cancelled") == "cancelled")
+        precondition(QueuedSessionTurn.cancelVerdict(state: "cancelled", status: "") == "cancelled", "an older server sends no status")
+        precondition(QueuedSessionTurn.cancelVerdict(state: "cancelled", status: "delivered") == "already_delivering",
+                     "a 200 carrying delivered is too late, never cancelled")
+        precondition(QueuedSessionTurn.cancelVerdict(state: "already_delivering", status: "") == "already_delivering")
+        precondition(QueuedSessionTurn.cancelVerdict(state: "unknown_turn", status: "") == "unknown_turn")
+        precondition(QueuedSessionTurn.cancelVerdict(state: "route_absent", status: "") == "unavailable")
     }
 
     /// The subtitle, including the case that would otherwise render blank.

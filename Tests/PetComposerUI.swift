@@ -139,6 +139,19 @@ struct PetComposerUIContract {
             ]
             _ = try render(SessionPetCanary.column(model: model, presenter: presenter),
                            size: size, name: "pet-composer-queue", output: output, dark: dark)
+            // 3c. The first row opened to its whole text; then Edit puts it in the field.
+            model.togglePetExpandedTurn(model.petQueuedTurns[0])
+            _ = try render(SessionPetCanary.column(model: model, presenter: presenter),
+                           size: size, name: "pet-composer-queue-expanded", output: output, dark: dark)
+            model.beginEditingPetTurn(model.petQueuedTurns[0])
+            let editing = try render(SessionPetCanary.column(model: model, presenter: presenter),
+                                     size: size, name: "pet-composer-queue-editing", output: output, dark: dark)
+            let editingStrings = strings(editing).joined(separator: "\n")
+            precondition(editingStrings.contains("Ship the pet composer once the harness renders clean."),
+                         "Edit did not put the queued text in the field")
+            precondition(editingStrings.contains("Edit the queued message"), "the field does not say it is editing")
+            model.cancelEditingPetTurn()
+            precondition(model.petComposeDraft == "", "Escape did not put the empty draft back")
             model.petQueuedTurns = []
 
             // 4. Refused, on the Codex row: copy verbatim, text back in the field.

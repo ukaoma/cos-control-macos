@@ -5313,7 +5313,7 @@ struct SessionChatComposer: View {
                     .lineLimit(1...6)
                     .disabled(model.chatSending || model.chatPolling || model.chatForking)
                     .onSubmit { model.sendChatMessage() }
-                Button("Send") { model.sendChatMessage() }
+                Button(model.chatEditingTurn == nil ? "Send" : "Replace") { model.sendChatMessage() }
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(model.chatSending || model.chatPolling || model.chatForking
                         || model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -5356,13 +5356,23 @@ struct SessionChatComposer: View {
                                 .fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 8)
                             if turn.cancellable {
+                                if model.chatEditingTurn?.clientTurnId == turn.clientTurnId {
+                                    Button("Keep it as it was") { model.cancelEditingChatTurn() }
+                                        .controlSize(.small)
+                                } else {
+                                    Button("Edit") { model.beginEditingChatTurn(turn) }
+                                        .controlSize(.small)
+                                        .help("Put this message in the composer. Send replaces it in the queue.")
+                                }
                                 Button("Cancel") { model.cancelChatQueuedTurn(turn) }
                                     .controlSize(.small)
                                     .help("Cancel this queued message. It will not be sent.")
                             }
                         }
                         .padding(8)
-                        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 9))
+                        .background(model.chatEditingTurn?.clientTurnId == turn.clientTurnId
+                                    ? COSPalette.amber.opacity(0.10) : COSPalette.card,
+                                    in: RoundedRectangle(cornerRadius: 9))
                     }
                     if let note = model.chatQueueNote {
                         Text(verbatim: note)

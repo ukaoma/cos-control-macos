@@ -1,3 +1,11 @@
+## 0.5.236 (build 274)
+
+A queued message opens to its whole text, and can be edited while it waits.
+
+- Tap a queued row on the pet card and it opens to the whole message (up to twelve lines); tap again to fold it (Miles, 2026-09-17: "we need a way to be able to expand or view more of the context of it. Ideally we could edit a queue as well if it hasn't already gone"). A row queued from the glasses or the phone says it holds only the first 80 characters, because that is all the server publishes. The Sessions pane already showed the whole text.
+- Edit, while it is still waiting. Edit puts the message in the field (the card's edge goes amber, the placeholder says so); Return replaces it, Escape keeps it as it was. The pane has Edit beside Cancel, Keep it as it was while editing, and its Send reads Replace. The server has no edit route, so a replace is a cancel and a new park with a fresh turn id, in that order, and the server appends: with one message waiting nothing moves, with more the edited one goes to the back of the line and the card says "Replaced, now 3 in line." A thread that freed between the cancel and the park gets the text by the ordinary send, now. A message the session already took cannot be replaced: Control says "Too late to edit: the session already has it." and leaves your text in the field to send fresh. A cancel that the server answers with a settled status (delivered) now reads as too late, not as cancelled.
+- Tests: ModelsContract executes the cancel outcome (a 200 carrying "delivered" is too late; "cancelled" or no status is cancelled); run.sh pins the expand toggle, Edit gated on a waiting row, cancel-before-park in both replace paths, the too-late branch keeping the draft, Escape folding an edit before it closes the card, and the pane's Replace label; the pet harness renders the expanded row and the editing field.
+
 ## 0.5.235 (build 273)
 
 See what is queued behind a session, and cancel it.

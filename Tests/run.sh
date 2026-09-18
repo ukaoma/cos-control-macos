@@ -3962,9 +3962,11 @@ need('Text("TO")' in card_src and "providerGlyph(target.petProviderMark" in card
      "the composer card does not name its target")
 need("if let sent = model.petSentText" in card_src and ".transition(" in card_src,
      "the sent chip is gone, or it no longer moves out of the field")
+# 0.5.236: Escape goes through escapePetComposer, which folds an edit before it
+# closes the card (pinned below, with the fold-before-close order).
 need(".focused($composerFocused)" in card_src and ".onSubmit { model.sendPetMessage() }" in card_src
-     and ".onExitCommand { model.closePetComposer() }" in card_src,
-     "the field lost focus, Return-to-send or Escape-to-close")
+     and ".onExitCommand { model.escapePetComposer() }" in card_src,
+     "the field lost focus, Return-to-send or Escape")
 need(".stroke(accepted ? COSPalette.gold : COSPalette.line" in card_src,
      "the card no longer goes gold on acceptance")
 need("composerCard(target)" in body_code and "petComposeTarget" in body_code,
@@ -4055,6 +4057,36 @@ need('Button("Cancel") { model.cancelChatQueuedTurn(turn) }' in activity_src and
      "the pane lists the queue without Cancel, or draws the preview instead of the text")
 need("follow-up queued; it lands when this turn ends." in activity_src,
      "the pane lost its queued line")
+# ---- Queued turns: expand and edit (0.5.236) --------------------------
+need("model.togglePetExpandedTurn(turn)" in qrows and "lineLimit(expanded ? 12 : 1)" in qrows,
+     "the card row no longer opens to its whole text on tap")
+need('Button("Edit") { model.beginEditingPetTurn(turn) }' in qrows and qrows.index("if turn.cancellable {") < qrows.index('Button("Edit")'),
+     "Edit is offered on a row that cannot be cancelled")
+replace_src = model[model.index("private func performPetReplace("):]
+replace_src = replace_src[:replace_src.index("\n    }\n")]
+need(replace_src.index("cancelQueuedTurn(session, turn)") < replace_src.index("parkPetTurn(session, clientTurnId: clientTurnId, prompt: prompt)"),
+     "the card's replace parks before it cancels; that is two copies")
+need("Too late to edit: the session already has it." in replace_src and "petComposeDraft = prompt" in replace_src,
+     "a too-late replace no longer keeps the text in the field")
+need("case .threadFree:" in replace_src and "performPetSend(session, prompt: prompt)" in replace_src,
+     "a thread that freed between cancel and park drops the message")
+pane_replace = model[model.index("func replaceChatQueuedTurn()"):]
+pane_replace = pane_replace[:pane_replace.index("\n    }\n")]
+need(pane_replace.index("cancelQueuedTurn(session, turn)") < pane_replace.index("parkPetTurn(session, clientTurnId: UUID().uuidString, prompt: prompt)"),
+     "the pane's replace parks before it cancels")
+need("if chatEditingTurn != nil { replaceChatQueuedTurn(); return }" in model,
+     "the pane's Send does not route to replace while editing")
+esc = model[model.index("func escapePetComposer()"):]
+esc = esc[:esc.index("\n    }\n")]
+need("if petEditingTurn != nil { cancelEditingPetTurn() } else { closePetComposer() }" in esc
+     and ".onExitCommand { model.escapePetComposer() }" in card_src,
+     "Escape closes the card under an edit instead of folding the edit first")
+need("QueuedSessionTurn.cancelVerdict(state: state, status: status)" in model,
+     "the cancel outcome no longer reads the settled status; a delivered row would read cancelled")
+need('Button(model.chatEditingTurn == nil ? "Send" : "Replace")' in activity_src
+     and 'Button("Edit") { model.beginEditingChatTurn(turn) }' in activity_src
+     and 'Button("Keep it as it was") { model.cancelEditingChatTurn() }' in activity_src,
+     "the pane lost Edit, Keep it as it was, or the Replace label")
 # The Sessions pane parks the same way (the docs have claimed it since 6.48.1).
 refusal_src = model[model.index("private func handleChatRefusal("):]
 refusal_src = refusal_src[:refusal_src.index("\n    }\n")]

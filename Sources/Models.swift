@@ -1467,6 +1467,19 @@ struct QueuedSessionTurn: Identifiable, Sendable, Equatable {
         settledAt = o["settledAt"]?.double ?? 0
     }
 
+    /// What a cancel answer means (0.5.236). The server answers 200 to a cancel
+    /// of a row that already settled, with that row's final status riding
+    /// along; only "cancelled" (or no status at all, an older server) means the
+    /// message will not be sent. A "delivered" status on a 200 is the too-late
+    /// case, and an edit built on it would send the message twice.
+    static func cancelVerdict(state: String, status: String) -> String {
+        switch state {
+        case "cancelled": return status.isEmpty || status == "cancelled" ? "cancelled" : "already_delivering"
+        case "already_delivering", "unknown_turn": return state
+        default: return "unavailable"
+        }
+    }
+
     /// The rows the pet card shows: waiting and delivering only, in queue order,
     /// capped so the card stays a card. The pane shows everything `showsInQueue`.
     static func cardRows(_ turns: [QueuedSessionTurn], limit: Int = 3) -> [QueuedSessionTurn] {

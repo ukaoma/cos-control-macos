@@ -1675,6 +1675,16 @@ final class ControllerModel: ObservableObject {
     /// list can show what was said rather than the server's 80-character head.
     /// Pruned to the ids the server still lists on every load.
     private var queuedPromptLedger: [String: String] = ControllerModel.loadQueuedPromptLedger()
+    // ── Queued turns: expand and edit (0.5.236) ─────────────────────
+    /// The card row opened to its full text; one at a time, tap to toggle.
+    @Published var petExpandedTurnID: String?
+    /// A waiting turn whose text is in the composer field. Return replaces it:
+    /// cancel, then park the new text (or send it, if the thread freed).
+    @Published var petEditingTurn: QueuedSessionTurn?
+    @Published var chatEditingTurn: QueuedSessionTurn?
+    /// What was in the field before Edit borrowed it; Escape puts it back.
+    private var petDraftBeforeEdit = ""
+    private var chatDraftBeforeEdit = ""
     private static let queuedPromptLedgerKey = "cos.sessionQueuedPrompts"
 
     private func postPetTerminalHint(_ text: String) {
@@ -4733,6 +4743,7 @@ final class ControllerModel: ObservableObject {
     }
 
     func sendChatMessage() {
+        if chatEditingTurn != nil { replaceChatQueuedTurn(); return }
         guard let session = openClaudeRow, !chatSending, !chatPolling else { return }
         let prompt = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
@@ -5178,6 +5189,9 @@ final class ControllerModel: ObservableObject {
         if case .sending = petSendPhase, petComposeTarget?.id != session.id { return }
         petComposeParkReason = nil
         if petComposeTarget?.id != session.id {
+            petEditingTurn = nil
+            petDraftBeforeEdit = ""
+            petExpandedTurnID = nil
             petComposeDraft = ""
             petSentText = nil
             petSendPhase = .idle
@@ -5201,7 +5215,16 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    /// Escape on the field: an edit in progress folds back first; a second
+    /// Escape closes the card.
+    func escapePetComposer() {
+        if petEditingTurn != nil { cancelEditingPetTurn() } else { closePetComposer() }
+    }
+
     func closePetComposer() {
+        petEditingTurn = nil
+        petDraftBeforeEdit = ""
+        petExpandedTurnID = nil
         petComposeCloseTask?.cancel()
         petComposeCloseTask = nil
         petComposeProbeTask?.cancel()
@@ -5288,6 +5311,12 @@ final class ControllerModel: ObservableObject {
         petSentText = prompt
         petComposeDraft = ""
         petSendTask?.cancel()
+        if let editing = petEditingTurn {
+            petSendTask = Task { [weak self] in
+                await self?.performPetReplace(target, turn: editing, prompt: prompt)
+            }
+            return
+        }
         petSendTask = Task { [weak self] in
             await self?.performPetSend(target, prompt: prompt)
         }
@@ -5509,6 +5538,12 @@ final class ControllerModel: ObservableObject {
         queuedPromptLedger[turn.clientTurnId] ?? turn.preview
     }
 
+    /// Whether the text on screen is the whole message. False for a turn the
+    /// glasses or the phone parked: only the server's 80-character head is here.
+    func queuedTurnHasFullText(_ turn: QueuedSessionTurn) -> Bool {
+        queuedPromptLedger[turn.clientTurnId] != nil
+    }
+
     private func fetchQueuedTurns(_ session: ClaudeSession) async -> [QueuedSessionTurn]? {
         do {
             let response = try await helper.run([
@@ -5525,6 +5560,19 @@ final class ControllerModel: ObservableObject {
 
     enum QueueCancelResult: Equatable { case cancelled, alreadyDelivering, unknown, unavailable(String) }
 
+    /// The server answers 200 to a cancel of a row that already settled, with
+    /// that row's final status riding along. Only "cancelled" means the message
+    /// will not be sent; "delivered" means the session has it, which for an
+    /// edit is the too-late case and must read as one.
+    static func cancelOutcome(state: String, status: String) -> QueueCancelResult {
+        switch QueuedSessionTurn.cancelVerdict(state: state, status: status) {
+        case "cancelled": return .cancelled
+        case "already_delivering": return .alreadyDelivering
+        case "unknown_turn": return .unknown
+        default: return .unavailable("Update the COS server to cancel a queued message.")
+        }
+    }
+
     private func cancelQueuedTurn(_ session: ClaudeSession, _ turn: QueuedSessionTurn) async -> QueueCancelResult {
         do {
             let response = try await helper.run([
@@ -5533,12 +5581,9 @@ final class ControllerModel: ObservableObject {
                 "--thread-id", session.sessionId,
                 "--client-turn-id", turn.clientTurnId,
             ], timeout: 20)
-            switch response.details["state"]?.string ?? "" {
-            case "cancelled": return .cancelled
-            case "already_delivering": return .alreadyDelivering
-            case "unknown_turn": return .unknown
-            default: return .unavailable("Update the COS server to cancel a queued message.")
-            }
+            return Self.cancelOutcome(
+                state: response.details["state"]?.string ?? "",
+                status: response.details["status"]?.string ?? "")
         } catch {
             return .unavailable(error.localizedDescription)
         }
@@ -5592,11 +5637,83 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    /// Tap a card row to open it to its full text; tap again to fold it.
+    func togglePetExpandedTurn(_ turn: QueuedSessionTurn) {
+        petExpandedTurnID = petExpandedTurnID == turn.clientTurnId ? nil : turn.clientTurnId
+    }
+
+    /// Edit = the row's text into the field. Return then replaces the queued
+    /// message; Escape puts the field back the way it was.
+    func beginEditingPetTurn(_ turn: QueuedSessionTurn) {
+        guard turn.cancellable, petComposeTarget != nil else { return }
+        if petEditingTurn == nil { petDraftBeforeEdit = petComposeDraft }
+        petEditingTurn = turn
+        petComposeDraft = queuedTurnText(turn)
+        petExpandedTurnID = nil
+        petQueueNote = nil
+        petComposeHint = queuedTurnHasFullText(turn)
+            ? "Editing a queued message. Return replaces it; Escape keeps it as it was."
+            : "Editing a queued message. Only its first 80 characters are on this Mac (it was queued from the glasses or phone); Return replaces the whole message with what is in the field."
+    }
+
+    func cancelEditingPetTurn() {
+        guard petEditingTurn != nil else { return }
+        petEditingTurn = nil
+        petComposeDraft = petDraftBeforeEdit
+        petDraftBeforeEdit = ""
+        petComposeHint = petComposeParkReason != nil ? petComposeTarget.map { Self.petParkHint(for: $0) } : nil
+    }
+
+    /// Replace = cancel the waiting row, then park the new text with a fresh
+    /// turn id (or send it now, if the thread freed meanwhile). The server
+    /// appends, so with more than one waiting the edited message goes to the
+    /// back of the line, and the card says so. A row the session already took
+    /// cannot be replaced; the new text stays in the field to send fresh.
+    private func performPetReplace(_ session: ClaudeSession, turn: QueuedSessionTurn, prompt: String) async {
+        let others = petQueuedTurns.filter { $0.isWaiting && $0.clientTurnId != turn.clientTurnId }.count
+        switch await cancelQueuedTurn(session, turn) {
+        case .cancelled:
+            break
+        case .alreadyDelivering, .unknown:
+            petEditingTurn = nil
+            petDraftBeforeEdit = ""
+            petComposeDraft = prompt
+            petSentText = nil
+            settlePetSend(session, .failed("Too late to edit: the session already has it. Send this as a new message if you still want it."))
+            loadPetQueue()
+            return
+        case .unavailable(let copy):
+            petComposeDraft = prompt
+            petSentText = nil
+            settlePetSend(session, .failed(copy))
+            return
+        }
+        petEditingTurn = nil
+        petDraftBeforeEdit = ""
+        let clientTurnId = UUID().uuidString
+        switch await parkPetTurn(session, clientTurnId: clientTurnId, prompt: prompt) {
+        case .parked:
+            settlePetSend(session, .queued(others > 0
+                ? "Replaced, now \(others + 1) in line. It lands when this turn ends."
+                : "Replaced. It lands when this turn ends."))
+        case .failed(let copy):
+            petComposeDraft = prompt
+            petSentText = nil
+            settlePetSend(session, .failed("The old message was cancelled, but the new one was not queued: \(copy)"))
+        case .threadFree:
+            // The thread freed between cancel and park: the ordinary send path
+            // takes the same text, with the same id, so it lands now.
+            petComposeParkReason = nil
+            await performPetSend(session, prompt: prompt)
+        }
+    }
+
     private func clearPetQueue() {
         petQueueTask?.cancel(); petQueueTask = nil
         petQueueTicker?.cancel(); petQueueTicker = nil
         petQueuedTurns = []
         petQueueNote = nil
+        petExpandedTurnID = nil
     }
 
     // Pane surface
@@ -5636,11 +5753,85 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    func beginEditingChatTurn(_ turn: QueuedSessionTurn) {
+        guard turn.cancellable, openClaudeRow != nil else { return }
+        if chatEditingTurn == nil { chatDraftBeforeEdit = chatDraft }
+        chatEditingTurn = turn
+        chatDraft = queuedTurnText(turn)
+        chatQueueNote = queuedTurnHasFullText(turn)
+            ? "Editing a queued message. Send replaces it."
+            : "Editing a queued message. Only its first 80 characters are on this Mac (it was queued from the glasses or phone); Send replaces the whole message with what is in the field."
+    }
+
+    func cancelEditingChatTurn() {
+        guard chatEditingTurn != nil else { return }
+        chatEditingTurn = nil
+        chatDraft = chatDraftBeforeEdit
+        chatDraftBeforeEdit = ""
+        chatQueueNote = nil
+    }
+
+    /// The pane's replace: cancel, then park the new text; if the thread freed,
+    /// the ordinary send takes it. Same honesty as the card about the line.
+    func replaceChatQueuedTurn() {
+        guard let session = openClaudeRow, let turn = chatEditingTurn, !chatSending else { return }
+        let prompt = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { return }
+        guard prompt.count <= 32_000 else {
+            chatRefusal = "That message is too long for one turn (32,000 characters max)."
+            return
+        }
+        chatRefusal = nil
+        chatQueueNote = nil
+        chatSending = true
+        Task { [weak self] in
+            guard let self else { return }
+            let others = self.chatQueuedTurns.filter { $0.isWaiting && $0.clientTurnId != turn.clientTurnId }.count
+            switch await self.cancelQueuedTurn(session, turn) {
+            case .cancelled:
+                break
+            case .alreadyDelivering, .unknown:
+                self.chatEditingTurn = nil
+                self.chatDraftBeforeEdit = ""
+                self.chatQueueNote = "Too late to edit: the session already has it. Send this as a new message if you still want it."
+                self.chatSending = false
+                self.loadChatQueue()
+                return
+            case .unavailable(let copy):
+                self.chatQueueNote = copy
+                self.chatSending = false
+                return
+            }
+            self.chatEditingTurn = nil
+            self.chatDraftBeforeEdit = ""
+            switch await self.parkPetTurn(session, clientTurnId: UUID().uuidString, prompt: prompt) {
+            case .parked:
+                self.chatMessages.append(SessionChatMessage(role: .status, text: others > 0
+                    ? "Replaced, now \(others + 1) in line. It lands when this turn ends."
+                    : "Replaced. It lands when this turn ends."))
+                self.chatDraft = ""
+                self.chatSending = false
+                self.loadChatQueue()
+                await self.loadClaudeSessions(force: true)
+            case .failed(let copy):
+                self.chatQueueNote = "The old message was cancelled, but the new one was not queued: \(copy)"
+                self.chatSending = false
+            case .threadFree:
+                // Freed between cancel and park: the ordinary send takes the same
+                // text now. It owns chatSending from here.
+                self.chatSending = false
+                self.sendChatMessage()
+            }
+        }
+    }
+
     private func clearChatQueue() {
         chatQueueTask?.cancel(); chatQueueTask = nil
         chatQueueTicker?.cancel(); chatQueueTicker = nil
         chatQueuedTurns = []
         chatQueueNote = nil
+        chatEditingTurn = nil
+        chatDraftBeforeEdit = ""
     }
 
     /// The result lands on the card that sent it, or as a pet notice when that
