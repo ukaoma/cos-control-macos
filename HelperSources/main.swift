@@ -510,6 +510,8 @@ final class COSControlHelper {
         case "session-chat-attach": try emitSessionChatAttach(args: args)
         case "session-chat-send": try emitSessionChatSend(args: args)
         case "session-chat-queue": try emitSessionChatQueue(args: args)
+        case "session-chat-queued": try emitSessionChatQueued(args: args)
+        case "session-chat-queue-cancel": try emitSessionChatQueueCancel(args: args)
         case "session-chat-turn": try emitSessionChatTurn(args: args)
         case "session-chat-fork": try emitSessionChatFork(args: args)
         case "session-chat-reply": try emitSessionChatReply(args: args)
@@ -5817,6 +5819,38 @@ final class COSControlHelper {
         case 404: return "route_absent"
         default: return "unavailable"
         }
+    }
+
+    /// What the cancel route said. `cancelled` is the 200 (the row's final status
+    /// rides along: a turn already cancelled or settled answers 200 with that
+    /// status, which is not a failure); `already_delivering` is the one 409 — the
+    /// adapter has the turn and it cannot be recalled; `unknown_turn` is the 404
+    /// for an id the queue never held or has pruned. Anything else is unavailable.
+    static func classifySessionChatCancel(status: Int?, error: String?) -> String {
+        switch status {
+        case 200: return "cancelled"
+        case 409: return "already_delivering"
+        case 404: return error == "unknown_turn" ? "unknown_turn" : "route_absent"
+        default: return "unavailable"
+        }
+    }
+
+    /// One queued row, as the server publishes it: the status, where it stands
+    /// (0 is next; -1 once it is no longer waiting), when it was queued (epoch
+    /// millis), attempts, a preview of at most 80 characters, and a reason on a
+    /// settled row. The full prompt is never on the wire by the server's design.
+    static func queuedTurnRow(_ raw: [String: Any]) -> [String: Any]? {
+        guard let id = raw["clientTurnId"] as? String, !id.isEmpty else { return nil }
+        return [
+            "clientTurnId": id,
+            "status": raw["status"] as? String ?? "waiting",
+            "position": raw["position"] as? Int ?? -1,
+            "queuedAt": raw["queuedAt"] as? Double ?? Double(raw["queuedAt"] as? Int ?? 0),
+            "attempts": raw["attempts"] as? Int ?? 0,
+            "preview": raw["preview"] as? String ?? "",
+            "reason": raw["reason"] as? String ?? "",
+            "settledAt": raw["settledAt"] as? Double ?? Double(raw["settledAt"] as? Int ?? 0),
+        ]
     }
 
     /// Provider + thread id validation before either reaches a URL. The
@@ -13738,6 +13772,46 @@ final class COSControlHelper {
         }
     }
 
+    /// What is parked behind a thread (6.48.1's queued-turns GET). Every row
+    /// the server still keeps: waiting and delivering, plus settled rows for the
+    /// half hour the server retains them so an outcome is never "lost".
+    private func emitSessionChatQueued(args: [String]) throws {
+        let (provider, threadId) = try sessionChatIds(args: args)
+        let token = try speakerReviewToken()
+        guard let response = request("/api/agent-sessions/\(provider)/\(threadId)/queued-turns", token: token, timeout: 15) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if response.status == 404 {
+            emit(ok: true, message: "Queue not available", details: ["state": "route_absent", "turns": []])
+            return
+        }
+        guard response.status == 200 else { throw HelperError.message("Server stopped") }
+        let rows = (response.body?["turns"] as? [[String: Any]] ?? []).compactMap(Self.queuedTurnRow)
+        emit(ok: true, message: "\(rows.count) queued", details: ["state": "listed", "turns": rows])
+    }
+
+    /// Cancel one waiting turn. The server refuses to recall a turn its adapter
+    /// already holds (409), and says so; that is the one lie this feature must
+    /// never tell, so the refusal is surfaced rather than retried.
+    private func emitSessionChatQueueCancel(args: [String]) throws {
+        let (provider, threadId) = try sessionChatIds(args: args)
+        let clientTurnId = try sessionChatHandle("--client-turn-id", in: args, pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$")
+        let token = try speakerReviewToken()
+        guard let response = request("/api/agent-sessions/\(provider)/\(threadId)/queued-turns/\(clientTurnId)", method: "DELETE", token: token, timeout: 15) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        let body = response.body ?? [:]
+        let state = Self.classifySessionChatCancel(status: response.status, error: body["error"] as? String)
+        if state == "unavailable" { throw HelperError.message("Server stopped") }
+        emit(ok: true, message: state == "cancelled" ? "Cancelled" : "Not cancelled", details: [
+            "state": state,
+            "clientTurnId": body["clientTurnId"] as? String ?? clientTurnId,
+            "status": body["status"] as? String ?? "",
+        ])
+    }
+
     private func emitSessionChatTurn(args: [String]) throws {
         let bindingId = try sessionChatHandle("--binding-id", in: args, pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{1,127}$")
         let clientTurnId = try sessionChatHandle("--client-turn-id", in: args, pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$")
@@ -17645,6 +17719,23 @@ final class COSControlHelper {
         try expect(Self.classifySessionChatQueue(status: 503, error: nil, hint: nil) == "unavailable"
                    && Self.classifySessionChatQueue(status: nil, error: nil, hint: nil) == "unavailable",
                    "a 5xx or a dead server is unavailable, never a refusal the card would print")
+        // Listing and cancelling what is parked (0.5.235).
+        try expect(Self.classifySessionChatCancel(status: 200, error: nil) == "cancelled",
+                   "a 200 is cancelled, whatever final status rides along")
+        try expect(Self.classifySessionChatCancel(status: 409, error: "already_delivering") == "already_delivering",
+                   "the adapter holds it: not recallable, and the client must say so")
+        try expect(Self.classifySessionChatCancel(status: 404, error: "unknown_turn") == "unknown_turn",
+                   "an id the queue never held reads unknown_turn")
+        try expect(Self.classifySessionChatCancel(status: 404, error: nil) == "route_absent",
+                   "a bare 404 is a server before the queue route")
+        try expect(Self.classifySessionChatCancel(status: 503, error: nil) == "unavailable",
+                   "a 5xx is unavailable, never a cancellation")
+        let row = Self.queuedTurnRow(["clientTurnId": "abc-123", "status": "waiting", "position": 0,
+                                      "queuedAt": 1_789_690_000_000, "attempts": 0, "preview": "Ship it"])
+        try expect(row?["clientTurnId"] as? String == "abc-123" && row?["position"] as? Int == 0
+                   && row?["preview"] as? String == "Ship it" && row?["queuedAt"] as? Double == 1_789_690_000_000,
+                   "a queued row carries id, position, preview and an epoch-millis queuedAt")
+        try expect(Self.queuedTurnRow(["status": "waiting"]) == nil, "a row without an id is dropped, not invented")
 
         // Provider + thread id validation, before either reaches a URL.
         try expect(Self.sessionChatValidationError(provider: "claude", threadId: "1c45222f-038d-460f-9a86-b8ea72c424ea") == nil,

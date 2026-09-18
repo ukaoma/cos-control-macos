@@ -87,6 +87,12 @@ final class SessionPetPresenter: NSObject, ObservableObject, NSWindowDelegate {
         observers.append(model.$petComposeHint.removeDuplicates().sink { [weak self] _ in
             Task { @MainActor in self?.syncPanel() }
         })
+        observers.append(model.$petQueuedTurns.removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
+        observers.append(model.$petQueueNote.removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in self?.syncPanel() }
+        })
         // The field grows to four lines; every line it gains re-fits the panel
         // so the card unfolds upward like a list, never off the bottom edge.
         observers.append(model.$petComposeDraft.removeDuplicates().sink { [weak self] _ in
@@ -1325,6 +1331,13 @@ private struct SessionPetRoot: View {
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if let note = model.petQueueNote {
+                Text(verbatim: note)
+                    .font(COSType.body(size.typeSize(9)))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            queuedRows(target)
             if case .failed = phase {
                 // The pane has Fork, Retry and Continue anyway; the pet does not
                 // grow them. One quiet path to where they live.
@@ -1367,6 +1380,61 @@ private struct SessionPetRoot: View {
         case .landed, .queued: COSPalette.green
         case .failed, .blocked: COSPalette.amber
         case .idle, .sending: Color.secondary
+        }
+    }
+
+    /// What is parked behind the target (0.5.235): waiting and delivering rows,
+    /// in queue order, at most three on the card, each with its place, its text
+    /// (the full text when this Mac queued it, the server's preview otherwise)
+    /// and an × that cancels a waiting one. A delivering row cannot be recalled
+    /// and shows no ×. Past three the pane has the rest.
+    @ViewBuilder
+    private func queuedRows(_ target: ClaudeSession) -> some View {
+        let rows = QueuedSessionTurn.cardRows(model.petQueuedTurns)
+        let waiting = model.petQueuedTurns.filter(\.isWaiting).count
+        if !rows.isEmpty {
+            VStack(alignment: .leading, spacing: size.length(3)) {
+                HStack(spacing: size.length(5)) {
+                    Circle().fill(COSPalette.amber).frame(width: size.length(5), height: size.length(5))
+                    Text("QUEUED \(waiting)")
+                        .font(COSType.mono(size.typeSize(8), weight: .bold))
+                        .kerning(0.5)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                ForEach(rows) { turn in
+                    HStack(alignment: .firstTextBaseline, spacing: size.length(6)) {
+                        Text(turn.stateLine)
+                            .font(COSType.mono(size.typeSize(8), weight: .bold))
+                            .foregroundStyle(turn.isDelivering ? COSPalette.green : COSPalette.accent)
+                            .frame(width: size.length(58), alignment: .leading)
+                        Text(verbatim: model.queuedTurnText(turn))
+                            .font(COSType.body(size.typeSize(10)))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 0)
+                        if turn.cancellable {
+                            Button { model.cancelPetQueuedTurn(turn) } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: size.typeSize(8), weight: .bold))
+                                    .foregroundStyle(.secondary)
+                                    .padding(size.length(3))
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help("Cancel this queued message. It will not be sent.")
+                            .accessibilityLabel("Cancel queued message")
+                        }
+                    }
+                }
+                if waiting > rows.filter(\.isWaiting).count {
+                    Button("\(waiting - rows.filter(\.isWaiting).count) more in the session view") { presenter.openInControl(target) }
+                        .buttonStyle(.plain)
+                        .font(COSType.body(size.typeSize(9), weight: .semibold))
+                        .foregroundStyle(COSPalette.accent)
+                }
+            }
+            .padding(.top, size.length(2))
         }
     }
 

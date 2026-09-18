@@ -1410,6 +1410,72 @@ struct SessionChatVerdict: Sendable {
     var caution: Bool { attachable && ownerCount > 0 }
 }
 
+/// One turn parked behind a thread (0.5.235; server 6.48.1's queued-turns GET).
+///
+/// `preview` is the server's 80-character head of the prompt: the full text is
+/// never on the wire by design. `text` is what Control draws: the full prompt
+/// when this Mac queued the turn (kept in a local ledger by `clientTurnId`),
+/// the preview otherwise, so a turn the lens or the phone parked still reads.
+struct QueuedSessionTurn: Identifiable, Sendable, Equatable {
+    let clientTurnId: String
+    let status: String
+    /// 0 is next; -1 once the row is no longer waiting.
+    let position: Int
+    /// Epoch milliseconds.
+    let queuedAt: Double
+    let attempts: Int
+    let preview: String
+    let reason: String
+    let settledAt: Double
+
+    var id: String { clientTurnId }
+    var isWaiting: Bool { status == "waiting" }
+    var isDelivering: Bool { status == "delivering" }
+    /// A cancel can reach only a waiting row; the adapter holds a delivering one.
+    var cancellable: Bool { isWaiting }
+    /// Rows a person still needs to see: what is parked, what is in the adapter's
+    /// hands, and what the server gave up on. Delivered and cancelled rows are
+    /// the transcript's and the user's own doing; they drop off the list.
+    var showsInQueue: Bool { ["waiting", "delivering", "refused", "expired"].contains(status) }
+
+    /// "Next", "2nd in line", "Delivering…", "Refused · delivery attempts exhausted".
+    var stateLine: String {
+        switch status {
+        case "waiting":
+            switch position {
+            case 0: return "Next"
+            case 1: return "2nd in line"
+            case 2: return "3rd in line"
+            default: return position > 2 ? "\(position + 1)th in line" : "Waiting"
+            }
+        case "delivering": return "Delivering…"
+        case "refused": return reason.isEmpty ? "Refused" : "Refused · \(reason.replacingOccurrences(of: "_", with: " "))"
+        case "expired": return "Expired · not delivered"
+        default: return status.capitalized
+        }
+    }
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let id = o["clientTurnId"]?.string, !id.isEmpty else { return nil }
+        clientTurnId = id
+        status = o["status"]?.string ?? "waiting"
+        position = o["position"]?.int ?? -1
+        queuedAt = o["queuedAt"]?.double ?? 0
+        attempts = o["attempts"]?.int ?? 0
+        preview = o["preview"]?.string ?? ""
+        reason = o["reason"]?.string ?? ""
+        settledAt = o["settledAt"]?.double ?? 0
+    }
+
+    /// The rows the pet card shows: waiting and delivering only, in queue order,
+    /// capped so the card stays a card. The pane shows everything `showsInQueue`.
+    static func cardRows(_ turns: [QueuedSessionTurn], limit: Int = 3) -> [QueuedSessionTurn] {
+        Array(turns.filter { $0.isWaiting || $0.isDelivering }
+            .sorted { ($0.isWaiting ? 0 : 1, $0.position, $0.queuedAt) < ($1.isWaiting ? 0 : 1, $1.position, $1.queuedAt) }
+            .prefix(limit))
+    }
+}
+
 /// Where a message sent from the pet is (0.5.234). One card, one phase.
 ///
 /// `landed` is the live hand-off: the session's own process took the message

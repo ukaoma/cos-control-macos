@@ -125,6 +125,22 @@ struct PetComposerUIContract {
             _ = try render(SessionPetCanary.column(model: model, presenter: presenter),
                            size: size, name: "pet-composer-landed", output: output, dark: dark)
 
+            // 3b. A queue behind the target: two waiting rows and one delivering.
+            model.petSendPhase = .idle
+            model.petSentText = nil
+            model.petComposeHint = ControllerModel.petParkHint(for: claude)
+            model.petQueuedTurns = [
+                QueuedSessionTurn(.object(["clientTurnId": .string("q-1"), "status": .string("waiting"), "position": .number(0),
+                                           "queuedAt": .number(1), "preview": .string("Ship the pet composer once the harness renders clean.")]))!,
+                QueuedSessionTurn(.object(["clientTurnId": .string("q-2"), "status": .string("waiting"), "position": .number(1),
+                                           "queuedAt": .number(2), "preview": .string("Then publish 0.5.235 and verify the live render.")]))!,
+                QueuedSessionTurn(.object(["clientTurnId": .string("q-0"), "status": .string("delivering"), "position": .number(-1),
+                                           "queuedAt": .number(0), "preview": .string("Run the suite first.")]))!,
+            ]
+            _ = try render(SessionPetCanary.column(model: model, presenter: presenter),
+                           size: size, name: "pet-composer-queue", output: output, dark: dark)
+            model.petQueuedTurns = []
+
             // 4. Refused, on the Codex row: copy verbatim, text back in the field.
             model.petComposeTarget = codex
             model.petComposeDraft = "Ship the pet composer once the harness renders clean."

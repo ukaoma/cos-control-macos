@@ -39,8 +39,8 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 697:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 697 (697 at 0.5.234: the queued-turns classifier behind session-chat-queue)")
+if count < 704:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 704 (704 at 0.5.235: the cancel classifier and row projection behind session-chat-queued / session-chat-queue-cancel)")
 ' "$SELF_TEST"
 
 python3 "$ROOT/Tests/HeldNamingTransport.py" "$TMP/cos-control-helper"
@@ -4030,6 +4030,31 @@ need("if Self.petQueueableReasons.contains(reason) { return .park(copy) }" in mo
      "a queueable refusal from the turn route no longer parks")
 need('"session-chat-queue",' in model and '"--client-turn-id", clientTurnId,' in model,
      "the model does not call the park verb with the turn id")
+# ---- Queued turns: list and cancel (0.5.235) ----------------------------
+need('case "session-chat-queued": try emitSessionChatQueued(args: args)' in helper_src
+     and 'case "session-chat-queue-cancel": try emitSessionChatQueueCancel(args: args)' in helper_src,
+     "the helper lost a queue verb")
+need('/queued-turns/\\(clientTurnId)", method: "DELETE"' in helper_src,
+     "cancel does not DELETE the server's queued-turn route")
+need('"session-chat-queued",' in model and '"session-chat-queue-cancel",' in model,
+     "the model does not call both queue verbs")
+need("rememberQueuedPrompt(clientTurnId, prompt)" in model and "pruneQueuedPromptLedger(keeping:" in model
+     and model.count("pruneQueuedPromptLedger(keeping: Set(turns.map(\\.clientTurnId)))") == 2,
+     "the full-text ledger is not written on park or not pruned on both loads")
+need("row.queuedTurns != petQueuedTurns.filter(\\.isWaiting).count" in model
+     and "row.queuedTurns != chatQueuedTurns.filter(\\.isWaiting).count" in model,
+     "a moved queued count no longer reloads the list on both surfaces")
+qrows = code[code.index("private func queuedRows("):code.index("private func sendButton")]
+need("QueuedSessionTurn.cardRows(model.petQueuedTurns)" in qrows and "if turn.cancellable {" in qrows
+     and "model.cancelPetQueuedTurn(turn)" in qrows,
+     "the card's queue rows lost the cancel gated on a waiting row")
+need("queuedRows(target)" in card_src, "the card does not mount its queue rows")
+activity_src = (root / "Sources/ActivityWindow.swift").read_text()
+need('Button("Cancel") { model.cancelChatQueuedTurn(turn) }' in activity_src and "if turn.cancellable {" in activity_src
+     and "model.queuedTurnText(turn)" in activity_src,
+     "the pane lists the queue without Cancel, or draws the preview instead of the text")
+need("follow-up queued; it lands when this turn ends." in activity_src,
+     "the pane lost its queued line")
 # The Sessions pane parks the same way (the docs have claimed it since 6.48.1).
 refusal_src = model[model.index("private func handleChatRefusal("):]
 refusal_src = refusal_src[:refusal_src.index("\n    }\n")]

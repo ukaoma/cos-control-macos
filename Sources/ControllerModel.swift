@@ -1657,6 +1657,25 @@ final class ControllerModel: ObservableObject {
     /// a self-inflicted 30-minute dead end — so both paths read this before
     /// they attach and both drop it when the server says the binding is gone.
     private var sessionBindings: [String: SessionChatBinding] = [:]
+    // ── Queued turns (0.5.235) ─────────────────────────────────────
+    /// What is parked behind the pet composer's target and behind the open
+    /// session, from the server's queued-turns list. Loaded when a surface
+    /// opens, after a park, after a cancel, and whenever the row's queued count
+    /// moves; refreshed every 15 s while a surface shows a non-empty list.
+    @Published var petQueuedTurns: [QueuedSessionTurn] = []
+    @Published var chatQueuedTurns: [QueuedSessionTurn] = []
+    /// A cancel's one-line result on the surface that asked for it.
+    @Published var petQueueNote: String?
+    @Published var chatQueueNote: String?
+    private var petQueueTask: Task<Void, Never>?
+    private var chatQueueTask: Task<Void, Never>?
+    private var petQueueTicker: Task<Void, Never>?
+    private var chatQueueTicker: Task<Void, Never>?
+    /// The full text of every turn THIS Mac parked, by clientTurnId, so the
+    /// list can show what was said rather than the server's 80-character head.
+    /// Pruned to the ids the server still lists on every load.
+    private var queuedPromptLedger: [String: String] = ControllerModel.loadQueuedPromptLedger()
+    private static let queuedPromptLedgerKey = "cos.sessionQueuedPrompts"
 
     private func postPetTerminalHint(_ text: String) {
         petTerminalHint = text
@@ -2505,6 +2524,12 @@ final class ControllerModel: ObservableObject {
                 if !quick, !partial {
                     claudeSessionsCacheSavedAt = Date()
                 }
+                // 0.5.235: the open pane's queue follows the row's queued count.
+                if let open = openClaudeRow,
+                   let row = next.first(where: { $0.id == open.id }),
+                   row.queuedTurns != chatQueuedTurns.filter(\.isWaiting).count {
+                    loadChatQueue()
+                }
             }
             claudeSessionsError = nil
         } catch is CancellationError {
@@ -3213,6 +3238,13 @@ final class ControllerModel: ObservableObject {
         suppressedIDs: Set<String> = []
     ) {
         petSessionsRaw = sessions
+        // 0.5.235: the row's queued count is the server's word; when it moves
+        // under an open card, the card's list follows without a click.
+        if let target = petComposeTarget,
+           let row = sessions.first(where: { $0.id == target.id }),
+           row.queuedTurns != petQueuedTurns.filter(\.isWaiting).count {
+            loadPetQueue()
+        }
         if authoritative { petDismissals.prune(against: sessions) }
         if authoritative {
             // Suppress ids HIDDEN by hides() on either snapshot — never raw
@@ -4592,6 +4624,7 @@ final class ControllerModel: ObservableObject {
     }
 
     private func resetSessionChat() {
+        clearChatQueue()
         chatPollTask?.cancel()
         chatPollTask = nil
         chatDraft = ""
@@ -4632,6 +4665,7 @@ final class ControllerModel: ObservableObject {
         Task { [weak self] in
             await self?.probeChatAttachability(session)
         }
+        loadChatQueue()
     }
 
     private func probeChatAttachability(_ session: ClaudeSession) async {
@@ -5005,6 +5039,7 @@ final class ControllerModel: ObservableObject {
                 case .parked(let phase):
                     chatMessages.append(SessionChatMessage(role: .status, text: phase.statusLine ?? "Queued."))
                     clearPendingTurn()
+                    loadChatQueue()
                     await loadClaudeSessions(force: true)
                     return
                 case .threadFree, .failed:
@@ -5154,6 +5189,8 @@ final class ControllerModel: ObservableObject {
         }
         petComposeTarget = session
         petFocusID = session.id
+        clearPetQueue()
+        loadPetQueue()
         // The list gives way to the card: one target, named on the card, so the
         // pet grows by a card and not by a card AND a list (Miles: "without
         // adding a whole bunch of additional clutter").
@@ -5172,6 +5209,7 @@ final class ControllerModel: ObservableObject {
         petComposeTarget = nil
         petComposeHint = nil
         petComposeParkReason = nil
+        clearPetQueue()
         if case .sending = petSendPhase {
             // The send keeps going — its result is real whether or not the
             // card is on screen — and lands as a notice instead.
@@ -5352,6 +5390,7 @@ final class ControllerModel: ObservableObject {
             ], timeout: 35, stdinData: Data(prompt.utf8))
             switch response.details["state"]?.string ?? "" {
             case "parked":
+                rememberQueuedPrompt(clientTurnId, prompt)
                 return .parked(.queued(Self.petParkedCopy(position: response.details["position"]?.int ?? 1)))
             case "thread_free":
                 return .threadFree
@@ -5443,6 +5482,167 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    // ── Queued turns: list and cancel (0.5.235) ──────────────────────
+
+    private static func loadQueuedPromptLedger() -> [String: String] {
+        (UserDefaults.standard.dictionary(forKey: queuedPromptLedgerKey) as? [String: String]) ?? [:]
+    }
+
+    private func rememberQueuedPrompt(_ clientTurnId: String, _ prompt: String) {
+        queuedPromptLedger[clientTurnId] = prompt
+        UserDefaults.standard.set(queuedPromptLedger, forKey: Self.queuedPromptLedgerKey)
+    }
+
+    /// Keep only what the server still lists; a delivered or pruned turn's text
+    /// has no reader left and must not accumulate in defaults.
+    private func pruneQueuedPromptLedger(keeping ids: Set<String>) {
+        let before = queuedPromptLedger.count
+        queuedPromptLedger = queuedPromptLedger.filter { ids.contains($0.key) }
+        if queuedPromptLedger.count != before {
+            UserDefaults.standard.set(queuedPromptLedger, forKey: Self.queuedPromptLedgerKey)
+        }
+    }
+
+    /// The line a queued row draws: the full text when this Mac parked it, else
+    /// the server's preview.
+    func queuedTurnText(_ turn: QueuedSessionTurn) -> String {
+        queuedPromptLedger[turn.clientTurnId] ?? turn.preview
+    }
+
+    private func fetchQueuedTurns(_ session: ClaudeSession) async -> [QueuedSessionTurn]? {
+        do {
+            let response = try await helper.run([
+                "session-chat-queued",
+                "--provider", session.provider,
+                "--thread-id", session.sessionId,
+            ], timeout: 20)
+            guard response.details["state"]?.string == "listed" else { return nil }
+            return (response.details["turns"]?.array ?? []).compactMap(QueuedSessionTurn.init)
+        } catch {
+            return nil
+        }
+    }
+
+    enum QueueCancelResult: Equatable { case cancelled, alreadyDelivering, unknown, unavailable(String) }
+
+    private func cancelQueuedTurn(_ session: ClaudeSession, _ turn: QueuedSessionTurn) async -> QueueCancelResult {
+        do {
+            let response = try await helper.run([
+                "session-chat-queue-cancel",
+                "--provider", session.provider,
+                "--thread-id", session.sessionId,
+                "--client-turn-id", turn.clientTurnId,
+            ], timeout: 20)
+            switch response.details["state"]?.string ?? "" {
+            case "cancelled": return .cancelled
+            case "already_delivering": return .alreadyDelivering
+            case "unknown_turn": return .unknown
+            default: return .unavailable("Update the COS server to cancel a queued message.")
+            }
+        } catch {
+            return .unavailable(error.localizedDescription)
+        }
+    }
+
+    static func queueCancelCopy(_ result: QueueCancelResult) -> String {
+        switch result {
+        case .cancelled: "Cancelled. It will not be sent."
+        case .alreadyDelivering: "Too late to cancel: the session already has it."
+        case .unknown: "That message is no longer queued."
+        case .unavailable(let copy): copy
+        }
+    }
+
+    // Pet surface
+
+    func loadPetQueue() {
+        guard let target = petComposeTarget else { return }
+        petQueueTask?.cancel()
+        petQueueTask = Task { [weak self] in
+            guard let self, let turns = await self.fetchQueuedTurns(target) else { return }
+            guard self.petComposeTarget?.id == target.id else { return }
+            self.petQueuedTurns = turns.filter(\.showsInQueue)
+            self.pruneQueuedPromptLedger(keeping: Set(turns.map(\.clientTurnId)))
+            self.armPetQueueTicker()
+        }
+    }
+
+    /// A 15 s refresh while the card shows a queue, so a delivery drops the row
+    /// without a click. Stops itself when the list empties or the card closes.
+    private func armPetQueueTicker() {
+        petQueueTicker?.cancel()
+        guard !petQueuedTurns.isEmpty, petComposeTarget != nil else { return }
+        petQueueTicker = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(15))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { self?.loadPetQueue() }
+        }
+    }
+
+    func cancelPetQueuedTurn(_ turn: QueuedSessionTurn) {
+        guard let target = petComposeTarget, turn.cancellable else { return }
+        petQueueNote = nil
+        Task { [weak self] in
+            guard let self else { return }
+            let result = await self.cancelQueuedTurn(target, turn)
+            guard self.petComposeTarget?.id == target.id else { return }
+            self.petQueueNote = Self.queueCancelCopy(result)
+            self.loadPetQueue()
+            await self.loadPetSessions()
+        }
+    }
+
+    private func clearPetQueue() {
+        petQueueTask?.cancel(); petQueueTask = nil
+        petQueueTicker?.cancel(); petQueueTicker = nil
+        petQueuedTurns = []
+        petQueueNote = nil
+    }
+
+    // Pane surface
+
+    func loadChatQueue() {
+        guard let session = openClaudeRow else { return }
+        chatQueueTask?.cancel()
+        chatQueueTask = Task { [weak self] in
+            guard let self, let turns = await self.fetchQueuedTurns(session) else { return }
+            guard self.openClaudeRow?.id == session.id else { return }
+            self.chatQueuedTurns = turns.filter(\.showsInQueue)
+            self.pruneQueuedPromptLedger(keeping: Set(turns.map(\.clientTurnId)))
+            self.armChatQueueTicker()
+        }
+    }
+
+    private func armChatQueueTicker() {
+        chatQueueTicker?.cancel()
+        guard !chatQueuedTurns.isEmpty, openClaudeRow != nil else { return }
+        chatQueueTicker = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(15))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { self?.loadChatQueue() }
+        }
+    }
+
+    func cancelChatQueuedTurn(_ turn: QueuedSessionTurn) {
+        guard let session = openClaudeRow, turn.cancellable else { return }
+        chatQueueNote = nil
+        Task { [weak self] in
+            guard let self else { return }
+            let result = await self.cancelQueuedTurn(session, turn)
+            guard self.openClaudeRow?.id == session.id else { return }
+            self.chatQueueNote = Self.queueCancelCopy(result)
+            self.loadChatQueue()
+            await self.loadClaudeSessions(force: true)
+        }
+    }
+
+    private func clearChatQueue() {
+        chatQueueTask?.cancel(); chatQueueTask = nil
+        chatQueueTicker?.cancel(); chatQueueTicker = nil
+        chatQueuedTurns = []
+        chatQueueNote = nil
+    }
+
     /// The result lands on the card that sent it, or as a pet notice when that
     /// card has since closed — a send is never silently swallowed either way.
     private func settlePetSend(_ session: ClaudeSession, _ phase: PetSendPhase) {
@@ -5465,6 +5665,7 @@ final class ControllerModel: ObservableObject {
         case .landed, .queued:
             petComposeDraft = ""
             petComposeHint = nil
+            loadPetQueue()
             // The row should read as working before the card leaves.
             Task { [weak self] in await self?.loadPetSessions() }
             petComposeCloseTask?.cancel()

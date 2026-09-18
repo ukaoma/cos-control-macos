@@ -1,3 +1,13 @@
+## 0.5.235 (build 273)
+
+See what is queued behind a session, and cancel it.
+
+- The pet card and the Sessions pane list what is parked behind a thread (Miles, 2026-09-17: "Is there a way to cancel messages that are in queue? also being able to list the prompts in queue."). Each row shows its place (Next, 2nd in line), its text, and an × on the card or Cancel in the pane while it is still waiting. A turn the adapter already holds reads Delivering… and cannot be recalled; the server says so and Control repeats it ("Too late to cancel: the session already has it.") rather than pretending. A turn the server gave up on reads Refused with its reason, or Expired, for the half hour the server keeps it, so an outcome is never silently lost; delivered and cancelled rows drop off.
+- The full text, when this Mac queued it. The server publishes only the first 80 characters of a queued prompt by design, so Control keeps the full text of every turn it parked itself, by turn id, and draws that; a turn the glasses or the phone parked shows the server's preview. The ledger is pruned to what the server still lists, so nothing accumulates.
+- The list follows the server. It loads when a card or pane opens, after a park, after a cancel, whenever the row's queued count moves on a refresh, and every 15 seconds while a surface shows a non-empty queue, so a delivery drops its row without a click. The card shows at most three rows and points at the session view for the rest.
+- Helper: `session-chat-queued --provider --thread-id` reads the queue; `session-chat-queue-cancel --provider --thread-id --client-turn-id` cancels one and reads back cancelled, already_delivering or unknown_turn.
+- Tests: the helper self-test drives the cancel classifier and the row projection (704 checks, floor raised); ModelsContract executes the row decode, the state lines and the card's three-row cut; run.sh pins the two verbs, the DELETE, the × gated on a waiting row, the pane's Cancel, the ledger prune and the queued-count hook on both surfaces; the pet harness renders the card with a queue.
+
 ## 0.5.234 (build 272)
 
 Message a session from the pet, and meeting times read on a 12-hour clock.

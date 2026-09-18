@@ -206,6 +206,38 @@ struct ModelsContract {
                      "rest shows no line; in flight says so")
     }
 
+    /// 0.5.235: a parked turn as the server lists it, and the card's cut of it.
+    private static func checkQueuedSessionTurn() {
+        func turn(_ id: String, _ status: String, _ position: Int, _ at: Double, reason: String = "") -> QueuedSessionTurn {
+            guard let t = QueuedSessionTurn(.object([
+                "clientTurnId": .string(id), "status": .string(status), "position": .number(Double(position)),
+                "queuedAt": .number(at), "attempts": .number(0), "preview": .string("Preview \(id)"),
+                "reason": .string(reason),
+            ])) else { preconditionFailure("queued turn fixture failed to parse") }
+            return t
+        }
+        precondition(QueuedSessionTurn(.object(["status": .string("waiting")])) == nil, "a row without an id is dropped")
+        let next = turn("a", "waiting", 0, 10)
+        precondition(next.stateLine == "Next" && next.cancellable && next.showsInQueue, "position 0 is Next and cancellable")
+        precondition(turn("b", "waiting", 1, 11).stateLine == "2nd in line", "position 1 reads 2nd in line")
+        precondition(turn("c", "waiting", 3, 12).stateLine == "4th in line", "position 3 reads 4th in line")
+        let delivering = turn("d", "delivering", -1, 5)
+        precondition(delivering.stateLine == "Delivering…" && !delivering.cancellable && delivering.showsInQueue,
+                     "a delivering row shows, cannot be cancelled")
+        precondition(turn("e", "refused", -1, 1, reason: "delivery_attempts_exhausted").stateLine == "Refused · delivery attempts exhausted",
+                     "a refused row names its reason in words")
+        precondition(!turn("f", "delivered", -1, 1).showsInQueue && !turn("g", "cancelled", -1, 1).showsInQueue,
+                     "delivered and cancelled rows drop off the list")
+        // The card: waiting and delivering only, delivering first? No: queue order —
+        // the delivering row is the one in flight and sorts after the waiting ones
+        // by design, so the next thing to be cancelled is at the top.
+        let rows = QueuedSessionTurn.cardRows([turn("w2", "waiting", 1, 3), delivering, turn("w1", "waiting", 0, 2),
+                                               turn("r", "refused", -1, 1), turn("w3", "waiting", 2, 4), turn("w4", "waiting", 3, 5)])
+        precondition(rows.map(\.clientTurnId) == ["w1", "w2", "w3"], "the card shows three waiting rows in queue order, got \(rows.map(\.clientTurnId))")
+        precondition(QueuedSessionTurn.cardRows([delivering, turn("w1", "waiting", 0, 2)]).map(\.clientTurnId) == ["w1", "d"],
+                     "with room, the delivering row follows the waiting ones")
+    }
+
     /// The subtitle, including the case that would otherwise render blank.
     private static func checkCountsSummary() {
         precondition(meetingRow()?.countsSummary == "4 topics · 2 decisions · 1 action · 3 attendees")
@@ -4134,6 +4166,7 @@ struct ModelsContract {
         checkMeetingReviewSort()
         checkCountsSummary()
         checkClockStyle()
+        checkQueuedSessionTurn()
         checkSpeakerListMemory()
         checkReviewVoiceQueue()
         checkLibraryMeeting()

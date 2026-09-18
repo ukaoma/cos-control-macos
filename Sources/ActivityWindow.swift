@@ -5328,10 +5328,48 @@ struct SessionChatComposer: View {
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if let queued = model.openClaudeRow?.queuedTurns, queued > 0 {
-                Text(queued == 1 ? "1 follow-up queued; it lands when this turn ends." : "\(queued) follow-ups queued; they land in order when this turn ends.")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(COSPalette.accent)
+            // 0.5.235: the queue itself, not only its count. Each parked turn with
+            // its place, its text (full when this Mac queued it, the server's
+            // 80-character head otherwise) and Cancel while it is still waiting.
+            // A delivering row cannot be recalled; a refused or expired row says so
+            // for the half hour the server keeps it, so an outcome is never lost.
+            let queue = model.chatQueuedTurns
+            let waiting = queue.filter(\.isWaiting).count
+            if !queue.isEmpty || (model.openClaudeRow?.queuedTurns ?? 0) > 0 {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(waiting == 1 ? "1 follow-up queued; it lands when this turn ends."
+                         : waiting > 1 ? "\(waiting) follow-ups queued; they land in order when this turn ends."
+                         : "Queue")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(COSPalette.accent)
+                    ForEach(queue) { turn in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(turn.stateLine)
+                                .font(COSType.mono(9.5, weight: .bold))
+                                .foregroundStyle(turn.isDelivering ? COSPalette.green
+                                                 : turn.isWaiting ? COSPalette.accent : COSPalette.amber)
+                                .frame(width: 118, alignment: .leading)
+                            Text(verbatim: model.queuedTurnText(turn))
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(turn.isWaiting || turn.isDelivering ? Color.primary : Color.secondary)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 8)
+                            if turn.cancellable {
+                                Button("Cancel") { model.cancelChatQueuedTurn(turn) }
+                                    .controlSize(.small)
+                                    .help("Cancel this queued message. It will not be sent.")
+                            }
+                        }
+                        .padding(8)
+                        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 9))
+                    }
+                    if let note = model.chatQueueNote {
+                        Text(verbatim: note)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
         .padding(.horizontal, 24)
