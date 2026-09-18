@@ -1,3 +1,12 @@
+## 0.5.237 (build 275)
+
+Meeting sync lists each meeting and where it is.
+
+- Under Meeting sync, one line per meeting the Mac is polishing or saving: its start time ("1:05 PM meeting"), and its stage as the server reports it ("HQ polish 62% (70/113)", "Saving to meeting library", or "Waiting · 21 min of audio"). The meeting being worked on is listed first, then the queue, oldest first. Up to four lines, then "+N more". Miles, 2026-09-18 15:31: "2 meetings syncing" next to "HQ prefill 0/0 sealed" read as one empty meeting blocking the others. It was a 114-minute meeting polishing ahead of a 22-minute one and a 21-second clip, and all three landed by 15:31:34. The server has published these rows since 6.18.4; Control showed only their count.
+- HQ prefill says "Ready" between recordings instead of "0/0 sealed". Prefill only runs during a recording; the count shows once one starts.
+- Helper: `meetingSyncMeetings` passes the server's rows through (id, phase, percent, segments, chunk count, label), bounded at 12, id-less rows dropped. Older servers send none, and the panel shows the count as before.
+- Tests: the helper self-test drives the row projection; ModelsContract executes decode, order, titles (today, another day, a non-meeting id), the waiting and working stage lines, and the prefill wording for idle, live, sealed, unavailable and off. `run.sh` pins the passthrough, the rows in the panel, and that the panel reads the model's prefill string. Six mutants of the model logic were each caught.
+
 ## 0.5.236 (build 274)
 
 A queued message opens to its whole text, and can be edited while it waits.

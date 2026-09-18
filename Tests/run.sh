@@ -6111,4 +6111,13 @@ for rel in ("Tests/run.sh", "scripts/build-release.sh", "Tests/run-held-ui.sh", 
 print("COS Control: live session pane, hooks banner and composer queue line pinned (0.5.233)")
 LIVEPANE
 
+# ---- Meeting sync rows (0.5.237) --------------------------------------
+/usr/bin/grep -q '"meetingSyncMeetings": Self.meetingSyncRows(meetings),' "$ROOT/HelperSources/main.swift"
+/usr/bin/grep -q 'ForEach(model.status.meetingSyncMeetings.prefix(4)) { row in' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q 'let prefillValue = model.status.progressiveHqValue' "$ROOT/Sources/Views.swift"
+if /usr/bin/grep -q 'sealed · \\(tier)\\(threadLabel)' "$ROOT/Sources/Views.swift"; then
+  echo "FAIL: the panel builds its own prefill string again; it must read progressiveHqValue" >&2; exit 1
+fi
+echo "COS Control: meeting sync rows and prefill wording pinned (0.5.237)"
+
 echo "COS Control: helper self-tests, secret-boundary checks, and macOS 14 builds passed"

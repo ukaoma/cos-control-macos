@@ -4323,6 +4323,62 @@ struct ModelsContract {
         ])
         precondition(hqPolish.displayedMeetingSync.label.contains("HQ polish"))
 
+        // 0.5.237: each meeting behind "N meetings syncing", working first, then oldest.
+        let syncing = ServerStatus([
+            "meetingSyncActive": .bool(true),
+            "meetingSyncLabel": .string("2 meetings syncing"),
+            "meetingSyncMeetings": .array([
+                .object(["meetingId": .string("meeting_1789762860374_6ce9vi"), "phase": .string("pending"),
+                         "percent": .null, "chunkFiles": .number(4), "label": .string("HQ polish · 4 chunks")]),
+                .object(["meetingId": .string("meeting_1789761552246_qfcpyr"), "phase": .string("pending"),
+                         "percent": .null, "chunkFiles": .number(216), "label": .string("HQ polish · 216 chunks")]),
+                .object(["meetingId": .string("meeting_1789754707558_277naf"), "phase": .string("hq_polish"),
+                         "percent": .number(62), "chunkFiles": .number(1135), "label": .string("HQ polish 62% (70/113)")]),
+                .object(["phase": .string("queued")]),
+                .object(["meetingId": .string("recovery-abc123"), "phase": .string("persisting"), "percent": .null,
+                         "chunkFiles": .number(0), "label": .string("Saving to meeting library · do not update/restart")]),
+            ]),
+        ])
+        let rows = syncing.meetingSyncMeetings
+        precondition(rows.count == 4, "an id-less row is dropped")
+        precondition(rows.map(\.meetingId) == ["meeting_1789754707558_277naf", "recovery-abc123",
+                                             "meeting_1789761552246_qfcpyr", "meeting_1789762860374_6ce9vi"],
+                     "working rows first (dated before undated), then waiting rows oldest first")
+        precondition(rows[0].stage == "HQ polish 62% (70/113)" && !rows[0].isWaiting)
+        precondition(rows[1].stage == "Saving to meeting library", "the restart warning is shown once, not per row")
+        precondition(rows[2].isWaiting && rows[2].stage == "Waiting · 21 min of audio")
+        precondition(rows[3].stage == "Waiting · 1 min of audio", "a short clip still says a minute, never zero")
+        var chicago = Calendar(identifier: .gregorian)
+        chicago.timeZone = TimeZone(identifier: "America/Chicago")!
+        let us = Locale(identifier: "en_US")
+        let sameDay = Date(timeIntervalSince1970: 1_789_765_000)
+        // Formatter spacing and joiners vary by macOS release (U+202F before PM; "Sep 18 at"):
+        // pin what the reader needs, not the exact glyphs.
+        let today = rows[0].title(now: sameDay, calendar: chicago, locale: us)
+        precondition(today.hasPrefix("1:05") && today.contains("PM") && today.hasSuffix(" meeting") && !today.contains("Sep"),
+                     "today's meeting shows its start time only: \(today)")
+        let earlier = rows[0].title(now: sameDay.addingTimeInterval(86_400), calendar: chicago, locale: us)
+        precondition(earlier.contains("Sep 18") && earlier.contains("1:05") && earlier.hasSuffix(" meeting"),
+                     "another day's meeting shows its date too: \(earlier)")
+        precondition(rows[1].startedAt == nil && rows[1].title(now: sameDay, calendar: chicago, locale: us) == "Meeting …abc123")
+        precondition(ServerStatus(["meetingSyncActive": .bool(false)]).meetingSyncMeetings.isEmpty, "an older server sends no rows")
+
+        // 0.5.237: prefill between recordings is Ready, never "0/0 sealed".
+        let prefillIdle = ServerStatus(["progressiveHqEnabled": .bool(true), "progressiveHqTier": .string("max"),
+                                        "progressiveHqThreads": .number(6), "progressiveHqSealedDone": .number(0),
+                                        "progressiveHqSealedTotal": .number(0), "activeTranscriptionSessions": .number(0)])
+        precondition(prefillIdle.progressiveHqValue == "Ready · Max · 6t")
+        let prefillLive = ServerStatus(["progressiveHqEnabled": .bool(true), "progressiveHqTier": .string("max"),
+                                        "progressiveHqThreads": .number(6), "progressiveHqSealedDone": .number(0),
+                                        "progressiveHqSealedTotal": .number(0), "activeTranscriptionSessions": .number(1)])
+        precondition(prefillLive.progressiveHqValue == "0/0 sealed · Max · 6t", "a live recording shows its count from zero")
+        let prefillSealed = ServerStatus(["progressiveHqEnabled": .bool(true), "progressiveHqSealedDone": .number(1),
+                                          "progressiveHqSealedTotal": .number(5)])
+        precondition(prefillSealed.progressiveHqValue == "1/5 sealed · Balanced")
+        precondition(ServerStatus(["progressiveHqEnabled": .bool(false), "progressiveHqRequested": .bool(true)]).progressiveHqValue == "Unavailable")
+        precondition(ServerStatus(["progressiveHqEnabled": .bool(false)]).progressiveHqValue == "Off")
+        precondition(ServerStatus([:]).progressiveHqValue == nil)
+
         // A server that predates the capability contract sends none of these
         // fields. Absent MUST resolve to off, never to "probably on" — the same
         // fail-closed posture the server's own contract mandates for clients.

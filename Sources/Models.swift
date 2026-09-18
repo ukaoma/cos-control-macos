@@ -40,6 +40,67 @@ enum JSONValue: Codable, Sendable {
     var array: [JSONValue]? { if case .array(let value) = self { value } else { nil } }
 }
 
+/// 0.5.237: one meeting the server is polishing or saving (`meeting_sync.meetings`).
+struct MeetingSyncRow: Sendable, Equatable, Identifiable {
+    let meetingId: String
+    let phase: String
+    let percent: Int?
+    let chunkFiles: Int
+    let label: String
+    var id: String { meetingId }
+
+    init?(_ value: JSONValue) {
+        guard let o = value.object, let id = o["meetingId"]?.string, !id.isEmpty else { return nil }
+        meetingId = id
+        phase = o["phase"]?.string ?? "pending"
+        percent = o["percent"]?.int
+        chunkFiles = o["chunkFiles"]?.int ?? 0
+        label = o["label"]?.string ?? ""
+    }
+
+    /// The glasses app names a session `meeting_<epoch ms>_<suffix>`; nil for any other id.
+    var startedAt: Date? {
+        let parts = meetingId.split(separator: "_")
+        guard parts.count >= 3, parts[0] == "meeting", parts[1].count == 13, let ms = Double(parts[1]) else { return nil }
+        return Date(timeIntervalSince1970: ms / 1000)
+    }
+
+    /// Waiting its turn: no progress yet. The server writes progress when HQ starts.
+    var isWaiting: Bool { percent == nil && (phase == "pending" || phase == "queued") }
+
+    /// "1:05 PM meeting" today, "Sep 17, 1:05 PM meeting" another day, the id's tail otherwise.
+    func title(now: Date = Date(), calendar: Calendar = .current, locale: Locale = .current) -> String {
+        guard let start = startedAt else { return "Meeting …\(meetingId.suffix(6))" }
+        let f = DateFormatter()
+        f.locale = locale
+        f.calendar = calendar
+        f.timeZone = calendar.timeZone
+        f.setLocalizedDateFormatFromTemplate(calendar.isDate(start, inSameDayAs: now) ? "jmm" : "MMMd jmm")
+        return "\(f.string(from: start)) meeting"
+    }
+
+    /// The server's own words, minus the restart warning the panel already shows once;
+    /// a waiting row says so, with its audio length (the app records 6 s chunks).
+    var stage: String {
+        if isWaiting {
+            let minutes = chunkFiles * 6 / 60
+            return chunkFiles > 0 ? "Waiting · \(max(1, minutes)) min of audio" : "Waiting"
+        }
+        let trimmed = label.replacingOccurrences(of: " · do not update/restart", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? phase.replacingOccurrences(of: "_", with: " ") : trimmed
+    }
+
+    /// Working rows first (what the Mac is doing now), then oldest first (the queue order).
+    static func ordered(_ rows: [MeetingSyncRow]) -> [MeetingSyncRow] {
+        rows.enumerated().sorted { a, b in
+            if a.element.isWaiting != b.element.isWaiting { return !a.element.isWaiting }
+            let sa = a.element.startedAt ?? .distantFuture, sb = b.element.startedAt ?? .distantFuture
+            return sa != sb ? sa < sb : a.offset < b.offset
+        }.map(\.element)
+    }
+}
+
 struct HelperResponse: Codable, Sendable {
     let ok: Bool
     let message: String
@@ -183,6 +244,8 @@ struct ServerStatus: Sendable {
     var meetingSyncLabel = "Idle"
     var meetingSyncBlocksRestart = false
     var meetingSyncCount = 0
+    /// 0.5.237: each meeting behind "N meetings syncing", in panel order.
+    var meetingSyncMeetings: [MeetingSyncRow] = []
     var earlyMeetingSyncEnabled: Bool?
     var earlyMeetingSyncRequested: Bool?
     var earlyMeetingSyncAvailable: Bool?
@@ -222,6 +285,19 @@ struct ServerStatus: Sendable {
             return (false, "Recording in progress", true)
         }
         return (false, trimmed.isEmpty ? "Idle" : trimmed, false)
+    }
+
+    /// 0.5.237: "0/0 sealed" with nothing recording read as a stuck meeting (Miles,
+    /// 2026-09-18 15:31). Prefill only runs DURING a recording; between recordings it is Ready.
+    var progressiveHqValue: String? {
+        guard let progressive = progressiveHqEnabled else { return nil }
+        let tier = progressiveHqTier == "max" ? "Max" : "Balanced"
+        let threads = progressiveHqThreads.map { " · \($0)t" } ?? ""
+        guard progressive else { return progressiveHqRequested == true ? "Unavailable" : "Off" }
+        let recording = progressiveHqActive || progressiveHqSealedTotal > 0 || (activeTranscriptionSessions ?? 0) > 0
+        return recording
+            ? "\(progressiveHqSealedDone)/\(progressiveHqSealedTotal) sealed · \(tier)\(threads)"
+            : "Ready · \(tier)\(threads)"
     }
 
     var meetingWorkBlockingRestart: Bool {
@@ -368,6 +444,7 @@ struct ServerStatus: Sendable {
         meetingSyncLabel = details["meetingSyncLabel"]?.string ?? (meetingSyncActive ? "Syncing…" : "Idle")
         meetingSyncBlocksRestart = details["meetingSyncBlocksRestart"]?.bool ?? meetingSyncActive
         meetingSyncCount = details["meetingSyncCount"]?.int ?? 0
+        meetingSyncMeetings = MeetingSyncRow.ordered((details["meetingSyncMeetings"]?.array ?? []).compactMap(MeetingSyncRow.init))
         earlyMeetingSyncEnabled = details["earlyMeetingSyncEnabled"]?.bool
         earlyMeetingSyncRequested = details["earlyMeetingSyncRequested"]?.bool
         earlyMeetingSyncAvailable = details["earlyMeetingSyncAvailable"]?.bool

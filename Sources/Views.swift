@@ -856,6 +856,25 @@ struct ControlPanel: View {
                 }
             }
             statusRow("Meeting sync", value: model.status.displayedMeetingSync.label, good: !model.status.meetingWorkBlockingRestart)
+            // 0.5.237: which meetings, and where each one is, as the server reports it.
+            ForEach(model.status.meetingSyncMeetings.prefix(4)) { row in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(row.title())
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Text(row.stage)
+                        .monospacedDigit()
+                        .foregroundStyle(row.isWaiting ? Color.secondary : Color.primary)
+                        .lineLimit(1)
+                }
+                .font(.caption)
+            }
+            if model.status.meetingSyncMeetings.count > 4 {
+                Text("+\(model.status.meetingSyncMeetings.count - 4) more")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
             HStack {
                 Spacer()
                 Button("Run sync now") { model.perform("meeting-sync-now") }
@@ -900,17 +919,13 @@ struct ControlPanel: View {
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
-            if let progressive = model.status.progressiveHqEnabled {
-                let total = model.status.progressiveHqSealedTotal
-                let done = model.status.progressiveHqSealedDone
+            if let progressive = model.status.progressiveHqEnabled, let prefillValue = model.status.progressiveHqValue {
                 let tier = model.status.progressiveHqTier == "max" ? "Max" : "Balanced"
                 let threadLabel = model.status.progressiveHqThreads.map { " · \($0)t" } ?? ""
                 let unavailable = model.status.progressiveHqRequested == true && !progressive
                 statusRow(
                     "HQ prefill",
-                    value: progressive
-                        ? "\(done)/\(total) sealed · \(tier)\(threadLabel)"
-                        : unavailable ? "Unavailable" : "Off",
+                    value: prefillValue,
                     good: progressive
                 )
                 if model.status.progressiveHqActive {

@@ -2661,9 +2661,31 @@ final class COSControlHelper {
                 "meetingSyncLabel": (label?.isEmpty == false ? label! : (active ? "Syncing…" : "Idle")),
                 "meetingSyncBlocksRestart": blocks,
                 "meetingSyncCount": meetings.count,
+                "meetingSyncMeetings": Self.meetingSyncRows(meetings),
             ]
         }
         return meetingSyncStatusFromPendingBatch()
+    }
+
+    /// 0.5.237: each meeting the server is polishing or saving, as it reports it
+    /// (`meeting_sync.meetings`, server 6.18.4+). Control showed only the count, so
+    /// "2 meetings syncing" beside "HQ prefill 0/0" read as stuck while a 114-minute
+    /// meeting polished ahead of two short ones (Miles, 2026-09-18 15:31). Bounded;
+    /// a row without an id is dropped; absent numbers are NSNull.
+    static func meetingSyncRows(_ meetings: [[String: Any]]) -> [[String: Any]] {
+        meetings.prefix(12).compactMap { row in
+            guard let id = row["meetingId"] as? String, !id.isEmpty else { return nil }
+            func number(_ key: String) -> Any { (row[key] as? NSNumber) ?? NSNull() }
+            return [
+                "meetingId": id,
+                "phase": row["phase"] as? String ?? "pending",
+                "percent": number("percent"),
+                "segmentsDone": number("segmentsDone"),
+                "segmentsTotal": number("segmentsTotal"),
+                "chunkFiles": number("chunkFiles"),
+                "label": row["label"] as? String ?? "",
+            ]
+        }
     }
 
     /// HQ polish can report Idle while library handoff or a live recording still
@@ -2774,6 +2796,7 @@ final class COSControlHelper {
                 "meetingSyncLabel": "Idle",
                 "meetingSyncBlocksRestart": false,
                 "meetingSyncCount": 0,
+                "meetingSyncMeetings": [[String: Any]](),
             ]
         }
         let now = Date()
@@ -2788,6 +2811,7 @@ final class COSControlHelper {
                 "meetingSyncLabel": "Idle",
                 "meetingSyncBlocksRestart": false,
                 "meetingSyncCount": 0,
+                "meetingSyncMeetings": [[String: Any]](),
             ]
         }
         for name in dirs {
@@ -16287,6 +16311,23 @@ final class COSControlHelper {
         try expect(jsonHandoff["meetingSyncLabel"] as? String == "Saving to meeting library"
                    && jsonHandoff["meetingSyncBlocksRestart"] as? Bool == true,
                    "JSON pending overlays Idle through jsonInt")
+
+        // 0.5.237: the per-meeting rows pass through; an id-less row is dropped.
+        let syncRows = Self.meetingSyncRows([
+            ["meetingId": "meeting_1789754707558_277naf", "phase": "hq_polish", "percent": NSNumber(value: 62),
+             "segmentsDone": NSNumber(value: 70), "segmentsTotal": NSNumber(value: 113), "chunkFiles": NSNumber(value: 1135),
+             "label": "HQ polish 62% (70/113)"],
+            ["meetingId": "meeting_1789761552246_qfcpyr", "phase": "pending", "chunkFiles": NSNumber(value: 216), "label": "HQ polish · 216 chunks"],
+            ["phase": "queued", "label": "no id"],
+        ])
+        try expect(syncRows.count == 2, "a sync row without a meeting id is dropped")
+        try expect(syncRows[0]["percent"] as? NSNumber == 62 && syncRows[0]["segmentsTotal"] as? NSNumber == 113,
+                   "a polishing row keeps its percent and segments")
+        try expect(syncRows[1]["percent"] is NSNull && syncRows[1]["phase"] as? String == "pending"
+                   && syncRows[1]["chunkFiles"] as? NSNumber == 216,
+                   "a waiting row has no percent and keeps its chunk count")
+        try expect(Self.meetingSyncRows(Array(repeating: ["meetingId": "m"], count: 30)).count == 12,
+                   "sync rows are bounded")
 
         // --- restart blockers must NAME the cause ---------------------------
         // The 2026-08-12 lockout in one fixture: activeByKind EMPTY, everything
