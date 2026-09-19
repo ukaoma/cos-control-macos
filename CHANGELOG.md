@@ -2,8 +2,8 @@
 
 Control keeps the server switches you set by hand. Pairs with server 6.52.0.
 
-- Update Server, repair and adoption rewrite the server's launch settings from an allowlist, and any setting not on it was dropped. Seven server switches from 6.49 to 6.52 were missing, so a value set by hand (usually a kill switch) quietly reverted on the next update: `COS_CONTINUE_LIVE` (live Continue into an open Claude session), `COS_CODEX_LIVE_QUEUE` (Codex Continue into the Codex app's queue), `COS_SESSION_HOOKS`, `COS_PERMISSION_BROKER` with `COS_PERMISSION_BROKER_DESK_IDLE_S` and `COS_PERMISSION_BROKER_TIMEOUT_S` (questions and approvals answered from the glasses), and `COS_MESSAGES_TRAIL` (the readable Messages trail). All seven are now kept. Found by the plan validation on 2026-09-19.
-- Tests: the helper self-test checks each key is allowlisted; run.sh pins all seven in the allowlist block.
+- Update Server, repair and adoption rewrite the server's launch settings from an allowlist, and any setting not on it was dropped. Seven server switches from 6.49 to 6.52 were missing, so a value set by hand (usually a kill switch) quietly reverted on the next update: `COS_CONTINUE_LIVE` (live Continue into an open Claude session), `COS_CODEX_LIVE_QUEUE` (Codex Continue into the Codex app's queue), `COS_SESSION_HOOKS`, `COS_PERMISSION_BROKER` with `COS_PERMISSION_BROKER_DESK_IDLE_S` and `COS_PERMISSION_BROKER_TIMEOUT_S` (questions and approvals answered from the glasses), and `COS_MESSAGES_TRAIL` (the readable Messages trail). Two 6.48.0 hook settings were missing too, `COS_SESSION_HOOKS_SPOOL_DIR` (a dropped spool folder leaves the installed hook writing where the server no longer reads) and `COS_SESSION_HOOK_SSE`. All nine are now kept. The pet does not show a held glasses question yet; that comes with the app release that answers them. Found by the plan validation on 2026-09-19.
+- Tests: the helper self-test checks each key is allowlisted; run.sh pins all nine in the allowlist block.
 
 ## 0.5.238 (build 276)
 

@@ -362,6 +362,8 @@ final class COSControlHelper {
         "COS_PERMISSION_BROKER_DESK_IDLE_S",
         "COS_PERMISSION_BROKER_TIMEOUT_S",
         "COS_MESSAGES_TRAIL",
+        "COS_SESSION_HOOKS_SPOOL_DIR",
+        "COS_SESSION_HOOK_SSE",
     ]
 
     private lazy var support = home.appendingPathComponent("Library/Application Support/COS Control", isDirectory: true)
@@ -15841,6 +15843,10 @@ final class COSControlHelper {
                    "COS_PERMISSION_BROKER_TIMEOUT_S must be allowlisted or on Update Server the question hold time silently resets")
         try expect(providerEnvironmentKeys.contains("COS_MESSAGES_TRAIL"),
                    "COS_MESSAGES_TRAIL must be allowlisted or on Update Server the Messages trail kill switch (6.52) silently comes back on")
+        try expect(providerEnvironmentKeys.contains("COS_SESSION_HOOKS_SPOOL_DIR"),
+                   "COS_SESSION_HOOKS_SPOOL_DIR must be allowlisted or on Update Server the hook spool folder resets and the installed hook writes where the server no longer reads")
+        try expect(providerEnvironmentKeys.contains("COS_SESSION_HOOK_SSE"),
+                   "COS_SESSION_HOOK_SSE must be allowlisted or on Update Server the session-hook stream switch silently resets")
         try expect(providerEnvironmentKeys.contains("COS_OLLAMA_MODEL"),
                    "COS_OLLAMA_MODEL must be allowlisted or Update Server silently drops a pinned local model")
         try expect(providerEnvironmentKeys.contains("COS_OLLAMA_THINK"),

@@ -1510,7 +1510,7 @@ block = re.search(r"providerEnvironmentKeys: Set<String> = \[(.*?)\]", src, re.S
 assert block, "providerEnvironmentKeys not found"
 assert '"COS_THREAD_FENCE_DURABLE"' in block.group(1), \
     "COS_THREAD_FENCE_DURABLE is not allowlisted -- Control will drop it on the next plist rewrite"
-for key in ("COS_CONTINUE_LIVE", "COS_CODEX_LIVE_QUEUE", "COS_SESSION_HOOKS", "COS_PERMISSION_BROKER", "COS_PERMISSION_BROKER_DESK_IDLE_S", "COS_PERMISSION_BROKER_TIMEOUT_S", "COS_MESSAGES_TRAIL",):
+for key in ("COS_CONTINUE_LIVE", "COS_CODEX_LIVE_QUEUE", "COS_SESSION_HOOKS", "COS_PERMISSION_BROKER", "COS_PERMISSION_BROKER_DESK_IDLE_S", "COS_PERMISSION_BROKER_TIMEOUT_S", "COS_MESSAGES_TRAIL", "COS_SESSION_HOOKS_SPOOL_DIR", "COS_SESSION_HOOK_SSE",):
     assert f'"{key}"' in block.group(1), f"{key} is not allowlisted -- Control will drop it on the next plist rewrite (0.5.239)"
 PY
 
