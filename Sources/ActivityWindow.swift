@@ -5276,14 +5276,23 @@ struct SessionChatComposer: View {
             // 0.5.238: a thread mid-turn reads as waiting, not refused. Send parks the
             // message and it lands when the turn ends, as it does from the pet and the lens.
             if model.chatRefusal == nil, let hint = model.chatParkHint {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Image(systemName: "clock")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
-                    Text(verbatim: hint)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "clock")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                        Text(verbatim: hint)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    // Fork stays available beside the park (QA, 0.5.238).
+                    if model.chatForkAvailable {
+                        Button("Fork with this message") { model.forkChatThread() }
+                            .controlSize(.small)
+                            .disabled(model.chatForkPrompt.isEmpty || model.chatForking)
+                            .help("Runs your message in a copy of this thread. The original is untouched.")
+                    }
                 }
             }
             if let refusal = model.chatRefusal {

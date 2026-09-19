@@ -4115,6 +4115,16 @@ need("lastAttachRefusalReason = response.details[\"reason\"]?.string" in model,
      "the attach refusal reason is not kept for the park path")
 need("if model.chatRefusal == nil, let hint = model.chatParkHint {" in activity_src,
      "the pane does not show the park hint")
+hint_block = activity_src[activity_src.index("if model.chatRefusal == nil, let hint = model.chatParkHint {"):]
+hint_block = hint_block[:hint_block.index("if let refusal = model.chatRefusal {")]
+need('Button("Fork with this message") { model.forkChatThread() }' in hint_block and "if model.chatForkAvailable {" in hint_block,
+     "Fork must stay available beside the park hint: parking is added, nothing removed")
+need("chatForkAvailable = Self.chatCopyRecommendsFork(chatVerdict?.reasonCopy ?? \"\")" in chat_probe,
+     "the park path must keep the Fork affordance the refusal offered")
+parked_note = model[model.index("private func noteChatParked("):]
+parked_note = parked_note[:parked_note.index("\n    }\n")]
+need("chatParkReason = nil" in parked_note and "chatParkHint = nil" in parked_note,
+     "a parked message must clear the stale park hint")
 need('model.openClaudeRow?.provider == "codex"' in activity_src,
      "the composer's held-session line is not provider-aware for Codex")
 # 0.5.238: the pet reads Codex rollouts and discovers open Codex threads and active Cursor composers.

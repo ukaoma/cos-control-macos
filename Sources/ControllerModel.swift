@@ -4718,6 +4718,8 @@ final class ControllerModel: ObservableObject {
                     // queue will not take it.
                     chatParkReason = reason
                     chatParkHint = Self.petParkHint(for: session)
+                    // Fork stays where it was (QA, 0.5.238): parking is added, nothing removed.
+                    chatForkAvailable = Self.chatCopyRecommendsFork(chatVerdict?.reasonCopy ?? "")
                 } else {
                     chatRefusal = chatVerdict?.reasonCopy
                     chatSupplement = Self.chatSupplementLine(
@@ -5131,6 +5133,10 @@ final class ControllerModel: ObservableObject {
         chatSupplement = nil
         chatForkAvailable = false
         chatRetryAvailable = false
+        // The queue list below now says what is waiting; a later send re-checks the
+        // thread (a busy attach still parks), so a stale hint never outlives the turn.
+        chatParkReason = nil
+        chatParkHint = nil
         chatMessages.append(SessionChatMessage(role: .user, text: prompt))
         chatMessages.append(SessionChatMessage(role: .status, text: phase.statusLine ?? "Queued."))
         chatDraft = ""

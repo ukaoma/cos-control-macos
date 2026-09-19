@@ -10204,9 +10204,10 @@ final class COSControlHelper {
                 // pet as a finish.
                 if out[index]["activitySource"] as? String == "rollout",
                    let inFlight = out[index]["turnInFlight"] as? Bool {
-                    let state = claudeTurnState(
+                    var state = claudeTurnState(
                         inFlight: inFlight, waitingOnUser: false, lastActivityAt: mtime,
                         subagentInFlightAt: nil, now: now)
+                    if state == "waiting", now.timeIntervalSince(mtime) > codexWaitingCeiling { state = "recent" }
                     out[index]["state"] = state
                     out[index]["alive"] = state != "recent"
                     continue
@@ -10518,9 +10519,14 @@ final class COSControlHelper {
         return open
     }
 
-    /// Codex rollouts run to tens of MB of tool output; past 4 MB with no turn marker the
+    /// Codex rollouts run to tens of MB of tool output; past 1 MB with no turn marker the
     /// file-time rule answers instead of reading more on every pet tick.
-    static let codexActivityTailMaxBytes = 4 * 1024 * 1024
+    static let codexActivityTailMaxBytes = 1024 * 1024
+
+    /// An open Codex turn quiet this long is not waiting on anyone: its process died with the
+    /// turn open (a force-quit app, a killed child) and the lock file outlived it. The pet
+    /// stops showing it (QA, 0.5.238: without a ceiling it read waiting for ever).
+    static let codexWaitingCeiling: TimeInterval = 30 * 60
 
     /// `readMarkers` decides, from the file time, whether the tail is worth opening: the pet
     /// asks only for threads a Codex process has open or that wrote in the last 15 min, so a
@@ -16922,6 +16928,7 @@ final class COSControlHelper {
                 "01a00da5-8026-7bf3-a9cb-000000000001": CodexThreadActivity(threadId: "01a00da5-8026-7bf3-a9cb-000000000001", lastActivityAt: petNow.addingTimeInterval(-5), inFlight: false),
                 "01a00da5-8026-7bf3-a9cb-000000000002": CodexThreadActivity(threadId: "01a00da5-8026-7bf3-a9cb-000000000002", lastActivityAt: petNow.addingTimeInterval(-20 * 60), inFlight: true),
                 "01a00da5-8026-7bf3-a9cb-000000000003": CodexThreadActivity(threadId: "01a00da5-8026-7bf3-a9cb-000000000003", lastActivityAt: petNow.addingTimeInterval(-3 * 3600), inFlight: nil),
+                "01a00da5-8026-7bf3-a9cb-000000000004": CodexThreadActivity(threadId: "01a00da5-8026-7bf3-a9cb-000000000004", lastActivityAt: petNow.addingTimeInterval(-45 * 60), inFlight: true),
             ]
             let cachedCodex: [[String: Any]] = [
                 // The 2026-09-19 row: the cache said running at 08:12, the thread was still writing at 08:20.
@@ -16929,6 +16936,7 @@ final class COSControlHelper {
                 ["id": "01a00da5-8026-7bf3-a9cb-000000000001", "provider": "codex", "name": "Finished", "alive": true, "state": "running", "updatedAt": Self.isoString(from: petNow.addingTimeInterval(-600))],
                 ["id": "01a00da5-8026-7bf3-a9cb-000000000002", "provider": "codex", "name": "Approval", "alive": false, "state": "recent", "updatedAt": ""],
                 ["id": "01a00da5-8026-7bf3-a9cb-000000000003", "provider": "codex", "name": "Old", "alive": true, "state": "running", "updatedAt": ""],
+                ["id": "01a00da5-8026-7bf3-a9cb-000000000004", "provider": "codex", "name": "Died mid-turn", "alive": true, "state": "running", "updatedAt": ""],
             ]
             let petRows = Self.petLiveRows(cached: cachedCodex, livePeers: [], transcriptActivity: { _ in nil },
                                            composerActivity: meta.activity, codexActivity: { codexActs[$0.lowercased()] },
@@ -16942,6 +16950,8 @@ final class COSControlHelper {
                        "an open Codex turn quiet past 15 min reads waiting, the Claude rule")
             try expect(petRow("01a00da5-8026-7bf3-a9cb-000000000003") == nil,
                        "an unread thread with an old file time is not on the pet")
+            try expect(petRow("01a00da5-8026-7bf3-a9cb-000000000004") == nil,
+                       "an open Codex turn quiet past 30 min (its process died) is not waiting for ever")
             try expect(petRow("01a0b9c5-0271-7bd0-9072-3e29e33bd6d4")?["state"] as? String == "running"
                        && petRow("01a0b9c5-0271-7bd0-9072-3e29e33bd6d4")?["name"] as? String == "Voice Chat Title Request",
                        "a Codex thread the cache never listed shows once a Codex process has it open and it is working")
