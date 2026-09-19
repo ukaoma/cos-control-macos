@@ -1,3 +1,10 @@
+## 0.5.239 (build 277)
+
+Control keeps the server switches you set by hand. Pairs with server 6.52.0.
+
+- Update Server, repair and adoption rewrite the server's launch settings from an allowlist, and any setting not on it was dropped. Seven server switches from 6.49 to 6.52 were missing, so a value set by hand (usually a kill switch) quietly reverted on the next update: `COS_CONTINUE_LIVE` (live Continue into an open Claude session), `COS_CODEX_LIVE_QUEUE` (Codex Continue into the Codex app's queue), `COS_SESSION_HOOKS`, `COS_PERMISSION_BROKER` with `COS_PERMISSION_BROKER_DESK_IDLE_S` and `COS_PERMISSION_BROKER_TIMEOUT_S` (questions and approvals answered from the glasses), and `COS_MESSAGES_TRAIL` (the readable Messages trail). All seven are now kept. Found by the plan validation on 2026-09-19.
+- Tests: the helper self-test checks each key is allowlisted; run.sh pins all seven in the allowlist block.
+
 ## 0.5.238 (build 276)
 
 Codex and Cursor sessions on the pet, the Sessions pane queues like the pet, and the pet has a right-click menu. Pairs with server 6.51.0.

@@ -352,6 +352,16 @@ final class COSControlHelper {
         // is not a missing feature — it silently DROPS a hand-set flag on the
         // next update, which is how COS_PROFILE_PATH was lost.
         "COS_THREAD_ATTACH_ENABLED",
+        // 0.5.239: server switches from 6.49 to 6.52. Every one of these is read by the
+        // server from its launch environment; a key missing here is dropped on the next
+        // plist rewrite, so a value set by hand (usually a kill switch) quietly reverts.
+        "COS_CONTINUE_LIVE",
+        "COS_CODEX_LIVE_QUEUE",
+        "COS_SESSION_HOOKS",
+        "COS_PERMISSION_BROKER",
+        "COS_PERMISSION_BROKER_DESK_IDLE_S",
+        "COS_PERMISSION_BROKER_TIMEOUT_S",
+        "COS_MESSAGES_TRAIL",
     ]
 
     private lazy var support = home.appendingPathComponent("Library/Application Support/COS Control", isDirectory: true)
@@ -15817,6 +15827,20 @@ final class COSControlHelper {
                    "COS_CLAUDE_SESSIONS_SHOW_NAMES must be allowlisted or Update Server strips it")
         try expect(providerEnvironmentKeys.contains("COS_THREAD_ATTACH_ENABLED"),
                    "COS_THREAD_ATTACH_ENABLED must be allowlisted or Update Server silently drops Continue")
+        try expect(providerEnvironmentKeys.contains("COS_CONTINUE_LIVE"),
+                   "COS_CONTINUE_LIVE must be allowlisted or on Update Server a live Continue into an open Claude session (6.49) silently turns back off")
+        try expect(providerEnvironmentKeys.contains("COS_CODEX_LIVE_QUEUE"),
+                   "COS_CODEX_LIVE_QUEUE must be allowlisted or on Update Server the Codex live-queue kill switch (6.51) silently comes back on")
+        try expect(providerEnvironmentKeys.contains("COS_SESSION_HOOKS"),
+                   "COS_SESSION_HOOKS must be allowlisted or on Update Server the session-hooks switch silently resets")
+        try expect(providerEnvironmentKeys.contains("COS_PERMISSION_BROKER"),
+                   "COS_PERMISSION_BROKER must be allowlisted or on Update Server the glasses question and approval kill switch (6.52) silently comes back on")
+        try expect(providerEnvironmentKeys.contains("COS_PERMISSION_BROKER_DESK_IDLE_S"),
+                   "COS_PERMISSION_BROKER_DESK_IDLE_S must be allowlisted or on Update Server the away-from-desk threshold for questions on the glasses silently resets")
+        try expect(providerEnvironmentKeys.contains("COS_PERMISSION_BROKER_TIMEOUT_S"),
+                   "COS_PERMISSION_BROKER_TIMEOUT_S must be allowlisted or on Update Server the question hold time silently resets")
+        try expect(providerEnvironmentKeys.contains("COS_MESSAGES_TRAIL"),
+                   "COS_MESSAGES_TRAIL must be allowlisted or on Update Server the Messages trail kill switch (6.52) silently comes back on")
         try expect(providerEnvironmentKeys.contains("COS_OLLAMA_MODEL"),
                    "COS_OLLAMA_MODEL must be allowlisted or Update Server silently drops a pinned local model")
         try expect(providerEnvironmentKeys.contains("COS_OLLAMA_THINK"),
