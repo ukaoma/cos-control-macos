@@ -3786,8 +3786,38 @@ need("UserDefaults.standard.set(enabled, forKey: Self.petCalmMotionKey)" in _cal
      "setPetCalmMotion does not persist the choice; it would reset every launch")
 need("UserDefaults.standard.bool(forKey: ControllerModel.petCalmMotionKey)" in model_code,
      "the calm preference is never read back at launch")
-need("Calm motion" in (root / "Sources/Views.swift").read_text(),
-     "calm motion has no control in Session Pet settings")
+_views_src = (root / "Sources/Views.swift").read_text()
+need('Picker("Motion"' in _views_src and "model.setPetMotion($0)" in _views_src,
+     "motion has no control in Session Pet settings")
+need("func setPetCalmMotion(" in model_code and "setPetCalmMotion(motion.calm)" in model_code,
+     "setPetMotion must write the calm flag through its own persisting setter")
+# 0.5.238: No motion. A second flag, persisted and read back, that reaches
+# every pet animation through ONE computed value and never the ledger.
+_motion_setter = model_code[model_code.index("func setPetMotion("):]
+_motion_setter = _motion_setter[:_motion_setter.index("\n    }")]
+need("UserDefaults.standard.set(motion.still, forKey: Self.petNoMotionKey)" in _motion_setter,
+     "setPetMotion does not persist No motion; it would reset every launch")
+need("UserDefaults.standard.bool(forKey: ControllerModel.petNoMotionKey)" in model_code,
+     "No motion is never read back at launch")
+need("petNoMotion" not in _ledger_src and "petMotion" not in _ledger_src,
+     "No motion must not touch the ledger; lower motion may not cost status")
+_pet_src = (root / "Sources/SessionPet.swift").read_text()
+need("PetMotion.reducesMotion(system: systemReduceMotion, choice: model.petMotion)" in _pet_src,
+     "the pet's reduceMotion no longer folds in the No motion choice")
+need(_pet_src.count("@Environment(\\.accessibilityReduceMotion)") == 1
+     and "private var systemReduceMotion" in _pet_src,
+     "a second raw Reduce Motion read in the pet would ignore No motion")
+# The figure's right-click menu (Miles, 2026-09-19): Hide pet, and motion.
+_sprite_use = _pet_src[_pet_src.index("SessionPetSprite("):_pet_src.index("ledgerSlot\n        }")]
+need(".contextMenu { spriteMenu }" in _sprite_use,
+     "the figure lost its right-click menu")
+_menu = _pet_src[_pet_src.index("private var spriteMenu"):]
+_menu = _menu[:_menu.index("\n    }\n")]
+need('Button("Hide pet") { model.setPetEnabled(false) }' in _menu,
+     "the right-click menu has no Hide pet, or it no longer turns the pet off")
+need("PetMotion.allCases" in _menu and "model.setPetMotion(motion)" in _menu
+     and "model.petMotion == motion" in _menu,
+     "the right-click menu does not offer every motion choice with its check")
 # The token-spending switch lives beside the search it governs, NOT in the
 # toolbar panel, where it sat third between Activity and Server status
 # (Miles, 2026-09-01: "should be out of the way"). Wherever it lives it must
@@ -3816,10 +3846,10 @@ need("semanticSearchEnabled" not in _pet_pane,
      "the search flag is back in the pet settings pane")
 # The first version of that flag orphaned calm motion's caption: it sat between
 # the toggle and the text explaining it, so the text read as the flag's.
-_calm_gap = _pet_pane[_pet_pane.index('Toggle("Calm motion"'):
-                      _pet_pane.index("Rests the character")]
-need("Toggle(" not in _calm_gap.replace('Toggle("Calm motion"', "", 1),
-     "another control sits between the Calm motion toggle and its own caption; "
+_calm_gap = _pet_pane[_pet_pane.index('Picker("Motion"'):
+                      _pet_pane.index("Full plays every state")]
+need("Toggle(" not in _calm_gap and _calm_gap.count("Picker(") == 1,
+     "another control sits between the Motion picker and its own caption; "
      "the caption now reads as that control's")
 
 # The pet must return to where it was parked. Every frame is rebuilt from the

@@ -687,6 +687,7 @@ struct ControlPanel: View {
                         .font(.body.weight(.medium))
                     Text(model.petEnabled
                          ? "On · \(model.petSize.preset.title) · \(model.petCharacterPercent)% size · \(model.petAnimationSpeedPercent)% speed"
+                            + (model.petMotion == .full ? "" : " · \(model.petMotion.title)")
                          : "Off")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -4089,16 +4090,21 @@ private struct PetSizeControls: View {
                 .foregroundStyle(.secondary)
             Divider()
                 .padding(.vertical, 2)
-            Toggle("Calm motion", isOn: Binding(
-                get: { model.petCalmMotion },
-                set: { model.setPetCalmMotion($0) }
-            ))
-            .toggleStyle(.switch)
+            Picker("Motion", selection: Binding(
+                get: { model.petMotion },
+                set: { model.setPetMotion($0) }
+            )) {
+                ForEach(PetMotion.allCases) { motion in
+                    Text(motion.shortTitle).tag(motion)
+                }
+            }
+            .pickerStyle(.segmented)
             .controlSize(.small)
             .font(.caption)
-            Text("Rests the character on its idle loop instead of the multi-session "
-                 + "fights. Session counts still show on the bar, and alerts still "
-                 + "break through. For no motion at all, use macOS Reduce Motion.")
+            Text("Full plays every state. Calm rests the character on its idle loop "
+                 + "instead of the multi-session fights. None holds one still frame. "
+                 + "Session counts always show on the bar, and alerts still change "
+                 + "the pose. Also on the pet's right-click menu.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }

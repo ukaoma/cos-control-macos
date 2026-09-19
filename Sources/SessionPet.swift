@@ -347,7 +347,12 @@ private struct SessionPetRoot: View {
     var presenter: SessionPetPresenter
     var characterScale: CGFloat
     var viewportSize: CGSize
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    /// macOS Reduce Motion, or the pet's own No motion (0.5.238). Every
+    /// animation in the pet reads this one value, so the two cannot disagree.
+    private var reduceMotion: Bool {
+        PetMotion.reducesMotion(system: systemReduceMotion, choice: model.petMotion)
+    }
 
     private var sessions: [ClaudeSession] { model.petSessions }
     private var focus: ClaudeSession? { model.petFocusSession }
@@ -467,6 +472,7 @@ private struct SessionPetRoot: View {
             // to the platform and the menu would open behind the raised app.
             .onTapGesture(count: 2) { toggleSessionMenu() }
             .onTapGesture { handleSpriteClick() }
+            .contextMenu { spriteMenu }
             .accessibilityAddTraits(.isButton)
             .help(spriteHelp)
             .frame(width: viewportSize.width, height: viewportSize.height, alignment: .bottom)
@@ -1188,7 +1194,23 @@ private struct SessionPetRoot: View {
         // uses. Gating on a session count left the gesture unadvertised at
         // RUNNING 1 — the case the count guard was removed for.
         (!sessions.isEmpty || !model.petCompletions.isEmpty || !model.petDismissals.stamps.isEmpty)
-            ? base + " · double-click for the session list" : base
+            ? base + " · double-click for the session list · right-click to hide or calm it"
+            : base + " · right-click to hide or calm it"
+    }
+
+    /// Right-click on the figure (Miles, 2026-09-19, after Codex's pet offers
+    /// "Hide pet"): hide it, or turn its motion down. Only the figure carries
+    /// this menu; the rows keep their own. Hide is the Session pet switch in
+    /// Control's menu-bar panel, which is where the pet comes back.
+    @ViewBuilder private var spriteMenu: some View {
+        ForEach(PetMotion.allCases) { motion in
+            Toggle(motion.title, isOn: Binding(
+                get: { model.petMotion == motion },
+                set: { if $0 { model.setPetMotion(motion) } }
+            ))
+        }
+        Divider()
+        Button("Hide pet") { model.setPetEnabled(false) }
     }
 
     private func handleSpriteClick() {

@@ -179,6 +179,7 @@ final class ControllerModel: ObservableObject {
     private static let petCharacterPercentKey = "cos.sessionPetCharacterPercent"
     private static let petAnimationSpeedPercentKey = "cos.sessionPetAnimationSpeedPercent"
     private static let petCalmMotionKey = "cos.sessionPetCalmMotion"
+    private static let petNoMotionKey = "cos.sessionPetNoMotion"
     private static let semanticSearchKey = "cos.archiveSemanticSearch"
     private static let petCharacterScaleGenerationKey = "cos.sessionPetCharacterScaleGeneration"
     private static let petCharacterScaleGeneration = 2
@@ -1553,6 +1554,10 @@ final class ControllerModel: ObservableObject {
     /// Calm motion: the character rests through the escalation ladder while
     /// the ledger keeps reporting every count.
     @Published var petCalmMotion = UserDefaults.standard.bool(forKey: ControllerModel.petCalmMotionKey)
+    /// No motion (0.5.238): the figure holds one frame and the pet's own
+    /// animations stop, as under macOS Reduce Motion. See PetMotion.
+    @Published var petNoMotion = UserDefaults.standard.bool(forKey: ControllerModel.petNoMotionKey)
+    var petMotion: PetMotion { PetMotion.resolve(calm: petCalmMotion, still: petNoMotion) }
     @Published var petSize = PetSize.load(
         preset: UserDefaults.standard.string(forKey: ControllerModel.petSizeKey),
         pixels: UserDefaults.standard.object(forKey: ControllerModel.petSizePixelsKey) as? Int
@@ -2884,6 +2889,15 @@ final class ControllerModel: ObservableObject {
         guard enabled != petCalmMotion else { return }
         petCalmMotion = enabled
         UserDefaults.standard.set(enabled, forKey: Self.petCalmMotionKey)
+    }
+
+    /// One choice across both flags, so the menu and settings can never show
+    /// Calm checked while No motion is what the pet is doing.
+    func setPetMotion(_ motion: PetMotion) {
+        setPetCalmMotion(motion.calm)
+        guard motion.still != petNoMotion else { return }
+        petNoMotion = motion.still
+        UserDefaults.standard.set(motion.still, forKey: Self.petNoMotionKey)
     }
 
     func setClockStyle(_ style: ClockStyle) {

@@ -166,6 +166,29 @@ struct ModelsContract {
                      "a missing time must not render an empty separator segment")
     }
 
+    /// 0.5.238: the pet's motion choice. Two stored flags, one reading; No
+    /// motion wins, and it (not Calm) is what stops the pet's animations.
+    private static func checkPetMotion() {
+        precondition(PetMotion.resolve(calm: false, still: false) == .full, "nothing stored is full motion")
+        precondition(PetMotion.resolve(calm: true, still: false) == .calm, "the pre-0.5.238 calm flag still reads calm")
+        precondition(PetMotion.resolve(calm: false, still: true) == .still, "the still flag reads no motion")
+        precondition(PetMotion.resolve(calm: true, still: true) == .still, "no motion wins over calm")
+        for motion in PetMotion.allCases {
+            precondition(PetMotion.resolve(calm: motion.calm, still: motion.still) == motion,
+                         "\(motion) must round-trip through its two flags")
+            precondition(PetMotion.reducesMotion(system: true, choice: motion),
+                         "macOS Reduce Motion stops the pet whatever the choice")
+        }
+        precondition(PetMotion.reducesMotion(system: false, choice: .still), "No motion stops the pet's animations")
+        precondition(!PetMotion.reducesMotion(system: false, choice: .calm), "Calm keeps the idle loop moving")
+        precondition(!PetMotion.reducesMotion(system: false, choice: .full), "Full motion moves")
+        precondition(Set(PetMotion.allCases.map(\.title)).count == 3
+                     && Set(PetMotion.allCases.map(\.shortTitle)).count == 3,
+                     "every choice needs its own words in the menu and the picker")
+        precondition(PetMotion.still.title == "No motion" && PetMotion.full.title == "Full motion",
+                     "the menu names Miles asked for")
+    }
+
     /// 0.5.234: the Meetings clock, executed across the hour edges. The wire
     /// form is 24-hour `HH:mm`; twelve-hour is what the tab draws by default.
     private static func checkClockStyle() {
@@ -4174,6 +4197,7 @@ struct ModelsContract {
         checkMeetingReviewSort()
         checkCountsSummary()
         checkClockStyle()
+        checkPetMotion()
         checkQueuedSessionTurn()
         checkSpeakerListMemory()
         checkReviewVoiceQueue()

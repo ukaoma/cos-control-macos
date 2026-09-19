@@ -5350,6 +5350,51 @@ enum PetAnimationSpeed {
     }
 }
 
+/// How much the pet moves (0.5.238). Miles, 2026-09-19, after Codex's own
+/// pet menu: "full motion vs no motion if people don't like it moving so
+/// much". Set from the figure's right-click menu and from Session pet
+/// settings. It is two stored flags so the Calm choice made before this
+/// existed keeps its key: calm rests the character on its idle loop; still
+/// holds it on one frame and stops the pet's animations, what macOS Reduce
+/// Motion does, for the pet only. Still wins if both are ever set. A figure
+/// preference only: no choice here may cost the ledger a count.
+enum PetMotion: String, CaseIterable, Identifiable, Sendable {
+    case full
+    case calm
+    case still
+
+    var id: String { rawValue }
+
+    static func resolve(calm: Bool, still: Bool) -> PetMotion {
+        still ? .still : (calm ? .calm : .full)
+    }
+
+    /// The pet stops its own animations under either switch.
+    static func reducesMotion(system: Bool, choice: PetMotion) -> Bool {
+        system || choice == .still
+    }
+
+    var title: String {
+        switch self {
+        case .full: "Full motion"
+        case .calm: "Calm motion"
+        case .still: "No motion"
+        }
+    }
+
+    /// The segmented control in settings has room for one word each.
+    var shortTitle: String {
+        switch self {
+        case .full: "Full"
+        case .calm: "Calm"
+        case .still: "None"
+        }
+    }
+
+    var calm: Bool { self == .calm }
+    var still: Bool { self == .still }
+}
+
 /// The running row's LIVE line as a news ticker: the visible window is fixed
 /// and the text slides through it, so a long activity summary stays readable
 /// without widening the row (Miles, 2026-08-31 — "urgent/breaking news
