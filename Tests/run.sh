@@ -39,8 +39,8 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 704:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 704 (704 at 0.5.235: the cancel classifier and row projection behind session-chat-queued / session-chat-queue-cancel)")
+if count < 727:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 727 (727 at 0.5.238: the Codex rollout reader, open-thread list, discovery and the pet pipeline over them)")
 ' "$SELF_TEST"
 
 python3 "$ROOT/Tests/HeldNamingTransport.py" "$TMP/cos-control-helper"
@@ -4094,6 +4094,42 @@ need("if Self.petQueueableReasons.contains(reason) {" in refusal_src
      and "parkPetTurn(session, clientTurnId: pending.clientTurnId, prompt: pending.prompt)" in refusal_src
      and refusal_src.index("parkPetTurn(") < refusal_src.index("chatRetryAvailable = true"),
      "the pane's wait-class refusal no longer parks before offering Retry")
+# 0.5.238: the pane parks on a probed-busy thread and on a busy attach, as the pet does.
+chat_probe = model[model.index("private func probeChatAttachability("):]
+chat_probe = chat_probe[:chat_probe.index("\n    }\n")]
+need("if Self.petQueueableReasons.contains(reason) {" in chat_probe
+     and "chatParkReason = reason" in chat_probe
+     and "chatParkHint = Self.petParkHint(for: session)" in chat_probe
+     and chat_probe.index("chatParkReason = reason") < chat_probe.index("chatRefusal = chatVerdict?.reasonCopy"),
+     "the pane's probe renders a mid-turn thread as a refusal instead of arming the park path")
+chat_send = model[model.index("private func performChatSend("):]
+chat_send = chat_send[:chat_send.index("\n    }\n")]
+need("if chatParkReason != nil {" in chat_send
+     and chat_send.index("parkPetTurn(") < chat_send.index("cachedBinding(session)"),
+     "a pane send on a probed-busy thread must go to the queue BEFORE any attach")
+need("case .threadFree:\n                chatParkReason = nil" in chat_send,
+     "a 409 thread_free must fall through to the ordinary pane send")
+need("if let reason = lastAttachRefusalReason, Self.petQueueableReasons.contains(reason) {" in chat_send,
+     "a busy attach in the pane no longer parks")
+need("lastAttachRefusalReason = response.details[\"reason\"]?.string" in model,
+     "the attach refusal reason is not kept for the park path")
+need("if model.chatRefusal == nil, let hint = model.chatParkHint {" in activity_src,
+     "the pane does not show the park hint")
+need('model.openClaudeRow?.provider == "codex"' in activity_src,
+     "the composer's held-session line is not provider-aware for Codex")
+# 0.5.238: the pet reads Codex rollouts and discovers open Codex threads and active Cursor composers.
+pet_pipe = helper_src[helper_src.index("static func petLiveRows("):]
+pet_pipe = pet_pipe[:pet_pipe.index("\n    }\n")]
+need(pet_pipe.index("refreshClaudeTranscriptActivity(") < pet_pipe.index("refreshCodexRolloutActivity(") < pet_pipe.index("applyLiveWorkingState("),
+     "the Codex rollout refresh must run after the Claude refresh (which clears turn keys) and before the working-state rule")
+live_emit = helper_src[helper_src.index("private func emitLiveClaudeSessions("):]
+live_emit = live_emit[:live_emit.index("\n    }\n")]
+need("codexActivity: { id in" in live_emit and "discovered: discovered" in live_emit
+     and "Self.codexOpenThreadIds(locksDir:" in live_emit,
+     "session-pet-live does not read Codex rollouts or discover open threads")
+need("openCodex.contains(id.lowercased()) || Date().timeIntervalSince(modified) <= Self.petUnfinishedMaxAge" in live_emit,
+     "the pet must only read the markers of Codex threads that are open or recent")
+
 # Result never swallowed: a card that closed mid-send reports as a notice.
 settle_src = model[model.index("private func settlePetSend("):]
 settle_src = settle_src[:settle_src.index("\n    }\n")]

@@ -10198,6 +10198,19 @@ final class COSControlHelper {
             }
             if provider == "codex" {
                 let mtime = parseISODate(out[index]["updatedAt"] as? String ?? "") ?? .distantPast
+                // 0.5.238: the rollout's own turn markers decide, with the Claude rule: an
+                // open turn works until 15 min pass with no record, then reads waiting (a
+                // Codex approval sits there); a closed turn is not running, so it leaves the
+                // pet as a finish.
+                if out[index]["activitySource"] as? String == "rollout",
+                   let inFlight = out[index]["turnInFlight"] as? Bool {
+                    let state = claudeTurnState(
+                        inFlight: inFlight, waitingOnUser: false, lastActivityAt: mtime,
+                        subagentInFlightAt: nil, now: now)
+                    out[index]["state"] = state
+                    out[index]["alive"] = state != "recent"
+                    continue
+                }
                 let work = cursorWorkingState(
                     mtime: mtime,
                     now: now,
@@ -10443,6 +10456,176 @@ final class COSControlHelper {
         )
     }
 
+    // ── 0.5.238: CODEX, FROM ITS ROLLOUT ──────────────────────────────────────────
+    //
+    // Miles, 2026-09-19: a Codex thread working in the Codex app never reached the pet. The
+    // pet's Codex rows came only from `session-list-cache.json`, which moves when Activity
+    // walks Sessions, and their state from the cached `updatedAt` (08:12 for a thread still
+    // writing at 08:20), so a working thread aged out of the pet and a thread started after
+    // the walk was never listed. The Claude half of this was fixed in 0.5.225; Codex never
+    // got it. Now a Codex row reads its own rollout: the file's time, and the newest turn
+    // marker in the tail (`task_started` opens a turn, `task_complete` / `turn_complete` /
+    // `turn_aborted` close it), the same markers the server's drain rule reads.
+
+    struct CodexThreadActivity: Equatable {
+        let threadId: String
+        let lastActivityAt: Date
+        /// The newest turn marker in the tail opened a turn. Nil when the tail holds none.
+        let inFlight: Bool?
+    }
+
+    /// The rollout for a Codex thread without walking `~/.codex/sessions` (908 files on
+    /// this Mac). A Codex thread id is a UUIDv7: its first 48 bits are the start time in
+    /// ms, and the rollout lives in that LOCAL day's folder (`2026/08/16/rollout-2026-08-16T
+    /// 21-55-45-01a00da5-...jsonl` for 01a00da5-8026-...). The day either side covers a
+    /// clock or time-zone edge.
+    static func codexRolloutURL(threadId: String, sessionsRoot: URL, calendar: Calendar = .current) -> URL? {
+        let id = threadId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard id.count == 36, UUID(uuidString: id) != nil else { return nil }
+        let hex = String(id.replacingOccurrences(of: "-", with: "").prefix(12))
+        guard let ms = UInt64(hex, radix: 16), ms > 0 else { return nil }
+        let started = Date(timeIntervalSince1970: Double(ms) / 1000)
+        let suffix = "-\(id).jsonl"
+        for offset in [0, -1, 1] {
+            guard let day = calendar.date(byAdding: .day, value: offset, to: started) else { continue }
+            let parts = calendar.dateComponents([.year, .month, .day], from: day)
+            guard let y = parts.year, let m = parts.month, let d = parts.day else { continue }
+            let dir = sessionsRoot.appendingPathComponent(String(format: "%04d/%02d/%02d", y, m, d), isDirectory: true)
+            guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { continue }
+            if let name = names.first(where: { $0.hasPrefix("rollout-") && $0.lowercased().hasSuffix(suffix) }) {
+                return dir.appendingPathComponent(name)
+            }
+        }
+        return nil
+    }
+
+    /// The newest turn marker in these rollout lines: true = a turn is open, false = the
+    /// last turn closed, nil = no marker in the window.
+    static func codexTurnFromTail(_ lines: [String]) -> Bool? {
+        var open: Bool?
+        for line in lines where line.contains("\"event_msg\"") {
+            guard let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  obj["type"] as? String == "event_msg",
+                  let payload = obj["payload"] as? [String: Any],
+                  let kind = payload["type"] as? String else { continue }
+            switch kind {
+            case "task_started", "turn_started": open = true
+            case "task_complete", "turn_complete", "turn_aborted": open = false
+            default: continue
+            }
+        }
+        return open
+    }
+
+    /// Codex rollouts run to tens of MB of tool output; past 4 MB with no turn marker the
+    /// file-time rule answers instead of reading more on every pet tick.
+    static let codexActivityTailMaxBytes = 4 * 1024 * 1024
+
+    /// `readMarkers` decides, from the file time, whether the tail is worth opening: the pet
+    /// asks only for threads a Codex process has open or that wrote in the last 15 min, so a
+    /// month-old thread that died mid-turn is never read as waiting.
+    static func codexThreadActivity(
+        threadId: String,
+        sessionsRoot: URL,
+        initialBytes: Int = claudeActivityTailBytes,
+        maxBytes: Int = codexActivityTailMaxBytes,
+        readMarkers: (Date) -> Bool = { _ in true }
+    ) -> CodexThreadActivity? {
+        guard let url = codexRolloutURL(threadId: threadId, sessionsRoot: sessionsRoot),
+              let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = (attributes[.size] as? NSNumber)?.intValue, size > 0,
+              let modified = attributes[.modificationDate] as? Date else { return nil }
+        guard readMarkers(modified) else {
+            return CodexThreadActivity(threadId: threadId.lowercased(), lastActivityAt: modified, inFlight: nil)
+        }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        var window = max(1, initialBytes)
+        var marker: Bool?
+        while true {
+            let length = min(window, maxBytes)
+            let start = max(0, size - length)
+            marker = codexTurnFromTail(claudeTailLines(handle: handle, start: start, end: size))
+            if marker != nil || start == 0 || length >= maxBytes { break }
+            window *= 4
+        }
+        return CodexThreadActivity(threadId: threadId.lowercased(), lastActivityAt: modified, inFlight: marker)
+    }
+
+    /// Codex threads a Codex process has open right now: `thread-writer-locks/<id>.lock`.
+    /// The app-server holds a thread's lock for as long as the thread is loaded and the
+    /// file goes when it unloads (measured 2026-09-19), so the directory is a short list of
+    /// live threads, including ones started after the last Sessions walk. Names only: no
+    /// descriptor scan (one `lsof` costs about 2.3 s on this Mac).
+    static func codexOpenThreadIds(locksDir: URL, limit: Int = 24) -> [String] {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: locksDir.path) else { return [] }
+        var found: [(id: String, modified: Date)] = []
+        for name in names where name.hasSuffix(".lock") && !name.hasPrefix(".") {
+            let id = String(name.dropLast(5)).lowercased()
+            guard id.count == 36, UUID(uuidString: id) != nil else { continue }
+            let modified = (try? fm.attributesOfItem(atPath: locksDir.appendingPathComponent(name).path)[.modificationDate] as? Date) ?? .distantPast
+            found.append((id, modified))
+        }
+        return found.sorted { $0.modified > $1.modified }.prefix(limit).map(\.id)
+    }
+
+    /// 0.5.238: rows the pet should see that the cache has never listed: Codex threads a
+    /// Codex process has open, and Cursor composers active right now. Ids already present
+    /// are skipped, so a cached row always wins. State comes later, from the same rules as
+    /// every other row.
+    static func discoveredPetRows(
+        existingIds: Set<String>,
+        codexOpenIds: [String],
+        codexNames: [String: String],
+        cursorMeta: CursorComposerMeta,
+        now: Date = Date()
+    ) -> [[String: Any]] {
+        var rows: [[String: Any]] = []
+        var seen = Set(existingIds.map { $0.lowercased() })
+        for id in codexOpenIds where !seen.contains(id) {
+            seen.insert(id)
+            rows.append([
+                "id": id, "provider": "codex", "name": codexNames[id] ?? "Codex session", "workspace": "",
+                "state": "recent", "status": "", "waitingFor": "", "alive": false, "reachable": false, "pinned": false,
+                "updatedAt": "",
+            ])
+        }
+        for (id, activity) in cursorMeta.activity where !seen.contains(id.lowercased()) {
+            guard let name = cursorMeta.names[id], !name.isEmpty, !isKeepWarmSessionTitle(name) else { continue }
+            let newest = [activity.lastUpdated, activity.checkpoint].compactMap { $0 }.max() ?? .distantPast
+            let work = cursorWorkingState(mtime: newest, now: now, lastUpdated: activity.lastUpdated,
+                                          checkpoint: activity.checkpoint, unfinished: activity.unfinished)
+            guard work.alive else { continue }
+            seen.insert(id.lowercased())
+            rows.append([
+                "id": id, "provider": "cursor", "name": name, "workspace": "",
+                "state": work.state, "status": "recent", "waitingFor": "", "alive": true, "reachable": false, "pinned": false,
+                "updatedAt": isoString(from: newest),
+            ])
+        }
+        return rows
+    }
+
+    /// Stamp each Codex row with its rollout's facts. Runs AFTER
+    /// `refreshClaudeTranscriptActivity`, which clears the turn keys on every row.
+    static func refreshCodexRolloutActivity(
+        _ rows: [[String: Any]],
+        codexActivity: (String) -> CodexThreadActivity?
+    ) -> [[String: Any]] {
+        rows.map { row in
+            guard (row["provider"] as? String ?? "").lowercased() == "codex",
+                  let id = row["id"] as? String,
+                  let activity = codexActivity(id) else { return row }
+            var out = row
+            out["updatedAt"] = isoString(from: activity.lastActivityAt)
+            out["activitySource"] = "rollout"
+            if let inFlight = activity.inFlight { out["turnInFlight"] = inFlight }
+            return out
+        }
+    }
+
     /// 0.5.225: what a live Claude session is doing, from its records. Waiting on the user
     /// wins. A subagent still in flight is work. A finished or interrupted turn is idle at
     /// once, so a finish lands when the turn ends. A turn in flight is working until
@@ -10536,11 +10719,16 @@ final class COSControlHelper {
         livePeers: [[String: Any]]?,
         transcriptActivity: (String) -> ClaudeSessionActivity?,
         composerActivity: [String: CursorComposerActivity] = [:],
+        codexActivity: (String) -> CodexThreadActivity? = { _ in nil },
+        discovered: [[String: Any]] = [],
         now: Date = Date()
     ) -> [[String: Any]] {
-        var rows = overlayLiveState(onto: cached, live: livePeers ?? [])
+        let cachedIds = Set(cached.compactMap { ($0["id"] as? String)?.lowercased() })
+        let fresh = discovered.filter { !cachedIds.contains((($0["id"] as? String) ?? "").lowercased()) }
+        var rows = overlayLiveState(onto: cached + fresh, live: livePeers ?? [])
         if let livePeers { rows = markUnlistedClaudeRowsGone(rows, live: livePeers) }
         rows = refreshClaudeTranscriptActivity(rows, transcriptActivity: transcriptActivity)
+        rows = refreshCodexRolloutActivity(rows, codexActivity: codexActivity)
         rows = applyLiveWorkingState(rows, now: now, composerActivity: composerActivity)
         rows.removeAll { isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
         return rows.filter { isPetLiveRow($0) }
@@ -10840,12 +11028,30 @@ final class COSControlHelper {
             }
         }
         let claudeProjects = home.appendingPathComponent(".claude/projects", isDirectory: true)
+        let codexSessions = home.appendingPathComponent(".codex/sessions", isDirectory: true)
         let previousRows = peers
+        // 0.5.238: Codex threads a Codex process has open, and Cursor composers active now,
+        // that the cache has never listed. Names only when there is something to name.
+        let existing = Set(peers.compactMap { ($0["id"] as? String)?.lowercased() })
+        let openCodex = Self.codexOpenThreadIds(locksDir: home.appendingPathComponent(".codex/thread-writer-locks", isDirectory: true))
+        let unseenCodex = openCodex.filter { !existing.contains($0) }
+        let discovered = Self.discoveredPetRows(
+            existingIds: existing,
+            codexOpenIds: unseenCodex,
+            codexNames: unseenCodex.isEmpty ? [:] : Self.loadCodexThreadNames(sessionsRoot: codexSessions),
+            cursorMeta: composerMeta
+        )
         peers = Self.petLiveRows(
             cached: peers,
             livePeers: serverAnswered && enabled ? live : nil,
             transcriptActivity: { Self.claudeSessionActivity(sessionId: $0, projectsRoot: claudeProjects) },
-            composerActivity: composerMeta.activity
+            composerActivity: composerMeta.activity,
+            codexActivity: { id in
+                Self.codexThreadActivity(threadId: id, sessionsRoot: codexSessions) { modified in
+                    openCodex.contains(id.lowercased()) || Date().timeIntervalSince(modified) <= Self.petUnfinishedMaxAge
+                }
+            },
+            discovered: discovered
         )
         // 0.5.229: a live row that COS automation started reads as that scheduled job.
         peers = annotatedScheduledJobs(peers, home: home, previous: previousRows)
@@ -10859,8 +11065,16 @@ final class COSControlHelper {
         if let payload = Self.readSessionListCache(from: sessionListCacheURL),
            let cachedRows = payload["sessions"] as? [[String: Any]], !cachedRows.isEmpty {
             let claudeProjects = home.appendingPathComponent(".claude/projects", isDirectory: true)
+            let codexSessions = home.appendingPathComponent(".codex/sessions", isDirectory: true)
+            let openCodex = Set(Self.codexOpenThreadIds(locksDir: home.appendingPathComponent(".codex/thread-writer-locks", isDirectory: true)))
             var peers = Self.applyLiveWorkingState(
-                Self.refreshClaudeTranscriptActivity(cachedRows) { Self.claudeSessionActivity(sessionId: $0, projectsRoot: claudeProjects) },
+                Self.refreshCodexRolloutActivity(
+                    Self.refreshClaudeTranscriptActivity(cachedRows) { Self.claudeSessionActivity(sessionId: $0, projectsRoot: claudeProjects) }
+                ) { id in
+                    Self.codexThreadActivity(threadId: id, sessionsRoot: codexSessions) { modified in
+                        openCodex.contains(id.lowercased()) || Date().timeIntervalSince(modified) <= Self.petUnfinishedMaxAge
+                    }
+                },
                 composerActivity: composerMeta.activity
             )
             peers.removeAll { Self.isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
@@ -16621,6 +16835,119 @@ final class COSControlHelper {
         let liveActOffline = Self.petLiveRows(cached: liveActCached, livePeers: nil, transcriptActivity: { liveActActivity[$0] }, now: liveActNow)
         try expect(liveActOffline.contains { $0["id"] as? String == liveActDead },
                    "without a server answer, cached liveness stands")
+
+        // 0.5.238: Codex rows read their own rollout; the pet finds Codex threads a Codex
+        // process has open and Cursor composers active now, even when the cache never listed them.
+        do {
+            let fm = FileManager.default
+            let codexRoot = fm.temporaryDirectory.appendingPathComponent("cos-codex-pet-\(UUID().uuidString)", isDirectory: true)
+            defer { try? fm.removeItem(at: codexRoot) }
+            let sessionsRoot = codexRoot.appendingPathComponent("sessions", isDirectory: true)
+            var chicago = Calendar(identifier: .gregorian)
+            chicago.timeZone = TimeZone(identifier: "America/Chicago")!
+            let codexThread = "01a00da5-8026-7bf3-a9cb-47e61f06ab29" // UUIDv7: 2026-08-16 21:55:45 CDT
+            func event(_ kind: String) -> String { "{\"timestamp\":\"2026-09-19T13:24:10.422Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"\(kind)\"}}" }
+            func writeRollout(day: String, id: String, lines: [String]) throws -> URL {
+                let dir = sessionsRoot.appendingPathComponent(day, isDirectory: true)
+                try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+                let url = dir.appendingPathComponent("rollout-2026-08-16T21-55-45-\(id).jsonl")
+                try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+                return url
+            }
+            let rollout = try writeRollout(day: "2026/08/16", id: codexThread, lines: [event("task_started"), event("token_count"), event("task_complete"), event("task_started")])
+            try expect(Self.codexRolloutURL(threadId: codexThread, sessionsRoot: sessionsRoot, calendar: chicago)?.lastPathComponent == rollout.lastPathComponent,
+                       "a Codex thread's rollout is found from its UUIDv7 start day, with no walk")
+            try expect(Self.codexRolloutURL(threadId: codexThread.uppercased(), sessionsRoot: sessionsRoot, calendar: chicago) != nil,
+                       "the id match ignores case")
+            let edgeId = "01a00da5-8026-7bf3-a9cb-47e61f06ab30"
+            _ = try writeRollout(day: "2026/08/17", id: edgeId, lines: [event("task_complete")])
+            try expect(Self.codexRolloutURL(threadId: edgeId, sessionsRoot: sessionsRoot, calendar: chicago) != nil,
+                       "a rollout filed under the next day (a clock or time-zone edge) is still found")
+            try expect(Self.codexRolloutURL(threadId: "../x", sessionsRoot: sessionsRoot) == nil
+                       && Self.codexRolloutURL(threadId: "01a00da5", sessionsRoot: sessionsRoot) == nil,
+                       "only a full UUID is looked up")
+
+            try expect(Self.codexTurnFromTail([event("task_started")]) == true
+                       && Self.codexTurnFromTail([event("task_started"), event("task_complete")]) == false
+                       && Self.codexTurnFromTail([event("task_started"), event("turn_aborted")]) == false
+                       && Self.codexTurnFromTail([event("task_complete"), event("task_started")]) == true
+                       && Self.codexTurnFromTail([event("token_count"), "{\"type\":\"response_item\",\"payload\":{\"type\":\"task_started\"}}"]) == nil,
+                       "the newest event_msg turn marker decides; anything else is no marker")
+
+            let working = Self.codexThreadActivity(threadId: codexThread, sessionsRoot: sessionsRoot)
+            try expect(working?.inFlight == true && working?.threadId == codexThread, "a rollout whose newest marker is task_started is in flight")
+            // The same file answers true when read, so nil here is the gate, not the file.
+            let skipped = Self.codexThreadActivity(threadId: codexThread, sessionsRoot: sessionsRoot) { _ in false }
+            try expect(skipped?.inFlight == nil && skipped?.lastActivityAt != nil,
+                       "a thread neither open nor recent is stat'd, never read")
+            let buriedId = "01a00da5-8026-7bf3-a9cb-47e61f06ab31"
+            _ = try writeRollout(day: "2026/08/16", id: buriedId, lines: [event("task_started")] + Array(repeating: "{\"type\":\"response_item\",\"payload\":{\"type\":\"custom_tool_call_output\",\"output\":\"\(String(repeating: "x", count: 200))\"}}", count: 20))
+            try expect(Self.codexThreadActivity(threadId: buriedId, sessionsRoot: sessionsRoot, initialBytes: 64, maxBytes: 1024)?.inFlight == nil
+                       && Self.codexThreadActivity(threadId: buriedId, sessionsRoot: sessionsRoot)?.inFlight == true,
+                       "a marker past the read cap is no marker (the file-time rule answers); inside it, it counts")
+
+            let locks = codexRoot.appendingPathComponent("thread-writer-locks", isDirectory: true)
+            try fm.createDirectory(at: locks, withIntermediateDirectories: true)
+            for name in [".coordination.lock", "\(codexThread).lock", "01a0b9c5-0271-7bd0-9072-3e29e33bd6d4.lock", "not-a-thread.lock", "01a0b9c5.lock"] {
+                fm.createFile(atPath: locks.appendingPathComponent(name).path, contents: Data())
+            }
+            try fm.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -60)], ofItemAtPath: locks.appendingPathComponent("\(codexThread).lock").path)
+            try expect(Self.codexOpenThreadIds(locksDir: locks) == ["01a0b9c5-0271-7bd0-9072-3e29e33bd6d4", codexThread],
+                       "open Codex threads are the lock files' full ids, newest first; the coordination lock and junk are not threads")
+            try expect(Self.codexOpenThreadIds(locksDir: codexRoot.appendingPathComponent("missing")).isEmpty, "no locks folder is no open threads")
+
+            let petNow = Date()
+            let meta = CursorComposerMeta(
+                names: ["c-live": "Wire the queue", "c-cached": "Already listed", "c-stale": "Yesterday", "c-warm": "Reply with exactly: OK"],
+                activity: [
+                    "c-live": CursorComposerActivity(lastUpdated: petNow.addingTimeInterval(-20), checkpoint: nil, unfinished: nil),
+                    "c-cached": CursorComposerActivity(lastUpdated: petNow.addingTimeInterval(-20), checkpoint: nil, unfinished: nil),
+                    "c-stale": CursorComposerActivity(lastUpdated: petNow.addingTimeInterval(-7200), checkpoint: nil, unfinished: nil),
+                    "c-unnamed": CursorComposerActivity(lastUpdated: petNow.addingTimeInterval(-20), checkpoint: nil, unfinished: nil),
+                ])
+            let discovered = Self.discoveredPetRows(
+                existingIds: ["c-cached", codexThread],
+                codexOpenIds: [codexThread, "01a0b9c5-0271-7bd0-9072-3e29e33bd6d4"],
+                codexNames: ["01a0b9c5-0271-7bd0-9072-3e29e33bd6d4": "Voice Chat Title Request"],
+                cursorMeta: meta, now: petNow)
+            let discoveredIds = Set(discovered.compactMap { $0["id"] as? String })
+            try expect(discoveredIds == ["01a0b9c5-0271-7bd0-9072-3e29e33bd6d4", "c-live"],
+                       "discovery adds only unlisted open Codex threads and named, active Cursor composers")
+            try expect(discovered.first { $0["id"] as? String == "01a0b9c5-0271-7bd0-9072-3e29e33bd6d4" }?["name"] as? String == "Voice Chat Title Request",
+                       "a discovered Codex thread carries its Codex name")
+
+            let codexActs: [String: CodexThreadActivity] = [
+                codexThread: CodexThreadActivity(threadId: codexThread, lastActivityAt: petNow.addingTimeInterval(-5), inFlight: true),
+                "01a0b9c5-0271-7bd0-9072-3e29e33bd6d4": CodexThreadActivity(threadId: "01a0b9c5-0271-7bd0-9072-3e29e33bd6d4", lastActivityAt: petNow.addingTimeInterval(-5), inFlight: true),
+                "01a00da5-8026-7bf3-a9cb-000000000001": CodexThreadActivity(threadId: "01a00da5-8026-7bf3-a9cb-000000000001", lastActivityAt: petNow.addingTimeInterval(-5), inFlight: false),
+                "01a00da5-8026-7bf3-a9cb-000000000002": CodexThreadActivity(threadId: "01a00da5-8026-7bf3-a9cb-000000000002", lastActivityAt: petNow.addingTimeInterval(-20 * 60), inFlight: true),
+                "01a00da5-8026-7bf3-a9cb-000000000003": CodexThreadActivity(threadId: "01a00da5-8026-7bf3-a9cb-000000000003", lastActivityAt: petNow.addingTimeInterval(-3 * 3600), inFlight: nil),
+            ]
+            let cachedCodex: [[String: Any]] = [
+                // The 2026-09-19 row: the cache said running at 08:12, the thread was still writing at 08:20.
+                ["id": codexThread, "provider": "codex", "name": "Run weekly persona update", "alive": true, "state": "running", "updatedAt": Self.isoString(from: petNow.addingTimeInterval(-600))],
+                ["id": "01a00da5-8026-7bf3-a9cb-000000000001", "provider": "codex", "name": "Finished", "alive": true, "state": "running", "updatedAt": Self.isoString(from: petNow.addingTimeInterval(-600))],
+                ["id": "01a00da5-8026-7bf3-a9cb-000000000002", "provider": "codex", "name": "Approval", "alive": false, "state": "recent", "updatedAt": ""],
+                ["id": "01a00da5-8026-7bf3-a9cb-000000000003", "provider": "codex", "name": "Old", "alive": true, "state": "running", "updatedAt": ""],
+            ]
+            let petRows = Self.petLiveRows(cached: cachedCodex, livePeers: [], transcriptActivity: { _ in nil },
+                                           composerActivity: meta.activity, codexActivity: { codexActs[$0.lowercased()] },
+                                           discovered: discovered, now: petNow)
+            func petRow(_ id: String) -> [String: Any]? { petRows.first { ($0["id"] as? String)?.lowercased() == id } }
+            try expect(petRow(codexThread)?["state"] as? String == "running" && petRow(codexThread)?["activitySource"] as? String == "rollout",
+                       "a Codex thread still writing reads running from its rollout, whatever the cache's time says")
+            try expect(petRow("01a00da5-8026-7bf3-a9cb-000000000001") == nil,
+                       "a Codex turn that closed leaves the pet (a finish), even when the cache still said running")
+            try expect(petRow("01a00da5-8026-7bf3-a9cb-000000000002")?["state"] as? String == "waiting",
+                       "an open Codex turn quiet past 15 min reads waiting, the Claude rule")
+            try expect(petRow("01a00da5-8026-7bf3-a9cb-000000000003") == nil,
+                       "an unread thread with an old file time is not on the pet")
+            try expect(petRow("01a0b9c5-0271-7bd0-9072-3e29e33bd6d4")?["state"] as? String == "running"
+                       && petRow("01a0b9c5-0271-7bd0-9072-3e29e33bd6d4")?["name"] as? String == "Voice Chat Title Request",
+                       "a Codex thread the cache never listed shows once a Codex process has it open and it is working")
+            try expect(petRow("c-live")?["state"] as? String == "running", "an active Cursor composer the cache never listed shows")
+            try expect(petRows.filter { ($0["id"] as? String) == codexThread }.count == 1, "a cached row is never duplicated by discovery")
+        }
         let liveActDirect = Self.refreshClaudeTranscriptActivity([
             ["id": liveActDead, "provider": "claude", "alive": false, "updatedAt": "2026-09-14T02:00:00Z", "turnInFlight": true, "waitingOnUser": true],
         ]) { liveActActivity[$0] }

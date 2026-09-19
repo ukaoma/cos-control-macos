@@ -5273,6 +5273,19 @@ struct SessionChatComposer: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            // 0.5.238: a thread mid-turn reads as waiting, not refused. Send parks the
+            // message and it lands when the turn ends, as it does from the pet and the lens.
+            if model.chatRefusal == nil, let hint = model.chatParkHint {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                    Text(verbatim: hint)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             if let refusal = model.chatRefusal {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(verbatim: refusal)
@@ -5323,7 +5336,11 @@ struct SessionChatComposer: View {
                 // the session's transcript through a resume child; the open Desktop tab paints
                 // it only when that session is resumed. Queue-and-deliver (server 6.48.1) makes
                 // it land the moment the engine closes the turn.
-                Text("Another app on this Mac has this session open. COS will ask before the first send. The reply lands in the transcript; the open desk tab will not show it until you resume.")
+                // 0.5.238: a Codex thread the Codex app holds is the exception (server 6.51.0):
+                // the message goes into the app's own queue and shows there.
+                Text(model.openClaudeRow?.provider == "codex"
+                    ? "The Codex app has this thread open. COS will ask before the first send, then hands your message to the app's own queue, where it shows."
+                    : "Another app on this Mac has this session open. COS will ask before the first send. The reply lands in the transcript; the open desk tab will not show it until you resume.")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)

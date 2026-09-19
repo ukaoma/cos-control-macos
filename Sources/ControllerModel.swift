@@ -1773,6 +1773,13 @@ final class ControllerModel: ObservableObject {
     /// appears exactly where the instruction does.
     @Published var chatForkAvailable = false
     @Published var chatForking = false
+    /// 0.5.238: the probe saw the thread mid-turn (a queueable reason). The pane
+    /// shows this line instead of a refusal, and Send parks the message on the
+    /// server queue, the way the pet and the lens already do.
+    @Published var chatParkHint: String?
+    private var chatParkReason: String?
+    /// The reason the last attach refused with, so a send can park after it.
+    private var lastAttachRefusalReason: String?
     private var chatForkOperation = UUID()
     private var chatPendingTurn: SessionChatPendingTurn?
     private var chatPollTask: Task<Void, Never>?
@@ -4654,6 +4661,9 @@ final class ControllerModel: ObservableObject {
         chatPendingTurn = nil
         chatDidReattach = false
         chatCautionAcknowledged = false
+        chatParkHint = nil
+        chatParkReason = nil
+        lastAttachRefusalReason = nil
     }
 
     private func prepareSessionChat(_ session: ClaudeSession) {
@@ -4697,11 +4707,23 @@ final class ControllerModel: ObservableObject {
                 reasonCopy: response.details["reasonCopy"]?.string ?? "",
                 ownerCount: response.details["ownerCount"]?.int ?? 0
             )
+            chatParkReason = nil
+            chatParkHint = nil
             if chatVerdict?.attachable == false {
-                chatRefusal = chatVerdict?.reasonCopy
-                chatSupplement = Self.chatSupplementLine(
-                    reason: chatVerdict?.reason ?? "", copy: chatVerdict?.reasonCopy ?? "")
-                chatForkAvailable = Self.chatCopyRecommendsFork(chatVerdict?.reasonCopy ?? "")
+                let reason = chatVerdict?.reason ?? ""
+                if Self.petQueueableReasons.contains(reason) {
+                    // 0.5.238: mid-turn is not a refusal on a live session. Send parks the
+                    // message and the server delivers it when the turn ends (the pet's and
+                    // the lens's behaviour since 0.5.234). Retry and Fork come back if the
+                    // queue will not take it.
+                    chatParkReason = reason
+                    chatParkHint = Self.petParkHint(for: session)
+                } else {
+                    chatRefusal = chatVerdict?.reasonCopy
+                    chatSupplement = Self.chatSupplementLine(
+                        reason: reason, copy: chatVerdict?.reasonCopy ?? "")
+                    chatForkAvailable = Self.chatCopyRecommendsFork(chatVerdict?.reasonCopy ?? "")
+                }
             }
         } catch {
             guard openClaudeRow?.id == session.id else { return }
@@ -4902,11 +4924,44 @@ final class ControllerModel: ObservableObject {
 
     private func performChatSend(_ session: ClaudeSession, prompt: String) async {
         defer { chatSending = false }
+        // 0.5.238: THE PET'S ORDER. A probe that saw the thread mid-turn parks the
+        // message instead of attaching into the refusal it already predicted. The queue
+        // route re-runs the gate: a thread that freed meanwhile answers thread_free and
+        // the ordinary send below takes over.
+        if chatParkReason != nil {
+            switch await parkPetTurn(session, clientTurnId: UUID().uuidString, prompt: prompt) {
+            case .parked(let phase):
+                await noteChatParked(session, prompt: prompt, phase: phase)
+                return
+            case .failed(let copy):
+                chatRefusal = copy
+                return
+            case .threadFree:
+                chatParkReason = nil
+                chatParkHint = nil
+            }
+        }
         if chatBinding == nil || chatBinding?.expired == true {
             chatBinding = cachedBinding(session)
         }
         if chatBinding == nil {
-            guard await attachChatBinding(session) else { return }
+            lastAttachRefusalReason = nil
+            guard await attachChatBinding(session) else {
+                // The turn started in the gap between the probe and this send: park it
+                // like the pet does. If the queue says the thread is free after all, the
+                // attach's own refusal copy (with Retry and Fork) stays on screen.
+                if let reason = lastAttachRefusalReason, Self.petQueueableReasons.contains(reason) {
+                    switch await parkPetTurn(session, clientTurnId: UUID().uuidString, prompt: prompt) {
+                    case .parked(let phase):
+                        await noteChatParked(session, prompt: prompt, phase: phase)
+                    case .failed(let copy):
+                        chatRefusal = copy
+                    case .threadFree:
+                        break
+                    }
+                }
+                return
+            }
         }
         guard let binding = chatBinding else { return }
         let pending = SessionChatPendingTurn(
@@ -4952,6 +5007,7 @@ final class ControllerModel: ObservableObject {
                 return false
             default:
                 let copy = response.details["reasonCopy"]?.string ?? "COS could not attach to this thread."
+                lastAttachRefusalReason = response.details["reason"]?.string
                 chatRefusal = copy
                 chatSupplement = Self.chatSupplementLine(
                     reason: response.details["reason"]?.string ?? "", copy: copy)
@@ -5066,6 +5122,20 @@ final class ControllerModel: ObservableObject {
         chatSupplement = Self.chatSupplementLine(reason: reason, copy: copy)
         chatForkAvailable = Self.chatCopyRecommendsFork(copy)
         clearPendingTurn()
+    }
+
+    /// 0.5.238: a message the pane parked. It reads like the pet's: the words, then
+    /// the queue's own line, and the queue list below picks it up.
+    private func noteChatParked(_ session: ClaudeSession, prompt: String, phase: PetSendPhase) async {
+        chatRefusal = nil
+        chatSupplement = nil
+        chatForkAvailable = false
+        chatRetryAvailable = false
+        chatMessages.append(SessionChatMessage(role: .user, text: prompt))
+        chatMessages.append(SessionChatMessage(role: .status, text: phase.statusLine ?? "Queued."))
+        chatDraft = ""
+        loadChatQueue()
+        await loadClaudeSessions(force: true)
     }
 
     private func startChatPoll(_ session: ClaudeSession, pending: SessionChatPendingTurn) {
@@ -5327,9 +5397,13 @@ final class ControllerModel: ObservableObject {
     static let petQueueableReasons: Set<String> = ["native_thread_working", "native_target_busy"]
 
     static func petParkHint(for session: ClaudeSession) -> String {
-        session.provider == "cursor"
-            ? "Working right now. Cursor cannot queue a message; wait for the turn to end."
-            : "Working right now. A message you send waits and lands when this turn ends."
+        switch session.provider {
+        // Server 6.51.0: only a composer its hooks show mid-turn is queueable, and the
+        // message goes in through that turn's Stop hook.
+        case "cursor": "Working right now. A message you send goes into this Cursor chat when its turn ends."
+        case "codex": "Working right now. A message you send joins the Codex app's queue for this thread."
+        default: "Working right now. A message you send waits and lands when this turn ends."
+        }
     }
 
     static func petParkedCopy(position: Int) -> String {
@@ -5428,7 +5502,11 @@ final class ControllerModel: ObservableObject {
             default:
                 switch response.details["reason"]?.string ?? "" {
                 case "unsupported_provider":
-                    return .failed("Cursor cannot queue a message. Wait for the turn to end, then send again.")
+                    // Cursor takes a queued message only through a turn's Stop hook, so a
+                    // composer that already finished (or a server before 6.51) refuses.
+                    return .failed(session.provider == "cursor"
+                        ? "This Cursor chat is not mid-turn, so it cannot take a message from COS. Send it from Cursor."
+                        : "COS cannot queue a message for this session.")
                 case "duplicate_turn", "already_queued":
                     return .failed("That message is already queued for this session.")
                 case let reason:
