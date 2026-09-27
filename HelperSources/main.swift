@@ -415,6 +415,9 @@ final class COSControlHelper {
             appIdentity = build.map { "\(version) (build \($0))" } ?? version
         }
         switch command {
+        case "foundation-status": try emitControl2Foundation(action: "status", args: args)
+        case "foundation-replay": try emitControl2Foundation(action: "replay", args: args)
+        case "foundation-draft": try emitControl2Foundation(action: "draft", args: args)
         case "self-test": try selfTest()
         case "self-test-lock-crash": try selfTestLockCrash()
         case "status": emit(ok: true, message: "Status refreshed", details: statusDetails())
@@ -1995,6 +1998,111 @@ final class COSControlHelper {
             headers[String(describing: key).lowercased()] = String(describing: value)
         }
         return HTTPResponse(status: http.statusCode, body: object, data: data, headers: headers)
+    }
+
+    /// Descriptor-relative opens prevent a scratch token-directory symlink from
+    /// borrowing the real installation's credentials (including during a swap).
+    private func readFoundationToken(root: String) throws -> String {
+        let rootFD = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard rootFD >= 0 else { throw HelperError.message("Unsafe Foundation Lab home") }
+        defer { close(rootFD) }
+        let directoryFD = openat(rootFD, ".cos-glasses", O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard directoryFD >= 0 else { throw HelperError.message("Unsafe Foundation Lab token directory") }
+        defer { close(directoryFD) }
+        let tokenFD = openat(directoryFD, ".env", O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard tokenFD >= 0 else { throw HelperError.message("Unsafe Foundation Lab token file") }
+        defer { close(tokenFD) }
+        var metadata = stat()
+        guard fstat(tokenFD, &metadata) == 0, (metadata.st_mode & S_IFMT) == S_IFREG,
+              metadata.st_uid == getuid(), (metadata.st_mode & 0o077) == 0,
+              metadata.st_size > 0, metadata.st_size <= 4096 else {
+            throw HelperError.message("Foundation Lab token must be a private regular file owned by this user.")
+        }
+        var bytes = [UInt8](repeating: 0, count: 4097)
+        let count = read(tokenFD, &bytes, bytes.count)
+        guard count > 0, count <= 4096,
+              let content = String(bytes: bytes.prefix(count), encoding: .utf8),
+              let line = content.split(separator: "\n").first(where: { $0.hasPrefix("COS_API_TOKEN=") }) else {
+            throw HelperError.message("Invalid Foundation Lab token")
+        }
+        let token = String(line.dropFirst("COS_API_TOKEN=".count))
+        guard token.range(of: "^[a-zA-Z0-9_-]{16,}$", options: .regularExpression) != nil else {
+            throw HelperError.message("Invalid Foundation Lab token")
+        }
+        return token
+    }
+
+    /// Foundation commands never fall back to the production server or token.
+    private func emitControl2Foundation(action: String, args: [String]) throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["COS_CONTROL2_FOUNDATION"] == "1",
+              let testHome = environment["COS_CONTROL_TEST_HOME"], testHome.hasPrefix("/tmp/"),
+              Self.loopbackAPIPort(environment: environment) != 3141 else {
+            throw HelperError.message("Foundation Lab requires opt-in, a disposable /tmp home and an isolated server port.")
+        }
+        let resolvedHome = URL(fileURLWithPath: testHome).resolvingSymlinksInPath().standardizedFileURL.path
+        guard resolvedHome.hasPrefix("/private/tmp/") || resolvedHome.hasPrefix("/tmp/") else {
+            throw HelperError.message("Foundation Lab home must resolve inside the disposable temporary directory.")
+        }
+        let token = try readFoundationToken(root: resolvedHome)
+        let port = Self.loopbackAPIPort(environment: environment)
+        let replay = action == "replay"
+        let draft = action == "draft"
+        let timeout: TimeInterval = draft ? 150 : 15
+        let route = "/api/control2/foundation" + (action == "status" ? "" : "/" + action)
+        guard let url = URL(string: "http://127.0.0.1:\(port)\(route)") else { throw HelperError.message("Invalid Foundation Lab endpoint") }
+        var request = URLRequest(url: url, timeoutInterval: timeout)
+        request.setValue(token, forHTTPHeaderField: "X-COS-Token")
+        if draft {
+            guard let workID = option("--work-id", in: args),
+                  workID.range(of: "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$", options: .regularExpression) != nil else {
+                throw HelperError.message("A valid foundation work ID is required.")
+            }
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["workId": workID])
+        }
+        if replay {
+            var payload = Data()
+            while payload.count <= 65536 {
+                let chunk = FileHandle.standardInput.readData(ofLength: 65537 - payload.count)
+                if chunk.isEmpty { break }
+                payload.append(chunk)
+            }
+            guard !payload.isEmpty, payload.count <= 65536,
+                  (try? JSONSerialization.jsonObject(with: payload)) is [String: Any] else {
+                throw HelperError.message("Foundation replay requires a JSON object of at most 64 KiB.")
+            }
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = payload
+        }
+        let delegate = BoundedMediaRequestDelegate(maximumBytes: 2 * 1024 * 1024, refuseRedirects: true)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = timeout
+        configuration.timeoutIntervalForResource = timeout + 2
+        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        let task = session.dataTask(with: request)
+        task.resume()
+        defer { session.invalidateAndCancel() }
+        guard let (data, response, tooLarge, failed) = delegate.wait(timeout: timeout + 2),
+              !tooLarge, !failed, let http = response as? HTTPURLResponse else {
+            throw HelperError.message("Foundation Lab did not return a bounded response. Check the isolated server.")
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            let code = (object?["error"] as? [String: Any])?["code"] as? String
+            // Only stable machine codes cross this boundary; never echo arbitrary
+            // provider/server error text (which may contain credentials or paths).
+            let allowed = "^(draft_(process_turn_budget_exhausted|criteria_exceed_limit|source_superseded|source_unavailable|disabled|canceled|timeout|provider_failed|provider_spawn_failed|artifact_check_failed|checker_unavailable|instruction_invalid|claude_model_required|output_limit|process_not_quiescent)|journal_(busy_or_recovery_required|recovery_required)|foundation_(capacity_reached|disabled)|revision_conflict|alias_reconciliation_required)$"
+            let suffix = code.flatMap { $0.range(of: allowed, options: .regularExpression) == nil ? nil : $0 }
+            let detail = suffix.map { "; \($0)" } ?? ""
+            throw HelperError.message("Foundation Lab refused the request (HTTP \(http.statusCode)\(detail)).")
+        }
+        guard let body = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw HelperError.message("Invalid Foundation Lab response")
+        }
+        emit(ok: true, message: "Foundation Lab refreshed", details: body)
     }
 
     private func boundedMediaRequest(
