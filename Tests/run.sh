@@ -2182,9 +2182,14 @@ need(len(section_cases) <= 9, f"ActivitySection has {len(section_cases)} cases; 
 need([case.strip().removeprefix("case ") for case in section_cases] ==
      ["messages", "speakers", "meetings", "memories", "threads", "sessions", "tasks", "work"],
      f"ActivitySection should declare seven existing panes and opt-in Work, found {section_cases}")
-need('environment["COS_CONTROL2_FOUNDATION"] == "1" ? existing + [.work] : existing' in activity,
-     "Work must remain explicitly opt-in in the shared navigation collection")
-need('case .work: Control2FoundationView()' in activity, "Work is not mounted")
+need('environment["COS_CONTROL2_FOUNDATION"] == "1" ? existing.map { $0 == .tasks ? .work : $0 } : existing' in activity,
+     "opt-in Work must replace the Tasks peer, keeping seven shared navigation entries")
+need('case .work: workSurface' in activity, "Work is not mounted on its Tasks/follow-up parent")
+work_surface = activity[activity.index('@ViewBuilder private var workSurface'):activity.index('private func previewOnlySection')]
+need('if isolatedWorkPreview {' in work_surface and 'Control2FoundationView(showTaskExamples: true)' in work_surface,
+     "the isolated Work preview must use synthetic Tasks, not the live Tasks surface")
+need('Self.usesExistingTaskList(isolatedWorkPreview: isolatedWorkPreview, subview: workSubview)' in work_surface
+     and 'tasksList' in work_surface, "normal Work must reuse the existing Tasks surface under its isolation guard")
 need("Sources/Control2Foundation.swift" in (root / "scripts/build-release.sh").read_text(),
      "the production compile list must include the opt-in Work source")
 need('private func goHome()' in activity and 'private func goBack()' in activity,
@@ -4592,8 +4597,11 @@ need("ChipFlowLayout(spacing: 7) {" in views and "struct ChipFlowLayout: Layout"
 need('Text(number > 99 ? "99+" : "\\(number)")' in views, "a chip number is not clamped to 99+")
 need("model.activitySignalsError" in views, "a failed signals call is invisible")
 need("model.activityNumber(item)" in views and "model.activityDot(item)" in views, "chips do not read the two marks")
-select_fn = between(activity, "private func select(_ next: ActivitySection)", "private func goHome()")
-need("model.markActivityOpened(next)" in select_fn, "opening a section does not advance its cursor")
+select_fn = between(activity, "private func select(_ requested: ActivitySection)", "private func goHome()")
+need("ActivitySection.resolvedLaunch(requested" in select_fn,
+     "legacy Tasks launches must resolve before the visible-section guard")
+need("model.markActivityOpened(next == .work && workSubview == .tasks ? .tasks : next)" in select_fn,
+     "opening Work/Tasks must preserve the existing Tasks cursor")
 need("pendingActivityOpens" in model and "for section in pending { markActivityOpened(section) }" in model,
      "a section opened before the first signals answer must advance its cursor when it lands")
 need('"legend": activitySignalsLegend' in helper and "Number = needs you" in helper, "the helper does not ship the legend")

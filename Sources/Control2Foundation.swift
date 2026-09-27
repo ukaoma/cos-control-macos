@@ -132,7 +132,41 @@ final class Control2FoundationModel: ObservableObject {
     }
 }
 
+/// Disposable UI examples. These never become TaskRow objects or enter a task writer.
+struct Control2PreviewTask: Identifiable {
+    let id: String
+    let title: String
+    let domain: String
+    let owner: String
+    let schedule: String
+    let source: String
+    let finishLine: String
+    let stage: String
+    var completed = false
+
+    static var samples: [Self] { [
+        Self(id: "sample-task-website", title: "Check the homepage on mobile", domain: "Website", owner: "You", schedule: "Today", source: "Existing task · sample", finishLine: "Check the headline, primary CTA, and navigation at phone width. Record any changes needed.", stage: "Planning"),
+        Self(id: "sample-task-review", title: "Review the revised launch copy", domain: "Website", owner: "You", schedule: "Unscheduled", source: "Manually captured · sample", finishLine: "Review the draft and record requested edits. Publication is a separate decision.", stage: "Review"),
+        Self(id: "sample-task-complete", title: "Confirm the launch checklist", domain: "Website", owner: "You", schedule: "Unscheduled", source: "Existing task · sample", finishLine: "Check every launch checklist item.", stage: "Planning", completed: true)
+    ] }
+}
+
 struct Control2FoundationView: View {
+    var showTaskExamples = false
+    @State private var previewTasks = Control2PreviewTask.samples
+    @State private var selectedTaskID: String? = "sample-task-website"
+    @State private var workFilter = "All work"
+    private let workFilters = ["All work", "Tasks", "Meeting follow-up", "Completed"]
+    private var selectedTask: Control2PreviewTask? {
+        guard showTaskExamples else { return nil }
+        return previewTasks.first { $0.id == selectedTaskID }
+    }
+    private var filteredTasks: [Control2PreviewTask] {
+        guard showTaskExamples, workFilter != "Meeting follow-up" else { return [] }
+        return previewTasks.filter { workFilter == "Completed" ? $0.completed : !$0.completed }
+    }
+    private var showsMeetings: Bool { !showTaskExamples || workFilter == "All work" || workFilter == "Meeting follow-up" }
+
     @StateObject private var model = Control2FoundationModel()
     @State private var diagnosticsOpen = false
     @State private var testControlsOpen = false
@@ -142,8 +176,8 @@ struct Control2FoundationView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("From meeting to review").font(COSType.display(27, weight: .medium))
-                    Text("Review the request, prepare a draft, and decide what comes next.")
+                    Text(showTaskExamples ? "Your work, in one place" : "From meeting to review").font(COSType.display(27, weight: .medium))
+                    Text(showTaskExamples ? "Keep your tasks. Add context, prepared drafts, and decisions as work grows." : "Review the request, prepare a draft, and decide what comes next.")
                         .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
                 }
                 Spacer(minLength: 16)
@@ -154,7 +188,7 @@ struct Control2FoundationView: View {
             HStack(spacing: 8) {
                 Image(systemName: "flask").foregroundStyle(COSPalette.accent)
                 Text("Test workspace").font(COSType.body(11.5, weight: .semibold))
-                Text("Sample meetings only. Automatic work and publishing are off.")
+                Text(showTaskExamples ? "Sample tasks and meetings. Task changes stay in this preview; automatic work and publishing are off." : "Sample meetings only. Automatic work and publishing are off.")
                     .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
                 Spacer(minLength: 0)
             }.padding(.horizontal, 20).padding(.vertical, 10).background(COSPalette.raised)
@@ -168,12 +202,17 @@ struct Control2FoundationView: View {
                 Rectangle().fill(COSPalette.line).frame(width: 1)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 22) {
-                        if let selected { detail(selected) }
+                        if let selectedTask { taskDetail(selectedTask) }
+                        else if showsMeetings, let selected { detail(selected) }
+                        else if !showsMeetings {
+                            Text("No tasks in this view").font(COSType.display(22))
+                            Text("Choose another view to see the sample work.").foregroundStyle(COSPalette.muted)
+                        }
                         else {
                             Text("Your next review starts here").font(COSType.display(22))
                             Text("Load the sample meeting to explore how follow-up work will appear in COS.")
                                 .foregroundStyle(COSPalette.muted)
-                            Button("Load sample meeting") { Task { await model.replay(revision: "1") } }
+                            Button("Load sample meeting") { Task { selectedTaskID = nil; workFilter = "Meeting follow-up"; await model.replay(revision: "1") } }
                                 .buttonStyle(COSPrimaryButtonStyle()).disabled(model.busy || model.snapshot == nil)
                         }
                     }.frame(maxWidth: 740, alignment: .leading)
@@ -183,8 +222,8 @@ struct Control2FoundationView: View {
             Divider().overlay(COSPalette.line)
             DisclosureGroup("Test controls", isExpanded: $testControlsOpen) {
                 HStack(spacing: 10) {
-                    Button("Replay sample") { Task { await model.replay(revision: "1") } }
-                    Button("Replay correction") { Task { await model.replay(revision: "2") } }
+                    Button("Replay sample") { Task { selectedTaskID = nil; workFilter = "Meeting follow-up"; await model.replay(revision: "1") } }
+                    Button("Replay correction") { Task { selectedTaskID = nil; workFilter = "Meeting follow-up"; await model.replay(revision: "2") } }
                     Spacer(minLength: 0)
                     Text("Replaying the same revision does not duplicate work.")
                         .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
@@ -199,9 +238,39 @@ struct Control2FoundationView: View {
     private var workList: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Meeting work").font(COSType.body(12, weight: .semibold)).padding(.bottom, 4)
+                if showTaskExamples {
+                    ForEach(workFilters, id: \.self) { filter in
+                        Button { selectFilter(filter) } label: {
+                            HStack {
+                                Text(filter).font(COSType.body(12, weight: workFilter == filter ? .semibold : .regular))
+                                Spacer()
+                                if workFilter == filter { Image(systemName: "chevron.right").font(.system(size: 9)) }
+                            }.padding(.vertical, 7).padding(.horizontal, 9)
+                                .background(workFilter == filter ? COSPalette.raised : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+                        }.buttonStyle(.plain).accessibilityAddTraits(workFilter == filter ? .isSelected : [])
+                    }
+                    Divider().padding(.vertical, 5)
+                    if !filteredTasks.isEmpty {
+                        Text(workFilter == "Completed" ? "Completed tasks" : "Tasks").font(COSType.body(12, weight: .semibold))
+                    }
+                    ForEach(filteredTasks) { task in
+                        Button { selectedTaskID = task.id } label: {
+                            VStack(alignment: .leading, spacing: 7) {
+                                Label(task.title, systemImage: task.completed ? "checkmark.circle" : "checklist")
+                                    .font(COSType.body(12.5, weight: .semibold)).multilineTextAlignment(.leading)
+                                Text(task.completed ? "Completed" : "\(task.stage) · \(task.schedule)")
+                                    .font(COSType.body(11)).foregroundStyle(COSPalette.accent)
+                                Text("\(task.domain) · \(task.owner)").font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+                            }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                                .background(selectedTaskID == task.id ? COSPalette.raised : COSPalette.card, in: RoundedRectangle(cornerRadius: 9))
+                                .overlay(RoundedRectangle(cornerRadius: 9).stroke(selectedTaskID == task.id ? COSPalette.gold : COSPalette.line, lineWidth: 1))
+                        }.buttonStyle(.plain).accessibilityAddTraits(selectedTaskID == task.id ? .isSelected : [])
+                    }
+                }
+                if showsMeetings {
+                Text("Meeting follow-up").font(COSType.body(12, weight: .semibold)).padding(.bottom, 4)
                 ForEach(model.snapshot?.work ?? []) { item in
-                    Button { model.selectedID = item.id } label: {
+                    Button { selectedTaskID = nil; model.selectedID = item.id } label: {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(displayTitle(item)).font(COSType.body(13, weight: .semibold))
                                 .lineLimit(3).multilineTextAlignment(.leading)
@@ -209,19 +278,64 @@ struct Control2FoundationView: View {
                                 .foregroundStyle(item.status == "blocked" ? COSPalette.danger : COSPalette.accent)
                             Text("Revision \(item.revision)").font(COSType.mono(10)).foregroundStyle(COSPalette.muted)
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(13)
-                            .background(model.selectedID == item.id ? COSPalette.raised : COSPalette.card)
+                            .background((!showTaskExamples || selectedTaskID == nil) && model.selectedID == item.id ? COSPalette.raised : COSPalette.card)
                             .clipShape(RoundedRectangle(cornerRadius: 9))
                             .overlay(RoundedRectangle(cornerRadius: 9)
-                                .stroke(model.selectedID == item.id ? COSPalette.gold : COSPalette.line, lineWidth: 1))
+                                .stroke((!showTaskExamples || selectedTaskID == nil) && model.selectedID == item.id ? COSPalette.gold : COSPalette.line, lineWidth: 1))
                     }.buttonStyle(.plain)
                         .accessibilityLabel("\(displayTitle(item)), \(statusLabel(item)), revision \(item.revision)")
-                        .accessibilityAddTraits(model.selectedID == item.id ? .isSelected : [])
+                        .accessibilityAddTraits((!showTaskExamples || selectedTaskID == nil) && model.selectedID == item.id ? .isSelected : [])
                 }
                 if model.snapshot?.work.isEmpty == true {
                     Text("No work to review yet.").font(COSType.body(12)).foregroundStyle(COSPalette.muted)
                 }
+                }
             }.padding(16)
         }.background(COSPalette.panel)
+    }
+
+    private func selectFilter(_ filter: String) {
+        workFilter = filter
+        selectedTaskID = filteredTasks.first?.id
+    }
+
+    @ViewBuilder private func taskDetail(_ task: Control2PreviewTask) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(task.title).font(COSType.display(23, weight: .medium))
+            Text("Task · \(task.completed ? "Completed" : task.stage)").font(COSType.body(12, weight: .medium)).foregroundStyle(COSPalette.accent)
+        }
+        HStack(alignment: .top, spacing: 32) {
+            taskFact("Owner", task.owner)
+            taskFact("Schedule", task.schedule)
+            taskFact("Project", task.domain)
+        }
+        packetSection("Done when", task.finishLine)
+        packetSection("Where this came from", task.source)
+        VStack(alignment: .leading, spacing: 12) {
+            Text("The same task, inside Work").font(COSType.display(19, weight: .medium))
+            Text("Existing tasks keep their task actions. On glasses, this remains a task in the Tasks view. Meeting follow-up sits alongside it, with its own draft and review steps.")
+                .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+            Button(task.completed ? "Reopen sample task" : "Complete sample task") {
+                if let index = previewTasks.firstIndex(where: { $0.id == task.id }) {
+                    previewTasks[index].completed.toggle()
+                    workFilter = previewTasks[index].completed ? "Completed" : "Tasks"
+                }
+            }.buttonStyle(COSPrimaryButtonStyle())
+            Text("Demo only. This changes the sample in this window and resets when you leave Work or restart the preview.")
+                .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+        }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line, lineWidth: 1))
+        packetSection("Context as work grows", "A task can link to its meeting, relevant memories, and prior sessions. Prepared output and execution history belong here. Those connections are the next build step; the samples do not retrieve your real context.")
+        Label("Completing a task does not approve or publish a draft.", systemImage: "lock")
+            .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+    }
+
+    private func taskFact(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+            Text(value).font(COSType.body(12, weight: .medium))
+        }
     }
 
     @ViewBuilder private func detail(_ item: Control2FoundationSnapshot.Work) -> some View {

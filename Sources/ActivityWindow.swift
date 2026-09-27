@@ -71,9 +71,15 @@ enum ActivitySection: String, CaseIterable, Identifiable {
     /// Work cannot appear in an ordinary production launch before release.
     static func visibleSections(environment: [String: String]) -> [ActivitySection] {
         let existing: [ActivitySection] = [.messages, .speakers, .meetings, .memories, .threads, .sessions, .tasks]
-        return environment["COS_CONTROL2_FOUNDATION"] == "1" ? existing + [.work] : existing
+        return environment["COS_CONTROL2_FOUNDATION"] == "1" ? existing.map { $0 == .tasks ? .work : $0 } : existing
     }
     static var allCases: [ActivitySection] { visibleSections(environment: ProcessInfo.processInfo.environment) }
+
+    /// Keep old task launch links and session-pet actions useful after Work takes
+    /// over the top-level slot. The caller still knows this requested Tasks.
+    static func resolvedLaunch(_ requested: ActivitySection, environment: [String: String]) -> ActivitySection {
+        requested == .tasks && environment["COS_CONTROL2_FOUNDATION"] == "1" ? .work : requested
+    }
 
     var id: String { rawValue }
 
@@ -125,9 +131,16 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         case .threads: "Follow work that develops across meetings and time."
         case .sessions: "Claude, Codex, and Cursor sessions on this Mac."
         case .tasks: "Capture, schedule, and run the work sitting in tasks.md."
-        case .work: "Turn meeting decisions into prepared work for your review."
+        case .work: "Manage your tasks and turn meeting decisions into prepared work."
         }
     }
+}
+
+enum ActivityWorkSubview: String, CaseIterable, Identifiable {
+    case tasks
+    case meetingFollowUp
+    var id: String { rawValue }
+    var title: String { self == .tasks ? "Tasks" : "Meeting follow-up" }
 }
 
 
@@ -228,6 +241,7 @@ struct ActivityWindow: View {
     @State private var chatQuery = ""
     @State private var chatMatchCursor = 0
     @State private var section: ActivitySection?
+    @State private var workSubview: ActivityWorkSubview = .tasks
     @State private var selectedTurnID: String?
     /// The archive drill-through: a date, then a chat index inside that date.
     /// Two flags rather than one enum because they nest — the chat pane needs its
@@ -304,6 +318,14 @@ struct ActivityWindow: View {
         !isolatedWorkPreview && backgroundWorkEnabled
     }
 
+    static func workSubviewForLaunch(_ requested: ActivitySection, current: ActivityWorkSubview) -> ActivityWorkSubview {
+        requested == .tasks ? .tasks : current
+    }
+
+    static func usesExistingTaskList(isolatedWorkPreview: Bool, subview: ActivityWorkSubview) -> Bool {
+        !isolatedWorkPreview && subview == .tasks
+    }
+
     private var selectedTurn: GlassesTurn? {
         guard let selectedTurnID else { return nil }
         return model.recentMessages.first { $0.id == selectedTurnID }
@@ -360,7 +382,8 @@ struct ActivityWindow: View {
         case .memories: selectedContextID != nil || selectedLearningID != nil || selectedGraphEntityID != nil
         case .threads: selectedContextID != nil
         case .sessions: selectedSessionID != nil
-        case .tasks, .work: false
+        case .tasks: taskDetail != nil
+        case .work: !isolatedWorkPreview && workSubview == .tasks && taskDetail != nil
         case nil: false
         }
     }
@@ -583,6 +606,10 @@ struct ActivityWindow: View {
                 Text(section.title)
                     .font(.system(size: 11, weight: hasDetail ? .regular : .semibold))
                     .foregroundStyle(hasDetail ? .secondary : .primary)
+                if section == .work, !isolatedWorkPreview {
+                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
+                    Text(workSubview.title).font(COSType.body(11, weight: .semibold))
+                }
             }
             if let detailTitle {
                 Image(systemName: "chevron.right")
@@ -691,14 +718,16 @@ struct ActivityWindow: View {
         .background(COSPalette.card.opacity(0.50))
     }
 
-    private func select(_ next: ActivitySection) {
+    private func select(_ requested: ActivitySection) {
+        let next = ActivitySection.resolvedLaunch(requested, environment: ProcessInfo.processInfo.environment)
         guard ActivitySection.allCases.contains(next) else { return }
         if isolatedWorkPreview { withOptionalAnimation { section = next }; return }
         clearDetail()
+        workSubview = Self.workSubviewForLaunch(requested, current: workSubview)
         withOptionalAnimation { section = next }
         // Opening a section is what clears its dot: the cursor moves to the
         // newest stamp the last signals call saw.
-        model.markActivityOpened(next)
+        model.markActivityOpened(next == .work && workSubview == .tasks ? .tasks : next)
         Task { await load(next) }
     }
 
@@ -710,7 +739,9 @@ struct ActivityWindow: View {
 
     private func goBack() {
         if isolatedWorkPreview { withOptionalAnimation { section = nil }; return }
-        if section == .messages, model.selectedMediaPreview != nil {
+        if (section == .tasks || (section == .work && workSubview == .tasks)), taskDetail != nil {
+            if !taskDetailBusy { closeTaskDetail() }
+        } else if section == .messages, model.selectedMediaPreview != nil {
             model.closeMediaPreview()
         } else if section == .messages, selectedTurnID != nil {
             selectedTurnID = nil
@@ -771,6 +802,7 @@ struct ActivityWindow: View {
 
     private func clearDetail() {
         guard !isolatedWorkPreview else { return }
+        if !taskDetailBusy { closeTaskDetail() }
         model.closeMediaPreview()
         selectedTurnID = nil
         selectedArchiveDate = nil
@@ -1031,7 +1063,45 @@ struct ActivityWindow: View {
         case .threads: contextList(kind: "thread")
         case .sessions: sessionsList
         case .tasks: tasksList
-        case .work: Control2FoundationView()
+        case .work: workSurface
+        }
+    }
+
+    @ViewBuilder private var workSurface: some View {
+        if isolatedWorkPreview {
+            // Structural isolation: the branch containing tasksList is never
+            // mounted in the lab, even if its selected subview is Tasks.
+            Control2FoundationView(showTaskExamples: true)
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 22) {
+                    ForEach(ActivityWorkSubview.allCases) { item in
+                        Button {
+                            guard !taskDetailBusy else { return }
+                            closeTaskDetail()
+                            workSubview = item
+                            if item == .tasks {
+                                model.markActivityOpened(.tasks)
+                                Task { await load(.tasks) }
+                            }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(item.title).font(COSType.body(13, weight: workSubview == item ? .semibold : .regular))
+                                    .foregroundStyle(workSubview == item ? Color.primary : COSPalette.muted)
+                                Rectangle().fill(workSubview == item ? COSPalette.gold : .clear).frame(height: 2)
+                            }.fixedSize(horizontal: true, vertical: false)
+                        }.buttonStyle(.plain).disabled(taskDetailBusy)
+                            .accessibilityAddTraits(workSubview == item ? .isSelected : [])
+                    }
+                    Spacer()
+                }.padding(.horizontal, 20).padding(.top, 14)
+                Divider().overlay(COSPalette.line)
+                if Self.usesExistingTaskList(isolatedWorkPreview: isolatedWorkPreview, subview: workSubview) {
+                    tasksList
+                } else {
+                    Control2FoundationView()
+                }
+            }
         }
     }
 
@@ -4983,7 +5053,11 @@ struct ActivityWindow: View {
             reconcileTaskDomain()
             await model.loadTasks(force: true)
         case .work:
-            break // Work owns its isolated foundation transport.
+            if workSubview == .tasks {
+                await model.loadDomains()
+                reconcileTaskDomain()
+                await model.loadTasks(force: true)
+            } // Meeting follow-up owns its isolated foundation transport.
         }
     }
 

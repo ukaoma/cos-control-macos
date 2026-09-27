@@ -6630,7 +6630,8 @@ final class ControllerModel: ObservableObject {
     }
 
     func activityCursor(_ section: ActivitySection) -> String? {
-        ActivitySignals.validCursor(UserDefaults.standard.string(forKey: Self.activityCursorPrefix + section.rawValue))
+        let source: ActivitySection = section == .work ? .tasks : section
+        return ActivitySignals.validCursor(UserDefaults.standard.string(forKey: Self.activityCursorPrefix + source.rawValue))
     }
 
     /// Advance the section's cursor to the newest stamp the last signals call
@@ -6654,15 +6655,18 @@ final class ControllerModel: ObservableObject {
 
     /// The chip's number, or nil: absent source, absent count, or zero.
     func activityNumber(_ section: ActivitySection) -> Int? {
+        // Work inherits the existing Tasks marks during the navigation overlay.
+        let source: ActivitySection = section == .work ? .tasks : section
         guard let signals = activitySignals else { return nil }
         let seen = Set(UserDefaults.standard.stringArray(forKey: Self.seenInboxKey) ?? [])
-        let unseenInbox = signals.mark(section.rawValue)?.inboxIDs.filter { !seen.contains($0) }.count ?? 0
-        return signals.number(for: section.rawValue, unseenInbox: unseenInbox)
+        let unseenInbox = signals.mark(source.rawValue)?.inboxIDs.filter { !seen.contains($0) }.count ?? 0
+        return signals.number(for: source.rawValue, unseenInbox: unseenInbox)
     }
 
     /// The chip's dot: a newer item than the cursor exists.
     func activityDot(_ section: ActivitySection) -> Bool {
-        guard let mark = activitySignals?.mark(section.rawValue) else { return false }
+        let source: ActivitySection = section == .work ? .tasks : section
+        guard let mark = activitySignals?.mark(source.rawValue) else { return false }
         return ActivitySignals.hasNewer(newest: mark.newest, cursor: activityCursor(section))
     }
 
