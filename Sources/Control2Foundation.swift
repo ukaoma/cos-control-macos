@@ -380,12 +380,16 @@ struct Control2FoundationView: View {
                 .font(COSType.display(19, weight: .medium))
             Text("This preview prepares text copy. Website code, page layout, and production content are unchanged.")
                 .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+            if model.snapshot?.capabilities.manualDraft == true {
+                Text("One draft attempt per test-server run. If the budget is used, quit and relaunch the preview to prepare another.")
+                    .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+            }
             if let artifact = item.artifact {
                 if item.status == "needs_review" {
                     Button { model.openPreview(artifact) } label: { Label("Open checked preview", systemImage: "arrow.up.right.square") }
                         .buttonStyle(COSPrimaryButtonStyle()).disabled(model.busy)
                 }
-                Label("Preview file verified. Website checks have not run.", systemImage: "checkmark.seal")
+                Label("Preview prepared. File integrity is checked when opened; website checks have not run.", systemImage: "doc.text")
                     .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
             } else if item.status == "needs_review", model.snapshot?.capabilities.manualDraft == true {
                 Button { Task { await model.preparePreview(workID: item.id) } } label: {

@@ -1,6 +1,6 @@
 # Control 2 Foundation Lab
 
-Opt-in native SwiftUI interface for the disposable meeting-to-work foundation. The regular COS Control menu exposes **Open Work** and Activity includes a **Work** peer section only when `COS_CONTROL2_FOUNDATION=1`. Normal launches are unchanged.
+Opt-in native SwiftUI interface for the disposable meeting-to-work foundation. The regular COS Control menu exposes **Open Work** and Activity replaces the **Tasks** peer with **Work** only when `COS_CONTROL2_FOUNDATION=1`. Normal launches retain the existing Tasks tab. Old Tasks entry points open Work → Tasks under the opt-in; this subview reuses the existing task controls and APIs.
 
 The isolated QA application renders the actual COS Control Activity window, navigation rail, shared brand resources and Work pane. It initializes ControllerModel with background work disabled and never starts the runtime updater, session pet or hotkey. Peer sections remain visible but display an explanatory placeholder instead of mounting live panes or making production calls. Its bundle ID is `com.gotcos.COSControl.FoundationLab`.
 
@@ -27,14 +27,16 @@ Launch `.../COS Control Foundation Lab.app/Contents/MacOS/COS Control Foundation
 
 ## Manual checks
 
-1. Start the isolated backend and launch the lab. Read the currently blocked gates.
-2. Replay sample. A synthetic meeting produces a review packet in the durable queue.
-3. Replay the same sample. Confirm no additional work is created for an unchanged revision.
-4. Replay correction. Inspect the revision change and superseded record.
-5. Restart the isolated backend and Refresh. The queue should survive.
-6. Stop the backend and Refresh. A transport error clears old packet state; replay is disabled.
+1. Start the isolated backend and launch the lab. Exercise All work, Tasks, Meeting follow-up, and Completed using blank/padded row space as well as text. Complete and reopen a sample task.
+2. Open another section and return to Work: synthetic task state resets, as the UI says. Meeting history belongs to the backend journal and can survive a resumed launch.
+3. Select Meeting follow-up and expand Test controls.
+4. Replay sample. A synthetic meeting produces a review packet in the durable queue.
+5. Replay the same sample. Confirm no additional work is created for an unchanged revision.
+6. Replay correction. Inspect the revision change and superseded record.
+7. Restart the isolated backend and Refresh. The queue should survive.
+8. Stop the backend and Refresh. A transport error clears old packet state; replay is disabled.
 
-The view displays source excerpts, operator-provided criteria, optional fixture preview path/hash and actual check results. When the isolated backend explicitly advertises `manualDraft`, Prepare text preview requests a bounded no-tool text draft for the selected current work. It is not a website coding agent. Open checked preview verifies the HTML file remains within the scratch home and matches its recorded SHA-256 before opening. It does not invent an AI-generated diff. Publication and automatic execution are unavailable. Any response advertising those capabilities or an unsupported schema/status is refused. End-to-end durability and revision behavior depend on the server and must be tested against it separately; the transport fixture does not prove those features.
+The view displays source excerpts, operator-provided criteria, optional fixture preview path/hash and actual check results. When the isolated backend explicitly advertises `manualDraft`, Prepare text preview requests a bounded no-tool text draft for the selected current work. There is one draft attempt per backend process. If its budget is exhausted, quit and relaunch the preview; use COS_FOUNDATION_TEST_HOME to retain meeting history. It is not a website coding agent. Open checked preview verifies the HTML file remains within the scratch home and matches its recorded SHA-256 before opening. It does not invent an AI-generated diff. Publication and automatic execution are unavailable. Any response advertising those capabilities or an unsupported schema/status is refused. End-to-end durability and revision behavior depend on the server and must be tested against it separately; the transport fixture does not prove those features.
 
 
 ## One-command local test
@@ -46,6 +48,8 @@ Override `COS_FOUNDATION_SERVER_ROOT`, `COS_FOUNDATION_APP_PATH` or `COS_FOUNDAT
 Approved foundation error codes are shown alongside HTTP status (including exhausted draft budget or oversized criteria). Arbitrary server/provider error text is never displayed.
 
 
-Visual QA may set `COS_CONTROL_TEST_APPEARANCE=light` or `dark`, and `COS_CONTROL_TEST_WIDTH`/`COS_CONTROL_TEST_HEIGHT` (minimum 760×560). These affect only the preview process; they never change system appearance. Candidate version 0.1.1/build 2 distinguishes the integrated Work shell from the earlier standalone sketch. Production app metadata is unchanged.
+Visual QA may set `COS_CONTROL_TEST_APPEARANCE=light` or `dark`, and `COS_CONTROL_TEST_WIDTH`/`COS_CONTROL_TEST_HEIGHT` (minimum 760×560). These affect only the preview process; they never change system appearance. Candidate version 0.1.4/build 5 includes full-row hit targets and accurate preview-verification copy. The default distribution ZIP and cached app must agree on this version. Production app metadata is unchanged.
 
-The actual light and dark startup probes passed for this candidate. Layout and interaction review of the integrated shell remains pending while macOS is locked; process aliveness is not visual verification.
+Historical evidence: native 0.1.3 blank/padded-area clicks passed for all four filters plus task and meeting cards in light mode at the default size. Fresh QA results and remaining visual limits are recorded in the September27 QA report. A process startup probe is not a visual pass. The Work→run→session orchestration plan is not implemented in this preview; Sessions displays the isolated-placeholder explanation.
+
+Synthetic task completion lives only in this view and resets when leaving Work or restarting. It never edits real tasks. The meeting journal persists under the disposable home; use COS_FOUNDATION_TEST_HOME to resume it. The preview remains isolated and never writes a production task or publishes a page.
