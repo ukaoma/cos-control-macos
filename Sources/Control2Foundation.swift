@@ -246,6 +246,8 @@ struct Control2FoundationView: View {
                                 Spacer()
                                 if workFilter == filter { Image(systemName: "chevron.right").font(.system(size: 9)) }
                             }.padding(.vertical, 7).padding(.horizontal, 9)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                                 .background(workFilter == filter ? COSPalette.raised : Color.clear, in: RoundedRectangle(cornerRadius: 5))
                         }.buttonStyle(.plain).accessibilityAddTraits(workFilter == filter ? .isSelected : [])
                     }
@@ -262,6 +264,7 @@ struct Control2FoundationView: View {
                                     .font(COSType.body(11)).foregroundStyle(COSPalette.accent)
                                 Text("\(task.domain) · \(task.owner)").font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
                             }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                                 .background(selectedTaskID == task.id ? COSPalette.raised : COSPalette.card, in: RoundedRectangle(cornerRadius: 9))
                                 .overlay(RoundedRectangle(cornerRadius: 9).stroke(selectedTaskID == task.id ? COSPalette.gold : COSPalette.line, lineWidth: 1))
                         }.buttonStyle(.plain).accessibilityAddTraits(selectedTaskID == task.id ? .isSelected : [])
@@ -278,6 +281,7 @@ struct Control2FoundationView: View {
                                 .foregroundStyle(item.status == "blocked" ? COSPalette.danger : COSPalette.accent)
                             Text("Revision \(item.revision)").font(COSType.mono(10)).foregroundStyle(COSPalette.muted)
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(13)
+                            .contentShape(Rectangle())
                             .background((!showTaskExamples || selectedTaskID == nil) && model.selectedID == item.id ? COSPalette.raised : COSPalette.card)
                             .clipShape(RoundedRectangle(cornerRadius: 9))
                             .overlay(RoundedRectangle(cornerRadius: 9)
