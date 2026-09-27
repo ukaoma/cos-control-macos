@@ -60,7 +60,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/COSMotion.swift" \
   "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" \
-  "$ROOT/Sources/ActivityWindow.swift" \
+  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" \
@@ -102,7 +102,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
-  "$ROOT/Sources/Views.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
+  "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" \
   "$ROOT/Sources/SessionPet.swift" \
@@ -952,7 +952,7 @@ echo "    manual update check: button, method, and all three outcomes"
 /usr/bin/grep -q 'libraryMeetingProjection' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'struct LibrarySearchHit' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'Search topics, ideas' "$ROOT/Sources/ActivityMeetings.swift"
-/usr/bin/grep -q 'Seven views into the work' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'Views into the work' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'Image(systemName: model.status.running ? "eyeglasses"' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q '\.fixedSize()' "$ROOT/Sources/COSControlApp.swift"
 ! /usr/bin/grep -q 'Image(nsImage:' "$ROOT/Sources/COSControlApp.swift"
@@ -2046,7 +2046,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/COSMotion.swift" \
   "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" \
-  "$ROOT/Sources/ActivityWindow.swift" \
+  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" \
@@ -2179,7 +2179,14 @@ section_enum = re.search(r"enum ActivitySection: String, CaseIterable, Identifia
 need(section_enum is not None, "ActivitySection enum block not found")
 section_cases = re.findall(r"^\s+case \w+", section_enum.group(1), re.M)
 need(len(section_cases) <= 9, f"ActivitySection has {len(section_cases)} cases; keyboard shortcuts only cover 1-9")
-need(len(section_cases) == 7, f"ActivitySection should have 7 panes, found {section_cases}")
+need([case.strip().removeprefix("case ") for case in section_cases] ==
+     ["messages", "speakers", "meetings", "memories", "threads", "sessions", "tasks", "work"],
+     f"ActivitySection should declare seven existing panes and opt-in Work, found {section_cases}")
+need('environment["COS_CONTROL2_FOUNDATION"] == "1" ? existing + [.work] : existing' in activity,
+     "Work must remain explicitly opt-in in the shared navigation collection")
+need('case .work: Control2FoundationView()' in activity, "Work is not mounted")
+need("Sources/Control2Foundation.swift" in (root / "scripts/build-release.sh").read_text(),
+     "the production compile list must include the opt-in Work source")
 need('private func goHome()' in activity and 'private func goBack()' in activity,
      "Activity does not own Home and Back navigation")
 need('private var breadcrumb' in activity, "Activity has no breadcrumb")

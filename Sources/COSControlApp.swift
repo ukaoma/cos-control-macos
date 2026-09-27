@@ -4,7 +4,6 @@ import SwiftUI
 struct COSControlApp: App {
     @StateObject private var model: ControllerModel
     @StateObject private var activityWindow: ActivityWindowPresenter
-    @StateObject private var foundationLab = Control2FoundationPresenter()
     @StateObject private var sessionPet: SessionPetPresenter
 
     init() {
@@ -35,7 +34,7 @@ struct COSControlApp: App {
     var body: some Scene {
         MenuBarExtra {
             if ProcessInfo.processInfo.environment["COS_CONTROL2_FOUNDATION"] == "1" {
-                Button("Open Control 2 Foundation Lab") { foundationLab.show() }.padding()
+                Button("Open Work") { activityWindow.show(model: model, section: .work) }.padding()
             }
             ControlPanel(model: model) { section in
                 activityWindow.show(model: model, section: section)

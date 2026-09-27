@@ -65,6 +65,15 @@ enum ActivitySection: String, CaseIterable, Identifiable {
     case threads
     case sessions
     case tasks
+    case work
+
+    /// The same collection drives menu chips, Activity home and its peer rail.
+    /// Work cannot appear in an ordinary production launch before release.
+    static func visibleSections(environment: [String: String]) -> [ActivitySection] {
+        let existing: [ActivitySection] = [.messages, .speakers, .meetings, .memories, .threads, .sessions, .tasks]
+        return environment["COS_CONTROL2_FOUNDATION"] == "1" ? existing + [.work] : existing
+    }
+    static var allCases: [ActivitySection] { visibleSections(environment: ProcessInfo.processInfo.environment) }
 
     var id: String { rawValue }
 
@@ -77,6 +86,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         case .threads: "Threads"
         case .sessions: "Sessions"
         case .tasks: "Tasks"
+        case .work: "Work"
         }
     }
 
@@ -89,6 +99,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         case .threads: "point.3.connected.trianglepath.dotted"
         case .sessions: "terminal"
         case .tasks: "checklist"
+        case .work: "tray.full"
         }
     }
 
@@ -101,6 +112,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         case .threads: Color(red: 0.22, green: 0.57, blue: 0.39)
         case .sessions: Color(red: 0.36, green: 0.36, blue: 0.40)
         case .tasks: Color(red: 0.18, green: 0.45, blue: 0.52)
+        case .work: COSPalette.gold
         }
     }
 
@@ -113,6 +125,7 @@ enum ActivitySection: String, CaseIterable, Identifiable {
         case .threads: "Follow work that develops across meetings and time."
         case .sessions: "Claude, Codex, and Cursor sessions on this Mac."
         case .tasks: "Capture, schedule, and run the work sitting in tasks.md."
+        case .work: "Turn meeting decisions into prepared work for your review."
         }
     }
 }
@@ -203,6 +216,7 @@ private enum VoiceDirectorySort: String, CaseIterable, Identifiable {
 /// from silently replacing the 390pt menu-bar console when it is opened later.
 struct ActivityWindow: View {
     @ObservedObject var model: ControllerModel
+    var isolatedWorkPreview = false
     /// In-chat search: the term and which match the cursor is on.
     @Environment(\.colorScheme) private var colorScheme
     /// Recent-view search. Recent turns are already in memory, so this filters
@@ -279,6 +293,17 @@ struct ActivityWindow: View {
         return view
     }
 
+    /// Uses the actual app shell; other sections are visible but cannot load live data.
+    static func workPreview(model: ControllerModel) -> ActivityWindow {
+        var view = ActivityWindow(model: model, isolatedWorkPreview: true)
+        view._section = State(initialValue: .work)
+        return view
+    }
+
+    static func allowsLiveSectionLoads(isolatedWorkPreview: Bool, backgroundWorkEnabled: Bool) -> Bool {
+        !isolatedWorkPreview && backgroundWorkEnabled
+    }
+
     private var selectedTurn: GlassesTurn? {
         guard let selectedTurnID else { return nil }
         return model.recentMessages.first { $0.id == selectedTurnID }
@@ -335,7 +360,7 @@ struct ActivityWindow: View {
         case .memories: selectedContextID != nil || selectedLearningID != nil || selectedGraphEntityID != nil
         case .threads: selectedContextID != nil
         case .sessions: selectedSessionID != nil
-        case .tasks: false
+        case .tasks, .work: false
         case nil: false
         }
     }
@@ -348,7 +373,9 @@ struct ActivityWindow: View {
             lensRail
             Divider()
             Group {
-                if section == .messages, let preview = model.selectedMediaPreview {
+                if isolatedWorkPreview, let selected = section, selected != .work {
+                    previewOnlySection(selected)
+                } else if section == .messages, let preview = model.selectedMediaPreview {
                     mediaDetail(preview)
                 } else if section == .messages, let selectedTurn {
                     messageDetail(selectedTurn)
@@ -488,6 +515,11 @@ struct ActivityWindow: View {
     }
 
     private func applyLaunchSection() {
+        if isolatedWorkPreview {
+            model.activityOpenSection = nil
+            model.activityOpenSessionID = nil
+            return
+        }
         let sessionID = model.activityOpenSessionID
         let next = model.activityOpenSection
         if next == nil && sessionID == nil { return }
@@ -528,9 +560,9 @@ struct ActivityWindow: View {
             Spacer()
             HStack(spacing: 6) {
                 Circle()
-                    .fill(model.status.running ? COSPalette.green : COSPalette.amber)
+                    .fill(isolatedWorkPreview ? COSPalette.gold : (model.status.running ? COSPalette.green : COSPalette.amber))
                     .frame(width: 7, height: 7)
-                Text(model.status.running ? "Server connected" : "Server offline")
+                Text(isolatedWorkPreview ? "Isolated Work preview" : (model.status.running ? "Server connected" : "Server offline"))
                     .font(COSType.mono(10.5))
                     .foregroundStyle(.secondary)
             }
@@ -660,6 +692,8 @@ struct ActivityWindow: View {
     }
 
     private func select(_ next: ActivitySection) {
+        guard ActivitySection.allCases.contains(next) else { return }
+        if isolatedWorkPreview { withOptionalAnimation { section = next }; return }
         clearDetail()
         withOptionalAnimation { section = next }
         // Opening a section is what clears its dot: the cursor moves to the
@@ -669,11 +703,13 @@ struct ActivityWindow: View {
     }
 
     private func goHome() {
+        if isolatedWorkPreview { withOptionalAnimation { section = nil }; return }
         clearDetail()
         withOptionalAnimation { section = nil }
     }
 
     private func goBack() {
+        if isolatedWorkPreview { withOptionalAnimation { section = nil }; return }
         if section == .messages, model.selectedMediaPreview != nil {
             model.closeMediaPreview()
         } else if section == .messages, selectedTurnID != nil {
@@ -734,6 +770,7 @@ struct ActivityWindow: View {
     }
 
     private func clearDetail() {
+        guard !isolatedWorkPreview else { return }
         model.closeMediaPreview()
         selectedTurnID = nil
         selectedArchiveDate = nil
@@ -777,7 +814,7 @@ struct ActivityWindow: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Activity")
                         .font(COSType.display(28, weight: .medium))
-                    Text("Seven views into the work your COS already holds.")
+                    Text("Views into the work your COS already holds.")
                         .font(COSType.display(13, italic: true))
                         .foregroundStyle(.secondary)
                 }
@@ -940,6 +977,8 @@ struct ActivityWindow: View {
             return model.claudeSessions.isEmpty ? ("—", "REFRESH") : (n(model.claudeSessions.count), "ON DISK")
         case .tasks:
             return model.tasks.isEmpty ? ("—", "REFRESH") : (n(model.tasks.count), "OPEN")
+        case .work:
+            return ("—", "PREVIEW")
         }
     }
 
@@ -975,6 +1014,8 @@ struct ActivityWindow: View {
             if model.tasks.isEmpty { return "Refresh to load" }
             let flagged = model.tasks.filter { $0.missed == true || $0.failed == true }.count
             return flagged > 0 ? "\(flagged) need attention" : "\(model.tasks.count) open"
+        case .work:
+            return "Meeting follow-through"
         }
     }
 
@@ -990,7 +1031,19 @@ struct ActivityWindow: View {
         case .threads: contextList(kind: "thread")
         case .sessions: sessionsList
         case .tasks: tasksList
+        case .work: Control2FoundationView()
         }
+    }
+
+    private func previewOnlySection(_ item: ActivitySection) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(item.title).font(COSType.display(28, weight: .medium))
+            Text("Your existing \(item.title.lowercased()) stay in COS Control. This isolated preview tests the new Work view without opening your live data.")
+                .font(COSType.body(14)).foregroundStyle(.secondary)
+            Button("Return to Work") { select(.work) }.buttonStyle(COSPrimaryButtonStyle())
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     // The strip under a pane's title: what the pane holds right now, in the
@@ -4886,7 +4939,7 @@ struct ActivityWindow: View {
     // MARK: - Loading and copy
 
     private func loadOverviewIfNeeded() async {
-        guard model.backgroundWorkEnabled else { return }
+        guard Self.allowsLiveSectionLoads(isolatedWorkPreview: isolatedWorkPreview, backgroundWorkEnabled: model.backgroundWorkEnabled) else { return }
         // Activity can be the first COS Control surface opened after launch.
         // Prove the server here instead of inheriting the model's initial
         // `running = false` placeholder from the unopened menu-bar panel.
@@ -4909,6 +4962,7 @@ struct ActivityWindow: View {
     }
 
     private func load(_ item: ActivitySection) async {
+        guard Self.allowsLiveSectionLoads(isolatedWorkPreview: isolatedWorkPreview, backgroundWorkEnabled: model.backgroundWorkEnabled) else { return }
         switch item {
         case .messages: await model.refreshRecentMessages()
         case .speakers:
@@ -4928,6 +4982,8 @@ struct ActivityWindow: View {
             await model.loadDomains()
             reconcileTaskDomain()
             await model.loadTasks(force: true)
+        case .work:
+            break // Work owns its isolated foundation transport.
         }
     }
 
@@ -4944,6 +5000,7 @@ struct ActivityWindow: View {
     }
 
     private func peekMeetingsIfNeeded() async {
+        guard Self.allowsLiveSectionLoads(isolatedWorkPreview: isolatedWorkPreview, backgroundWorkEnabled: model.backgroundWorkEnabled) else { return }
         guard section == .speakers, speakerSubview == .meetings, selectedSpeakerSessionID == nil else { return }
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(45))

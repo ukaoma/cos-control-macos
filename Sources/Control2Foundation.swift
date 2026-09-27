@@ -121,7 +121,10 @@ final class Control2FoundationModel: ObservableObject {
             guard result.ok else { throw HelperClientError.commandFailed(result.message) }
             let current = try Control2FoundationSnapshot.decode(JSONEncoder().encode(result.details))
             snapshot = current
-            if !current.work.contains(where: { $0.id == selectedID }) { selectedID = current.work.first?.id }
+            if let replay, let active = current.work.first(where: {
+                $0.meetingId == replay.meetingId && $0.projectId == replay.projectId && $0.status != "superseded"
+            }) { selectedID = active.id }
+            else if !current.work.contains(where: { $0.id == selectedID }) { selectedID = current.work.first?.id }
         } catch {
             self.error = error.localizedDescription
             snapshot = nil // stale packets must never look current after a transport failure
@@ -129,111 +132,186 @@ final class Control2FoundationModel: ObservableObject {
     }
 }
 
-@MainActor
-final class Control2FoundationPresenter: ObservableObject {
-    private var controller: NSWindowController?
-    func show() {
-        guard ProcessInfo.processInfo.environment["COS_CONTROL2_FOUNDATION"] == "1" else { return }
-        if let controller { controller.showWindow(nil); NSApp.activate(ignoringOtherApps: true); return }
-        let window = NSWindow(contentViewController: NSHostingController(rootView: Control2FoundationView()))
-        window.title = "COS Control 2 · Foundation Lab"
-        window.setContentSize(NSSize(width: 1080, height: 740))
-        window.contentMinSize = NSSize(width: 850, height: 580)
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.isReleasedWhenClosed = false
-        window.center()
-        let controller = NSWindowController(window: window)
-        self.controller = controller
-        controller.showWindow(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-}
-
 struct Control2FoundationView: View {
     @StateObject private var model = Control2FoundationModel()
+    @State private var diagnosticsOpen = false
+    @State private var testControlsOpen = false
     private var selected: Control2FoundationSnapshot.Work? { model.snapshot?.work.first { $0.id == model.selectedID } }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Meetings become reviewable work").font(.title2.weight(.semibold))
-                    Text("FOUNDATION LAB · DISPOSABLE DATA").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("From meeting to review").font(COSType.display(27, weight: .medium))
+                    Text("Review the request, prepare a draft, and decide what comes next.")
+                        .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
                 }
-                Spacer()
-                if model.busy { Text(model.operation).font(.caption).foregroundStyle(.secondary); ProgressView().controlSize(.small) }
-                Button("Refresh") { Task { await model.refresh() } }.disabled(model.busy)
-            }.padding(22)
-            HStack {
-                Label("Automatic execution off", systemImage: "pause.circle")
-                Spacer()
-                Label("Publication unavailable", systemImage: "lock")
-            }.font(.callout).padding(.horizontal, 22).padding(.bottom, 18).foregroundStyle(.secondary)
-            Divider()
+                Spacer(minLength: 16)
+                if model.busy { ProgressView().controlSize(.small).help(model.operation) }
+                Button { Task { await model.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                    .buttonStyle(COSQuietButtonStyle()).disabled(model.busy)
+            }.padding(20)
+            HStack(spacing: 8) {
+                Image(systemName: "flask").foregroundStyle(COSPalette.accent)
+                Text("Test workspace").font(COSType.body(11.5, weight: .semibold))
+                Text("Sample meetings only. Automatic work and publishing are off.")
+                    .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+                Spacer(minLength: 0)
+            }.padding(.horizontal, 20).padding(.vertical, 10).background(COSPalette.raised)
             if let error = model.error {
-                Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled).padding()
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(COSType.body(12)).foregroundStyle(COSPalette.danger)
+                    .textSelection(.enabled).padding(14)
             }
-            HSplitView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Meeting work").font(.headline).padding(.horizontal)
-                    List(model.snapshot?.work ?? [], selection: $model.selectedID) { item in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(item.title).font(.headline).lineLimit(2)
-                            Text(item.status.replacingOccurrences(of: "_", with: " ").capitalized).foregroundStyle(item.status == "blocked" ? Color.orange : Color.secondary)
-                            Text("Revision \(item.revision) · \(item.projectId)").font(.caption).foregroundStyle(.secondary)
-                        }.padding(.vertical, 6).tag(item.id)
-                    }.overlay {
-                        if model.snapshot?.work.isEmpty == true { Text("Replay the sample to create your first packet.").foregroundStyle(.secondary).padding() }
-                    }
-                }.padding(.top, 18).frame(minWidth: 270, idealWidth: 320)
+            HStack(alignment: .top, spacing: 0) {
+                workList.frame(width: 255)
+                Rectangle().fill(COSPalette.line).frame(width: 1)
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        if let selected {
-                            Text(selected.title).font(.title2.weight(.semibold))
-                            Text("Source: \(selected.meetingId) · revision \(selected.revision)").font(.caption.monospaced()).textSelection(.enabled)
-                            if let reason = selected.reason { Label(reason, systemImage: "info.circle").foregroundStyle(.secondary) }
-                            if let excerpt = selected.sourceExcerpt { packetSection("Source excerpt", excerpt) }
-                            if let criteria = selected.criteria, !criteria.isEmpty { packetSection("Operator-provided criteria", criteria.map { "• \($0)" }.joined(separator: "\n")) }
-                            if let artifact = selected.artifact {
-                                packetSection("Prepared text preview", artifact.path)
-                                Text("Draft content for review. Website code and production pages are unchanged.").font(.caption).foregroundStyle(.secondary)
-                                Button("Open checked preview") { model.openPreview(artifact) }.disabled(model.busy || selected.status != "needs_review")
-                                Text("SHA-256: \(artifact.sha256)").font(.caption.monospaced()).textSelection(.enabled)
-                                ForEach(Array(artifact.checks.enumerated()), id: \.offset) { _, check in
-                                    Label(check.name, systemImage: check.passed ? "checkmark.circle" : "xmark.circle").foregroundStyle(check.passed ? Color.green : Color.orange)
-                                }
-                            } else { Text("No build output exists for this packet yet.").foregroundStyle(.secondary) }
-                            if model.snapshot?.capabilities.manualDraft == true {
-                                Button("Prepare text preview") { Task { await model.preparePreview(workID: selected.id) } }
-                                    .disabled(model.busy || selected.status != "needs_review")
-                            }
-                            Divider()
-                        } else {
-                            Text("From meeting to decision").font(.title2.weight(.semibold))
-                            Text("Test source readiness, duplicate replay, revision changes and durable review packets. This slice does not run builders or publish changes.").foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 22) {
+                        if let selected { detail(selected) }
+                        else {
+                            Text("Your next review starts here").font(COSType.display(22))
+                            Text("Load the sample meeting to explore how follow-up work will appear in COS.")
+                                .foregroundStyle(COSPalette.muted)
+                            Button("Load sample meeting") { Task { await model.replay(revision: "1") } }
+                                .buttonStyle(COSPrimaryButtonStyle()).disabled(model.busy || model.snapshot == nil)
                         }
-                        Text("Build gates").font(.headline)
-                        ForEach(model.snapshot?.gates ?? []) { gate in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("\(gate.id) · \(gate.status)").font(.callout.weight(.semibold))
-                                Text(gate.detail).font(.callout).foregroundStyle(.secondary)
-                            }
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(22)
-                }.frame(minWidth: 450)
+                    }.frame(maxWidth: 740, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(22)
+                }.frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+            }.frame(minHeight: 0, maxHeight: .infinity)
+            Divider().overlay(COSPalette.line)
+            DisclosureGroup("Test controls", isExpanded: $testControlsOpen) {
+                HStack(spacing: 10) {
+                    Button("Replay sample") { Task { await model.replay(revision: "1") } }
+                    Button("Replay correction") { Task { await model.replay(revision: "2") } }
+                    Spacer(minLength: 0)
+                    Text("Replaying the same revision does not duplicate work.")
+                        .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+                }.buttonStyle(COSQuietButtonStyle()).disabled(model.busy || model.snapshot == nil).padding(.top, 8)
+            }.font(COSType.body(11.5, weight: .medium)).tint(COSPalette.accent).padding(14)
+        }
+        .font(COSType.body(13)).foregroundStyle(.primary)
+        .background(COSPalette.panel).tint(COSPalette.accent)
+        .task { await model.refresh() }
+    }
+
+    private var workList: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Meeting work").font(COSType.body(12, weight: .semibold)).padding(.bottom, 4)
+                ForEach(model.snapshot?.work ?? []) { item in
+                    Button { model.selectedID = item.id } label: {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(displayTitle(item)).font(COSType.body(13, weight: .semibold))
+                                .lineLimit(3).multilineTextAlignment(.leading)
+                            Text(statusLabel(item)).font(COSType.body(11, weight: .medium))
+                                .foregroundStyle(item.status == "blocked" ? COSPalette.danger : COSPalette.accent)
+                            Text("Revision \(item.revision)").font(COSType.mono(10)).foregroundStyle(COSPalette.muted)
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(13)
+                            .background(model.selectedID == item.id ? COSPalette.raised : COSPalette.card)
+                            .clipShape(RoundedRectangle(cornerRadius: 9))
+                            .overlay(RoundedRectangle(cornerRadius: 9)
+                                .stroke(model.selectedID == item.id ? COSPalette.gold : COSPalette.line, lineWidth: 1))
+                    }.buttonStyle(.plain)
+                        .accessibilityLabel("\(displayTitle(item)), \(statusLabel(item)), revision \(item.revision)")
+                        .accessibilityAddTraits(model.selectedID == item.id ? .isSelected : [])
+                }
+                if model.snapshot?.work.isEmpty == true {
+                    Text("No work to review yet.").font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+                }
+            }.padding(16)
+        }.background(COSPalette.panel)
+    }
+
+    @ViewBuilder private func detail(_ item: Control2FoundationSnapshot.Work) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(displayTitle(item)).font(COSType.display(23, weight: .medium))
+            HStack(spacing: 8) {
+                Text(statusLabel(item)).foregroundStyle(COSPalette.accent)
+                Text("· Revision \(item.revision)").foregroundStyle(COSPalette.muted)
+            }.font(COSType.body(11.5, weight: .medium))
+        }
+        if item.status == "superseded" {
+            VStack(alignment: .leading, spacing: 9) {
+                Label("A newer revision replaces this work.", systemImage: "arrow.triangle.2.circlepath")
+                Text("This draft is kept as history. Continue with the latest request.")
+                    .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+                if let next = model.snapshot?.work.first(where: { $0.meetingId == item.meetingId && $0.projectId == item.projectId && $0.status != "superseded" }) {
+                    Button("View current revision") { model.selectedID = next.id }.buttonStyle(COSQuietButtonStyle())
+                }
+            }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 9))
+        } else if item.status == "blocked" {
+            Label("Waiting for a complete meeting before work can begin.", systemImage: "pause.circle")
+                .foregroundStyle(COSPalette.muted)
+        }
+        if let excerpt = item.sourceExcerpt { packetSection("What was discussed", excerpt) }
+        if let criteria = item.criteria, !criteria.isEmpty {
+            VStack(alignment: .leading, spacing: 9) {
+                Text("What the work should accomplish").font(COSType.body(12, weight: .semibold))
+                ForEach(Array(criteria.enumerated()), id: \.offset) { _, criterion in
+                    HStack(alignment: .top, spacing: 9) {
+                        Image(systemName: "circle").font(.system(size: 7)).padding(.top, 5).foregroundStyle(COSPalette.muted)
+                        Text(criterion).textSelection(.enabled)
+                    }
+                }
             }
-            Divider()
-            HStack {
-                Button("Replay sample") { Task { await model.replay(revision: "1") } }
-                Button("Replay correction") { Task { await model.replay(revision: "2") } }
-                Spacer()
-                Text("Synthetic meeting · isolated local server").font(.caption).foregroundStyle(.secondary)
-            }.disabled(model.busy || model.snapshot == nil).padding(18)
-        }.frame(minWidth: 850, minHeight: 580).task { await model.refresh() }
+        }
+        VStack(alignment: .leading, spacing: 11) {
+            Text(item.artifact == nil ? "Prepare a draft" : "Draft ready to review")
+                .font(COSType.display(19, weight: .medium))
+            Text("This preview prepares text copy. Website code, page layout, and production content are unchanged.")
+                .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+            if let artifact = item.artifact {
+                if item.status == "needs_review" {
+                    Button { model.openPreview(artifact) } label: { Label("Open checked preview", systemImage: "arrow.up.right.square") }
+                        .buttonStyle(COSPrimaryButtonStyle()).disabled(model.busy)
+                }
+                Label("Preview file verified. Website checks have not run.", systemImage: "checkmark.seal")
+                    .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+            } else if item.status == "needs_review", model.snapshot?.capabilities.manualDraft == true {
+                Button { Task { await model.preparePreview(workID: item.id) } } label: {
+                    Label(model.busy ? "Preparing preview…" : "Prepare text preview", systemImage: "doc.badge.gearshape")
+                }.buttonStyle(COSPrimaryButtonStyle()).disabled(model.busy)
+            } else if item.status == "needs_review" {
+                Text("Text drafting is off for this test workspace.")
+                    .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+            }
+        }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line, lineWidth: 1))
+        DisclosureGroup("Technical details", isExpanded: $diagnosticsOpen) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Source: \(item.meetingId)\nProject: \(item.projectId)").font(COSType.mono(10)).textSelection(.enabled)
+                if let artifact = item.artifact {
+                    Text(artifact.path).font(COSType.mono(10)).textSelection(.enabled)
+                    Text("SHA-256: \(artifact.sha256)").font(COSType.mono(10)).textSelection(.enabled)
+                    ForEach(Array(artifact.checks.enumerated()), id: \.offset) { _, check in
+                        Label(check.name, systemImage: check.passed ? "checkmark.circle" : "xmark.circle")
+                            .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    }
+                }
+                ForEach(model.snapshot?.gates ?? []) { gate in
+                    Text("\(gate.id): \(gate.status)\n\(gate.detail)").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                }
+            }.padding(.top, 10)
+        }.font(COSType.body(11.5, weight: .medium))
+    }
+
+    private func displayTitle(_ item: Control2FoundationSnapshot.Work) -> String {
+        item.meetingId == "foundation-native-sample" ? "Website follow-up · sample" : item.title
+    }
+    private func statusLabel(_ item: Control2FoundationSnapshot.Work) -> String {
+        switch item.status {
+        case "superseded": "Earlier revision"
+        case "blocked": "Waiting for meeting"
+        default: item.artifact == nil ? (model.snapshot?.capabilities.manualDraft == true ? "Ready to prepare" : "Captured for review") : "Ready for review"
+        }
     }
     private func packetSection(_ heading: String, _ text: String) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(heading).font(.headline)
-            Text(text).font(.body).textSelection(.enabled)
+        VStack(alignment: .leading, spacing: 9) {
+            Text(heading).font(COSType.body(12, weight: .semibold))
+            Text(text).font(COSType.body(13)).lineSpacing(3).textSelection(.enabled)
         }
     }
 }

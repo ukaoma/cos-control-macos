@@ -113,6 +113,11 @@ struct SectionGlyph: Shape {
             path.move(to: p(6, 8.6)); path.addLine(to: p(8.5, 10.8)); path.addLine(to: p(6, 13))
             path.move(to: p(10.6, 13)); path.addLine(to: p(14.2, 13))
 
+        case .work:
+            path.addRoundedRect(in: box(3, 6, 14, 10), cornerSize: CGSize(width: 2 * s, height: 2 * s))
+            path.move(to: p(7, 6)); path.addLine(to: p(7, 3.8)); path.addLine(to: p(13, 3.8)); path.addLine(to: p(13, 6))
+            path.move(to: p(3, 10)); path.addLine(to: p(17, 10))
+
         case .tasks:
             path.addRoundedRect(in: box(4, 3.2, 12, 13.6), cornerSize: CGSize(width: 1.6 * s, height: 1.6 * s))
             path.move(to: p(6.4, 7.2)); path.addLine(to: p(8.2, 9.2)); path.addLine(to: p(13.4, 5.6))
