@@ -230,6 +230,12 @@ private enum VoiceDirectorySort: String, CaseIterable, Identifiable {
 struct ActivityWindow: View {
     @ObservedObject var model: ControllerModel
     var isolatedWorkPreview = false
+    @StateObject private var handoffStore = WorkHandoffStore()
+    @State private var showingLinkedSession = false
+    @State private var historicalWorkID: String?
+    private var connectedWorkTest: Bool {
+        !isolatedWorkPreview && ProcessInfo.processInfo.environment["COS_WORK_CONNECTED_TEST"] == "1"
+    }
     /// In-chat search: the term and which match the cursor is on.
     @Environment(\.colorScheme) private var colorScheme
     /// Recent-view search. Recent turns are already in memory, so this filters
@@ -310,6 +316,14 @@ struct ActivityWindow: View {
     /// Uses the actual app shell; other sections are visible but cannot load live data.
     static func workPreview(model: ControllerModel) -> ActivityWindow {
         var view = ActivityWindow(model: model, isolatedWorkPreview: true)
+        view._section = State(initialValue: .work)
+        view._handoffStore = StateObject(wrappedValue: WorkHandoffStore(isolated: true))
+        return view
+    }
+
+    /// Explicit connected candidate. Its caller enables only foreground Activity loads.
+    static func workConnectedTest(model: ControllerModel) -> ActivityWindow {
+        var view = ActivityWindow(model: model)
         view._section = State(initialValue: .work)
         return view
     }
@@ -393,10 +407,21 @@ struct ActivityWindow: View {
     var body: some View {
         VStack(spacing: 0) {
             navigationBar
+            if connectedWorkTest {
+                HStack(spacing: 8) {
+                    Image(systemName: "network")
+                    Text("Connected Work candidate").font(COSType.body(11.5, weight: .semibold))
+                    Text("Real tasks and sessions. Sending uses the selected agent’s existing permissions.")
+                        .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    Spacer(minLength: 0)
+                }.padding(.horizontal, 18).padding(.vertical, 8).background(COSPalette.raised)
+            }
             lensRail
             Divider()
             Group {
-                if isolatedWorkPreview, let selected = section, selected != .work {
+                if section == .sessions && (isolatedWorkPreview || showingLinkedSession) {
+                    WorkSessionsView(store: handoffStore, isPreview: isolatedWorkPreview, onOpenWork: openHandoffWork, onOpenFullSession: openFullHandoffSession)
+                } else if isolatedWorkPreview, let selected = section, selected != .work {
                     previewOnlySection(selected)
                 } else if section == .messages, let preview = model.selectedMediaPreview {
                     mediaDetail(preview)
@@ -463,7 +488,14 @@ struct ActivityWindow: View {
                     MeetingSuggestionsPane(model: model)
                 } else if section == .sessions, selectedSessionID != nil {
                     if model.claudeSessionRouteActive {
-                        ClaudeSessionDetailPane(model: model)
+                        VStack(spacing: 0) {
+                            if let workID = handoffStore.selectedWorkID,
+                               handoffStore.selectedSessionID == selectedSessionID {
+                                Button("Back to linked work") { model.closeClaudeSession(); openHandoffWork(workID) }
+                                    .buttonStyle(COSQuietButtonStyle()).padding(10)
+                            }
+                            ClaudeSessionDetailPane(model: model)
+                        }
                     } else {
                         centeredProgress("Loading session…")
                     }
@@ -485,7 +517,14 @@ struct ActivityWindow: View {
         .frame(minWidth: 760, minHeight: 560)
         .font(COSType.body(13))
         .background(COSPalette.panel)
-        .task { await loadOverviewIfNeeded() }
+        .task {
+            if connectedWorkTest {
+                await model.refresh(quiet: true)
+                await load(.work)
+            } else {
+                await loadOverviewIfNeeded()
+            }
+        }
         .task(id: speakerPeekKey) { await peekMeetingsIfNeeded() }
         .alert("COS Control", isPresented: Binding(
             get: { model.error != nil },
@@ -719,6 +758,7 @@ struct ActivityWindow: View {
     }
 
     private func select(_ requested: ActivitySection) {
+        if !isolatedWorkPreview { showingLinkedSession = false; historicalWorkID = nil }
         let next = ActivitySection.resolvedLaunch(requested, environment: ProcessInfo.processInfo.environment)
         guard ActivitySection.allCases.contains(next) else { return }
         if isolatedWorkPreview { withOptionalAnimation { section = next }; return }
@@ -1071,7 +1111,7 @@ struct ActivityWindow: View {
         if isolatedWorkPreview {
             // Structural isolation: the branch containing tasksList is never
             // mounted in the lab, even if its selected subview is Tasks.
-            Control2FoundationView(showTaskExamples: true)
+            Control2FoundationView(showTaskExamples: true, handoffStore: handoffStore, onOpenSession: openHandoffSession)
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 22) {
@@ -1097,12 +1137,78 @@ struct ActivityWindow: View {
                 }.padding(.horizontal, 20).padding(.top, 14)
                 Divider().overlay(COSPalette.line)
                 if Self.usesExistingTaskList(isolatedWorkPreview: isolatedWorkPreview, subview: workSubview) {
-                    tasksList
+                    if let id = historicalWorkID {
+                        historicalWorkReceipts(id)
+                    } else {
+                        tasksList
+                    }
                 } else {
-                    Control2FoundationView()
+                    Control2FoundationView(handoffStore: handoffStore, onOpenSession: openHandoffSession)
                 }
             }
         }
+    }
+
+    private func openHandoffSession(_ id: String) {
+        handoffStore.selectedSessionID = id
+        showingLinkedSession = true
+        section = .sessions
+    }
+
+    private func openHandoffWork(_ id: String) {
+        handoffStore.selectedWorkID = id
+        if !isolatedWorkPreview { model.closeClaudeSession(); selectedSessionID = nil }
+        showingLinkedSession = false
+        workSubview = .tasks
+        section = .work
+        if !isolatedWorkPreview {
+            if let task = model.tasks.first(where: { WorkSource.taskSnapshot($0).id == id }) {
+                historicalWorkID = nil
+                openTaskDetail(task)
+            } else {
+                historicalWorkID = id
+            }
+        }
+    }
+
+    private func historicalWorkReceipts(_ id: String) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Button("Back to current tasks") { historicalWorkID = nil }.buttonStyle(COSQuietButtonStyle())
+                Text(handoffStore.receipts(for: id).first?.workTitle ?? "Linked work")
+                    .font(COSType.display(25, weight: .medium))
+                Label("This task is not in the currently loaded task list.", systemImage: "info.circle")
+                    .font(COSType.body(12, weight: .semibold))
+                Text("It may be completed, outside the current list, changed, or unavailable. These are the saved handoff receipts; no task has been recreated or changed.")
+                    .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+                ForEach(handoffStore.receipts(for: id)) { receipt in
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(receipt.status.capitalized + " · " + receipt.provider).font(COSType.body(12, weight: .semibold))
+                        Text(receipt.detail).font(COSType.body(12))
+                        Text("Context sent").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
+                        Text(receipt.prompt).font(COSType.body(12)).textSelection(.enabled)
+                        if let result = receipt.result { COSMarkdownView(text: result) }
+                        if let sessionID = receipt.sessionID {
+                            Button("Open linked session") { openHandoffSession(sessionID) }.buttonStyle(COSQuietButtonStyle())
+                        }
+                    }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 10))
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(24)
+        }
+    }
+
+    private func openFullHandoffSession(_ session: WorkSession) {
+        guard !isolatedWorkPreview else { return }
+        let value: JSONValue = .object([
+            "id": .string(session.nativeID), "provider": .string(session.provider),
+            "name": .string(session.title), "workspace": .string(session.project),
+            "state": .string(session.status), "discussionSummary": .string(session.summary)
+        ])
+        guard let row = ClaudeSession(value) else { return }
+        showingLinkedSession = false
+        selectedSessionID = row.id
+        model.openClaudeSession(row)
     }
 
     private func previewOnlySection(_ item: ActivitySection) -> some View {
@@ -1325,7 +1431,13 @@ struct ActivityWindow: View {
                 ZStack {
                     Color.black.opacity(0.16).ignoresSafeArea()
                         .onTapGesture { if !taskDetailBusy { closeTaskDetail() } }
-                    taskDetailSheet(task)
+                    Group {
+                        if ActivitySection.allCases.contains(.work) {
+                            ScrollView { taskDetailSheet(task) }.frame(width: 520, height: 480)
+                        } else {
+                            taskDetailSheet(task)
+                        }
+                    }
                         .background(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .fill(COSPalette.card)
@@ -1545,6 +1657,12 @@ struct ActivityWindow: View {
                     .disabled(taskDetailBusy || task.stage == stage)
                 }
                 Spacer()
+            }
+            if ActivitySection.allCases.contains(.work) {
+                WorkHandoffView(store: handoffStore, source: .taskSnapshot(task), onOpenSession: { id in
+                    closeTaskDetail()
+                    openHandoffSession(id)
+                })
             }
         }
         .padding(20)
@@ -5009,7 +5127,7 @@ struct ActivityWindow: View {
     // MARK: - Loading and copy
 
     private func loadOverviewIfNeeded() async {
-        guard Self.allowsLiveSectionLoads(isolatedWorkPreview: isolatedWorkPreview, backgroundWorkEnabled: model.backgroundWorkEnabled) else { return }
+        guard Self.allowsLiveSectionLoads(isolatedWorkPreview: isolatedWorkPreview, backgroundWorkEnabled: model.activityLoadsEnabled) else { return }
         // Activity can be the first COS Control surface opened after launch.
         // Prove the server here instead of inheriting the model's initial
         // `running = false` placeholder from the unopened menu-bar panel.
@@ -5032,7 +5150,7 @@ struct ActivityWindow: View {
     }
 
     private func load(_ item: ActivitySection) async {
-        guard Self.allowsLiveSectionLoads(isolatedWorkPreview: isolatedWorkPreview, backgroundWorkEnabled: model.backgroundWorkEnabled) else { return }
+        guard Self.allowsLiveSectionLoads(isolatedWorkPreview: isolatedWorkPreview, backgroundWorkEnabled: model.activityLoadsEnabled) else { return }
         switch item {
         case .messages: await model.refreshRecentMessages()
         case .speakers:
@@ -5074,7 +5192,7 @@ struct ActivityWindow: View {
     }
 
     private func peekMeetingsIfNeeded() async {
-        guard Self.allowsLiveSectionLoads(isolatedWorkPreview: isolatedWorkPreview, backgroundWorkEnabled: model.backgroundWorkEnabled) else { return }
+        guard Self.allowsLiveSectionLoads(isolatedWorkPreview: isolatedWorkPreview, backgroundWorkEnabled: model.activityLoadsEnabled) else { return }
         guard section == .speakers, speakerSubview == .meetings, selectedSpeakerSessionID == nil else { return }
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(45))

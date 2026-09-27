@@ -387,8 +387,10 @@ final class ControllerModel: ObservableObject {
     private var openPetsThumbTasks: [String: Task<Void, Never>] = [:]
 
     let backgroundWorkEnabled: Bool
-    init(startBackgroundWork: Bool = true) {
+    let activityLoadsEnabled: Bool
+    init(startBackgroundWork: Bool = true, allowActivityLoads: Bool = false) {
         backgroundWorkEnabled = startBackgroundWork
+        activityLoadsEnabled = startBackgroundWork || allowActivityLoads
         guard startBackgroundWork else { return }
         try? Self.pruneMediaHandoffs()
         refreshTask = Task { [weak self] in

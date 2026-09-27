@@ -48,8 +48,19 @@ Override `COS_FOUNDATION_SERVER_ROOT`, `COS_FOUNDATION_APP_PATH` or `COS_FOUNDAT
 Approved foundation error codes are shown alongside HTTP status (including exhausted draft budget or oversized criteria). Arbitrary server/provider error text is never displayed.
 
 
-Visual QA may set `COS_CONTROL_TEST_APPEARANCE=light` or `dark`, and `COS_CONTROL_TEST_WIDTH`/`COS_CONTROL_TEST_HEIGHT` (minimum 760×560). These affect only the preview process; they never change system appearance. Candidate version 0.1.4/build 5 includes full-row hit targets and accurate preview-verification copy. The default distribution ZIP and cached app must agree on this version. Production app metadata is unchanged.
+Visual QA may set `COS_CONTROL_TEST_APPEARANCE=light` or `dark`, and `COS_CONTROL_TEST_WIDTH`/`COS_CONTROL_TEST_HEIGHT` (minimum 760×560). These affect only the preview process; they never change system appearance. Candidate version 0.1.5/build 6 includes full-row hit targets and accurate preview-verification copy. The default distribution ZIP and cached app must agree on this version. Production app metadata is unchanged.
 
 Historical evidence: native 0.1.3 blank/padded-area clicks passed for all four filters plus task and meeting cards in light mode at the default size. Fresh QA results and remaining visual limits are recorded in the September27 QA report. A process startup probe is not a visual pass. The Work→run→session orchestration plan is not implemented in this preview; Sessions displays the isolated-placeholder explanation.
 
 Synthetic task completion lives only in this view and resets when leaving Work or restarting. It never edits real tasks. The meeting journal persists under the disposable home; use COS_FOUNDATION_TEST_HOME to resume it. The preview remains isolated and never writes a production task or publishes a page.
+
+
+## Work → Sessions handoff preview (0.1.5)
+
+Each sample task/current meeting work item now has **Choose where to work**. Continue selects a suggested existing conversation, Fork creates a separate sample conversation, and New selects a provider/model example. Inspect/edit the context first. These buttons simulate delivery inside the isolated preview and never call a provider.
+
+After sending, use Show running, Show failure or Show result to exercise history. Open session shows the exact linked sample conversation and Back to work restores its source. Sample checkbox state now survives Work/Sessions navigation in the shared window store; it resets on application restart. Handoff history/sample sessions persist in the same disposable home. An unknown outcome blocks another handoff; a delivered live receipt can be explicitly marked reviewed without completing its task.
+
+The source implementation also wires ordinary opted-in COS tasks to real existing session transports and a dynamic new-session catalog. That source path is separate from this disposable launcher. Read `design/work-session-handoffs.md` for supported provider actions, permission boundaries and remaining managed-execution work. Do not report the sample chooser as live orchestration.
+
+For real-task testing, quit the isolated preview and run `scripts/start-work-connected.command`. The window is explicitly labeled **Connected Work candidate**. It reads real tasks and session summaries; Send/Fork/New deliver real instructions using the selected provider's existing permissions. The installed app and server binaries remain unchanged. This optional window has no background updater or pet loop and never turns test examples into real tasks.

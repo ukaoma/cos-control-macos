@@ -153,8 +153,13 @@ struct Control2PreviewTask: Identifiable {
 
 struct Control2FoundationView: View {
     var showTaskExamples = false
-    @State private var previewTasks = Control2PreviewTask.samples
-    @State private var selectedTaskID: String? = "sample-task-website"
+    @ObservedObject var handoffStore: WorkHandoffStore
+    var onOpenSession: (String) -> Void = { _ in }
+    private var previewTasks: [Control2PreviewTask] { handoffStore.previewTasks }
+    private var selectedTaskID: String? {
+        get { handoffStore.selectedWorkID }
+        nonmutating set { handoffStore.selectedWorkID = newValue }
+    }
     @State private var workFilter = "All work"
     private let workFilters = ["All work", "Tasks", "Meeting follow-up", "Completed"]
     private var selectedTask: Control2PreviewTask? {
@@ -232,7 +237,14 @@ struct Control2FoundationView: View {
         }
         .font(COSType.body(13)).foregroundStyle(.primary)
         .background(COSPalette.panel).tint(COSPalette.accent)
-        .task { await model.refresh() }
+        .task {
+            if let task = selectedTask, task.completed { workFilter = "Completed" }
+            await model.refresh()
+            if let workID = handoffStore.selectedWorkID, model.snapshot?.work.contains(where: { $0.id == workID }) == true {
+                model.selectedID = workID
+                workFilter = "Meeting follow-up"
+            }
+        }
     }
 
     private var workList: some View {
@@ -321,15 +333,16 @@ struct Control2FoundationView: View {
                 .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
             Button(task.completed ? "Reopen sample task" : "Complete sample task") {
                 if let index = previewTasks.firstIndex(where: { $0.id == task.id }) {
-                    previewTasks[index].completed.toggle()
+                    handoffStore.previewTasks[index].completed.toggle()
                     workFilter = previewTasks[index].completed ? "Completed" : "Tasks"
                 }
             }.buttonStyle(COSPrimaryButtonStyle())
-            Text("Demo only. This changes the sample in this window and resets when you leave Work or restart the preview.")
+            Text("Demo only. This changes the sample in this window and stays while you move between Work and Sessions; it resets when you restart the preview.")
                 .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
         }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
             .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line, lineWidth: 1))
+        WorkHandoffView(store: handoffStore, source: WorkSource(id: task.id, title: task.title, revision: "preview-1", project: task.domain, context: "Task: \(task.title)\nDone when: \(task.finishLine)\nSource: \(task.source)"), isPreview: true, onOpenSession: onOpenSession)
         packetSection("Context as work grows", "A task can link to its meeting, relevant memories, and prior sessions. Prepared output and execution history belong here. Those connections are the next build step; the samples do not retrieve your real context.")
         Label("Completing a task does not approve or publish a draft.", systemImage: "lock")
             .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
@@ -349,6 +362,9 @@ struct Control2FoundationView: View {
                 Text(statusLabel(item)).foregroundStyle(COSPalette.accent)
                 Text("· Revision \(item.revision)").foregroundStyle(COSPalette.muted)
             }.font(COSType.body(11.5, weight: .medium))
+        }
+        if showTaskExamples, item.status != "superseded" {
+            WorkHandoffView(store: handoffStore, source: WorkSource(id: item.id, title: item.title, revision: item.revision, project: item.projectId, context: "Meeting follow-up: \(item.title)\nSource: \(item.sourceExcerpt ?? "Sample meeting")\nDone when: \((item.criteria ?? []).joined(separator: "; "))"), isPreview: true, onOpenSession: onOpenSession)
         }
         if item.status == "superseded" {
             VStack(alignment: .leading, spacing: 9) {

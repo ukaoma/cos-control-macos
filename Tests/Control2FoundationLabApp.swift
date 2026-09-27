@@ -2,7 +2,9 @@ import SwiftUI
 
 /// Same Activity shell as COS Control; no production polling, updater, pet or hotkey.
 @main struct Control2FoundationLabApp: App {
-    @StateObject private var model = ControllerModel(startBackgroundWork: false)
+    private static let connected = ProcessInfo.processInfo.environment["COS_WORK_CONNECTED_TEST"] == "1"
+        && ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] == nil
+    @StateObject private var model = ControllerModel(startBackgroundWork: false, allowActivityLoads: connected)
     private var previewColorScheme: ColorScheme? {
         switch ProcessInfo.processInfo.environment["COS_CONTROL_TEST_APPEARANCE"] {
         case "light": .light
@@ -19,9 +21,11 @@ import SwiftUI
         return CGFloat(min(1400, max(560, value)))
     }
     var body: some Scene {
-        WindowGroup("COS Control · Work Preview") {
-            ActivityWindow.workPreview(model: model)
-                .preferredColorScheme(previewColorScheme)
+        WindowGroup(Self.connected ? "COS Control · Connected Work Candidate" : "COS Control · Work Preview") {
+            Group {
+                if Self.connected { ActivityWindow.workConnectedTest(model: model) }
+                else { ActivityWindow.workPreview(model: model) }
+            }.preferredColorScheme(previewColorScheme)
         }.defaultSize(width: previewWidth, height: previewHeight)
     }
 }

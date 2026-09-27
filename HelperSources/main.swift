@@ -527,6 +527,10 @@ final class COSControlHelper {
         case "session-chat-queue": try emitSessionChatQueue(args: args)
         case "session-chat-queued": try emitSessionChatQueued(args: args)
         case "session-chat-queue-cancel": try emitSessionChatQueueCancel(args: args)
+        case "work-models": try emitWorkModels()
+        case "work-new": try emitWorkNew()
+        case "work-job": try emitWorkJob(args: args)
+        case "self-test-work": try selfTestWork()
         case "session-chat-turn": try emitSessionChatTurn(args: args)
         case "session-chat-fork": try emitSessionChatFork(args: args)
         case "session-chat-reply": try emitSessionChatReply(args: args)
@@ -14054,6 +14058,7 @@ final class COSControlHelper {
         if response.status == 202 {
             emit(ok: true, message: "Sent", details: [
                 "state": "queued",
+                "httpStatus": response.status, "receipt": body,
                 "clientTurnId": body["clientTurnId"] as? String ?? clientTurnId,
             ])
             return
@@ -14067,6 +14072,7 @@ final class COSControlHelper {
            ["completed", "refused", "ambiguous"].contains(outcome) {
             emit(ok: true, message: "Already recorded", details: [
                 "state": outcome,
+                "httpStatus": response.status, "receipt": body,
                 "reason": body["reason"] as? String ?? "",
                 "reasonCopy": body["reasonCopy"] as? String ?? "",
                 "via": body["via"] as? String ?? "",
@@ -14075,6 +14081,7 @@ final class COSControlHelper {
         }
         emit(ok: true, message: "Turn refused", details: [
             "state": "refused",
+            "httpStatus": response.status, "receipt": body,
             "reason": body["reason"] as? String ?? "",
             "reasonCopy": body["reasonCopy"] as? String ?? "",
             "changed": body["changed"] as? Bool ?? false,
@@ -14176,6 +14183,190 @@ final class COSControlHelper {
         ])
     }
 
+    // Work is an operator-directed conversation handoff, not task dispatch.
+    // Never send these requests from the disposable Foundation preview.
+    private func requireLiveWorkTransport() throws {
+        guard ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] == nil else {
+            throw HelperError.message("Work session handoffs are unavailable in the isolated preview")
+        }
+    }
+
+    static func workModelCatalog(health: [String: Any], catalog: [String: Any]) -> [[String: Any]] {
+        let features = health["features"] as? [String: Any] ?? [:]
+        let durable = features["durableQueryJobs"] as? Bool == true
+            && features["durableQueryJobsProtocol"] as? Int == 1
+        let options = catalog["options"] as? [[String: Any]] ?? []
+        let slots: [(String, String, String)] = [
+            ("sonnet", "claude", "Claude Sonnet"), ("opus", "claude", "Claude Opus"),
+            ("fable", "claude", "Claude Fable"), ("haiku", "claude", "Claude Haiku"),
+            ("codex-frontier", "codex", "OpenAI via Codex · Frontier"),
+            ("codex-balanced", "codex", "OpenAI via Codex · Balanced"),
+            ("cursor-grok", "cursor", "Grok via Cursor"),
+            ("cursor-composer", "cursor", "Cursor Composer"), ("ollama", "ollama", "Ollama")
+        ]
+        return slots.map { slot, provider, label in
+            let matches = options.filter { $0["preference"] as? String == slot }
+            let concrete = matches.count == 1 ? matches[0]["id"] as? String : nil
+            let catalogValid = provider == "claude" || (concrete?.isEmpty == false && concrete!.count <= 160)
+            let featureReady = features[provider] as? Bool == true
+            let providerReady = featureReady && (provider != "cursor" || catalog["cursorReady"] as? Bool == true)
+                && (provider != "ollama" || catalog["ollamaReady"] as? Bool == true)
+            let available = durable && providerReady && catalogValid
+            var row: [String: Any] = ["id": slot, "provider": provider, "title": label,
+                "available": available, "readiness": "configured_runtime_only", "modelCanaryVerified": false]
+            if let concrete, catalogValid { row["title"] = "\(label) · \(concrete)"; row["resolvedModel"] = concrete }
+            if !available {
+                row["reason"] = !durable ? "Durable conversation jobs are unavailable"
+                    : (!providerReady ? "Provider runtime is unavailable" : "No unambiguous model catalog entry")
+            } else if provider == "claude" {
+                row["reason"] = "Configured Claude tier alias; this tier has not been independently tested"
+            }
+            return row
+        }
+    }
+
+    static func workJobID(_ value: String) -> Bool {
+        value.range(of: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", options: .regularExpression) != nil
+    }
+
+    private func fetchWorkModels(token: String) throws -> (models: [[String: Any]], serverInstanceId: String?) {
+        guard let health = request("/api/health", token: token, timeout: 15), health.status == 200,
+              let healthBody = health.body,
+              let catalog = request("/api/models", token: token, timeout: 20), catalog.status == 200,
+              let catalogBody = catalog.body else {
+            throw HelperError.message("Cannot verify the configured provider catalog")
+        }
+        let instance = catalogBody["serverInstanceId"] as? String
+        return (Self.workModelCatalog(health: healthBody, catalog: catalogBody), instance.flatMap {
+            $0.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil ? $0 : nil
+        })
+    }
+
+    private func emitWorkModels() throws {
+        try requireLiveWorkTransport()
+        let catalog = try fetchWorkModels(token: readToken())
+        var details: [String: Any] = ["models": catalog.models]
+        if let instance = catalog.serverInstanceId { details["serverInstanceId"] = instance }
+        emit(ok: true, message: "Configured models ready", details: details)
+    }
+
+    private func emitWorkJobResponse(_ response: HTTPResponse) throws {
+        guard let body = response.body else { throw HelperError.message("Conversation response is unavailable; delivery is unknown") }
+        let job = body["job"] as? [String: Any]
+        let success = (200..<300).contains(response.status)
+        if success && job == nil { throw HelperError.message("Conversation receipt is missing; delivery is unknown") }
+        var details: [String: Any] = ["state": success ? (job?["status"] as? String ?? "unknown") : "error",
+                                    "httpStatus": response.status]
+        if let job { details["job"] = job }
+        if let raw = body["error"] as? [String: Any], let code = raw["code"] as? String,
+           code.range(of: "^[A-Za-z0-9_-]{1,100}$", options: .regularExpression) != nil {
+            var error: [String: Any] = ["code": code]
+            if let message = raw["message"] as? String {
+                error["message"] = String(message.unicodeScalars.filter {
+                    !CharacterSet.controlCharacters.contains($0) || $0 == "\n" || $0 == "\t"
+                }.prefix(2_000).map(String.init).joined())
+            }
+            if let retryable = raw["retryable"] as? Bool { error["retryable"] = retryable }
+            details["error"] = error
+        }
+        // Preserve machine error codes without echoing arbitrary HTML/server text.
+        for key in ["error", "reason"] {
+            if let code = body[key] as? String,
+               code.range(of: "^[A-Za-z0-9_-]{1,100}$", options: .regularExpression) != nil { details[key] = code }
+        }
+        emit(ok: true, message: success ? "Conversation receipt ready" : "Conversation request refused", details: details)
+    }
+
+    static func workMessageEra(_ counter: [String: Any]) -> String? {
+        guard let era = counter["era"] as? String,
+              era.range(of: "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$", options: .regularExpression) != nil else { return nil }
+        return era
+    }
+
+    static func workNewPayload(clientJobId: String, query: String, model: String, messageEra: String) -> [String: Any] {
+        // An unknown supplied session ID is NOT a request to create that ID.
+        // The coordinator allocates and durably reuses the session for this
+        // clientJobId/generation; inventing one causes session_identity_mismatch.
+        ["clientJobId": clientJobId, "generation": 1, "query": query, "model": model,
+         "cursorExecutionMode": "ask", "messageEra": messageEra]
+    }
+
+    private func emitWorkNew() throws {
+        try requireLiveWorkTransport()
+        var input = Data()
+        while input.count <= 256_000 {
+            let chunk = try FileHandle.standardInput.read(upToCount: min(16_384, 256_001 - input.count)) ?? Data()
+            if chunk.isEmpty { break }
+            input.append(chunk)
+        }
+        guard input.count <= 256_000,
+              let body = try JSONSerialization.jsonObject(with: input) as? [String: Any],
+              let id = body["clientJobId"] as? String, Self.workJobID(id),
+              let query = body["query"] as? String, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              query.utf16.count <= 48_000, let model = body["model"] as? String else {
+            throw HelperError.message("Work needs a UUIDv4 clientJobId, bounded query and explicit model slot")
+        }
+        let token = try readToken()
+        let models = try fetchWorkModels(token: token).models
+        guard models.contains(where: { $0["id"] as? String == model && $0["available"] as? Bool == true }) else {
+            throw HelperError.message("The selected model is unavailable; no substitute was sent")
+        }
+        // Public admission rejects pre-reset clients even when messageEra is
+        // omitted. Read the exact server era; never mint a phone message number
+        // from max+1 or mutate/reset the shared counter for this handoff.
+        guard let counter = request("/api/message-counter", token: token, timeout: 5), counter.status == 200,
+              let counterBody = counter.body, let era = Self.workMessageEra(counterBody) else {
+            throw HelperError.message("Cannot verify the current conversation era; no handoff was sent")
+        }
+        let payload = Self.workNewPayload(clientJobId: id, query: query, model: model, messageEra: era)
+        let json = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
+        guard let response = request("/api/query-jobs", method: "POST", token: token, body: json, timeout: 30) else {
+            throw HelperError.message("Conversation admission timed out; delivery is unknown. Recover the original receipt before trying again")
+        }
+        try emitWorkJobResponse(response)
+    }
+
+    private func emitWorkJob(args: [String]) throws {
+        try requireLiveWorkTransport()
+        guard let id = option("--client-job-id", in: args), Self.workJobID(id) else {
+            throw HelperError.message("--client-job-id must be the original UUIDv4")
+        }
+        guard let response = request("/api/query-jobs/by-client/\(id)?generation=1&trail=1", token: try readToken(), timeout: 15) else {
+            throw HelperError.message("Conversation receipt is temporarily unavailable")
+        }
+        try emitWorkJobResponse(response)
+    }
+
+    private func selfTestWork() throws {
+        let health: [String: Any] = ["features": ["durableQueryJobs": true, "durableQueryJobsProtocol": 1,
+            "claude": true, "codex": true, "cursor": true, "ollama": true]]
+        let options: [[String: Any]] = [["preference": "codex-frontier", "id": "configured-model"],
+            ["preference": "cursor-grok", "id": "configured-grok"], ["preference": "ollama", "id": "local-model"]]
+        let catalog: [String: Any] = ["options": options, "cursorReady": true, "ollamaReady": true]
+        let models = Self.workModelCatalog(health: health, catalog: catalog)
+        func available(_ rows: [[String: Any]], _ id: String) -> Bool {
+            rows.first(where: { $0["id"] as? String == id })?["available"] as? Bool == true
+        }
+        let newPayload = Self.workNewPayload(clientJobId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            query: "test", model: "ollama", messageEra: "era-contract")
+        guard newPayload["sessionId"] == nil, newPayload["messageEra"] as? String == "era-contract",
+              newPayload["origin"] == nil, newPayload["dispatch"] == nil,
+              models.count == 9, available(models, "sonnet"), available(models, "codex-frontier"),
+              available(models, "cursor-grok"), available(models, "ollama"), !available(models, "codex-balanced"),
+              !available(Self.workModelCatalog(health: [:], catalog: catalog), "sonnet"),
+              !available(Self.workModelCatalog(health: health, catalog: ["options": options]), "cursor-grok"),
+              !available(Self.workModelCatalog(health: health, catalog: ["options": options + options]), "codex-frontier"),
+              Self.workJobID("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+              !Self.workJobID("aaaaaaaa-bbbb-1ccc-8ddd-eeeeeeeeeeee"), !Self.workJobID("../job"),
+              Self.workMessageEra([:]) == nil,
+              Self.workMessageEra(["era": "era-actual.2026"]) == "era-actual.2026",
+              Self.workMessageEra(["era": "legacy"]) == "legacy",
+              Self.workMessageEra(["era": "bad/era"]) == nil else {
+            throw HelperError.message("Work model/admission contract self-test failed")
+        }
+        emit(ok: true, message: "Work model/admission contract passed", details: ["checks": 19])
+    }
+
     private func emitSessionChatTurn(args: [String]) throws {
         let bindingId = try sessionChatHandle("--binding-id", in: args, pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{1,127}$")
         let clientTurnId = try sessionChatHandle("--client-turn-id", in: args, pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$")
@@ -14186,6 +14377,8 @@ final class COSControlHelper {
         let state = Self.classifyTurnPoll(status: response?.status, outcome: body?["outcome"] as? String)
         emit(ok: true, message: state == "pending" ? "Still working" : "Turn \(state)", details: [
             "state": state,
+            "httpStatus": response?.status ?? 0,
+            "receipt": body as Any? ?? NSNull(),
             "reason": body?["reason"] as? String ?? "",
             "reasonCopy": state == "pending" ? "" : (body?["reasonCopy"] as? String ?? ""),
         ])
@@ -14256,7 +14449,7 @@ final class COSControlHelper {
         if response.status == 404, response.body?["reason"] == nil {
             // Fork is registered UNCONDITIONALLY (not behind the Continue
             // toggle), so a bare 404 really is an old server.
-            emit(ok: true, message: "Fork is not available on this server", details: ["state": "route_absent"])
+            emit(ok: true, message: "Fork is not available on this server", details: ["state": "route_absent", "httpStatus": response.status])
             return
         }
         guard let body = response.body else { throw HelperError.message("Server stopped") }
@@ -14265,6 +14458,7 @@ final class COSControlHelper {
         if body["forked"] as? Bool == true {
             emit(ok: true, message: "Forked", details: [
                 "state": "forked",
+                "httpStatus": response.status, "receipt": body,
                 "forkRef": body["forkRef"] as? String ?? "",
                 "forkSession": Self.localForkSession(provider: provider,
                     reference: body["forkRef"] as? String ?? "",
@@ -14276,6 +14470,7 @@ final class COSControlHelper {
         }
         emit(ok: true, message: "Fork refused", details: [
             "state": "refused",
+            "httpStatus": response.status, "receipt": body,
             "reason": body["reason"] as? String ?? "",
             "reasonCopy": body["reasonCopy"] as? String ?? "",
             // True when the server cannot prove no child ran. The app renders

@@ -60,7 +60,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/COSMotion.swift" \
   "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" \
-  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/ActivityWindow.swift" \
+  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" \
@@ -102,7 +102,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
-  "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
+  "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" \
   "$ROOT/Sources/SessionPet.swift" \
@@ -2046,7 +2046,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/COSMotion.swift" \
   "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" \
-  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/ActivityWindow.swift" \
+  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" \
@@ -2135,8 +2135,9 @@ need(re.search(r"openLibraryRow\s*=", library_opener.group(0)) is not None,
      "openLibraryMeeting never assigns openLibraryRow, so the route can never activate")
 
 need('selectedSessionID != nil' in activity, "session detail has no window-local selection gate")
-need(re.search(r"if model\.claudeSessionRouteActive\s*\{\s*ClaudeSessionDetailPane", activity) is not None,
-     "ClaudeSessionDetailPane is not gated on model.claudeSessionRouteActive")
+session_mount = re.search(r'if model\.claudeSessionRouteActive\s*\{(.*?)\} else \{\s*centeredProgress\("Loading session…"\)', activity, re.S)
+need(session_mount is not None and 'ClaudeSessionDetailPane(model: model)' in session_mount.group(1),
+     "ClaudeSessionDetailPane and its backlink must remain gated on model.claudeSessionRouteActive")
 session_route = re.search(r"var claudeSessionRouteActive[^}]*\}", model, re.S)
 need(session_route is not None, "claudeSessionRouteActive not found")
 need(re.search(r"\bopenClaudeRow\b", session_route.group(0)) is not None,
@@ -2186,8 +2187,31 @@ need('environment["COS_CONTROL2_FOUNDATION"] == "1" ? existing.map { $0 == .task
      "opt-in Work must replace the Tasks peer, keeping seven shared navigation entries")
 need('case .work: workSurface' in activity, "Work is not mounted on its Tasks/follow-up parent")
 work_surface = activity[activity.index('@ViewBuilder private var workSurface'):activity.index('private func previewOnlySection')]
-need('if isolatedWorkPreview {' in work_surface and 'Control2FoundationView(showTaskExamples: true)' in work_surface,
+need('if isolatedWorkPreview {' in work_surface and 'Control2FoundationView(showTaskExamples: true, handoffStore: handoffStore, onOpenSession: openHandoffSession)' in work_surface,
      "the isolated Work preview must use synthetic Tasks, not the live Tasks surface")
+need('@StateObject private var handoffStore = WorkHandoffStore()' in activity and
+     'view._handoffStore = StateObject(wrappedValue: WorkHandoffStore(isolated: true))' in activity,
+     "Work and Sessions must share a window-owned store with an explicitly isolated preview instance")
+need('section == .sessions && (isolatedWorkPreview || showingLinkedSession)' in activity and
+     'WorkSessionsView(store: handoffStore, isPreview: isolatedWorkPreview' in activity,
+     "isolated Sessions must use the shared handoff fixture view, not the live Sessions loader")
+full_handoff_open = activity[activity.index('private func openFullHandoffSession'):activity.index('private func previewOnlySection')]
+need('guard !isolatedWorkPreview else { return }' in full_handoff_open and
+     full_handoff_open.index('guard !isolatedWorkPreview') < full_handoff_open.index('model.openClaudeSession(row)'),
+     "opening a full provider session must remain impossible from the isolated preview")
+need('WorkSource.taskSnapshot($0).id == id' in activity,
+     "a Work backlink must resolve the same domain-qualified task identity used by its receipt")
+need('static func workConnectedTest(model: ControllerModel)' in activity and
+     'Text("Connected Work candidate")' in activity,
+     "the explicitly connected candidate must use the real Activity shell and identify live data")
+need('if connectedWorkTest {\n                await model.refresh(quiet: true)\n                await load(.work)' in activity,
+     "connected candidate startup must load capabilities and Work rather than every unrelated Activity source")
+need(activity.count('backgroundWorkEnabled: model.activityLoadsEnabled)') == 3,
+     "foreground Activity load permission must guard all three load paths independently of background services")
+need('historicalWorkReceipts(id)' in work_surface and 'These are the saved handoff receipts' in activity,
+     "a missing canonical task must preserve a read-only receipt fallback instead of a dead backlink")
+
+
 need('Self.usesExistingTaskList(isolatedWorkPreview: isolatedWorkPreview, subview: workSubview)' in work_surface
      and 'tasksList' in work_surface, "normal Work must reuse the existing Tasks surface under its isolation guard")
 need("Sources/Control2Foundation.swift" in (root / "scripts/build-release.sh").read_text(),
@@ -4668,7 +4692,7 @@ if "FileHandle" in models[models.index("struct SessionListCache"):models.index("
     fail("SessionListCache must not open session bodies")
 if "hydrateClaudeSessionsFromCache()" not in model:
     fail("ControllerModel must hydrate Sessions from cache before helper RPC")
-init = model[model.index("init(startBackgroundWork: Bool = true) {"):model.index("func checkForAppUpdate(")]
+init = model[model.index("init(startBackgroundWork: Bool = true, allowActivityLoads: Bool = false) {"):model.index("func checkForAppUpdate(")]
 if "hydrateClaudeSessionsFromCache()" not in init:
     fail("first paint must read the session cache in init, not after the week scan")
 load = model[model.index("func loadClaudeSessions"):model.index("private func fetchClaudeSessions")]
@@ -5283,7 +5307,7 @@ if load.count("guard generation == meetingAudioGeneration else { return }") != 2
     fail("a check overtaken by a newer one must be ignored on both paths")
 if "meetingAudio = []" not in load_catch:
     fail("a failed check must clear its rows, never keep a stale Reaching this Mac")
-init = body(model, "init(startBackgroundWork: Bool = true) {")
+init = body(model, "init(startBackgroundWork: Bool = true, allowActivityLoads: Bool = false) {")
 guard_at, ask_at = init.find("guard startBackgroundWork else { return }"), init.find("meetingAudioNotifier.requestAuthorization()")
 if guard_at < 0 or ask_at < guard_at:
     fail("notification permission is asked at launch, and only by the background-work model")
@@ -5349,7 +5373,7 @@ apply_sessions = body(model, "private func applyPetSessions(")
 if not 0 <= apply_sessions.find("mergeCompletions(") < apply_sessions.find("ScheduledJobLedger.record(") \
         or "saveScheduledJobRuns()" not in apply_sessions:
     fail("finished job runs must be recorded and saved on the authoritative pet poll")
-init = body(model, "init(startBackgroundWork: Bool = true) {")
+init = body(model, "init(startBackgroundWork: Bool = true, allowActivityLoads: Bool = false) {")
 if not 0 <= init.find("guard startBackgroundWork else { return }") < init.find("loadScheduledJobRuns()"):
     fail("today's runs must load at launch, only in the background-work model")
 opener = body(model, "func openClaudeSession(")

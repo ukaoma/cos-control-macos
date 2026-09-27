@@ -35,5 +35,30 @@ import SwiftUI
     let preview = ActivityWindow.workPreview(model: model)
     precondition(!model.backgroundWorkEnabled && preview.isolatedWorkPreview)
     precondition(!ActivityWindow(model: model).isolatedWorkPreview)
+    let connectedModel = ControllerModel(startBackgroundWork: false, allowActivityLoads: true)
+    precondition(!connectedModel.backgroundWorkEnabled && connectedModel.activityLoadsEnabled)
+    precondition(!ActivityWindow.workConnectedTest(model: connectedModel).isolatedWorkPreview)
+    precondition(!model.activityLoadsEnabled, "The isolated preview cannot load foreground production sections")
+    // Handoffs must carry the full task and finish line, not the lens's capped title.
+    let task = TaskRow(.object([
+        "id": .string("legacy-row"), "domain": .string("demo"), "title": .string("Short lens title"),
+        "text": .string("The complete task description for the chosen destination"),
+        "doneWhen": .string("Check desktop and phone widths"), "source": .string("Meeting evidence")
+    ]))!
+    let source = WorkSource.taskSnapshot(task)
+    precondition(source.id == "task:demo:legacy-row" && source.project == "demo")
+    precondition(source.context.contains(task.text) && source.context.contains(task.doneWhen) && source.context.contains(task.source))
+    precondition(source.suggestedPrompt.contains("Ask before publishing or sending externally."))
+    let otherDomain = TaskRow(.object([
+        "id": .string("legacy-row"), "domain": .string("another-domain"), "title": .string(task.title),
+        "text": .string(task.text), "doneWhen": .string(task.doneWhen), "source": .string(task.source)
+    ]))!
+    precondition(WorkSource.taskSnapshot(otherDomain).id != source.id, "Matching row IDs across domains must never share a handoff history or backlink")
+    let changed = TaskRow(.object([
+        "id": .string("legacy-row"), "domain": .string("demo"), "title": .string("Short lens title"),
+        "text": .string(task.text), "doneWhen": .string("A revised finish line"), "source": .string(task.source)
+    ]))!
+    precondition(WorkSource.taskSnapshot(changed).revision != source.revision, "A changed goal must not reuse the previewed context revision")
     print("PASS: seven shared Activity peers, legacy Tasks maps to Work/Tasks, existing Tasks reuse and notification marks, isolated preview/live-load policy")
+    print("PASS: handoff context retains the full task/finish line/source and changes snapshot revision with the goal")
 }
