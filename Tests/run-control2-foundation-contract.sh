@@ -8,7 +8,7 @@ swiftc -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" "$ROOT/Sources/SessionLiveFeed.swift" \
-  "$ROOT/Sources/SessionPet.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkHandoffView.swift" \
-  "$ROOT/Tests/Control2ActivityIntegrationChecks.swift" "$ROOT/Tests/Control2FoundationContract.swift" \
+  "$ROOT/Sources/SessionPet.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" \
+  "$ROOT/Tests/WorkWorkspaceProjectionChecks.swift" "$ROOT/Tests/WorkReviewStoreChecks.swift" "$ROOT/Tests/Control2ActivityIntegrationChecks.swift" "$ROOT/Tests/Control2FoundationContract.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement -o "$BIN"
 "$BIN"

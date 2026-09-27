@@ -1,0 +1,126 @@
+import Foundation
+import SwiftUI
+
+struct WorkReviewTaskLink: Identifiable, Sendable {
+    let taskId: String
+    let domain: String
+    let title: String
+    let evidence: String
+    var id: String { domain + ":" + taskId }
+}
+
+struct WorkReviewRecord: Identifiable, Sendable {
+    let id: String
+    let title: String
+    let domain: String
+    let revision: String
+    let status: String
+    let markdown: String
+    let error: String?
+    let createdAt: String
+    let taskLinks: [WorkReviewTaskLink]
+    let canonicalMeetingId: String
+    let descriptor: [String: String]
+    let model: String
+    let contextWarnings: [String]
+    let inputTruncated: Bool
+    var canPrepare: Bool { status == "ready" && !markdown.isEmpty }
+    var source: WorkSource {
+        WorkSource(id: "meeting:" + (canonicalMeetingId.isEmpty ? id : canonicalMeetingId), title: title, revision: revision, project: domain,
+            context: "Meeting: \(title)\nDomain: \(domain)\nMeeting record: \(canonicalMeetingId)\n\nReviewed follow-up:\n\(markdown)")
+    }
+    init?(_ value: JSONValue) {
+        guard let row = value.object, let id = row["id"]?.string, !id.isEmpty,
+              let source = row["source"]?.object else { return nil }
+        self.id = id
+        title = source["title"]?.string ?? "Meeting follow-up"
+        domain = source["domain"]?.string ?? ""
+        revision = source["revision"]?.string ?? ""
+        status = row["status"]?.string ?? "unknown"
+        markdown = row["markdown"]?.string ?? ""
+        error = row["error"]?.string ?? row["error"]?.object?["message"]?.string
+        createdAt = row["createdAt"]?.string ?? ""
+        canonicalMeetingId = row["canonicalMeetingId"]?.string ?? ""
+        descriptor = (source["descriptor"]?.object ?? [:]).compactMapValues(\.string)
+        model = row["model"]?.string ?? ""
+        contextWarnings = (row["contextWarnings"]?.array ?? []).compactMap(\.string)
+        inputTruncated = source["inputTruncated"]?.bool == true
+        taskLinks = (row["taskLinks"]?.array ?? []).compactMap { value in
+            guard let link = value.object, let taskId = link["taskId"]?.string, !taskId.isEmpty else { return nil }
+            return WorkReviewTaskLink(taskId: taskId, domain: link["domain"]?.string ?? "", title: link["title"]?.string ?? "Linked task", evidence: link["evidence"]?.string ?? "")
+        }
+    }
+}
+
+/// Projection of server-owned review jobs. Navigation never admits a provider run.
+@MainActor final class WorkReviewStore: ObservableObject {
+    typealias Transport = @Sendable ([String], Data?) async throws -> HelperResponse
+    @Published var reviews: [WorkReviewRecord] = []
+    @Published var models: [WorkModelChoice] = []
+    @Published var available = false
+    @Published var busy = false
+    @Published var error: String?
+    @Published var selectedMeeting: LibraryMeeting?
+    @Published var selectedReviewID: String?
+    @Published var automaticAfterSync = false
+    private let transport: Transport
+    init(transport: Transport? = nil) {
+        let helper = HelperClient()
+        self.transport = transport ?? { args, data in try await helper.run(args, timeout: 90, stdinData: data) }
+    }
+    func refresh() async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        do { error = nil; try absorb(await transport(["work-reviews"], nil)) }
+        catch { available = false; models = []; self.error = error.localizedDescription }
+    }
+    func review(meeting: LibraryMeeting, modelID: String) async {
+        guard !busy, available, models.contains(where: { $0.id == modelID && $0.available }) else { return }
+        busy = true; error = nil
+        defer { busy = false }
+        do {
+            var descriptor: [String: String] = ["domain": meeting.domain, "month": meeting.month, "filename": meeting.filename]
+            if !meeting.recordId.isEmpty { descriptor["recordId"] = meeting.recordId }
+            let data = try JSONSerialization.data(withJSONObject: ["meeting": descriptor, "model": modelID])
+            let response = try await transport(["work-review"], data)
+            guard response.ok, let value = response.details["review"], let row = WorkReviewRecord(value) else {
+                throw NSError(domain: "WorkReview", code: 1, userInfo: [NSLocalizedDescriptionKey: response.message])
+            }
+            let sameRecord = !meeting.recordId.isEmpty && row.canonicalMeetingId == meeting.recordId
+            let sameDescriptor = row.descriptor["domain"] == meeting.domain && row.descriptor["month"] == meeting.month && row.descriptor["filename"] == meeting.filename
+            guard sameRecord || (meeting.recordId.isEmpty && sameDescriptor) else {
+                throw NSError(domain: "WorkReview", code: 3, userInfo: [NSLocalizedDescriptionKey: "The review response does not match the selected saved meeting. Refresh before trying again."])
+            }
+            reviews.removeAll { $0.id == row.id }; reviews.insert(row, at: 0)
+            selectedReviewID = row.id; selectedMeeting = nil
+        } catch { self.error = error.localizedDescription }
+    }
+    /// Refresh the canonical source fence immediately before a reviewed context
+    /// can leave Work. A cached result alone is not current authority.
+    func validateForHandoff(_ review: WorkReviewRecord) async -> Bool {
+        guard !busy else { return false }
+        await refresh()
+        guard available, error == nil,
+              let current = reviews.first(where: { $0.id == review.id }), current.canPrepare,
+              current.canonicalMeetingId == review.canonicalMeetingId,
+              current.revision == review.revision, current.markdown == review.markdown else {
+            if error == nil { error = "This meeting review changed or is unavailable. Review the current saved source before sending." }
+            return false
+        }
+        return true
+    }
+
+    private func absorb(_ response: HelperResponse) throws {
+        guard response.ok else { throw NSError(domain: "WorkReview", code: 2, userInfo: [NSLocalizedDescriptionKey: response.message]) }
+        let capabilities = response.details["capabilities"]?.object ?? [:]
+        available = capabilities["manualReview"]?.bool == true
+        automaticAfterSync = capabilities["automaticAfterSync"]?.bool == true
+        models = (capabilities["reviewModels"]?.array ?? response.details["reviewModels"]?.array ?? []).compactMap { value in
+            guard let row = value.object, let id = row["id"]?.string, let provider = row["provider"]?.string else { return nil }
+            return WorkModelChoice(id: id, provider: provider, title: row["title"]?.string ?? id, available: row["available"]?.bool == true, reason: row["reason"]?.string)
+        }
+        reviews = (response.details["reviews"]?.array ?? []).compactMap(WorkReviewRecord.init)
+        if !available { error = "Meeting review is not available on this server yet." }
+    }
+}

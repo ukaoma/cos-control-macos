@@ -89,6 +89,10 @@ private actor HandoffTransport {
 
 @main struct WorkHandoffTests {
     @MainActor static func main() async throws {
+        if CommandLine.arguments.dropFirst().first == "--hold-journal" {
+            try await holdJournalInChild()
+            return
+        }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("work-handoff-tests-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -283,6 +287,115 @@ private actor HandoffTransport {
         let diskCalls = await badDisk.recorded()
         precondition(diskCalls.isEmpty && corrupt.error != nil && unwritable.error != nil)
         print("PASS: malformed journal and persistence failure prevent all transport calls")
+
+        let draftTransport = HandoffTransport(.dropped)
+        let drafts = make("drafts", draftTransport)
+        var draft = drafts.draft(for: source)
+        precondition(draft.prompt == source.suggestedPrompt && draft.sessionID.isEmpty && draft.provider.isEmpty && draft.modelID.isEmpty)
+        draft.prompt = "Operator's unsent edits"; draft.mode = .newSession
+        draft.sessionID = other.id; draft.provider = "codex"; draft.modelID = choice.id
+        precondition(drafts.updateDraft(draft, for: source))
+        drafts.selectedWorkID = second.id
+        let draftReload = make("drafts", draftTransport)
+        let restored = draftReload.draft(for: source)
+        precondition(restored.prompt == draft.prompt && restored.mode == .newSession && restored.sessionID == other.id
+            && restored.provider == "codex" && restored.modelID == choice.id)
+        let revised = WorkSource(id: source.id, title: source.title, revision: "changed", project: source.project, context: "Revised source")
+        let revisionDraft = draftReload.draft(for: revised)
+        precondition(revisionDraft.prompt == revised.suggestedPrompt && revisionDraft.sessionID.isEmpty && revisionDraft.modelID.isEmpty)
+        precondition(!draftReload.updateDraft(restored, for: revised), "A stale source draft cannot be written into a different revision")
+        precondition(draftReload.draft(for: source).prompt == "Operator's unsent edits")
+        let competingDrafts = make("drafts", draftTransport)
+        var staleDraft = competingDrafts.draft(for: source)
+        var newestDraft = draftReload.draft(for: source); newestDraft.prompt = "Newer window edit"
+        precondition(draftReload.updateDraft(newestDraft, for: source))
+        staleDraft.prompt = "Stale window overwrite"
+        precondition(!competingDrafts.updateDraft(staleDraft, for: source))
+        precondition(make("drafts", draftTransport).draft(for: source).prompt == "Newer window edit")
+        let draftCalls = await draftTransport.recorded()
+        precondition(draftCalls.isEmpty, "Draft persistence cannot deliver a message")
+        print("PASS: source/revision drafts retain prompt and destination across reload; stale revision/window edits cannot overwrite")
+
+        var legacy = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("lost.json"))) as! [String: Any]
+        legacy["version"] = 1; legacy.removeValue(forKey: "drafts")
+        try JSONSerialization.data(withJSONObject: legacy).write(to: root.appendingPathComponent("legacy-drafts.json"))
+        let upgraded = make("legacy-drafts", draftTransport)
+        let oldIntentID = upgraded.receipts.first!.id
+        var upgradingDraft = upgraded.draft(for: source); upgradingDraft.prompt = "Draft alongside retained unknown receipt"
+        precondition(upgraded.updateDraft(upgradingDraft, for: source))
+        let upgradedReload = make("legacy-drafts", draftTransport)
+        precondition(upgradedReload.receipts.first?.id == oldIntentID && upgradedReload.receipts.first?.blocksNewHandoff == true)
+        precondition(upgradedReload.draft(for: source).prompt == upgradingDraft.prompt)
+        let upgradedBytes = try Data(contentsOf: root.appendingPathComponent("legacy-drafts.json"))
+        let upgradedWire = try JSONSerialization.jsonObject(with: upgradedBytes) as! [String: Any]
+        precondition(upgradedWire["version"] as? Int == 2, "Draft writes must identify the new schema; a v1 binary must not silently overwrite drafts")
+        precondition((upgradedWire["drafts"] as? [[String: Any]])?.first?["prompt"] as? String == upgradingDraft.prompt)
+        let downgradeTransport = HandoffTransport(.continueTurn)
+        let oldReader = LegacyWorkHandoffStore(storageURL: root.appendingPathComponent("legacy-drafts.json"), transport: { args, data in try await downgradeTransport.run(args, data) })
+        oldReader.sessions = [target]
+        precondition(oldReader.error != nil, "Actual baseline reader must refuse the v2 journal")
+        await oldReader.submit(source: source, mode: .continueSession, session: target, model: nil, prompt: "Must not overwrite a newer journal")
+        let downgradeCalls = await downgradeTransport.recorded()
+        precondition(downgradeCalls.isEmpty && oldReader.error != nil)
+        let afterDowngradeBytes = try Data(contentsOf: root.appendingPathComponent("legacy-drafts.json"))
+        precondition(afterDowngradeBytes == upgradedBytes)
+        print("PASS: legacy upgrade retains unknown fence/drafts; actual baseline store refuses v2 with zero transport or journal mutation")
+
+        let recommendationStore = make("recommendations", draftTransport, isolated: true)
+        let unrelated = WorkSource(id: "recommendation-work", title: "Prepare next reviewable result", revision: "1", project: "", context: "Review work and task context")
+        recommendationStore.sessions = [WorkSession(id: "codex:generic", nativeID: "generic", provider: "codex", title: "Review work and task context", summary: "Prepare next reviewable result", project: "", status: "idle"), target, other]
+        precondition(recommendationStore.recommendations(for: unrelated).isEmpty, "Boilerplate overlap must not recommend a recipient")
+        await recommendationStore.submit(source: unrelated, mode: .continueSession, session: other, model: nil, prompt: "Explicit association")
+        recommendationStore.simulate(receiptID: recommendationStore.receipts[0].id, outcome: "completed")
+        precondition(recommendationStore.recommendations(for: unrelated).first?.id == other.id)
+        precondition(recommendationStore.recommendationReason(for: other, source: unrelated).lowercased().contains("handoff"))
+        precondition(recommendationStore.draft(for: unrelated).sessionID.isEmpty, "Recommendation must not automatically select a recipient")
+        print("PASS: generic overlap produces no recommendation; exact prior handoff ranks first without selecting it")
+
+        // The child invokes the actual store and holds its lock across transport.
+        // This proves an OS-process boundary, not merely two instances in one process.
+        let marker = root.appendingPathComponent("child-holds-lock")
+        let release = root.appendingPathComponent("release-child")
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        child.arguments = ["--hold-journal", root.appendingPathComponent("cross-process.json").path, marker.path, release.path]
+        try child.run()
+        defer { if child.isRunning { child.terminate() } }
+        for _ in 0..<150 {
+            if FileManager.default.fileExists(atPath: marker.path) { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        precondition(FileManager.default.fileExists(atPath: marker.path), "Child must positively reach transport while holding its journal lock")
+        let crossProcessTransport = HandoffTransport(.continueTurn)
+        let crossProcessStore = make("cross-process", crossProcessTransport)
+        await crossProcessStore.submit(source: second, mode: .continueSession, session: other, model: nil, prompt: "Must not race child")
+        let crossCalls = await crossProcessTransport.recorded()
+        precondition(crossCalls.isEmpty && crossProcessStore.error != nil)
+        try Data().write(to: release)
+        for _ in 0..<150 {
+            if !child.isRunning { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        precondition(!child.isRunning && child.terminationStatus == 0, "Child must release and exit cleanly")
+        print("PASS: actual separate process holds journal lock and prevents duplicate dispatch")
+    }
+    @MainActor private static func holdJournalInChild() async throws {
+        guard CommandLine.arguments.count == 5 else { throw HelperClientError.commandFailed("Invalid child fixture arguments") }
+        let journal = URL(fileURLWithPath: CommandLine.arguments[2])
+        let marker = URL(fileURLWithPath: CommandLine.arguments[3])
+        let release = URL(fileURLWithPath: CommandLine.arguments[4])
+        let store = WorkHandoffStore(storageURL: journal, transport: { _, _ in
+            try Data().write(to: marker)
+            for _ in 0..<250 {
+                if FileManager.default.fileExists(atPath: release.path) { break }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            throw HelperClientError.commandFailed("Synthetic child delivery remains unknown")
+        })
+        let session = WorkSession(id: "codex:child-held", nativeID: "child-held", provider: "codex", title: "Child fixture", summary: "", project: "Fixture", status: "idle")
+        store.sessions = [session]
+        await store.submit(source: WorkSource(id: "child-work", title: "Fixture", revision: "1", project: "Fixture", context: "Synthetic"), mode: .continueSession, session: session, model: nil, prompt: "Hold until released")
+        precondition(store.receipts.first?.status == "unknown")
     }
     private static func require<T>(_ value: T?) throws -> T {
         guard let value else { throw HelperClientError.commandFailed("Expected fixture result was missing") }

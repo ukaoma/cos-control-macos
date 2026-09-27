@@ -1,0 +1,535 @@
+import AppKit
+import SwiftUI
+
+enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
+    case all, attention, progress, completed
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .all: "All work"
+        case .attention: "Needs attention"
+        case .progress: "In progress"
+        case .completed: "Completed"
+        }
+    }
+}
+
+@MainActor final class WorkWorkspaceState: ObservableObject {
+    @Published var scope: WorkWorkspaceScope = .all
+    @Published var domain: String?
+    @Published var query = ""
+    @Published var selectedID: String?
+    @Published var meetingPicker = false
+    @Published var reviewModelID = ""
+    @Published var captureOpen = false
+    @Published var captureText = ""
+    @Published var captureDomain = ""
+    @Published var captureBusy = false
+    @Published var captureError: String?
+
+    /// Explicit transition after admission also handles a reused review ID, where
+    /// SwiftUI onChange would not fire. Failure leaves the chosen intake visible.
+    func requestReview(meeting: LibraryMeeting, modelID: String, store: WorkReviewStore) async -> WorkReviewRecord? {
+        await store.review(meeting: meeting, modelID: modelID)
+        guard store.selectedMeeting == nil, store.error == nil,
+              let id = store.selectedReviewID, let review = store.reviews.first(where: { $0.id == id }) else { return nil }
+        selectedID = "meeting-review:" + review.id
+        meetingPicker = false
+        return review
+    }
+
+}
+
+struct WorkWorkspaceItem: Identifiable {
+    let id: String
+    let title: String
+    let domain: String
+    let searchText: String
+    let subtitle: String
+    let task: TaskRow?
+    let review: WorkReviewRecord?
+    let needsAttention: Bool
+    let inProgress: Bool
+    let completed: Bool
+    var sourceID: String { review?.source.id ?? id }
+}
+
+enum WorkWorkspaceProjection {
+    static func previewRows(_ samples: [Control2PreviewTask]) -> [TaskRow] {
+        samples.compactMap { row in TaskRow(.object([
+            "id": .string(row.id), "domain": .string(row.domain), "title": .string(row.title), "text": .string(row.title),
+            "checked": .bool(row.completed), "source": .string(row.source), "doneWhen": .string(row.finishLine),
+            "stage": .string(row.stage.lowercased())
+        ])) }
+    }
+    @MainActor static func previewReviewStore() -> WorkReviewStore {
+        let store = WorkReviewStore(transport: { _, _ in
+            throw HelperClientError.invalidResponse("Local sample review: live transport is disabled.")
+        })
+        if let review = WorkReviewRecord(.object([
+            "id": .string("sample-review"), "status": .string("ready"), "canonicalMeetingId": .string("sample-meeting"),
+            "markdown": .string("## Website follow-up\nPrepare a clearer homepage call to action. Check the mobile layout. Bring the changes back for review before publishing."),
+            "source": .object(["title": .string("Website launch review · sample"), "domain": .string("Website"),
+                "revision": .string("sample-1"), "descriptor": .object(["recordId": .string("sample-meeting")])])
+        ])) { store.reviews = [review] }
+        return store
+    }
+
+    static func items(tasks: [TaskRow], reviews: [WorkReviewRecord], receipts: [WorkHandoffReceipt]) -> [WorkWorkspaceItem] {
+        let taskItems = tasks.map { task in
+            let source = WorkSource.taskSnapshot(task)
+            let linked = receipts.filter { $0.workID == source.id }
+            let running = linked.contains { ["preparing", "sending", "queued", "running"].contains($0.status) }
+            let attention = linked.contains { ["unknown", "failed", "refused", "delivered"].contains($0.status) }
+            let label = task.checked ? "Completed task" : task.agentState == "done" ? "Agent finished · task still open" : task.stage.capitalized
+            return WorkWorkspaceItem(id: source.id, title: task.text.isEmpty ? task.title : task.text, domain: task.domain,
+                searchText: source.context, subtitle: label, task: task, review: nil,
+                needsAttention: !task.checked && (task.failed == true || task.missed == true || attention || task.agentState == "done" || task.stage == "review"),
+                inProgress: task.agentState == "running" || running, completed: task.checked)
+        }
+        let meetingItems = reviews.map { review in
+            WorkWorkspaceItem(id: "meeting-review:" + review.id, title: review.title, domain: review.domain,
+                searchText: review.title + " " + review.markdown + " " + review.source.context,
+                subtitle: "Meeting review · " + review.status.replacingOccurrences(of: "_", with: " "),
+                task: nil, review: review,
+                needsAttention: ["completed", "ready", "failed", "unknown", "needs_review"].contains(review.status),
+                inProgress: ["preparing", "starting", "queued", "running", "accepted"].contains(review.status),
+                completed: false)
+        }
+        return (taskItems + meetingItems).enumerated().sorted { left, right in
+            func rank(_ item: WorkWorkspaceItem) -> Int {
+                if item.completed { return 3 }
+                if item.needsAttention { return 0 }
+                if item.inProgress { return 1 }
+                return 2
+            }
+            let l = rank(left.element), r = rank(right.element)
+            return l == r ? left.offset < right.offset : l < r
+        }.map(\.element)
+    }
+
+    /// A row identifies one review revision; its source identifies the work across revisions.
+    static func rowID(forSourceID id: String, currentID: String?, items: [WorkWorkspaceItem]) -> String? {
+        if let currentID, items.contains(where: { $0.id == currentID && $0.sourceID == id }) { return currentID }
+        let matches = items.filter { $0.sourceID == id }
+        let ordered = matches.sorted { left, right in
+            let leftOld = ["superseded", "stale"].contains(left.review?.status ?? "")
+            let rightOld = ["superseded", "stale"].contains(right.review?.status ?? "")
+            if leftOld != rightOld { return !leftOld }
+            return (left.review?.createdAt ?? "") > (right.review?.createdAt ?? "")
+        }
+        return ordered.first?.id
+    }
+
+    static func filter(_ items: [WorkWorkspaceItem], scope: WorkWorkspaceScope, domain: String?, query: String) -> [WorkWorkspaceItem] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return items.filter { item in
+            guard domain == nil || item.domain == domain else { return false }
+            if !needle.isEmpty && !(item.title + " " + item.domain + " " + item.searchText).localizedCaseInsensitiveContains(needle) { return false }
+            switch scope {
+            case .all: return true
+            case .attention: return item.needsAttention
+            case .progress: return item.inProgress
+            case .completed: return item.completed
+            }
+        }
+    }
+}
+
+struct WorkWorkspaceView: View {
+    @ObservedObject var model: ControllerModel
+    @ObservedObject var handoffStore: WorkHandoffStore
+    @ObservedObject var reviewStore: WorkReviewStore
+    @ObservedObject var state: WorkWorkspaceState
+    var onOpenSession: (String) -> Void
+    var onEditTask: (TaskRow) -> Void
+    var onReviewMeeting: (LibraryMeeting) -> Void
+
+    private var items: [WorkWorkspaceItem] {
+        WorkWorkspaceProjection.items(tasks: handoffStore.isolated ? WorkWorkspaceProjection.previewRows(handoffStore.previewTasks) : model.workTasks, reviews: reviewStore.reviews, receipts: handoffStore.receipts)
+    }
+    private var visible: [WorkWorkspaceItem] { WorkWorkspaceProjection.filter(items, scope: state.scope, domain: state.domain, query: state.query) }
+    private var selected: WorkWorkspaceItem? { items.first { $0.id == state.selectedID } }
+    private var domains: [String] { Array(Set(model.domainOptions.map(\.name) + items.map(\.domain))).filter { !$0.isEmpty }.sorted() }
+    private var hasDetail: Bool { state.selectedID != nil || state.meetingPicker || reviewStore.selectedMeeting != nil }
+
+    var body: some View {
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                header
+                if state.captureOpen { captureForm }
+                Divider().overlay(COSPalette.line)
+                if state.meetingPicker {
+                    HStack {
+                        Button { returnToList() } label: { Label("Back to work list", systemImage: "chevron.left") }
+                            .buttonStyle(COSQuietButtonStyle())
+                        Spacer()
+                    }.padding(.horizontal, 18).padding(.vertical, 8)
+                    detailPane
+                } else if geometry.size.width >= 900 {
+                    HStack(spacing: 0) {
+                        sidebar.frame(width: 148)
+                        Divider()
+                        workList.frame(width: 248)
+                        Divider()
+                        detailPane.frame(maxWidth: .infinity)
+                    }
+                } else {
+                    compactNavigation
+                    Divider()
+                    if hasDetail {
+                        HStack {
+                            Button { returnToList() } label: { Label("Back to work list", systemImage: "chevron.left") }
+                                .buttonStyle(COSQuietButtonStyle())
+                            Spacer()
+                        }.padding(.horizontal, 18).padding(.vertical, 8)
+                        detailPane
+                    } else { workList }
+                }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .background(COSPalette.panel).clipped()
+        }
+        .task {
+            if let id = handoffStore.selectedWorkID { state.selectedID = WorkWorkspaceProjection.rowID(forSourceID: id, currentID: state.selectedID, items: items) ?? id }
+            guard !handoffStore.isolated else { return }
+            await model.loadDomains()
+            await model.loadWorkTasks()
+            await reviewStore.refresh()
+            if let id = handoffStore.selectedWorkID { state.selectedID = WorkWorkspaceProjection.rowID(forSourceID: id, currentID: state.selectedID, items: items) ?? id }
+        }
+        .task(id: reviewStore.reviews.contains { ["preparing", "starting", "queued", "running", "accepted"].contains($0.status) }) {
+            guard !handoffStore.isolated else { return }
+            while !Task.isCancelled && reviewStore.reviews.contains(where: { ["preparing", "starting", "queued", "running", "accepted"].contains($0.status) }) {
+                do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                guard !Task.isCancelled else { return }
+                await reviewStore.refresh()
+            }
+        }
+        .onChange(of: reviewStore.selectedReviewID) { _, id in
+            if let id, let review = reviewStore.reviews.first(where: { $0.id == id }) {
+                state.selectedID = "meeting-review:" + review.id; handoffStore.selectedWorkID = review.source.id
+            }
+        }
+         .onChange(of: handoffStore.selectedWorkID) { _, id in
+            if let id { state.selectedID = WorkWorkspaceProjection.rowID(forSourceID: id, currentID: state.selectedID, items: items) ?? id }
+        }
+        .onChange(of: reviewStore.selectedMeeting?.recordId) { _, id in
+            if id != nil { state.selectedID = nil; state.meetingPicker = false }
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 14) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Work").font(COSType.display(26, weight: .medium))
+                Text(handoffStore.isolated ? "Local sample data. No task writes or agent calls." : model.workTasksComplete ? "Tasks, meeting follow-up, and the sessions doing the work." : "Showing available work. Task inventory is not confirmed complete.")
+                    .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+            }
+            Spacer(minLength: 8)
+            Button("Add task") {
+                state.captureOpen.toggle()
+                if state.captureDomain.isEmpty { state.captureDomain = state.domain ?? model.domainOptions.first?.name ?? "" }
+            }.buttonStyle(COSQuietButtonStyle()).disabled(handoffStore.isolated)
+            Button(handoffStore.isolated ? "Sample meeting review" : "Review a meeting") {
+                if handoffStore.isolated {
+                    if let item = items.first(where: { $0.review != nil }) { select(item) }
+                    return
+                }
+                state.meetingPicker = true; state.selectedID = nil; reviewStore.selectedMeeting = nil
+                Task { await model.loadLibraryMeetings() }
+            }.buttonStyle(COSPrimaryButtonStyle())
+            Button { Task { await model.loadWorkTasks(); await reviewStore.refresh() } } label: { Image(systemName: "arrow.clockwise") }
+                .buttonStyle(COSQuietButtonStyle()).disabled(handoffStore.isolated || model.workTasksLoading || reviewStore.busy).help("Refresh work")
+        }.padding(18)
+    }
+
+    private var captureForm: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                TextField("What needs to be done?", text: $state.captureText).textFieldStyle(.roundedBorder).disabled(state.captureBusy)
+                Picker("Domain", selection: $state.captureDomain) {
+                    Text("Choose domain").tag("")
+                    ForEach(model.domainOptions) { Text($0.label).tag($0.name) }
+                }.frame(maxWidth: 200).disabled(state.captureBusy)
+                Button(state.captureBusy ? "Adding…" : "Capture") {
+                    guard !handoffStore.isolated else { return }
+                    let text = state.captureText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let domain = state.captureDomain
+                    state.captureBusy = true; state.captureError = nil
+                    Task {
+                        defer { state.captureBusy = false }
+                        do {
+                            try await model.captureTask(domain: domain, text: text)
+                            state.captureText = ""; state.captureOpen = false
+                            await model.loadWorkTasks()
+                        } catch { state.captureError = error.localizedDescription }
+                    }
+                }.buttonStyle(COSPrimaryButtonStyle())
+                    .disabled(state.captureBusy || state.captureText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.domainOptions.contains { $0.name == state.captureDomain })
+            }
+            if let error = state.captureError { Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.danger) }
+        }.padding(.horizontal, 18).padding(.bottom, 12)
+    }
+
+    private var sidebar: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(WorkWorkspaceScope.allCases) { scope in
+                    navigationRow(scope.title, selected: state.scope == scope && state.domain == nil) {
+                        state.scope = scope; state.domain = nil; returnToList()
+                    }
+                }
+                Divider().padding(.vertical, 12)
+                Text("Domains").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted).padding(.horizontal, 10)
+                ForEach(domains, id: \.self) { domain in
+                    navigationRow(domainLabel(domain), selected: state.domain == domain) {
+                        state.domain = domain; state.scope = .all; returnToList()
+                    }
+                }
+            }.padding(10)
+        }.background(COSPalette.card)
+    }
+
+    private func navigationRow(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Rectangle().fill(selected ? COSPalette.gold : .clear).frame(width: 2)
+                Text(title).font(COSType.body(12, weight: selected ? .semibold : .regular)).multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+            }.padding(.vertical, 9).padding(.trailing, 6).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+        }.buttonStyle(.plain).foregroundStyle(selected ? Color.primary : COSPalette.muted)
+            .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private var compactNavigation: some View {
+        HStack(spacing: 18) {
+            Picker("View", selection: $state.scope) {
+                ForEach(WorkWorkspaceScope.allCases) { Text($0.title).tag($0) }
+            }.onChange(of: state.scope) { _, _ in returnToList() }
+            Picker("Domain", selection: Binding(get: { state.domain ?? "" }, set: { state.domain = $0.isEmpty ? nil : $0; returnToList() })) {
+                Text("All domains").tag("")
+                ForEach(domains, id: \.self) { Text(domainLabel($0)).tag($0) }
+            }
+            Spacer(minLength: 0)
+        }.font(COSType.body(12)).padding(.horizontal, 18).padding(.vertical, 10)
+    }
+
+    private var workList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            TextField("Search work", text: $state.query).textFieldStyle(.plain)
+                .help("Search full task text, finish lines, source evidence, and review context")
+                .font(COSType.body(12)).padding(10).background(COSPalette.card, in: RoundedRectangle(cornerRadius: 6)).padding(12)
+            HStack {
+                Text("\(visible.count) shown").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                Spacer()
+                if model.workTasksLoading { ProgressView().controlSize(.small) }
+            }.padding(.horizontal, 16).padding(.bottom, 8)
+            if let error = model.workTasksError { Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.danger).padding(12) }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if visible.isEmpty {
+                        Text(model.workTasksLoading ? "Loading work…" : "No work matches this view.")
+                            .font(COSType.body(13)).foregroundStyle(COSPalette.muted).padding(18)
+                    }
+                    ForEach(visible) { item in
+                        Button { select(item) } label: {
+                            VStack(alignment: .leading, spacing: 7) {
+                                Text(inlineTitle(item.title)).font(COSType.body(13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                                Text(domainLabel(item.domain) + " · " + item.subtitle).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+                                if item.needsAttention { Label("Needs attention", systemImage: "circle.fill").font(COSType.body(10)).foregroundStyle(COSPalette.accent) }
+                            }.padding(16).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                        }.buttonStyle(.plain).background(state.selectedID == item.id ? COSPalette.raised : Color.clear)
+                            .accessibilityAddTraits(state.selectedID == item.id ? .isSelected : [])
+                        Divider().overlay(COSPalette.line)
+                    }
+                }
+            }
+        }.frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    @ViewBuilder private var detailPane: some View {
+        if state.meetingPicker {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Choose a saved meeting").font(COSType.display(23, weight: .medium)).padding(.horizontal, 18)
+                Text("Browse older months or search. Selecting a meeting does not start an agent.").font(COSType.body(12)).foregroundStyle(COSPalette.muted).padding(.horizontal, 18)
+                MeetingLibraryBody(model: model, selectionOnly: true, onOpen: onReviewMeeting)
+            }.padding(.top, 18)
+        } else if let meeting = reviewStore.selectedMeeting {
+            ScrollView { meetingIntake(meeting).padding(22) }
+        } else if let item = selected {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    if let task = item.task { taskDetail(task) }
+                    else if let review = item.review { meetingDetail(review) }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(22)
+            }.id(item.id)
+        } else if let id = state.selectedID, !handoffStore.receipts(for: id).isEmpty {
+            ScrollView { receiptFallback(id).padding(22) }
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(state.selectedID == nil ? "Choose what to work on" : "This work is not currently available").font(COSType.display(25, weight: .medium))
+                Text(state.selectedID == nil ? "Select a task to see its goal, source, agent destination, and history. Or review a saved meeting for follow-up." : "Refresh or choose another item. The original task or meeting has not been recreated.").font(COSType.body(13)).foregroundStyle(COSPalette.muted)
+            }.padding(26).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private func taskDetail(_ task: TaskRow) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .top) {
+                Text(inlineTitle(task.text.isEmpty ? task.title : task.text)).font(COSType.display(24, weight: .medium)).textSelection(.enabled)
+                Spacer(minLength: 8)
+                if handoffStore.isolated {
+                    Button(task.checked ? "Reopen sample" : "Complete sample") {
+                        if let index = handoffStore.previewTasks.firstIndex(where: { $0.id == task.id }) { handoffStore.previewTasks[index].completed.toggle() }
+                    }.buttonStyle(COSQuietButtonStyle())
+                } else {
+                    Button("Edit task") { onEditTask(task) }.buttonStyle(COSQuietButtonStyle())
+                }
+            }
+            Text(domainLabel(task.domain) + " · " + (task.checked ? "Completed task" : task.stage.capitalized))
+                .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+            fact("Done when", task.doneWhen.isEmpty ? "No finish line recorded. Use Edit task to define one." : task.doneWhen)
+            if !task.source.isEmpty { fact("Source", task.source) }
+            if !task.runAt.isEmpty { fact("Scheduled", task.runAt) }
+            WorkHandoffView(store: handoffStore, source: .taskSnapshot(task), isPreview: handoffStore.isolated, onOpenSession: onOpenSession)
+            Text("Task editing, scheduling, and completion stay attached to the original task. Agent output does not change its completion state.")
+                .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+        }
+    }
+
+    private func meetingIntake(_ meeting: LibraryMeeting) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Review follow-up").font(COSType.display(25, weight: .medium))
+            Text(meeting.title).font(COSType.body(16, weight: .semibold))
+            Text(meeting.date + " · " + meeting.domainLabel).font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+            Text("Review the canonical saved meeting for decisions and possible next steps. This does not create, complete, or send tasks automatically.")
+                .font(COSType.body(13)).foregroundStyle(COSPalette.muted)
+            if reviewStore.available {
+                Picker("Review model", selection: $state.reviewModelID) {
+                    Text("Choose a model").tag("")
+                    ForEach(reviewStore.models) { choice in Text(choice.title + (choice.available ? "" : " · unavailable")).tag(choice.id) }
+                }
+                if let reason = reviewStore.models.first(where: { $0.id == state.reviewModelID })?.reason { Text(reason).font(COSType.body(11)).foregroundStyle(COSPalette.muted) }
+                Button(reviewStore.busy ? "Reviewing…" : "Review this meeting") {
+                    Task {
+                        if let review = await state.requestReview(meeting: meeting, modelID: state.reviewModelID, store: reviewStore) {
+                            handoffStore.selectedWorkID = review.source.id
+                        }
+                    }
+                }.buttonStyle(COSPrimaryButtonStyle())
+                    .disabled(reviewStore.busy || reviewStore.models.first(where: { $0.id == state.reviewModelID })?.available != true)
+            } else {
+                Text("Meeting review is unavailable on this server. Your saved meetings and tasks remain available.")
+                    .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+                Button("Check availability") { Task { await reviewStore.refresh() } }.buttonStyle(COSQuietButtonStyle())
+            }
+            if let error = reviewStore.error { Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger) }
+            ForEach(reviewStore.reviews.filter { $0.descriptor["recordId"] == meeting.recordId && !meeting.recordId.isEmpty }) { review in
+                Button("Open recorded review · \(review.status)") {
+                    state.selectedID = "meeting-review:" + review.id; handoffStore.selectedWorkID = review.source.id; reviewStore.selectedMeeting = nil
+                }.buttonStyle(COSQuietButtonStyle())
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func meetingDetail(_ review: WorkReviewRecord) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(inlineTitle(review.title)).font(COSType.display(25, weight: .medium))
+            Text("Meeting review · " + review.status.replacingOccurrences(of: "_", with: " ")).font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+            if let error = review.error { Text(error).foregroundStyle(COSPalette.danger) }
+            if review.inputTruncated {
+                Label("The source was too long to include in full. Review may omit details.", systemImage: "exclamationmark.triangle")
+                    .font(COSType.body(12)).foregroundStyle(COSPalette.danger)
+            }
+            ForEach(review.contextWarnings, id: \.self) { warning in
+                Text(warning).font(COSType.body(12)).foregroundStyle(COSPalette.danger)
+            }
+            if !handoffStore.isolated {
+                Text("This review also appears in COS conversation history.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+            }
+            if !review.markdown.isEmpty { COSMarkdownView(text: review.markdown) }
+            if !review.taskLinks.isEmpty {
+                Text("Possible existing task links").font(COSType.display(18, weight: .medium))
+                Text("Suggestions only. No task has been created or completed.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                ForEach(Array(review.taskLinks.enumerated()), id: \.offset) { _, link in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(link.title).font(COSType.body(12, weight: .semibold))
+                        Text(link.evidence).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    }
+                }
+            }
+            if let error = reviewStore.error {
+                Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger)
+            }
+            if review.canPrepare && (handoffStore.isolated || (reviewStore.available && reviewStore.error == nil)) {
+                WorkHandoffView(store: handoffStore, source: review.source, isPreview: handoffStore.isolated, onOpenSession: onOpenSession,
+                    validateBeforeSend: {
+                        if handoffStore.isolated { return true }
+                        return await reviewStore.validateForHandoff(review)
+                    })
+            } else {
+                Text(review.canPrepare ? "Refresh to verify this source before preparing work." : "Agent preparation becomes available after this review finishes successfully.").font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+                Button("Check review status") { Task { await reviewStore.refresh() } }.buttonStyle(COSQuietButtonStyle())
+            }
+        }
+    }
+
+    private func receiptFallback(_ id: String) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(handoffStore.receipts(for: id).first?.workTitle ?? "Saved work history").font(COSType.display(24, weight: .medium))
+            Text("The original item is not in the current source inventory. Its saved handoffs remain here; no item has been recreated.").font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+            ForEach(handoffStore.receipts(for: id)) { receipt in
+                Text(receipt.status.capitalized + " · " + receipt.detail).font(COSType.body(12))
+                Text(receipt.prompt).font(COSType.body(12)).textSelection(.enabled)
+                if let result = receipt.result { COSMarkdownView(text: result) }
+                if let session = receipt.sessionID { Button("Open session") { onOpenSession(session) }.buttonStyle(COSQuietButtonStyle()) }
+                Divider()
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func inlineTitle(_ value: String) -> AttributedString {
+        (try? AttributedString(markdown: value, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(value)
+    }
+
+    private func fact(_ title: String, _ content: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
+            Text(content).font(COSType.body(13)).textSelection(.enabled)
+        }
+    }
+    private func domainLabel(_ domain: String) -> String { model.domainOptions.first { $0.name == domain }?.label ?? domain.replacingOccurrences(of: "_", with: " ").capitalized }
+    private func select(_ item: WorkWorkspaceItem) {
+        state.selectedID = item.id; state.meetingPicker = false; reviewStore.selectedMeeting = nil; handoffStore.selectedWorkID = item.sourceID
+    }
+    private func returnToList() { state.selectedID = nil; handoffStore.selectedWorkID = nil; state.meetingPicker = false; reviewStore.selectedMeeting = nil }
+}
+
+/// TextEditor can consume SwiftUI's onExitCommand. This handler exists only while
+/// an editor is mounted, and only intercepts Escape in its own Activity window.
+struct WorkEditorEscapeHandler: NSViewRepresentable {
+    var onEscape: () -> Void
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.view = view
+        context.coordinator.action = onEscape
+        context.coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak coordinator = context.coordinator] event in
+            guard event.keyCode == 53, let coordinator,
+                  let window = coordinator.view?.window, event.window === window else { return event }
+            coordinator.action?()
+            return nil
+        }
+        return view
+    }
+    func updateNSView(_ view: NSView, context: Context) { context.coordinator.action = onEscape }
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
+        if let monitor = coordinator.monitor { NSEvent.removeMonitor(monitor) }
+        coordinator.monitor = nil
+    }
+    final class Coordinator {
+        weak var view: NSView?
+        var monitor: Any?
+        var action: (() -> Void)?
+    }
+}

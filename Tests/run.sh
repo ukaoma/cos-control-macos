@@ -60,7 +60,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/COSMotion.swift" \
   "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" \
-  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/ActivityWindow.swift" \
+  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" \
@@ -102,7 +102,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
-  "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
+  "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" \
   "$ROOT/Sources/SessionPet.swift" \
@@ -1204,7 +1204,9 @@ need("task.text.isEmpty ? task.title : task.text" in activity,
      "the row still renders the lens-capped title instead of the full text")
 detail = activity[activity.index("private func taskDetailSheet"):]
 detail = detail[:detail.index("\n    private func detailLine")]
-for action in ("setTaskText", "setTaskChecked", "moveTask", "scheduleTask", "runTask"):
+save_edits = activity[activity.index("private func saveTaskEdits"):activity.index("private func closeTaskDetail")]
+need("model.setTaskText(" in save_edits and "saveTaskEdits()" in detail, "task editing must save through the guarded combined editor")
+for action in ("setTaskChecked", "moveTask", "scheduleTask", "runTask"):
     need(f"model.{action}(" in detail, f"the detail view cannot {action}")
 need('Text(task.checked ? "Reopen" : "Done")' in detail or 'task.checked ? "Reopen" : "Done"' in detail,
      "the detail view has no Done/Reopen")
@@ -1212,8 +1214,8 @@ need('Text(task.checked ? "Reopen" : "Done")' in detail or 'task.checked ? "Reop
 need('task.agentState == "running"' in detail, "Run now is offered while an agent is already running")
 # Its own route flag, written only by the opener, so a board refresh cannot
 # dismiss the sheet under the user.
-need(len(re.findall(r"taskDetail = ", activity)) == 2,
-     "taskDetail is written from somewhere other than open/close")
+need(len(re.findall(r"taskDetail = ", activity)) == 3 and "taskDetail = refreshed" in activity,
+     "taskDetail may only open, close, or refresh after its own successful mutation")
 
 need("private var domainsCard" in views, "there is no Domains settings card")
 need("model.saveDomains(" in views, "the Domains card cannot save")
@@ -1265,10 +1267,9 @@ need('task.checked ? "Reopen" : "Done"' in row, "the row has no Done/Reopen CTA"
 need("await checkTask(task)" in row, "the row Done CTA does not complete the task")
 need(".popover(" in row, "Schedule on the row has no timestamp picker")
 need("private func taskSchedulePopover" in activity, "the Schedule popover is gone")
-need('Text("Schedule for")' in detail, "the overlay Schedule action has no timestamp")
+need('Text("Legacy schedule for")' in detail, "the overlay Schedule action has no timestamp")
 need("DatePicker" in detail, "the overlay lost its schedule DatePicker")
-overlay = activity[activity.index("// Inline overlay"):]
-overlay = overlay[:overlay.index("private var tasksStatus")]
+overlay = activity[activity.index("private var taskEditorOverlay"):activity.index("private func taskDetailSheet")]
 need(".shadow(" not in overlay, "the task overlay still has a drop shadow")
 need("COSPalette.card" in overlay and "COSPalette.line" in overlay,
      "the task overlay is not the board's card/hairline")
@@ -2046,7 +2047,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/COSMotion.swift" \
   "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" \
-  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/ActivityWindow.swift" \
+  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" \
@@ -2187,11 +2188,12 @@ need('environment["COS_CONTROL2_FOUNDATION"] == "1" ? existing.map { $0 == .task
      "opt-in Work must replace the Tasks peer, keeping seven shared navigation entries")
 need('case .work: workSurface' in activity, "Work is not mounted on its Tasks/follow-up parent")
 work_surface = activity[activity.index('@ViewBuilder private var workSurface'):activity.index('private func previewOnlySection')]
-need('if isolatedWorkPreview {' in work_surface and 'Control2FoundationView(showTaskExamples: true, handoffStore: handoffStore, onOpenSession: openHandoffSession)' in work_surface,
-     "the isolated Work preview must use synthetic Tasks, not the live Tasks surface")
+need('WorkWorkspaceView(model: model, handoffStore: handoffStore, reviewStore: reviewStore' in work_surface
+     and 'Control2FoundationView' not in work_surface, "connected and isolated Work must mount the same workspace, never lab diagnostics")
 need('@StateObject private var handoffStore = WorkHandoffStore()' in activity and
-     'view._handoffStore = StateObject(wrappedValue: WorkHandoffStore(isolated: true))' in activity,
-     "Work and Sessions must share a window-owned store with an explicitly isolated preview instance")
+     'let store = WorkHandoffStore(isolated: true)' in activity and
+     'WorkWorkspaceProjection.previewReviewStore()' in activity,
+     "the isolated shared workspace must use fixture-only handoff and review transports")
 need('section == .sessions && (isolatedWorkPreview || showingLinkedSession)' in activity and
      'WorkSessionsView(store: handoffStore, isPreview: isolatedWorkPreview' in activity,
      "isolated Sessions must use the shared handoff fixture view, not the live Sessions loader")
@@ -2199,8 +2201,8 @@ full_handoff_open = activity[activity.index('private func openFullHandoffSession
 need('guard !isolatedWorkPreview else { return }' in full_handoff_open and
      full_handoff_open.index('guard !isolatedWorkPreview') < full_handoff_open.index('model.openClaudeSession(row)'),
      "opening a full provider session must remain impossible from the isolated preview")
-need('WorkSource.taskSnapshot($0).id == id' in activity,
-     "a Work backlink must resolve the same domain-qualified task identity used by its receipt")
+need('workWorkspaceState.selectedID = id' in activity,
+     "Back to work must select the persistent domain-qualified work identity, not reopen an editor")
 need('static func workConnectedTest(model: ControllerModel)' in activity and
      'Text("Connected Work candidate")' in activity,
      "the explicitly connected candidate must use the real Activity shell and identify live data")
@@ -2208,12 +2210,15 @@ need('if connectedWorkTest {\n                await model.refresh(quiet: true)\n
      "connected candidate startup must load capabilities and Work rather than every unrelated Activity source")
 need(activity.count('backgroundWorkEnabled: model.activityLoadsEnabled)') == 3,
      "foreground Activity load permission must guard all three load paths independently of background services")
-need('historicalWorkReceipts(id)' in work_surface and 'These are the saved handoff receipts' in activity,
-     "a missing canonical task must preserve a read-only receipt fallback instead of a dead backlink")
+workspace = (root / "Sources/WorkWorkspaceView.swift").read_text()
+need('receiptFallback(id)' in workspace and 'no item has been recreated' in workspace,
+     "missing canonical items must preserve read-only receipt history")
+need('guard !handoffStore.isolated else { return }' in workspace and
+     'WorkWorkspaceProjection.previewRows(handoffStore.previewTasks)' in workspace,
+     "the shared preview workspace must structurally use fixture rows and block production loading")
+need('taskEditorOverlay' in activity and 'WorkEditorEscapeHandler(onEscape: requestCloseTaskDetail)' in activity and
+     '.cosConfirm("Save task changes?"' in activity, "secondary editing must retain fixed close, scoped Escape and dirty confirmation")
 
-
-need('Self.usesExistingTaskList(isolatedWorkPreview: isolatedWorkPreview, subview: workSubview)' in work_surface
-     and 'tasksList' in work_surface, "normal Work must reuse the existing Tasks surface under its isolation guard")
 need("Sources/Control2Foundation.swift" in (root / "scripts/build-release.sh").read_text(),
      "the production compile list must include the opt-in Work source")
 need('private func goHome()' in activity and 'private func goBack()' in activity,
@@ -5088,8 +5093,12 @@ for need in ("case .meetings: await model.loadReviewableMeetings()", "case .samp
         fail(f"loadSpeakerSubview lost {need!r}")
 if "case .speakers:\n            await loadSpeakerSubview(speakerSubview, refresh: false)" not in activity:
     fail("opening Speakers must load the current view through loadSpeakerSubview")
-root_body = body(activity, "    var body: some View {\n        VStack(spacing: 0) {\n            navigationBar", ".frame(minWidth: 760, minHeight: 560)")
-if not re.search(r"activityHome\n\s*\}\n\s*\}\n(?:\s*//.*\n)*\s*\.frame\(minWidth: 0, maxWidth: \.infinity, minHeight: 0, maxHeight: \.infinity, alignment: \.top\)\n\s*\.clipped\(\)\n\s*\}\n\s*$", root_body):
+# Work's additional overlays made the full SwiftUI expression too large for the
+# solver. The extracted frame still owns the same bounded, clipped content.
+root_body = body(activity, "    private var activityFrame: some View {\n        VStack(spacing: 0) {\n            navigationBar", "    var body: some View {\n        activityFrame")
+if "    var body: some View {\n        activityFrame\n        .frame(minWidth: 760, minHeight: 560)" not in activity:
+    fail("Activity body must mount the extracted frame with its content minimum")
+if not re.search(r"activityHome\n\s*\}\n\s*\}\n(?:\s*//.*\n)*\s*\.frame\(minWidth: 0, maxWidth: \.infinity, minHeight: 0, maxHeight: \.infinity, alignment: \.top\)\n\s*\.clipped\(\)\n\s*\}\n\s*\}\n\s*$", root_body):
     fail("the content under the toolbar must be .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top).clipped()")
 if "window.contentMinSize = NSSize(width: 760, height: 560)" not in activity or "window.minSize =" in activity:
     fail("the Activity window minimum must be a content size; minSize counts the title bar")

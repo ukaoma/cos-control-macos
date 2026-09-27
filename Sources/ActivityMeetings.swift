@@ -6,13 +6,14 @@ import SwiftUI
 /// is the saved-call browser: domain, duration, summary, transcript, copy.
 struct MeetingLibraryBody: View {
     @ObservedObject var model: ControllerModel
+    var selectionOnly = false
     let onOpen: (LibraryMeeting) -> Void
     @State private var confirmRecoverAllOrphans = false
     @State private var confirmSaveAllStranded = false
 
     var body: some View {
         VStack(spacing: 0) {
-            if !model.recoverableOrphans.isEmpty || !model.strandedCaptures.isEmpty {
+            if !selectionOnly && (!model.recoverableOrphans.isEmpty || !model.strandedCaptures.isEmpty) {
                 unsavedCaptureBanner
             }
             if !model.isLibraryQueryActive {
@@ -32,10 +33,10 @@ struct MeetingLibraryBody: View {
         .onChange(of: model.libraryDomainFilter) { _, _ in
             if model.isLibraryQueryActive { model.scheduleLibrarySearch() }
         }
-        .task { await model.loadOrphans(quiet: true) }
+        .task { if !selectionOnly { await model.loadOrphans(quiet: true) } }
         // The suggestion count on the doorway comes from the engine, so it is
         // fetched when Meetings opens rather than only once the pane is entered.
-        .task { await model.loadMeetingEngineStatus() }
+        .task { if !selectionOnly { await model.loadMeetingEngineStatus() } }
         .confirmationDialog(
             "Recover all unsaved captures?",
             isPresented: $confirmRecoverAllOrphans,
@@ -164,13 +165,15 @@ struct MeetingLibraryBody: View {
             // 6.47.0 — the two doorways into import and merge. THESE ARE THE
             // OPENERS the route flags read: each writes its own pane's flag and
             // nothing else, which is the link 0.5.17 was missing.
-            ChipFlowLayout(spacing: 8) {
+            if !selectionOnly {
+              ChipFlowLayout(spacing: 8) {
                 Button("Import meetings") { model.openMeetingImport() }
                     .buttonStyle(COSQuietButtonStyle())
                     .controlSize(.small)
                 Button(suggestionsLabel) { model.openMeetingSuggestions() }
                     .buttonStyle(COSQuietButtonStyle())
                     .controlSize(.small)
+              }
             }
         }
         .padding(.horizontal, 24)
@@ -461,6 +464,7 @@ struct MeetingLibraryDetailPane: View {
     @ObservedObject var model: ControllerModel
     var onReviewVoices: (String) -> Void
     var onOpenSource: (LibraryMeetingSource) -> Void = { _ in }
+    var onReviewFollowUp: ((LibraryMeeting) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -472,6 +476,10 @@ struct MeetingLibraryDetailPane: View {
                     Text(row.subtitle(clock: model.clockStyle))
                         .font(COSType.body(12))
                         .foregroundStyle(.secondary)
+                    if let onReviewFollowUp {
+                        Button("Review follow-up in Work") { onReviewFollowUp(row) }
+                            .buttonStyle(COSPrimaryButtonStyle()).padding(.top, 4)
+                    }
                     // 6.47.0 — a record COS derived says so, and offers the way
                     // back out. A row COS did not derive gets nothing here.
                     if row.isDerived || row.isImported {

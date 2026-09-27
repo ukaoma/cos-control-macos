@@ -15,12 +15,21 @@ struct WorkHandoffView: View {
     let source: WorkSource
     var isPreview = false
     var onOpenSession: (String) -> Void
-    @State private var mode: WorkHandoffMode = .continueSession
-    @State private var sessionID = ""
-    @State private var modelID = ""
-    @State private var provider = ""
-    @State private var prompt = ""
-    @State private var initializedID = ""
+    var validateBeforeSend: (@MainActor () async -> Bool)? = nil
+    @State private var validating = false
+    private var draft: WorkHandoffDraft { store.draft(for: source) }
+    private var mode: WorkHandoffMode { draft.mode }
+    private var sessionID: String { draft.sessionID }
+    private var modelID: String { draft.modelID }
+    private var provider: String { draft.provider }
+    private var prompt: String { draft.prompt }
+    private func draftBinding<Value>(_ path: WritableKeyPath<WorkHandoffDraft, Value>) -> Binding<Value> {
+        let boundSource = source
+        return Binding(get: { store.draft(for: boundSource)[keyPath: path] }, set: { value in
+            var next = store.draft(for: boundSource); next[keyPath: path] = value
+            store.updateDraft(next, for: boundSource)
+        })
+    }
 
     private var recommended: [WorkSession] { store.recommendations(for: source) }
     private var selectedSession: WorkSession? { store.sessions.first { $0.id == sessionID } }
@@ -28,7 +37,7 @@ struct WorkHandoffView: View {
     private var providers: [String] { Array(Set(store.models.map(\.provider))).sorted() }
     private var choices: [WorkModelChoice] { store.models.filter { $0.provider == provider } }
     private var canSend: Bool {
-        !store.busy && !store.receipts(for: source.id).contains(where: \.blocksNewHandoff) && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && prompt.utf16.count <= 32_000
+        !validating && !store.busy && !store.receipts(for: source.id).contains(where: \.blocksNewHandoff) && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && prompt.utf16.count <= 32_000
             && destinationSupported
     }
 
@@ -41,28 +50,39 @@ struct WorkHandoffView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Choose where to work").font(COSType.display(20, weight: .medium))
+                Text("Agent workspace").font(COSType.display(20, weight: .medium))
                 Spacer()
-                Button("Refresh") { Task { await store.refresh(); chooseDefaults() } }
-                    .buttonStyle(COSQuietButtonStyle()).disabled(store.busy)
+                Button("Refresh") { Task { await store.refresh() } }
+                    .buttonStyle(COSQuietButtonStyle()).disabled(store.busy || validating)
             }
-            Text(isPreview ? "Local demonstration. No agent is launched and no message leaves this preview." : "Send this context to an agent you choose. The session keeps its own permissions; this does not complete the task or authorize publication.")
+            Text(isPreview ? "Local demonstration. No agent is contacted." : "Choose an agent and review the context. Sending does not complete or publish this work.")
                 .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
-            Picker("Destination", selection: $mode) {
+            Picker("Destination", selection: draftBinding(\.mode)) {
                 ForEach(WorkHandoffMode.allCases, id: \.self) { value in Text(value.title).tag(value) }
-            }.pickerStyle(.segmented)
+            }.pickerStyle(.segmented).disabled(store.busy || validating)
             if mode == .newSession { newDestination } else { existingDestination }
             Text("Context to send").font(COSType.body(12, weight: .semibold))
-            TextEditor(text: $prompt).font(COSType.body(12)).frame(minHeight: 100, maxHeight: 170)
+            TextEditor(text: draftBinding(\.prompt)).font(COSType.body(12)).frame(minHeight: 100, maxHeight: 170)
                 .padding(6).background(COSPalette.panel)
                 .overlay(RoundedRectangle(cornerRadius: 7).stroke(COSPalette.line))
                 .accessibilityLabel("Context to send")
+                .disabled(store.busy || validating)
+            if store.earlierDraftCount(for: source) > 0 {
+                Text("Earlier revision drafts are retained. This revision has its own context and destination.")
+                    .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+            }
             HStack {
                 Text("\(prompt.utf16.count.formatted()) / 32,000 characters · review before sending")
                     .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
                 Spacer()
                 Button(mode == .newSession ? "Start new session" : mode == .fork ? "Fork and send" : "Send to session") {
-                    Task { await store.submit(source: source, mode: mode, session: selectedSession, model: selectedModel, prompt: prompt) }
+                    let sendingSource = source, sendingMode = mode, sendingSession = selectedSession, sendingModel = selectedModel, sendingPrompt = prompt
+                    validating = true
+                    Task {
+                        defer { validating = false }
+                        if let validateBeforeSend, !(await validateBeforeSend()) { return }
+                        await store.submit(source: sendingSource, mode: sendingMode, session: sendingSession, model: sendingModel, prompt: sendingPrompt)
+                    }
                 }.buttonStyle(COSPrimaryButtonStyle()).disabled(!canSend)
             }
             if prompt.utf16.count > 32_000 {
@@ -77,11 +97,8 @@ struct WorkHandoffView: View {
             history
         }.padding(16).background(COSPalette.card, in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line))
-            .task(id: source.id + ":" + source.revision) {
-                let identity = source.id + ":" + source.revision
-                if initializedID != identity { prompt = source.suggestedPrompt; initializedID = identity }
+            .task(id: source) {
                 await store.refresh()
-                chooseDefaults()
             }
             .task { await pollVisibleReceipts() }
     }
@@ -100,12 +117,14 @@ struct WorkHandoffView: View {
     private var existingDestination: some View {
         VStack(alignment: .leading, spacing: 9) {
             if store.sessions.isEmpty {
-                Text("No sessions available. Refresh or choose a new session.").font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+                Text(sessionID.isEmpty ? "No sessions available. Refresh or choose a new session." : "Your saved session is unavailable. Refresh to resolve it or explicitly choose a new destination.")
+                    .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
             } else {
-                Picker("Session", selection: $sessionID) {
+                Picker("Session", selection: draftBinding(\.sessionID)) {
                     Text("Choose a session").tag("")
+                    if !sessionID.isEmpty && selectedSession == nil { Text("Saved session unavailable · refresh to resolve").tag(sessionID) }
                     ForEach(store.sessions) { session in Text("\(session.title) · \(session.provider)").tag(session.id) }
-                }
+                }.disabled(store.busy || validating)
                 if let session = selectedSession {
                     if !destinationSupported {
                         Text(mode == .fork ? "Fork is available for Claude and Codex sessions only. Choose Continue or a new session for this provider." : "This provider does not support continuing a session here.")
@@ -114,19 +133,20 @@ struct WorkHandoffView: View {
                     Text("\(session.status.capitalized) · \(session.project.isEmpty ? "Workspace unavailable" : session.project)")
                         .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                     if !session.summary.isEmpty { Text(session.summary).font(COSType.body(12)).lineLimit(3) }
-                    Text(mode == .fork ? "Creates a separate conversation with this session's context. The provider stays \(session.provider)." : "Continues this exact conversation with its current provider, model, and permissions. A busy session may queue or refuse the handoff.")
+                    Text(mode == .fork ? "Creates a copy with \(session.provider); the original remains unchanged." : "Uses this session’s model and permissions. Busy sessions may queue or refuse.")
                         .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                 }
                 if let first = recommended.first {
                     Button {
-                        sessionID = first.id
+                        var next = draft; next.sessionID = first.id
+                        store.updateDraft(next, for: source)
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Suggested: \(first.title)").font(COSType.body(12, weight: .semibold))
-                            Text(first.project == source.project && !source.project.isEmpty ? "Same project as this work." : "Ranked by project and relevant words in this work.")
+                            Text(store.recommendationReason(for: first, source: source))
                                 .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(10).contentShape(Rectangle())
-                    }.buttonStyle(.plain).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 6))
+                    }.buttonStyle(.plain).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 6)).disabled(store.busy || validating)
                 }
             }
         }
@@ -135,18 +155,23 @@ struct WorkHandoffView: View {
     private var newDestination: some View {
         VStack(alignment: .leading, spacing: 8) {
             if store.models.isEmpty { Text("No configured models available.").foregroundStyle(COSPalette.muted) }
-            Picker("Provider", selection: $provider) {
+            Picker("Provider", selection: Binding(get: { provider }, set: { value in
+                var next = draft; next.provider = value; next.modelID = ""
+                store.updateDraft(next, for: source)
+            })) {
                 Text("Choose provider").tag("")
+                if !provider.isEmpty && !providers.contains(provider) { Text("\(provider) · unavailable").tag(provider) }
                 ForEach(providers, id: \.self) { Text($0.capitalized).tag($0) }
-            }.onChange(of: provider) { _, _ in modelID = choices.first(where: \.available)?.id ?? "" }
-            Picker("Model", selection: $modelID) {
+            }.disabled(store.busy || validating)
+            Picker("Model", selection: draftBinding(\.modelID)) {
                 Text("Choose model").tag("")
+                if !modelID.isEmpty && selectedModel == nil { Text("Saved model unavailable").tag(modelID) }
                 ForEach(choices) { choice in Text(choice.title + (choice.available ? "" : " · unavailable")).tag(choice.id) }
-            }
+            }.disabled(store.busy || validating)
             if let reason = selectedModel?.reason, !reason.isEmpty {
                 Text(reason).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
             }
-            Text("A new session starts in the server’s configured workspace with its existing permissions. This chooser does not override that workspace. Review the context below; publication is not authorized by this handoff.")
+            Text("Uses the server’s configured workspace and permissions. This chooser does not change them.")
                 .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
         }
     }
@@ -156,7 +181,7 @@ struct WorkHandoffView: View {
             HStack {
                 Text("Handoff history").font(COSType.display(18, weight: .medium))
                 Spacer()
-                Button("Check status") { Task { await store.refreshReceipts() } }.buttonStyle(COSQuietButtonStyle()).disabled(store.busy)
+                Button("Check status") { Task { await store.refreshReceipts() } }.buttonStyle(COSQuietButtonStyle()).disabled(store.busy || validating)
             }
             if store.receipts(for: source.id).isEmpty {
                 Text("No recorded handoff for this work. Earlier agent activity is not inferred.").font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
@@ -177,7 +202,7 @@ struct WorkHandoffView: View {
                     }
                     if receipt.status == "delivered" {
                         Button("I reviewed this session") { store.markReviewed(receiptID: receipt.id) }
-                            .buttonStyle(COSQuietButtonStyle()).disabled(store.busy)
+                            .buttonStyle(COSQuietButtonStyle()).disabled(store.busy || validating)
                         Text("Acknowledges your review and allows another handoff. The task stays unchanged.")
                             .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
                     }
@@ -195,11 +220,6 @@ struct WorkHandoffView: View {
         }
     }
 
-    private func chooseDefaults() {
-        if !store.sessions.contains(where: { $0.id == sessionID }) { sessionID = recommended.first?.id ?? "" }
-        if !providers.contains(provider) { provider = store.models.first(where: \.available)?.provider ?? providers.first ?? "" }
-        if !choices.contains(where: { $0.id == modelID }) { modelID = choices.first(where: \.available)?.id ?? "" }
-    }
 }
 
 struct WorkSessionsView: View {

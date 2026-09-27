@@ -132,7 +132,7 @@ final class Control2FoundationModel: ObservableObject {
     }
 }
 
-/// Disposable UI examples. These never become TaskRow objects or enter a task writer.
+/// Disposable UI examples. These become read-only TaskRow projections, never canonical task writes objects or enter a task writer.
 struct Control2PreviewTask: Identifiable {
     let id: String
     let title: String

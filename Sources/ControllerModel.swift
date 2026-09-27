@@ -2565,6 +2565,26 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    @Published var workTasks: [TaskRow] = []
+    @Published var workTasksLoading = false
+    @Published var workTasksError: String?
+    @Published var workTasksComplete = false
+    private var workTasksRequested = false
+
+    func loadWorkTasks() async {
+        workTasksRequested = true
+        guard !workTasksLoading else { return }
+        workTasksLoading = true
+        defer { workTasksLoading = false }
+        do {
+            let response = try await helper.run(["work-tasks"], timeout: 30)
+            guard response.ok else { throw NSError(domain: "WorkTasks", code: 1, userInfo: [NSLocalizedDescriptionKey: response.message]) }
+            workTasks = (response.details["tasks"]?.array ?? []).compactMap(TaskRow.init)
+            workTasksComplete = response.details["complete"]?.bool == true
+            workTasksError = nil
+        } catch { workTasksError = error.localizedDescription; workTasksComplete = false }
+    }
+
     func loadTasks(force: Bool = false) async {
         if let inflight = tasksLoadInFlight {
             if !force { return }
@@ -2602,6 +2622,7 @@ final class ControllerModel: ObservableObject {
             _ = try await helper.run(args, timeout: 30, stdinData: Data(text.utf8))
             tasksError = nil
             await loadTasks(force: true)
+            if workTasksRequested { await loadWorkTasks() }
         } catch {
             tasksError = error.localizedDescription
             throw error
@@ -2616,6 +2637,7 @@ final class ControllerModel: ObservableObject {
             )
             tasksError = nil
             await loadTasks(force: true)
+            if workTasksRequested { await loadWorkTasks() }
         } catch {
             tasksError = error.localizedDescription
             throw error
@@ -2630,6 +2652,7 @@ final class ControllerModel: ObservableObject {
             )
             tasksError = nil
             await loadTasks(force: true)
+            if workTasksRequested { await loadWorkTasks() }
         } catch {
             tasksError = error.localizedDescription
             throw error
@@ -2644,6 +2667,7 @@ final class ControllerModel: ObservableObject {
             )
             tasksError = nil
             await loadTasks(force: true)
+            if workTasksRequested { await loadWorkTasks() }
         } catch {
             tasksError = error.localizedDescription
             throw error
@@ -2659,6 +2683,7 @@ final class ControllerModel: ObservableObject {
             )
             tasksError = nil
             await loadTasks(force: true)
+            if workTasksRequested { await loadWorkTasks() }
         } catch {
             tasksError = error.localizedDescription
             throw error
@@ -2672,6 +2697,7 @@ final class ControllerModel: ObservableObject {
             _ = try await helper.run(args, timeout: 30)
             tasksError = nil
             await loadTasks(force: true)
+            if workTasksRequested { await loadWorkTasks() }
         } catch {
             tasksError = error.localizedDescription
             throw error
@@ -2686,6 +2712,7 @@ final class ControllerModel: ObservableObject {
             )
             tasksError = nil
             await loadTasks(force: true)
+            if workTasksRequested { await loadWorkTasks() }
         } catch {
             tasksError = error.localizedDescription
             throw error

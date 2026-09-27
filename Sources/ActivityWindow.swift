@@ -231,6 +231,8 @@ struct ActivityWindow: View {
     @ObservedObject var model: ControllerModel
     var isolatedWorkPreview = false
     @StateObject private var handoffStore = WorkHandoffStore()
+    @StateObject private var reviewStore = WorkReviewStore()
+    @StateObject private var workWorkspaceState = WorkWorkspaceState()
     @State private var showingLinkedSession = false
     @State private var historicalWorkID: String?
     private var connectedWorkTest: Bool {
@@ -291,6 +293,9 @@ struct ActivityWindow: View {
     @State private var taskDoneWhenDraft = ""
     @State private var taskDetailBusy = false
     @State private var taskDetailError = ""
+    @State private var taskSavedText = ""
+    @State private var taskSavedDoneWhen = ""
+    @State private var confirmingTaskDismiss = false
     /// Stamp used only by Schedule. Capture files to inbox with no time.
     @State private var taskRunAt = Date()
     /// Which row's Schedule popover is open. The picker used to sit above the
@@ -317,7 +322,10 @@ struct ActivityWindow: View {
     static func workPreview(model: ControllerModel) -> ActivityWindow {
         var view = ActivityWindow(model: model, isolatedWorkPreview: true)
         view._section = State(initialValue: .work)
-        view._handoffStore = StateObject(wrappedValue: WorkHandoffStore(isolated: true))
+        let store = WorkHandoffStore(isolated: true)
+        store.selectedWorkID = "task:Website:sample-task-website"
+        view._handoffStore = StateObject(wrappedValue: store)
+        view._reviewStore = StateObject(wrappedValue: WorkWorkspaceProjection.previewReviewStore())
         return view
     }
 
@@ -334,10 +342,6 @@ struct ActivityWindow: View {
 
     static func workSubviewForLaunch(_ requested: ActivitySection, current: ActivityWorkSubview) -> ActivityWorkSubview {
         requested == .tasks ? .tasks : current
-    }
-
-    static func usesExistingTaskList(isolatedWorkPreview: Bool, subview: ActivityWorkSubview) -> Bool {
-        !isolatedWorkPreview && subview == .tasks
     }
 
     private var selectedTurn: GlassesTurn? {
@@ -404,7 +408,7 @@ struct ActivityWindow: View {
 
     private var canGoBack: Bool { section != nil || hasDetail }
 
-    var body: some View {
+    private var activityFrame: some View {
         VStack(spacing: 0) {
             navigationBar
             if connectedWorkTest {
@@ -473,7 +477,8 @@ struct ActivityWindow: View {
                         MeetingLibraryDetailPane(
                             model: model,
                             onReviewVoices: openVoiceReviewFromLibrary,
-                            onOpenSource: openLibrarySource
+                            onOpenSource: openLibrarySource,
+                            onReviewFollowUp: meetingWorkReviewAction
                         )
                     } else {
                         centeredProgress("Loading meeting…")
@@ -514,6 +519,10 @@ struct ActivityWindow: View {
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
             .clipped()
         }
+    }
+
+    var body: some View {
+        activityFrame
         .frame(minWidth: 760, minHeight: 560)
         .font(COSType.body(13))
         .background(COSPalette.panel)
@@ -557,6 +566,10 @@ struct ActivityWindow: View {
                 }
             }
         }
+        .overlay { taskEditorOverlay }
+        .cosConfirm("Save task changes?", isPresented: $confirmingTaskDismiss,
+            message: "Save your task text and finish line, discard these edits, or keep editing.",
+            actions: [.normal("Save") { saveTaskEdits() }, .destructive("Discard") { closeTaskDetail() }, .cancel("Cancel")])
         .cosConfirm(
             "Restore this naming’s previous labels?",
             isPresented: Binding(get: { heldNamingUndoHandle != nil }, set: { if !$0 { heldNamingUndoHandle = nil } }),
@@ -758,6 +771,7 @@ struct ActivityWindow: View {
     }
 
     private func select(_ requested: ActivitySection) {
+        if taskDetail != nil { requestCloseTaskDetail(); return }
         if !isolatedWorkPreview { showingLinkedSession = false; historicalWorkID = nil }
         let next = ActivitySection.resolvedLaunch(requested, environment: ProcessInfo.processInfo.environment)
         guard ActivitySection.allCases.contains(next) else { return }
@@ -772,6 +786,7 @@ struct ActivityWindow: View {
     }
 
     private func goHome() {
+        if taskDetail != nil { requestCloseTaskDetail(); return }
         if isolatedWorkPreview { withOptionalAnimation { section = nil }; return }
         clearDetail()
         withOptionalAnimation { section = nil }
@@ -780,7 +795,10 @@ struct ActivityWindow: View {
     private func goBack() {
         if isolatedWorkPreview { withOptionalAnimation { section = nil }; return }
         if (section == .tasks || (section == .work && workSubview == .tasks)), taskDetail != nil {
-            if !taskDetailBusy { closeTaskDetail() }
+            requestCloseTaskDetail()
+        } else if section == .work, workWorkspaceState.selectedID != nil || reviewStore.selectedMeeting != nil || workWorkspaceState.meetingPicker {
+            workWorkspaceState.selectedID = nil; handoffStore.selectedWorkID = nil
+            reviewStore.selectedMeeting = nil; workWorkspaceState.meetingPicker = false
         } else if section == .messages, model.selectedMediaPreview != nil {
             model.closeMediaPreview()
         } else if section == .messages, selectedTurnID != nil {
@@ -1108,45 +1126,24 @@ struct ActivityWindow: View {
     }
 
     @ViewBuilder private var workSurface: some View {
-        if isolatedWorkPreview {
-            // Structural isolation: the branch containing tasksList is never
-            // mounted in the lab, even if its selected subview is Tasks.
-            Control2FoundationView(showTaskExamples: true, handoffStore: handoffStore, onOpenSession: openHandoffSession)
-        } else {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 22) {
-                    ForEach(ActivityWorkSubview.allCases) { item in
-                        Button {
-                            guard !taskDetailBusy else { return }
-                            closeTaskDetail()
-                            workSubview = item
-                            if item == .tasks {
-                                model.markActivityOpened(.tasks)
-                                Task { await load(.tasks) }
-                            }
-                        } label: {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(item.title).font(COSType.body(13, weight: workSubview == item ? .semibold : .regular))
-                                    .foregroundStyle(workSubview == item ? Color.primary : COSPalette.muted)
-                                Rectangle().fill(workSubview == item ? COSPalette.gold : .clear).frame(height: 2)
-                            }.fixedSize(horizontal: true, vertical: false)
-                        }.buttonStyle(.plain).disabled(taskDetailBusy)
-                            .accessibilityAddTraits(workSubview == item ? .isSelected : [])
-                    }
-                    Spacer()
-                }.padding(.horizontal, 20).padding(.top, 14)
-                Divider().overlay(COSPalette.line)
-                if Self.usesExistingTaskList(isolatedWorkPreview: isolatedWorkPreview, subview: workSubview) {
-                    if let id = historicalWorkID {
-                        historicalWorkReceipts(id)
-                    } else {
-                        tasksList
-                    }
-                } else {
-                    Control2FoundationView(handoffStore: handoffStore, onOpenSession: openHandoffSession)
-                }
-            }
-        }
+        WorkWorkspaceView(model: model, handoffStore: handoffStore, reviewStore: reviewStore,
+            state: workWorkspaceState, onOpenSession: openHandoffSession,
+            onEditTask: openTaskDetail, onReviewMeeting: openMeetingWorkReview)
+    }
+
+    private var meetingWorkReviewAction: ((LibraryMeeting) -> Void)? {
+        guard ActivitySection.visibleSections(environment: ProcessInfo.processInfo.environment).contains(.work), !isolatedWorkPreview else { return nil }
+        return { meeting in openMeetingWorkReview(meeting) }
+    }
+
+    private func openMeetingWorkReview(_ meeting: LibraryMeeting) {
+        guard !isolatedWorkPreview else { return }
+        reviewStore.selectedMeeting = meeting
+        workWorkspaceState.selectedID = nil
+        handoffStore.selectedWorkID = nil
+        workWorkspaceState.meetingPicker = false
+        section = .work
+        Task { await reviewStore.refresh() }
     }
 
     private func openHandoffSession(_ id: String) {
@@ -1161,41 +1158,9 @@ struct ActivityWindow: View {
         showingLinkedSession = false
         workSubview = .tasks
         section = .work
-        if !isolatedWorkPreview {
-            if let task = model.tasks.first(where: { WorkSource.taskSnapshot($0).id == id }) {
-                historicalWorkID = nil
-                openTaskDetail(task)
-            } else {
-                historicalWorkID = id
-            }
-        }
-    }
-
-    private func historicalWorkReceipts(_ id: String) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Button("Back to current tasks") { historicalWorkID = nil }.buttonStyle(COSQuietButtonStyle())
-                Text(handoffStore.receipts(for: id).first?.workTitle ?? "Linked work")
-                    .font(COSType.display(25, weight: .medium))
-                Label("This task is not in the currently loaded task list.", systemImage: "info.circle")
-                    .font(COSType.body(12, weight: .semibold))
-                Text("It may be completed, outside the current list, changed, or unavailable. These are the saved handoff receipts; no task has been recreated or changed.")
-                    .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
-                ForEach(handoffStore.receipts(for: id)) { receipt in
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(receipt.status.capitalized + " · " + receipt.provider).font(COSType.body(12, weight: .semibold))
-                        Text(receipt.detail).font(COSType.body(12))
-                        Text("Context sent").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
-                        Text(receipt.prompt).font(COSType.body(12)).textSelection(.enabled)
-                        if let result = receipt.result { COSMarkdownView(text: result) }
-                        if let sessionID = receipt.sessionID {
-                            Button("Open linked session") { openHandoffSession(sessionID) }.buttonStyle(COSQuietButtonStyle())
-                        }
-                    }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 10))
-                }
-            }.frame(maxWidth: .infinity, alignment: .leading).padding(24)
-        }
+        workWorkspaceState.selectedID = id
+        workWorkspaceState.meetingPicker = false
+        reviewStore.selectedMeeting = nil
     }
 
     private func openFullHandoffSession(_ session: WorkSession) {
@@ -1423,33 +1388,6 @@ struct ActivityWindow: View {
                 }
             }
         }
-        // Inline overlay, matching the rest of this window: a detail that dims
-        // the list behind it and closes on its own button, so a board refresh
-        // underneath cannot dismiss it.
-        .overlay {
-            if let task = taskDetail {
-                ZStack {
-                    Color.black.opacity(0.16).ignoresSafeArea()
-                        .onTapGesture { if !taskDetailBusy { closeTaskDetail() } }
-                    Group {
-                        if ActivitySection.allCases.contains(.work) {
-                            ScrollView { taskDetailSheet(task) }.frame(width: 520, height: 480)
-                        } else {
-                            taskDetailSheet(task)
-                        }
-                    }
-                        .background(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(COSPalette.card)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(COSPalette.line, lineWidth: 1)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-            }
-        }
     }
 
     private var tasksStatus: String {
@@ -1534,14 +1472,46 @@ struct ActivityWindow: View {
     }
 
     private func openTaskDetail(_ task: TaskRow) {
+        guard !isolatedWorkPreview else { return }
         taskDetail = task
         taskDetailDraft = task.text.isEmpty ? task.title : task.text
         taskDoneWhenDraft = task.doneWhen
+        taskSavedText = taskDetailDraft
+        taskSavedDoneWhen = taskDoneWhenDraft
         taskDetailError = ""
         prepareSchedule(from: task)
     }
 
+    private var taskEditsDirty: Bool {
+        taskDetailDraft != taskSavedText || taskDoneWhenDraft != taskSavedDoneWhen
+    }
+
+    private func requestCloseTaskDetail() {
+        guard !taskDetailBusy else { return }
+        if confirmingTaskDismiss { confirmingTaskDismiss = false; return }
+        if taskEditsDirty { confirmingTaskDismiss = true } else { closeTaskDetail() }
+    }
+
+    private func saveTaskEdits() {
+        guard let task = taskDetail, !taskDetailBusy else { return }
+        let text = taskDetailDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finish = taskDoneWhenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { taskDetailError = "Task text cannot be empty."; return }
+        runDetailAction {
+            // Rename can change a legacy ID. Write the finish line before text.
+            if finish != taskSavedDoneWhen {
+                try await model.setTaskDoneWhen(id: task.id, domain: task.domain, doneWhen: finish)
+                taskSavedDoneWhen = finish; taskDoneWhenDraft = finish
+            }
+            if text != taskSavedText {
+                try await model.setTaskText(id: task.id, domain: task.domain, text: text)
+                taskSavedText = text
+            }
+        }
+    }
+
     private func closeTaskDetail() {
+        confirmingTaskDismiss = false
         taskDetail = nil
         taskDetailDraft = ""
         taskDoneWhenDraft = ""
@@ -1557,9 +1527,36 @@ struct ActivityWindow: View {
             defer { taskDetailBusy = false }
             do {
                 try await work()
+                if ActivitySection.allCases.contains(.work) { await model.loadWorkTasks() }
                 if closeOnSuccess { closeTaskDetail() }
+                else if let original = taskDetail,
+                        let refreshed = (ActivitySection.allCases.contains(.work) ? model.workTasks : model.tasks).first(where: { $0.id == original.id && $0.domain == original.domain }) {
+                    taskDetail = refreshed
+                }
             } catch {
                 taskDetailError = error.localizedDescription
+            }
+        }
+    }
+
+    @ViewBuilder private var taskEditorOverlay: some View {
+        if let task = taskDetail {
+            ZStack {
+                Color.black.opacity(0.22).ignoresSafeArea().contentShape(Rectangle())
+                    .onTapGesture { requestCloseTaskDetail() }
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("Edit task").font(COSType.display(18, weight: .medium))
+                        Spacer()
+                        Button("Close") { requestCloseTaskDetail() }.buttonStyle(COSQuietButtonStyle()).disabled(taskDetailBusy)
+                    }.padding(16)
+                    Divider()
+                    ScrollView { taskDetailSheet(task) }
+                }.frame(width: 540, height: 450)
+                    .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .background(WorkEditorEscapeHandler(onEscape: requestCloseTaskDetail).frame(width: 0, height: 0))
             }
         }
     }
@@ -1567,13 +1564,9 @@ struct ActivityWindow: View {
     @ViewBuilder
     private func taskDetailSheet(_ task: TaskRow) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text(task.checked ? "Task (done)" : "Task").font(COSType.display(17))
-                Spacer()
-                Button("Close") { closeTaskDetail() }
-            }
             TextEditor(text: $taskDetailDraft)
                 .font(COSType.body(13.5))
+                .disabled(taskDetailBusy)
                 .frame(minHeight: 72, maxHeight: 140)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(COSPalette.line))
             VStack(alignment: .leading, spacing: 5) {
@@ -1581,6 +1574,7 @@ struct ActivityWindow: View {
                     task.doneWhen.isEmpty ? Color.orange : Color.secondary)
                 HStack(spacing: 8) {
                     TextField("What does finished look like?", text: $taskDoneWhenDraft)
+                        .disabled(taskDetailBusy)
                         .textFieldStyle(.roundedBorder)
                         .font(COSType.body(12))
                     Button("Set") {
@@ -1590,6 +1584,7 @@ struct ActivityWindow: View {
                             try await model.setTaskDoneWhen(
                                 id: task.id, domain: task.domain,
                                 doneWhen: taskDoneWhenDraft.trimmingCharacters(in: .whitespacesAndNewlines))
+                            taskSavedDoneWhen = taskDoneWhenDraft
                         }, closeOnSuccess: false)
                     }
                     .disabled(taskDetailBusy)
@@ -1615,38 +1610,37 @@ struct ActivityWindow: View {
                 Text(taskDetailError).font(COSType.body(11.5)).foregroundStyle(.red)
             }
             HStack(spacing: 8) {
-                Button("Save text") {
-                    let next = taskDetailDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !next.isEmpty else { taskDetailError = "Task text cannot be empty."; return }
-                    runDetailAction { try await model.setTaskText(id: task.id, domain: task.domain, text: next) }
-                }
-                .disabled(taskDetailBusy || taskDetailDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Save changes") { saveTaskEdits() }
+                    .disabled(taskDetailBusy || taskDetailDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
                 Button(task.checked ? "Reopen" : "Done") {
                     runDetailAction { try await model.setTaskChecked(id: task.id, domain: task.domain, checked: !task.checked) }
                 }
-                .disabled(taskDetailBusy)
+                .disabled(taskDetailBusy || taskEditsDirty)
                 Spacer()
             }
             HStack(spacing: 8) {
                 Button("To inbox") {
                     runDetailAction { try await model.moveTask(id: task.id, domain: task.domain, section: "inbox") }
                 }
-                .disabled(taskDetailBusy || task.section == "inbox")
+                .disabled(taskDetailBusy || taskEditsDirty || task.section == "inbox")
                 Spacer()
             }
-            HStack(spacing: 8) {
-                Text("Schedule for").font(COSType.body(11)).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Legacy schedule for").font(COSType.body(11)).foregroundStyle(.secondary)
                 DatePicker("Schedule for", selection: $taskRunAt, displayedComponents: [.date, .hourAndMinute])
-                    .labelsHidden()
-                Button("Schedule") {
-                    runDetailAction { try await model.scheduleTask(id: task.id, domain: task.domain, runAt: taskRunAtStamp()) }
+                    .labelsHidden().disabled(taskDetailBusy)
+                HStack(spacing: 8) {
+                    Button("Schedule") {
+                        runDetailAction { try await model.scheduleTask(id: task.id, domain: task.domain, runAt: taskRunAtStamp()) }
+                    }.disabled(taskDetailBusy || taskEditsDirty)
+                    Button("Legacy run now") {
+                        runDetailAction { try await model.runTask(id: task.id, domain: task.domain) }
+                    }.disabled(taskDetailBusy || taskEditsDirty || task.agentState == "running" || task.doneWhen.isEmpty)
+                    Spacer()
                 }
-                .disabled(taskDetailBusy)
-                Button("Run now") {
-                    runDetailAction { try await model.runTask(id: task.id, domain: task.domain) }
-                }
-                .disabled(taskDetailBusy || task.agentState == "running" || task.doneWhen.isEmpty)
-                Spacer()
+                Text("Uses the existing task dispatcher. Choose a session from Work’s agent workspace for a directed handoff.")
+                    .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
             }
             HStack(spacing: 8) {
                 Text("Move to").font(COSType.body(11)).foregroundStyle(.secondary)
@@ -1654,16 +1648,11 @@ struct ActivityWindow: View {
                     Button(stage.capitalized) {
                         runDetailAction { try await model.setTaskStage(id: task.id, domain: task.domain, stage: stage) }
                     }
-                    .disabled(taskDetailBusy || task.stage == stage)
+                    .disabled(taskDetailBusy || taskEditsDirty || task.stage == stage)
                 }
                 Spacer()
             }
-            if ActivitySection.allCases.contains(.work) {
-                WorkHandoffView(store: handoffStore, source: .taskSnapshot(task), onOpenSession: { id in
-                    closeTaskDetail()
-                    openHandoffSession(id)
-                })
-            }
+
         }
         .padding(20)
         .frame(width: 520)
@@ -5171,11 +5160,10 @@ struct ActivityWindow: View {
             reconcileTaskDomain()
             await model.loadTasks(force: true)
         case .work:
-            if workSubview == .tasks {
-                await model.loadDomains()
-                reconcileTaskDomain()
-                await model.loadTasks(force: true)
-            } // Meeting follow-up owns its isolated foundation transport.
+            await model.loadDomains()
+            reconcileTaskDomain()
+            await model.loadWorkTasks()
+            await reviewStore.refresh()
         }
     }
 

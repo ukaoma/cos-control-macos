@@ -38,6 +38,16 @@ struct WorkModelChoice: Identifiable, Codable, Equatable, Sendable {
     let available: Bool
     let reason: String?
 }
+struct WorkHandoffDraft: Codable, Equatable, Sendable {
+    let sourceID: String
+    let sourceRevision: String
+    var mode: WorkHandoffMode = .continueSession
+    var sessionID = ""
+    var provider = ""
+    var modelID = ""
+    var prompt: String
+    var editVersion = 0
+}
 struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     var id: String
     var workID: String
@@ -71,6 +81,7 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     @Published var sessions: [WorkSession] = []
     @Published var models: [WorkModelChoice] = []
     @Published var receipts: [WorkHandoffReceipt] = []
+    @Published private(set) var drafts: [WorkHandoffDraft] = []
     @Published var error: String?
     @Published var busy = false
     @Published var previewTasks = Control2PreviewTask.samples
@@ -81,7 +92,8 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     private let transport: Transport
     private var storageReady = true
     private var serverInstanceID: String?
-    private struct Journal: Codable { var version = 1; var receipts: [WorkHandoffReceipt]; var sessions: [WorkSession] }
+    private struct Journal: Codable { var version = 2; var receipts: [WorkHandoffReceipt]; var sessions: [WorkSession]; var drafts: [WorkHandoffDraft]? }
+    private struct DraftIdentity: Hashable { let sourceID: String; let revision: String }
     private static let queueable: Set<String> = ["native_thread_working", "native_target_busy"]
 
     init(isolated: Bool = false, storageURL: URL? = nil, transport: Transport? = nil) {
@@ -112,7 +124,11 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
         let attr = try FileManager.default.attributesOfItem(atPath: storageURL.path)
         guard attr[.type] as? FileAttributeType == .typeRegular, (attr[.size] as? NSNumber)?.intValue ?? Int.max < 10_000_000 else { throw failure("Invalid handoff journal") }
         let journal = try JSONDecoder().decode(Journal.self, from: Data(contentsOf: storageURL))
-        guard journal.version == 1, Set(journal.receipts.map(\.id)).count == journal.receipts.count else { throw failure("Unsupported handoff history") }
+        let savedDrafts = journal.drafts ?? []
+        guard [1, 2].contains(journal.version), Set(journal.receipts.map(\.id)).count == journal.receipts.count,
+              Set(savedDrafts.map { DraftIdentity(sourceID: $0.sourceID, revision: $0.sourceRevision) }).count == savedDrafts.count,
+              savedDrafts.allSatisfy({ !$0.sourceID.isEmpty && !$0.sourceRevision.isEmpty && $0.editVersion >= 0 }) else { throw failure("Unsupported handoff history") }
+        drafts = savedDrafts
         receipts = journal.receipts.map { row in
             var row = row
             if ["preparing", "sending"].contains(row.status) { row.status = "unknown"; row.detail = "Delivery was interrupted. Refresh the receipt or inspect the target session before further work." }
@@ -125,12 +141,16 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
         guard storageReady else { throw failure("History is unavailable; sending is disabled.") }
         let folder = storageURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let data = try JSONEncoder().encode(Journal(receipts: receipts, sessions: sessions))
+        let data = try JSONEncoder().encode(Journal(receipts: receipts, sessions: sessions, drafts: drafts))
         guard data.count < 10_000_000 else { throw failure("Handoff history reached its storage limit. No new handoff was sent.") }
         try data.write(to: storageURL, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: storageURL.path)
         let file = try FileHandle(forWritingTo: storageURL)
         try file.synchronize(); try file.close()
+        let directory = open(folder.path, O_RDONLY | O_DIRECTORY)
+        guard directory >= 0 else { throw failure("Cannot synchronize handoff history directory") }
+        defer { close(directory) }
+        guard fsync(directory) == 0 else { throw failure("Cannot synchronize handoff history directory") }
     }
     // Held over await: a second app instance cannot dispatch against an old journal.
     private func lockJournal() throws -> Int32 {
@@ -149,13 +169,70 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
         return r.details
     }
     func receipts(for workID: String) -> [WorkHandoffReceipt] { receipts.filter { $0.workID == workID }.sorted { $0.createdAt > $1.createdAt } }
+    func draft(for source: WorkSource) -> WorkHandoffDraft {
+        drafts.first { $0.sourceID == source.id && $0.sourceRevision == source.revision }
+            ?? WorkHandoffDraft(sourceID: source.id, sourceRevision: source.revision, prompt: source.suggestedPrompt)
+    }
+    func earlierDraftCount(for source: WorkSource) -> Int {
+        drafts.filter { $0.sourceID == source.id && $0.sourceRevision != source.revision }.count
+    }
+    /// Every edit is saved before reporting success, independent of view lifecycle.
+    /// Compare the edit version after reloading under the same lock used by delivery.
+    @discardableResult func updateDraft(_ candidate: WorkHandoffDraft, for source: WorkSource) -> Bool {
+        guard !busy else { return false }
+        do {
+            guard storageReady, candidate.sourceID == source.id, candidate.sourceRevision == source.revision,
+                  !source.id.isEmpty, !source.revision.isEmpty, candidate.prompt.utf16.count <= 256_000 else {
+                throw failure("This draft does not match the current source revision or exceeds the draft storage limit.")
+            }
+            let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }
+            try loadJournal()
+            let current = draft(for: source)
+            guard current.editVersion == candidate.editVersion, candidate.editVersion < Int.max else {
+                throw failure("This draft changed in another window. The newer saved draft was restored; review it before editing.")
+            }
+            let previousDrafts = drafts
+            var next = candidate; next.editVersion += 1
+            if let index = drafts.firstIndex(where: { $0.sourceID == source.id && $0.sourceRevision == source.revision }) {
+                drafts[index] = next
+            } else { drafts.append(next) }
+            do { try persist() } catch { drafts = previousDrafts; throw error }
+            error = nil
+            return true
+        } catch { self.error = error.localizedDescription; return false }
+    }
+
+    private static let genericRecommendationWords: Set<String> = [
+        "prepare", "next", "reviewable", "result", "review", "work", "task", "context", "source", "project", "done", "when",
+        "with", "from", "this", "that", "have", "will", "your", "their", "about", "into", "what", "which", "where",
+        "before", "after", "only", "more", "some", "then", "there", "these", "those", "should", "could", "would",
+        "session", "agent", "instructions", "evidence", "additional", "explain", "changes", "checks", "unresolved",
+        "questions", "publishing", "sending", "externally", "current", "existing", "meeting", "sample", "synthetic"
+    ]
+    private func meaningfulWords(_ text: String) -> Set<String> {
+        Set(text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+            .filter { $0.count > 3 && !Self.genericRecommendationWords.contains($0) })
+    }
+    private func priorAssociation(_ session: WorkSession, source: WorkSource) -> WorkHandoffReceipt? {
+        receipts(for: source.id).first { $0.sessionID == session.id && ["delivered", "reviewed", "completed"].contains($0.status) }
+    }
+    func recommendationReason(for session: WorkSession, source: WorkSource) -> String {
+        if let prior = priorAssociation(session, source: source) {
+            return prior.sourceRevision == source.revision ? "Used for a confirmed handoff of this work." : "Used for a confirmed handoff of an earlier revision. Review the updated context."
+        }
+        if !source.project.isEmpty && session.project.caseInsensitiveCompare(source.project) == .orderedSame {
+            return "Same project label. Confirm this is the right conversation."
+        }
+        let overlap = meaningfulWords(source.title + " " + source.context).intersection(meaningfulWords(session.title + " " + session.summary))
+        return "Shared topic words: " + overlap.sorted().prefix(3).joined(separator: ", ") + ". Choose explicitly."
+    }
     func recommendations(for source: WorkSource) -> [WorkSession] {
-        let words = Set((source.title + " " + source.context).lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { $0.count > 3 })
+        let words = meaningfulWords(source.title + " " + source.context)
         func score(_ row: WorkSession) -> Int {
-            let text = (row.title + " " + row.summary + " " + row.project).lowercased()
-            let overlap = words.filter { text.contains($0) }.count
-            let project = !source.project.isEmpty && row.project.lowercased() == source.project.lowercased() ? 10 : 0
-            return overlap + project
+            if priorAssociation(row, source: source) != nil { return 1_000 }
+            let overlap = words.intersection(meaningfulWords(row.title + " " + row.summary)).count
+            let project = !source.project.isEmpty && row.project.caseInsensitiveCompare(source.project) == .orderedSame ? 100 : 0
+            return project + (overlap >= 2 ? overlap : 0)
         }
         return sessions.filter { score($0) > 0 }.sorted { score($0) == score($1) ? $0.id < $1.id : score($0) > score($1) }.prefix(5).map { $0 }
     }

@@ -477,6 +477,9 @@ final class COSControlHelper {
         case "set-morning-brief": try setMorningBrief()
         case "run-morning-brief": try runMorningBrief()
         case "tasks": try emitTasks(args: args)
+        case "work-tasks": try emitWorkTasks()
+        case "work-reviews": try emitWorkReviews(create: false)
+        case "work-review": try emitWorkReviews(create: true)
         case "domains": try emitDomains()
         case "set-domains": try withMutationLock { try emitSetDomains(args: args) }
         case "task-set-text": try withMutationLock { try emitTaskSetText(args: args) }
@@ -1958,9 +1961,10 @@ final class COSControlHelper {
         body: String? = nil,
         headers: [String: String] = [:],
         timeout: Int = 5,
-        deadlineUptime: TimeInterval? = nil
+        deadlineUptime: TimeInterval? = nil,
+        reviewCandidatePort: Int? = nil
     ) -> HTTPResponse? {
-        let port = Self.loopbackAPIPort(environment: ProcessInfo.processInfo.environment)
+        let port = reviewCandidatePort ?? Self.loopbackAPIPort(environment: ProcessInfo.processInfo.environment)
         guard let url = URL(string: "http://127.0.0.1:\(port)\(path)") else { return nil }
         let now = ProcessInfo.processInfo.systemUptime
         let remaining = deadlineUptime.map { $0 - now }
@@ -4533,6 +4537,89 @@ final class COSControlHelper {
             "next": next?.status == 200 ? (next?.body?["task"] ?? NSNull()) : NSNull(),
             "runs": runs?.status == 200 ? (runs?.body?["runs"] ?? []) : [],
         ])
+    }
+
+    static func workTaskProjection(_ raw: [[String: Any]]) -> [[String: Any]] {
+        raw.compactMap { row in
+            guard var projected = taskRowProjection(row) else { return nil }
+            for key in ["text", "source", "agentState", "stage", "doneWhen"] {
+                projected[key] = row[key] as? String ?? ""
+            }
+            projected["checked"] = taskFlag(row, "checked")
+            return projected
+        }
+    }
+
+    private func emitWorkTasks() throws {
+        let board = try taskRequest("/api/tasks")
+        guard board.status == 200, let body = board.body, let raw = body["tasks"] as? [[String: Any]] else {
+            throw HelperError.message("The server could not read the complete Work task board.")
+        }
+        let rows = Self.workTaskProjection(Array(raw.prefix(10_000)))
+        emit(ok: true, message: "Work tasks ready", details: ["tasks": rows, "count": rows.count,
+            "total": raw.count, "complete": raw.count <= 10_000 && rows.count == raw.count,
+            "gate": body["gate"] ?? NSNull()])
+    }
+
+    /// Only the explicit connected candidate may route review commands to its
+    /// private qualification service. All other APIs keep their existing port.
+    private func reviewCandidateTransport() throws -> (port: Int, token: String)? {
+        let env = ProcessInfo.processInfo.environment
+        guard env["COS_WORK_CONNECTED_TEST"] == "1", let rawPort = env["COS_WORK_REVIEW_CANDIDATE_PORT"] else { return nil }
+        guard env["COS_CONTROL_TEST_HOME"] == nil,
+              let port = Int(rawPort), (1024...65535).contains(port), port != 3141, port != 3143,
+              let path = env["COS_WORK_REVIEW_CANDIDATE_TOKEN_FILE"], path.hasPrefix("/") else {
+            throw HelperError.message("Invalid meeting-review candidate configuration.")
+        }
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { throw HelperError.message("Meeting-review candidate token is unavailable.") }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_uid == getuid(), (info.st_mode & 0o077) == 0, info.st_size == 64 else {
+            throw HelperError.message("Unsafe meeting-review candidate token.")
+        }
+        var bytes = [UInt8](repeating: 0, count: 64)
+        guard read(fd, &bytes, bytes.count) == 64, bytes.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            throw HelperError.message("Invalid meeting-review candidate token.")
+        }
+        return (port, String(decoding: bytes, as: UTF8.self))
+    }
+
+    private func emitWorkReviews(create: Bool) throws {
+        var payload: String?
+        if create {
+            var data = Data()
+            while data.count <= 16_384 {
+                let chunk = try FileHandle.standardInput.read(upToCount: min(4096, 16_385 - data.count)) ?? Data()
+                if chunk.isEmpty { break }; data.append(chunk)
+            }
+            guard data.count <= 16_384,
+                  let body = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let meeting = body["meeting"] as? [String: Any],
+                  let domain = meeting["domain"] as? String, !domain.isEmpty,
+                  let month = meeting["month"] as? String, !month.isEmpty,
+                  let filename = meeting["filename"] as? String, !filename.isEmpty,
+                  let model = body["model"] as? String, !model.isEmpty else {
+                throw HelperError.message("Select a saved meeting and an available review model.")
+            }
+            payload = String(decoding: data, as: UTF8.self)
+        }
+        let candidate = try reviewCandidateTransport()
+        let token = try candidate?.token ?? readToken()
+        guard let response = request("/api/work-reviews", method: create ? "POST" : "GET", token: token, body: payload, timeout: create ? 60 : 30, reviewCandidatePort: candidate?.port) else {
+            throw HelperError.message(create ? "Review admission could not be confirmed. Refresh Work before trying again." : "Meeting reviews are temporarily unavailable.")
+        }
+        if response.status == 404 {
+            emit(ok: true, message: "Meeting review needs a compatible server update.", details: ["capabilities": ["manualReview": false, "automaticAfterSync": false, "reviewModels": []], "reviews": []])
+            return
+        }
+        guard (200..<300).contains(response.status), let body = response.body else {
+            let message = (response.body?["error"] as? [String: Any])?["message"] as? String
+                ?? "Meeting review was refused (HTTP \(response.status))."
+            throw HelperError.message(message)
+        }
+        emit(ok: true, message: "Meeting review ready", details: body)
     }
 
     /// The domain list the server resolved from the user's own config and

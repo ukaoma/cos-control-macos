@@ -13,10 +13,6 @@ import SwiftUI
     precondition(ActivitySection.resolvedLaunch(.sessions, environment: ["COS_CONTROL2_FOUNDATION": "1"]) == .sessions)
     precondition(ActivityWindow.workSubviewForLaunch(.tasks, current: .meetingFollowUp) == .tasks)
     precondition(ActivityWindow.workSubviewForLaunch(.work, current: .meetingFollowUp) == .meetingFollowUp)
-    precondition(ActivityWindow.usesExistingTaskList(isolatedWorkPreview: false, subview: .tasks))
-    precondition(!ActivityWindow.usesExistingTaskList(isolatedWorkPreview: false, subview: .meetingFollowUp))
-    precondition(!ActivityWindow.usesExistingTaskList(isolatedWorkPreview: true, subview: .tasks))
-    precondition(!ActivityWindow.usesExistingTaskList(isolatedWorkPreview: true, subview: .meetingFollowUp))
     precondition(ActivitySection.work.title == "Work" && ActivitySection.work.icon == "tray.full")
     precondition(!ActivityWindow.allowsLiveSectionLoads(isolatedWorkPreview: true, backgroundWorkEnabled: true))
     precondition(!ActivityWindow.allowsLiveSectionLoads(isolatedWorkPreview: true, backgroundWorkEnabled: false))
@@ -39,6 +35,11 @@ import SwiftUI
     precondition(!connectedModel.backgroundWorkEnabled && connectedModel.activityLoadsEnabled)
     precondition(!ActivityWindow.workConnectedTest(model: connectedModel).isolatedWorkPreview)
     precondition(!model.activityLoadsEnabled, "The isolated preview cannot load foreground production sections")
+    let sampleRows = WorkWorkspaceProjection.previewRows(Control2PreviewTask.samples)
+    precondition(sampleRows.count == 3 && sampleRows.filter(\.checked).count == 1)
+    let sampleReviews = WorkWorkspaceProjection.previewReviewStore()
+    precondition(sampleReviews.reviews.count == 1 && sampleReviews.reviews[0].canPrepare)
+    precondition(!sampleReviews.available, "Sample review transport cannot admit a live review")
     // Handoffs must carry the full task and finish line, not the lens's capped title.
     let task = TaskRow(.object([
         "id": .string("legacy-row"), "domain": .string("demo"), "title": .string("Short lens title"),
@@ -59,6 +60,6 @@ import SwiftUI
         "text": .string(task.text), "doneWhen": .string("A revised finish line"), "source": .string(task.source)
     ]))!
     precondition(WorkSource.taskSnapshot(changed).revision != source.revision, "A changed goal must not reuse the previewed context revision")
-    print("PASS: seven shared Activity peers, legacy Tasks maps to Work/Tasks, existing Tasks reuse and notification marks, isolated preview/live-load policy")
+    print("PASS: seven shared Activity peers, legacy Tasks maps to Work/Tasks, shared workspace routing and notification marks, isolated preview/live-load policy")
     print("PASS: handoff context retains the full task/finish line/source and changes snapshot revision with the goal")
 }

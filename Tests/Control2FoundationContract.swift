@@ -4,6 +4,9 @@ import CryptoKit
 @main struct Control2FoundationContract {
     @MainActor static func main() async throws {
         runControl2ActivityIntegrationChecks()
+        runWorkWorkspaceProjectionChecks()
+        try await runWorkWorkspaceReviewSelectionChecks()
+        try await runWorkReviewStoreChecks()
         let valid = #"{"schemaVersion":1,"enabled":true,"mode":"foundation","capabilities":{"publication":false,"automaticExecution":false},"work":[{"id":"work-1","meetingId":"m1","projectId":"p1","revision":"1","status":"needs_review","title":"Review","createdAt":"2026-09-27","updatedAt":"2026-09-27","sourceExcerpt":"Operator request","criteria":["Mobile layout"]}],"gates":[{"id":"publication","status":"unrun","detail":"No publication capability"}]}"#
         let decoded = try Control2FoundationSnapshot.decode(Data(valid.utf8))
         precondition(decoded.work[0].sourceExcerpt == "Operator request")
