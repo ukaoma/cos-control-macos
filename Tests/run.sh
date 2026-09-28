@@ -2143,8 +2143,12 @@ need(re.search(r"openLibraryRow\s*=", library_opener.group(0)) is not None,
 
 need('selectedSessionID != nil' in activity, "session detail has no window-local selection gate")
 session_mount = re.search(r'if model\.claudeSessionRouteActive\s*\{(.*?)\} else \{\s*centeredProgress\("Loading session…"\)', activity, re.S)
-need(session_mount is not None and 'ClaudeSessionDetailPane(model: model)' in session_mount.group(1),
+need(session_mount is not None and 'ClaudeSessionDetailPane(model: model' in session_mount.group(1),
      "ClaudeSessionDetailPane and its backlink must remain gated on model.claudeSessionRouteActive")
+# 0.5.241: the From Work row comes from the handoff receipts inside the same gate, however the session was opened.
+need(session_mount is not None and 'WorkHandoffStore.latestReceipt(forSession:' in session_mount.group(1)
+     and 'workReceipt: workReceipt' in session_mount.group(1),
+     "the Sessions page must take its From Work receipt from WorkHandoffStore.latestReceipt inside the route gate")
 session_route = re.search(r"var claudeSessionRouteActive[^}]*\}", model, re.S)
 need(session_route is not None, "claudeSessionRouteActive not found")
 need(re.search(r"\bopenClaudeRow\b", session_route.group(0)) is not None,
