@@ -4,7 +4,7 @@ set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 umask 077
 HERE="${0:A:h}"
-APP="${COS_FOUNDATION_APP_PATH:-$HOME/Library/Caches/COS Control Work Preview 0.1.6 Final/COS Control Foundation Lab.app}"
+APP="${COS_FOUNDATION_APP_PATH:-$HOME/Library/Caches/COS Control Work Preview 0.1.7 Final/COS Control Foundation Lab.app}"
 SERVER="${COS_WORK_REVIEW_SERVER_ROOT:-$HERE/../../cos-glasses-server}"
 if [[ -d "$HERE/COS Control Foundation Lab.app" ]]; then APP="$HERE/COS Control Foundation Lab.app"; fi
 [[ -z "${COS_CONTROL_TEST_HOME:-}" ]] || { print -u2 'Use a fresh Terminal for connected Work.'; exit 64; }

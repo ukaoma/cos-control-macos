@@ -1,6 +1,57 @@
 import AppKit
 import SwiftUI
 
+struct WorkActivity: Identifiable {
+    let receipt: WorkHandoffReceipt
+    let session: WorkSession?
+    var id: String { receipt.id }
+    var observingTurn: Bool { ["sending", "queued", "running", "delivered"].contains(receipt.status) }
+    var sessionRunning: Bool { observingTurn && ["running", "working"].contains(session?.status ?? "") }
+    var needsAttention: Bool {
+        ["unknown", "failed", "refused", "delivered", "completed"].contains(receipt.status)
+            || (observingTurn && ["waiting", "error", "failed"].contains(session?.status ?? ""))
+    }
+    var inProgress: Bool { ["preparing", "sending", "queued", "running"].contains(receipt.status) || sessionRunning }
+    var title: String {
+        switch receipt.status {
+        case "unknown": return "Delivery needs checking"
+        case "failed", "refused": return "Needs attention"
+        case "completed": return "Response ready for review"
+        case "reviewed": return "Reviewed"
+        case "canceled": return "Canceled"
+        case "queued": return "Queued for session"
+        default:
+            if sessionRunning { return "Session running" }
+            if observingTurn && session?.status == "waiting" { return "Session needs your input" }
+            if observingTurn && ["error", "failed"].contains(session?.status ?? "") { return "Session needs attention" }
+            if receipt.status == "delivered" { return "Sent to session" }
+            return inProgress ? "Handoff in progress" : receipt.status.capitalized
+        }
+    }
+    var glyph: String { inProgress ? "clock" : needsAttention ? "circle.dashed" : "checkmark.circle" }
+    var sessionState: String {
+        guard let session else { return "Live status unavailable" }
+        switch session.status {
+        case "running", "working": return "Running"
+        case "waiting": return "Waiting for input"
+        case "error", "failed": return "Needs attention"
+        case "idle", "recent", "completed": return "Idle"
+        default: return "Live status unknown"
+        }
+    }
+}
+
+enum WorkActivityProjection {
+    static func latest(workID: String, revision: String, receipts: [WorkHandoffReceipt], sessions: [WorkSession]) -> WorkActivity? {
+        guard let receipt = receipts.filter({ $0.workID == workID && $0.sourceRevision == revision })
+            .sorted(by: { $0.createdAt == $1.createdAt ? $0.id > $1.id : $0.createdAt > $1.createdAt }).first else { return nil }
+        // Only a receipt establishes this association. A suggestion or matching
+        // title must not paint somebody else's session as this task's activity.
+        let session = sessions.first { $0.id == receipt.sessionID && $0.provider == receipt.provider }
+        return WorkActivity(receipt: receipt, session: session)
+    }
+}
+
 enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
     case all, attention, progress, completed
     var id: String { rawValue }
@@ -51,6 +102,7 @@ struct WorkWorkspaceItem: Identifiable {
     let needsAttention: Bool
     let inProgress: Bool
     let completed: Bool
+    var activity: WorkActivity? = nil
     var sourceID: String { review?.source.id ?? id }
 }
 
@@ -75,26 +127,27 @@ enum WorkWorkspaceProjection {
         return store
     }
 
-    static func items(tasks: [TaskRow], reviews: [WorkReviewRecord], receipts: [WorkHandoffReceipt]) -> [WorkWorkspaceItem] {
+    static func items(tasks: [TaskRow], reviews: [WorkReviewRecord], receipts: [WorkHandoffReceipt], sessions: [WorkSession] = []) -> [WorkWorkspaceItem] {
         let taskItems = tasks.map { task in
             let source = WorkSource.taskSnapshot(task)
-            let linked = receipts.filter { $0.workID == source.id }
-            let running = linked.contains { ["preparing", "sending", "queued", "running"].contains($0.status) }
-            let attention = linked.contains { ["unknown", "failed", "refused", "delivered"].contains($0.status) }
+            let activity = WorkActivityProjection.latest(workID: source.id, revision: source.revision, receipts: receipts, sessions: sessions)
+            let running = activity?.inProgress == true
+            let attention = activity?.needsAttention == true && activity?.sessionRunning != true
             let label = task.checked ? "Completed task" : task.agentState == "done" ? "Agent finished · task still open" : task.stage.capitalized
             return WorkWorkspaceItem(id: source.id, title: task.text.isEmpty ? task.title : task.text, domain: task.domain,
                 searchText: source.context, subtitle: label, task: task, review: nil,
                 needsAttention: !task.checked && (task.failed == true || task.missed == true || attention || task.agentState == "done" || task.stage == "review"),
-                inProgress: task.agentState == "running" || running, completed: task.checked)
+                inProgress: task.agentState == "running" || running, completed: task.checked, activity: activity)
         }
         let meetingItems = reviews.map { review in
-            WorkWorkspaceItem(id: "meeting-review:" + review.id, title: review.title, domain: review.domain,
+            let activity = WorkActivityProjection.latest(workID: review.source.id, revision: review.source.revision, receipts: receipts, sessions: sessions)
+            return WorkWorkspaceItem(id: "meeting-review:" + review.id, title: review.title, domain: review.domain,
                 searchText: review.title + " " + review.markdown + " " + review.source.context,
                 subtitle: "Meeting review · " + review.status.replacingOccurrences(of: "_", with: " "),
                 task: nil, review: review,
-                needsAttention: ["completed", "ready", "failed", "unknown", "needs_review"].contains(review.status),
-                inProgress: ["preparing", "starting", "queued", "running", "accepted"].contains(review.status),
-                completed: false)
+                needsAttention: activity.map { $0.needsAttention && !$0.sessionRunning } ?? ["completed", "ready", "failed", "unknown", "needs_review"].contains(review.status),
+                inProgress: activity?.inProgress == true || ["preparing", "starting", "queued", "running", "accepted"].contains(review.status),
+                completed: false, activity: activity)
         }
         return (taskItems + meetingItems).enumerated().sorted { left, right in
             func rank(_ item: WorkWorkspaceItem) -> Int {
@@ -137,6 +190,7 @@ enum WorkWorkspaceProjection {
 }
 
 struct WorkWorkspaceView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var model: ControllerModel
     @ObservedObject var handoffStore: WorkHandoffStore
     @ObservedObject var reviewStore: WorkReviewStore
@@ -146,7 +200,7 @@ struct WorkWorkspaceView: View {
     var onReviewMeeting: (LibraryMeeting) -> Void
 
     private var items: [WorkWorkspaceItem] {
-        WorkWorkspaceProjection.items(tasks: handoffStore.isolated ? WorkWorkspaceProjection.previewRows(handoffStore.previewTasks) : model.workTasks, reviews: reviewStore.reviews, receipts: handoffStore.receipts)
+        WorkWorkspaceProjection.items(tasks: handoffStore.isolated ? WorkWorkspaceProjection.previewRows(handoffStore.previewTasks) : model.workTasks, reviews: reviewStore.reviews, receipts: handoffStore.receipts, sessions: handoffStore.observedSessions())
     }
     private var visible: [WorkWorkspaceItem] { WorkWorkspaceProjection.filter(items, scope: state.scope, domain: state.domain, query: state.query) }
     private var selected: WorkWorkspaceItem? { items.first { $0.id == state.selectedID } }
@@ -157,6 +211,7 @@ struct WorkWorkspaceView: View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
                 header
+                activitySummary
                 if state.captureOpen { captureForm }
                 Divider().overlay(COSPalette.line)
                 if state.meetingPicker {
@@ -196,6 +251,19 @@ struct WorkWorkspaceView: View {
             await model.loadWorkTasks()
             await reviewStore.refresh()
             if let id = handoffStore.selectedWorkID { state.selectedID = WorkWorkspaceProjection.rowID(forSourceID: id, currentID: state.selectedID, items: items) ?? id }
+        }
+        .task(id: scenePhase) {
+            guard !handoffStore.isolated, scenePhase == .active else { return }
+            while !Task.isCancelled {
+                if !handoffStore.receipts.isEmpty {
+                    await handoffStore.refreshActivity()
+                    guard !Task.isCancelled else { return }
+                    if handoffStore.receipts.contains(where: { $0.blocksNewHandoff && $0.status != "delivered" }) {
+                        await handoffStore.refreshReceipts()
+                    }
+                }
+                do { try await Task.sleep(for: .seconds(15)) } catch { return }
+            }
         }
         .task(id: reviewStore.reviews.contains { ["preparing", "starting", "queued", "running", "accepted"].contains($0.status) }) {
             guard !handoffStore.isolated else { return }
@@ -238,9 +306,30 @@ struct WorkWorkspaceView: View {
                 state.meetingPicker = true; state.selectedID = nil; reviewStore.selectedMeeting = nil
                 Task { await model.loadLibraryMeetings() }
             }.buttonStyle(COSPrimaryButtonStyle())
-            Button { Task { await model.loadWorkTasks(); await reviewStore.refresh() } } label: { Image(systemName: "arrow.clockwise") }
+            Button { Task { await model.loadWorkTasks(); await reviewStore.refresh(); await handoffStore.refreshActivity(); await handoffStore.refreshReceipts() } } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(COSQuietButtonStyle()).disabled(handoffStore.isolated || model.workTasksLoading || reviewStore.busy).help("Refresh work")
         }.padding(18)
+    }
+
+    private var activitySummary: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 20) { activityCounts; Spacer(minLength: 0); activityFreshness }
+            VStack(alignment: .leading, spacing: 8) { HStack(spacing: 16) { activityCounts }; activityFreshness }
+        }.font(COSType.body(11.5)).padding(.horizontal, 18).padding(.bottom, 14)
+    }
+    @ViewBuilder private var activityCounts: some View {
+        Text("\(items.filter(\.inProgress).count) in progress").foregroundStyle(COSPalette.accent)
+        Text("\(items.filter(\.needsAttention).count) need attention").foregroundStyle(COSPalette.muted)
+    }
+    private var activityFreshness: some View {
+        Group {
+            if handoffStore.isolated { Text("Sample activity") }
+            else if let error = handoffStore.activityError { Text(error) }
+            else if handoffStore.activityRefreshing { Text("Checking session activity…") }
+            else if let checked = handoffStore.activityCheckedAt {
+                Text("Sessions checked \(checked, style: .relative) ago")
+            } else { Text("Session activity appears after a handoff") }
+        }.foregroundStyle(COSPalette.muted)
     }
 
     private var captureForm: some View {
@@ -287,7 +376,7 @@ struct WorkWorkspaceView: View {
                     }
                 }
             }.padding(10)
-        }.background(COSPalette.card)
+        }.background(COSPalette.raised.opacity(0.55))
     }
 
     private func navigationRow(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
@@ -318,7 +407,8 @@ struct WorkWorkspaceView: View {
         VStack(alignment: .leading, spacing: 0) {
             TextField("Search work", text: $state.query).textFieldStyle(.plain)
                 .help("Search full task text, finish lines, source evidence, and review context")
-                .font(COSType.body(12)).padding(10).background(COSPalette.card, in: RoundedRectangle(cornerRadius: 6)).padding(12)
+                .font(COSType.body(12)).padding(10).background(COSPalette.panel, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(COSPalette.line)).padding(12)
             HStack {
                 Text("\(visible.count) shown").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                 Spacer()
@@ -336,7 +426,11 @@ struct WorkWorkspaceView: View {
                             VStack(alignment: .leading, spacing: 7) {
                                 Text(inlineTitle(item.title)).font(COSType.body(13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
                                 Text(domainLabel(item.domain) + " · " + item.subtitle).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
-                                if item.needsAttention { Label("Needs attention", systemImage: "circle.fill").font(COSType.body(10)).foregroundStyle(COSPalette.accent) }
+                                if let activity = item.activity {
+                                    Label(activity.title, systemImage: activity.glyph).font(COSType.body(10.5)).foregroundStyle(COSPalette.accent)
+                                    Text(activity.session?.title ?? activity.receipt.sessionTitle).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).lineLimit(2)
+                                } else if item.inProgress { Label("In progress", systemImage: "clock").font(COSType.body(10)).foregroundStyle(COSPalette.accent) }
+                                else if item.needsAttention { Label("Needs attention", systemImage: "circle.fill").font(COSType.body(10)).foregroundStyle(COSPalette.accent) }
                             }.padding(16).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                         }.buttonStyle(.plain).background(state.selectedID == item.id ? COSPalette.raised : Color.clear)
                             .accessibilityAddTraits(state.selectedID == item.id ? .isSelected : [])
@@ -344,7 +438,7 @@ struct WorkWorkspaceView: View {
                     }
                 }
             }
-        }.frame(maxHeight: .infinity, alignment: .top)
+        }.frame(maxHeight: .infinity, alignment: .top).background(COSPalette.raised.opacity(0.3))
     }
 
     @ViewBuilder private var detailPane: some View {
@@ -388,6 +482,7 @@ struct WorkWorkspaceView: View {
             }
             Text(domainLabel(task.domain) + " · " + (task.checked ? "Completed task" : task.stage.capitalized))
                 .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+            workActivity(source: .taskSnapshot(task))
             fact("Done when", task.doneWhen.isEmpty ? "No finish line recorded. Use Edit task to define one." : task.doneWhen)
             if !task.source.isEmpty { fact("Source", task.source) }
             if !task.runAt.isEmpty { fact("Scheduled", task.runAt) }
@@ -436,6 +531,7 @@ struct WorkWorkspaceView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text(inlineTitle(review.title)).font(COSType.display(25, weight: .medium))
             Text("Meeting review · " + review.status.replacingOccurrences(of: "_", with: " ")).font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+            workActivity(source: review.source)
             if let error = review.error { Text(error).foregroundStyle(COSPalette.danger) }
             if review.inputTruncated {
                 Label("The source was too long to include in full. Review may omit details.", systemImage: "exclamationmark.triangle")
@@ -486,6 +582,44 @@ struct WorkWorkspaceView: View {
                 Divider()
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder private func workActivity(source: WorkSource) -> some View {
+        if let activity = WorkActivityProjection.latest(workID: source.id, revision: source.revision, receipts: handoffStore.receipts, sessions: handoffStore.observedSessions()) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Activity").font(COSType.display(20, weight: .medium))
+                    Spacer()
+                    Label(activity.title, systemImage: activity.glyph).font(COSType.body(11, weight: .medium)).foregroundStyle(COSPalette.accent)
+                }
+                HStack(alignment: .top, spacing: 10) {
+                    Circle().fill(COSPalette.gold).frame(width: 7, height: 7).padding(.top, 5)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(activity.receipt.mode.title + " · " + activity.receipt.provider.capitalized).font(COSType.body(12, weight: .semibold))
+                        Text(activity.receipt.detail).font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+                        Text(Date(timeIntervalSince1970: activity.receipt.createdAt), style: .date).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+                    }
+                }
+                Divider().overlay(COSPalette.line)
+                Text(activity.session?.title ?? activity.receipt.sessionTitle).font(COSType.body(13, weight: .medium))
+                Text("Session: " + activity.sessionState).font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+                if let session = activity.session {
+                    if let failure = session.failure, !failure.isEmpty { Text(failure).font(COSType.body(12)).foregroundStyle(COSPalette.danger) }
+                    if let waiting = session.waitingDetail, !waiting.isEmpty { Text(waiting).font(COSType.body(12)).foregroundStyle(COSPalette.accent) }
+                    if !session.summary.isEmpty { Text(session.summary).font(COSType.body(12)).lineLimit(3) }
+                }
+                if let result = activity.receipt.result, !result.isEmpty {
+                    Text(result).font(COSType.body(12)).lineLimit(4)
+                }
+                if let sessionID = activity.receipt.sessionID {
+                    Button("Open session") { handoffStore.selectedWorkID = source.id; onOpenSession(sessionID) }.buttonStyle(COSQuietButtonStyle())
+                }
+                Text("Session activity is current context. The handoff result and task completion are tracked separately.")
+                    .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+            }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                .background(COSPalette.raised.opacity(0.55), in: RoundedRectangle(cornerRadius: 9))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(COSPalette.line))
+        }
     }
 
     private func inlineTitle(_ value: String) -> AttributedString {

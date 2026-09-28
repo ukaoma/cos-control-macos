@@ -63,7 +63,7 @@ struct WorkHandoffView: View {
             if mode == .newSession { newDestination } else { existingDestination }
             Text("Context to send").font(COSType.body(12, weight: .semibold))
             TextEditor(text: draftBinding(\.prompt)).font(COSType.body(12)).frame(minHeight: 100, maxHeight: 170)
-                .padding(6).background(COSPalette.panel)
+                .scrollContentBackground(.hidden).padding(6).background(COSPalette.panel)
                 .overlay(RoundedRectangle(cornerRadius: 7).stroke(COSPalette.line))
                 .accessibilityLabel("Context to send")
                 .disabled(store.busy || validating)
@@ -95,23 +95,11 @@ struct WorkHandoffView: View {
             if store.busy { ProgressView("Checking destination…").controlSize(.small) }
             Divider()
             history
-        }.padding(16).background(COSPalette.card, in: RoundedRectangle(cornerRadius: 10))
+        }.padding(16).background(COSPalette.raised.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line))
             .task(id: source) {
                 await store.refresh()
             }
-            .task { await pollVisibleReceipts() }
-    }
-
-    private func pollVisibleReceipts() async {
-        guard !isPreview else { return }
-        while !Task.isCancelled {
-            do { try await Task.sleep(for: .seconds(5)) } catch { return }
-            guard !Task.isCancelled else { return }
-            if !store.busy, store.receipts.contains(where: { $0.blocksNewHandoff && $0.status != "delivered" }) {
-                await store.refreshReceipts()
-            }
-        }
     }
 
     private var existingDestination: some View {
@@ -261,7 +249,7 @@ struct WorkSessionsView: View {
                                 Text(receipt.status.capitalized + " · " + receipt.detail).font(COSType.body(12))
                                 Text(receipt.prompt).font(COSType.body(12)).textSelection(.enabled)
                                 if let result = receipt.result { COSMarkdownView(text: result) }
-                            }.padding(14).background(COSPalette.card, in: RoundedRectangle(cornerRadius: 8))
+                            }.padding(14).background(COSPalette.raised.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
                         }
                     } else {
                         Text("Choose a session").font(COSType.display(24, weight: .medium))

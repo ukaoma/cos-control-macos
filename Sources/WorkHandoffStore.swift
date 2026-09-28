@@ -25,10 +25,13 @@ struct WorkSession: Identifiable, Codable, Equatable, Sendable {
     var summary: String
     let project: String
     var status: String
+    var waitingDetail: String? = nil
+    var failure: String? = nil
     static func parse(_ value: JSONValue) -> Self? {
         guard let row = ClaudeSession(value), !row.sessionId.isEmpty else { return nil }
         return Self(id: "\(row.provider):\(row.sessionId)", nativeID: row.sessionId, provider: row.provider,
-                    title: row.name, summary: row.discussionSummary, project: row.workspace, status: row.state)
+                    title: row.name, summary: row.discussionSummary, project: row.workspace, status: row.state,
+                    waitingDetail: row.waitingDetail, failure: row.failure)
     }
 }
 struct WorkModelChoice: Identifiable, Codable, Equatable, Sendable {
@@ -84,6 +87,12 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     @Published private(set) var drafts: [WorkHandoffDraft] = []
     @Published var error: String?
     @Published var busy = false
+    /// Read-only session observation is separate from the delivery journal and
+    /// editor lock. A session becoming idle never completes a Work receipt.
+    @Published private(set) var activitySessions: [WorkSession] = []
+    @Published private(set) var activityCheckedAt: Date?
+    @Published private(set) var activityError: String?
+    @Published private(set) var activityRefreshing = false
     @Published var previewTasks = Control2PreviewTask.samples
     @Published var selectedWorkID: String?
     @Published var selectedSessionID: String?
@@ -92,6 +101,7 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     private let transport: Transport
     private var storageReady = true
     private var serverInstanceID: String?
+    private var activityRefreshTask: Task<Void, Never>?
     private struct Journal: Codable { var version = 2; var receipts: [WorkHandoffReceipt]; var sessions: [WorkSession]; var drafts: [WorkHandoffDraft]? }
     private struct DraftIdentity: Hashable { let sourceID: String; let revision: String }
     private static let queueable: Set<String> = ["native_thread_working", "native_target_busy"]
@@ -245,12 +255,40 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
             let catalog = try await call(["work-models"])
             serverInstanceID = catalog["serverInstanceId"]?.string
             models = try JSONDecoder().decode([WorkModelChoice].self, from: JSONEncoder().encode(catalog["models"] ?? .array([])))
-            let discovered = try await call(["claude-sessions", "--fresh"])
-            let fresh = (discovered["sessions"]?.array ?? []).compactMap(WorkSession.parse)
+            await refreshActivity()
+            if let activityError { throw failure(activityError) }
+            let fresh = activitySessions
             // Preserve exact receipt-bound targets even if discovery has aged them out.
             let linked = Set(receipts.compactMap(\.sessionID))
             sessions = fresh + sessions.filter { previous in linked.contains(previous.id) && !fresh.contains(where: { $0.id == previous.id }) }
         } catch { models = []; self.error = error.localizedDescription }
+    }
+    func refreshActivity() async {
+        guard !isolated else { return }
+        if let activityRefreshTask { await activityRefreshTask.value; return }
+        activityRefreshing = true
+        let request = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.activityRefreshing = false }
+            do {
+                let discovered = try await self.call(["claude-sessions", "--fresh"])
+                guard let rows = discovered["sessions"]?.array else { throw self.failure("Session activity response was unavailable.") }
+                let fresh = rows.compactMap(WorkSession.parse)
+                guard fresh.count == rows.count else { throw self.failure("Some session activity could not be read.") }
+                self.activitySessions = fresh; self.activityCheckedAt = Date(); self.activityError = nil
+            } catch {
+                self.activityError = "Session activity unavailable. Showing saved handoff history."
+                self.activitySessions = []; self.activityCheckedAt = nil
+            }
+        }
+        activityRefreshTask = request
+        await request.value
+        activityRefreshTask = nil
+    }
+    func observedSessions(now: Date = Date()) -> [WorkSession] {
+        if isolated { return sessions }
+        guard activityError == nil, let checked = activityCheckedAt, now.timeIntervalSince(checked) < 45 else { return [] }
+        return activitySessions
     }
     func submit(source: WorkSource, mode: WorkHandoffMode, session: WorkSession?, model: WorkModelChoice?, prompt: String) async {
         guard !busy else { return }
