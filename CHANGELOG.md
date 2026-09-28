@@ -1,3 +1,15 @@
+## 0.5.240 (build 278)
+
+Work brings tasks, meeting follow-up and agent sessions together in the existing Activity window.
+
+- Work is the Tasks home on normal launch. Existing Tasks shortcuts, badges and saved task IDs continue to work.
+- Domain boards show Mentioned, Planned, Draft, Built, QA and Complete. Stage updates check the task revision before writing. A completed agent run does not complete a task.
+- Tasks link to exact saved meetings, and meetings show associated work and sessions. Continue, Fork and New session retain the existing provider permissions and record a durable handoff receipt.
+- Manual meeting review runs when requested. Review settings survive Update Server and Repair. No automatic preparation or publication is enabled by this release.
+- The Work surface uses the existing COS cream/gold styles and supports full-row selection and dismissible task dialogs.
+- Requires paired server 6.56.0 for Work routes and the portable canonical task bridge. Earlier servers retain their established features; Work shows unavailable when its contract is absent.
+- Signed with the stable COS Control Local identity to preserve Accessibility grants. This build is not Apple-notarized.
+
 ## 0.5.239 (build 277)
 
 Control keeps the server switches you set by hand. Pairs with server 6.52.0.

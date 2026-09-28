@@ -23,12 +23,11 @@ Signed builds fail closed unless Developer ID signing and notarization are both
 configured, and the script then verifies the extracted ZIP with codesign,
 stapler, and Gatekeeper. Those post-checks run on the signed path only.
 
-**Current release state:** Developer ID enrollment is not in place yet, so
-published releases (0.2.3 onward) are built with `COS_ALLOW_ADHOC=1` and ship
-ad-hoc signed and unnotarized. Gatekeeper rejects them on first open, which is
-why the download page walks users through `xattr -dr com.apple.quarantine` and
-"Open Anyway". Drop the ad-hoc path and delete this note once Developer ID is
-available.
+**Current release state:** Developer ID enrollment is not configured. Releases
+use the stable `COS Control Local` signing identity, preserving the designated
+requirement and Accessibility grants across updates. They are not Apple-notarized;
+first installation may require the documented macOS Open Anyway flow. Ad-hoc
+signing is reserved for throwaway QA on a machine without a stable identity.
 
 The controller stores immutable npm
 server generations under `~/Library/Application Support/COS Control` and uses

@@ -68,17 +68,17 @@ enum ActivitySection: String, CaseIterable, Identifiable {
     case work
 
     /// The same collection drives menu chips, Activity home and its peer rail.
-    /// Work cannot appear in an ordinary production launch before release.
+    /// Work is the production Tasks home. A rollback switch preserves the old pane.
     static func visibleSections(environment: [String: String]) -> [ActivitySection] {
         let existing: [ActivitySection] = [.messages, .speakers, .meetings, .memories, .threads, .sessions, .tasks]
-        return environment["COS_CONTROL2_FOUNDATION"] == "1" ? existing.map { $0 == .tasks ? .work : $0 } : existing
+        return environment["COS_CONTROL_WORK_DISABLED"] == "1" ? existing : existing.map { $0 == .tasks ? .work : $0 }
     }
     static var allCases: [ActivitySection] { visibleSections(environment: ProcessInfo.processInfo.environment) }
 
     /// Keep old task launch links and session-pet actions useful after Work takes
     /// over the top-level slot. The caller still knows this requested Tasks.
     static func resolvedLaunch(_ requested: ActivitySection, environment: [String: String]) -> ActivitySection {
-        requested == .tasks && environment["COS_CONTROL2_FOUNDATION"] == "1" ? .work : requested
+        requested == .tasks && environment["COS_CONTROL_WORK_DISABLED"] != "1" ? .work : requested
     }
 
     var id: String { rawValue }
@@ -581,7 +581,8 @@ struct ActivityWindow: View {
                 .cancel("Keep labels"),
             ]
         )
-        .onExitCommand { if heldNamingOverlayOpen { closeHeldNamingOverlay() } else { goBack() } }
+        .background(ActivityEscapeHandler(onEscape: handleActivityEscape).frame(width: 0, height: 0))
+        .onExitCommand { if !handleActivityEscape() { goBack() } }
         .onAppear { applyLaunchSection() }
         .onChange(of: model.activityOpenSection) { _, _ in applyLaunchSection() }
         .onChange(of: model.activityOpenSessionID) { _, _ in applyLaunchSection() }
@@ -790,7 +791,33 @@ struct ActivityWindow: View {
         withOptionalAnimation { section = nil }
     }
 
+    /// Escape reaches these window-owned routes before TextEditor/ScrollView can
+    /// consume it. Other child panes retain their own cancellation semantics.
+    private func handleActivityEscape() -> Bool {
+        if confirmingTaskDismiss { confirmingTaskDismiss = false; return true }
+        if heldNamingUndoHandle != nil { heldNamingUndoHandle = nil; return true }
+        if taskDetail != nil { requestCloseTaskDetail(); return true }
+        if heldNamingOverlayOpen {
+            if !model.addVoiceBusy { closeHeldNamingOverlay() }
+            return true
+        }
+        if section == .sessions, showingLinkedSession { goBack(); return true }
+        if section == .meetings, meetingReturnToWork { goBack(); return true }
+        return false
+    }
+
     private func goBack() {
+        // The linked receipt reader is a child of Work in both the integrated
+        // candidate and production. Header Back and Escape keep that context.
+        if section == .sessions, showingLinkedSession {
+            if let workID = handoffStore.selectedWorkID ?? workWorkspaceState.selectedID {
+                openConnectedWork(workID)
+            } else {
+                showingLinkedSession = false
+                section = .work
+            }
+            return
+        }
         if isolatedWorkPreview, section == .meetings, meetingReturnToWork {
             selectedLibraryRecordID = nil; model.closeLibraryDetail()
             returnFromMeetingToWork(); return
@@ -1663,7 +1690,6 @@ struct ActivityWindow: View {
                     .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line))
                     .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .background(WorkEditorEscapeHandler(onEscape: requestCloseTaskDetail).frame(width: 0, height: 0))
             }
         }
     }
@@ -6437,5 +6463,37 @@ struct HeldNamingHistorySheet: View {
                 .cancel("Keep labels"),
             ]
         )
+    }
+}
+
+
+/// One local monitor for Activity-owned overlays and linked navigation. SwiftUI's
+/// onExitCommand alone depends on the current responder accepting cancelOperation.
+private struct ActivityEscapeHandler: NSViewRepresentable {
+    var onEscape: () -> Bool
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.view = view
+        context.coordinator.action = onEscape
+        context.coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak coordinator = context.coordinator] event in
+            guard event.keyCode == 53, !event.isARepeat,
+                  event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+                  let coordinator, let window = coordinator.view?.window,
+                  window.isKeyWindow, window.attachedSheet == nil,
+                  (event.window ?? NSApplication.shared.keyWindow) === window else { return event }
+            return coordinator.action?() == true ? nil : event
+        }
+        return view
+    }
+    func updateNSView(_ view: NSView, context: Context) { context.coordinator.action = onEscape }
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
+        if let monitor = coordinator.monitor { NSEvent.removeMonitor(monitor) }
+        coordinator.monitor = nil
+    }
+    final class Coordinator {
+        weak var view: NSView?
+        var monitor: Any?
+        var action: (() -> Bool)?
     }
 }

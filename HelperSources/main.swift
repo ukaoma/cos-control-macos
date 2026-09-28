@@ -316,6 +316,10 @@ final class COSControlHelper {
         "COS_MEETINGS_ROOT",
         "CODEX_GLASSES_WORKDIR",
         "COS_DURABLE_QUERY_JOBS",
+        // Manual meeting review opt-out must survive server update and repair.
+        "COS_WORK_REVIEWS_ENABLED",
+        "COS_PORTABLE_TASKS",
+        "COS_TASK_PYTHON",
         // Durable thread fences. MUST be allowlisted or Control drops it on the next
         // plist rewrite -- `providerEnvironment` is filtered to this set, which is
         // exactly how COS_PROFILE_PATH stopped surviving updates. A dropped fence
@@ -16268,6 +16272,10 @@ final class COSControlHelper {
         try expect(refusal.contains("memory") && refusal.contains("markdown"),
                    "the refusal must name the notes path, got \(refusal)")
 
+        try expect(providerEnvironmentKeys.contains("COS_PORTABLE_TASKS") && providerEnvironmentKeys.contains("COS_TASK_PYTHON"),
+                   "Portable task runtime settings must survive Update Server and Repair")
+        try expect(providerEnvironmentKeys.contains("COS_WORK_REVIEWS_ENABLED"),
+                   "Manual review preference must survive Update Server and Repair")
         try expect(providerEnvironmentKeys.contains("COS_CONTEXT_DIR"),
                    "COS_CONTEXT_DIR must be allowlisted or applying it is rejected as unsupported")
         try expect(providerEnvironmentKeys.contains("COS_CLAUDE_SESSIONS_ENABLED"),

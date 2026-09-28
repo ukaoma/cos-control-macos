@@ -2185,9 +2185,9 @@ section_cases = re.findall(r"^\s+case \w+", section_enum.group(1), re.M)
 need(len(section_cases) <= 9, f"ActivitySection has {len(section_cases)} cases; keyboard shortcuts only cover 1-9")
 need([case.strip().removeprefix("case ") for case in section_cases] ==
      ["messages", "speakers", "meetings", "memories", "threads", "sessions", "tasks", "work"],
-     f"ActivitySection should declare seven existing panes and opt-in Work, found {section_cases}")
-need('environment["COS_CONTROL2_FOUNDATION"] == "1" ? existing.map { $0 == .tasks ? .work : $0 } : existing' in activity,
-     "opt-in Work must replace the Tasks peer, keeping seven shared navigation entries")
+     f"ActivitySection should declare seven existing panes and Work, found {section_cases}")
+need('environment["COS_CONTROL_WORK_DISABLED"] == "1" ? existing : existing.map { $0 == .tasks ? .work : $0 }' in activity,
+     "Production Work must replace the Tasks peer, keeping seven shared navigation entries")
 need('case .work: workSurface' in activity, "Work is not mounted on its Tasks/follow-up parent")
 work_surface = activity[activity.index('@ViewBuilder private var workSurface'):activity.index('private func previewOnlySection')]
 need('WorkWorkspaceView(model: model, handoffStore: handoffStore, reviewStore: reviewStore' in work_surface
@@ -2203,6 +2203,10 @@ full_handoff_open = activity[activity.index('private func openFullHandoffSession
 need('guard !isolatedWorkPreview else { return }' in full_handoff_open and
      full_handoff_open.index('guard !isolatedWorkPreview') < full_handoff_open.index('model.openClaudeSession(row)'),
      "opening a full provider session must remain impossible from the isolated preview")
+go_back = activity[activity.index('private func goBack()'):activity.index('private func goBack()') + 1800]
+need('if section == .sessions, showingLinkedSession' in go_back and 'openConnectedWork(workID)' in go_back
+     and go_back.index('if section == .sessions, showingLinkedSession') < go_back.index('if isolatedWorkPreview'),
+     "header Back/Escape from a linked session must return to Work before preview/home fallback")
 need('workWorkspaceState.selectedID = id' in activity,
      "Back to work must select the persistent domain-qualified work identity, not reopen an editor")
 need('static func workConnectedTest(model: ControllerModel)' in activity and
@@ -2218,8 +2222,24 @@ need('receiptFallback(id)' in workspace and 'no item has been recreated' in work
 need('guard !handoffStore.isolated else { return }' in workspace and
      'WorkWorkspaceProjection.previewRows(handoffStore.previewTasks, stages: state.previewStages)' in workspace,
      "the shared preview workspace must structurally use fixture rows and block production loading")
-need('taskEditorOverlay' in activity and 'WorkEditorEscapeHandler(onEscape: requestCloseTaskDetail)' in activity and
-     '.cosConfirm("Save task changes?"' in activity, "secondary editing must retain fixed close, scoped Escape and dirty confirmation")
+need('taskEditorOverlay' in activity and 'ActivityEscapeHandler(onEscape: handleActivityEscape)' in activity and
+     '.cosConfirm("Save task changes?"' in activity, "secondary editing must retain fixed close, window-scoped Escape and dirty confirmation")
+escape = activity[activity.index('private func handleActivityEscape()'):activity.index('private func goBack()')]
+need('if confirmingTaskDismiss { confirmingTaskDismiss = false; return true }' in escape and
+     'if taskDetail != nil { requestCloseTaskDetail(); return true }' in escape and
+     'if section == .sessions, showingLinkedSession { goBack(); return true }' in escape,
+     "Escape must cancel dirty confirmation before closing the editor and route linked Sessions through header Back")
+need(escape.index('if taskDetail != nil') < escape.index('showingLinkedSession'),
+     "an editor overlay must own Escape before underlying linked-session navigation")
+monitor = activity[activity.index('private struct ActivityEscapeHandler:'):]
+need('NSEvent.addLocalMonitorForEvents(matching: .keyDown)' in monitor and
+     'window.isKeyWindow, window.attachedSheet == nil' in monitor and
+     '(event.window ?? NSApplication.shared.keyWindow) === window' in monitor and
+     'coordinator.action?() == true ? nil : event' in monitor and
+     'NSEvent.removeMonitor(monitor)' in monitor,
+     "Escape interception must be scoped, release ownership on teardown, and pass unowned events to child responders")
+need('WorkEditorEscapeHandler(onEscape: requestCloseTaskDetail)' not in activity,
+     "Activity must not mount a second competing editor Escape monitor")
 
 need("Sources/Control2Foundation.swift" in (root / "scripts/build-release.sh").read_text(),
      "the production compile list must include the opt-in Work source")

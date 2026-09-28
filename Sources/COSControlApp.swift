@@ -33,7 +33,7 @@ struct COSControlApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            if ProcessInfo.processInfo.environment["COS_CONTROL2_FOUNDATION"] == "1" {
+            if ActivitySection.allCases.contains(.work) {
                 Button("Open Work") { activityWindow.show(model: model, section: .work) }.padding()
             }
             ControlPanel(model: model) { section in
