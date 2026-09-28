@@ -18,7 +18,9 @@ Local candidate. The installed Control app, installed server and glasses package
 - Actual HTTP → canonical Python writer canary: 12 checks passed. Six phases, atomic completion/reopen, stale-write refusal, exact meeting resolution, wrong-meeting refusal, rename continuity and restart durability. All mutations targeted scratch task/profile/data/lock roots.
 - Full server suite: 352 files passed; 5,321 tests passed, two existing skips. Typecheck and compiled helper transport fixtures passed.
 - Config packager export/import checks passed. Its one-hop dependency audit still reports nine unrelated missing imports; the identical list was reproduced against baseline 6117b014. The new metadata module is included in the export manifest.
-- Native final regression and UI evidence are recorded in the delivery note after candidate verification.
+- Native focused Work suite passed. The full native runner compiled both helper and app and passed its regression prefix; its route assertion was updated to follow the extracted, still-gated Meeting detail surface. Re-running the complete remaining source-contract tail passed.
+- Actual native UI verified at 1800px and 760px: six lanes, explicit stage change, source meeting round-trip, simulated running session, Meeting → Session → originating Work navigation, and horizontal access to QA/Complete.
+- Connected candidate read 202 current board tasks with capability version 1 and writes enabled. Sprocket Rocket displayed 95 cards (9 Planned, 86 Complete). Meeting linking picker and cancel worked; no real task or agent was changed. The launcher pins the qualified canonical scripts path because the installed environment does not declare it.
 
 ## Deliberate limits
 

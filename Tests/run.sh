@@ -2124,8 +2124,10 @@ need(re.search(r"contextDetail\s*=", opener.group(0)) is not None,
 
 need('case .meetings: meetingsList' in activity, "Meetings is not mounted")
 need('selectedLibraryRecordID != nil' in activity, "meeting library detail has no window-local selection gate")
-need(re.search(r"if model\.libraryRouteActive\s*\{\s*MeetingLibraryDetailPane", activity) is not None,
+need(re.search(r"if model\.libraryRouteActive\s*\{\s*connectedMeetingDetailSurface", activity) is not None,
      "MeetingLibraryDetailPane is not gated on model.libraryRouteActive")
+need(re.search(r"private var connectedMeetingDetailSurface: some View\s*\{\s*MeetingLibraryDetailPane", activity) is not None,
+     "the gated meeting surface does not mount MeetingLibraryDetailPane")
 library_route = re.search(r"var libraryRouteActive[^}]*\}", model, re.S)
 need(library_route is not None, "libraryRouteActive not found")
 need(re.search(r"\bopenLibraryRow\b", library_route.group(0)) is not None,
