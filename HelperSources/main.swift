@@ -368,6 +368,8 @@ final class COSControlHelper {
         "COS_MESSAGES_TRAIL",
         "COS_SESSION_HOOKS_SPOOL_DIR",
         "COS_SESSION_HOOK_SSE",
+        // 0.5.241: the server's daily Jev input-token cap (6.57.0). A hand-set cap must survive Update Server.
+        "COS_JEV_DAILY_TOKENS",
     ]
 
     private lazy var support = home.appendingPathComponent("Library/Application Support/COS Control", isDirectory: true)
@@ -484,6 +486,12 @@ final class COSControlHelper {
         case "work-tasks": try emitWorkTasks()
         case "work-set-stage": try emitWorkUpdate(action: "stage")
         case "work-link-meeting": try emitWorkUpdate(action: "meeting")
+        case "work-intake": try emitWorkIntake()
+        case "work-intake-resolve": try emitWorkIntakeResolve()
+        case "work-session-recommend": try emitWorkSessionRecommend()
+        case "jev-status": try emitJevStatus()
+        case "jev-key-set": try emitJevKeySet()
+        case "jev-key-clear": try emitJevKeyClear()
         case "work-reviews": try emitWorkReviews(create: false)
         case "work-review": try emitWorkReviews(create: true)
         case "domains": try emitDomains()
@@ -4645,6 +4653,150 @@ final class COSControlHelper {
             throw HelperError.message("Invalid meeting-review candidate token.")
         }
         return (port, String(decoding: bytes, as: UTF8.self))
+    }
+
+    /// Meeting-derived Work not yet on the board (server 6.57.0). An older server (404) or an unavailable
+    /// store (503) reads as "not available", never as an error that would blank the Work pane.
+    private func emitWorkIntake() throws {
+        let candidate = try reviewCandidateTransport()
+        let token = try candidate?.token ?? readToken()
+        guard let response = request("/api/work-intake", token: token, timeout: 30, reviewCandidatePort: candidate?.port) else {
+            throw HelperError.message("Work intake is temporarily unavailable.")
+        }
+        if response.status == 404 || response.status == 503 {
+            // 404: an older server, and Control hides Intake. 503: a current server whose store is down, shown with this reason.
+            emit(ok: true, message: response.status == 404 ? "Work intake needs server 6.57.0 or later."
+                    : "Intake is unavailable on this server right now. The rest of Work is unaffected; refresh to try again.",
+                 details: ["available": false, "storeUnavailable": response.status == 503, "items": [],
+                           "capabilities": ["cardCreation": false, "linkWrites": false]])
+            return
+        }
+        guard response.status == 200, var body = response.body else {
+            throw HelperError.message("Work intake was refused (HTTP \(response.status)).")
+        }
+        body["available"] = true
+        emit(ok: true, message: "Work intake ready", details: body)
+    }
+
+    static let workIntakeRefusals: [String: String] = [
+        "meeting_identity_changed": "That meeting was renamed or merged after it was scored. Dismiss this item; the renamed meeting is checked again.",
+        "meeting_unavailable": "That meeting can't be found; it may have been renamed or removed. Dismiss this item.",
+        "intake_task_changed": "That task changed or was closed since it was suggested. Dismiss this suggestion.",
+        "meeting_links_full": "That task already links eight meetings. Dismiss this suggestion.",
+        "work_board_read_only": "This server can't write Work links yet.",
+        "card_creation_unavailable": "This server can't create Work cards yet. Update the server.",
+        "task_bridge_unavailable": "The task bridge didn't answer. Try again in a moment.",
+        "intake_text_collision": "The same words are on closed or archived work. Reopen that task instead, or dismiss this item.",
+        "intake_busy": "That item is already being saved.",
+        "intake_not_found": "That item is no longer in Intake. Refresh.",
+        "invalid_intake_action": "Refresh Intake and try again.",
+        "invalid_intake_id": "Refresh Intake and try again.",
+        "intake_store_full": "Intake is full. Dismiss older items, then try again.",
+        "intake_store_closed": "Intake is unavailable while the server restarts. Try again shortly.",
+        "work_intake_unavailable": "Intake is unavailable right now. Try again shortly.",
+    ]
+
+    private func emitWorkIntakeResolve() throws {
+        var data = Data()
+        while data.count <= 4_096 {
+            let chunk = try FileHandle.standardInput.read(upToCount: min(1024, 4_097 - data.count)) ?? Data()
+            if chunk.isEmpty { break }; data.append(chunk)
+        }
+        guard data.count <= 4_096,
+              let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(body.keys) == ["id", "action"],
+              let id = body["id"] as? String, id.range(of: "^wi_[a-f0-9]{32}$", options: .regularExpression) != nil,
+              let action = body["action"] as? String, ["accept", "dismiss"].contains(action) else {
+            throw HelperError.message("Choose an Intake item and an action.")
+        }
+        let candidate = try reviewCandidateTransport()
+        let token = try candidate?.token ?? readToken()
+        let payload = String(decoding: try JSONSerialization.data(withJSONObject: ["action": action]), as: UTF8.self)
+        guard let response = request("/api/work-intake/\(id)/resolve", method: "POST", token: token, body: payload, timeout: 60,
+                                      reviewCandidatePort: candidate?.port) else {
+            throw HelperError.message("The Intake change could not be confirmed. Refresh before trying again.")
+        }
+        guard response.status == 200, let result = response.body else {
+            let error = response.body?["error"] as? [String: Any]
+            let code = error?["code"] as? String ?? ""
+            throw HelperError.message(Self.workIntakeRefusals[code] ?? (error?["message"] as? String) ?? "The Intake change was refused (HTTP \(response.status)).")
+        }
+        emit(ok: true, message: action == "accept" ? "Added to Work" : "Dismissed", details: result)
+    }
+
+    private func readBoundedStdin(_ limit: Int) throws -> Data {
+        var data = Data()
+        while data.count <= limit {
+            let chunk = try FileHandle.standardInput.read(upToCount: min(4096, limit + 1 - data.count)) ?? Data()
+            if chunk.isEmpty { break }; data.append(chunk)
+        }
+        guard data.count <= limit else { throw HelperError.message("Input is too large.") }
+        return data
+    }
+
+    /// Continue / Fork / New advice for one Work task (server 6.57.0). Advice only: every failure answers
+    /// `provider: none` so the workspace falls back to its local word match instead of showing an error.
+    private func emitWorkSessionRecommend() throws {
+        let data = try readBoundedStdin(65_536)
+        guard let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(body.keys) == ["domain", "id", "sessions"],
+              let domain = body["domain"] as? String, !domain.isEmpty, domain.utf16.count <= 64, !domain.contains("/"), !domain.hasPrefix("."),
+              let id = body["id"] as? String, id.range(of: "^[a-f0-9]{12}$", options: .regularExpression) != nil,
+              let sessions = body["sessions"] as? [[String: Any]], sessions.count <= 80 else {
+            throw HelperError.message("Choose an exact task to get a session suggestion.")
+        }
+        let candidate = try reviewCandidateTransport()
+        let token = try candidate?.token ?? readToken()
+        guard let response = request("/api/work-board/session-recommendation", method: "POST", token: token,
+                                      body: String(decoding: data, as: UTF8.self), timeout: 40, reviewCandidatePort: candidate?.port) else {
+            emit(ok: true, message: "Session suggestion unavailable", details: ["provider": "none", "reason": "unreachable"]); return
+        }
+        guard response.status == 200, let result = response.body else {
+            emit(ok: true, message: "Session suggestion unavailable", details: ["provider": "none", "reason": response.status == 404 ? "server_too_old" : "http_\(response.status)"])
+            return
+        }
+        emit(ok: true, message: "Session suggestion ready", details: result)
+    }
+
+    /// Jev key status (never the key). An older server (404) reads as "not available", not an error.
+    private func emitJevStatus() throws {
+        let token = try readToken()
+        guard let response = request("/api/jev-key/status", token: token, timeout: 15) else {
+            throw HelperError.message("The server did not answer. Check that it is running.")
+        }
+        if response.status == 404 {
+            emit(ok: true, message: "Jev needs server 6.57.0 or later.", details: ["available": false]); return
+        }
+        guard response.status == 200, var body = response.body else { throw HelperError.message("Jev status was refused (HTTP \(response.status)).") }
+        body["available"] = true
+        emit(ok: true, message: "Jev status ready", details: body)
+    }
+
+    /// The key goes to the server once, over the local authenticated API; it is validated there and never echoed.
+    private func emitJevKeySet() throws {
+        let data = try readBoundedStdin(2_048)
+        guard let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any], Set(body.keys) == ["key"],
+              let key = body["key"] as? String, !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw HelperError.message("Paste a TypeSafe API key.")
+        }
+        let token = try readToken()
+        guard let response = request("/api/jev-key/set", method: "POST", token: token, body: String(decoding: data, as: UTF8.self), timeout: 30) else {
+            throw HelperError.message("The server did not answer. The key was not saved.")
+        }
+        guard response.status == 200, let result = response.body else {
+            if response.status == 404 { throw HelperError.message("Saving a Jev key needs server 6.57.0 or later. Update the server first.") }
+            let error = response.body?["error"] as? [String: Any]
+            throw HelperError.message((error?["message"] as? String) ?? "The key was not saved (HTTP \(response.status)).")
+        }
+        emit(ok: true, message: "Jev key saved", details: result)
+    }
+
+    private func emitJevKeyClear() throws {
+        let token = try readToken()
+        guard let response = request("/api/jev-key", method: "DELETE", token: token, timeout: 15), response.status == 200, let result = response.body else {
+            throw HelperError.message("The saved Jev key could not be removed.")
+        }
+        emit(ok: true, message: "Saved Jev key removed", details: result)
     }
 
     private func emitWorkReviews(create: Bool) throws {

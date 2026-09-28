@@ -87,10 +87,12 @@ enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
 }
 
 @MainActor final class WorkWorkspaceState: ObservableObject {
-    @Published var scope: WorkWorkspaceScope = .all
-    @Published var domain: String?
+    @Published var scope: WorkWorkspaceScope = .all { didSet { intakeOpen = false } }
+    @Published var domain: String? { didSet { if domain != nil { intakeOpen = false } } }
     @Published var query = ""
-    @Published var selectedID: String?
+    @Published var selectedID: String? { didSet { if oldValue != selectedID { personFocus = nil } } }
+    /// The person card open under a source meeting: "<recordId>|<name>". Closes when another task is selected.
+    @Published var personFocus: String?
     @Published var meetingPicker = false
     @Published var reviewModelID = ""
     @Published var captureOpen = false
@@ -102,6 +104,9 @@ enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
     @Published var mutationBusy = false
     @Published var linkTarget: TaskRow?
     @Published var previewStages: [String: String] = [:]
+    /// Work → Intake (server 6.57.0). Its own route flag: the Intake row or toggle opens it, and choosing a view
+    /// or a domain closes it (the observers above), so no opener can leave Intake covering the board.
+    @Published var intakeOpen = false
 
     /// Explicit transition after admission also handles a reused review ID, where
     /// SwiftUI onChange would not fire. Failure leaves the chosen intake visible.
@@ -259,7 +264,9 @@ struct WorkWorkspaceView: View {
                     HStack(spacing: 0) {
                         sidebar.frame(width: 148)
                         Divider()
-                        if state.domain != nil {
+                        if state.intakeOpen {
+                            WorkIntakeView(model: model, onOpenMeeting: onOpenMeeting)
+                        } else if state.domain != nil {
                             domainSurface
                         } else {
                             workList.frame(width: 248)
@@ -270,7 +277,8 @@ struct WorkWorkspaceView: View {
                 } else {
                     compactNavigation
                     Divider()
-                    if state.domain != nil { domainSurface }
+                    if state.intakeOpen { WorkIntakeView(model: model, onOpenMeeting: onOpenMeeting) }
+                    else if state.domain != nil { domainSurface }
                     else if hasDetail {
                         HStack {
                             Button { returnToList() } label: { Label("Back to work list", systemImage: "chevron.left") }
@@ -289,6 +297,7 @@ struct WorkWorkspaceView: View {
             await model.loadDomains()
             await model.loadWorkTasks()
             await reviewStore.refresh()
+            await model.loadWorkIntake()
             if let id = handoffStore.selectedWorkID { state.selectedID = WorkWorkspaceProjection.rowID(forSourceID: id, currentID: state.selectedID, items: items) ?? id }
         }
         .task(id: scenePhase) {
@@ -404,19 +413,30 @@ struct WorkWorkspaceView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 5) {
                 ForEach(WorkWorkspaceScope.allCases) { scope in
-                    navigationRow(scope.title, selected: state.scope == scope && state.domain == nil) {
-                        state.scope = scope; state.domain = nil; returnToList()
+                    navigationRow(scope.title, selected: state.scope == scope && state.domain == nil && !state.intakeOpen) {
+                        state.scope = scope; state.domain = nil; state.intakeOpen = false; returnToList()
+                    }
+                }
+                if !handoffStore.isolated && model.workIntakeVisible {
+                    navigationRow(intakeTitle, selected: state.intakeOpen) {
+                        state.intakeOpen = true; state.domain = nil; returnToList()
                     }
                 }
                 Divider().padding(.vertical, 12)
                 Text("Domains").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted).padding(.horizontal, 10)
                 ForEach(domains, id: \.self) { domain in
-                    navigationRow(domainLabel(domain), selected: state.domain == domain) {
-                        state.domain = domain; state.scope = .all; returnToList()
+                    navigationRow(domainLabel(domain), selected: state.domain == domain && !state.intakeOpen) {
+                        state.domain = domain; state.scope = .all; state.intakeOpen = false; returnToList()
                     }
                 }
             }.padding(10)
         }.background(COSPalette.raised.opacity(0.55))
+    }
+
+    private var intakeTitle: String {
+        let count = model.workIntake.openCount
+        if !model.workIntake.available || model.workIntakeError != nil { return "Intake · !" }
+        return count > 0 ? "Intake · \(count)" : "Intake"
     }
 
     private func navigationRow(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
@@ -434,7 +454,10 @@ struct WorkWorkspaceView: View {
         HStack(spacing: 18) {
             Picker("View", selection: $state.scope) {
                 ForEach(WorkWorkspaceScope.allCases) { Text($0.title).tag($0) }
-            }.onChange(of: state.scope) { _, _ in returnToList() }
+            }.onChange(of: state.scope) { _, _ in state.intakeOpen = false; returnToList() }
+            if !handoffStore.isolated && model.workIntakeVisible {
+                Toggle(intakeTitle, isOn: $state.intakeOpen).toggleStyle(.button)
+            }
             Picker("Domain", selection: Binding(get: { state.domain ?? "" }, set: { state.domain = $0.isEmpty ? nil : $0; returnToList() })) {
                 Text("All domains").tag("")
                 ForEach(domains, id: \.self) { Text(domainLabel($0)).tag($0) }
@@ -586,6 +609,97 @@ struct WorkWorkspaceView: View {
             if task.meetingRefs.isEmpty { Text("No confirmed meeting link. Attach a saved meeting to connect its tasks and sessions.").font(COSType.body(12)).foregroundStyle(COSPalette.muted) }
             ForEach(task.meetingRefs) { meeting in
                 Button { onOpenMeeting(meeting) } label: { Label(meeting.title, systemImage: "calendar").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }.buttonStyle(COSQuietButtonStyle())
+                if !handoffStore.isolated { meetingPeople(meeting) }
+            }
+        }
+    }
+
+    /// Who the meeting involved (attendees and action-item owners). A name opens their card: their items from
+    /// this meeting and where each stands, their other asks in Intake, and open tasks that mention them.
+    @ViewBuilder private func meetingPeople(_ meeting: WorkMeetingReference) -> some View {
+        if let people = model.workMeetingPeople[meeting.recordId] {
+            if !people.people.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        Text("People").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
+                        ForEach(people.people, id: \.self) { name in
+                            let key = meeting.recordId + "|" + name, open = state.personFocus == key, count = people.items[name]?.count ?? 0
+                            Button { state.personFocus = open ? nil : key } label: {
+                                Text(name + (count > 0 ? " · \(count)" : "")).font(COSType.body(11, weight: open ? .semibold : .regular))
+                                    .padding(.horizontal, 8).padding(.vertical, 4)
+                                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(open ? COSPalette.gold : COSPalette.line))
+                                    .contentShape(Rectangle())
+                            }.buttonStyle(.plain).help(count > 0 ? "\(count) item\(count == 1 ? "" : "s") from this meeting" : "Attended")
+                        }
+                    }.padding(.vertical, 2)
+                }
+                if let focus = state.personFocus, focus.hasPrefix(meeting.recordId + "|") {
+                    personCard(WorkPersonNetwork(name: String(focus.dropFirst(meeting.recordId.count + 1)), meeting: people,
+                                                 intake: model.workIntake, tasks: model.workTasks), meeting: meeting)
+                }
+            }
+        } else if model.workMeetingPeopleFailed.contains(meeting.recordId) {
+            Text("People for this meeting could not be read.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+        } else {
+            ProgressView().controlSize(.small).task { await model.loadWorkMeetingPeople(meeting) }
+        }
+    }
+
+    private func personCard(_ person: WorkPersonNetwork, meeting: WorkMeetingReference) -> some View {
+        let first = person.name.split(separator: " ").first.map(String.init) ?? person.name
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(person.name).font(COSType.body(13, weight: .semibold))
+                Spacer()
+                Button { state.personFocus = nil } label: { Image(systemName: "xmark") }.buttonStyle(COSIconButtonStyle()).help("Close")
+            }
+            if person.meetingItems.isEmpty {
+                Text("No action items for \(first) in this meeting.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+            } else {
+                Text("From this meeting").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
+                ForEach(person.meetingItems) { item in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(item.text).font(COSType.body(12)).fixedSize(horizontal: false, vertical: true)
+                        switch item.state {
+                        case .onBoard(let title): Text("On the board: \(title)").font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).lineLimit(1)
+                        case .inIntake(let id): intakeActions(id)
+                        case .untracked: Text("Not tracked").font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+                        }
+                    }
+                }
+            }
+            if !person.otherAsks.isEmpty {
+                Text("\(first)'s other open asks").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
+                ForEach(person.otherAsks.prefix(5)) { ask in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(ask.text).font(COSType.body(12)).lineLimit(2)
+                        HStack { Text(ask.meeting.title + (ask.meetingDate.isEmpty ? "" : " · " + ask.meetingDate)).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).lineLimit(1); Spacer(); intakeActions(ask.id) }
+                    }
+                }
+            }
+            if !person.mentions.isEmpty {
+                Text("Open tasks mentioning \(first)").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
+                ForEach(person.mentions) { task in
+                    Button {
+                        state.domain = nil; state.scope = .all
+                        state.selectedID = WorkSource.taskSnapshot(task).id
+                    } label: { Label(task.title, systemImage: "checklist").font(COSType.body(12)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
+                        .buttonStyle(.plain)
+                }
+            }
+        }.padding(12).background(COSPalette.raised.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(COSPalette.line))
+    }
+
+    @ViewBuilder private func intakeActions(_ id: String) -> some View {
+        if let item = model.workIntake.items.first(where: { $0.id == id }) {
+            let busy = model.workIntakeBusyIDs.contains(id)
+            HStack(spacing: 8) {
+                Text("In Intake").font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+                Button("Make it mine") { Task { await model.resolveWorkIntake(item, accept: true) } }
+                    .buttonStyle(COSQuietButtonStyle()).disabled(busy || !model.workIntake.cardCreation)
+                Button("Dismiss") { Task { await model.resolveWorkIntake(item, accept: false) } }
+                    .buttonStyle(COSTextButtonStyle()).disabled(busy)
             }
         }
     }
@@ -889,5 +1003,166 @@ struct WorkEditorEscapeHandler: NSViewRepresentable {
         weak var view: NSView?
         var monitor: Any?
         var action: (() -> Void)?
+    }
+}
+
+// MARK: - Work → Intake (server 6.57.0)
+// Kept in this file on purpose: the app's source list is repeated in ten build and test scripts.
+
+/// Inline markdown in task text (`**bold**` from meeting notes), as on the board.
+fileprivate func intakeInlineText(_ value: String) -> AttributedString {
+    (try? AttributedString(markdown: value, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(value)
+}
+
+/// Work → Intake: what meetings produced that is not on the board yet (server 6.57.0).
+///
+/// Three groups, each answered in place, his own first:
+/// - Review: his own items that need a look (from an older meeting, may not be a task, owner unclear).
+///   "Keep as card" or "Skip"; the older-meeting ones can be skipped together after a confirm.
+/// - Suggested links: an existing task probably worked on in a meeting. "Link" or "Dismiss".
+/// - Asks from others: visible so Miles can take one on. An ask one of his recent sessions probably covers is
+///   pulled to the top and names the session. "Make it mine" creates a card written "(from Name)".
+/// Accepting writes on the server through the same task writer and locks as every other Work change.
+struct WorkIntakeView: View {
+    @ObservedObject var model: ControllerModel
+    var onOpenMeeting: (WorkMeetingReference) -> Void
+    @State private var confirmSkipOlder = false
+
+    var body: some View {
+        let snapshot = model.workIntake
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Intake").font(COSType.display(19, weight: .medium))
+                Text("From your meetings, not on the board yet").font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+                Spacer()
+                if model.workIntakeLoading { ProgressView().controlSize(.small) }
+                Button { Task { await model.loadWorkIntake() } } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(COSIconButtonStyle()).help("Refresh Intake")
+            }.padding(.horizontal, 18).padding(.vertical, 12)
+            if let error = model.workIntakeError {
+                Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger).padding(.horizontal, 18).padding(.bottom, 8)
+            }
+            Divider().overlay(COSPalette.line)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    if !snapshot.available {
+                        Text(snapshot.message ?? "Intake is unavailable on this server.")
+                            .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+                    } else if snapshot.openCount == 0 {
+                        Text("Nothing waiting. When a saved meeting has Work that is not on the board yet, it appears here.")
+                            .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+                    } else {
+                        group("Review", snapshot.reviews, note: "Yours to check: from an older meeting, or not clear enough to add on its own.",
+                              accessory: skipOlder(snapshot)) { review($0, snapshot) }
+                        group("Suggested links", snapshot.suggestedLinks, note: "Existing tasks these meetings probably worked on.") { suggestion($0, snapshot) }
+                        group("Asks from others", snapshot.asks, note: "Other people's action items. Take one on when you are positioned to do it.") { ask($0, snapshot) }
+                    }
+                }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
+            }.frame(minWidth: 0, minHeight: 88, maxHeight: .infinity, alignment: .top)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .task { await model.loadWorkIntake() }
+    }
+
+    /// Skip every Review item from an older meeting at once, after one confirm. There is no undo.
+    @ViewBuilder
+    private func skipOlder(_ snapshot: WorkIntakeSnapshot) -> some View {
+        let older = snapshot.reviews.filter { $0.reason == "outside_window" }
+        if older.count > 1 {
+            HStack(spacing: 8) {
+                if confirmSkipOlder {
+                    Text("Skip \(older.count) from older meetings? This can't be undone.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    Button("Skip \(older.count)") { confirmSkipOlder = false; Task { await model.dismissWorkIntake(older) } }
+                        .buttonStyle(COSQuietButtonStyle())
+                    Button("Cancel") { confirmSkipOlder = false }.buttonStyle(COSTextButtonStyle())
+                } else {
+                    Button("Skip all \(older.count) from older meetings") { confirmSkipOlder = true }
+                        .buttonStyle(COSTextButtonStyle()).disabled(!model.workIntakeBusyIDs.isEmpty)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func group(_ title: String, _ items: [WorkIntakeItem], note: String, accessory: some View = EmptyView(),
+                       @ViewBuilder row: @escaping (WorkIntakeItem) -> some View) -> some View {
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(title).font(COSType.body(13, weight: .semibold))
+                    Text("\(items.count)").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    Spacer(minLength: 8)
+                    accessory
+                }
+                Text(note).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                VStack(spacing: 0) {
+                    ForEach(items) { item in
+                        row(item).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)  // short rows stay flush left when stacked
+                        if item.id != items.last?.id { Divider().overlay(COSPalette.line) }
+                    }
+                }.padding(.horizontal, 12)
+                    .background(COSPalette.raised.opacity(0.5), in: RoundedRectangle(cornerRadius: 9))
+                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(COSPalette.line))
+            }
+        }
+    }
+
+    private func source(_ item: WorkIntakeItem) -> some View {
+        Button { onOpenMeeting(item.meeting) } label: {
+            Label(item.meeting.title + (item.meetingDate.isEmpty ? "" : " · " + item.meetingDate), systemImage: "calendar")
+                .font(COSType.body(10.5)).lineLimit(1).contentShape(Rectangle())
+        }.buttonStyle(.plain).foregroundStyle(COSPalette.muted).help("Open the meeting")
+    }
+
+    private func actions(_ item: WorkIntakeItem, _ snapshot: WorkIntakeSnapshot, accept: String, enabled: Bool, dismiss: String) -> some View {
+        let busy = model.workIntakeBusyIDs.contains(item.id)
+        return HStack(spacing: 8) {
+            if busy { ProgressView().controlSize(.small) }
+            Button(accept) { Task { await model.resolveWorkIntake(item, accept: true) } }
+                .buttonStyle(COSQuietButtonStyle()).disabled(busy || !enabled)
+                .help(enabled ? "" : (snapshot.bridgeUnavailable ? "The task bridge didn't answer. Refresh Intake."
+                                      : item.kind == .link ? "This server can't write Work links." : "This server can't create Work cards yet."))
+            Button(dismiss) { Task { await model.resolveWorkIntake(item, accept: false) } }
+                .buttonStyle(COSTextButtonStyle()).disabled(busy)
+        }
+    }
+
+    /// Source line and actions side by side, or stacked when the pane is narrow.
+    private func footer(_ item: WorkIntakeItem, detail: String?, actions: some View) -> some View {
+        let meta = HStack(spacing: 4) {
+            source(item)
+            if let detail { Text("· " + detail).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).lineLimit(1) }
+        }
+        return ViewThatFits(in: .horizontal) {
+            HStack { meta; Spacer(minLength: 8); actions }
+            VStack(alignment: .leading, spacing: 6) { meta; actions }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func review(_ item: WorkIntakeItem, _ snapshot: WorkIntakeSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(intakeInlineText(item.text)).font(COSType.body(12.5, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+            footer(item, detail: item.reasonLabel ?? (item.ownerIsMiles ? "probably yours" : item.owner),
+                   actions: actions(item, snapshot, accept: "Keep as card", enabled: snapshot.cardCreation, dismiss: "Skip"))
+        }
+    }
+
+    private func suggestion(_ item: WorkIntakeItem, _ snapshot: WorkIntakeSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(intakeInlineText(item.text)).font(COSType.body(12.5, weight: .medium)).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+            footer(item, detail: item.percent, actions: actions(item, snapshot, accept: "Link", enabled: snapshot.linkWrites, dismiss: "Dismiss"))
+        }
+    }
+
+    private func ask(_ item: WorkIntakeItem, _ snapshot: WorkIntakeSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(intakeInlineText(item.text)).font(COSType.body(12.5, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+            if let session = item.pullTitle {
+                Label("Your session may already cover this" + (item.pullPercent.map { " (\($0))" } ?? "") + ": " + session,
+                      systemImage: "arrow.up.forward.circle")
+                    .font(COSType.body(11)).foregroundStyle(COSPalette.accent)
+            }
+            footer(item, detail: item.owner, actions: actions(item, snapshot, accept: "Make it mine", enabled: snapshot.cardCreation, dismiss: "Dismiss"))
+        }
     }
 }

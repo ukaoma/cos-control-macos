@@ -63,6 +63,7 @@ struct WorkHandoffView: View {
             }
             Text(isPreview ? "Local demonstration. No agent is contacted." : "Choose an agent and review the context. Sending does not complete or publish this work.")
                 .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+            adviceBlock
             Picker("Destination", selection: draftBinding(\.mode)) {
                 ForEach(WorkHandoffMode.allCases, id: \.self) { value in Text(value.title).tag(value) }
             }.pickerStyle(.segmented).disabled(store.busy || validating)
@@ -105,7 +106,42 @@ struct WorkHandoffView: View {
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line))
             .task(id: source) {
                 await store.refresh()
+                await store.loadAdvice(for: source)
             }
+    }
+
+    /// Jev's suggestion. "Use this" fills Destination and Session in one explicit click; sending stays separate.
+    @ViewBuilder private var adviceBlock: some View {
+        if let advice = store.advice(for: source) {
+            let session = advice.sessionID.flatMap { id in store.sessions.first { $0.id == id } }
+            let applied = mode == (advice.action == .continueSession ? .continueSession : advice.action == .fork ? .fork : .newSession)
+                && (advice.action == .newSession || sessionID == advice.sessionID)
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "sparkle").foregroundStyle(COSPalette.accent)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(adviceTitle(advice, session)).font(COSType.body(12, weight: .semibold))
+                    Text("\(advice.reason) Jev · \(advice.percent)").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                }
+                Spacer(minLength: 8)
+                Button(applied ? "Selected" : "Use this") {
+                    var next = draft
+                    next.mode = advice.action == .continueSession ? .continueSession : advice.action == .fork ? .fork : .newSession
+                    if let id = advice.sessionID { next.sessionID = id }
+                    store.updateDraft(next, for: source)
+                }.buttonStyle(COSQuietButtonStyle()).disabled(applied || store.busy || validating)
+            }.padding(10).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 6))
+        } else if store.adviceUnavailableReason(for: source) == "jev_not_configured" {
+            Text("Add a Jev key in COS Control settings to get Continue, Fork or New suggestions from your sessions.")
+                .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+        }
+    }
+
+    private func adviceTitle(_ advice: SessionAdvice, _ session: WorkSession?) -> String {
+        switch advice.action {
+        case .continueSession: return "Suggested: continue in “\(session?.title ?? "session")”"
+        case .fork: return "Suggested: fork “\(session?.title ?? "session")”"
+        case .newSession: return "Suggested: start a new session"
+        }
     }
 
     private var existingDestination: some View {
@@ -130,13 +166,13 @@ struct WorkHandoffView: View {
                     Text(mode == .fork ? "Creates a copy with \(session.provider); the original remains unchanged." : "Uses this session’s model and permissions. Busy sessions may queue or refuse.")
                         .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                 }
-                if let first = recommended.first {
+                if store.advice(for: source) == nil, let first = recommended.first {
                     Button {
                         var next = draft; next.sessionID = first.id
                         store.updateDraft(next, for: source)
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Suggested: \(first.title)").font(COSType.body(12, weight: .semibold))
+                            Text("Word match: \(first.title)").font(COSType.body(12, weight: .semibold))
                             Text(store.recommendationReason(for: first, source: source))
                                 .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(10).contentShape(Rectangle())

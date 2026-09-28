@@ -127,6 +127,8 @@ struct ControlPanel: View {
     /// from `model.morningBrief` whenever the server's `updatedAt` changes, so a
     /// half-edited card is never overwritten by a background refresh.
     @State private var briefDraft: MorningBriefSettings?
+    @State private var jevExpanded = false
+    @State private var jevKeyDraft = ""
     @State private var briefDraftStamp = ""
     @State private var briefSourcesExpanded = false
     @State private var selectedClaudeSessions = false
@@ -595,6 +597,46 @@ struct ControlPanel: View {
             for: NSApplication.didBecomeActiveNotification)) { _ in
             model.refreshPetJumpTrust()
         }
+    }
+
+    /// Jev (TypeSafe) powers Work's session suggestions and meeting intake. The key is validated by the server
+    /// and stored there (0600); Control never keeps or shows it. Without a key, Work falls back to word matching.
+    private var jevSettings: some View {
+        DisclosureGroup(isExpanded: $jevExpanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(model.jevStatus?.summary ?? "Checking…").font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let until = model.jevStatus?.breakerOpenUntil {
+                    Text("Paused after repeated errors until \(until.prefix(16).replacingOccurrences(of: "T", with: " ")) UTC.")
+                        .font(.caption2).foregroundStyle(COSPalette.danger)
+                }
+                if model.jevStatus?.available != false {
+                    HStack {
+                        SecureField(model.jevStatus?.configured == true ? "Replace key" : "TypeSafe API key", text: $jevKeyDraft)
+                            .textFieldStyle(.roundedBorder).disabled(model.jevBusy)
+                        Button(model.jevBusy ? "Checking…" : "Save") {
+                            let key = jevKeyDraft
+                            Task { if await model.saveJevKey(key) { jevKeyDraft = "" } }
+                        }.disabled(model.jevBusy || jevKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).count < 16)
+                    }
+                    if model.jevStatus?.source == "config" {
+                        Button("Remove saved key", role: .destructive) { Task { await model.removeJevKey() } }
+                            .buttonStyle(.borderless).font(.caption).disabled(model.jevBusy)
+                    }
+                }
+                if let message = model.jevMessage { Text(message).font(.caption2).foregroundStyle(.secondary) }
+                Text("Used by Work to suggest Continue, Fork or New for a task and to sort meetings into Intake. Keys come from typesafe.ai.")
+                    .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }.padding(.top, 6)
+        } label: {
+            HStack(spacing: 8) {
+                Label("Jev (TypeSafe)", systemImage: "sparkle")
+                Spacer(minLength: 0)
+                Text(model.jevStatus == nil ? "" : model.jevStatus?.configured == true ? "On" : "Off")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .onChange(of: jevExpanded) { _, open in if open { Task { await model.loadJevStatus() } } }
     }
 
     private var sessionPetSettings: some View {
@@ -2099,6 +2141,7 @@ struct ControlPanel: View {
             Toggle("Launch COS Control at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
             HotKeyRecorderRow(model: model)
             sessionPetSettings
+            jevSettings
             DisclosureGroup("Advanced") {
                 // 0.5.234: the Meetings clock. The server sends 24-hour times and
                 // the tab used to print them raw; twelve-hour is the default here

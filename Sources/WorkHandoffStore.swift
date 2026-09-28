@@ -82,6 +82,9 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
 @MainActor final class WorkHandoffStore: ObservableObject {
     typealias Transport = @Sendable ([String], Data?) async throws -> HelperResponse
     @Published var sessions: [WorkSession] = []
+    /// Jev's Continue / Fork / New advice per task revision (server 6.57.0), or why there is none.
+    @Published private(set) var advice: [String: SessionAdvice] = [:]
+    @Published private(set) var adviceUnavailable: [String: String] = [:]
     @Published var models: [WorkModelChoice] = []
     @Published var receipts: [WorkHandoffReceipt] = []
     @Published private(set) var drafts: [WorkHandoffDraft] = []
@@ -212,16 +215,48 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
         } catch { self.error = error.localizedDescription; return false }
     }
 
+    func advice(for source: WorkSource) -> SessionAdvice? {
+        guard let value = advice[source.id + "|" + source.revision] else { return nil }
+        // Advice about a session that is no longer listed is not shown.
+        if let id = value.sessionID, !sessions.contains(where: { $0.id == id }) { return nil }
+        return value
+    }
+    func adviceUnavailableReason(for source: WorkSource) -> String? { adviceUnavailable[source.id + "|" + source.revision] }
+
+    /// Ask the server which session should take this task. The task text comes from the board on the server; only
+    /// the sessions this workspace can target are sent. Advice only: nothing is selected or sent.
+    func loadAdvice(for source: WorkSource) async {
+        guard !isolated else { return }
+        let key = source.id + "|" + source.revision
+        guard advice[key] == nil, adviceUnavailable[key] == nil else { return }
+        let parts = source.id.split(separator: ":", maxSplits: 2).map(String.init)  // "task:<domain>:<workIdentity>"
+        guard parts.count == 3, parts[0] == "task", parts[2].range(of: "^[a-f0-9]{12}$", options: .regularExpression) != nil else { return }
+        let candidates = sessions.filter { !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.prefix(80)
+            .map { ["id": $0.id, "provider": $0.provider, "title": $0.title, "summary": String($0.summary.prefix(240))] }
+        guard !candidates.isEmpty else { return }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: ["domain": parts[1], "id": parts[2], "sessions": Array(candidates)])
+            let details = try await call(["work-session-recommend"], data)
+            if let value = SessionAdvice(details: details) { advice[key] = value }
+            else { adviceUnavailable[key] = details["reason"]?.string ?? "unavailable" }
+        } catch { adviceUnavailable[key] = "unavailable" }
+    }
+
     private static let genericRecommendationWords: Set<String> = [
         "prepare", "next", "reviewable", "result", "review", "work", "task", "context", "source", "project", "done", "when",
         "with", "from", "this", "that", "have", "will", "your", "their", "about", "into", "what", "which", "where",
         "before", "after", "only", "more", "some", "then", "there", "these", "those", "should", "could", "would",
         "session", "agent", "instructions", "evidence", "additional", "explain", "changes", "checks", "unresolved",
-        "questions", "publishing", "sending", "externally", "current", "existing", "meeting", "sample", "synthetic"
+        "questions", "publishing", "sending", "externally", "current", "existing", "meeting", "sample", "synthetic",
+        // Words that match almost every session (his name, dates, the brief): they made a Morning brief the
+        // "suggestion" for a 1:1 task on 2026-09-28.
+        "miles", "ukaoma", "brief", "morning", "today", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+        "sunday", "january", "february", "march", "april", "june", "july", "august", "september", "october", "november",
+        "december", "america", "chicago", "chicag"
     ]
     private func meaningfulWords(_ text: String) -> Set<String> {
         Set(text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
-            .filter { $0.count > 3 && !Self.genericRecommendationWords.contains($0) })
+            .filter { $0.count > 3 && !Self.genericRecommendationWords.contains($0) && !$0.allSatisfy(\.isNumber) })
     }
     private func priorAssociation(_ session: WorkSession, source: WorkSource) -> WorkHandoffReceipt? {
         receipts(for: source.id).first { $0.sessionID == session.id && ["delivered", "reviewed", "completed"].contains($0.status) }

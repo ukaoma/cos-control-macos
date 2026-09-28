@@ -1979,6 +1979,105 @@ struct DomainOption: Identifiable, Sendable, Equatable {
     }
 }
 
+/// Meeting-derived Work that is not on the board yet (server 6.57.0 `/api/work-intake`): suggested links, other
+/// people's asks, and his own items that need a look. A producer scores them; nothing here is written to tasks
+/// until the user accepts it.
+struct WorkIntakeItem: Identifiable, Hashable, Sendable {
+    enum Kind: String, Sendable { case link, ask }
+    let id: String
+    let kind: Kind
+    let status: String
+    let meeting: WorkMeetingReference
+    let confidence: Double
+    let text: String
+    let owner: String?
+    let ownerIsMiles: Bool
+    let pullTitle: String?
+    let pullConfidence: Double?
+    /// Why an item landed in Review (server 6.57.0): `outside_window`, `unclear_task` or `owner_uncertain`.
+    let reason: String?
+
+    var isReview: Bool { status == "review" }
+    /// A short reason shown on a Review row; an unknown reason from a newer server shows nothing.
+    var reasonLabel: String? {
+        switch reason {
+        case "outside_window": return "older meeting"
+        case "unclear_task": return "may not be a task"
+        case "owner_uncertain": return "owner unclear"
+        default: return nil
+        }
+    }
+    var isSuggestedLink: Bool { kind == .link && status == "suggested" }
+    var isAsk: Bool { kind == .ask && status == "ask" }
+    var percent: String { "\(Int((confidence * 100).rounded()))%" }
+    var pullPercent: String? { pullConfidence.map { "\(Int(($0 * 100).rounded()))%" } }
+    var meetingDate: String {
+        let prefix = String(meeting.filename.prefix(10))
+        guard prefix.range(of: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$", options: .regularExpression) != nil,
+              let month = Int(prefix.dropFirst(5).prefix(2)), let day = Int(prefix.suffix(2)) else { return "" }
+        return "\(month)/\(day)"
+    }
+
+    init?(_ value: JSONValue) {
+        guard let row = value.object,
+              let id = row["id"]?.string, id.range(of: "^wi_[a-f0-9]{32}$", options: .regularExpression) != nil,
+              let kind = row["kind"]?.string.flatMap(Kind.init(rawValue:)),
+              let status = row["status"]?.string, ["suggested", "review", "ask", "accepted", "dismissed"].contains(status),
+              let meeting = WorkMeetingReference(row["meeting"]),
+              let confidence = row["confidence"]?.double, (0...1).contains(confidence) else { return nil }
+        let task = row["task"]?.object
+        let text = kind == .link ? task?["text"]?.string : row["text"]?.string
+        guard let text, !text.isEmpty else { return nil }
+        self.id = id; self.kind = kind; self.status = status; self.meeting = meeting; self.confidence = confidence; self.text = text
+        owner = row["owner"]?.string
+        ownerIsMiles = row["ownerIsMiles"]?.bool == true
+        let pull = row["pull"]?.object
+        pullTitle = pull?["title"]?.string
+        pullConfidence = pull?["p"]?.double
+        reason = row["reason"]?.string
+    }
+}
+
+struct WorkIntakeSnapshot: Sendable {
+    var available: Bool
+    var message: String?
+    var items: [WorkIntakeItem]
+    var cardCreation: Bool
+    var linkWrites: Bool
+    /// The server's task bridge did not answer (accept is refused until it does), not an older server.
+    var bridgeUnavailable = false
+    /// Server 6.57.0 or later whose Intake store is down (503): shown with its reason, never hidden.
+    var storeUnavailable = false
+
+    static let unavailable = WorkIntakeSnapshot(available: false, message: nil, items: [], cardCreation: false, linkWrites: false)
+    var asks: [WorkIntakeItem] {
+        items.filter(\.isAsk).sorted { left, right in
+            // Pulled forward first, likeliest session match first (one of Miles's sessions may already be on it),
+            // then newest meeting.
+            if (left.pullConfidence ?? -1) != (right.pullConfidence ?? -1) { return (left.pullConfidence ?? -1) > (right.pullConfidence ?? -1) }
+            return left.meeting.filename > right.meeting.filename
+        }
+    }
+    var reviews: [WorkIntakeItem] { items.filter(\.isReview).sorted { $0.meeting.filename > $1.meeting.filename } }
+    var suggestedLinks: [WorkIntakeItem] { items.filter(\.isSuggestedLink).sorted { $0.confidence > $1.confidence } }
+    var openCount: Int { asks.count + reviews.count + suggestedLinks.count }
+
+    init(available: Bool, message: String?, items: [WorkIntakeItem], cardCreation: Bool, linkWrites: Bool) {
+        self.available = available; self.message = message; self.items = items; self.cardCreation = cardCreation; self.linkWrites = linkWrites
+    }
+
+    /// Helper details: `available` false means an older server (404) or an unavailable store (503).
+    init(details: [String: JSONValue]) {
+        let raw = details["items"]?.array ?? []
+        let capabilities = details["capabilities"]?.object ?? [:]
+        self.init(available: details["available"]?.bool != false, message: details["message"]?.string,
+                  items: raw.compactMap(WorkIntakeItem.init), cardCreation: capabilities["cardCreation"]?.bool == true,
+                  linkWrites: capabilities["linkWrites"]?.bool == true)
+        bridgeUnavailable = capabilities["bridgeUnavailable"]?.bool == true
+        storeUnavailable = details["storeUnavailable"]?.bool == true
+    }
+}
+
 /// Exact saved-meeting reference. No title or capture-session matching is allowed.
 struct WorkMeetingReference: Identifiable, Hashable, Sendable {
     let recordId: String
@@ -2011,6 +2110,146 @@ struct WorkMeetingReference: Identifiable, Hashable, Sendable {
 
     func matches(_ meeting: LibraryMeeting) -> Bool {
         recordId == meeting.recordId && domain == meeting.domain && month == meeting.month && filename == meeting.filename
+    }
+}
+
+/// Jev key state from the server (6.57.0). Never carries the key itself.
+struct JevStatus: Sendable, Equatable {
+    var available: Bool
+    var configured: Bool
+    var source: String
+    var savedAt: String?
+    var usedToday: Int
+    var dailyCap: Int
+    var breakerOpenUntil: String?
+    var lastError: String?
+    init(details: [String: JSONValue]) {
+        available = details["available"]?.bool != false
+        configured = details["configured"]?.bool == true
+        source = details["source"]?.string ?? "none"
+        savedAt = details["savedAt"]?.string
+        usedToday = Int(details["usedToday"]?.double ?? 0)
+        dailyCap = Int(details["dailyCap"]?.double ?? 0)
+        breakerOpenUntil = details["breakerOpenUntil"]?.string
+        lastError = details["lastError"]?.string
+    }
+    /// One line for Settings. The environment wins over a saved key, so say which one is in use.
+    var summary: String {
+        guard available else { return "Needs server 6.57.0 or later." }
+        guard configured else { return "Not set. Work uses word matching for session suggestions." }
+        let origin = source == "env" ? "from the server environment" : source == "scripts-env" ? "from the COS .env" : "saved here"
+        return "Active, \(origin). Today \(usedToday.formatted()) of \(dailyCap.formatted()) tokens."
+    }
+}
+
+/// Continue / Fork / New advice for one Work task (server 6.57.0, Jev). Advice only.
+struct SessionAdvice: Sendable, Equatable {
+    enum Action: String, Sendable { case continueSession = "continue", fork, newSession = "new" }
+    let action: Action
+    let sessionID: String?
+    let confidence: Double
+    let reason: String
+    init?(details: [String: JSONValue]) {
+        guard details["provider"]?.string == "jev", let raw = details["action"]?.string, let action = Action(rawValue: raw),
+              let confidence = details["confidence"]?.double, (0...1).contains(confidence) else { return nil }
+        let sessionID = details["sessionId"]?.string
+        if action != .newSession && (sessionID ?? "").isEmpty { return nil }
+        self.action = action; self.sessionID = action == .newSession ? nil : sessionID
+        self.confidence = confidence; self.reason = details["reason"]?.string ?? ""
+    }
+    var percent: String { "\(Int((confidence * 100).rounded()))%" }
+}
+
+/// Who a saved meeting involved: attendees plus action-item owners, with each person's items from it.
+/// Miles himself is left out; his items are already his cards.
+struct WorkMeetingPeople: Sendable, Equatable {
+    let recordID: String
+    let people: [String]
+    let items: [String: [String]]
+
+    static let milesNames: Set<String> = ["miles", "miles ukaoma", "mu", "miles u", "me"]
+    static let placeholders: Set<String> = ["", "unassigned", "tbd", "team", "all", "everyone", "n/a", "none", "unknown"]
+
+    /// "**Ryan Hopkins** (ryan@x.com)" → "Ryan Hopkins".
+    static func cleanName(_ raw: String) -> String {
+        var name = raw.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")
+        if let paren = name.firstIndex(of: "(") { name = String(name[..<paren]) }
+        if let at = name.firstIndex(of: "@") { name = String(name[..<at]) }
+        return name.trimmingCharacters(in: CharacterSet(charactersIn: " -–—:,.\t\n"))
+    }
+    static func same(_ a: String, _ b: String) -> Bool {
+        a.caseInsensitiveCompare(b) == .orderedSame
+    }
+
+    init(recordID: String, attendees: [String], actionItems: [(task: String, owner: String)]) {
+        self.recordID = recordID
+        var order: [String] = [], items: [String: [String]] = [:]
+        func add(_ raw: String) -> String? {
+            let name = Self.cleanName(raw)
+            guard !Self.placeholders.contains(name.lowercased()), !Self.milesNames.contains(name.lowercased()), name.count <= 60 else { return nil }
+            if let existing = order.first(where: { Self.same($0, name) }) { return existing }
+            order.append(name); return name
+        }
+        for item in actionItems {
+            for owner in item.owner.split(whereSeparator: { ",/&".contains($0) }).map(String.init) {
+                if let name = add(owner) { items[name, default: []].append(item.task) }
+            }
+        }
+        for attendee in attendees { _ = add(attendee) }
+        // People with items from this meeting first, then attendees, each in the meeting's own order.
+        people = order.filter { items[$0] != nil } + order.filter { items[$0] == nil }
+        self.items = items
+    }
+}
+
+/// Everything Work knows about one person: their items from a meeting (and where each stands), their other open
+/// asks in Intake, and open tasks that mention them. Built from data Control already holds; no extra calls.
+struct WorkPersonNetwork: Sendable {
+    enum ItemState: Sendable, Equatable { case onBoard(taskTitle: String), inIntake(id: String), untracked }
+    struct Item: Sendable, Equatable, Identifiable { let text: String; let state: ItemState; var id: String { text } }
+    let name: String
+    let meetingItems: [Item]
+    let otherAsks: [WorkIntakeItem]
+    let mentions: [TaskRow]
+
+    static let stopWords: Set<String> = ["the", "and", "for", "with", "from", "this", "that", "into", "onto", "our", "your", "their", "them", "then"]
+    /// Key words: three or more letters, or any token with a digit ("H1", "Q4"), minus filler.
+    static func words(_ text: String) -> Set<String> {
+        Set(text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+            .filter { ($0.count >= 3 || $0.contains(where: \.isNumber)) && !stopWords.contains($0) })
+    }
+    /// The meeting item's key words are (nearly) all in the task. Cards gain words ("(from Name)", a due date), so
+    /// coverage of the item, not overlap of both, is the test. Only tasks and asks from the SAME meeting are compared.
+    static func similar(_ item: String, _ task: String) -> Bool {
+        let x = words(item), y = words(task)
+        guard x.count >= 2 || (x.count == 1 && y.count == 1) else { return x == y && !x.isEmpty }
+        return Double(x.intersection(y).count) / Double(x.count) >= 0.75
+    }
+    /// Whole-word match on the full name, or on a first name of four or more letters.
+    static func mentions(_ text: String, name: String) -> Bool {
+        let lower = " " + String(text.lowercased().map { $0.isLetter || $0.isNumber ? $0 : " " }) + " "
+        let full = name.lowercased()
+        if lower.contains(" " + full + " ") { return true }
+        let first = full.split(separator: " ").first.map(String.init) ?? full
+        return first.count >= 4 && lower.contains(" " + first + " ")
+    }
+
+    init(name: String, meeting: WorkMeetingPeople, intake: WorkIntakeSnapshot, tasks: [TaskRow]) {
+        self.name = name
+        let owned = intake.items.filter { $0.kind == .ask && ($0.status == "ask" || $0.status == "review") && $0.owner.map { WorkMeetingPeople.same(WorkMeetingPeople.cleanName($0), name) } == true }
+        let open = tasks.filter { !$0.checked }
+        meetingItems = (meeting.items[name] ?? []).map { text in
+            if let task = open.first(where: { $0.meetingRefs.contains { $0.recordId == meeting.recordID } && Self.similar(text, $0.text.isEmpty ? $0.title : $0.text) }) {
+                return Item(text: text, state: .onBoard(taskTitle: task.title))
+            }
+            if let ask = owned.first(where: { $0.meeting.recordId == meeting.recordID && Self.similar(text, $0.text) }) {
+                return Item(text: text, state: .inIntake(id: ask.id))
+            }
+            return Item(text: text, state: .untracked)
+        }
+        let shown = Set(meetingItems.compactMap { if case .inIntake(let id) = $0.state { return id } else { return nil } })
+        otherAsks = owned.filter { !shown.contains($0.id) }.sorted { $0.meeting.filename > $1.meeting.filename }
+        self.mentions = Array(open.filter { Self.mentions($0.text.isEmpty ? $0.title : $0.text, name: name) }.prefix(8))
     }
 }
 

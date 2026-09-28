@@ -2611,6 +2611,132 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    @Published var workIntake: WorkIntakeSnapshot = .unavailable
+    @Published var workIntakeLoading = false
+    @Published var workIntakeError: String?
+    @Published var workIntakeBusyIDs: Set<String> = []
+    /// Intake shows in Work on server 6.57.0+, including when its store is down or a load failed (with the reason);
+    /// only an older server (404) hides it.
+    var workIntakeVisible: Bool { workIntake.available || workIntake.storeUnavailable || workIntakeError != nil }
+
+    /// Meeting-derived suggestions, asks and review items (server 6.57.0). Never blanks on an older server.
+    func loadWorkIntake() async {
+        workIntakeLoading = true
+        defer { workIntakeLoading = false }
+        do {
+            let response = try await helper.run(["work-intake"], timeout: 30)
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            workIntake = WorkIntakeSnapshot(details: response.details)
+            if !workIntake.available { workIntake.message = response.message }
+            workIntakeError = nil
+        } catch {
+            workIntakeError = error.localizedDescription
+        }
+    }
+
+    /// Accept makes the link or the card on the server (one locked write); dismiss is remembered there.
+    func resolveWorkIntake(_ item: WorkIntakeItem, accept: Bool) async {
+        guard !workIntakeBusyIDs.contains(item.id) else { return }
+        workIntakeBusyIDs.insert(item.id)
+        defer { workIntakeBusyIDs.remove(item.id) }
+        var failure: String?
+        do {
+            let payload = try JSONSerialization.data(withJSONObject: ["id": item.id, "action": accept ? "accept" : "dismiss"])
+            // Longer than the helper's own 60-second request, so the helper can report a timeout itself.
+            let response = try await helper.run(["work-intake-resolve"], timeout: 75, stdinData: payload)
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+        } catch {
+            failure = error.localizedDescription
+        }
+        await loadWorkIntake()
+        if let failure { workIntakeError = failure }  // the refresh must not hide why the change was refused
+        else if accept { await loadWorkTasks(force: true) }
+    }
+
+    // MARK: Jev key (server 6.57.0). The key goes to the server once and is never read back.
+    @Published var jevStatus: JevStatus?
+    @Published var jevBusy = false
+    @Published var jevMessage: String?
+
+    func loadJevStatus() async {
+        do {
+            let response = try await helper.run(["jev-status"], timeout: 20)
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            jevStatus = JevStatus(details: response.details)
+            if jevStatus?.available == false { jevMessage = response.message }
+        } catch { jevMessage = error.localizedDescription }
+    }
+
+    /// Validated live by the server before it is saved. Returns true when saved.
+    func saveJevKey(_ key: String) async -> Bool {
+        guard !jevBusy else { return false }
+        jevBusy = true; jevMessage = nil
+        defer { jevBusy = false }
+        do {
+            let payload = try JSONSerialization.data(withJSONObject: ["key": key.trimmingCharacters(in: .whitespacesAndNewlines)])
+            let response = try await helper.run(["jev-key-set"], timeout: 45, stdinData: payload)
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            jevStatus = JevStatus(details: response.details.merging(["available": .bool(true)]) { old, _ in old })
+            // Like the OpenAI key, a TYPESAFE_API_KEY in the server environment wins over a saved one. Say so.
+            jevMessage = jevStatus?.source == "config" ? "Key accepted and saved. It is in use now."
+                : "Key accepted and saved. The key in the server environment is still the one in use."
+            return true
+        } catch { jevMessage = error.localizedDescription; return false }
+    }
+
+    func removeJevKey() async {
+        guard !jevBusy else { return }
+        jevBusy = true; defer { jevBusy = false }
+        do {
+            let response = try await helper.run(["jev-key-clear"], timeout: 20)
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            jevStatus = JevStatus(details: response.details.merging(["available": .bool(true)]) { old, _ in old })
+            jevMessage = jevStatus?.configured == true ? "Saved key removed. A key from the server environment is still active." : "Saved key removed."
+        } catch { jevMessage = error.localizedDescription }
+    }
+
+    // MARK: People on a Work task's source meetings (attendees and action-item owners).
+    @Published var workMeetingPeople: [String: WorkMeetingPeople] = [:]
+    @Published var workMeetingPeopleFailed: Set<String> = []
+    private var workMeetingPeopleLoading: Set<String> = []
+
+    func loadWorkMeetingPeople(_ reference: WorkMeetingReference) async {
+        let key = reference.recordId
+        guard workMeetingPeople[key] == nil, !workMeetingPeopleLoading.contains(key) else { return }
+        workMeetingPeopleLoading.insert(key); defer { workMeetingPeopleLoading.remove(key) }
+        do {
+            let response = try await helper.run(["meeting-library-detail", "--domain", reference.domain, "--month", reference.month,
+                                                 "--filename", reference.filename], timeout: 30)
+            // Only the exact saved record: a renamed or merged meeting must not lend its people to this task.
+            guard response.ok, let detail = LibraryMeetingDetail(.object(response.details)), detail.recordId == reference.recordId else {
+                workMeetingPeopleFailed.insert(key); return
+            }
+            workMeetingPeople[key] = WorkMeetingPeople(recordID: key, attendees: detail.attendees, actionItems: detail.actionItems)
+            workMeetingPeopleFailed.remove(key)
+        } catch { workMeetingPeopleFailed.insert(key) }
+    }
+
+    /// Dismiss several items (Review → "Skip all from older meetings"), then refresh once. Stops at the first refusal.
+    func dismissWorkIntake(_ items: [WorkIntakeItem]) async {
+        let ids = Set(items.map(\.id)).subtracting(workIntakeBusyIDs)
+        guard !ids.isEmpty else { return }
+        workIntakeBusyIDs.formUnion(ids)
+        defer { workIntakeBusyIDs.subtract(ids) }
+        var failure: String?
+        for item in items where ids.contains(item.id) {
+            do {
+                let payload = try JSONSerialization.data(withJSONObject: ["id": item.id, "action": "dismiss"])
+                let response = try await helper.run(["work-intake-resolve"], timeout: 75, stdinData: payload)
+                guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            } catch {
+                failure = error.localizedDescription
+                break
+            }
+        }
+        await loadWorkIntake()
+        if let failure { workIntakeError = failure }
+    }
+
     func setWorkStage(_ task: TaskRow, stage: String) async throws {
         guard TaskRow.workStages.contains(stage) else { throw HelperClientError.invalidResponse("Unsupported Work stage.") }
         try await mutateWorkTask(task, command: "work-set-stage", extra: ["workStage": stage])

@@ -2,6 +2,8 @@
 set -euo pipefail
 ROOT="${0:A:h:h}"
 OUT="${COS_FOUNDATION_DIST_DIR:-$ROOT/dist/control2-foundation}"
+LAB_VERSION="${COS_FOUNDATION_VERSION:-0.1.9}"; LAB_BUILD="${COS_FOUNDATION_BUILD:-10}"
+LAB_NAME="${COS_FOUNDATION_NAME:-COS Control Work Preview $LAB_VERSION}"; LAB_ID="${COS_FOUNDATION_BUNDLE_ID:-com.gotcos.COSControl.WorkPreview019}"
 APP="${COS_FOUNDATION_APP_DIR:-$HOME/Library/Caches/COS Control Work Preview 0.1.9}/COS Control Foundation Lab.app"
 mkdir -p "$OUT" "$APP/Contents/MacOS" "$APP/Contents/Resources"
 swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete \
@@ -17,17 +19,17 @@ swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=compl
   -o "$APP/Contents/MacOS/COS Control Foundation Lab"
 # Share the application's actual brand assets, fonts and supporting resources.
 /usr/bin/ditto "$ROOT/Resources" "$APP/Contents/Resources"
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>com.gotcos.COSControl.WorkPreview019</string>
-<key>CFBundleName</key><string>COS Control Work Preview 0.1.9</string>
-<key>CFBundleDisplayName</key><string>COS Control Work Preview 0.1.9</string>
+<key>CFBundleIdentifier</key><string>$LAB_ID</string>
+<key>CFBundleName</key><string>$LAB_NAME</string>
+<key>CFBundleDisplayName</key><string>$LAB_NAME</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundleExecutable</key><string>COS Control Foundation Lab</string>
-<key>CFBundleShortVersionString</key><string>0.1.9</string>
-<key>CFBundleVersion</key><string>10</string>
+<key>CFBundleShortVersionString</key><string>$LAB_VERSION</string>
+<key>CFBundleVersion</key><string>$LAB_BUILD</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>

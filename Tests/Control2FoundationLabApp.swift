@@ -5,6 +5,8 @@ import SwiftUI
     private static let connected = ProcessInfo.processInfo.environment["COS_WORK_CONNECTED_TEST"] == "1"
         && ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] == nil
     @StateObject private var model = ControllerModel(startBackgroundWork: false, allowActivityLoads: connected)
+    /// The build script's label (0.1.9 by default; a candidate build names itself).
+    private static let labVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.9"
     private var previewColorScheme: ColorScheme? {
         switch ProcessInfo.processInfo.environment["COS_CONTROL_TEST_APPEARANCE"] {
         case "light": .light
@@ -21,7 +23,7 @@ import SwiftUI
         return CGFloat(min(1400, max(560, value)))
     }
     var body: some Scene {
-        WindowGroup(Self.connected ? "COS Control · Connected Work 0.1.9" : "COS Control · Work Preview 0.1.9") {
+        WindowGroup((Self.connected ? "COS Control · Connected Work " : "COS Control · Work Preview ") + Self.labVersion) {
             Group {
                 if Self.connected { ActivityWindow.workConnectedTest(model: model) }
                 else { ActivityWindow.workPreview(model: model) }
