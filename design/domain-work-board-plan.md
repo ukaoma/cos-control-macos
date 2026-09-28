@@ -37,3 +37,13 @@ Confidence-based preparation, automatic agent runs and publication are unchanged
 - Malformed/duplicate/unknown metadata is preserved, reported and cannot be overwritten by board actions. Ordinary task entry cannot inject the reserved metadata protocol.
 - Legacy stage edits made through the upgraded writer reset the refinement to the corresponding coarse stage. A truly old writer can only express planning/active/review: returning to a previously matching bucket can restore its retained fine phase. Rollback preserves tasks and IDs but cannot express all six stages; stage movement never authorizes execution or publication.
 - Candidate stage/link canaries must use a disposable COS_TASK_ROOT. No QA writes to real tasks.
+
+## Next phase: Work in the EHPK glasses HUD
+
+**Requested by Miles on 2026-09-27, after the Control candidate delivery.** Begin this phase after COS Control completion and acceptance; a test-ready Mac candidate does not close that dependency. This records the follow-up scope, not a claim that the glasses implementation has shipped.
+
+- Extend the existing glasses Tasks experience with Work using the same canonical tasks, stable Work identities and six stages. Preserve task capture, completion and legacy-client compatibility; do not introduce a separate glasses task store.
+- Design a glanceable domain/stage list and Work detail suited to the HUD. Include source meeting associations and recorded session activity/errors, with return navigation to the originating item. Validate which controls fit on the lens and which belong in the phone/Hub or Control detail.
+- Reuse the existing session handoff contracts wherever actions are exposed. A stage or session status must not silently dispatch an agent, complete a task or approve publication. Preserve Continue within thread behavior and explicit destination choice.
+- Build an opt-in candidate through the actual glasses and phone/Hub shell. Read G2_DISPLAY_CONSTRAINTS.md, verify current manufacturer contracts and test the real SDK event/render path. Use disposable write targets, old-server/old-client compatibility canaries, reconnect/restart checks and on-lens acceptance evidence; the phone mirror alone is not lens proof.
+- Preserve the current EHPK and Hub distribution as rollback artifacts. The recorded glasses baseline is 6.9.555; recheck the actual device and release branches before choosing the next version. Update the EHPK and associated Hub distribution together when that phase is qualified for release.
