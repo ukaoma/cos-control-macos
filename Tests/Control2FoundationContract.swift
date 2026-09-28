@@ -10,6 +10,7 @@ import CryptoKit
         runWorkIntakeChecks()
         try await runWorkPeopleAndAdviceChecks()
         runWorkPersonMatchChecks()
+        runSessionLinkChecks()
         try await runWorkActivityChecks()
         try await runWorkWorkspaceReviewSelectionChecks()
         try await runWorkReviewStoreChecks()

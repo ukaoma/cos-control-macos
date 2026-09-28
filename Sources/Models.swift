@@ -2196,8 +2196,9 @@ struct WorkMeetingPeople: Sendable, Equatable {
             }
         }
         for attendee in attendees { _ = add(attendee) }
-        // People with items from this meeting first, then attendees, each in the meeting's own order.
-        people = order.filter { items[$0] != nil } + order.filter { items[$0] == nil }
+        // People with items from this meeting first, then attendees, each in the meeting's own order:
+        // owners are added before attendees above, so `order` already is that order.
+        people = order
         self.items = items
     }
 }

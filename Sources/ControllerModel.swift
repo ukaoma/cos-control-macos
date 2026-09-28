@@ -3807,6 +3807,16 @@ final class ControllerModel: ObservableObject {
             }
         }
         if openMode == "session" {
+            // 0.5.241: Claude Desktop's own links, chosen by the helper (continue an existing Code
+            // session, or import a finished transcript Work ran on the server). The sidebar press
+            // stays for older Desktop builds and when no link applies.
+            if let url = Self.claudeDesktopURL(response.details["deepLink"]?.string), NSWorkspace.shared.open(url) {
+                return
+            }
+            if let notice = Self.claudeRevealNotice(response.details["revealReason"]?.string) {
+                petNotice = notice
+                return
+            }
             await revealClaudeSession(appURL: appURL, bundleId: bundleId, sessionName: session.name)
             return
         }
@@ -3872,6 +3882,23 @@ final class ControllerModel: ObservableObject {
     /// press the Code radio, then the row whose title matches the session
     /// name. Do not match that name against Claude window titles. Do not
     /// open the workspace folder.
+    /// Only the two Claude Desktop routes the helper builds; anything else is ignored.
+    nonisolated static func claudeDesktopURL(_ link: String?) -> URL? {
+        guard let link, let url = URL(string: link), url.scheme == "claude",
+              (url.host == "code" && url.path == "/continue") || (url.host == "resume" && url.path.isEmpty) else { return nil }
+        return url
+    }
+
+    /// Why Open in platform could not reach a Claude session, when the sidebar press cannot help either.
+    nonisolated static func claudeRevealNotice(_ reason: String?) -> String? {
+        switch reason {
+        case "running": "This session is still running. Open it in Claude when it finishes."
+        case "archived": "This session is archived in Claude. Unarchive it there to open it."
+        case "no_transcript": "Claude has no transcript for this session anymore, so there is nothing to open."
+        default: nil
+        }
+    }
+
     private func revealClaudeSession(appURL: URL?, bundleId: String?, sessionName: String) async {
         func runningClaude() -> NSRunningApplication? {
             let ids = [bundleId, "com.anthropic.claudefordesktop"].compactMap { $0 }

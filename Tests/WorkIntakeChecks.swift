@@ -183,3 +183,37 @@ import Foundation
     precondition(WorkPersonNetwork.similar("Send SVG logos", "Send the SVG logos (from Ryan Hopkins) — Due: 2026-09-24"))
     precondition(!WorkPersonNetwork.similar("the and for", "the and for"), "Only filler: no match")
 }
+
+/// 0.5.241: Open in platform reaches Claude Desktop by its own links, and a session Work started
+/// leads back to its Work item.
+@MainActor func runSessionLinkChecks() {
+    precondition(ControllerModel.claudeDesktopURL("claude://code/continue?session=local_1c45222f-038d-460f-9a86-b8ea72c424ea")?.absoluteString
+                 == "claude://code/continue?session=local_1c45222f-038d-460f-9a86-b8ea72c424ea", "the continue link opens")
+    precondition(ControllerModel.claudeDesktopURL("claude://resume?session=c7fbe91f-1ca7-42b5-9882-66fd49d8ea8a") != nil, "the resume link opens")
+    for refused in ["claude://code/new?folder=/", "claude://claude.ai/new", "https://claude.ai", "claude://resume/x?session=a",
+                    "codex://threads/abc", "claude://code/continue/extra", "", "not a url"] {
+        precondition(ControllerModel.claudeDesktopURL(refused) == nil, "\(refused) is not a Claude session link")
+    }
+    precondition(ControllerModel.claudeDesktopURL(nil) == nil, "no link, nothing opened")
+    precondition(ControllerModel.claudeRevealNotice("running")?.contains("still running") == true, "a running session says so")
+    precondition(ControllerModel.claudeRevealNotice("archived")?.contains("archived") == true, "an archived session says so")
+    precondition(ControllerModel.claudeRevealNotice("no_transcript")?.contains("no transcript") == true, "a deleted transcript says so")
+    for fallThrough in ["import", "desktop", "desktop_too_old", "invalid", nil] as [String?] {
+        precondition(ControllerModel.claudeRevealNotice(fallThrough) == nil, "\(fallThrough ?? "nil") keeps the sidebar press")
+    }
+    func receipt(_ id: String, session: String?, at: Double, title: String = "Retail Liquor Summit Campaign Launch") -> WorkHandoffReceipt {
+        WorkHandoffReceipt(id: id, workID: "meeting:ops:quilt:2026-09:x.md", workTitle: title, sourceRevision: "r", mode: .newSession,
+                           provider: "claude", modelID: "opus", sessionID: session, sessionTitle: title, status: "completed",
+                           detail: "", prompt: "p", createdAt: at)
+    }
+    let receipts = [receipt("a", session: "claude:one", at: 10), receipt("b", session: "claude:one", at: 30, title: "Newer"),
+                    receipt("c", session: "claude:two", at: 50), receipt("d", session: nil, at: 60)]
+    precondition(WorkHandoffStore.latestReceipt(forSession: "claude:one", in: receipts)?.id == "b", "the newest handoff to that session wins")
+    precondition(WorkHandoffStore.latestReceipt(forSession: "claude:three", in: receipts) == nil, "a session no handoff named has no Work link")
+    precondition(WorkHandoffStore.latestReceipt(forSession: "one", in: receipts) == nil, "the provider is part of the session id")
+    precondition(ClaudeSessionDetailPane.headerTitle(detail: "Claude session", row: "Prepare the next", workTitle: "Retail Liquor Summit")
+                 == "Retail Liquor Summit", "a server-run session takes its Work title")
+    precondition(ClaudeSessionDetailPane.headerTitle(detail: "Real title", row: nil, workTitle: "Work") == "Real title", "a real title stays")
+    precondition(ClaudeSessionDetailPane.headerTitle(detail: "Claude session", row: "Row", workTitle: nil) == "Row", "no Work link: the row title")
+    precondition(ClaudeSessionDetailPane.headerTitle(detail: nil, row: nil, workTitle: nil) == "Session", "nothing known: Session")
+}

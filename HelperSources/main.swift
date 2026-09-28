@@ -8861,6 +8861,81 @@ final class COSControlHelper {
         return "codex://threads/\(id)"
     }
 
+    // MARK: - Claude Desktop links (0.5.241)
+    //
+    // Measured 2026-09-28 on Claude 2.9939.4: `claude://code/continue?session=local_<id>` focuses
+    // an existing Code session, and `claude://resume?session=<uuid>` imports a CLI transcript as
+    // Desktop session `local_<uuid>` and opens it. Before this, Open in platform pressed a sidebar
+    // row by NAME, so a session Work started on the server (no Desktop row) opened Claude and
+    // nothing else. Desktop's link import has no live-owner check, and Desktop then owns the
+    // transcript (deleting that tab deletes it), so a running transcript is never imported.
+
+    struct ClaudeDesktopRecord: Equatable {
+        var desktopId: String
+        var cliSessionId: String
+        var archived: Bool?
+        var mtime: Date
+    }
+
+    /// The oldest Claude Desktop these links were verified on. Older builds keep the sidebar press.
+    static let claudeDesktopLinkFloor = [2, 9939, 4]
+
+    static func claudeDesktopSupportsLinks(_ version: String?) -> Bool {
+        guard let version, !version.isEmpty else { return false }
+        let parts = version.split(separator: ".").map { Int($0.prefix { $0.isNumber }) ?? 0 }
+        for (index, floor) in claudeDesktopLinkFloor.enumerated() {
+            let part = index < parts.count ? parts[index] : 0
+            if part != floor { return part > floor }
+        }
+        return true
+    }
+
+    /// Which Desktop link opens this session, or why none does (`reason` goes to the notice).
+    static func claudeDesktopTarget(
+        sessionId: String, records: [ClaudeDesktopRecord], live: Bool,
+        transcriptExists: Bool, desktopVersion: String?
+    ) -> (link: String?, reason: String) {
+        let key = normalizeClaudeSessionId(sessionId)
+        guard UUID(uuidString: key) != nil else { return (nil, "invalid") }
+        guard claudeDesktopSupportsLinks(desktopVersion) else { return (nil, "desktop_too_old") }
+        let mine = records.filter {
+            UUID(uuidString: $0.desktopId) != nil && ($0.desktopId == key || $0.cliSessionId == key)
+        }
+        if let open = mine.filter({ $0.archived != true }).max(by: { $0.mtime < $1.mtime }) {
+            return ("claude://code/continue?session=local_\(open.desktopId)", "desktop")
+        }
+        if !mine.isEmpty { return (nil, "archived") }
+        if live { return (nil, "running") }
+        guard transcriptExists else { return (nil, "no_transcript") }
+        return ("claude://resume?session=\(key)", "import")
+    }
+
+    /// Desktop records naming this session, read from a small prefix of each file: sessionId,
+    /// cliSessionId and isArchived sit in the first few hundred bytes. The list's 256 KB head read
+    /// costs seconds across ~600 records, too slow for a click.
+    static func claudeDesktopRecords(for sessionId: String, sessionsRoot: URL) -> [ClaudeDesktopRecord] {
+        let key = normalizeClaudeSessionId(sessionId)
+        guard UUID(uuidString: key) != nil, let walker = FileManager.default.enumerator(
+            at: sessionsRoot, includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]) else { return [] }
+        var out: [ClaudeDesktopRecord] = []
+        for case let file as URL in walker {
+            let name = file.lastPathComponent
+            guard name.hasPrefix("local_"), name.hasSuffix(".json") else { continue }
+            let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey])
+            guard values?.isRegularFile == true, let handle = try? FileHandle(forReadingFrom: file) else { continue }
+            let head = desktopMetadataPrefix(handle.readData(ofLength: 16 * 1024)).fields
+            try? handle.close()
+            let desktopId = normalizeClaudeSessionId(String(name.dropLast(5)))
+            let cli = normalizeClaudeSessionId(head["cliSessionId"] as? String ?? "")
+            guard desktopId == key || cli == key else { continue }
+            out.append(ClaudeDesktopRecord(desktopId: desktopId, cliSessionId: cli,
+                                           archived: head["isArchived"] as? Bool,
+                                           mtime: values?.contentModificationDate ?? .distantPast))
+        }
+        return out
+    }
+
     /// `/api/agent-sessions` field names in the shape the Activity list parses.
     ///
     /// `project` already arrives as a workspace label, so it is NOT run through
@@ -10113,6 +10188,7 @@ final class COSControlHelper {
                 guard let parsed = string() else { break }
                 value = parsed
             } else {
+                let valueStart = i
                 var depth = 0, inString = false, escaped = false
                 while i < bytes.count {
                     let ch = bytes[i]
@@ -10126,6 +10202,13 @@ final class COSControlHelper {
                     else if ch == 125 || ch == 93 { depth -= 1 }
                 }
                 if i == bytes.count { break }
+                // 0.5.241: a literal boolean is kept (isArchived decides how Open in platform
+                // reaches a Desktop session). Numbers, arrays and objects stay NSNull.
+                switch String(decoding: bytes[valueStart..<i], as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) {
+                case "true": value = true
+                case "false": value = false
+                default: break
+                }
             }
             fields[key] = fields[key] == nil ? value : NSNull()
             space()
@@ -11709,6 +11792,8 @@ final class COSControlHelper {
         var pid: Int?
         var entrypoint: String?
         var procStart: String?
+        var claudeLink: String?
+        var revealReason: String?
         switch provider {
         case "cursor":
             path = Self.resolvedWorkspacePath(
@@ -11753,7 +11838,26 @@ final class COSControlHelper {
                 label: option("--workspace", in: args) ?? "",
                 workDirectory: loadManifest()?.workDirectory
             )
+            let desktopVersion = app.flatMap {
+                NSDictionary(contentsOfFile: $0.path + "/Contents/Info.plist")?["CFBundleShortVersionString"] as? String
+            }
+            let target = Self.claudeDesktopTarget(
+                sessionId: sessionId,
+                records: Self.claudeDesktopRecords(
+                    for: sessionId,
+                    sessionsRoot: home.appendingPathComponent("Library/Application Support/Claude/claude-code-sessions", isDirectory: true)
+                ),
+                live: live != nil,
+                transcriptExists: Self.findClaudeSessionFile(
+                    sessionId: sessionId, projectsRoot: home.appendingPathComponent(".claude/projects", isDirectory: true)
+                ) != nil,
+                desktopVersion: desktopVersion
+            )
+            claudeLink = target.link
+            revealReason = target.reason
         }
+        let deepLink: Any = claudeLink ?? Self.sessionRevealDeepLink(provider: provider, sessionId: sessionId) ?? NSNull()
+        let reason: Any = revealReason ?? NSNull()
         emit(ok: true, message: "Session ready", details: [
             "provider": provider,
             "sessionId": sessionId,
@@ -11764,7 +11868,8 @@ final class COSControlHelper {
             "entrypoint": entrypoint ?? NSNull(),
             "procStart": procStart ?? NSNull(),
             "openMode": Self.sessionRevealOpenMode(provider: provider),
-            "deepLink": Self.sessionRevealDeepLink(provider: provider, sessionId: sessionId) ?? NSNull(),
+            "deepLink": deepLink,
+            "revealReason": reason,
         ])
     }
 
@@ -17968,6 +18073,68 @@ final class COSControlHelper {
                    "a path-shaped Codex id is not a deep link")
         try expect(Self.sessionRevealDeepLink(provider: "cursor", sessionId: "abc") == nil,
                    "Cursor has no local composer deep link")
+        // 0.5.241: Claude Desktop links for Open in platform.
+        try expect(Self.claudeDesktopSupportsLinks("2.9939.4") && Self.claudeDesktopSupportsLinks("2.9940.0")
+                   && Self.claudeDesktopSupportsLinks("3.0.0") && Self.claudeDesktopSupportsLinks("2.9939.4.1"),
+                   "the verified Claude build and newer use the Desktop links")
+        try expect(!Self.claudeDesktopSupportsLinks("2.9939.3") && !Self.claudeDesktopSupportsLinks("2.9938.9")
+                   && !Self.claudeDesktopSupportsLinks("1.99999.0") && !Self.claudeDesktopSupportsLinks(nil)
+                   && !Self.claudeDesktopSupportsLinks(""),
+                   "an older or unknown Claude keeps the sidebar press")
+        let revealCli = "c7fbe91f-1ca7-42b5-9882-66fd49d8ea8a"
+        let revealDesk = "1c45222f-038d-460f-9a86-b8ea72c424ea"
+        func revealRecord(_ desk: String, _ cli: String, archived: Bool?, age: TimeInterval = 0) -> ClaudeDesktopRecord {
+            ClaudeDesktopRecord(desktopId: desk, cliSessionId: cli, archived: archived, mtime: Date(timeIntervalSince1970: 1_790_000_000 - age))
+        }
+        func revealTarget(_ records: [ClaudeDesktopRecord], live: Bool = false, transcript: Bool = true,
+                          version: String? = "2.9939.4", id: String = revealCli) -> (link: String?, reason: String) {
+            Self.claudeDesktopTarget(sessionId: id, records: records, live: live, transcriptExists: transcript, desktopVersion: version)
+        }
+        try expect(revealTarget([revealRecord(revealDesk, revealCli, archived: false)]).link == "claude://code/continue?session=local_\(revealDesk)",
+                   "a Desktop session is continued by its Desktop id, found through its transcript id")
+        try expect(revealTarget([revealRecord(revealDesk, revealCli, archived: nil)], id: "local_" + revealDesk).link
+                   == "claude://code/continue?session=local_\(revealDesk)",
+                   "a Desktop id reaches the same session, and an unread archive flag counts as open")
+        try expect(revealTarget([revealRecord(revealDesk, revealCli, archived: false)], live: true).reason == "desktop",
+                   "a running Desktop session is still opened in Desktop")
+        try expect(revealTarget([revealRecord(revealDesk, revealCli, archived: true, age: 0),
+                                 revealRecord(revealCli, revealCli, archived: false, age: 50)]).link
+                   == "claude://code/continue?session=local_\(revealCli)",
+                   "an archived copy never wins over an open one")
+        let archivedOnly = revealTarget([revealRecord(revealDesk, revealCli, archived: true)])
+        try expect(archivedOnly.link == nil && archivedOnly.reason == "archived",
+                   "an archived Desktop session is not re-imported beside itself")
+        try expect(revealTarget([]).link == "claude://resume?session=\(revealCli)",
+                   "a finished transcript with no Desktop record is imported (Work ran it on the server)")
+        try expect(revealTarget([], id: revealCli.uppercased()).link == "claude://resume?session=\(revealCli)",
+                   "the imported id is the normalized transcript id")
+        let runningHeadless = revealTarget([], live: true)
+        try expect(runningHeadless.link == nil && runningHeadless.reason == "running",
+                   "a transcript something is still running is never imported (Desktop checks no live owner)")
+        try expect(revealTarget([], transcript: false) == (nil, "no_transcript"),
+                   "no transcript, nothing to import")
+        try expect(revealTarget([revealRecord(revealDesk, revealCli, archived: false)], version: "2.9939.3") == (nil, "desktop_too_old"),
+                   "an older Claude gets no link at all")
+        try expect(revealTarget([], id: "../../etc") == (nil, "invalid") && revealTarget([], id: "abc") == (nil, "invalid"),
+                   "only a UUID becomes part of a link")
+        try expect(revealTarget([revealRecord("not-a-uuid", revealCli, archived: false)]).link == "claude://resume?session=\(revealCli)",
+                   "a record whose file name is not a UUID is never linked")
+        let revealRoot = FileManager.default.temporaryDirectory.appendingPathComponent("cos-reveal-\(UUID().uuidString)/acct/org", isDirectory: true)
+        try FileManager.default.createDirectory(at: revealRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: revealRoot.deletingLastPathComponent().deletingLastPathComponent()) }
+        try Data(#"{"sessionId":"local_\#(revealDesk)","cliSessionId":"\#(revealCli)","cwd":"/repo","effort":{"a":[1,2]},"isArchived":true,"title":"T"}"#.utf8)
+            .write(to: revealRoot.appendingPathComponent("local_\(revealDesk).json"))
+        try Data(#"{"sessionId":"local_aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb","cliSessionId":"aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb","isArchived":false}"#.utf8)
+            .write(to: revealRoot.appendingPathComponent("local_aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb.json"))
+        let foundRecords = Self.claudeDesktopRecords(for: revealCli, sessionsRoot: revealRoot.deletingLastPathComponent().deletingLastPathComponent())
+        try expect(foundRecords.count == 1 && foundRecords.first?.desktopId == revealDesk && foundRecords.first?.archived == true,
+                   "the record scan finds the Desktop session by its transcript id and reads isArchived past a nested value")
+        try expect(Self.claudeDesktopRecords(for: "../x", sessionsRoot: revealRoot).isEmpty,
+                   "the record scan refuses a non-UUID id")
+        let boolPrefix = Self.desktopMetadataPrefix(Data(#"{"a":true,"b":false,"c":12,"d":"true"}"#.utf8)).fields
+        try expect(boolPrefix["a"] as? Bool == true && boolPrefix["b"] as? Bool == false
+                   && boolPrefix["c"] is NSNull && boolPrefix["d"] as? String == "true",
+                   "literal booleans are kept; numbers stay NSNull and a quoted true stays a string")
         try expect(
             Self.sessionRevealDeepLink(
                 provider: "claude",

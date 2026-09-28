@@ -182,6 +182,11 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
         return r.details
     }
     func receipts(for workID: String) -> [WorkHandoffReceipt] { receipts.filter { $0.workID == workID }.sorted { $0.createdAt > $1.createdAt } }
+    /// 0.5.241: the newest handoff that started or sent to this Activity session ("provider:native"),
+    /// so the Sessions page can lead back to its Work item however it was opened.
+    nonisolated static func latestReceipt(forSession id: String, in receipts: [WorkHandoffReceipt]) -> WorkHandoffReceipt? {
+        receipts.filter { $0.sessionID == id }.max { $0.createdAt < $1.createdAt }
+    }
     func draft(for source: WorkSource) -> WorkHandoffDraft {
         drafts.first { $0.sourceID == source.id && $0.sourceRevision == source.revision }
             ?? WorkHandoffDraft(sourceID: source.id, sourceRevision: source.revision, prompt: source.suggestedPrompt)

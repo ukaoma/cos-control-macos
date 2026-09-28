@@ -492,12 +492,17 @@ struct ActivityWindow: View {
                 } else if section == .sessions, selectedSessionID != nil {
                     if model.claudeSessionRouteActive {
                         VStack(spacing: 0) {
-                            if let workID = handoffStore.selectedWorkID,
+                            // 0.5.241: a session Work started names its Work item however it was opened.
+                            let workReceipt = workConnectionsEnabled
+                                ? selectedSessionID.flatMap { WorkHandoffStore.latestReceipt(forSession: $0, in: handoffStore.receipts) }
+                                : nil
+                            if workReceipt == nil, let workID = handoffStore.selectedWorkID,
                                handoffStore.selectedSessionID == selectedSessionID {
                                 Button("Back to linked work") { model.closeClaudeSession(); openHandoffWork(workID) }
                                     .buttonStyle(COSQuietButtonStyle()).padding(10)
                             }
-                            ClaudeSessionDetailPane(model: model)
+                            ClaudeSessionDetailPane(model: model, workReceipt: workReceipt,
+                                                    onOpenWork: { id in model.closeClaudeSession(); openHandoffWork(id) })
                         }
                     } else {
                         centeredProgress("Loading session…")
@@ -5375,6 +5380,18 @@ struct ActivityWindow: View {
 
 struct ClaudeSessionDetailPane: View {
     @ObservedObject var model: ControllerModel
+    /// 0.5.241: the Work handoff that started or sent to this session, if any.
+    var workReceipt: WorkHandoffReceipt? = nil
+    var onOpenWork: ((String) -> Void)? = nil
+
+    /// A server-run session has no title of its own ("Claude session"); the Work item names it.
+    nonisolated static func headerTitle(detail: String?, row: String?, workTitle: String?) -> String {
+        let generic: Set<String> = ["", "Claude session", "Session"]
+        if let detail, !generic.contains(detail) { return detail }
+        if let workTitle, !workTitle.isEmpty { return workTitle }
+        if let row, !row.isEmpty { return row }
+        return detail ?? "Session"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -5389,7 +5406,8 @@ struct ClaudeSessionDetailPane: View {
                             .padding(.vertical, 3)
                             .background(Capsule().fill(Self.tint(row.provider).opacity(0.14)))
                     }
-                    Text(model.claudeSessionDetail?.title ?? model.openClaudeRow?.title ?? "Session")
+                    Text(Self.headerTitle(detail: model.claudeSessionDetail?.title, row: model.openClaudeRow?.title,
+                                          workTitle: workReceipt?.sessionTitle))
                         .font(COSType.display(22, weight: .medium))
                         .textSelection(.enabled)
                 }
@@ -5404,6 +5422,19 @@ struct ClaudeSessionDetailPane: View {
                         .foregroundStyle(.tertiary)
                         .textSelection(.enabled)
                         .lineLimit(2)
+                }
+                if let receipt = workReceipt {
+                    HStack(spacing: 10) {
+                        Text("From Work · \(receipt.workTitle) · \(receipt.status.capitalized)")
+                            .font(COSType.body(12))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        if let onOpenWork {
+                            Button("Open in Work") { onOpenWork(receipt.workID) }
+                                .buttonStyle(COSQuietButtonStyle())
+                                .controlSize(.small)
+                        }
+                    }
                 }
             }
             .padding(.horizontal, 24)
