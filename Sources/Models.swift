@@ -2133,12 +2133,24 @@ struct JevStatus: Sendable, Equatable {
         breakerOpenUntil = details["breakerOpenUntil"]?.string
         lastError = details["lastError"]?.string
     }
-    /// One line for Settings. The environment wins over a saved key, so say which one is in use.
+    /// One line for Settings. Since 6.57.0 a key saved here wins over any .env, so say which one is in use.
     var summary: String {
         guard available else { return "Needs server 6.57.0 or later." }
         guard configured else { return "Not set. Work uses word matching for session suggestions." }
-        let origin = source == "env" ? "from the server environment" : source == "scripts-env" ? "from the COS .env" : "saved here"
+        let origin = source == "env" ? "from the server environment" : source == "scripts-env" ? "from the COS .env"
+            : "saved here" + (savedAt.map { " on \($0.prefix(10))" } ?? "")
         return "Active, \(origin). Today \(usedToday.formatted()) of \(dailyCap.formatted()) tokens."
+    }
+    /// The last thing that went wrong with Jev, in words, or nil. A revoked key otherwise still reads "Active".
+    var problem: String? {
+        switch lastError {
+        case nil: return nil
+        case "jev_key_rejected": return "Last request: TypeSafe rejected the key. Save a new one."
+        case "jev_cap_reached": return "Last request: today's token limit was reached."
+        case "jev_unavailable": return "Last request: TypeSafe did not answer."
+        case "jev_bad_answer", "jev_request_rejected": return "Last request: TypeSafe refused or garbled one answer."
+        case let other?: return "Last request failed (\(other))."
+        }
     }
 }
 
@@ -2177,6 +2189,15 @@ struct WorkMeetingPeople: Sendable, Equatable {
         if let at = name.firstIndex(of: "@") { name = String(name[..<at]) }
         return name.trimmingCharacters(in: CharacterSet(charactersIn: " -–—:,.\t\n"))
     }
+    /// Transcript labels, not people: "Speaker 3" (G2 recordings list them as attendees), "Unknown speaker".
+    static func isPlaceholder(_ lower: String) -> Bool {
+        placeholders.contains(lower) || lower.hasPrefix("unknown") || lower.hasPrefix("unidentified")
+            || lower.range(of: #"^(speaker|participant|guest)\s*\d+$"#, options: .regularExpression) != nil
+    }
+    /// A calendar handle ("miles.ukaoma", from "**miles.ukaoma** (email)") is Miles too.
+    static func isMiles(_ lower: String) -> Bool {
+        milesNames.contains(lower) || lower.hasPrefix("miles.") || lower == "milesukaoma"
+    }
     static func same(_ a: String, _ b: String) -> Bool {
         a.caseInsensitiveCompare(b) == .orderedSame
     }
@@ -2186,12 +2207,13 @@ struct WorkMeetingPeople: Sendable, Equatable {
         var order: [String] = [], items: [String: [String]] = [:]
         func add(_ raw: String) -> String? {
             let name = Self.cleanName(raw)
-            guard !Self.placeholders.contains(name.lowercased()), !Self.milesNames.contains(name.lowercased()), name.count <= 60 else { return nil }
+            guard !Self.isPlaceholder(name.lowercased()), !Self.isMiles(name.lowercased()), name.count <= 60 else { return nil }
             if let existing = order.first(where: { Self.same($0, name) }) { return existing }
             order.append(name); return name
         }
         for item in actionItems {
-            for owner in item.owner.split(whereSeparator: { ",/&".contains($0) }).map(String.init) {
+            let owners = item.owner.replacingOccurrences(of: " and ", with: ",", options: .caseInsensitive)
+            for owner in owners.split(whereSeparator: { ",/&".contains($0) }).map(String.init) {
                 if let name = add(owner) { items[name, default: []].append(item.task) }
             }
         }

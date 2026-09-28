@@ -184,8 +184,11 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     func receipts(for workID: String) -> [WorkHandoffReceipt] { receipts.filter { $0.workID == workID }.sorted { $0.createdAt > $1.createdAt } }
     /// 0.5.241: the newest handoff that started or sent to this Activity session ("provider:native"),
     /// so the Sessions page can lead back to its Work item however it was opened.
+    /// A Fork keeps its parent as `sessionID` until the fork exists, and a refused handoff never reached the
+    /// session, so neither names this session as doing the work.
     nonisolated static func latestReceipt(forSession id: String, in receipts: [WorkHandoffReceipt]) -> WorkHandoffReceipt? {
-        receipts.filter { $0.sessionID == id }.max { $0.createdAt < $1.createdAt }
+        receipts.filter { $0.sessionID == id && $0.status != "refused" && !($0.mode == .fork && $0.sessionID == $0.sourceSessionID) }
+            .max { $0.createdAt < $1.createdAt }
     }
     func draft(for source: WorkSource) -> WorkHandoffDraft {
         drafts.first { $0.sourceID == source.id && $0.sourceRevision == source.revision }
@@ -230,21 +233,56 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
 
     /// Ask the server which session should take this task. The task text comes from the board on the server; only
     /// the sessions this workspace can target are sent. Advice only: nothing is selected or sent.
+    /// Only an answer that stays true for this revision is final. Everything else ("not configured" costs no Jev
+    /// call, a paused or capped Jev, an unreachable server) is shown and asked again on the next visit, so a key
+    /// added in Settings or a server that came back takes effect without a relaunch.
+    nonisolated static let lastingAdviceReasons: Set<String> = ["server_too_old"]
+    /// The helper refuses more than 64 KB on stdin; 80 sessions of multibyte text clipped only by characters
+    /// could pass it. Bytes per field keep the worst case near 57 KB. The server clips to 120 and 240 characters.
+    nonisolated static func utf8Prefix(_ text: String, characters: Int, bytes: Int) -> String {
+        var out = "", used = 0
+        for ch in text.prefix(characters) {
+            let size = String(ch).utf8.count
+            if used + size > bytes { break }
+            out.append(ch); used += size
+        }
+        return out
+    }
+
     func loadAdvice(for source: WorkSource) async {
         guard !isolated else { return }
         let key = source.id + "|" + source.revision
-        guard advice[key] == nil, adviceUnavailable[key] == nil else { return }
+        guard advice[key] == nil, !Self.lastingAdviceReasons.contains(adviceUnavailable[key] ?? "") else { return }
         let parts = source.id.split(separator: ":", maxSplits: 2).map(String.init)  // "task:<domain>:<workIdentity>"
         guard parts.count == 3, parts[0] == "task", parts[2].range(of: "^[a-f0-9]{12}$", options: .regularExpression) != nil else { return }
         let candidates = sessions.filter { !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.prefix(80)
-            .map { ["id": $0.id, "provider": $0.provider, "title": $0.title, "summary": String($0.summary.prefix(240))] }
+            .map { ["id": $0.id, "provider": $0.provider, "title": Self.utf8Prefix($0.title, characters: 120, bytes: 240),
+                    "summary": Self.utf8Prefix($0.summary, characters: 240, bytes: 360)] }
         guard !candidates.isEmpty else { return }
         do {
             let data = try JSONSerialization.data(withJSONObject: ["domain": parts[1], "id": parts[2], "sessions": Array(candidates)])
             let details = try await call(["work-session-recommend"], data)
-            if let value = SessionAdvice(details: details) { advice[key] = value }
+            guard !Task.isCancelled else { return }
+            if let value = SessionAdvice(details: details) { advice[key] = value; adviceUnavailable[key] = nil }
             else { adviceUnavailable[key] = details["reason"]?.string ?? "unavailable" }
-        } catch { adviceUnavailable[key] = "unavailable" }
+        } catch {
+            // Leaving the task before Jev answers cancels the request: nothing to remember, the next visit asks again.
+            guard !(error is CancellationError), !Task.isCancelled else { return }
+            adviceUnavailable[key] = "unavailable"
+        }
+    }
+
+    /// One line for a suggestion that did not come, instead of falling back to word match in silence.
+    nonisolated static func adviceUnavailableText(_ reason: String?) -> String? {
+        switch reason {
+        case nil, "no_sessions": return nil
+        case "jev_not_configured": return "Add a Jev key in COS Control settings to get Continue, Fork or New suggestions from your sessions."
+        case "server_too_old": return "Session suggestions need server 6.57.0 or later."
+        case "jev_key_rejected": return "Jev rejected its key. Check it in COS Control settings. Showing word matches."
+        case "jev_cap_reached": return "Jev reached today's limit. Showing word matches until tomorrow."
+        case "jev_breaker_open": return "Jev is paused after repeated failures. Showing word matches for now."
+        default: return "No Jev suggestion this time. Showing word matches."
+        }
     }
 
     private static let genericRecommendationWords: Set<String> = [

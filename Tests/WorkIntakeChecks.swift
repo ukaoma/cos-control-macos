@@ -137,6 +137,11 @@ import Foundation
     precondition(JevStatus(details: ["configured": .bool(false)]).summary.hasPrefix("Not set."))
     precondition(JevStatus(details: ["configured": .bool(true), "source": .string("env"), "usedToday": .number(12000), "dailyCap": .number(1000000)])
         .summary.contains("from the server environment"))
+    let saved = JevStatus(details: ["configured": .bool(true), "source": .string("config"), "savedAt": .string("2026-09-28T20:00:00.000Z"),
+                                    "usedToday": .number(0), "dailyCap": .number(1000000), "lastError": .string("jev_key_rejected")])
+    precondition(saved.summary.contains("saved here on 2026-09-28") && saved.problem?.contains("rejected the key") == true)
+    precondition(JevStatus(details: ["configured": .bool(true)]).problem == nil
+                 && JevStatus(details: ["lastError": .string("jev_weird")]).problem == "Last request failed (jev_weird).")
 
     // The workspace asks the server with the task's domain and Work identity, sends only its sessions, and hides
     // advice that names a session it no longer lists.
@@ -168,6 +173,59 @@ import Foundation
     precondition(store.recommendations(for: WorkSource.taskSnapshot(row("0123456789ac", "Compare 2025 with 2026 spend"))).isEmpty,
                  "Shared years alone are not a topic")
 
+    // QA2 W1: a transient failure is shown and asked again; a cancelled request leaves nothing behind;
+    // only an older server is final for the revision.
+    final class Script: @unchecked Sendable { var replies: [Result<HelperResponse, Error>] = []; var calls = 0 }
+    let script = Script()
+    let retryStore = WorkHandoffStore(storageURL: root.appendingPathComponent("retry.json"), transport: { _, _ in
+        script.calls += 1
+        return try script.replies.removeFirst().get()
+    })
+    retryStore.sessions = store.sessions
+    let retrySource = WorkSource.taskSnapshot(row("0123456789ad", "Draft the launch email for the summit offer"))
+    script.replies = [.failure(CancellationError())]
+    await retryStore.loadAdvice(for: retrySource)
+    precondition(retryStore.adviceUnavailableReason(for: retrySource) == nil, "a cancelled request is not a failure")
+    script.replies = [.success(HelperResponse(ok: true, message: "", details: ["provider": .string("none"), "reason": .string("jev_not_configured")]))]
+    await retryStore.loadAdvice(for: retrySource)
+    precondition(retryStore.adviceUnavailableReason(for: retrySource) == "jev_not_configured" && script.calls == 2)
+    script.replies = [.success(HelperResponse(ok: true, message: "", details: ["provider": .string("jev"), "action": .string("new"), "confidence": .number(0.8)]))]
+    await retryStore.loadAdvice(for: retrySource)
+    precondition(script.calls == 3 && retryStore.advice(for: retrySource)?.action == .newSession
+                 && retryStore.adviceUnavailableReason(for: retrySource) == nil, "a key added later answers on the next visit")
+    let oldServer = WorkSource.taskSnapshot(row("0123456789ae", "Another task on an older server"))
+    script.replies = [.success(HelperResponse(ok: true, message: "", details: ["provider": .string("none"), "reason": .string("server_too_old")]))]
+    await retryStore.loadAdvice(for: oldServer)
+    await retryStore.loadAdvice(for: oldServer)
+    precondition(script.calls == 4 && retryStore.adviceUnavailableReason(for: oldServer) == "server_too_old", "an older server is asked once")
+    precondition(WorkHandoffStore.lastingAdviceReasons == ["server_too_old"])
+    precondition(WorkHandoffStore.adviceUnavailableText(nil) == nil && WorkHandoffStore.adviceUnavailableText("no_sessions") == nil)
+    precondition(WorkHandoffStore.adviceUnavailableText("jev_not_configured")?.contains("Add a Jev key") == true)
+    precondition(WorkHandoffStore.adviceUnavailableText("jev_breaker_open")?.contains("paused") == true
+                 && WorkHandoffStore.adviceUnavailableText("jev_cap_reached")?.contains("limit") == true
+                 && WorkHandoffStore.adviceUnavailableText("jev_key_rejected")?.contains("rejected") == true
+                 && WorkHandoffStore.adviceUnavailableText("server_too_old")?.contains("6.57.0") == true
+                 && WorkHandoffStore.adviceUnavailableText("http_502")?.contains("word matches") == true)
+    // QA2 note: fields are clipped by bytes as well as characters, on character boundaries.
+    precondition(WorkHandoffStore.utf8Prefix("abcdef", characters: 4, bytes: 99) == "abcd")
+    precondition(WorkHandoffStore.utf8Prefix("ééé", characters: 9, bytes: 5) == "éé", "two 2-byte characters fit in 5 bytes")
+    precondition(WorkHandoffStore.utf8Prefix("a👍b", characters: 9, bytes: 4) == "a", "never splits a 4-byte character")
+    let wide = String(repeating: "界", count: 500)
+    precondition(WorkHandoffStore.utf8Prefix(wide, characters: 240, bytes: 360).utf8.count <= 360
+                 && WorkHandoffStore.utf8Prefix(wide, characters: 240, bytes: 360).count == 120)
+
+    // QA2: his name alone is not a topic (every Morning brief and many titles carry it).
+    let nameOnly = WorkHandoffStore(storageURL: root.appendingPathComponent("names.json"), transport: { _, _ in HelperResponse(ok: true, message: "", details: [:]) })
+    nameOnly.sessions = [.init(id: "claude:n", nativeID: "n", provider: "claude", title: "Miles Ukaoma notes", summary: "", project: "MU", status: "idle")]
+    precondition(nameOnly.recommendations(for: WorkSource.taskSnapshot(row("0123456789af", "Ask Miles Ukaoma for the signed form"))).isEmpty,
+                 "sharing only his name is not a match")
+
+    // QA2 W2: transcript placeholders and Miles's calendar handle are not people; "and" separates owners.
+    let g2 = WorkMeetingPeople(recordID: "ops:personal:2026-09:g.md",
+        attendees: ["Speaker 1", "speaker 12", "Participant 2", "Unknown speaker", "Unidentified", "**miles.ukaoma** (miles.ukaoma@quiltsoftware.com)", "Speakerman Jones"],
+        actionItems: [(task: "Send the deck", owner: "Ryan Hopkins and Gina Obert")])
+    precondition(g2.people == ["Ryan Hopkins", "Gina Obert", "Speakerman Jones"], "\(g2.people)")
+
     // Choosing another task closes a person card.
     let state = WorkWorkspaceState()
     state.selectedID = "task:quilt:a"; state.personFocus = people.recordID + "|Gina Obert"
@@ -191,7 +249,9 @@ import Foundation
                  == "claude://code/continue?session=local_1c45222f-038d-460f-9a86-b8ea72c424ea", "the continue link opens")
     precondition(ControllerModel.claudeDesktopURL("claude://resume?session=c7fbe91f-1ca7-42b5-9882-66fd49d8ea8a") != nil, "the resume link opens")
     for refused in ["claude://code/new?folder=/", "claude://claude.ai/new", "https://claude.ai", "claude://resume/x?session=a",
-                    "codex://threads/abc", "claude://code/continue/extra", "", "not a url"] {
+                    "codex://threads/abc", "claude://code/continue/extra", "", "not a url",
+                    // right route, wrong scheme: only claude:// may open
+                    "https://code/continue?session=local_1c45222f-038d-460f-9a86-b8ea72c424ea", "codex://resume?session=c7fbe91f-1ca7-42b5-9882-66fd49d8ea8a"] {
         precondition(ControllerModel.claudeDesktopURL(refused) == nil, "\(refused) is not a Claude session link")
     }
     precondition(ControllerModel.claudeDesktopURL(nil) == nil, "no link, nothing opened")
@@ -211,6 +271,16 @@ import Foundation
     precondition(WorkHandoffStore.latestReceipt(forSession: "claude:one", in: receipts)?.id == "b", "the newest handoff to that session wins")
     precondition(WorkHandoffStore.latestReceipt(forSession: "claude:three", in: receipts) == nil, "a session no handoff named has no Work link")
     precondition(WorkHandoffStore.latestReceipt(forSession: "one", in: receipts) == nil, "the provider is part of the session id")
+    var pendingFork = receipt("f", session: "claude:one", at: 90); pendingFork.mode = .fork; pendingFork.sourceSessionID = "claude:one"
+    var madeFork = receipt("g", session: "claude:forked", at: 95); madeFork.mode = .fork; madeFork.sourceSessionID = "claude:one"
+    var refused = receipt("h", session: "claude:one", at: 99); refused.mode = .continueSession; refused.status = "refused"
+    var continued = receipt("i", session: "claude:two", at: 70); continued.mode = .continueSession; continued.sourceSessionID = "claude:two"
+    let withForks = receipts + [pendingFork, madeFork, refused, continued]
+    precondition(WorkHandoffStore.latestReceipt(forSession: "claude:one", in: withForks)?.id == "b",
+                 "a fork that has not made its own session, and a refused handoff, do not claim the parent")
+    precondition(WorkHandoffStore.latestReceipt(forSession: "claude:forked", in: withForks)?.id == "g", "the fork's own session is From Work")
+    precondition(WorkHandoffStore.latestReceipt(forSession: "claude:two", in: withForks)?.id == "i",
+                 "a Continue names its own session as source and target, and still counts")
     precondition(ClaudeSessionDetailPane.headerTitle(detail: "Claude session", row: "Prepare the next", workTitle: "Retail Liquor Summit")
                  == "Retail Liquor Summit", "a server-run session takes its Work title")
     precondition(ClaudeSessionDetailPane.headerTitle(detail: "Real title", row: nil, workTitle: "Work") == "Real title", "a real title stays")

@@ -604,8 +604,13 @@ struct ControlPanel: View {
     private var jevSettings: some View {
         DisclosureGroup(isExpanded: $jevExpanded) {
             VStack(alignment: .leading, spacing: 8) {
-                Text(model.jevStatus?.summary ?? "Checking…").font(.caption).foregroundStyle(.secondary)
+                // Without an answer from the server, say so instead of "Checking…" forever (the error is below).
+                Text(model.jevStatus?.summary ?? (model.jevMessage == nil ? "Checking…" : "Status unavailable."))
+                    .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if let problem = model.jevStatus?.problem {
+                    Text(problem).font(.caption2).foregroundStyle(COSPalette.danger).fixedSize(horizontal: false, vertical: true)
+                }
                 if let until = model.jevStatus?.breakerOpenUntil {
                     Text("Paused after repeated errors until \(until.prefix(16).replacingOccurrences(of: "T", with: " ")) UTC.")
                         .font(.caption2).foregroundStyle(COSPalette.danger)

@@ -639,7 +639,11 @@ struct WorkWorkspaceView: View {
                 }
             }
         } else if model.workMeetingPeopleFailed.contains(meeting.recordId) {
-            Text("People for this meeting could not be read.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+            HStack(spacing: 8) {
+                Text("People for this meeting could not be read.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                Button("Try again") { Task { await model.retryWorkMeetingPeople(meeting) } }
+                    .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+            }
         } else {
             ProgressView().controlSize(.small).task { await model.loadWorkMeetingPeople(meeting) }
         }
@@ -681,8 +685,10 @@ struct WorkWorkspaceView: View {
                 Text("Open tasks mentioning \(first)").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
                 ForEach(person.mentions) { task in
                     Button {
-                        state.domain = nil; state.scope = .all
-                        state.selectedID = WorkSource.taskSnapshot(task).id
+                        // Same bookkeeping as select(): Work restores its selection from the handoff store.
+                        let id = WorkSource.taskSnapshot(task).id
+                        state.domain = nil; state.scope = .all; state.meetingPicker = false; reviewStore.selectedMeeting = nil
+                        state.selectedID = id; handoffStore.selectedWorkID = id
                     } label: { Label(task.title, systemImage: "checklist").font(COSType.body(12)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
                         .buttonStyle(.plain)
                 }

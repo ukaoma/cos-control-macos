@@ -130,9 +130,8 @@ struct WorkHandoffView: View {
                     store.updateDraft(next, for: source)
                 }.buttonStyle(COSQuietButtonStyle()).disabled(applied || store.busy || validating)
             }.padding(10).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 6))
-        } else if store.adviceUnavailableReason(for: source) == "jev_not_configured" {
-            Text("Add a Jev key in COS Control settings to get Continue, Fork or New suggestions from your sessions.")
-                .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+        } else if let text = WorkHandoffStore.adviceUnavailableText(store.adviceUnavailableReason(for: source)) {
+            Text(text).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
         }
     }
 

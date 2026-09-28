@@ -2677,9 +2677,9 @@ final class ControllerModel: ObservableObject {
             let response = try await helper.run(["jev-key-set"], timeout: 45, stdinData: payload)
             guard response.ok else { throw HelperClientError.commandFailed(response.message) }
             jevStatus = JevStatus(details: response.details.merging(["available": .bool(true)]) { old, _ in old })
-            // Like the OpenAI key, a TYPESAFE_API_KEY in the server environment wins over a saved one. Say so.
+            // Server 6.57.0: a saved key wins over any .env, so a successful save is the key in use.
             jevMessage = jevStatus?.source == "config" ? "Key accepted and saved. It is in use now."
-                : "Key accepted and saved. The key in the server environment is still the one in use."
+                : "Key accepted and saved, but the server reports another key in use."
             return true
         } catch { jevMessage = error.localizedDescription; return false }
     }
@@ -2691,7 +2691,7 @@ final class ControllerModel: ObservableObject {
             let response = try await helper.run(["jev-key-clear"], timeout: 20)
             guard response.ok else { throw HelperClientError.commandFailed(response.message) }
             jevStatus = JevStatus(details: response.details.merging(["available": .bool(true)]) { old, _ in old })
-            jevMessage = jevStatus?.configured == true ? "Saved key removed. A key from the server environment is still active." : "Saved key removed."
+            jevMessage = jevStatus?.configured == true ? "Saved key removed. A key from a .env file is in use now." : "Saved key removed."
         } catch { jevMessage = error.localizedDescription }
     }
 
@@ -2708,12 +2708,23 @@ final class ControllerModel: ObservableObject {
             let response = try await helper.run(["meeting-library-detail", "--domain", reference.domain, "--month", reference.month,
                                                  "--filename", reference.filename], timeout: 30)
             // Only the exact saved record: a renamed or merged meeting must not lend its people to this task.
+            guard !Task.isCancelled else { return }
             guard response.ok, let detail = LibraryMeetingDetail(.object(response.details)), detail.recordId == reference.recordId else {
                 workMeetingPeopleFailed.insert(key); return
             }
             workMeetingPeople[key] = WorkMeetingPeople(recordID: key, attendees: detail.attendees, actionItems: detail.actionItems)
             workMeetingPeopleFailed.remove(key)
-        } catch { workMeetingPeopleFailed.insert(key) }
+        } catch {
+            // Scrolling the row away cancels the read; that is not a failure, and the row asks again when shown.
+            guard !(error is CancellationError), !Task.isCancelled else { return }
+            workMeetingPeopleFailed.insert(key)
+        }
+    }
+
+    /// "Try again" on a meeting whose people could not be read.
+    func retryWorkMeetingPeople(_ reference: WorkMeetingReference) async {
+        workMeetingPeopleFailed.remove(reference.recordId)
+        await loadWorkMeetingPeople(reference)
     }
 
     /// Dismiss several items (Review → "Skip all from older meetings"), then refresh once. Stops at the first refusal.

@@ -8891,12 +8891,18 @@ final class COSControlHelper {
     }
 
     /// Which Desktop link opens this session, or why none does (`reason` goes to the notice).
+    /// `live`: a process that owns the transcript is alive, or the transcript changed in the last
+    /// `claudeTranscriptQuietSeconds` (a server job may not register a pid file). `mentionedElsewhere`
+    /// runs only before an import: any Desktop record that names this id anywhere (priorCliSessionIds
+    /// after /clear, a fork's parent, a record the prefix read could not parse) blocks the import, so
+    /// Desktop never gets a second tab over a transcript one of its sessions already owns.
     static func claudeDesktopTarget(
         sessionId: String, records: [ClaudeDesktopRecord], live: Bool,
-        transcriptExists: Bool, desktopVersion: String?
+        transcriptExists: Bool, desktopVersion: String?, mentionedElsewhere: () -> Bool = { false }
     ) -> (link: String?, reason: String) {
         let key = normalizeClaudeSessionId(sessionId)
         guard UUID(uuidString: key) != nil else { return (nil, "invalid") }
+        guard desktopVersion?.isEmpty == false else { return (nil, "no_desktop") }
         guard claudeDesktopSupportsLinks(desktopVersion) else { return (nil, "desktop_too_old") }
         let mine = records.filter {
             UUID(uuidString: $0.desktopId) != nil && ($0.desktopId == key || $0.cliSessionId == key)
@@ -8907,7 +8913,32 @@ final class COSControlHelper {
         if !mine.isEmpty { return (nil, "archived") }
         if live { return (nil, "running") }
         guard transcriptExists else { return (nil, "no_transcript") }
+        if mentionedElsewhere() { return (nil, "desktop_lineage") }
         return ("claude://resume?session=\(key)", "import")
+    }
+
+    static let claudeTranscriptQuietSeconds: TimeInterval = 30
+
+    /// A pid file can outlive its process (SIGKILL, a crash). Only a process that exists counts;
+    /// EPERM means it exists under another user.
+    static func processExists(_ pid: Int) -> Bool {
+        guard pid > 0, pid <= Int(Int32.max) else { return false }
+        return kill(pid_t(pid), 0) == 0 || errno == EPERM
+    }
+
+    /// Whether any Desktop record's bytes contain this transcript id. A whole-file search, run only on
+    /// the import path: priorCliSessionIds sits hundreds of KB into a record, past any prefix read.
+    static func claudeDesktopMentions(_ sessionId: String, sessionsRoot: URL) -> Bool {
+        let key = normalizeClaudeSessionId(sessionId)
+        guard UUID(uuidString: key) != nil, let needle = key.data(using: .utf8), let walker = FileManager.default.enumerator(
+            at: sessionsRoot, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) else { return false }
+        for case let file as URL in walker {
+            let name = file.lastPathComponent
+            guard name.hasPrefix("local_"), name.hasSuffix(".json"),
+                  let data = try? Data(contentsOf: file, options: .alwaysMapped) else { continue }
+            if data.range(of: needle) != nil { return true }
+        }
+        return false
     }
 
     /// Desktop records naming this session, read from a small prefix of each file: sessionId,
@@ -11841,17 +11872,19 @@ final class COSControlHelper {
             let desktopVersion = app.flatMap {
                 NSDictionary(contentsOfFile: $0.path + "/Contents/Info.plist")?["CFBundleShortVersionString"] as? String
             }
+            let desktopRoot = home.appendingPathComponent("Library/Application Support/Claude/claude-code-sessions", isDirectory: true)
+            let transcript = Self.findClaudeSessionFile(
+                sessionId: sessionId, projectsRoot: home.appendingPathComponent(".claude/projects", isDirectory: true)
+            )
+            let writtenAt = transcript.flatMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }
+            let recentlyWritten = writtenAt.map { Date().timeIntervalSince($0) < Self.claudeTranscriptQuietSeconds } ?? false
             let target = Self.claudeDesktopTarget(
                 sessionId: sessionId,
-                records: Self.claudeDesktopRecords(
-                    for: sessionId,
-                    sessionsRoot: home.appendingPathComponent("Library/Application Support/Claude/claude-code-sessions", isDirectory: true)
-                ),
-                live: live != nil,
-                transcriptExists: Self.findClaudeSessionFile(
-                    sessionId: sessionId, projectsRoot: home.appendingPathComponent(".claude/projects", isDirectory: true)
-                ) != nil,
-                desktopVersion: desktopVersion
+                records: Self.claudeDesktopRecords(for: sessionId, sessionsRoot: desktopRoot),
+                live: live.map { Self.processExists($0.pid) } == true || recentlyWritten,
+                transcriptExists: transcript != nil,
+                desktopVersion: desktopVersion,
+                mentionedElsewhere: { Self.claudeDesktopMentions(sessionId, sessionsRoot: desktopRoot) }
             )
             claudeLink = target.link
             revealReason = target.reason
@@ -18115,6 +18148,19 @@ final class COSControlHelper {
                    "no transcript, nothing to import")
         try expect(revealTarget([revealRecord(revealDesk, revealCli, archived: false)], version: "2.9939.3") == (nil, "desktop_too_old"),
                    "an older Claude gets no link at all")
+        try expect(revealTarget([], version: nil) == (nil, "no_desktop") && revealTarget([], version: "") == (nil, "no_desktop"),
+                   "no Claude Desktop reads as no Desktop, not as too old")
+        var askedLineage = 0
+        let lineage = Self.claudeDesktopTarget(sessionId: revealCli, records: [], live: false, transcriptExists: true,
+                                               desktopVersion: "2.9939.4", mentionedElsewhere: { askedLineage += 1; return true })
+        try expect(lineage == (nil, "desktop_lineage") && askedLineage == 1,
+                   "a transcript a Desktop record names anywhere (after /clear, a fork) is never imported beside it")
+        _ = Self.claudeDesktopTarget(sessionId: revealCli, records: [revealRecord(revealDesk, revealCli, archived: false)], live: false,
+                                     transcriptExists: true, desktopVersion: "2.9939.4", mentionedElsewhere: { askedLineage += 1; return true })
+        try expect(askedLineage == 1, "the whole-record search runs only on the import path")
+        try expect(Self.processExists(Int(getpid())) && !Self.processExists(0) && !Self.processExists(-4)
+                   && !Self.processExists(Int(Int32.max) + 7),
+                   "this process exists; pid 0, negative and out-of-range pids do not")
         try expect(revealTarget([], id: "../../etc") == (nil, "invalid") && revealTarget([], id: "abc") == (nil, "invalid"),
                    "only a UUID becomes part of a link")
         try expect(revealTarget([revealRecord("not-a-uuid", revealCli, archived: false)]).link == "claude://resume?session=\(revealCli)",
@@ -18129,8 +18175,22 @@ final class COSControlHelper {
         let foundRecords = Self.claudeDesktopRecords(for: revealCli, sessionsRoot: revealRoot.deletingLastPathComponent().deletingLastPathComponent())
         try expect(foundRecords.count == 1 && foundRecords.first?.desktopId == revealDesk && foundRecords.first?.archived == true,
                    "the record scan finds the Desktop session by its transcript id and reads isArchived past a nested value")
-        try expect(Self.claudeDesktopRecords(for: "../x", sessionsRoot: revealRoot).isEmpty,
-                   "the record scan refuses a non-UUID id")
+        try Data(#"{"sessionId":"local_dddddddd-1111-2222-3333-eeeeeeeeeeee","isArchived":false}"#.utf8)
+            .write(to: revealRoot.appendingPathComponent("local_dddddddd-1111-2222-3333-eeeeeeeeeeee.json"))
+        try expect(Self.claudeDesktopRecords(for: "../x", sessionsRoot: revealRoot).isEmpty
+                   && Self.claudeDesktopRecords(for: "", sessionsRoot: revealRoot).isEmpty,
+                   "the record scan refuses a non-UUID id (an empty id would match every record with no cliSessionId)")
+        let clearedCli = "eeeeeeee-4444-5555-6666-ffffffffffff"
+        var padded = #"{"sessionId":"local_99999999-1111-2222-3333-444444444444","cliSessionId":"aaaaaaaa-0000-0000-0000-000000000000","#
+        padded += #""pad":""# + String(repeating: "x", count: 40_000) + #"","priorCliSessionIds":[""# + clearedCli + #""]}"#
+        try Data(padded.utf8).write(to: revealRoot.appendingPathComponent("local_99999999-1111-2222-3333-444444444444.json"))
+        let revealTop = revealRoot.deletingLastPathComponent().deletingLastPathComponent()
+        try expect(Self.claudeDesktopRecords(for: clearedCli, sessionsRoot: revealTop).isEmpty
+                   && Self.claudeDesktopMentions(clearedCli, sessionsRoot: revealTop),
+                   "an id past the prefix (priorCliSessionIds after /clear) is invisible to the scan but found by the mention search")
+        try expect(!Self.claudeDesktopMentions("12345678-aaaa-bbbb-cccc-000000000000", sessionsRoot: revealTop)
+                   && !Self.claudeDesktopMentions("../x", sessionsRoot: revealTop),
+                   "an id no record names, or a non-UUID, is not mentioned")
         let boolPrefix = Self.desktopMetadataPrefix(Data(#"{"a":true,"b":false,"c":12,"d":"true"}"#.utf8)).fields
         try expect(boolPrefix["a"] as? Bool == true && boolPrefix["b"] as? Bool == false
                    && boolPrefix["c"] is NSNull && boolPrefix["d"] as? String == "true",
@@ -18140,7 +18200,7 @@ final class COSControlHelper {
                 provider: "claude",
                 sessionId: "d3786335-cfb4-4556-9a4a-7308ce66eab1"
             ) == nil,
-            "Claude has no documented existing-session deep link"
+            "sessionRevealDeepLink stays Codex-only; Claude links come from claudeDesktopTarget (0.5.241)"
         )
         let workNow = Self.parseISODate("2026-08-27T19:01:00Z") ?? Date()
         try expect(
