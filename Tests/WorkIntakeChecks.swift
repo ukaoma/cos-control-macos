@@ -206,6 +206,19 @@ import Foundation
                  && WorkHandoffStore.adviceUnavailableText("jev_key_rejected")?.contains("rejected") == true
                  && WorkHandoffStore.adviceUnavailableText("server_too_old")?.contains("6.57.0") == true
                  && WorkHandoffStore.adviceUnavailableText("http_502")?.contains("word matches") == true)
+    // The request itself carries the clipped fields (80 multibyte sessions must fit the helper's 64 KB stdin).
+    final class Payload: @unchecked Sendable { var body: [String: Any] = [:] }
+    let payload = Payload()
+    let clipStore = WorkHandoffStore(storageURL: root.appendingPathComponent("clip.json"), transport: { _, data in
+        payload.body = (try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: Any] ?? [:]
+        return HelperResponse(ok: true, message: "", details: ["provider": .string("none"), "reason": .string("no_sessions")])
+    })
+    clipStore.sessions = (0..<80).map { .init(id: "claude:\($0)", nativeID: "\($0)", provider: "claude", title: String(repeating: "界", count: 300),
+                                              summary: String(repeating: "界", count: 900), project: "MU", status: "idle") }
+    await clipStore.loadAdvice(for: WorkSource.taskSnapshot(row("0123456789b0", "Clip check task")))
+    let sent = payload.body["sessions"] as? [[String: Any]] ?? []
+    precondition(sent.count == 80 && sent.allSatisfy { ($0["summary"] as? String)?.utf8.count ?? 999 <= 360 && ($0["title"] as? String)?.utf8.count ?? 999 <= 240 })
+    precondition(((try? JSONSerialization.data(withJSONObject: payload.body))?.count ?? .max) < 64 * 1024, "80 sessions fit the helper's stdin cap")
     // QA2 note: fields are clipped by bytes as well as characters, on character boundaries.
     precondition(WorkHandoffStore.utf8Prefix("abcdef", characters: 4, bytes: 99) == "abcd")
     precondition(WorkHandoffStore.utf8Prefix("ééé", characters: 9, bytes: 5) == "éé", "two 2-byte characters fit in 5 bytes")

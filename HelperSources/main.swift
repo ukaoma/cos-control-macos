@@ -8919,6 +8919,13 @@ final class COSControlHelper {
 
     static let claudeTranscriptQuietSeconds: TimeInterval = 30
 
+    /// Whether something may still be writing this transcript: a registered process that exists, or a write in
+    /// the last `claudeTranscriptQuietSeconds`. A pid file alone is not enough (SIGKILL leaves it behind).
+    static func claudeTranscriptBusy(pid: Int?, writtenAt: Date?, now: Date = Date()) -> Bool {
+        (pid.map(processExists) ?? false)
+            || (writtenAt.map { now.timeIntervalSince($0) < claudeTranscriptQuietSeconds } ?? false)
+    }
+
     /// A pid file can outlive its process (SIGKILL, a crash). Only a process that exists counts;
     /// EPERM means it exists under another user.
     static func processExists(_ pid: Int) -> Bool {
@@ -11877,11 +11884,10 @@ final class COSControlHelper {
                 sessionId: sessionId, projectsRoot: home.appendingPathComponent(".claude/projects", isDirectory: true)
             )
             let writtenAt = transcript.flatMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }
-            let recentlyWritten = writtenAt.map { Date().timeIntervalSince($0) < Self.claudeTranscriptQuietSeconds } ?? false
             let target = Self.claudeDesktopTarget(
                 sessionId: sessionId,
                 records: Self.claudeDesktopRecords(for: sessionId, sessionsRoot: desktopRoot),
-                live: live.map { Self.processExists($0.pid) } == true || recentlyWritten,
+                live: Self.claudeTranscriptBusy(pid: live?.pid, writtenAt: writtenAt),
                 transcriptExists: transcript != nil,
                 desktopVersion: desktopVersion,
                 mentionedElsewhere: { Self.claudeDesktopMentions(sessionId, sessionsRoot: desktopRoot) }
@@ -18161,6 +18167,20 @@ final class COSControlHelper {
         try expect(Self.processExists(Int(getpid())) && !Self.processExists(0) && !Self.processExists(-4)
                    && !Self.processExists(Int(Int32.max) + 7),
                    "this process exists; pid 0, negative and out-of-range pids do not")
+        let finished = Process()
+        finished.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try finished.run(); finished.waitUntilExit()
+        try expect(!Self.processExists(Int(finished.processIdentifier)),
+                   "a process that exited does not exist (its pid file is stale)")
+        let busyNow = Date(timeIntervalSince1970: 1_790_000_000)
+        let quietWindow = Self.claudeTranscriptQuietSeconds
+        try expect(!Self.claudeTranscriptBusy(pid: Int(finished.processIdentifier), writtenAt: busyNow.addingTimeInterval(-quietWindow), now: busyNow)
+                   && !Self.claudeTranscriptBusy(pid: nil, writtenAt: nil, now: busyNow),
+                   "a stale pid file and a transcript quiet for the window are not busy")
+        try expect(Self.claudeTranscriptBusy(pid: Int(getpid()), writtenAt: nil, now: busyNow)
+                   && Self.claudeTranscriptBusy(pid: nil, writtenAt: busyNow.addingTimeInterval(-(quietWindow - 1)), now: busyNow)
+                   && Self.claudeTranscriptBusy(pid: Int(finished.processIdentifier), writtenAt: busyNow.addingTimeInterval(-1), now: busyNow),
+                   "a live pid, or a write inside the window (a server job may register no pid), is busy")
         try expect(revealTarget([], id: "../../etc") == (nil, "invalid") && revealTarget([], id: "abc") == (nil, "invalid"),
                    "only a UUID becomes part of a link")
         try expect(revealTarget([revealRecord("not-a-uuid", revealCli, archived: false)]).link == "claude://resume?session=\(revealCli)",
@@ -18189,8 +18209,9 @@ final class COSControlHelper {
                    && Self.claudeDesktopMentions(clearedCli, sessionsRoot: revealTop),
                    "an id past the prefix (priorCliSessionIds after /clear) is invisible to the scan but found by the mention search")
         try expect(!Self.claudeDesktopMentions("12345678-aaaa-bbbb-cccc-000000000000", sessionsRoot: revealTop)
-                   && !Self.claudeDesktopMentions("../x", sessionsRoot: revealTop),
-                   "an id no record names, or a non-UUID, is not mentioned")
+                   && !Self.claudeDesktopMentions("../x", sessionsRoot: revealTop)
+                   && !Self.claudeDesktopMentions("local", sessionsRoot: revealTop),
+                   "an id no record names, or a non-UUID (\"local\" is in every record), is not mentioned")
         let boolPrefix = Self.desktopMetadataPrefix(Data(#"{"a":true,"b":false,"c":12,"d":"true"}"#.utf8)).fields
         try expect(boolPrefix["a"] as? Bool == true && boolPrefix["b"] as? Bool == false
                    && boolPrefix["c"] is NSNull && boolPrefix["d"] as? String == "true",
