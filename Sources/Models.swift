@@ -1979,6 +1979,41 @@ struct DomainOption: Identifiable, Sendable, Equatable {
     }
 }
 
+/// Exact saved-meeting reference. No title or capture-session matching is allowed.
+struct WorkMeetingReference: Identifiable, Hashable, Sendable {
+    let recordId: String
+    let domain: String
+    let month: String
+    let filename: String
+    let title: String
+    var id: String { recordId }
+    var json: [String: String] { ["recordId": recordId, "domain": domain, "month": month, "filename": filename, "title": title] }
+    var jsonValue: JSONValue { .object(json.mapValues { .string($0) }) }
+    var libraryMeeting: LibraryMeeting? { LibraryMeeting(jsonValue) }
+
+    init?(_ value: JSONValue?) {
+        guard let row = value?.object,
+              let recordId = row["recordId"]?.string, !recordId.isEmpty, recordId.utf8.count <= 2048,
+              !recordId.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              let domain = row["domain"]?.string, domain.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil,
+              let month = row["month"]?.string, month.range(of: "^[0-9]{4}-(0[1-9]|1[0-2])$", options: .regularExpression) != nil,
+              let filename = row["filename"]?.string, !filename.isEmpty, filename.utf8.count <= 1024,
+              filename != ".", filename != "..", !filename.contains("/"), !filename.contains("\\"),
+              !filename.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return nil }
+        self.recordId = recordId; self.domain = domain; self.month = month; self.filename = filename
+        title = row["title"]?.string ?? "Saved meeting"
+    }
+
+    init?(meeting: LibraryMeeting) {
+        self.init(.object(["recordId": .string(meeting.recordId), "domain": .string(meeting.domain),
+            "month": .string(meeting.month), "filename": .string(meeting.filename), "title": .string(meeting.title)]))
+    }
+
+    func matches(_ meeting: LibraryMeeting) -> Bool {
+        recordId == meeting.recordId && domain == meeting.domain && month == meeting.month && filename == meeting.filename
+    }
+}
+
 struct TaskRow: Identifiable, Sendable {
     let id: String
     let ref: String
@@ -2005,6 +2040,14 @@ struct TaskRow: Identifiable, Sendable {
     /// What finished looks like. A dispatch is refused while this is empty: the
     /// server answers `run` with 409 done_when_required.
     let doneWhen: String
+    /// Separate Work lifecycle metadata; legacy stage remains planning/active/review.
+    let workStage: String
+    let workIdentity: String
+    let workRevision: String
+    let meetingRefs: [WorkMeetingReference]
+    let workMetadataError: String?
+    static let workStages = ["mentioned", "planned", "draft", "built", "qa", "complete"]
+    var workSourceID: String { "task:\(domain):\(workIdentity)" }
 
     var runAtDate: Date? {
         let trimmed = runAt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2045,6 +2088,22 @@ struct TaskRow: Identifiable, Sendable {
         doneWhen = o["doneWhen"]?.string ?? ""
         checked = o["checked"]?.bool ?? false
         agentState = o["agentState"]?.string ?? ""
+        let suppliedMetadataError = o["workMetadataError"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var metadataError = suppliedMetadataError.flatMap { $0.isEmpty ? nil : $0 }
+        let rawWorkStage = o["workStage"]?.string ?? ""
+        workStage = Self.workStages.contains(rawWorkStage) ? rawWorkStage : (checked ? "complete" : stage == "active" ? "draft" : stage == "review" ? "qa" : "planned")
+        if !rawWorkStage.isEmpty && !Self.workStages.contains(rawWorkStage) { metadataError = "Unsupported Work stage. Refresh before changing this task." }
+        let identity = o["workIdentity"]?.string ?? id
+        if identity.isEmpty || identity.utf8.count > 2048 || identity.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) {
+            workIdentity = id; metadataError = "Invalid Work identity. Refresh before changing this task."
+        } else { workIdentity = identity }
+        workRevision = o["workRevision"]?.string ?? ""
+        let rawRefs = o["meetingRefs"]?.array ?? []
+        meetingRefs = rawRefs.compactMap { WorkMeetingReference($0) }
+        if meetingRefs.count != rawRefs.count || (o["meetingRefs"] != nil && o["meetingRefs"]?.array == nil) {
+            metadataError = "Some saved meeting references are invalid. Refresh before changing this task."
+        }
+        workMetadataError = metadataError
     }
 }
 

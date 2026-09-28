@@ -4,9 +4,15 @@ import CryptoKit
 extension WorkSource {
     /// A display snapshot fingerprint, not the canonical task writer's CAS revision.
     static func taskSnapshot(_ task: TaskRow) -> WorkSource {
-        let context = "Task: \(task.text.isEmpty ? task.title : task.text)\nProject: \(task.domain)\nDone when: \(task.doneWhen)\nSource: \(task.source)"
+        var context = "Task: \(task.text.isEmpty ? task.title : task.text)\nProject: \(task.domain)\nDone when: \(task.doneWhen)\nSource: \(task.source)"
+        if !task.meetingRefs.isEmpty {
+            let references = task.meetingRefs.map { reference in
+                "- \(reference.title) | canonical ID: \(reference.recordId) | saved source: \(reference.domain)/\(reference.month)/\(reference.filename)"
+            }.joined(separator: "\n")
+            context += "\nConfirmed meeting references (explicit links; transcript evidence is not included):\n" + references
+        }
         let revision = SHA256.hash(data: Data(context.utf8)).map { String(format: "%02x", $0) }.joined()
-        return WorkSource(id: "task:\(task.domain):\(task.id)", title: task.title, revision: revision, project: task.domain, context: context)
+        return WorkSource(id: "task:\(task.domain):\(task.workIdentity)", title: task.title, revision: revision, project: task.domain, context: context)
     }
 }
 

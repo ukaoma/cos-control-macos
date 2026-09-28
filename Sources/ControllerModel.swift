@@ -2569,20 +2569,71 @@ final class ControllerModel: ObservableObject {
     @Published var workTasksLoading = false
     @Published var workTasksError: String?
     @Published var workTasksComplete = false
+    @Published var workBoardWritable = false
     private var workTasksRequested = false
+    private var workTasksLoadInFlight: Task<Void, Never>?
+    private var workTasksLoadGeneration = 0
 
-    func loadWorkTasks() async {
+    func loadWorkTasks(force: Bool = false) async {
         workTasksRequested = true
-        guard !workTasksLoading else { return }
+        if let pending = workTasksLoadInFlight {
+            await pending.value
+            if !force { return }
+        }
+        workTasksLoadGeneration += 1
+        let generation = workTasksLoadGeneration
+        let pending = Task { await performLoadWorkTasks(generation: generation) }
+        workTasksLoadInFlight = pending
+        await pending.value
+        if workTasksLoadGeneration == generation { workTasksLoadInFlight = nil }
+    }
+
+    private func performLoadWorkTasks(generation: Int) async {
         workTasksLoading = true
-        defer { workTasksLoading = false }
+        defer { if workTasksLoadGeneration == generation { workTasksLoading = false } }
         do {
             let response = try await helper.run(["work-tasks"], timeout: 30)
-            guard response.ok else { throw NSError(domain: "WorkTasks", code: 1, userInfo: [NSLocalizedDescriptionKey: response.message]) }
-            workTasks = (response.details["tasks"]?.array ?? []).compactMap(TaskRow.init)
+            guard workTasksLoadGeneration == generation else { return }
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            guard let values = response.details["tasks"]?.array else { throw HelperClientError.invalidResponse("Work task inventory is missing its task array.") }
+            let parsed = values.compactMap(TaskRow.init)
+            guard parsed.count == values.count, Set(parsed.map(\.workSourceID)).count == parsed.count else {
+                throw HelperClientError.invalidResponse("Work task inventory contains invalid or duplicate identities. Refresh before changing work.")
+            }
+            workTasks = parsed
             workTasksComplete = response.details["complete"]?.bool == true
+            let capabilities = response.details["capabilities"]?.object ?? [:]
+            workBoardWritable = capabilities["version"]?.int == 1 && capabilities["writable"]?.bool == true
             workTasksError = nil
-        } catch { workTasksError = error.localizedDescription; workTasksComplete = false }
+        } catch {
+            guard workTasksLoadGeneration == generation else { return }
+            workTasksError = error.localizedDescription; workTasksComplete = false; workBoardWritable = false
+        }
+    }
+
+    func setWorkStage(_ task: TaskRow, stage: String) async throws {
+        guard TaskRow.workStages.contains(stage) else { throw HelperClientError.invalidResponse("Unsupported Work stage.") }
+        try await mutateWorkTask(task, command: "work-set-stage", extra: ["workStage": stage])
+    }
+
+    func linkWorkMeeting(_ task: TaskRow, meeting: WorkMeetingReference) async throws {
+        try await mutateWorkTask(task, command: "work-link-meeting", extra: ["meeting": meeting.json])
+    }
+
+    private func mutateWorkTask(_ task: TaskRow, command: String, extra: [String: Any]) async throws {
+        guard workBoardWritable else { throw HelperClientError.invalidResponse("This server does not support Work board changes. Update the server and refresh.") }
+        guard task.workMetadataError == nil, !task.workRevision.isEmpty else {
+            throw HelperClientError.invalidResponse(task.workMetadataError ?? "This task has no current Work revision. Refresh before changing it.")
+        }
+        var payload: [String: Any] = ["domain": task.domain, "id": task.id, "expectedText": task.text, "expectedRevision": task.workRevision]
+        for (key, value) in extra { payload[key] = value }
+        let response = try await helper.run([command], timeout: 30, stdinData: try JSONSerialization.data(withJSONObject: payload))
+        guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+        await loadWorkTasks(force: true)
+        if let error = workTasksError {
+            throw HelperClientError.commandFailed("Change saved, but refreshing Work failed: " + error)
+        }
+        await loadTasks(force: true)
     }
 
     func loadTasks(force: Bool = false) async {
@@ -2622,7 +2673,7 @@ final class ControllerModel: ObservableObject {
             _ = try await helper.run(args, timeout: 30, stdinData: Data(text.utf8))
             tasksError = nil
             await loadTasks(force: true)
-            if workTasksRequested { await loadWorkTasks() }
+            if workTasksRequested { await loadWorkTasks(force: true) }
         } catch {
             tasksError = error.localizedDescription
             throw error
@@ -2637,7 +2688,7 @@ final class ControllerModel: ObservableObject {
             )
             tasksError = nil
             await loadTasks(force: true)
-            if workTasksRequested { await loadWorkTasks() }
+            if workTasksRequested { await loadWorkTasks(force: true) }
         } catch {
             tasksError = error.localizedDescription
             throw error
@@ -2652,7 +2703,7 @@ final class ControllerModel: ObservableObject {
             )
             tasksError = nil
             await loadTasks(force: true)
-            if workTasksRequested { await loadWorkTasks() }
+            if workTasksRequested { await loadWorkTasks(force: true) }
         } catch {
             tasksError = error.localizedDescription
             throw error
@@ -2667,7 +2718,7 @@ final class ControllerModel: ObservableObject {
             )
             tasksError = nil
             await loadTasks(force: true)
-            if workTasksRequested { await loadWorkTasks() }
+            if workTasksRequested { await loadWorkTasks(force: true) }
         } catch {
             tasksError = error.localizedDescription
             throw error
@@ -2683,7 +2734,7 @@ final class ControllerModel: ObservableObject {
             )
             tasksError = nil
             await loadTasks(force: true)
-            if workTasksRequested { await loadWorkTasks() }
+            if workTasksRequested { await loadWorkTasks(force: true) }
         } catch {
             tasksError = error.localizedDescription
             throw error
@@ -2697,7 +2748,7 @@ final class ControllerModel: ObservableObject {
             _ = try await helper.run(args, timeout: 30)
             tasksError = nil
             await loadTasks(force: true)
-            if workTasksRequested { await loadWorkTasks() }
+            if workTasksRequested { await loadWorkTasks(force: true) }
         } catch {
             tasksError = error.localizedDescription
             throw error
@@ -2712,7 +2763,7 @@ final class ControllerModel: ObservableObject {
             )
             tasksError = nil
             await loadTasks(force: true)
-            if workTasksRequested { await loadWorkTasks() }
+            if workTasksRequested { await loadWorkTasks(force: true) }
         } catch {
             tasksError = error.localizedDescription
             throw error
@@ -6069,6 +6120,15 @@ final class ControllerModel: ObservableObject {
         Task { await loadLibraryMeetings() }
     }
 
+    func openWorkMeeting(_ reference: WorkMeetingReference) {
+        guard let meeting = reference.libraryMeeting else { return }
+        libraryDetailTask?.cancel()
+        openLibraryRow = meeting; libraryDetail = nil; libraryDetailError = nil; copyNote = nil
+        libraryDetailTask = Task { [weak self] in
+            await self?.fetchLibraryDetail(meeting, expectedRecordID: reference.recordId)
+        }
+    }
+
     func openLibraryMeeting(_ meeting: LibraryMeeting) {
         libraryDetailTask?.cancel()
         openLibraryRow = meeting
@@ -6080,7 +6140,7 @@ final class ControllerModel: ObservableObject {
         }
     }
 
-    private func fetchLibraryDetail(_ meeting: LibraryMeeting) async {
+    private func fetchLibraryDetail(_ meeting: LibraryMeeting, expectedRecordID: String? = nil) async {
         libraryDetailLoading = true
         defer {
             if openLibraryRow?.id == meeting.id { libraryDetailLoading = false }
@@ -6093,8 +6153,13 @@ final class ControllerModel: ObservableObject {
                 "--filename", meeting.filename,
             ])
             guard !Task.isCancelled, openLibraryRow?.id == meeting.id else { return }
+            guard response.ok else { libraryDetailError = response.message; return }
             guard let detail = LibraryMeetingDetail(.object(response.details)) else {
                 libraryDetailError = "The server returned a meeting this build cannot read."
+                return
+            }
+            if let expectedRecordID, detail.recordId != expectedRecordID {
+                libraryDetailError = "The saved meeting no longer matches this reference. Its content was not opened."
                 return
             }
             libraryDetail = detail

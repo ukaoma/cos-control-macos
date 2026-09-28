@@ -66,3 +66,28 @@ import Foundation
                  "A failed review must retain intake and cannot reopen an older unrelated result")
     print("PASS Work workspace: same-review reopen and failed-admission intake retention")
 }
+
+@MainActor func runWorkBoardChecks() {
+    precondition(WorkBoardStage.allCases.map(\.rawValue) == ["mentioned", "planned", "draft", "built", "qa", "complete"])
+    let samples = WorkWorkspaceProjection.previewRows(Control2PreviewTask.samples)
+    precondition(Set(samples.map { WorkBoardStage.stage(for: $0) }) == Set(WorkBoardStage.allCases), "Every stage has a fixture")
+    let projected = WorkWorkspaceProjection.items(tasks: samples, reviews: [], receipts: [])
+    let filtered = WorkWorkspaceProjection.filter(projected, scope: .all, domain: "Website", query: "")
+    let allLanes = WorkBoardStage.allCases.flatMap { stage in filtered.filter { $0.task.map { WorkBoardStage.stage(for: $0) == stage } ?? false } }
+    precondition(allLanes.count == samples.count && Set(allLanes.map(\.id)).count == samples.count, "Every task appears exactly once")
+    for stage in WorkBoardStage.allCases {
+        let task = TaskRow(.object(["id": .string("t"), "domain": .string("d"), "workStage": .string(stage.rawValue), "checked": .bool(true)]))!
+        precondition(WorkBoardStage.stage(for: task) == .complete, "Canonical completion wins")
+    }
+    for legacy in ["planning": "planned", "active": "draft", "review": "qa"] {
+        let task = TaskRow(.object(["id": .string("t"), "stage": .string(legacy.key), "agentState": .string("done")]))!
+        precondition(WorkBoardStage.stage(for: task).rawValue == legacy.value, "Legacy stage remains visible; agent finished is not task completed")
+    }
+    let renamed = TaskRow(.object(["id": .string("new-hash"), "workIdentity": .string("original-hash"), "domain": .string("d"), "text": .string("renamed")]))!
+    precondition(WorkSource.taskSnapshot(renamed).id == "task:d:original-hash", "Canonical work identity retains receipt history through text edits")
+    let narrow = WorkWorkspaceProjection.filter(projected, scope: .all, domain: "Website", query: "navigation build")
+    precondition(narrow.count == 1 && WorkBoardStage.stage(for: narrow[0].task!) == .built)
+    let override = WorkWorkspaceProjection.previewRows(Control2PreviewTask.samples, stages: ["sample-task-website": "draft"])
+    precondition(WorkBoardStage.stage(for: override.first { $0.id == "sample-task-website" }!) == .draft)
+    print("PASS Work board: six lanes, exact membership, legacy mappings, completion authority, rename identity and domain search")
+}

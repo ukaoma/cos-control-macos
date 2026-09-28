@@ -36,7 +36,7 @@ import SwiftUI
     precondition(!ActivityWindow.workConnectedTest(model: connectedModel).isolatedWorkPreview)
     precondition(!model.activityLoadsEnabled, "The isolated preview cannot load foreground production sections")
     let sampleRows = WorkWorkspaceProjection.previewRows(Control2PreviewTask.samples)
-    precondition(sampleRows.count == 3 && sampleRows.filter(\.checked).count == 1)
+    precondition(sampleRows.count == 6 && sampleRows.filter(\.checked).count == 1)
     let sampleReviews = WorkWorkspaceProjection.previewReviewStore()
     precondition(sampleReviews.reviews.count == 1 && sampleReviews.reviews[0].canPrepare)
     precondition(!sampleReviews.available, "Sample review transport cannot admit a live review")

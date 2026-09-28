@@ -9,7 +9,7 @@ FILES=()
 for source in $SOURCES; do FILES+=("$ROOT/Sources/$source.swift"); done
 swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   $FILES "$ROOT/Tests/Control2FoundationContract.swift" "$ROOT/Tests/Control2ActivityIntegrationChecks.swift" \
-  "$ROOT/Tests/WorkWorkspaceProjectionChecks.swift" "$ROOT/Tests/WorkReviewStoreChecks.swift" "$ROOT/Tests/WorkActivityChecks.swift" \
+  "$ROOT/Tests/WorkWorkspaceProjectionChecks.swift" "$ROOT/Tests/WorkReviewStoreChecks.swift" "$ROOT/Tests/WorkActivityChecks.swift" "$ROOT/Tests/WorkMeetingConnectionsChecks.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement -o "$TMP/work-contracts"
 "$TMP/work-contracts"
 # Exercise the real pre-draft reader against the upgraded journal.

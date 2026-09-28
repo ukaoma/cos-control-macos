@@ -4,7 +4,7 @@ set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 umask 077
 HERE="${0:A:h}"
-APP="${COS_FOUNDATION_APP_PATH:-$HOME/Library/Caches/COS Control Work Preview 0.1.7 Final/COS Control Foundation Lab.app}"
+APP="${COS_FOUNDATION_APP_PATH:-$HOME/Library/Caches/COS Control Work Preview 0.1.8 Final/COS Control Foundation Lab.app}"
 SERVER="${COS_WORK_REVIEW_SERVER_ROOT:-$HERE/../../cos-glasses-server}"
 if [[ -d "$HERE/COS Control Foundation Lab.app" ]]; then APP="$HERE/COS Control Foundation Lab.app"; fi
 [[ -z "${COS_CONTROL_TEST_HOME:-}" ]] || { print -u2 'Use a fresh Terminal for connected Work.'; exit 64; }
@@ -26,6 +26,19 @@ fi
 export COS_WORK_REVIEW_CANDIDATE_HOME="$CANDIDATE_ROOT"
 export COS_WORK_REVIEW_CANDIDATE_PORT="${COS_WORK_REVIEW_CANDIDATE_PORT:-3157}"
 export COS_WORK_REVIEW_CANDIDATE_TOKEN_FILE="$CANDIDATE_ROOT/candidate-token"
+# Read only the configured pipeline path; do not source arbitrary shell or print credentials.
+if [[ -z "${COS_SCRIPTS_DIR:-}" ]]; then
+  COS_SCRIPTS_DIR="$(/usr/bin/python3 - <<'PYCONFIG'
+from pathlib import Path
+p = Path.home() / '.cos-glasses' / '.env'
+for line in p.read_text().splitlines():
+    if line.startswith('COS_SCRIPTS_DIR='):
+        print(line.split('=', 1)[1].strip().strip('\"').strip("'"))
+        break
+PYCONFIG
+)"
+fi
+if [[ -n "$COS_SCRIPTS_DIR" ]]; then export COS_SCRIPTS_DIR; else unset COS_SCRIPTS_DIR; fi
 export COS_WORK_CONNECTED_TEST=1 COS_CONTROL2_FOUNDATION=1
 unset COS_CONTROL_TEST_API_PORT
 node --import "$SERVER/node_modules/tsx/dist/esm/index.mjs" "$SERVER/server/scripts/work-review-candidate.ts" > "$CANDIDATE_ROOT/service.log" 2>&1 &

@@ -52,6 +52,27 @@ enum WorkActivityProjection {
     }
 }
 
+enum WorkBoardStage: String, CaseIterable, Identifiable {
+    case mentioned, planned, draft, built, qa, complete
+    var id: String { rawValue }
+    var title: String { self == .qa ? "QA" : rawValue.capitalized }
+    var subtitle: String {
+        switch self {
+        case .mentioned: "Captured for consideration"
+        case .planned: "Ready to work on"
+        case .draft: "First pass in progress"
+        case .built: "Implementation prepared"
+        case .qa: "Checks and review"
+        case .complete: "Task marked complete"
+        }
+    }
+    static func stage(for task: TaskRow) -> Self {
+        if task.checked { return .complete }
+        let value = Self(rawValue: task.workStage) ?? .planned
+        return value == .complete ? .planned : value
+    }
+}
+
 enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
     case all, attention, progress, completed
     var id: String { rawValue }
@@ -77,6 +98,10 @@ enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
     @Published var captureDomain = ""
     @Published var captureBusy = false
     @Published var captureError: String?
+    @Published var mutationError: String?
+    @Published var mutationBusy = false
+    @Published var linkTarget: TaskRow?
+    @Published var previewStages: [String: String] = [:]
 
     /// Explicit transition after admission also handles a reused review ID, where
     /// SwiftUI onChange would not fire. Failure leaves the chosen intake visible.
@@ -107,11 +132,14 @@ struct WorkWorkspaceItem: Identifiable {
 }
 
 enum WorkWorkspaceProjection {
-    static func previewRows(_ samples: [Control2PreviewTask]) -> [TaskRow] {
+    static func previewRows(_ samples: [Control2PreviewTask], stages: [String: String] = [:]) -> [TaskRow] {
         samples.compactMap { row in TaskRow(.object([
             "id": .string(row.id), "domain": .string(row.domain), "title": .string(row.title), "text": .string(row.title),
             "checked": .bool(row.completed), "source": .string(row.source), "doneWhen": .string(row.finishLine),
-            "stage": .string(row.stage.lowercased())
+            "stage": .string(row.stage.lowercased()),
+            "workStage": .string(row.completed ? "complete" : stages[row.id] ?? ["planning": "planned", "review": "qa", "active": "draft"][row.stage.lowercased()] ?? row.stage.lowercased()),
+            "meetingRefs": .array([.object(["recordId": .string("sample-meeting"), "domain": .string("Website"),
+                "month": .string("2026-09"), "filename": .string("2026-09-27_Website_Review.md"), "title": .string("Website launch review · sample")])])
         ])) }
     }
     @MainActor static func previewReviewStore() -> WorkReviewStore {
@@ -122,7 +150,7 @@ enum WorkWorkspaceProjection {
             "id": .string("sample-review"), "status": .string("ready"), "canonicalMeetingId": .string("sample-meeting"),
             "markdown": .string("## Website follow-up\nPrepare a clearer homepage call to action. Check the mobile layout. Bring the changes back for review before publishing."),
             "source": .object(["title": .string("Website launch review · sample"), "domain": .string("Website"),
-                "revision": .string("sample-1"), "descriptor": .object(["recordId": .string("sample-meeting")])])
+                "revision": .string("sample-1"), "descriptor": .object(["recordId": .string("sample-meeting"), "domain": .string("Website"), "month": .string("2026-09"), "filename": .string("2026-09-27_Website_Review.md")])])
         ])) { store.reviews = [review] }
         return store
     }
@@ -133,7 +161,7 @@ enum WorkWorkspaceProjection {
             let activity = WorkActivityProjection.latest(workID: source.id, revision: source.revision, receipts: receipts, sessions: sessions)
             let running = activity?.inProgress == true
             let attention = activity?.needsAttention == true && activity?.sessionRunning != true
-            let label = task.checked ? "Completed task" : task.agentState == "done" ? "Agent finished · task still open" : task.stage.capitalized
+            let label = task.checked ? "Completed task" : task.agentState == "done" ? "Agent finished · task still open" : WorkBoardStage.stage(for: task).title
             return WorkWorkspaceItem(id: source.id, title: task.text.isEmpty ? task.title : task.text, domain: task.domain,
                 searchText: source.context, subtitle: label, task: task, review: nil,
                 needsAttention: !task.checked && (task.failed == true || task.missed == true || attention || task.agentState == "done" || task.stage == "review"),
@@ -198,9 +226,10 @@ struct WorkWorkspaceView: View {
     var onOpenSession: (String) -> Void
     var onEditTask: (TaskRow) -> Void
     var onReviewMeeting: (LibraryMeeting) -> Void
+    var onOpenMeeting: (WorkMeetingReference) -> Void = { _ in }
 
     private var items: [WorkWorkspaceItem] {
-        WorkWorkspaceProjection.items(tasks: handoffStore.isolated ? WorkWorkspaceProjection.previewRows(handoffStore.previewTasks) : model.workTasks, reviews: reviewStore.reviews, receipts: handoffStore.receipts, sessions: handoffStore.observedSessions())
+        WorkWorkspaceProjection.items(tasks: handoffStore.isolated ? WorkWorkspaceProjection.previewRows(handoffStore.previewTasks, stages: state.previewStages) : model.workTasks, reviews: reviewStore.reviews, receipts: handoffStore.receipts, sessions: handoffStore.observedSessions())
     }
     private var visible: [WorkWorkspaceItem] { WorkWorkspaceProjection.filter(items, scope: state.scope, domain: state.domain, query: state.query) }
     private var selected: WorkWorkspaceItem? { items.first { $0.id == state.selectedID } }
@@ -213,10 +242,15 @@ struct WorkWorkspaceView: View {
                 header
                 activitySummary
                 if state.captureOpen { captureForm }
+                if let error = state.mutationError {
+                    HStack { Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger); Spacer()
+                        Button("Dismiss") { state.mutationError = nil }.buttonStyle(COSQuietButtonStyle())
+                    }.padding(.horizontal, 18).padding(.bottom, 10)
+                }
                 Divider().overlay(COSPalette.line)
                 if state.meetingPicker {
                     HStack {
-                        Button { returnToList() } label: { Label("Back to work list", systemImage: "chevron.left") }
+                        Button { closePickerOrDetail() } label: { Label(state.linkTarget == nil ? "Back to work" : "Cancel linking", systemImage: "chevron.left") }
                             .buttonStyle(COSQuietButtonStyle())
                         Spacer()
                     }.padding(.horizontal, 18).padding(.vertical, 8)
@@ -225,14 +259,19 @@ struct WorkWorkspaceView: View {
                     HStack(spacing: 0) {
                         sidebar.frame(width: 148)
                         Divider()
-                        workList.frame(width: 248)
-                        Divider()
-                        detailPane.frame(maxWidth: .infinity)
+                        if state.domain != nil {
+                            domainSurface
+                        } else {
+                            workList.frame(width: 248)
+                            Divider()
+                            detailPane.frame(maxWidth: .infinity)
+                        }
                     }
                 } else {
                     compactNavigation
                     Divider()
-                    if hasDetail {
+                    if state.domain != nil { domainSurface }
+                    else if hasDetail {
                         HStack {
                             Button { returnToList() } label: { Label("Back to work list", systemImage: "chevron.left") }
                                 .buttonStyle(COSQuietButtonStyle())
@@ -273,6 +312,7 @@ struct WorkWorkspaceView: View {
                 await reviewStore.refresh()
             }
         }
+        .onExitCommand { if state.meetingPicker || hasDetail { closePickerOrDetail() } }
         .onChange(of: reviewStore.selectedReviewID) { _, id in
             if let id, let review = reviewStore.reviews.first(where: { $0.id == id }) {
                 state.selectedID = "meeting-review:" + review.id; handoffStore.selectedWorkID = review.source.id
@@ -303,7 +343,7 @@ struct WorkWorkspaceView: View {
                     if let item = items.first(where: { $0.review != nil }) { select(item) }
                     return
                 }
-                state.meetingPicker = true; state.selectedID = nil; reviewStore.selectedMeeting = nil
+                state.linkTarget = nil; state.meetingPicker = true; state.selectedID = nil; reviewStore.selectedMeeting = nil
                 Task { await model.loadLibraryMeetings() }
             }.buttonStyle(COSPrimaryButtonStyle())
             Button { Task { await model.loadWorkTasks(); await reviewStore.refresh(); await handoffStore.refreshActivity(); await handoffStore.refreshReceipts() } } label: { Image(systemName: "arrow.clockwise") }
@@ -403,6 +443,172 @@ struct WorkWorkspaceView: View {
         }.font(COSType.body(12)).padding(.horizontal, 18).padding(.vertical, 10)
     }
 
+    @ViewBuilder private var domainSurface: some View {
+        if hasDetail {
+            VStack(spacing: 0) {
+                HStack {
+                    Button { returnToList() } label: { Label("Back to " + domainLabel(state.domain ?? "") + " board", systemImage: "chevron.left") }
+                        .buttonStyle(COSQuietButtonStyle())
+                    Spacer()
+                }.padding(.horizontal, 18).padding(.vertical, 10)
+                Divider().overlay(COSPalette.line)
+                detailPane
+            }
+        } else { domainBoard }
+    }
+
+    private var domainBoard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(domainLabel(state.domain ?? "")).font(COSType.display(23, weight: .medium))
+                    Text("\(visible.filter { $0.task != nil }.count) tasks · Select a card to see its meetings and sessions")
+                        .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                }
+                Spacer(minLength: 8)
+                TextField("Search this domain", text: $state.query).textFieldStyle(.plain)
+                    .font(COSType.body(12)).padding(10).frame(maxWidth: 240)
+                    .background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(COSPalette.line))
+            }.padding(18)
+            if !handoffStore.isolated && !model.workBoardWritable {
+                Text("Board is read-only. Stage changes and meeting links need the connected Work service.")
+                    .font(COSType.body(11)).foregroundStyle(COSPalette.muted).padding(.horizontal, 18).padding(.bottom, 10)
+            }
+            if let error = model.workTasksError { Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger).padding(.horizontal, 18) }
+            let reviews = visible.filter { $0.review != nil }
+            if !reviews.isEmpty {
+                HStack {
+                    Text("Meeting reviews").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
+                    Menu("\(reviews.count) recorded") { ForEach(reviews) { item in Button(item.title + " · " + (item.review?.status ?? "")) { select(item) } } }
+                    Spacer()
+                }.padding(.horizontal, 18).padding(.bottom, 10)
+            }
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: 12) {
+                    ForEach(WorkBoardStage.allCases) { stage in boardColumn(stage) }
+                }.padding(.horizontal, 18).padding(.bottom, 18)
+            }
+            Text(handoffStore.isolated ? "Sample stages reset when this preview closes." : "Stages reflect your decisions. Moving a card does not run an agent or publish changes.")
+                .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).padding(.horizontal, 18).padding(.bottom, 10)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).background(COSPalette.panel)
+    }
+
+    private func boardColumn(_ stage: WorkBoardStage) -> some View {
+        let cards = visible.filter { $0.task.map { WorkBoardStage.stage(for: $0) == stage } ?? false }
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(stage.title).font(COSType.body(13, weight: .semibold))
+                Spacer()
+                Text("\(cards.count)").font(COSType.mono(11)).foregroundStyle(COSPalette.muted)
+            }.padding(.horizontal, 12).padding(.top, 13)
+            Text(stage.subtitle).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).padding(.horizontal, 12).padding(.top, 5).padding(.bottom, 13)
+            Divider().overlay(COSPalette.line)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    if cards.isEmpty { Text("No tasks here").font(COSType.body(12)).foregroundStyle(COSPalette.muted).padding(12) }
+                    ForEach(cards) { item in boardCard(item) }
+                }.padding(10)
+            }
+        }.frame(width: 234).frame(maxHeight: .infinity, alignment: .top)
+            .background(COSPalette.raised.opacity(0.7), in: RoundedRectangle(cornerRadius: 9))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(COSPalette.line))
+    }
+
+    private func boardCard(_ item: WorkWorkspaceItem) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button { select(item) } label: {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(inlineTitle(item.title)).font(COSType.body(13, weight: .medium)).multilineTextAlignment(.leading).lineLimit(5)
+                    if let activity = item.activity {
+                        Label(activity.title, systemImage: activity.glyph).font(COSType.body(10.5)).foregroundStyle(COSPalette.accent)
+                        Text(activity.session?.title ?? activity.receipt.sessionTitle).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).lineLimit(2)
+                    } else if item.inProgress { Label("Session running", systemImage: "clock").font(COSType.body(10.5)).foregroundStyle(COSPalette.accent) }
+                    else if item.needsAttention { Label("Needs attention", systemImage: "circle.dashed").font(COSType.body(10.5)).foregroundStyle(COSPalette.accent) }
+                    if let task = item.task, task.meetingRefs.isEmpty {
+                        Text(task.source.isEmpty ? "No meeting linked" : task.source).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).lineLimit(2)
+                    }
+                }.padding(12).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+            }.buttonStyle(.plain).help(item.title)
+            if let task = item.task {
+                ForEach(task.meetingRefs.prefix(2)) { meeting in
+                    Button { onOpenMeeting(meeting) } label: {
+                        Label(meeting.title, systemImage: "calendar").font(COSType.body(10.5)).lineLimit(2).multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                    }.buttonStyle(.plain).foregroundStyle(COSPalette.accent).padding(.horizontal, 12).padding(.bottom, 10)
+                }
+                Divider().overlay(COSPalette.line)
+                HStack { stageMenu(task); Spacer(minLength: 0) }.padding(.horizontal, 10).padding(.vertical, 6)
+            }
+        }.background(COSPalette.panel, in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(COSPalette.line))
+    }
+
+    private func stageMenu(_ task: TaskRow) -> some View {
+        Menu {
+            ForEach(WorkBoardStage.allCases) { stage in
+                Button(stage == .complete ? "Mark complete" : "Move to " + stage.title) { move(task, to: stage) }
+                    .disabled(WorkBoardStage.stage(for: task) == stage)
+            }
+        } label: { Label(WorkBoardStage.stage(for: task).title, systemImage: "arrow.left.arrow.right") }
+            .font(COSType.body(11)).menuStyle(.borderlessButton).fixedSize()
+            .disabled(state.mutationBusy || (!handoffStore.isolated && (!model.workBoardWritable || task.workRevision.isEmpty || task.workMetadataError != nil)))
+            .help("Change task stage")
+    }
+
+    private func move(_ task: TaskRow, to stage: WorkBoardStage) {
+        state.mutationError = nil
+        if handoffStore.isolated {
+            if let index = handoffStore.previewTasks.firstIndex(where: { $0.id == task.id }) {
+                handoffStore.previewTasks[index].completed = stage == .complete
+                if stage != .complete { state.previewStages[task.id] = stage.rawValue }
+            }
+            return
+        }
+        state.mutationBusy = true
+        Task {
+            defer { state.mutationBusy = false }
+            do { try await model.setWorkStage(task, stage: stage.rawValue) }
+            catch { state.mutationError = error.localizedDescription }
+        }
+    }
+
+    private func sourceMeetings(_ task: TaskRow) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Source meetings").font(COSType.body(12, weight: .semibold))
+                Spacer()
+                Button("Link a meeting") {
+                    state.linkTarget = task; state.meetingPicker = true; state.mutationError = nil
+                    Task { await model.loadLibraryMeetings() }
+                }.buttonStyle(COSQuietButtonStyle())
+                    .disabled(handoffStore.isolated || !model.workBoardWritable || state.mutationBusy || task.workRevision.isEmpty || task.workMetadataError != nil)
+            }
+            if task.meetingRefs.isEmpty { Text("No confirmed meeting link. Attach a saved meeting to connect its tasks and sessions.").font(COSType.body(12)).foregroundStyle(COSPalette.muted) }
+            ForEach(task.meetingRefs) { meeting in
+                Button { onOpenMeeting(meeting) } label: { Label(meeting.title, systemImage: "calendar").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }.buttonStyle(COSQuietButtonStyle())
+            }
+        }
+    }
+
+    private func chooseMeeting(_ meeting: LibraryMeeting) {
+        guard let target = state.linkTarget else { onReviewMeeting(meeting); return }
+        guard !state.mutationBusy else { return }
+        guard let reference = WorkMeetingReference(meeting: meeting) else {
+            state.mutationError = "This meeting has no complete saved reference. Refresh the meeting library before linking."
+            return
+        }
+        state.mutationBusy = true; state.mutationError = nil
+        Task {
+            defer { state.mutationBusy = false }
+            do {
+                try await model.linkWorkMeeting(target, meeting: reference)
+                if state.linkTarget?.id == target.id && state.linkTarget?.domain == target.domain {
+                    state.meetingPicker = false; state.linkTarget = nil
+                }
+            } catch { state.mutationError = error.localizedDescription }
+        }
+    }
+
     private var workList: some View {
         VStack(alignment: .leading, spacing: 0) {
             TextField("Search work", text: $state.query).textFieldStyle(.plain)
@@ -446,7 +652,11 @@ struct WorkWorkspaceView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Choose a saved meeting").font(COSType.display(23, weight: .medium)).padding(.horizontal, 18)
                 Text("Browse older months or search. Selecting a meeting does not start an agent.").font(COSType.body(12)).foregroundStyle(COSPalette.muted).padding(.horizontal, 18)
-                MeetingLibraryBody(model: model, selectionOnly: true, onOpen: onReviewMeeting)
+                if let target = state.linkTarget {
+                    Text("Link to: " + target.text).font(COSType.body(12, weight: .medium)).padding(.horizontal, 18)
+                }
+                MeetingLibraryBody(model: model, selectionOnly: true, onOpen: chooseMeeting)
+                    .disabled(state.mutationBusy)
             }.padding(.top, 18)
         } else if let meeting = reviewStore.selectedMeeting {
             ScrollView { meetingIntake(meeting).padding(22) }
@@ -480,9 +690,16 @@ struct WorkWorkspaceView: View {
                     Button("Edit task") { onEditTask(task) }.buttonStyle(COSQuietButtonStyle())
                 }
             }
-            Text(domainLabel(task.domain) + " · " + (task.checked ? "Completed task" : task.stage.capitalized))
+            Text(domainLabel(task.domain) + " · " + (task.checked ? "Completed task" : WorkBoardStage.stage(for: task).title))
                 .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+            HStack {
+                stageMenu(task)
+                if state.mutationBusy { ProgressView().controlSize(.small) }
+                Spacer()
+            }
+            if let error = task.workMetadataError { Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger) }
             workActivity(source: .taskSnapshot(task))
+            sourceMeetings(task)
             fact("Done when", task.doneWhen.isEmpty ? "No finish line recorded. Use Edit task to define one." : task.doneWhen)
             if !task.source.isEmpty { fact("Source", task.source) }
             if !task.runAt.isEmpty { fact("Scheduled", task.runAt) }
@@ -531,6 +748,9 @@ struct WorkWorkspaceView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text(inlineTitle(review.title)).font(COSType.display(25, weight: .medium))
             Text("Meeting review · " + review.status.replacingOccurrences(of: "_", with: " ")).font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+            if let reference = WorkMeetingReference(.object(review.descriptor.merging(["recordId": review.canonicalMeetingId, "title": review.title]) { _, new in new }.mapValues { .string($0) })) {
+                Button { onOpenMeeting(reference) } label: { Label("Open source meeting", systemImage: "calendar") }.buttonStyle(COSQuietButtonStyle())
+            }
             workActivity(source: review.source)
             if let error = review.error { Text(error).foregroundStyle(COSPalette.danger) }
             if review.inputTruncated {
@@ -636,7 +856,11 @@ struct WorkWorkspaceView: View {
     private func select(_ item: WorkWorkspaceItem) {
         state.selectedID = item.id; state.meetingPicker = false; reviewStore.selectedMeeting = nil; handoffStore.selectedWorkID = item.sourceID
     }
-    private func returnToList() { state.selectedID = nil; handoffStore.selectedWorkID = nil; state.meetingPicker = false; reviewStore.selectedMeeting = nil }
+    private func returnToList() { state.selectedID = nil; handoffStore.selectedWorkID = nil; state.meetingPicker = false; state.linkTarget = nil; reviewStore.selectedMeeting = nil }
+    private func closePickerOrDetail() {
+        if state.linkTarget != nil { state.meetingPicker = false; state.linkTarget = nil }
+        else { returnToList() }
+    }
 }
 
 /// TextEditor can consume SwiftUI's onExitCommand. This handler exists only while

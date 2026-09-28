@@ -478,6 +478,8 @@ final class COSControlHelper {
         case "run-morning-brief": try runMorningBrief()
         case "tasks": try emitTasks(args: args)
         case "work-tasks": try emitWorkTasks()
+        case "work-set-stage": try emitWorkUpdate(action: "stage")
+        case "work-link-meeting": try emitWorkUpdate(action: "meeting")
         case "work-reviews": try emitWorkReviews(create: false)
         case "work-review": try emitWorkReviews(create: true)
         case "domains": try emitDomains()
@@ -4542,23 +4544,78 @@ final class COSControlHelper {
     static func workTaskProjection(_ raw: [[String: Any]]) -> [[String: Any]] {
         raw.compactMap { row in
             guard var projected = taskRowProjection(row) else { return nil }
-            for key in ["text", "source", "agentState", "stage", "doneWhen"] {
+            for key in ["text", "source", "agentState", "stage", "doneWhen", "workStage", "workIdentity", "workRevision"] {
                 projected[key] = row[key] as? String ?? ""
             }
+            if let error = row["workMetadataError"] as? String, !error.isEmpty { projected["workMetadataError"] = error }
+            projected["meetingRefs"] = row["meetingRefs"] as? [[String: Any]] ?? []
             projected["checked"] = taskFlag(row, "checked")
             return projected
         }
     }
 
     private func emitWorkTasks() throws {
-        let board = try taskRequest("/api/tasks")
+        let candidate = try reviewCandidateTransport()
+        let token = try candidate?.token ?? readToken()
+        guard let current = request("/api/work-board", token: token, timeout: 30, reviewCandidatePort: candidate?.port) else {
+            throw HelperError.message("Work board is unavailable. Refresh before trying again.")
+        }
+        // Only a missing new endpoint permits the legacy read. Mutations never fall back.
+        let legacy = current.status == 404
+        let board = legacy ? try taskRequest("/api/tasks") : current
         guard board.status == 200, let body = board.body, let raw = body["tasks"] as? [[String: Any]] else {
             throw HelperError.message("The server could not read the complete Work task board.")
         }
         let rows = Self.workTaskProjection(Array(raw.prefix(10_000)))
         emit(ok: true, message: "Work tasks ready", details: ["tasks": rows, "count": rows.count,
             "total": raw.count, "complete": raw.count <= 10_000 && rows.count == raw.count,
+            "capabilities": legacy ? ["version": 0, "writable": false] : (body["capabilities"] ?? ["version": 0, "writable": false]),
             "gate": body["gate"] ?? NSNull()])
+    }
+
+    static func validateWorkUpdate(_ body: [String: Any], action: String) throws {
+        let allowed = Set(["domain", "id", "expectedText", "expectedRevision", action == "stage" ? "workStage" : "meeting"])
+        guard Set(body.keys).isSubset(of: allowed),
+              let domain = body["domain"] as? String, !domain.isEmpty, domain.utf16.count <= 64,
+              domain == domain.trimmingCharacters(in: .whitespacesAndNewlines), !domain.hasPrefix("."),
+              domain.range(of: "[/\\\\\\x00-\\x1f\\x7f]", options: .regularExpression) == nil,
+              let id = body["id"] as? String, id.range(of: "^[a-f0-9]{12}$", options: .regularExpression) != nil,
+              let expected = body["expectedText"] as? String, !expected.isEmpty, expected.utf16.count <= 8000,
+              let revision = body["expectedRevision"] as? String, revision.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else {
+            throw HelperError.message("Refresh and select an exact task before changing Work.")
+        }
+        if action == "stage" {
+            guard let stage = body["workStage"] as? String, ["mentioned", "planned", "draft", "built", "qa", "complete"].contains(stage) else {
+                throw HelperError.message("Choose a valid Work stage.")
+            }
+        } else {
+            guard let meeting = body["meeting"] as? [String: Any],
+                  ["recordId", "domain", "month", "filename"].allSatisfy({ !(meeting[$0] as? String ?? "").isEmpty }) else {
+                throw HelperError.message("Select an exact saved meeting.")
+            }
+        }
+    }
+
+    private func emitWorkUpdate(action: String) throws {
+        var data = Data()
+        while data.count <= 16_384 {
+            let chunk = try FileHandle.standardInput.read(upToCount: min(4096, 16_385 - data.count)) ?? Data()
+            if chunk.isEmpty { break }; data.append(chunk)
+        }
+        guard data.count <= 16_384, let body = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw HelperError.message("Work update must be a bounded JSON object.")
+        }
+        try Self.validateWorkUpdate(body, action: action)
+        let candidate = try reviewCandidateTransport()
+        let token = try candidate?.token ?? readToken()
+        guard let response = request("/api/work-board/\(action)", method: "POST", token: token,
+            body: String(decoding: data, as: UTF8.self), timeout: 30, reviewCandidatePort: candidate?.port) else {
+            throw HelperError.message("Work update was not confirmed. Refresh before trying again.")
+        }
+        guard response.status == 200, response.body?["ok"] as? Bool == true else {
+            throw HelperError.message(taskErrorMessage(response, fallback: "Work update refused. Refresh or update the canonical task bridge."))
+        }
+        emit(ok: true, message: "Work updated", details: response.body ?? [:])
     }
 
     /// Only the explicit connected candidate may route review commands to its

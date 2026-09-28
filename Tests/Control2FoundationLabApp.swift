@@ -21,7 +21,7 @@ import SwiftUI
         return CGFloat(min(1400, max(560, value)))
     }
     var body: some Scene {
-        WindowGroup(Self.connected ? "COS Control · Connected Work Candidate" : "COS Control · Work Preview") {
+        WindowGroup(Self.connected ? "COS Control · Connected Work 0.1.8" : "COS Control · Work Preview 0.1.8") {
             Group {
                 if Self.connected { ActivityWindow.workConnectedTest(model: model) }
                 else { ActivityWindow.workPreview(model: model) }

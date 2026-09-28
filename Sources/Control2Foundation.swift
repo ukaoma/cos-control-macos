@@ -147,7 +147,10 @@ struct Control2PreviewTask: Identifiable {
     static var samples: [Self] { [
         Self(id: "sample-task-website", title: "Check the homepage on mobile", domain: "Website", owner: "You", schedule: "Today", source: "Existing task · sample", finishLine: "Check the headline, primary CTA, and navigation at phone width. Record any changes needed.", stage: "Planning"),
         Self(id: "sample-task-review", title: "Review the revised launch copy", domain: "Website", owner: "You", schedule: "Unscheduled", source: "Manually captured · sample", finishLine: "Review the draft and record requested edits. Publication is a separate decision.", stage: "Review"),
-        Self(id: "sample-task-complete", title: "Confirm the launch checklist", domain: "Website", owner: "You", schedule: "Unscheduled", source: "Existing task · sample", finishLine: "Check every launch checklist item.", stage: "Planning", completed: true)
+        Self(id: "sample-task-complete", title: "Confirm the launch checklist", domain: "Website", owner: "You", schedule: "Unscheduled", source: "Existing task · sample", finishLine: "Check every launch checklist item.", stage: "Planning", completed: true),
+        Self(id: "sample-task-mentioned", title: "Explore a customer proof section", domain: "Website", owner: "You", schedule: "Unscheduled", source: "Website launch review · sample", finishLine: "Decide whether a proof section supports the launch goal.", stage: "Mentioned"),
+        Self(id: "sample-task-draft", title: "Draft the homepage call to action", domain: "Website", owner: "You", schedule: "Unscheduled", source: "Website launch review · sample", finishLine: "Prepare copy for review.", stage: "Draft"),
+        Self(id: "sample-task-built", title: "Prepare the mobile navigation build", domain: "Website", owner: "You", schedule: "Unscheduled", source: "Website launch review · sample", finishLine: "Build a preview that can be checked on a phone.", stage: "Built")
     ] }
 }
 

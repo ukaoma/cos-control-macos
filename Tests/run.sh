@@ -2214,7 +2214,7 @@ workspace = (root / "Sources/WorkWorkspaceView.swift").read_text()
 need('receiptFallback(id)' in workspace and 'no item has been recreated' in workspace,
      "missing canonical items must preserve read-only receipt history")
 need('guard !handoffStore.isolated else { return }' in workspace and
-     'WorkWorkspaceProjection.previewRows(handoffStore.previewTasks)' in workspace,
+     'WorkWorkspaceProjection.previewRows(handoffStore.previewTasks, stages: state.previewStages)' in workspace,
      "the shared preview workspace must structurally use fixture rows and block production loading")
 need('taskEditorOverlay' in activity and 'WorkEditorEscapeHandler(onEscape: requestCloseTaskDetail)' in activity and
      '.cosConfirm("Save task changes?"' in activity, "secondary editing must retain fixed close, scoped Escape and dirty confirmation")

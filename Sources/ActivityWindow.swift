@@ -283,6 +283,9 @@ struct ActivityWindow: View {
     @State private var voiceSort: VoiceDirectorySort = .attention
     @State private var selectedContextID: String?
     @State private var selectedLibraryRecordID: String?
+    @State private var meetingReturnWorkID: String?
+    @State private var meetingReturnToWork = false
+    @State private var meetingWorkLoaded = false
     @State private var selectedSessionID: String?
     @State private var taskCapture = ""
     @State private var taskDomain = "quilt"
@@ -425,7 +428,7 @@ struct ActivityWindow: View {
             Group {
                 if section == .sessions && (isolatedWorkPreview || showingLinkedSession) {
                     WorkSessionsView(store: handoffStore, isPreview: isolatedWorkPreview, onOpenWork: openHandoffWork, onOpenFullSession: openFullHandoffSession)
-                } else if isolatedWorkPreview, let selected = section, selected != .work {
+                } else if isolatedWorkPreview, let selected = section, selected != .work, !(selected == .meetings && selectedLibraryRecordID != nil) {
                     previewOnlySection(selected)
                 } else if section == .messages, let preview = model.selectedMediaPreview {
                     mediaDetail(preview)
@@ -474,12 +477,7 @@ struct ActivityWindow: View {
                     }
                 } else if section == .meetings, selectedLibraryRecordID != nil {
                     if model.libraryRouteActive {
-                        MeetingLibraryDetailPane(
-                            model: model,
-                            onReviewVoices: openVoiceReviewFromLibrary,
-                            onOpenSource: openLibrarySource,
-                            onReviewFollowUp: meetingWorkReviewAction
-                        )
+                        connectedMeetingDetailSurface
                     } else {
                         centeredProgress("Loading meeting…")
                     }
@@ -793,6 +791,10 @@ struct ActivityWindow: View {
     }
 
     private func goBack() {
+        if isolatedWorkPreview, section == .meetings, meetingReturnToWork {
+            selectedLibraryRecordID = nil; model.closeLibraryDetail()
+            returnFromMeetingToWork(); return
+        }
         if isolatedWorkPreview { withOptionalAnimation { section = nil }; return }
         if (section == .tasks || (section == .work && workSubview == .tasks)), taskDetail != nil {
             requestCloseTaskDetail()
@@ -832,6 +834,7 @@ struct ActivityWindow: View {
         } else if section == .meetings, selectedLibraryRecordID != nil {
             selectedLibraryRecordID = nil
             model.closeLibraryDetail()
+            if meetingReturnToWork { returnFromMeetingToWork() }
         } else if section == .meetings, model.meetingImportRouteActive {
             model.closeMeetingImport()
         } else if section == .meetings, model.meetingSuggestionsRouteActive {
@@ -874,6 +877,8 @@ struct ActivityWindow: View {
         selectedLearningID = nil
         selectedGraphEntityID = nil
         selectedLibraryRecordID = nil
+        meetingReturnWorkID = nil
+        meetingReturnToWork = false
         selectedSessionID = nil
         model.closeSpeakerReview()
         model.closeContextDetail()
@@ -1128,22 +1133,121 @@ struct ActivityWindow: View {
     @ViewBuilder private var workSurface: some View {
         WorkWorkspaceView(model: model, handoffStore: handoffStore, reviewStore: reviewStore,
             state: workWorkspaceState, onOpenSession: openHandoffSession,
-            onEditTask: openTaskDetail, onReviewMeeting: openMeetingWorkReview)
+            onEditTask: openTaskDetail, onReviewMeeting: openMeetingWorkReview, onOpenMeeting: openWorkMeeting)
+    }
+
+    private var connectedMeetingDetailSurface: some View {
+        MeetingLibraryDetailPane(model: model, onReviewVoices: openVoiceReviewFromLibrary,
+            onOpenSource: openLibrarySource, onReviewFollowUp: meetingWorkReviewAction,
+            workConnections: meetingConnections, onOpenWork: meetingWorkOpenAction,
+            onOpenSession: meetingSessionOpenAction)
+            .task(id: selectedLibraryRecordID) { await loadMeetingConnections() }
+    }
+
+    private var meetingWorkOpenAction: ((String) -> Void)? {
+        guard workConnectionsEnabled else { return nil }
+        return { id in openConnectedWork(id) }
+    }
+    private var meetingSessionOpenAction: ((String, String) -> Void)? {
+        guard workConnectionsEnabled else { return nil }
+        return { sessionID, workID in
+            handoffStore.selectedWorkID = workID
+            openHandoffSession(sessionID)
+        }
+    }
+
+    private var workConnectionsEnabled: Bool {
+        isolatedWorkPreview || ActivitySection.visibleSections(environment: ProcessInfo.processInfo.environment).contains(.work)
+    }
+
+    private var meetingConnections: MeetingWorkConnections? {
+        guard workConnectionsEnabled, let meeting = model.openLibraryRow else { return nil }
+        let errors = [model.workTasksError, reviewStore.error, handoffStore.error].compactMap { $0 }
+        let tasks = isolatedWorkPreview ? WorkWorkspaceProjection.previewRows(handoffStore.previewTasks, stages: workWorkspaceState.previewStages) : model.workTasks
+        return MeetingWorkConnections.project(meeting: meeting, tasks: tasks, reviews: reviewStore.reviews,
+            receipts: handoffStore.receipts, sessions: handoffStore.observedSessions(),
+            loading: !meetingWorkLoaded || model.workTasksLoading || reviewStore.busy,
+            complete: isolatedWorkPreview || model.workTasksComplete, errors: errors)
+    }
+
+    private func loadMeetingConnections() async {
+        guard workConnectionsEnabled else { return }
+        if isolatedWorkPreview { meetingWorkLoaded = true; return }
+        meetingWorkLoaded = false
+        await model.loadWorkTasks()
+        await reviewStore.refresh()
+        await handoffStore.refresh()
+        meetingWorkLoaded = true
     }
 
     private var meetingWorkReviewAction: ((LibraryMeeting) -> Void)? {
-        guard ActivitySection.visibleSections(environment: ProcessInfo.processInfo.environment).contains(.work), !isolatedWorkPreview else { return nil }
+        guard workConnectionsEnabled else { return nil }
         return { meeting in openMeetingWorkReview(meeting) }
     }
 
     private func openMeetingWorkReview(_ meeting: LibraryMeeting) {
-        guard !isolatedWorkPreview else { return }
+        if isolatedWorkPreview {
+            if let review = reviewStore.reviews.first(where: { $0.canonicalMeetingId == meeting.recordId }) {
+                openConnectedWork("meeting-review:" + review.id)
+            }
+            return
+        }
         reviewStore.selectedMeeting = meeting
         workWorkspaceState.selectedID = nil
         handoffStore.selectedWorkID = nil
         workWorkspaceState.meetingPicker = false
         section = .work
         Task { await reviewStore.refresh() }
+    }
+
+    private func openWorkMeeting(_ reference: WorkMeetingReference) {
+        guard workConnectionsEnabled, let row = reference.libraryMeeting else { return }
+        meetingReturnToWork = section == .work
+        meetingReturnWorkID = workWorkspaceState.selectedID
+        meetingWorkLoaded = false
+        if isolatedWorkPreview {
+            guard reference.recordId == "sample-meeting", reference.domain == "Website", reference.month == "2026-09",
+                  reference.filename == "2026-09-27_Website_Review.md" else {
+                model.error = "That meeting is not part of this isolated sample."
+                return
+            }
+            model.openLibraryRow = row
+            model.libraryDetailError = nil
+            model.libraryDetailLoading = false
+            model.libraryDetail = LibraryMeetingDetail(.object([
+                "recordId": .string(row.recordId), "title": .string(row.title), "domain": .string(row.domain),
+                "transcript": .string("# Website review · local sample\nPrepare a clearer homepage call to action and verify mobile layout. Bring the result back for review before publishing."),
+                "summary": .string("A local sample meeting. No live library was opened.")
+            ]))
+        } else { model.openWorkMeeting(reference) }
+        selectedLibraryRecordID = row.recordId
+        section = .meetings
+    }
+
+    private func returnFromMeetingToWork() {
+        let workID = meetingReturnWorkID
+        meetingReturnWorkID = nil; meetingReturnToWork = false
+        if let workID { openConnectedWork(workID) }
+        else {
+            // A source link on a board card can open before a card is selected.
+            // Keep the domain and return to its board, rather than Meetings list.
+            workWorkspaceState.selectedID = nil; handoffStore.selectedWorkID = nil
+            workWorkspaceState.meetingPicker = false; reviewStore.selectedMeeting = nil
+            section = .work
+        }
+    }
+
+    /// A related review may name a historical row while session receipts name
+    /// stable work identity. Preserve both meanings without title matching.
+    private func openConnectedWork(_ id: String) {
+        if let review = reviewStore.reviews.first(where: { "meeting-review:" + $0.id == id }) {
+            handoffStore.selectedWorkID = review.source.id
+            workWorkspaceState.selectedID = id
+            workWorkspaceState.meetingPicker = false
+            reviewStore.selectedMeeting = nil
+            showingLinkedSession = false
+            section = .work
+        } else { openHandoffWork(id) }
     }
 
     private func openHandoffSession(_ id: String) {
@@ -1227,6 +1331,9 @@ struct ActivityWindow: View {
                 stats: meetingsStats
             )
             MeetingLibraryBody(model: model) { meeting in
+                meetingReturnWorkID = nil
+                meetingReturnToWork = false
+                meetingWorkLoaded = false
                 selectedLibraryRecordID = meeting.id
                 model.openLibraryMeeting(meeting)
             }

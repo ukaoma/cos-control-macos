@@ -5,6 +5,8 @@ import CryptoKit
     @MainActor static func main() async throws {
         runControl2ActivityIntegrationChecks()
         runWorkWorkspaceProjectionChecks()
+        runWorkBoardChecks()
+        runWorkMeetingConnectionsChecks()
         try await runWorkActivityChecks()
         try await runWorkWorkspaceReviewSelectionChecks()
         try await runWorkReviewStoreChecks()

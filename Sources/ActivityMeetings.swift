@@ -460,11 +460,42 @@ private struct DayCell {
     let date: String
 }
 
+struct MeetingWorkConnections {
+    let tasks: [TaskRow]
+    let reviews: [WorkReviewRecord]
+    let receipts: [WorkHandoffReceipt]
+    let sessions: [WorkSession]
+    let loading: Bool
+    let complete: Bool
+    let errors: [String]
+
+    func sessionDestination(for receipt: WorkHandoffReceipt) -> (sessionID: String, workID: String)? {
+        guard receipts.contains(where: { $0.id == receipt.id }), let id = receipt.sessionID,
+              sessions.contains(where: { $0.id == id && $0.provider == receipt.provider }) else { return nil }
+        return (id, receipt.workID)
+    }
+
+    static func project(meeting: LibraryMeeting, tasks: [TaskRow], reviews: [WorkReviewRecord], receipts: [WorkHandoffReceipt], sessions: [WorkSession], loading: Bool, complete: Bool, errors: [String]) -> Self {
+        let confirmed = tasks.filter { task in task.meetingRefs.contains { $0.matches(meeting) } }
+        let meetingReviews = reviews.filter { $0.canonicalMeetingId == meeting.recordId }
+        let workIDs = Set(confirmed.map { WorkSource.taskSnapshot($0).id } + ["meeting:" + meeting.recordId])
+        let linkedReceipts = receipts.filter { receipt in
+            guard workIDs.contains(receipt.workID), let sessionID = receipt.sessionID else { return false }
+            return sessionID.hasPrefix(receipt.provider + ":")
+        }.sorted { $0.createdAt > $1.createdAt }
+        return Self(tasks: confirmed, reviews: meetingReviews, receipts: linkedReceipts, sessions: sessions,
+            loading: loading, complete: complete, errors: errors)
+    }
+}
+
 struct MeetingLibraryDetailPane: View {
     @ObservedObject var model: ControllerModel
     var onReviewVoices: (String) -> Void
     var onOpenSource: (LibraryMeetingSource) -> Void = { _ in }
     var onReviewFollowUp: ((LibraryMeeting) -> Void)? = nil
+    var workConnections: MeetingWorkConnections? = nil
+    var onOpenWork: ((String) -> Void)? = nil
+    var onOpenSession: ((String, String) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -517,6 +548,7 @@ struct MeetingLibraryDetailPane: View {
                 let isDocument = COSMarkdownParser.looksLikeDocument(detail.transcript)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
+                        if let workConnections { relatedWork(workConnections) }
                         if isDocument {
                             COSMarkdownView(text: detail.transcript, dropLeadingTitle: true)
                         } else {
@@ -541,6 +573,12 @@ struct MeetingLibraryDetailPane: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 Divider()
+                if let onReviewFollowUp, let row = model.openLibraryRow {
+                    HStack {
+                        Button("Review follow-up in Work") { onReviewFollowUp(row) }.buttonStyle(COSPrimaryButtonStyle())
+                        Spacer()
+                    }.padding(.horizontal, 24).padding(.top, 10)
+                }
                 // Actions by weight (0.5.232): Copy as context is what this pane is for,
                 // so it is the one filled button and it takes ⌘C; the other copies and
                 // Reveal are quiet; Review voices is featured while it is new to this
@@ -594,6 +632,49 @@ struct MeetingLibraryDetailPane: View {
             }
         }
         .background(COSPalette.panel)
+    }
+
+    private func relatedWork(_ links: MeetingWorkConnections) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Connected work").font(COSType.display(19, weight: .medium))
+            if links.loading { ProgressView("Loading linked work…").controlSize(.small) }
+            ForEach(links.errors, id: \.self) { Text($0).font(COSType.body(11)).foregroundStyle(COSPalette.danger) }
+            if !links.complete { Text("The task inventory is not confirmed complete.").font(COSType.body(11)).foregroundStyle(COSPalette.muted) }
+            ForEach(links.tasks, id: \.workSourceID) { task in
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(task.text.isEmpty ? task.title : task.text).font(COSType.body(12, weight: .medium))
+                        Text(task.domain + " · " + (task.checked ? "Complete" : task.workStage == "qa" ? "QA" : task.workStage.capitalized)).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+                    }
+                    Spacer()
+                    if let onOpenWork { Button("Open work") { onOpenWork(WorkSource.taskSnapshot(task).id) }.buttonStyle(COSQuietButtonStyle()) }
+                }
+            }
+            ForEach(links.reviews) { review in
+                HStack {
+                    Text("Meeting review · " + review.status).font(COSType.body(12))
+                    Spacer()
+                    if let onOpenWork { Button("Open review") { onOpenWork("meeting-review:" + review.id) }.buttonStyle(COSQuietButtonStyle()) }
+                }
+            }
+            ForEach(links.receipts) { receipt in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(receipt.workTitle + " · " + receipt.status).font(COSType.body(12, weight: .medium))
+                    Text(receipt.detail).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    if let destination = links.sessionDestination(for: receipt), let onOpenSession {
+                        Button("Open session · " + receipt.sessionTitle) { onOpenSession(destination.sessionID, destination.workID) }.buttonStyle(COSQuietButtonStyle())
+                    } else {
+                        Text("Linked session is not currently available.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    }
+                }
+            }
+            if !links.loading && links.complete && links.errors.isEmpty && links.tasks.isEmpty && links.reviews.isEmpty && links.receipts.isEmpty {
+                Text("No confirmed work links yet. Use Link a meeting from a task to connect it, or review this meeting’s follow-up.")
+                    .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+            }
+        }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            .background(COSPalette.raised.opacity(0.5), in: RoundedRectangle(cornerRadius: 9))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(COSPalette.line))
     }
 
     private func labeled(_ title: String, _ body: String) -> some View {
