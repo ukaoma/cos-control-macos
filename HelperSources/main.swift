@@ -4779,6 +4779,7 @@ final class COSControlHelper {
            code.range(of: "^[a-z_]{3,48}$", options: .regularExpression) != nil {
             // A 6.57.0 server knows only the task body, so it refuses a review request as invalid: that is an old
             // server, and it is final for the revision (Control asks again only after an update).
+            // (6.57.1 refuses a malformed review with its own code, invalid_review_request, so this cannot misfire.)
             return review && status == 400 && code == "invalid_recommendation_request" ? "server_too_old" : code
         }
         return status == 404 ? "server_too_old" : "http_\(status)"

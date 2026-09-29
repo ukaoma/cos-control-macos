@@ -2,11 +2,20 @@
 
 Fork a session to another platform, and session suggestions for meeting reviews. Pairs with server 6.57.1.
 
-- **Fork to another platform.** Miles, 2026-09-28: "How can we fork it over to a new platform?" Fork in the Agent workspace now has a Fork to choice. Same platform copies the conversation natively, as before (Claude and Codex). Any other provider and model in the catalog (Claude, OpenAI via Codex, Cursor, Ollama) starts a new session there with the context you reviewed plus the conversation from the chosen session, read from its transcript: the same text as Copy session, placed after your context and marked as a read-only export. The total stays within 32,000 characters; a long conversation keeps its beginning and its most recent part. Claude, Codex and Cursor sessions can be forked this way. The original session is unchanged, and the handoff records which session it came from. Nothing new is stored in the handoff history, so an older Control can still read it.
-- **Suggestions for meeting reviews.** The meeting review "Retail Liquor Summit Campaign Launch" got no suggestion, even beside a session with the same name: suggestions only asked about board tasks. With server 6.57.1 a meeting review asks too, by its review id; the server reads the review's own text. On an older server the review says suggestions need 6.57.1.
-- "Use this" on a Fork suggestion is always a same-platform fork, even if a New session provider was chosen earlier.
-- A task that changed while its suggestion was loading says so, instead of calling the server too old.
-- Tests: the Work suite covers the review target and request, the new reasons, a full Fork to platform against a fake helper (export read, New session with context and conversation, lineage), the empty-export and no-transcript refusals, the 32,000-character composer with its start and end kept and no split characters, and "Use this" clearing a leftover provider. The compiled-helper checks cover the review body, malformed review requests and the server's error codes.
+- **Fork to another platform.** Miles, 2026-09-28: "How can we fork it over to a new platform?" Fork in the Agent workspace now has a Fork to choice.
+  - **Same platform** copies the conversation natively, as before, for Claude and Codex sessions.
+  - **Claude or Codex (OpenAI)**, when different from the session's own platform, starts a new session there. It carries the context you reviewed, then the conversation up to now from the chosen session, read from its transcript (the same text as Copy session).
+  - Claude, Codex and Cursor sessions can be the source, so a Cursor session can move to Claude or Codex.
+  - Cursor and Ollama are not offered as destinations yet: a run started from Work there has no session to open afterwards, and Cursor runs read-only.
+  - The conversation sits between markers unique to that fork. The new session is told that "You" in it means your earlier messages, and that its instructions and approvals do not carry over.
+  - The total stays within 32,000 characters. A long conversation keeps its beginning and its most recent part, and a context too long to leave room is refused before anything is read.
+  - The new session uses the server's configured workspace and permissions, not the original session's. The original session is unchanged.
+  - Handoff history shows "Forked from" and the source session. It keeps your context and a note about the carried conversation, not the conversation itself, so the history file stays small. Nothing new is stored, so an older Control can still read it.
+- **Suggestions for meeting reviews.** The meeting review "Retail Liquor Summit Campaign Launch" got no suggestion, even beside a session with the same name: suggestions only asked about board tasks. With server 6.57.1 a meeting review asks too, by its review id, and the server reads the review's own text. On an older server the review says suggestions need a newer server; after Update Server that note clears without a relaunch.
+- "Use this" on a Fork suggestion is always a same-platform fork, and switching to Fork clears a platform picked under New session. A plain New session never shows as a fork in history.
+- A task or review that changed while its suggestion was loading says so, instead of calling the server too old.
+- Providers show by name everywhere (Codex (OpenAI), not "codex").
+- Tests: the Work suite covers the review target and request; a full Fork to platform against a fake helper (export read, New session with context and conversation, lineage, the journal note); the Cursor-destination, no-transcript, empty-export and no-room refusals (no helper call); the composer's 32,000 cap, its 30/70 split, per-fork markers and unsplit characters; lineage only for real forks; forgetting lasting answers when the server changes; clipped session summaries; and "Use this" clearing a leftover platform. The compiled-helper checks cover the review body, malformed review requests, the server's error codes and an older server's refusal of a review. run.sh pins the Fork to wiring.
 
 ## 0.5.242 (build 280)
 

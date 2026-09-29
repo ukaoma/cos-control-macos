@@ -49,16 +49,15 @@ struct WorkHandoffView: View {
 
     /// 0.5.243: a Fork with a target provider picked is a fork to another platform (a New session seeded with the
     /// conversation export). No provider means the native, same-platform fork.
-    private var forkToPlatform: Bool { mode == .fork && !provider.isEmpty }
+    private var forkToPlatform: Bool { mode == .fork && WorkHandoffStore.crossPlatformTargets.contains(provider) && provider != selectedSession?.provider }
 
     private var destinationSupported: Bool {
         if mode == .newSession { return selectedModel?.available == true }
         guard let selectedSession else { return false }
         if forkToPlatform {
-            return selectedModel?.available == true && WorkHandoffStore.crossPlatformTargets.contains(provider)
-                && ["claude", "codex", "cursor"].contains(selectedSession.provider)
+            return selectedModel?.available == true && WorkHandoffStore.exportableProviders.contains(selectedSession.provider)
         }
-        return (mode == .fork ? ["claude", "codex"] : ["claude", "codex", "cursor"]).contains(selectedSession.provider)
+        return (mode == .fork ? WorkHandoffStore.nativeForkProviders : WorkHandoffStore.continueProviders).contains(selectedSession.provider)
     }
 
     var body: some View {
@@ -107,7 +106,9 @@ struct WorkHandoffView: View {
                         if crossPlatform, let sendingSession, let sendingModel {
                             await store.forkToPlatform(source: sendingSource, session: sendingSession, model: sendingModel, prompt: sendingPrompt)
                         } else {
-                            await store.submit(source: sendingSource, mode: sendingMode, session: sendingSession, model: sendingModel, prompt: sendingPrompt)
+                            // A plain New session has no source session (a stale selection must not read as a fork).
+                            await store.submit(source: sendingSource, mode: sendingMode, session: sendingMode == .newSession ? nil : sendingSession,
+                                               model: sendingModel, prompt: sendingPrompt)
                         }
                     }
                 }.buttonStyle(COSPrimaryButtonStyle()).disabled(!canSend)
@@ -174,7 +175,11 @@ struct WorkHandoffView: View {
                 if mode == .fork { forkTarget }
                 if let session = selectedSession {
                     if !destinationSupported && !forkToPlatform {
-                        Text(mode == .fork ? "Fork is available for Claude and Codex sessions only. Fork it to another platform, or choose Continue or a new session." : "This provider does not support continuing a session here.")
+                        Text(mode == .fork
+                             ? (WorkHandoffStore.exportableProviders.contains(session.provider)
+                                ? "A \(WorkHandoffStore.providerName(session.provider)) session forks to Claude or Codex: choose one under Fork to."
+                                : "This session cannot be forked. Choose a new session instead.")
+                             : "This provider does not support continuing a session here.")
                             .font(COSType.body(11)).foregroundStyle(COSPalette.danger)
                     }
                     Text("\(session.status.capitalized) · \(session.project.isEmpty ? "Workspace unavailable" : session.project)")
@@ -182,7 +187,7 @@ struct WorkHandoffView: View {
                     if !session.summary.isEmpty { Text(session.summary).font(COSType.body(12)).lineLimit(3) }
                     Text(forkToPlatform
                          ? "Starts a new \(WorkHandoffStore.providerName(provider)) session with this context plus the conversation up to now from \u{201C}\(session.title)\u{201D}, read from its transcript (up to 32,000 characters in all). It uses the server\u{2019}s configured workspace and permissions, not the original session\u{2019}s. The original session is unchanged."
-                         : mode == .fork ? "Creates a copy with \(session.provider); the original remains unchanged." : "Uses this session’s model and permissions. Busy sessions may queue or refuse.")
+                         : mode == .fork ? "Creates a copy with \(WorkHandoffStore.providerName(session.provider)); the original remains unchanged." : "Uses this session’s model and permissions. Busy sessions may queue or refuse.")
                         .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                 }
                 if store.advice(for: source) == nil, let first = recommended.first {
@@ -204,13 +209,14 @@ struct WorkHandoffView: View {
     /// Fork to: the same platform (native copy of the conversation) or any catalog provider and model.
     private var forkTarget: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker("Fork to", selection: Binding(get: { provider }, set: { value in
+            Picker("Fork to", selection: Binding(get: { forkToPlatform ? provider : "" }, set: { value in
                 var next = draft; next.provider = value; next.modelID = ""
                 store.updateDraft(next, for: source)
             })) {
                 Text("Same platform (copy the conversation)").tag("")
-                if !provider.isEmpty && !providers.contains(provider) { Text("\(provider) · unavailable").tag(provider) }
-                ForEach(providers.filter { WorkHandoffStore.crossPlatformTargets.contains($0) }, id: \.self) { Text(WorkHandoffStore.providerName($0)).tag($0) }
+                ForEach(providers.filter { WorkHandoffStore.crossPlatformTargets.contains($0) && $0 != selectedSession?.provider }, id: \.self) {
+                    Text(WorkHandoffStore.providerName($0)).tag($0)
+                }
             }.disabled(store.busy || validating)
             if forkToPlatform {
                 Picker("Model", selection: draftBinding(\.modelID)) {
@@ -261,7 +267,7 @@ struct WorkHandoffView: View {
                     HStack {
                         Text(receipt.status.capitalized).font(COSType.body(12, weight: .semibold))
                         Spacer()
-                        Text(receipt.provider).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                        Text(WorkHandoffStore.providerName(receipt.provider)).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                     }
                     if let lineage = WorkHandoffStore.lineage(of: receipt, sessions: store.sessions) {
                         Text(lineage).font(COSType.body(11)).foregroundStyle(COSPalette.muted)

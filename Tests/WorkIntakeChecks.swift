@@ -313,7 +313,8 @@ import Foundation
         let other = WorkSource(id: "meeting:x", title: "", revision: "r", project: "", context: "", reviewID: bad)
         precondition(WorkHandoffStore.adviceTarget(for: other) == nil, "\(bad ?? "nil") names nothing")
     }
-    precondition(WorkHandoffStore.adviceUnavailableText("reviews_unavailable")?.contains("turned off") == true
+    precondition(WorkHandoffStore.adviceUnavailableText("reviews_unavailable")?.contains("read meeting reviews") == true
+                 && WorkHandoffStore.adviceUnavailableText("review_store_unavailable")?.contains("read meeting reviews") == true
                  && WorkHandoffStore.adviceUnavailableText("review_not_found")?.contains("changed") == true)
 
     final class Calls: @unchecked Sendable { var list: [([String], [String: Any])] = []; var export = "YOU: build the page\nASSISTANT: built it" }
@@ -346,8 +347,8 @@ import Foundation
     precondition(calls.list.map { $0.0.first ?? "" } == ["claude-session-detail", "work-new"], "\(calls.list.map(\.0))")
     precondition(calls.list[0].0 == ["claude-session-detail", "--session", "abc", "--provider", "claude"])
     let query = calls.list[1].1["query"] as? String ?? ""
-    precondition(query.hasPrefix("Prepare the next reviewable result for: RLS") && query.contains("carried over from the Claude session")
-                 && query.contains("ASSISTANT: built it") && query.hasSuffix(WorkHandoffStore.crossPlatformFence)
+    precondition(query.hasPrefix("Prepare the next reviewable result for: RLS") && query.contains("up to now from the Claude session")
+                 && query.contains("ASSISTANT: built it") && query.contains("=== End export ") && query.contains("do not carry over")
                  && calls.list[1].1["model"] as? String == "codex-frontier", query)
     let receipt = store.receipts(for: review.id).first!
     precondition(receipt.mode == .newSession && receipt.provider == "codex" && receipt.sourceSessionID == "claude:abc" && receipt.modelID == "codex-frontier")
@@ -361,7 +362,17 @@ import Foundation
     await store.forkToPlatform(source: WorkSource(id: "task:quilt:0123456789ad", title: "V", revision: "r", project: "quilt", context: "c"),
                                session: claude, model: cursorModel, prompt: "Do it")
     precondition(calls.list.isEmpty && store.error?.contains("Fork to Claude or Codex") == true)
-    precondition(WorkHandoffStore.crossPlatformTargets == ["claude", "codex"])
+    // A context with no room left is refused BEFORE the export is read.
+    calls.list.removeAll()
+    await store.forkToPlatform(source: WorkSource(id: "task:quilt:0123456789ae", title: "W", revision: "r", project: "quilt", context: "c"),
+                               session: claude, model: codex, prompt: String(repeating: "c", count: 31_800))
+    precondition(calls.list.isEmpty && store.error?.contains("no room") == true)
+    // A plain New session never shows as a fork, even with a source recorded by an older build.
+    var plain = receipt; plain.prompt = "Plain new session"
+    precondition(WorkHandoffStore.lineage(of: plain, sessions: store.sessions) == nil)
+    // Update Server (a new instance) forgets lasting answers; the same instance or an unknown one does not.
+    precondition(WorkHandoffStore.serverChanged(from: "a", to: "b") && !WorkHandoffStore.serverChanged(from: "a", to: "a")
+                 && !WorkHandoffStore.serverChanged(from: nil, to: "b") && !WorkHandoffStore.serverChanged(from: "a", to: nil))
 
     // Nothing to carry: an empty export is refused before any session starts; a provider with no transcript is refused.
     calls.list.removeAll(); calls.export = "   "
@@ -390,13 +401,24 @@ import Foundation
 
     // The composer: fits the cap, keeps the start and the end of a long export, never splits a character.
     let long = "START " + String(repeating: "界👍x", count: 20_000) + " END"
-    let composed = WorkHandoffStore.crossPlatformPrompt(context: "Context", export: long, sessionTitle: "S", provider: "cursor")!
+    let tag = "1a2b3c4d"
+    let composed = WorkHandoffStore.crossPlatformPrompt(context: "Context", export: long, sessionTitle: "S", provider: "cursor", tag: tag)!
+    let fence = WorkHandoffStore.crossPlatformFence(tag: tag)
     precondition(composed.utf16.count <= WorkHandoffStore.crossPlatformLimit && composed.hasPrefix("Context") && composed.contains("Cursor session")
-                 && composed.contains("START") && composed.contains(" END" + WorkHandoffStore.crossPlatformFence)
-                 && composed.hasSuffix(WorkHandoffStore.crossPlatformFence) && composed.contains("omitted to fit"))
+                 && composed.contains("START") && composed.contains(" END" + fence) && composed.hasSuffix(fence)
+                 && composed.contains("=== Begin export 1a2b3c4d ===") && composed.contains(WorkHandoffStore.crossPlatformMarker))
+    // The kept start is 30% of the room and the kept end fills the rest.
+    let room = WorkHandoffStore.crossPlatformRoom(context: "Context", sessionTitle: "S", provider: "cursor", tag: tag) - WorkHandoffStore.crossPlatformMarker.utf16.count
+    let exportStart = composed.range(of: "=== Begin export 1a2b3c4d ===\n")!.upperBound
+    let kept = composed[exportStart..<composed.range(of: WorkHandoffStore.crossPlatformMarker)!.lowerBound]
+    precondition(abs(kept.utf16.count - room * 3 / 10) <= 2, "head \(kept.utf16.count) vs \(room * 3 / 10)")
+    // Two forks never share a fence, so a past conversation cannot close one early.
+    let a = WorkHandoffStore.crossPlatformPrompt(context: "C", export: "x", sessionTitle: "S", provider: "claude")!
+    let b = WorkHandoffStore.crossPlatformPrompt(context: "C", export: "x", sessionTitle: "S", provider: "claude")!
+    precondition(a != b && WorkHandoffStore.exportTag().count == 8)
     let short = WorkHandoffStore.crossPlatformPrompt(context: "C", export: "# Kickstart\n\nRead-only export. Continue this work here. Do not look.\n\nshort",
                                                      sessionTitle: "S", provider: "claude")!
-    precondition(short.contains("short" + WorkHandoffStore.crossPlatformFence) && !short.contains("Continue this work here"),
+    precondition(short.contains("short\n=== End export ") && !short.contains("Continue this work here"),
                  "the export's own 'continue here' line is not an instruction to the new session")
     // A native fork that made its own session shows lineage; a Continue does not.
     var nativeFork = WorkHandoffReceipt(id: "n", workID: "w", workTitle: "W", sourceRevision: "r", mode: .fork, provider: "codex", modelID: "existing-session",
