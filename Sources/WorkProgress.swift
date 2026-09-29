@@ -185,6 +185,13 @@ struct WorkProgress: Codable, Equatable, Sendable {
             return at
         }.min()
     }
+    /// A tab's handoff showing as a message in the session (0.5.248). No time check: tabCandidates only offers sessions
+    /// created after the tab opened, so none of their messages is older, and Cursor writes no message times at all.
+    nonisolated static func tabPromptSeen(prompt: String, messages: [Reply]) -> Bool {
+        let head = promptKey(prompt)
+        guard head.count >= 12 else { return false }
+        return messages.contains { promptKey($0.text) == head }
+    }
     nonisolated static func promptKey(_ text: String) -> String {
         String(text.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.prefix(60).map(Character.init))
     }

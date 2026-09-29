@@ -548,6 +548,7 @@ final class COSControlHelper {
         case "work-models": try emitWorkModels()
         case "work-new": try emitWorkNew()
         case "work-job": try emitWorkJob(args: args)
+        case "work-tab-folder": try emitWorkTabFolder(args: args)
         case "self-test-work": try selfTestWork()
         case "session-chat-turn": try emitSessionChatTurn(args: args)
         case "session-chat-fork": try emitSessionChatFork(args: args)
@@ -14836,6 +14837,37 @@ final class COSControlHelper {
         try emitWorkJobResponse(response)
     }
 
+    /// 0.5.248: the folder a Work tab opens in, the one the COS server runs agents in. A mirror of
+    /// `resolveProviderWorkDir` (server/lib/launch-dir.ts): a COS brain folder (COS_WORKDIR, else COS_LAUNCH_DIR, as the
+    /// server's `??`) holding `.cos/manifest.json`, `AGENTS.md` or `CLAUDE.md`; for Codex, CODEX_GLASSES_WORKDIR; then
+    /// two levels above COS_SCRIPTS_DIR. Nil when none is configured.
+    static func workTabFolder(provider: String, environment env: [String: String], fileExists: (String) -> Bool) -> String? {
+        func clean(_ raw: String?) -> String? {
+            let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : URL(fileURLWithPath: trimmed).standardizedFileURL.path
+        }
+        if let brain = clean(env["COS_WORKDIR"] ?? env["COS_LAUNCH_DIR"]),
+           [".cos/manifest.json", "AGENTS.md", "CLAUDE.md"].contains(where: { fileExists((brain as NSString).appendingPathComponent($0)) }) {
+            return brain
+        }
+        if provider == "codex", let legacy = clean(env["CODEX_GLASSES_WORKDIR"]) { return legacy }
+        if let scripts = clean(env["COS_SCRIPTS_DIR"]) {
+            return URL(fileURLWithPath: scripts).appendingPathComponent("..").appendingPathComponent("..").standardizedFileURL.path
+        }
+        return nil
+    }
+
+    private func emitWorkTabFolder(args: [String]) throws {
+        let provider = option("--provider", in: args) ?? "claude"
+        guard ["claude", "codex", "cursor"].contains(provider) else { throw HelperError.message("--provider must be claude, codex or cursor") }
+        var isDirectory: ObjCBool = false
+        guard let folder = Self.workTabFolder(provider: provider, environment: serverEnvironment(), fileExists: { fm.fileExists(atPath: $0) }),
+              fm.fileExists(atPath: folder, isDirectory: &isDirectory), isDirectory.boolValue else {
+            emit(ok: true, message: "No COS work folder is configured", details: ["folder": ""]); return
+        }
+        emit(ok: true, message: "Work tab folder", details: ["folder": folder])
+    }
+
     private func emitWorkJob(args: [String]) throws {
         try requireLiveWorkTransport()
         guard let id = option("--client-job-id", in: args), Self.workJobID(id) else {
@@ -14874,7 +14906,20 @@ final class COSControlHelper {
               Self.workMessageEra(["era": "bad/era"]) == nil else {
             throw HelperError.message("Work model/admission contract self-test failed")
         }
-        emit(ok: true, message: "Work model/admission contract passed", details: ["checks": 19])
+        // 0.5.248: the Work tab folder mirrors the server's agent folder, rule by rule.
+        let tabEnv = ["COS_SCRIPTS_DIR": "/Users/x/Repo/operations/scripts"]
+        func withEnv(_ extra: [String: String]) -> [String: String] { tabEnv.merging(extra) { _, new in new } }
+        guard Self.workTabFolder(provider: "claude", environment: tabEnv, fileExists: { _ in false }) == "/Users/x/Repo",
+              Self.workTabFolder(provider: "claude", environment: withEnv(["COS_WORKDIR": "/Users/x/Brain"]), fileExists: { $0 == "/Users/x/Brain/CLAUDE.md" }) == "/Users/x/Brain",
+              Self.workTabFolder(provider: "claude", environment: withEnv(["COS_WORKDIR": "/Users/x/Empty"]), fileExists: { _ in false }) == "/Users/x/Repo",
+              Self.workTabFolder(provider: "claude", environment: withEnv(["COS_WORKDIR": " ", "COS_LAUNCH_DIR": "/Users/x/Brain"]), fileExists: { _ in true }) == "/Users/x/Repo",
+              Self.workTabFolder(provider: "claude", environment: withEnv(["COS_LAUNCH_DIR": "/Users/x/Brain"]), fileExists: { $0 == "/Users/x/Brain/AGENTS.md" }) == "/Users/x/Brain",
+              Self.workTabFolder(provider: "codex", environment: withEnv(["CODEX_GLASSES_WORKDIR": "/Users/x/Codex"]), fileExists: { _ in false }) == "/Users/x/Codex",
+              Self.workTabFolder(provider: "claude", environment: withEnv(["CODEX_GLASSES_WORKDIR": "/Users/x/Codex"]), fileExists: { _ in false }) == "/Users/x/Repo",
+              Self.workTabFolder(provider: "claude", environment: [:], fileExists: { _ in true }) == nil else {
+            throw HelperError.message("Work tab folder self-test failed")
+        }
+        emit(ok: true, message: "Work model/admission contract passed", details: ["checks": 27])
     }
 
     private func emitSessionChatTurn(args: [String]) throws {

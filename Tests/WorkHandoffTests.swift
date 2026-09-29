@@ -104,6 +104,7 @@ private actor HandoffTransport {
         func make(_ name: String, _ mock: HandoffTransport, isolated: Bool = false) -> WorkHandoffStore {
             let store = WorkHandoffStore(isolated: isolated, storageURL: root.appendingPathComponent(name + ".json"), transport: { args, data in try await mock.run(args, data) })
             store.sessions = [target, other]; store.models = [choice]
+            store.opensTabs = false   // these check the background run; tabs are covered in WorkProgressChecks (0.5.248)
             return store
         }
         func value(_ args: [String], _ flag: String) -> String? {

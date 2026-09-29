@@ -2150,6 +2150,9 @@ struct ControlPanel: View {
             // 0.5.247: Work tracking notifications (a session received a task, finished it, or needs you).
             Toggle("Work notifications", isOn: Binding(get: { model.workNotificationsEnabled }, set: { model.workNotificationsEnabled = $0 }))
                 .help("Notify me when a session receives Work, reports it done, or needs my input")
+            // 0.5.248: New sessions open as a tab in the app, where Miles works alongside COS.
+            Toggle("Open new sessions in the app", isOn: Binding(get: { model.workOpensTabs }, set: { model.workOpensTabs = $0 }))
+                .help("Start work in a new Claude, Codex or Cursor tab you send yourself. Off: runs in the background on this Mac")
             DisclosureGroup("Advanced") {
                 // 0.5.234: the Meetings clock. The server sends 24-hour times and
                 // the tab used to print them raw; twelve-hour is the default here

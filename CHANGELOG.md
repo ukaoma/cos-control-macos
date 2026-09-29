@@ -1,3 +1,22 @@
+## 0.5.248 (build 286)
+
+New sessions from Work open as a tab in Claude, Codex or Cursor. You press Send there and work in the app alongside COS, and Work follows the session as before. Includes 0.5.247. Pairs with server 6.57.1; the Jev check needs server 6.58.0.
+
+- Miles, 2026-09-29: "Tabs right away, in claude, ChatGPT and Cursor. Goal is to be able to work collaboratively with our orchestrator so that step is important. We can't see or recover those headless sessions with the GUI." A New session used to run in the background on the COS server, so it never appeared in the app's sidebar.
+- **New session opens a tab.** Start a new session (and Start work) for Claude, Codex or Cursor opens a new chat in that app with the handoff filled in, including its status line. It never sends by itself. The card reads "Opened in Claude. Press Send there to start it."
+  - Claude opens a new Code tab in the COS folder (the folder the server runs agents in).
+  - Codex opens a new thread in that project, in the ChatGPT app.
+  - Cursor shows its own "Create chat with prompt" dialog, then a new chat in the workspace Cursor has open. Choose Create Chat, then Send.
+  - Each app uses its own default model. None of their links can choose one.
+- **Work links the session once you send it.** The tracker looks for that app's sessions started after the tab opened whose first message is the handoff, then records the session. Received moves the card to Draft and done moves it to QA, as with every tracked handoff. A session older than the tab, or another app's, is never matched.
+- **Cursor and long handoffs.** Cursor drops a link of about 10,000 characters or more without a word, so a longer handoff is saved to a file beside Work's history, and the tab carries a short prompt that names the file and starts with the task's tag.
+- **Open again and Not sending it.** A tab not sent yet can be opened again with the same words, or closed, which lets the item take a new handoff.
+- **Fork to another platform** opens its tab the same way, with the conversation carried over.
+- **Ollama has no app**, so it keeps the background run, as does every provider when Settings > Open new sessions in the app is off.
+- The exact words each tab opened with are kept beside Work's history, never in your repository.
+- Fixed in the tests: the helper's Work self-test (the model catalog, admission, and now the tab folder rules) was its own command that nothing ran. The test suite runs it now.
+- Tests: the links for each app, character by character, including non-ASCII letters and reserved characters; no background run for a tab; linking skips older sessions and other apps; Cursor's file handoff, Open again, and a Cursor session whose messages carry no times; a refused open; Not sending it; Ollama in the background. The helper's self-test covers each folder rule the server uses.
+
 ## 0.5.247 (build 285)
 
 Sessions move their own tasks. Every handoff is followed from sent to done, and the Kanban keeps up by itself, as far as QA. Pairs with server 6.57.1. The Jev check below needs server 6.58.0.

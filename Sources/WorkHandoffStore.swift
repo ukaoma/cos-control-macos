@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 import Darwin
@@ -729,7 +730,13 @@ struct WorkSendPlan: Equatable {
                 row.status = "queued"; row.detail = "Simulated handoff. No message was sent to a provider. Use the test controls to advance it."
                 try save(row); return
             }
-            if mode == .newSession {
+            if mode == .newSession, opensTabs, Self.tabProviders.contains(row.provider) {
+                // 0.5.248: a tab in the provider's app, prompt filled in, that you send yourself (Miles, 2026-09-29:
+                // "Tabs right away, in claude, ChatGPT and Cursor ... We can't see or recover those headless sessions
+                // with the GUI."). The tracker links the session once you press Send.
+                row.channel = "tab"; try save(row)
+                try await openTab(&row, sent: sent, instruction: instruction)
+            } else if mode == .newSession {
                 row.channel = "job"; try save(row)
                 let data = try JSONSerialization.data(withJSONObject: ["clientJobId": id, "query": sent, "model": model!.id])
                 let result = try await call(["work-new"], data)
@@ -768,6 +775,140 @@ struct WorkSendPlan: Equatable {
             self.error = error.localizedDescription
         }
     }
+    // MARK: - Tabs in the apps (0.5.248)
+
+    /// Providers whose New session opens as a tab in their own app. Ollama has no app, so it keeps the background run.
+    nonisolated static let tabProviders: Set<String> = ["claude", "codex", "cursor"]
+    /// Longest Cursor link that is safe. Cursor drops a prompt link of about 10,000 characters or more without any
+    /// dialog or log line (9,000 opened, 10,000 did not, 2026-09-29), so a longer handoff goes in a file.
+    nonisolated static let cursorTabLinkLimit = 8_000
+    /// New sessions open as tabs (Settings, on unless turned off). Off, they run in the background as before.
+    var opensTabs = true
+    /// Opens a link in its app; replaced in tests.
+    var openURL: @MainActor (URL) -> Bool = { NSWorkspace.shared.open($0) }
+
+    nonisolated static func tabAppName(_ provider: String) -> String {
+        switch provider { case "codex": "Codex"; case "cursor": "Cursor"; default: "Claude" }
+    }
+    /// Unreserved URL characters only (RFC 3986), in ASCII: everything else is percent-encoded, including non-ASCII
+    /// letters, which `.alphanumerics` would let through.
+    nonisolated static let tabQueryAllowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+    /// The link that opens a new chat in the provider's app with `prompt` filled in, never sent (canaried 2026-09-29).
+    nonisolated static func tabLink(provider: String, folder: String, prompt: String) -> URL? {
+        func q(_ text: String) -> String? { text.addingPercentEncoding(withAllowedCharacters: tabQueryAllowed) }
+        guard let text = q(prompt), !prompt.isEmpty else { return nil }
+        switch provider {
+        case "claude":
+            // Claude refuses a link whose prompt starts with "/" (a slash command), so it gets a leading space.
+            guard let path = q(folder), !folder.isEmpty, let safe = prompt.hasPrefix("/") ? q(" " + prompt) : text else { return nil }
+            return URL(string: "claude://code/new?folder=\(path)&q=\(safe)")
+        case "codex":
+            guard let path = q(folder), !folder.isEmpty else { return nil }
+            return URL(string: "codex://threads/new?path=\(path)&prompt=\(text)")
+        case "cursor":
+            // Cursor's link takes no folder: the chat opens in the workspace Cursor has open.
+            return URL(string: "cursor://anysphere.cursor-deeplink/prompt?text=\(text)&mode=agent")
+        default: return nil
+        }
+    }
+    /// The short Cursor prompt for a handoff too long for its link. The task tag leads, so two such handoffs never
+    /// share a first line (the tracker links a tab by its first line).
+    nonisolated static func cursorFilePrompt(tag: String, path: String, instruction: String) -> String {
+        "COS Work handoff \(tag): the whole task is in the file \(path). Read all of it first, then do what it asks." + instruction
+    }
+    /// Sessions that could be the one a tab became: the tab's provider, created once the tab opened (5 s slack), not
+    /// already linked to another handoff; oldest first, since the first one after opening is the likeliest.
+    nonisolated static func tabCandidates(_ rows: [JSONValue], provider: String, openedAt: Double, taken: Set<String>) -> [WorkSession] {
+        rows.compactMap(\.object).compactMap { row -> (WorkSession, Double)? in
+            guard (row["provider"]?.string ?? "claude") == provider, let native = row["id"]?.string, !native.isEmpty,
+                  let created = row["createdAt"]?.string.flatMap(WorkProgress.parseStamp), created >= openedAt - 5 else { return nil }
+            let id = "\(provider):\(native)"
+            guard !taken.contains(id) else { return nil }
+            return (WorkSession(id: id, nativeID: native, provider: provider, title: row["name"]?.string ?? "", summary: "",
+                                project: row["workspace"]?.string ?? "", status: row["state"]?.string ?? "running"), created)
+        }.sorted { $0.1 < $1.1 }.map(\.0)
+    }
+
+    private func openTab(_ row: inout WorkHandoffReceipt, sent: String, instruction: String) async throws {
+        let app = Self.tabAppName(row.provider)
+        let folder = (try await call(["work-tab-folder", "--provider", row.provider]))["folder"]?.string ?? ""
+        guard !folder.isEmpty else {
+            row.status = "refused"; row.detail = "COS could not tell which folder to open \(app) in. Nothing was opened or sent."; return
+        }
+        // The exact words go in a file beside the journal: Open again reopens them (the journal keeps only a note for a
+        // fork to another platform), and a Cursor handoff too long for its link is read from it.
+        let file = tabFile(row.id)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(sent.utf8).write(to: file, options: .atomic)
+        var prompt = sent
+        if row.provider == "cursor", (Self.tabLink(provider: "cursor", folder: folder, prompt: sent)?.absoluteString.utf16.count ?? .max) > Self.cursorTabLinkLimit {
+            prompt = Self.cursorFilePrompt(tag: WorkProgress.tag(forWorkID: row.workID), path: file.path, instruction: instruction)
+            row.prompt = prompt
+        }
+        guard let url = Self.tabLink(provider: row.provider, folder: folder, prompt: prompt), openURL(url) else {
+            row.status = "refused"; row.detail = "\(app) could not be opened. Nothing was sent."; return
+        }
+        row.status = "queued"
+        row.detail = row.provider == "cursor" ? "Opened in Cursor. Choose Create Chat, then press Send there."
+                                              : "Opened in \(app). Press Send there to start it."
+    }
+
+    /// Opens a queued tab again (it was closed, or the app was not running). The same words, so linking still works.
+    func reopenTab(receiptID: String) async {
+        guard !isolated, let row = receipts.first(where: { $0.id == receiptID }), row.channel == "tab", row.status == "queued",
+              row.sessionID == nil else { return }
+        let folder = (try? await call(["work-tab-folder", "--provider", row.provider]))?["folder"]?.string ?? ""
+        // A Cursor handoff sent through a file reopens with its short prompt; any other reopens the saved words.
+        let saved = (try? Data(contentsOf: tabFile(row.id))).map { String(decoding: $0, as: UTF8.self) }
+        let text = row.prompt.hasPrefix("COS Work handoff ") ? row.prompt : (saved ?? row.prompt)
+        guard let url = Self.tabLink(provider: row.provider, folder: folder, prompt: text), openURL(url) else {
+            error = "\(Self.tabAppName(row.provider)) could not be opened."; return
+        }
+    }
+    /// Where a tab's exact words are kept, beside the journal (Application Support, never the user's repository).
+    func tabFile(_ id: String) -> URL {
+        storageURL.deletingLastPathComponent().appendingPathComponent("tabs", isDirectory: true).appendingPathComponent(id + ".md")
+    }
+    /// You will not send this tab: it stops blocking a new handoff for the item. Nothing reached a session.
+    func cancelTab(receiptID: String) {
+        updateReceipt(receiptID) { current in
+            guard current.channel == "tab", current.status == "queued", current.sessionID == nil else { return false }
+            current.status = "canceled"; current.detail = "Not sent. You closed this handoff before sending it."
+            return true
+        }
+    }
+
+    /// Links each tab Work opened to the session it became once you pressed Send: that provider's sessions created
+    /// since the tab opened whose first message is this handoff (WorkProgress.tabPromptSeen). Called by the tracker.
+    func linkOpenedTabs(ids: Set<String>) async {
+        guard !isolated, storageReady else { return }
+        let waiting = receipts.filter { ids.contains($0.id) && $0.channel == "tab" && $0.sessionID == nil && $0.status == "queued" }
+        guard !waiting.isEmpty, let listed = (try? await call(["claude-sessions", "--fresh"]))?["sessions"]?.array else { return }
+        var taken = Set(receipts.compactMap(\.sessionID))
+        for row in waiting {
+            for candidate in Self.tabCandidates(listed, provider: row.provider, openedAt: row.createdAt, taken: taken).prefix(4) {
+                guard let read = try? await sessionRead(sessionID: candidate.id, turns: 4),
+                      WorkProgress.tabPromptSeen(prompt: row.prompt, messages: read.prompts) else { continue }
+                if commitTabLink(row, session: candidate) { taken.insert(candidate.id) }
+                break
+            }
+        }
+    }
+    @discardableResult private func commitTabLink(_ row: WorkHandoffReceipt, session: WorkSession) -> Bool {
+        let app = Self.tabAppName(row.provider)
+        let linked = updateReceipt(row.id) { current in
+            guard current.sessionID == nil, current.status == "queued" else { return false }
+            current.sessionID = session.id
+            if !session.title.isEmpty { current.sessionTitle = session.title }
+            current.status = "delivered"; current.detail = "Started in \(app). Work follows it from here."
+            // A new session: nothing in it predates this handoff, so an untimed reply (Cursor) is never baseline.
+            if var progress = current.progress, progress.baseline == nil { progress.baseline = []; current.progress = progress }
+            return true
+        }
+        if linked, !sessions.contains(where: { $0.id == session.id }) { sessions.append(session) }
+        return linked
+    }
+
     /// Waits before each re-read of a New session that started without naming its session (0.5.247).
     var newSessionLinkDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(8)]
     /// The re-read the last New session started, so a test can wait for it.

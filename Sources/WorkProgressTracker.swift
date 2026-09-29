@@ -128,6 +128,10 @@ struct WorkProgressNotice: Equatable, Sendable {
         }
         let open = candidates(now: start)
         guard !open.isEmpty else { return }
+        // 0.5.248: a tab Work opened in an app becomes a session once you press Send there.
+        if open.contains(where: { $0.channel == "tab" && $0.sessionID == nil }) {
+            await store.linkOpenedTabs(ids: Set(open.map(\.id)))
+        }
         await store.reconcileForTracking(ids: Set(open.map(\.id)), now: start)
 
         // One read per session, backing off while a session stays quiet.

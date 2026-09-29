@@ -184,6 +184,7 @@ final class ControllerModel: ObservableObject {
     var workSessionIDs: Set<String> { Set(workHandoffStore?.receipts.compactMap(\.sessionID) ?? []) }
     private(set) var workTracker: WorkProgressTracker?
     nonisolated static let workNotificationsKey = "cos.workNotifications"
+    nonisolated static let workOpensTabsKey = "cos.workOpensTabs"
     @Published var mediaPreviewStates: [String: RecentMediaPreviewState] = [:]
     @Published var selectedMediaPreview: SelectedMediaPreview?
     @Published var previewingMediaID: String?
@@ -462,6 +463,7 @@ final class ControllerModel: ObservableObject {
                 try await self.setWorkStage(task, stage: stage)
             }),
             notify: { [weak self] notice in self?.postWorkNotice(notice) })
+        store.opensTabs = workOpensTabs
         workHandoffStore = store
         workTracker = tracker
         meetingAudioNotifier.onOpenWork = { [weak self] workID in self?.openWorkItem(workID) }
@@ -471,6 +473,12 @@ final class ControllerModel: ObservableObject {
     var workNotificationsEnabled: Bool {
         get { UserDefaults.standard.object(forKey: Self.workNotificationsKey) as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: Self.workNotificationsKey); objectWillChange.send() }
+    }
+    /// 0.5.248: New sessions open as a tab in Claude, Codex or Cursor (on unless turned off). Off, they run in the
+    /// background on the COS server, as before.
+    var workOpensTabs: Bool {
+        get { UserDefaults.standard.object(forKey: Self.workOpensTabsKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: Self.workOpensTabsKey); workHandoffStore?.opensTabs = newValue; objectWillChange.send() }
     }
     private func postWorkNotice(_ notice: WorkProgressNotice) {
         guard workNotificationsEnabled else { return }

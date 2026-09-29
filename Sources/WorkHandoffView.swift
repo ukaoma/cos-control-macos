@@ -111,7 +111,14 @@ struct WorkHandoffView: View {
     /// 0.5.247: where a New session runs. It is a run on this Mac through COS, never a tab in the provider's app, so
     /// Miles looked for it in Claude's sidebar, found nothing and read the handoff as lost (2026-09-29).
     nonisolated static func whereItRunsNote(_ receipt: WorkHandoffReceipt) -> String? {
-        guard receipt.mode == .newSession, receipt.channel == "job", ["claude", "codex"].contains(receipt.provider) else { return nil }
+        guard receipt.mode == .newSession else { return nil }
+        if receipt.channel == "tab" {
+            // 0.5.248: a tab in the provider's app, which Miles works in alongside COS.
+            let app = WorkHandoffStore.tabAppName(receipt.provider)
+            if receipt.sessionID != nil { return "Runs in the \(app) app, where you can work with it. Open session shows it here too." }
+            return receipt.status == "queued" ? "Work links the session once you send it in \(app)." : nil
+        }
+        guard receipt.channel == "job", ["claude", "codex"].contains(receipt.provider) else { return nil }
         let app = receipt.provider == "codex" ? "Codex" : "Claude"
         if receipt.sessionID == nil {
             return receipt.blocksNewHandoff ? "Runs on this Mac through COS, not as a tab in the \(app) app. Its session shows here in a moment." : nil
@@ -285,7 +292,13 @@ struct WorkHandoffView: View {
                     Button(WorkHandoffView.acknowledgeTitle(receipt)) { store.markReviewed(receiptID: receipt.id) }
                         .buttonStyle(COSQuietButtonStyle()).disabled(store.busy || validating)
                 }
-                if receipt.blocksNewHandoff && receipt.status != "delivered" {
+                if receipt.channel == "tab", receipt.status == "queued", receipt.sessionID == nil {
+                    // 0.5.248: the tab was closed or the app was not running; or you will not send it.
+                    Button("Open again") { Task { await store.reopenTab(receiptID: receipt.id) } }
+                        .buttonStyle(COSQuietButtonStyle()).disabled(isPreview)
+                    Button("Not sending it") { store.cancelTab(receiptID: receipt.id) }
+                        .buttonStyle(COSTextButtonStyle()).disabled(isPreview)
+                } else if receipt.blocksNewHandoff && receipt.status != "delivered" {
                     Button("Check status") { Task { await store.refreshReceipts() } }
                         .buttonStyle(COSTextButtonStyle()).disabled(store.busy || validating)
                 }
@@ -399,7 +412,7 @@ struct WorkHandoffView: View {
                     Divider().overlay(COSPalette.line)
                     choiceRow(.fork, title: "Fork a session", detail: "Copies a conversation first. Same platform, or to Claude or Codex.")
                     Divider().overlay(COSPalette.line)
-                    choiceRow(.newSession, title: "Start a new session", detail: "Claude, Codex, Cursor or a local model, with a model you pick.")
+                    choiceRow(.newSession, title: "Start a new session", detail: store.opensTabs ? "Opens a new tab in Claude, Codex or Cursor with this context; you press Send there. A local model runs in the background." : "Claude, Codex, Cursor or a local model, with a model you pick.")
                 }.overlay(RoundedRectangle(cornerRadius: 8).stroke(COSPalette.line))
             }
             VStack(alignment: .leading, spacing: 6) {
@@ -549,7 +562,9 @@ struct WorkHandoffView: View {
                     }
                     Text("\(session.status.capitalized) · \(session.project.isEmpty ? "Workspace unavailable" : session.project)")
                         .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
-                    Text(forkToPlatform
+                    Text(forkToPlatform && store.opensTabs
+                         ? "Opens a new \(WorkHandoffStore.tabAppName(provider)) tab with this context plus the conversation up to now from \u{201C}\(session.title)\u{201D}, read from its transcript (up to 32,000 characters in all). You press Send there. The original session is unchanged."
+                         : forkToPlatform
                          ? "Starts a new \(WorkHandoffStore.providerName(provider)) session with this context plus the conversation up to now from \u{201C}\(session.title)\u{201D}, read from its transcript (up to 32,000 characters in all). It uses the server\u{2019}s configured workspace and permissions, not the original session\u{2019}s. The original session is unchanged."
                          : mode == .fork ? "Creates a copy with \(WorkHandoffStore.providerName(session.provider)); the original remains unchanged." : "Uses this session’s model and permissions. Busy sessions may queue or refuse.")
                         .font(COSType.body(11)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
