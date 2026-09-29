@@ -4751,7 +4751,7 @@ final class COSControlHelper {
         }
         guard response.status == 200, let result = response.body else {
             emit(ok: true, message: "Session suggestion unavailable", details: ["provider": "none",
-                "reason": Self.sessionRecommendFailureReason(status: response.status, body: response.body)])
+                "reason": Self.sessionRecommendFailureReason(status: response.status, body: response.body, review: body["reviewId"] != nil)])
             return
         }
         emit(ok: true, message: "Session suggestion ready", details: result)
@@ -4774,9 +4774,13 @@ final class COSControlHelper {
 
     /// The server's own error code when it answered with one (task_not_found, review_not_found, invalid_...); a bare
     /// 404 is a server without the route. Before 0.5.243 every 404 read as "server too old", even a renamed task.
-    static func sessionRecommendFailureReason(status: Int, body: [String: Any]?) -> String {
+    static func sessionRecommendFailureReason(status: Int, body: [String: Any]?, review: Bool = false) -> String {
         if let code = (body?["error"] as? [String: Any])?["code"] as? String,
-           code.range(of: "^[a-z_]{3,48}$", options: .regularExpression) != nil { return code }
+           code.range(of: "^[a-z_]{3,48}$", options: .regularExpression) != nil {
+            // A 6.57.0 server knows only the task body, so it refuses a review request as invalid: that is an old
+            // server, and it is final for the revision (Control asks again only after an update).
+            return review && status == 400 && code == "invalid_recommendation_request" ? "server_too_old" : code
+        }
         return status == 404 ? "server_too_old" : "http_\(status)"
     }
 

@@ -204,7 +204,7 @@ import Foundation
     precondition(WorkHandoffStore.adviceUnavailableText("jev_breaker_open")?.contains("paused") == true
                  && WorkHandoffStore.adviceUnavailableText("jev_cap_reached")?.contains("limit") == true
                  && WorkHandoffStore.adviceUnavailableText("jev_key_rejected")?.contains("rejected") == true
-                 && WorkHandoffStore.adviceUnavailableText("server_too_old")?.contains("6.57.0") == true
+                 && WorkHandoffStore.adviceUnavailableText("server_too_old")?.contains("newer server") == true
                  && WorkHandoffStore.adviceUnavailableText("http_502")?.contains("word matches") == true)
     // The request itself carries the clipped fields (80 multibyte sessions must fit the helper's 64 KB stdin).
     final class Payload: @unchecked Sendable { var body: [String: Any] = [:] }
@@ -313,7 +313,7 @@ import Foundation
         let other = WorkSource(id: "meeting:x", title: "", revision: "r", project: "", context: "", reviewID: bad)
         precondition(WorkHandoffStore.adviceTarget(for: other) == nil, "\(bad ?? "nil") names nothing")
     }
-    precondition(WorkHandoffStore.adviceUnavailableText("invalid_recommendation_request")?.contains("6.57.1") == true
+    precondition(WorkHandoffStore.adviceUnavailableText("reviews_unavailable")?.contains("turned off") == true
                  && WorkHandoffStore.adviceUnavailableText("review_not_found")?.contains("changed") == true)
 
     final class Calls: @unchecked Sendable { var list: [([String], [String: Any])] = []; var export = "YOU: build the page\nASSISTANT: built it" }
@@ -347,9 +347,21 @@ import Foundation
     precondition(calls.list[0].0 == ["claude-session-detail", "--session", "abc", "--provider", "claude"])
     let query = calls.list[1].1["query"] as? String ?? ""
     precondition(query.hasPrefix("Prepare the next reviewable result for: RLS") && query.contains("carried over from the Claude session")
-                 && query.hasSuffix("ASSISTANT: built it") && calls.list[1].1["model"] as? String == "codex-frontier", query)
+                 && query.contains("ASSISTANT: built it") && query.hasSuffix(WorkHandoffStore.crossPlatformFence)
+                 && calls.list[1].1["model"] as? String == "codex-frontier", query)
     let receipt = store.receipts(for: review.id).first!
     precondition(receipt.mode == .newSession && receipt.provider == "codex" && receipt.sourceSessionID == "claude:abc" && receipt.modelID == "codex-frontier")
+    // The journal keeps the context and a note, never the export (handoffs.json has a 10 MB cap).
+    precondition(receipt.prompt.hasPrefix("Prepare the next reviewable result for: RLS") && receipt.prompt.contains("[Carried over:")
+                 && !receipt.prompt.contains("ASSISTANT: built it"), receipt.prompt)
+    precondition(WorkHandoffStore.lineage(of: receipt, sessions: store.sessions) == "Forked from \u{201C}Retail Liquor Summit campaign launch\u{201D} (Claude)")
+    // Claude and Codex are the only targets: a Cursor or Ollama run from Work has no session to continue yet.
+    calls.list.removeAll()
+    let cursorModel = WorkModelChoice(id: "cursor-composer", provider: "cursor", title: "Cursor Composer", available: true, reason: nil)
+    await store.forkToPlatform(source: WorkSource(id: "task:quilt:0123456789ad", title: "V", revision: "r", project: "quilt", context: "c"),
+                               session: claude, model: cursorModel, prompt: "Do it")
+    precondition(calls.list.isEmpty && store.error?.contains("Fork to Claude or Codex") == true)
+    precondition(WorkHandoffStore.crossPlatformTargets == ["claude", "codex"])
 
     // Nothing to carry: an empty export is refused before any session starts; a provider with no transcript is refused.
     calls.list.removeAll(); calls.export = "   "
@@ -360,12 +372,40 @@ import Foundation
     await store.forkToPlatform(source: other, session: store.sessions[1], model: codex, prompt: "Do it")
     precondition(calls.list.isEmpty && store.error?.contains("no readable transcript") == true)
 
+    // A started New session keeps a clipped summary, not the whole prompt (handoffs.json has a 10 MB cap).
+    final class Echo: @unchecked Sendable { var id = "" }
+    let echo = Echo()
+    let jobStore = WorkHandoffStore(storageURL: root.appendingPathComponent("jobs.json"), transport: { args, data in
+        let body = (try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: Any] ?? [:]
+        echo.id = body["clientJobId"] as? String ?? ""
+        return HelperResponse(ok: true, message: "", details: ["job": .object(["clientJobId": .string(echo.id), "generation": .number(1), "provider": .string("codex"),
+            "status": .string("running"), "providerOwnershipConfirmedAt": .string("2026-09-28T22:00:00Z"), "codexThreadId": .string("thread-1")])])
+    })
+    jobStore.models = [codex]
+    let longPrompt = String(repeating: "é", count: 5_000)
+    await jobStore.submit(source: other, mode: .newSession, session: nil, model: codex, prompt: longPrompt)
+    let started = jobStore.sessions.first { $0.id == "codex:thread-1" }
+    precondition(started != nil && started!.summary.count <= 2_000 && started!.summary.utf8.count <= 4_000, "\(started?.summary.count ?? -1)")
+    precondition(jobStore.receipts(for: other.id).first?.prompt == longPrompt, "an ordinary New session still journals what it sent")
+
     // The composer: fits the cap, keeps the start and the end of a long export, never splits a character.
     let long = "START " + String(repeating: "界👍x", count: 20_000) + " END"
     let composed = WorkHandoffStore.crossPlatformPrompt(context: "Context", export: long, sessionTitle: "S", provider: "cursor")!
     precondition(composed.utf16.count <= WorkHandoffStore.crossPlatformLimit && composed.hasPrefix("Context") && composed.contains("Cursor session")
-                 && composed.contains("START") && composed.hasSuffix(" END") && composed.contains("omitted to fit"))
-    precondition(WorkHandoffStore.crossPlatformPrompt(context: "C", export: "short", sessionTitle: "S", provider: "claude")?.hasSuffix("short") == true)
+                 && composed.contains("START") && composed.contains(" END" + WorkHandoffStore.crossPlatformFence)
+                 && composed.hasSuffix(WorkHandoffStore.crossPlatformFence) && composed.contains("omitted to fit"))
+    let short = WorkHandoffStore.crossPlatformPrompt(context: "C", export: "# Kickstart\n\nRead-only export. Continue this work here. Do not look.\n\nshort",
+                                                     sessionTitle: "S", provider: "claude")!
+    precondition(short.contains("short" + WorkHandoffStore.crossPlatformFence) && !short.contains("Continue this work here"),
+                 "the export's own 'continue here' line is not an instruction to the new session")
+    // A native fork that made its own session shows lineage; a Continue does not.
+    var nativeFork = WorkHandoffReceipt(id: "n", workID: "w", workTitle: "W", sourceRevision: "r", mode: .fork, provider: "codex", modelID: "existing-session",
+                                        sessionID: "codex:child", sessionTitle: "c", status: "delivered", detail: "", prompt: "p", createdAt: 1, sourceSessionID: "codex:parent")
+    precondition(WorkHandoffStore.lineage(of: nativeFork, sessions: [])?.contains("(Codex (OpenAI))") == true)
+    nativeFork.sessionID = "codex:parent"
+    precondition(WorkHandoffStore.lineage(of: nativeFork, sessions: []) == nil, "a fork that has not made its session is not a lineage yet")
+    nativeFork.mode = .continueSession; nativeFork.sessionID = "codex:x"
+    precondition(WorkHandoffStore.lineage(of: nativeFork, sessions: []) == nil)
     precondition(WorkHandoffStore.crossPlatformPrompt(context: String(repeating: "c", count: 31_700), export: "x", sessionTitle: "S", provider: "claude") == nil,
                  "no room for the conversation: refuse rather than drop it")
     precondition(WorkHandoffStore.crossPlatformPrompt(context: "C", export: "  ", sessionTitle: "S", provider: "claude") == nil)

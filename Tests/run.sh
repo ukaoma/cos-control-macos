@@ -969,6 +969,7 @@ src = open(sys.argv[1]).read()
 assert "await store.forkToPlatform(source: sendingSource, session: sendingSession, model: sendingModel, prompt: sendingPrompt)" in src, "Fork to platform is not wired to the send button"
 assert "WorkHandoffStore.applying(advice, to: draft)" in src, "Use this no longer goes through WorkHandoffStore.applying"
 assert "if mode == .fork { forkTarget }" in src, "the Fork to picker is not shown in Fork mode"
+assert 'if value == .fork && mode != .fork { next.provider = ""; next.modelID = "" }' in src, "entering Fork must clear a New session provider"
 PY
 # 0.5.242: the menu-bar window opens straight into ControlPanel. 0.5.240 stacked an unstyled "Open Work"
 # button above it; Work is reached from the panel's Activity chips, which come from ActivitySection.allCases.

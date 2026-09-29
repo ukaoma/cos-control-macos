@@ -68,6 +68,11 @@ try:
                 dict(review, text='inject'), {'reviewId': review['reviewId']}):
         assert not run(['work-session-recommend'], json.dumps(bad).encode())['ok'], bad
     assert len(calls) == before, 'No malformed review request reaches the server'
+    # A 6.57.0 server refuses the review body as invalid: that reads as an old server, for reviews only.
+    state['rec'], state['recBody'] = 400, {'error': {'code': 'invalid_recommendation_request'}}
+    assert run(['work-session-recommend'], json.dumps(review).encode())['details'] == {'provider': 'none', 'reason': 'server_too_old'}
+    assert run(['work-session-recommend'], json.dumps(good).encode())['details'] == {'provider': 'none', 'reason': 'invalid_recommendation_request'}
+    state['rec'], state['recBody'] = 200, {}
     before = len(calls)
     for bad in (dict(good, text='inject'), dict(good, id='nope'), dict(good, domain='../x'),
                 dict(good, sessions=[{'id': str(i), 'title': 't'} for i in range(81)]), {'domain': 'quilt', 'id': 'a' * 12}):
