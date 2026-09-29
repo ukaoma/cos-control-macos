@@ -70,6 +70,16 @@ struct WorkBoardSessionCard: Identifiable {
     var earlierRevision = false
     var id: String { activity.receipt.id }
     var state: WorkHandoffState { WorkHandoffState(activity) }
+    nonisolated static let cardWidth: CGFloat = 320
+    nonisolated static let cardGap: CGFloat = 12
+    nonisolated static let targetWidth: CGFloat = 240
+    /// The pinned Start work column: the target plus the gap before it.
+    nonisolated static let pinnedColumnWidth: CGFloat = targetWidth + cardGap
+    /// Whether `cards` session cards run under the pinned column in a row `width` wide.
+    nonisolated static func rowOverflows(cards: Int, width: CGFloat) -> Bool {
+        guard cards > 0, width > 0 else { return false }
+        return CGFloat(cards) * cardWidth + CGFloat(cards - 1) * cardGap > width - pinnedColumnWidth
+    }
     /// "sent 42 min ago" while running or waiting on delivery, "active 3 h ago" once the session has gone quiet.
     func ageText(now: Date = Date()) -> String {
         let sent = Date(timeIntervalSince1970: activity.receipt.createdAt)
@@ -335,6 +345,7 @@ enum WorkWorkspaceProjection {
 
 struct WorkWorkspaceView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var model: ControllerModel
     @ObservedObject var handoffStore: WorkHandoffStore
     @ObservedObject var reviewStore: WorkReviewStore
@@ -355,6 +366,8 @@ struct WorkWorkspaceView: View {
     @AppStorage("cos.workSessionsRowCollapsed") private var sessionsCollapsed = false
     @State private var startDropTargeted = false
     @State private var columnTarget: WorkBoardStage?
+    /// Width of the session row, measured, so the pinned Start work column casts its edge only when cards run under it.
+    @State private var sessionsRowWidth: CGFloat = 0
     /// The remembered layout (Board by default; an unknown stored value reads as Board). The isolated preview keeps
     /// its own, so trying Focus there never changes the real preference.
     private var storedLayout: WorkLayout { handoffStore.isolated ? state.previewLayout : (WorkLayout(rawValue: layoutRaw) ?? .board) }
@@ -728,17 +741,54 @@ struct WorkWorkspaceView: View {
                         .help(sessionsCollapsed ? "Show the session cards" : "Hide the session cards to give the board more room")
                 }
             }
-            HStack(alignment: .top, spacing: 12) {
-                if !sessionsCollapsed && !cards.isEmpty {
+            // 0.5.245: Start work is a pinned column the session cards slide under, instead of a hard cut beside it.
+            // Its leading shadow and hairline appear only when cards actually run under it, so a short row stays flat.
+            let showCards = !sessionsCollapsed && !cards.isEmpty
+            let overflowing = showCards && WorkBoardSessionCard.rowOverflows(cards: cards.count, width: sessionsRowWidth)
+            ZStack(alignment: .topTrailing) {
+                if showCards {
                     ScrollView(.horizontal) {
-                        HStack(alignment: .top, spacing: 12) { ForEach(cards) { sessionCard($0) } }.padding(.vertical, 2)
-                    }.frame(maxWidth: .infinity, alignment: .leading)
+                        HStack(alignment: .top, spacing: WorkBoardSessionCard.cardGap) {
+                            ForEach(cards) { sessionCard($0) }
+                            // Room to scroll the last card fully clear of the pinned column.
+                            Color.clear.frame(width: WorkBoardSessionCard.pinnedColumnWidth, height: 1)
+                        }.padding(.vertical, 2)
+                    }.scrollIndicators(overflowing ? .visible : .hidden)
+                    // Cards fade out over 40 pt before they pass under the pinned column, instead of cutting mid-letter.
+                    .mask(HStack(spacing: 0) {
+                        Rectangle()
+                        if overflowing {
+                            LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing).frame(width: 40)
+                            Color.clear.frame(width: WorkBoardSessionCard.pinnedColumnWidth)
+                        }
+                    })
                 } else {
+                    Color.clear.frame(height: sessionsCollapsed ? 40 : 96)
+                }
+                VStack(spacing: 0) {
+                    startWorkTarget(empty: cards.isEmpty, compact: sessionsCollapsed)
                     Spacer(minLength: 0)
                 }
-                // Pinned outside the scroll so it is always a visible drop target.
-                startWorkTarget(empty: cards.isEmpty, compact: sessionsCollapsed)
+                .padding(.leading, WorkBoardSessionCard.cardGap)
+                .frame(width: WorkBoardSessionCard.pinnedColumnWidth)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .background(alignment: .leading) {
+                    // A horizontal-only shade, so nothing bleeds onto the header above or the board below.
+                    Rectangle().fill(COSPalette.panel)
+                        .overlay(alignment: .leading) {
+                            if overflowing {
+                                // Deeper on the dark espresso, where a light shade disappears.
+                                LinearGradient(colors: [.clear, .black.opacity(colorScheme == .dark ? 0.45 : 0.16)], startPoint: .leading, endPoint: .trailing)
+                                    .frame(width: 18).offset(x: -18).allowsHitTesting(false)
+                                Rectangle().fill(COSPalette.line).frame(width: 1)
+                            }
+                        }
+                }
             }
+            .background(GeometryReader { box in
+                Color.clear.onAppear { sessionsRowWidth = box.size.width }
+                    .onChange(of: box.size.width) { _, width in sessionsRowWidth = width }
+            })
         }.padding(.horizontal, 18).padding(.bottom, 14)
     }
 
@@ -780,7 +830,7 @@ struct WorkWorkspaceView: View {
                 Button(card.item.review != nil ? "Open review" : "Open card") { select(card.item) }
                     .buttonStyle(COSTextButtonStyle()).controlSize(.small)
             }
-        }.padding(12).frame(width: 320, alignment: .leading)
+        }.padding(12).frame(width: WorkBoardSessionCard.cardWidth, alignment: .leading)
             .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 9))
             .overlay(RoundedRectangle(cornerRadius: 9).stroke(state.tint.opacity(0.4)))
     }
@@ -793,7 +843,7 @@ struct WorkWorkspaceView: View {
                            : "Drop a card here to put a session on it")
                     .font(COSType.body(11)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
             }
-        }.foregroundStyle(COSPalette.accent).padding(12).frame(width: 240).frame(minHeight: compact ? 40 : 96)
+        }.foregroundStyle(COSPalette.accent).padding(12).frame(width: WorkBoardSessionCard.targetWidth).frame(minHeight: compact ? 40 : 96)
             .background(COSPalette.gold.opacity(startDropTargeted ? 0.16 : 0.05), in: RoundedRectangle(cornerRadius: 9))
             .overlay(RoundedRectangle(cornerRadius: 9).stroke(COSPalette.gold.opacity(startDropTargeted ? 1 : 0.55), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])))
             .dropDestination(for: String.self) { ids, _ in

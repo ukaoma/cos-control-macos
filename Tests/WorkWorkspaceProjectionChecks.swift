@@ -267,6 +267,12 @@ import Foundation
     precondition(WorkWorkspaceProjection.stageDrop(id: idleID, items: items, to: .planned) == nil, "Dropping on its own column is not a move")
     precondition(WorkWorkspaceProjection.stageDrop(id: idleID, items: items, to: .draft)?.id == "idle")
     precondition(WorkWorkspaceProjection.stageDrop(id: "random text", items: items, to: .draft) == nil)
+    // The pinned Start work column casts its edge only when cards run under it (derived from the layout constants).
+    let fits = WorkBoardSessionCard.pinnedColumnWidth + 2 * WorkBoardSessionCard.cardWidth + WorkBoardSessionCard.cardGap
+    precondition(!WorkBoardSessionCard.rowOverflows(cards: 2, width: fits), "two cards that fit beside the column stay flat")
+    precondition(WorkBoardSessionCard.rowOverflows(cards: 2, width: fits - 1), "one point short runs under it")
+    precondition(WorkBoardSessionCard.rowOverflows(cards: 3, width: fits), "a third card runs under it")
+    precondition(!WorkBoardSessionCard.rowOverflows(cards: 0, width: 400) && !WorkBoardSessionCard.rowOverflows(cards: 3, width: 0), "no cards, or not measured yet: flat")
     precondition(WorkLayout(rawValue: "board") == .board && WorkLayout(rawValue: "focus") == .focus && WorkLayout(rawValue: "junk") == nil)
     let writable = TaskRow(.object(["id": .string("w"), "domain": .string("quilt"), "workRevision": .string("rev-1")]))!
     let noRevision = TaskRow(.object(["id": .string("n"), "domain": .string("quilt")]))!

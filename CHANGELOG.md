@@ -1,3 +1,13 @@
+## 0.5.245 (build 283)
+
+Start work is pinned beside the session row. Pairs with server 6.57.1.
+
+- Miles, 2026-09-29: "The overlap on the start work section doesn't look clean. It has a hard cut." With more session cards than fit, the row's scroll area ended beside Start work and cut the last card off mid-word.
+  - Start work is now a pinned column the cards slide under.
+  - When cards run under it, they fade out over their last 40 pt, and the column shows a soft shade and a hairline on its edge (deeper in dark mode, where a light shade disappears). The shade is horizontal only, so nothing bleeds onto the header or the board.
+  - With room to spare (two cards on a wide window), the row stays flat, with no shade or line. The last card can scroll fully clear of the column.
+- Tests: the Work suite checks when the row counts as overflowing, derived from the card, gap and target widths the layout uses.
+
 ## 0.5.244 (build 282)
 
 Work becomes a dashboard of the sessions doing the work, with drag to start and the Agent workspace pinned beside every item. Pairs with server 6.57.1.
