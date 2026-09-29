@@ -370,6 +370,33 @@ import Foundation
     // A plain New session never shows as a fork, even with a source recorded by an older build.
     var plain = receipt; plain.prompt = "Plain new session"
     precondition(WorkHandoffStore.lineage(of: plain, sessions: store.sessions) == nil)
+    // A long conversation: the journal note says the middle was left out.
+    calls.list.removeAll(); calls.export = "BEGIN " + String(repeating: "word ", count: 12_000) + " FINISH"
+    let longSource = WorkSource(id: "task:quilt:0123456789af", title: "L", revision: "r", project: "quilt", context: "Long one")
+    await store.forkToPlatform(source: longSource, session: claude, model: codex, prompt: "Long one")
+    precondition(store.receipts(for: longSource.id).first?.prompt.contains("the middle was left out to fit") == true)
+    precondition(receipt.prompt.hasSuffix("read from its transcript.]"), "a short conversation is carried whole")
+
+    // Refresh after Update Server: a new server instance forgets a lasting "server too old".
+    final class Instance: @unchecked Sendable { var id = "old" }
+    let instance = Instance()
+    let refreshing = WorkHandoffStore(storageURL: root.appendingPathComponent("refresh.json"), transport: { args, _ in
+        switch args.first {
+        case "work-models": return HelperResponse(ok: true, message: "", details: ["serverInstanceId": .string(instance.id), "models": .array([])])
+        case "claude-sessions": return HelperResponse(ok: true, message: "", details: ["sessions": .array([
+            .object(["id": .string("abc"), "provider": .string("claude"), "name": .string("Retail Liquor Summit campaign launch"), "workspace": .string("MU"), "state": .string("idle")])])])
+        default: return HelperResponse(ok: true, message: "", details: ["provider": .string("none"), "reason": .string("server_too_old")])
+        }
+    })
+    await refreshing.refresh()
+    await refreshing.loadAdvice(for: review)
+    precondition(refreshing.adviceUnavailableReason(for: review) == "server_too_old", "\(String(describing: refreshing.adviceUnavailableReason(for: review))) \(refreshing.sessions.count) \(refreshing.error ?? "")")
+    await refreshing.refresh()
+    precondition(refreshing.adviceUnavailableReason(for: review) == "server_too_old", "the same server keeps its answer")
+    instance.id = "new"
+    await refreshing.refresh()
+    precondition(refreshing.adviceUnavailableReason(for: review) == nil, "Update Server clears it without a relaunch")
+
     // Update Server (a new instance) forgets lasting answers; the same instance or an unknown one does not.
     precondition(WorkHandoffStore.serverChanged(from: "a", to: "b") && !WorkHandoffStore.serverChanged(from: "a", to: "a")
                  && !WorkHandoffStore.serverChanged(from: nil, to: "b") && !WorkHandoffStore.serverChanged(from: "a", to: nil))
