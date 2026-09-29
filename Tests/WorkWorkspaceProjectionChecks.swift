@@ -242,6 +242,20 @@ import Foundation
     precondition(start(draft(.newSession, provider: "codex", model: "frontier"), advice("fork", "claude:c", 0.9))?.plan.mode == .newSession)
     precondition(start(draft(.continueSession, session: "claude:c"), advice("continue", "claude:c", 0.95), history: true) == nil,
                  "Work that already has a handoff never gets one click: its draft may be the one already sent")
+    // A drop runs by itself only when every criterion holds (Miles 2026-09-29).
+    func auto(_ d: WorkHandoffDraft, _ a: SessionAdvice?, history: Bool = false, pool p: [WorkSession] = pool) -> WorkSendPlan? {
+        WorkHandoffStore.autoStartPlan(draft: d, advice: a, sessions: p, models: models, hasHistory: history)
+    }
+    precondition(auto(draft(.continueSession, session: "claude:c"), nil)?.session?.id == "claude:c", "saved destination, idle session, no history: runs")
+    precondition(auto(blank, advice("continue", "cursor:k", WorkHandoffStore.oneClickContinue))?.session?.id == "cursor:k", "confident suggestion: runs")
+    precondition(auto(blank, nil) == nil && auto(blank, advice("continue", "cursor:k", WorkHandoffStore.oneClickContinue - 0.01)) == nil, "nothing certain: asks")
+    precondition(auto(draft(.continueSession, session: "claude:c"), nil, history: true) == nil, "work with a handoff already: asks")
+    precondition(auto(blank, advice("new", nil, 0.99)) == nil, "New advice names no model: asks")
+    for busy in ["running", "working", "waiting"] {
+        var s = claude; s.status = busy
+        precondition(auto(draft(.continueSession, session: "claude:c"), nil, pool: [s, cursor, ollama]) == nil, "a busy Continue target (\(busy)) asks")
+        precondition(auto(draft(.fork, session: "claude:c"), nil, pool: [s, cursor, ollama])?.mode == .fork, "forking a busy session copies it without interrupting: runs")
+    }
     precondition(plan(draft(.continueSession, session: "claude:c"))?.verb == "Send" && plan(draft(.fork, session: "claude:c"))?.verb == "Fork and send"
                  && cross?.verb == "Fork to Codex (OpenAI)" && plan(draft(.newSession, provider: "claude", model: "opus"))?.verb == "Start session")
 

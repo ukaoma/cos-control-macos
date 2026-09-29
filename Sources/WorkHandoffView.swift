@@ -239,17 +239,30 @@ struct WorkHandoffView: View {
                 Text(WorkHandoffView.acknowledgeHint(receipt)).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
             }
             if receipt.status == "unknown" {
+                // 0.5.246: COS sent it but never saw it land, so it may already be in the session. Continuing again is
+                // allowed after one explicit confirm; the composer comes back set to the same session.
+                let canContinue = receipt.sessionID != nil && WorkHandoffStore.continueProviders.contains(receipt.provider)
                 if confirmClear {
-                    Text("Clear it only after checking the session yourself. If the instruction did arrive, another handoff would send it twice.")
+                    Text(canContinue
+                         ? "COS can\u{2019}t tell whether your last instruction arrived. If it did, sending again gives the session the same instruction twice. Open the session first if you want to check."
+                         : "Clear it only after checking the session yourself. If the instruction did arrive, another handoff would send it twice.")
                         .font(COSType.body(11)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 8) {
-                        Button("Clear this handoff") { confirmClear = false; store.clearUnresolved(receiptID: receipt.id) }
+                        if canContinue, let target = receipt.sessionID {
+                            Button("Continue in this session") {
+                                confirmClear = false
+                                store.clearUnresolved(receiptID: receipt.id)
+                                var next = draft; next.mode = .continueSession; next.sessionID = target
+                                store.updateDraft(next, for: source)
+                            }.buttonStyle(COSPrimaryButtonStyle()).disabled(store.busy || validating)
+                        }
+                        Button(canContinue ? "Clear without sending" : "Clear this handoff") { confirmClear = false; store.clearUnresolved(receiptID: receipt.id) }
                             .buttonStyle(COSQuietButtonStyle(tone: .destructive)).disabled(store.busy || validating)
                         Button("Cancel") { confirmClear = false }.buttonStyle(COSTextButtonStyle())
                     }
                 } else {
-                    Button("I checked the session. Clear this…") { confirmClear = true }
-                        .buttonStyle(COSTextButtonStyle()).disabled(store.busy || validating)
+                    Button(canContinue ? "Continue in this session\u{2026}" : "I checked the session. Clear this\u{2026}") { confirmClear = true }
+                        .buttonStyle(COSQuietButtonStyle()).disabled(store.busy || validating)
                 }
             }
             if isPreview && receipt.blocksNewHandoff {
@@ -580,7 +593,7 @@ enum WorkStartOutcome: Equatable {
 /// a Continue or Fork suggestion at its bar, or a complete saved draft on work with no handoff yet, shows as one line
 /// and one button; anything else opens the full Agent workspace chooser, which stays open once shown.
 struct WorkStartSheet: View {
-    enum Phase: Equatable { case checking, confirm(WorkSendPlan, fromAdvice: Bool), chooser }
+    enum Phase: Equatable { case checking, starting(WorkSendPlan, fromAdvice: Bool), confirm(WorkSendPlan, fromAdvice: Bool), chooser }
     @ObservedObject var store: WorkHandoffStore
     let title: String
     let subtitle: String
@@ -593,6 +606,7 @@ struct WorkStartSheet: View {
     @State private var phase: Phase = .checking
     @State private var openedWith: String?
     @State private var captured = false
+    @State private var secondsLeft = WorkHandoffStore.autoStartDelay
 
     private var blocking: WorkHandoffReceipt? { store.receipts(for: source.id).first(where: \.blocksNewHandoff) }
 
@@ -617,6 +631,30 @@ struct WorkStartSheet: View {
                     Spacer()
                     Button("Choose myself") { phase = .chooser }.buttonStyle(COSTextButtonStyle())
                 }
+            case let .starting(plan, fromAdvice):
+                // Every criterion holds: it runs by itself after a short countdown, then opens the session.
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: fromAdvice ? "sparkle" : "arrow.turn.down.right").foregroundStyle(COSPalette.accent)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(plan.label).font(COSType.body(12.5, weight: .semibold))
+                        Text(fromAdvice ? (store.advice(for: source).map { "\($0.reason) Jev · \($0.percent)" } ?? "Jev's suggestion.") : "Your saved destination for this card.")
+                            .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    }
+                }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 7))
+                HStack(spacing: 8) {
+                    if sending || store.busy {
+                        ProgressView().controlSize(.small)
+                        Text("Sending…").font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+                    } else {
+                        Text("Starting in \(secondsLeft) s, then opening the session.").font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+                    }
+                    Spacer()
+                    Button("Change where it goes") { phase = .chooser }.buttonStyle(COSQuietButtonStyle()).disabled(sending || store.busy)
+                    Button("Cancel") { onClose() }.buttonStyle(COSQuietButtonStyle()).disabled(sending)
+                    Button { startNow(plan) } label: { Text("Start now").lineLimit(1) }
+                        .buttonStyle(COSPrimaryButtonStyle()).disabled(sending || store.busy)
+                }
+                if let error = store.error { Label(error, systemImage: "exclamationmark.triangle").font(COSType.body(11.5)).foregroundStyle(COSPalette.danger) }
             case .chooser:
                 ScrollView {
                     WorkHandoffView(store: store, source: source, isPreview: isPreview, onOpenSession: onOpenSession, embedded: true,
@@ -647,14 +685,7 @@ struct WorkStartSheet: View {
                     Spacer()
                     Button("Change where it goes") { phase = .chooser }.buttonStyle(COSQuietButtonStyle()).disabled(sending || store.busy)
                     Button("Cancel") { onClose() }.buttonStyle(COSQuietButtonStyle()).disabled(sending)
-                    Button {
-                        let sendingSource = source
-                        sending = true
-                        Task {
-                            defer { sending = false }
-                            await sendWorkHandoff(store: store, source: sendingSource, plan: plan)
-                        }
-                    } label: { Text(plan.verb).lineLimit(1) }
+                    Button { startNow(plan) } label: { Text(plan.verb).lineLimit(1) }
                     .buttonStyle(COSPrimaryButtonStyle()).disabled(sending || store.busy)
                 }
             }
@@ -668,9 +699,21 @@ struct WorkStartSheet: View {
         .onChange(of: store.receipts(for: source.id).first.map { $0.id + "|" + $0.status }) { _, _ in
             switch WorkStartOutcome.after(openedWith: openedWith, newest: store.receipts(for: source.id).first) {
             case .waiting: break
-            case .close: onClose()
+            case .close:
+                // The handoff reached the session: open it (a New session may not have one yet; the board shows it).
+                if let sessionID = store.receipts(for: source.id).first?.sessionID { onOpenSession(sessionID) } else { onClose() }
             case .showResult: phase = .chooser   // the workspace's status box shows why, with Check status
             }
+        }
+        .task(id: phase) {
+            guard case let .starting(plan, _) = phase else { return }
+            secondsLeft = WorkHandoffStore.autoStartDelay
+            while secondsLeft > 0 {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, case .starting = phase else { return }
+                secondsLeft -= 1
+            }
+            if !sending { startNow(plan) }
         }
         .task(id: source) {
             // Wait out a receipt poll in flight, so refresh actually loads sessions and models.
@@ -681,12 +724,23 @@ struct WorkStartSheet: View {
             await store.loadAdvice(for: source)
             guard phase == .checking else { return }
             let hasHistory = !store.receipts(for: source.id).isEmpty
-            if let start = WorkHandoffStore.startPlan(draft: store.draft(for: source), advice: store.advice(for: source),
-                                                      sessions: store.sessions, models: store.models, hasHistory: hasHistory) {
-                phase = .confirm(start.plan, fromAdvice: start.fromAdvice)
+            let draft = store.draft(for: source), advice = store.advice(for: source)
+            if let start = WorkHandoffStore.startPlan(draft: draft, advice: advice, sessions: store.sessions, models: store.models, hasHistory: hasHistory) {
+                let auto = WorkHandoffStore.autoStartPlan(draft: draft, advice: advice, sessions: store.sessions, models: store.models, hasHistory: hasHistory)
+                phase = auto != nil ? .starting(start.plan, fromAdvice: start.fromAdvice) : .confirm(start.plan, fromAdvice: start.fromAdvice)
             } else {
                 phase = .chooser
             }
+        }
+    }
+
+    private func startNow(_ plan: WorkSendPlan) {
+        guard !sending else { return }
+        let sendingSource = source
+        sending = true
+        Task {
+            defer { sending = false }
+            await sendWorkHandoff(store: store, source: sendingSource, plan: plan)
         }
     }
 }

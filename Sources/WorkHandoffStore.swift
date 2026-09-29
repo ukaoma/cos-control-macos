@@ -301,6 +301,20 @@ struct WorkSendPlan: Equatable {
         return (plan, true)
     }
 
+    /// 0.5.246 (Miles: "the card needs to meet all criteria to run and open session"): a drop on Start work runs by
+    /// itself only when every criterion holds. The work has no handoff yet; its destination is certain (a destination
+    /// you saved, or a Continue or Fork suggestion at its bar); the send is valid; and a Continue target is not busy
+    /// (running or waiting on you), where it would queue or interrupt. Anything less asks first.
+    nonisolated static func autoStartPlan(draft: WorkHandoffDraft, advice: SessionAdvice?, sessions: [WorkSession],
+                                          models: [WorkModelChoice], hasHistory: Bool) -> WorkSendPlan? {
+        guard let start = startPlan(draft: draft, advice: advice, sessions: sessions, models: models, hasHistory: hasHistory) else { return nil }
+        if start.plan.mode == .continueSession, let session = start.plan.session,
+           ["running", "working", "waiting"].contains(session.status) { return nil }
+        return start.plan
+    }
+    /// Seconds a drop that meets every criterion waits before sending, so a mistaken drop can be cancelled.
+    nonisolated static let autoStartDelay = 3
+
     /// The Continue shortlist: Jev's pick, then word matches, then the most recently active sessions. At most `limit`.
     nonisolated static func shortlist(advised: String?, matches: [WorkSession], sessions: [WorkSession], limit: Int = 3) -> [WorkSession] {
         var out: [WorkSession] = []

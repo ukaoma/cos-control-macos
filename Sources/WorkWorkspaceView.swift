@@ -745,7 +745,9 @@ struct WorkWorkspaceView: View {
             // Its leading shadow and hairline appear only when cards actually run under it, so a short row stays flat.
             let showCards = !sessionsCollapsed && !cards.isEmpty
             let overflowing = showCards && WorkBoardSessionCard.rowOverflows(cards: cards.count, width: sessionsRowWidth)
-            ZStack(alignment: .topTrailing) {
+            // The column hangs off the row as an overlay, so it always takes the row's height: a ZStack let it
+            // stretch to the window when the row was empty (0.5.245).
+            Group {
                 if showCards {
                     ScrollView(.horizontal) {
                         HStack(alignment: .top, spacing: WorkBoardSessionCard.cardGap) {
@@ -765,6 +767,9 @@ struct WorkWorkspaceView: View {
                 } else {
                     Color.clear.frame(height: sessionsCollapsed ? 40 : 96)
                 }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .topTrailing) {
                 VStack(spacing: 0) {
                     startWorkTarget(empty: cards.isEmpty, compact: sessionsCollapsed)
                     Spacer(minLength: 0)
@@ -785,6 +790,19 @@ struct WorkWorkspaceView: View {
                         }
                 }
             }
+            // 0.5.246: the whole row is the drop zone ("drag it into the working area"), and Start work lights up while
+            // a card is over it. A drop destination inside `.overlay` never receives drops (measured with real mouse
+            // drags on this board), which is why the pinned tile alone could not take one.
+            .contentShape(Rectangle())
+            .dropDestination(for: String.self) { ids, _ in
+                guard let id = ids.first else { return false }
+                guard let item = WorkWorkspaceProjection.startable(id: id, items: items) else {
+                    if items.contains(where: { $0.id == id }) { state.mutationError = "Only open board cards can be started. A completed card or a meeting review is started from its own page." }
+                    return false
+                }
+                openStart(item)
+                return true
+            } isTargeted: { startDropTargeted = $0 }
             .background(GeometryReader { box in
                 Color.clear.onAppear { sessionsRowWidth = box.size.width }
                     .onChange(of: box.size.width) { _, width in sessionsRowWidth = width }
@@ -846,15 +864,6 @@ struct WorkWorkspaceView: View {
         }.foregroundStyle(COSPalette.accent).padding(12).frame(width: WorkBoardSessionCard.targetWidth).frame(minHeight: compact ? 40 : 96)
             .background(COSPalette.gold.opacity(startDropTargeted ? 0.16 : 0.05), in: RoundedRectangle(cornerRadius: 9))
             .overlay(RoundedRectangle(cornerRadius: 9).stroke(COSPalette.gold.opacity(startDropTargeted ? 1 : 0.55), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])))
-            .dropDestination(for: String.self) { ids, _ in
-                guard let id = ids.first else { return false }
-                guard let item = WorkWorkspaceProjection.startable(id: id, items: items) else {
-                    if items.contains(where: { $0.id == id }) { state.mutationError = "Only open board cards can be started. A completed card or a meeting review is started from its own page." }
-                    return false
-                }
-                openStart(item)
-                return true
-            } isTargeted: { startDropTargeted = $0 }
             .accessibilityLabel("Start work drop target")
             .accessibilityHint("Drop a board card here, or use Start work in a card's context menu")
     }
@@ -899,7 +908,9 @@ struct WorkWorkspaceView: View {
         let handoff = item.activity.map { WorkHandoffState($0) }
         let running = handoff == .running
         return VStack(alignment: .leading, spacing: 0) {
-            Button { select(item) } label: {
+            // 0.5.246: a tap gesture, not a Button. A Button swallows the drag (measured with real mouse drags: a
+            // Button-wrapped card never dropped; a tap-gesture card dropped every time), so cards could not be dragged.
+            VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(inlineTitle(item.title)).font(COSType.body(13, weight: .medium)).multilineTextAlignment(.leading).lineLimit(5)
                     if let activity = item.activity, let handoff, handoff != .settled {
@@ -914,7 +925,9 @@ struct WorkWorkspaceView: View {
                         Text(task.source.isEmpty ? "No meeting linked" : task.source).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).lineLimit(2)
                     }
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-            }.buttonStyle(.plain).help(item.title)
+            }.onTapGesture { select(item) }
+                .accessibilityElement(children: .combine).accessibilityAddTraits(.isButton).accessibilityAction { select(item) }
+                .help(item.title)
             if let task = item.task {
                 ForEach(task.meetingRefs.prefix(2)) { meeting in
                     Button { onOpenMeeting(meeting) } label: {

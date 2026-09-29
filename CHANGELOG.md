@@ -1,3 +1,22 @@
+## 0.5.246 (build 284)
+
+Drag and drop works, a drop that meets every criterion runs and opens its session, and a handoff COS lost track of can be continued. Pairs with server 6.57.1.
+
+- **Cards drag.** Miles, 2026-09-29: "drag and drop cards don't work here." Each card was a Button, and a Button swallows the drag: real mouse drags on a test window showed a Button-wrapped card never dropped, while a card that opens on a tap dropped every time. Cards now open on a tap and drag between columns or into the session row.
+- **Drop into the working area.** The whole "Sessions on this board" row takes a dropped card, and Start work lights up while a card is over it. In 0.5.245 only the pinned Start work tile could take a drop, and a drop target pinned that way never received one; that was also measured with real drags.
+- **Runs when every criterion is met.** Miles: "the card needs to meet all criteria to run and open session." A dropped card starts by itself only when:
+  - its work has no handoff yet;
+  - its destination is certain: a destination you saved, or a Continue or Fork suggestion at its bar;
+  - the send is valid;
+  - a Continue target is not busy (running or waiting on you).
+  It counts down three seconds (Cancel, Change where it goes, or Start now), sends, and opens the session. Anything less asks first: one line to confirm, or the full chooser.
+- **Continue after COS lost track.** Miles: "why can't we continue here even tho it's lost track?" When the server sent an instruction but never saw it land, the handoff blocks another send so the session does not get it twice. "Continue in this session…" now says so once and, on confirm, clears the stuck handoff and sets the composer to continue in the same session. "Clear without sending" remains.
+- The session row no longer stretches into a large empty band when it has no sessions (0.5.245).
+- Tests:
+  - The Work suite covers the auto-start rule: saved destination; confident suggestion; nothing certain; earlier handoff; New advice; and busy Continue targets against forks of busy sessions.
+  - run.sh pins that cards are a tap gesture, not a Button; that the row, not the pinned tile, is the drop zone; that a qualifying drop starts by itself; and that a started drop opens its session.
+  - Verified with real mouse drags on the Work board with sample data: a card moved to another column; drops on the Start work tile and on the empty row opened the overlay; a fully specified card counted down, sent and opened its session.
+
 ## 0.5.245 (build 283)
 
 Start work is pinned beside the session row. Pairs with server 6.57.1.
