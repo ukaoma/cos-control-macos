@@ -33,9 +33,8 @@ struct COSControlApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            if ActivitySection.allCases.contains(.work) {
-                Button("Open Work") { activityWindow.show(model: model, section: .work) }.padding()
-            }
+            // Work opens from the panel's Activity chips like every other view (they come from
+            // ActivitySection.allCases). No separate, unstyled button above the panel (Miles, 2026-09-28).
             ControlPanel(model: model) { section in
                 activityWindow.show(model: model, section: section)
             }

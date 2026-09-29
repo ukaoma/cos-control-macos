@@ -961,6 +961,16 @@ echo "    manual update check: button, method, and all three outcomes"
 /usr/bin/grep -q '\.fixedSize()' "$ROOT/Sources/COSControlApp.swift"
 ! /usr/bin/grep -q 'Image(nsImage:' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'eyeglasses.slash' "$ROOT/Sources/COSControlApp.swift"
+# 0.5.242: the menu-bar window opens straight into ControlPanel. 0.5.240 stacked an unstyled "Open Work"
+# button above it; Work is reached from the panel's Activity chips, which come from ActivitySection.allCases.
+python3 - "$ROOT/Sources/COSControlApp.swift" <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+m = re.search(r"MenuBarExtra\s*\{(.*?)ControlPanel\(model: model\)", src, re.S)
+assert m is not None, "MenuBarExtra no longer opens ControlPanel"
+before = re.sub(r"//[^\n]*", "", m.group(1))
+assert before.strip() == "", "something sits above ControlPanel in the menu-bar window: " + before.strip()[:80]
+PY
 /usr/bin/grep -q 'model.appUpdate.shouldSurface' "$ROOT/Sources/COSControlApp.swift"
 ! /usr/bin/grep -q 'hasNotice' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'AppUpdateInfo.merging(previous: appUpdate, incoming:' "$ROOT/Sources/ControllerModel.swift"
