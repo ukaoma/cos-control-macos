@@ -961,6 +961,15 @@ echo "    manual update check: button, method, and all three outcomes"
 /usr/bin/grep -q '\.fixedSize()' "$ROOT/Sources/COSControlApp.swift"
 ! /usr/bin/grep -q 'Image(nsImage:' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'eyeglasses.slash' "$ROOT/Sources/COSControlApp.swift"
+# 0.5.243: the send button routes a cross-platform Fork through forkToPlatform, and "Use this" goes through
+# WorkHandoffStore.applying (which clears a leftover provider on a Fork).
+python3 - "$ROOT/Sources/WorkHandoffView.swift" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+assert "await store.forkToPlatform(source: sendingSource, session: sendingSession, model: sendingModel, prompt: sendingPrompt)" in src, "Fork to platform is not wired to the send button"
+assert "WorkHandoffStore.applying(advice, to: draft)" in src, "Use this no longer goes through WorkHandoffStore.applying"
+assert "if mode == .fork { forkTarget }" in src, "the Fork to picker is not shown in Fork mode"
+PY
 # 0.5.242: the menu-bar window opens straight into ControlPanel. 0.5.240 stacked an unstyled "Open Work"
 # button above it; Work is reached from the panel's Activity chips, which come from ActivitySection.allCases.
 python3 - "$ROOT/Sources/COSControlApp.swift" <<'PY'

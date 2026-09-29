@@ -27,7 +27,8 @@ struct WorkReviewRecord: Identifiable, Sendable {
     var canPrepare: Bool { status == "ready" && !markdown.isEmpty }
     var source: WorkSource {
         WorkSource(id: "meeting:" + (canonicalMeetingId.isEmpty ? id : canonicalMeetingId), title: title, revision: revision, project: domain,
-            context: "Meeting: \(title)\nDomain: \(domain)\nMeeting record: \(canonicalMeetingId)\n\nReviewed follow-up:\n\(markdown)")
+            context: "Meeting: \(title)\nDomain: \(domain)\nMeeting record: \(canonicalMeetingId)\n\nReviewed follow-up:\n\(markdown)",
+            reviewID: id)
     }
     init?(_ value: JSONValue) {
         guard let row = value.object, let id = row["id"]?.string, !id.isEmpty,

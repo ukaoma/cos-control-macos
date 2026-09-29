@@ -300,3 +300,82 @@ import Foundation
     precondition(ClaudeSessionDetailPane.headerTitle(detail: "Claude session", row: "Row", workTitle: nil) == "Row", "no Work link: the row title")
     precondition(ClaudeSessionDetailPane.headerTitle(detail: nil, row: nil, workTitle: nil) == "Session", "nothing known: Session")
 }
+
+/// 0.5.243: session suggestions for meeting reviews, and Fork to another platform.
+@MainActor func runForkPlatformAndReviewAdviceChecks() async throws {
+    let reviewID = "wr_" + String(repeating: "a", count: 32)
+    let task = WorkSource(id: "task:quilt:0123456789ab", title: "T", revision: "r", project: "quilt", context: "c")
+    let review = WorkSource(id: "meeting:ops:quilt:2026-09:x.md", title: "Retail Liquor Summit Campaign Launch", revision: "r", project: "quilt",
+                            context: "Meeting: x", reviewID: reviewID)
+    precondition(WorkHandoffStore.adviceTarget(for: task) == ["domain": "quilt", "id": "0123456789ab"])
+    precondition(WorkHandoffStore.adviceTarget(for: review) == ["reviewId": reviewID], "a meeting review is named by its id")
+    for bad in [nil, "wr_x", "wr_" + String(repeating: "A", count: 32), "../" + reviewID] as [String?] {
+        let other = WorkSource(id: "meeting:x", title: "", revision: "r", project: "", context: "", reviewID: bad)
+        precondition(WorkHandoffStore.adviceTarget(for: other) == nil, "\(bad ?? "nil") names nothing")
+    }
+    precondition(WorkHandoffStore.adviceUnavailableText("invalid_recommendation_request")?.contains("6.57.1") == true
+                 && WorkHandoffStore.adviceUnavailableText("review_not_found")?.contains("changed") == true)
+
+    final class Calls: @unchecked Sendable { var list: [([String], [String: Any])] = []; var export = "YOU: build the page\nASSISTANT: built it" }
+    let calls = Calls()
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("fork-platform-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = WorkHandoffStore(storageURL: root.appendingPathComponent("journal.json"), transport: { args, data in
+        calls.list.append((args, (try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: Any] ?? [:]))
+        switch args.first {
+        case "claude-session-detail": return HelperResponse(ok: true, message: "", details: ["copyText": .string(calls.export)])
+        case "work-session-recommend": return HelperResponse(ok: true, message: "", details: ["provider": .string("none"), "reason": .string("no_sessions")])
+        default: return HelperResponse(ok: true, message: "", details: ["jobId": .string("job-1"), "state": .string("queued")])
+        }
+    })
+    let claude = WorkSession(id: "claude:abc", nativeID: "abc", provider: "claude", title: "Retail Liquor Summit campaign launch", summary: "", project: "MU", status: "idle")
+    store.sessions = [claude, WorkSession(id: "ollama:z", nativeID: "z", provider: "ollama", title: "Local", summary: "", project: "MU", status: "idle")]
+    let codex = WorkModelChoice(id: "codex-frontier", provider: "codex", title: "OpenAI via Codex · Frontier", available: true, reason: nil)
+    store.models = [codex]
+
+    // A review asks by its id, with the sessions, and nothing that names a task.
+    await store.loadAdvice(for: review)
+    let asked = calls.list.last!
+    precondition(asked.0 == ["work-session-recommend"] && asked.1["reviewId"] as? String == reviewID
+                 && asked.1["domain"] == nil && asked.1["id"] == nil && (asked.1["sessions"] as? [[String: Any]])?.count == 2)
+
+    // Fork to another platform: read the export, then start a New session carrying context and export.
+    calls.list.removeAll()
+    await store.forkToPlatform(source: review, session: claude, model: codex, prompt: "Prepare the next reviewable result for: RLS")
+    precondition(calls.list.map { $0.0.first ?? "" } == ["claude-session-detail", "work-new"], "\(calls.list.map(\.0))")
+    precondition(calls.list[0].0 == ["claude-session-detail", "--session", "abc", "--provider", "claude"])
+    let query = calls.list[1].1["query"] as? String ?? ""
+    precondition(query.hasPrefix("Prepare the next reviewable result for: RLS") && query.contains("carried over from the Claude session")
+                 && query.hasSuffix("ASSISTANT: built it") && calls.list[1].1["model"] as? String == "codex-frontier", query)
+    let receipt = store.receipts(for: review.id).first!
+    precondition(receipt.mode == .newSession && receipt.provider == "codex" && receipt.sourceSessionID == "claude:abc" && receipt.modelID == "codex-frontier")
+
+    // Nothing to carry: an empty export is refused before any session starts; a provider with no transcript is refused.
+    calls.list.removeAll(); calls.export = "   "
+    let other = WorkSource(id: "task:quilt:0123456789ac", title: "U", revision: "r", project: "quilt", context: "c")
+    await store.forkToPlatform(source: other, session: claude, model: codex, prompt: "Do it")
+    precondition(calls.list.map { $0.0.first ?? "" } == ["claude-session-detail"] && store.error?.contains("no stored conversation") == true)
+    calls.list.removeAll()
+    await store.forkToPlatform(source: other, session: store.sessions[1], model: codex, prompt: "Do it")
+    precondition(calls.list.isEmpty && store.error?.contains("no readable transcript") == true)
+
+    // The composer: fits the cap, keeps the start and the end of a long export, never splits a character.
+    let long = "START " + String(repeating: "界👍x", count: 20_000) + " END"
+    let composed = WorkHandoffStore.crossPlatformPrompt(context: "Context", export: long, sessionTitle: "S", provider: "cursor")!
+    precondition(composed.utf16.count <= WorkHandoffStore.crossPlatformLimit && composed.hasPrefix("Context") && composed.contains("Cursor session")
+                 && composed.contains("START") && composed.hasSuffix(" END") && composed.contains("omitted to fit"))
+    precondition(WorkHandoffStore.crossPlatformPrompt(context: "C", export: "short", sessionTitle: "S", provider: "claude")?.hasSuffix("short") == true)
+    precondition(WorkHandoffStore.crossPlatformPrompt(context: String(repeating: "c", count: 31_700), export: "x", sessionTitle: "S", provider: "claude") == nil,
+                 "no room for the conversation: refuse rather than drop it")
+    precondition(WorkHandoffStore.crossPlatformPrompt(context: "C", export: "  ", sessionTitle: "S", provider: "claude") == nil)
+    precondition(WorkHandoffStore.utf16Head("a👍b", units: 2) == "a" && WorkHandoffStore.utf16Tail("a👍b", units: 3) == "👍b")
+
+    // "Use this" on a Fork never inherits a New session provider; Continue and New keep the draft's choices.
+    var draft = WorkHandoffDraft(sourceID: "s", sourceRevision: "r", prompt: "p"); draft.provider = "codex"; draft.modelID = "codex-frontier"
+    let fork = SessionAdvice(details: ["provider": .string("jev"), "action": .string("fork"), "sessionId": .string("claude:abc"), "confidence": .number(0.7)])!
+    let applied = WorkHandoffStore.applying(fork, to: draft)
+    precondition(applied.mode == .fork && applied.sessionID == "claude:abc" && applied.provider.isEmpty && applied.modelID.isEmpty)
+    let cont = SessionAdvice(details: ["provider": .string("jev"), "action": .string("continue"), "sessionId": .string("claude:abc"), "confidence": .number(0.9)])!
+    precondition(WorkHandoffStore.applying(cont, to: draft).provider == "codex")
+}

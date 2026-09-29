@@ -47,9 +47,14 @@ struct WorkHandoffView: View {
             && destinationSupported
     }
 
+    /// 0.5.243: a Fork with a target provider picked is a fork to another platform (a New session seeded with the
+    /// conversation export). No provider means the native, same-platform fork.
+    private var forkToPlatform: Bool { mode == .fork && !provider.isEmpty }
+
     private var destinationSupported: Bool {
         if mode == .newSession { return selectedModel?.available == true }
         guard let selectedSession else { return false }
+        if forkToPlatform { return selectedModel?.available == true && ["claude", "codex", "cursor"].contains(selectedSession.provider) }
         return (mode == .fork ? ["claude", "codex"] : ["claude", "codex", "cursor"]).contains(selectedSession.provider)
     }
 
@@ -82,13 +87,18 @@ struct WorkHandoffView: View {
                 Text("\(prompt.utf16.count.formatted()) / 32,000 characters · review before sending")
                     .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
                 Spacer()
-                Button(mode == .newSession ? "Start new session" : mode == .fork ? "Fork and send" : "Send to session") {
+                Button(mode == .newSession ? "Start new session" : forkToPlatform ? "Fork to \(WorkHandoffStore.providerName(provider))" : mode == .fork ? "Fork and send" : "Send to session") {
                     let sendingSource = source, sendingMode = mode, sendingSession = selectedSession, sendingModel = selectedModel, sendingPrompt = prompt
+                    let crossPlatform = forkToPlatform
                     validating = true
                     Task {
                         defer { validating = false }
                         if let validateBeforeSend, !(await validateBeforeSend()) { return }
-                        await store.submit(source: sendingSource, mode: sendingMode, session: sendingSession, model: sendingModel, prompt: sendingPrompt)
+                        if crossPlatform, let sendingSession, let sendingModel {
+                            await store.forkToPlatform(source: sendingSource, session: sendingSession, model: sendingModel, prompt: sendingPrompt)
+                        } else {
+                            await store.submit(source: sendingSource, mode: sendingMode, session: sendingSession, model: sendingModel, prompt: sendingPrompt)
+                        }
                     }
                 }.buttonStyle(COSPrimaryButtonStyle()).disabled(!canSend)
             }
@@ -124,10 +134,7 @@ struct WorkHandoffView: View {
                 }
                 Spacer(minLength: 8)
                 Button(applied ? "Selected" : "Use this") {
-                    var next = draft
-                    next.mode = advice.action == .continueSession ? .continueSession : advice.action == .fork ? .fork : .newSession
-                    if let id = advice.sessionID { next.sessionID = id }
-                    store.updateDraft(next, for: source)
+                    store.updateDraft(WorkHandoffStore.applying(advice, to: draft), for: source)
                 }.buttonStyle(COSQuietButtonStyle()).disabled(applied || store.busy || validating)
             }.padding(10).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 6))
         } else if let text = WorkHandoffStore.adviceUnavailableText(store.adviceUnavailableReason(for: source)) {
@@ -154,15 +161,18 @@ struct WorkHandoffView: View {
                     if !sessionID.isEmpty && selectedSession == nil { Text("Saved session unavailable · refresh to resolve").tag(sessionID) }
                     ForEach(store.sessions) { session in Text("\(session.title) · \(session.provider)").tag(session.id) }
                 }.disabled(store.busy || validating)
+                if mode == .fork { forkTarget }
                 if let session = selectedSession {
-                    if !destinationSupported {
-                        Text(mode == .fork ? "Fork is available for Claude and Codex sessions only. Choose Continue or a new session for this provider." : "This provider does not support continuing a session here.")
+                    if !destinationSupported && !forkToPlatform {
+                        Text(mode == .fork ? "Fork is available for Claude and Codex sessions only. Fork it to another platform, or choose Continue or a new session." : "This provider does not support continuing a session here.")
                             .font(COSType.body(11)).foregroundStyle(COSPalette.danger)
                     }
                     Text("\(session.status.capitalized) · \(session.project.isEmpty ? "Workspace unavailable" : session.project)")
                         .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                     if !session.summary.isEmpty { Text(session.summary).font(COSType.body(12)).lineLimit(3) }
-                    Text(mode == .fork ? "Creates a copy with \(session.provider); the original remains unchanged." : "Uses this session’s model and permissions. Busy sessions may queue or refuse.")
+                    Text(forkToPlatform
+                         ? "Starts a new \(WorkHandoffStore.providerName(provider)) session with this context plus the conversation from \u{201C}\(session.title)\u{201D}, read from its transcript (up to 32,000 characters in all). The original session is unchanged."
+                         : mode == .fork ? "Creates a copy with \(session.provider); the original remains unchanged." : "Uses this session’s model and permissions. Busy sessions may queue or refuse.")
                         .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                 }
                 if store.advice(for: source) == nil, let first = recommended.first {
@@ -177,6 +187,27 @@ struct WorkHandoffView: View {
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(10).contentShape(Rectangle())
                     }.buttonStyle(.plain).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 6)).disabled(store.busy || validating)
                 }
+            }
+        }
+    }
+
+    /// Fork to: the same platform (native copy of the conversation) or any catalog provider and model.
+    private var forkTarget: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Fork to", selection: Binding(get: { provider }, set: { value in
+                var next = draft; next.provider = value; next.modelID = ""
+                store.updateDraft(next, for: source)
+            })) {
+                Text("Same platform (copy the conversation)").tag("")
+                if !provider.isEmpty && !providers.contains(provider) { Text("\(provider) · unavailable").tag(provider) }
+                ForEach(providers, id: \.self) { Text(WorkHandoffStore.providerName($0)).tag($0) }
+            }.disabled(store.busy || validating)
+            if forkToPlatform {
+                Picker("Model", selection: draftBinding(\.modelID)) {
+                    Text("Choose model").tag("")
+                    if !modelID.isEmpty && selectedModel == nil { Text("Saved model unavailable").tag(modelID) }
+                    ForEach(choices) { choice in Text(choice.title + (choice.available ? "" : " · unavailable")).tag(choice.id) }
+                }.disabled(store.busy || validating)
             }
         }
     }

@@ -28,7 +28,8 @@ class Handler(BaseHTTPRequestHandler):
         assert self.headers.get('X-COS-Token') == token
         data = self.body(); calls.append(('POST', self.path, data))
         if self.path == '/api/work-board/session-recommendation':
-            return self.reply(state['rec'], {'provider': 'jev', 'action': 'continue', 'sessionId': 'claude:b', 'confidence': 0.91} if state['rec'] == 200 else {})
+            return self.reply(state['rec'], {'provider': 'jev', 'action': 'continue', 'sessionId': 'claude:b', 'confidence': 0.91} if state['rec'] == 200
+                              else state.get('recBody', {}))
         status, message = state['set']
         self.reply(status, STATUS | {'ok': True} if status == 200 else {'error': {'code': 'jev_key_not_accepted', 'message': message}})
     def do_DELETE(self):
@@ -50,7 +51,23 @@ try:
         state['rec'] = status
         r = run(['work-session-recommend'], json.dumps(good).encode())
         assert r['ok'] and r['details'] == {'provider': 'none', 'reason': reason}, r
-    state['rec'] = 200
+    # 0.5.243: the server's own code comes through (a renamed task is not an old server); a bare 404 still is.
+    for status, body, reason in ((404, {'error': {'code': 'task_not_found'}}, 'task_not_found'), (404, {'error': {'code': 'review_not_found'}}, 'review_not_found'),
+                                 (400, {'error': {'code': 'invalid_recommendation_request'}}, 'invalid_recommendation_request'),
+                                 (404, {'error': {'code': 'NOT A CODE; rm -rf'}}, 'server_too_old'), (404, {}, 'server_too_old')):
+        state['rec'], state['recBody'] = status, body
+        r = run(['work-session-recommend'], json.dumps(good).encode())
+        assert r['ok'] and r['details'] == {'provider': 'none', 'reason': reason}, (status, body, r)
+    state['rec'], state['recBody'] = 200, {}
+    # A meeting review is named by its id alone (server 6.57.1), passed through unchanged.
+    review = {'reviewId': 'wr_' + 'a' * 32, 'sessions': good['sessions']}
+    r = run(['work-session-recommend'], json.dumps(review).encode())
+    assert r['ok'] and r['details']['action'] == 'continue' and calls[-1] == ('POST', '/api/work-board/session-recommendation', review), (r, calls[-1])
+    before = len(calls)
+    for bad in (dict(review, reviewId='wr_x'), dict(review, reviewId='wr_' + 'A' * 32), dict(review, domain='quilt'), dict(review, id='a' * 12),
+                dict(review, text='inject'), {'reviewId': review['reviewId']}):
+        assert not run(['work-session-recommend'], json.dumps(bad).encode())['ok'], bad
+    assert len(calls) == before, 'No malformed review request reaches the server'
     before = len(calls)
     for bad in (dict(good, text='inject'), dict(good, id='nope'), dict(good, domain='../x'),
                 dict(good, sessions=[{'id': str(i), 'title': 't'} for i in range(81)]), {'domain': 'quilt', 'id': 'a' * 12}):

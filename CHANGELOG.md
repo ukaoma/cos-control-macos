@@ -1,3 +1,13 @@
+## 0.5.243 (build 281)
+
+Fork a session to another platform, and session suggestions for meeting reviews. Pairs with server 6.57.1.
+
+- **Fork to another platform.** Miles, 2026-09-28: "How can we fork it over to a new platform?" Fork in the Agent workspace now has a Fork to choice. Same platform copies the conversation natively, as before (Claude and Codex). Any other provider and model in the catalog (Claude, OpenAI via Codex, Cursor, Ollama) starts a new session there with the context you reviewed plus the conversation from the chosen session, read from its transcript: the same text as Copy session, placed after your context and marked as a read-only export. The total stays within 32,000 characters; a long conversation keeps its beginning and its most recent part. Claude, Codex and Cursor sessions can be forked this way. The original session is unchanged, and the handoff records which session it came from. Nothing new is stored in the handoff history, so an older Control can still read it.
+- **Suggestions for meeting reviews.** The meeting review "Retail Liquor Summit Campaign Launch" got no suggestion, even beside a session with the same name: suggestions only asked about board tasks. With server 6.57.1 a meeting review asks too, by its review id; the server reads the review's own text. On an older server the review says suggestions need 6.57.1.
+- "Use this" on a Fork suggestion is always a same-platform fork, even if a New session provider was chosen earlier.
+- A task that changed while its suggestion was loading says so, instead of calling the server too old.
+- Tests: the Work suite covers the review target and request, the new reasons, a full Fork to platform against a fake helper (export read, New session with context and conversation, lineage), the empty-export and no-transcript refusals, the 32,000-character composer with its start and end kept and no split characters, and "Use this" clearing a leftover provider. The compiled-helper checks cover the review body, malformed review requests and the server's error codes.
+
 ## 0.5.242 (build 280)
 
 The menu-bar panel opens straight into itself again. Pairs with server 6.57.0.

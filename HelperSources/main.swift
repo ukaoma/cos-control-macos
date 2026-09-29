@@ -4739,11 +4739,9 @@ final class COSControlHelper {
     private func emitWorkSessionRecommend() throws {
         let data = try readBoundedStdin(65_536)
         guard let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(body.keys) == ["domain", "id", "sessions"],
-              let domain = body["domain"] as? String, !domain.isEmpty, domain.utf16.count <= 64, !domain.contains("/"), !domain.hasPrefix("."),
-              let id = body["id"] as? String, id.range(of: "^[a-f0-9]{12}$", options: .regularExpression) != nil,
-              let sessions = body["sessions"] as? [[String: Any]], sessions.count <= 80 else {
-            throw HelperError.message("Choose an exact task to get a session suggestion.")
+              let sessions = body["sessions"] as? [[String: Any]], sessions.count <= 80,
+              Self.sessionRecommendTargetValid(body) else {
+            throw HelperError.message("Choose an exact task or meeting review to get a session suggestion.")
         }
         let candidate = try reviewCandidateTransport()
         let token = try candidate?.token ?? readToken()
@@ -4752,10 +4750,34 @@ final class COSControlHelper {
             emit(ok: true, message: "Session suggestion unavailable", details: ["provider": "none", "reason": "unreachable"]); return
         }
         guard response.status == 200, let result = response.body else {
-            emit(ok: true, message: "Session suggestion unavailable", details: ["provider": "none", "reason": response.status == 404 ? "server_too_old" : "http_\(response.status)"])
+            emit(ok: true, message: "Session suggestion unavailable", details: ["provider": "none",
+                "reason": Self.sessionRecommendFailureReason(status: response.status, body: response.body)])
             return
         }
         emit(ok: true, message: "Session suggestion ready", details: result)
+    }
+
+    /// Exactly a board task (`domain`, `id`) or, with server 6.57.1, a meeting review (`reviewId`), plus `sessions`.
+    static func sessionRecommendTargetValid(_ body: [String: Any]) -> Bool {
+        switch Set(body.keys) {
+        case ["domain", "id", "sessions"]:
+            guard let domain = body["domain"] as? String, !domain.isEmpty, domain.utf16.count <= 64, !domain.contains("/"), !domain.hasPrefix("."),
+                  let id = body["id"] as? String else { return false }
+            return id.range(of: "^[a-f0-9]{12}$", options: .regularExpression) != nil
+        case ["reviewId", "sessions"]:
+            guard let review = body["reviewId"] as? String else { return false }
+            return review.range(of: "^wr_[a-f0-9]{32}$", options: .regularExpression) != nil
+        default:
+            return false
+        }
+    }
+
+    /// The server's own error code when it answered with one (task_not_found, review_not_found, invalid_...); a bare
+    /// 404 is a server without the route. Before 0.5.243 every 404 read as "server too old", even a renamed task.
+    static func sessionRecommendFailureReason(status: Int, body: [String: Any]?) -> String {
+        if let code = (body?["error"] as? [String: Any])?["code"] as? String,
+           code.range(of: "^[a-z_]{3,48}$", options: .regularExpression) != nil { return code }
+        return status == 404 ? "server_too_old" : "http_\(status)"
     }
 
     /// Jev key status (never the key). An older server (404) reads as "not available", not an error.
