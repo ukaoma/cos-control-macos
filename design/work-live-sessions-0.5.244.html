@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Work: live sessions and Agent workspace (0.5.244 options)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Fraunces:opsz,wght@9..144,500&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --panel:#17120d; --card:#261d16; --raised:#30271f; --line:rgba(201,168,110,.16); --line2:rgba(201,168,110,.28);
+  --accent:#c9a86e; --gold:#c9a86e; --muted:#bbae9a; --danger:#e8a494; --green:#4fb07a; --ink:#f3ede4; --amber:#c98045;
+}
+*{box-sizing:border-box}
+body{margin:0;background:#0d0a07;color:var(--ink);font:14px/1.45 "DM Sans",system-ui,sans-serif;padding:32px 28px 80px}
+.doc{max-width:1480px;margin:0 auto}
+.doc>h1{font:500 30px "Fraunces",serif;margin:0 0 6px}
+.doc>p.lede{color:var(--muted);max-width:900px;margin:0 0 30px}
+.opt{margin:44px 0 12px;display:flex;align-items:baseline;gap:14px}
+.opt h2{font:500 22px "Fraunces",serif;margin:0}
+.opt .rec{font:600 11px "JetBrains Mono",monospace;color:#17120d;background:var(--gold);padding:2px 7px;border-radius:4px}
+.why{color:var(--muted);max-width:980px;margin:0 0 14px}
+.why b{color:var(--ink);font-weight:600}
+/* window chrome */
+.win{border:1px solid rgba(201,168,110,.22);border-radius:12px;overflow:hidden;background:var(--panel);box-shadow:0 20px 50px rgba(0,0,0,.45)}
+.bar{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);font-size:12.5px}
+.bar .crumb{color:var(--muted)} .bar .crumb b{color:var(--ink);font-weight:600}
+.bar .srv{margin-left:auto;font:11.5px "JetBrains Mono",monospace;color:var(--muted)} .bar .srv i{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:6px}
+.tabs{display:flex;justify-content:space-around;border-bottom:1px solid var(--line);font-size:13.5px;color:var(--muted)}
+.tabs span{padding:10px 18px} .tabs span.on{color:var(--ink);box-shadow:inset 0 -2px 0 var(--gold)}
+.head{display:flex;align-items:center;gap:12px;padding:16px 20px 6px}
+.head h3{font:500 25px "Fraunces",serif;margin:0} .head .sub{color:var(--muted);font-size:12px}
+.btn{font:500 12.5px "DM Sans";border:1px solid var(--line2);border-radius:7px;padding:6px 12px;color:var(--ink);background:transparent;white-space:nowrap}
+.btn.pri{background:var(--gold);color:#1b140d;border-color:var(--gold);font-weight:600}
+.btn.sm{padding:4px 9px;font-size:11.5px}
+.btn.ghost{border-color:transparent;color:var(--muted)}
+.counts{display:flex;gap:22px;align-items:center;padding:6px 20px 14px;font-size:12.5px}
+.count{color:var(--accent);border-bottom:1px dotted rgba(201,168,110,.55);cursor:pointer}
+.count.att{color:var(--ink)} .count .n{font-weight:600}
+.count:hover{border-bottom-style:solid}
+.counts .fresh{margin-left:auto;color:var(--muted)}
+.body{display:flex;border-top:1px solid var(--line);min-height:560px}
+.side{width:148px;flex:none;background:rgba(48,39,31,.55);padding:10px;font-size:12.5px;color:var(--muted)}
+.side div{padding:8px 8px 8px 10px;border-left:2px solid transparent} .side .on{color:var(--ink);font-weight:600;border-left-color:var(--gold)}
+.side .hr{border-top:1px solid var(--line);margin:10px 0;padding:0} .side .lab{font-size:11px;font-weight:600;padding:4px 10px}
+.main{flex:1;min-width:0;padding:16px 18px}
+.bhead{display:flex;align-items:flex-end;gap:12px;margin-bottom:12px}
+.bhead h4{font:500 22px "Fraunces",serif;margin:0} .bhead .sub{color:var(--muted);font-size:11.5px}
+.search{margin-left:auto;background:var(--raised);border:1px solid var(--line);border-radius:6px;padding:7px 10px;color:var(--muted);font-size:12px;width:220px}
+/* live sessions */
+.live{margin:4px 0 16px}
+.live .lh{display:flex;align-items:baseline;gap:10px;margin-bottom:8px}
+.live .lh b{font:600 13px "DM Sans"} .live .lh span{color:var(--muted);font-size:11.5px}
+.lrow{display:flex;gap:12px;overflow:hidden}
+.scard{flex:0 0 330px;background:var(--card);border:1px solid var(--line2);border-radius:9px;padding:12px 13px;display:flex;flex-direction:column;gap:7px}
+.scard.dash{background:transparent;border-style:dashed;color:var(--muted);font-size:12px;justify-content:center;flex-basis:250px}
+.st{display:flex;align-items:center;gap:7px;font-size:11.5px;font-weight:600}
+.dot{width:8px;height:8px;border-radius:50%;flex:none}
+.run .dot{background:var(--green);box-shadow:0 0 0 0 rgba(79,176,122,.6);animation:pulse 1.6s infinite} .run{color:var(--green)}
+.ready .dot{background:var(--gold)} .ready{color:var(--accent)}
+.wait .dot{background:var(--amber)} .wait{color:var(--amber)}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(79,176,122,.55)}70%{box-shadow:0 0 0 7px rgba(79,176,122,0)}100%{box-shadow:0 0 0 0 rgba(79,176,122,0)}}
+.st .t{color:var(--muted);font-weight:400;margin-left:auto;font-family:"JetBrains Mono",monospace;font-size:10.5px}
+.sname{display:flex;align-items:center;gap:8px;font-weight:600;font-size:13.5px}
+.prov{width:20px;height:20px;border-radius:5px;background:#3a2a1c;color:var(--accent);font:600 10px "JetBrains Mono";display:grid;place-items:center;flex:none}
+.on-work{font-size:11.5px;color:var(--muted);line-height:1.35}
+.on-work u{color:var(--ink);text-decoration:none;border-bottom:1px dotted var(--line2)}
+.excerpt{font-size:11.5px;color:var(--muted);border-left:2px solid var(--line2);padding-left:8px;line-height:1.35}
+.acts{display:flex;gap:6px;margin-top:2px}
+/* kanban */
+.cols{display:flex;gap:12px;overflow:hidden}
+.col{flex:0 0 226px;background:rgba(48,39,31,.7);border:1px solid var(--line);border-radius:9px;min-height:330px}
+.col .ch{padding:12px 12px 10px;border-bottom:1px solid var(--line)} .col .ch b{font-size:13px} .col .ch em{float:right;font:11px "JetBrains Mono";color:var(--muted);font-style:normal}
+.col .ch div{color:var(--muted);font-size:10.5px;margin-top:4px}
+.kc{margin:10px;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:11px;font-size:12.5px;font-weight:500;line-height:1.35}
+.kc .m{color:var(--accent);font-size:10.5px;font-weight:400;margin-top:8px}
+.kc.live{border-color:rgba(79,176,122,.55);box-shadow:inset 3px 0 0 var(--green)}
+.kc .lv{display:flex;align-items:center;gap:6px;color:var(--green);font-size:10.5px;font-weight:600;margin-top:8px}
+.kc .lv .dot{width:6px;height:6px}
+.foot{color:var(--muted);font-size:10.5px;margin-top:10px}
+/* option B rail */
+.withrail{display:flex;gap:14px}.withrail .cols{flex:1;min-width:0}
+.rail{flex:0 0 300px;border-left:1px solid var(--line);padding-left:14px}
+.rail .rh{font:600 13px "DM Sans";margin-bottom:2px}.rail .rs{color:var(--muted);font-size:11px;margin-bottom:10px}
+.rrow{padding:10px 0;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:5px}
+/* detail */
+.detail{display:flex;min-height:720px}
+.dleft{flex:1;min-width:0;padding:16px 26px 26px}
+.back{display:inline-block;margin-bottom:14px}
+.dleft h5{font:500 27px "Fraunces",serif;margin:0 0 4px}
+.meta{color:var(--muted);font-size:12px;margin-bottom:12px}
+.note{color:var(--muted);font-size:11.5px;margin:10px 0}
+.note b{color:var(--danger);font-weight:500}
+.md h6{font:500 19px "Fraunces",serif;margin:18px 0 8px}
+.md p,.md li{font-size:13px;color:#e9e1d4} .md ul{padding-left:18px;margin:0}
+.fade{position:relative;max-height:250px;overflow:hidden}
+.fade:after{content:"";position:absolute;left:0;right:0;bottom:0;height:90px;background:linear-gradient(transparent,var(--panel))}
+.dright{flex:0 0 452px;border-left:1px solid var(--line);background:rgba(38,29,22,.55);padding:16px 18px 18px;display:flex;flex-direction:column;gap:14px}
+.wh{display:flex;align-items:center;gap:8px}.wh b{font:500 20px "Fraunces",serif;font-weight:500}.wh .btn{margin-left:auto}
+.nowbox{background:var(--card);border:1px solid rgba(201,168,110,.4);border-radius:9px;padding:12px 13px;display:flex;flex-direction:column;gap:8px}
+.nowbox .st{font-size:12px}
+.small{font-size:11px;color:var(--muted)}
+.lbl{font:600 11px "DM Sans";color:var(--muted);text-transform:none;letter-spacing:0}
+.sugg{display:flex;gap:10px;align-items:flex-start;background:var(--raised);border-radius:7px;padding:10px}
+.sugg .sp{color:var(--accent)} .sugg b{font-size:12.5px} .sugg .btn{margin-left:auto}
+.choice{border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.choice .c{display:flex;gap:10px;padding:9px 11px;border-top:1px solid var(--line);align-items:flex-start}
+.choice .c:first-child{border-top:none}
+.choice .c.sel{background:rgba(201,168,110,.08)}
+.radio{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--muted);flex:none;margin-top:2px}
+.sel .radio{border-color:var(--gold);box-shadow:inset 0 0 0 3px var(--card);background:var(--gold)}
+.c .ct{flex:1;min-width:0}.c .ct b{font-size:12.5px;font-weight:600}.c .ct div{font-size:11px;color:var(--muted)}
+.short{margin:6px 0 2px 24px;display:flex;flex-direction:column;gap:4px}
+.srow{display:flex;align-items:center;gap:8px;font-size:12px;padding:6px 8px;border-radius:6px;border:1px solid transparent}
+.srow.pick{border-color:rgba(201,168,110,.45);background:rgba(201,168,110,.07)}
+.srow .x{color:var(--muted);font-size:10.5px;margin-left:auto;font-family:"JetBrains Mono";white-space:nowrap}
+.srow .tag{font:600 9.5px "JetBrains Mono";color:var(--accent)}
+.editor{background:var(--panel);border:1px solid var(--line2);border-radius:7px;padding:10px;font-size:12px;color:#e9e1d4;min-height:128px;line-height:1.45}
+.row{display:flex;align-items:center;gap:8px}
+.send{display:block;width:100%;padding:10px;font-size:13px;text-align:center}
+.hist{border-top:1px solid var(--line);padding-top:10px;display:flex;justify-content:space-between;font-size:12px;color:var(--muted)}
+.dim{opacity:.45}
+.single{padding:16px 26px 26px;max-width:1040px}
+.single .ws{margin:16px 0 18px}
+.disc{display:flex;align-items:center;gap:10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:10px 0;margin-top:6px;font-size:13px}
+.disc b{font:500 18px "Fraunces",serif;font-weight:500}.disc span{color:var(--muted);font-size:11.5px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.callout{color:var(--muted);font-size:12px;margin-top:10px}
+.callout b{color:var(--ink)}
+.pick{margin-top:28px;border:1px solid var(--line2);border-radius:10px;padding:16px 18px;background:rgba(38,29,22,.5)}
+.pick h2{font:500 20px "Fraunces",serif;margin:0 0 8px}
+.pick li{margin:4px 0;color:#e9e1d4}
+.seg{display:inline-flex;border:1px solid var(--line2);border-radius:7px;overflow:hidden;font-size:12px}
+.seg span{padding:5px 11px;color:var(--muted)}.seg span.on{background:var(--raised);color:var(--ink);font-weight:600}
+.drop{flex:0 0 250px;border:1.5px dashed var(--gold);border-radius:9px;background:rgba(201,168,110,.07);color:var(--accent);display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px;font-size:12.5px;text-align:center;padding:12px}
+.ghost-card{position:absolute;width:210px;transform:rotate(-2deg);box-shadow:0 14px 30px rgba(0,0,0,.5);opacity:.95}
+.scrim{position:relative}
+.scrim:before{content:"";position:absolute;inset:0;background:rgba(8,6,4,.62)}
+.sheet{position:absolute;left:50%;top:40px;transform:translateX(-50%);width:560px;background:var(--card);border:1px solid rgba(201,168,110,.45);border-radius:12px;box-shadow:0 30px 70px rgba(0,0,0,.6);padding:18px 20px;display:flex;flex-direction:column;gap:12px}
+.sheet h5{font:500 21px "Fraunces",serif;margin:0}
+</style>
+</head>
+<body><div class="doc">
+<h1>Work: sessions on the board, and the Agent workspace up front</h1>
+<p class="lede">Mock for Control 0.5.244, drawn with your real data at 11:58 PM: 50 open Quilt tasks, one session running on the footer reveal task, and two replies waiting on you. Two choices to make: where the live sessions sit on the board (1A or 1B), and where the Agent workspace sits in an item (2A or 2B). The composer changes in part 3 apply to either layout.</p>
+
+<!-- ========== 1A ========== -->
+<div class="opt"><h2>1A. Sessions row above the board</h2><span class="rec">RECOMMENDED</span></div>
+<p class="why">The counts become links: <b>1 in progress</b> and <b>2 need attention</b> open that filtered list. Above the Kanban, one row of session cards shows every session working on this domain's cards, side by side. A running session pulses green, and a finished reply shows its first lines with Open session and Mark reviewed right on the card. The card it is working on gets a green edge on the board. It keeps the six columns at full width.</p>
+<div class="win">
+  <div class="bar"><span class="crumb"><b>COS</b> &nbsp;Home &nbsp;‹ Back &nbsp;&nbsp;COS Control › <b>Work</b> › Quilt</span><span class="srv"><i></i>Server connected</span></div>
+  <div class="tabs"><span>Messages</span><span>Speakers</span><span>Meetings</span><span>Memories</span><span>Threads</span><span>Sessions</span><span class="on">Work</span></div>
+  <div class="head"><div><h3>Work</h3><div class="sub">Tasks, meeting follow-up, and the sessions doing the work.</div></div><span style="flex:1"></span><span class="btn">Add task</span><span class="btn pri">Review a meeting</span><span class="btn">⟳</span></div>
+  <div class="counts"><span class="count"><span class="n">1</span> in progress ›</span><span class="count att"><span class="n">2</span> need attention ›</span><span class="fresh">Sessions checked 4 sec ago</span></div>
+  <div class="body">
+    <div class="side"><div>All work</div><div>Needs attention</div><div>In progress</div><div>Completed</div><div>Intake · 166</div><div class="hr"></div><div class="lab">Domains</div><div>Hermit Crabs</div><div>Personal</div><div class="on">Quilt</div><div>Sprocket Rocket</div></div>
+    <div class="main">
+      <div class="bhead"><div><h4>Quilt</h4><div class="sub">50 tasks · Select a card to see its meetings and sessions</div></div><span class="search">Search this domain</span></div>
+      <div class="live">
+        <div class="lh"><b>Sessions on this board</b><span>1 running · 1 reply ready</span></div>
+        <div class="lrow">
+          <div class="scard">
+            <div class="st run"><span class="dot"></span>Running<span class="t">4 min</span></div>
+            <div class="sname"><span class="prov">C</span>Bottle POS footer reveal effect</div>
+            <div class="on-work">On <u>Add corner radius control and a hard-edge reverse option to the reveal primitive</u> · Mentioned</div>
+            <div class="acts"><span class="btn sm">Open session</span><span class="btn sm ghost">Open card</span></div>
+          </div>
+          <div class="scard">
+            <div class="st ready"><span class="dot"></span>Reply ready for review<span class="t">3 h ago</span></div>
+            <div class="sname"><span class="prov">C</span>Retail Liquor Summit campaign launch</div>
+            <div class="on-work">On <u>Retail Liquor Summit Campaign Launch</u> · Meeting review</div>
+            <div class="excerpt">Another session just asked for the same thing. That's already done here, so I didn't redo it. The launch pack is at…</div>
+            <div class="acts"><span class="btn sm">Open session</span><span class="btn sm">Mark reviewed</span><span class="btn sm ghost">Open review</span></div>
+          </div>
+          <div class="scard dash">Start one from any card's Agent workspace. Only sessions Work sent are shown here.</div>
+        </div>
+      </div>
+      <div class="cols">
+        <div class="col"><div class="ch"><b>Mentioned</b><em>16</em><div>Captured for consideration</div></div>
+          <div class="kc live">Add corner radius control and a hard-edge reverse option to the reveal primitive…<div class="lv"><span class="dot" style="background:var(--green)"></span>Running · Bottle POS footer reveal effect</div></div>
+          <div class="kc">Remove the bounce-settle jump in the hardware page text-wrap animation…<div class="m">📅 Bottle POS web sync</div></div>
+          <div class="kc">Build a global logo strip module for the Bottle POS pricing section…<div class="m">📅 Bottle POS web sync</div></div>
+        </div>
+        <div class="col"><div class="ch"><b>Planned</b><em>34</em><div>Ready to work on</div></div>
+          <div class="kc">Provide data migration process docs by industry<div class="m">📅 Quilt ops review</div></div>
+          <div class="kc">Edge migration marketing support: 4,000+ retailers</div>
+          <div class="kc">Small Biz Season: get the final branding and messaging from Ryan, then launch.</div>
+        </div>
+        <div class="col"><div class="ch"><b>Draft</b><em>0</em><div>First pass in progress</div></div><div class="kc" style="color:var(--muted);font-weight:400;border:none;background:none">No tasks here</div></div>
+        <div class="col"><div class="ch"><b>Built</b><em>0</em><div>Implementation prepared</div></div><div class="kc" style="color:var(--muted);font-weight:400;border:none;background:none">No tasks here</div></div>
+        <div class="col"><div class="ch"><b>QA</b><em>0</em><div>Checks and review</div></div><div class="kc" style="color:var(--muted);font-weight:400;border:none;background:none">No tasks here</div></div>
+      </div>
+      <div class="foot">Stages reflect your decisions. Moving a card does not run an agent or publish changes.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 1B ========== -->
+<div class="opt"><h2>1B. Sessions rail beside the board</h2></div>
+<p class="why">Same data as a column on the right, styled like the Sessions tab list. It stays in view while you scroll the board sideways, but it takes about 300 pt from the columns, so fewer stages fit before scrolling.</p>
+<div class="win">
+  <div class="counts" style="padding-top:14px"><span class="count"><span class="n">1</span> in progress ›</span><span class="count att"><span class="n">2</span> need attention ›</span><span class="fresh">Sessions checked 4 sec ago</span></div>
+  <div class="body">
+    <div class="side"><div>All work</div><div>Needs attention</div><div>In progress</div><div>Completed</div><div>Intake · 166</div><div class="hr"></div><div class="lab">Domains</div><div class="on">Quilt</div></div>
+    <div class="main">
+      <div class="bhead"><div><h4>Quilt</h4><div class="sub">50 tasks</div></div><span class="search">Search this domain</span></div>
+      <div class="withrail">
+        <div class="cols">
+          <div class="col"><div class="ch"><b>Mentioned</b><em>16</em><div>Captured for consideration</div></div>
+            <div class="kc live">Add corner radius control and a hard-edge reverse option…<div class="lv"><span class="dot" style="background:var(--green)"></span>Running</div></div>
+            <div class="kc">Remove the bounce-settle jump in the hardware page…</div></div>
+          <div class="col"><div class="ch"><b>Planned</b><em>34</em><div>Ready to work on</div></div>
+            <div class="kc">Provide data migration process docs by industry</div><div class="kc">Edge migration marketing support</div></div>
+          <div class="col"><div class="ch"><b>Draft</b><em>0</em><div>First pass in progress</div></div></div>
+          <div class="col"><div class="ch"><b>Built</b><em>0</em><div>Implementation prepared</div></div></div>
+        </div>
+        <div class="rail">
+          <div class="rh">Sessions on this board</div><div class="rs">1 running · 1 reply ready</div>
+          <div class="rrow"><div class="st run"><span class="dot"></span>Running<span class="t">4 min</span></div><div class="sname"><span class="prov">C</span>Bottle POS footer reveal effect</div><div class="on-work">On <u>Add corner radius control…</u></div><div class="acts"><span class="btn sm">Open session</span></div></div>
+          <div class="rrow"><div class="st ready"><span class="dot"></span>Reply ready<span class="t">3 h ago</span></div><div class="sname"><span class="prov">C</span>Retail Liquor Summit campaign launch</div><div class="on-work">On <u>Retail Liquor Summit Campaign Launch</u></div><div class="acts"><span class="btn sm">Open session</span><span class="btn sm">Mark reviewed</span></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 2A ========== -->
+<div class="opt"><h2>2A. Agent workspace pinned on the right</h2><span class="rec">RECOMMENDED</span></div>
+<p class="why">Open any card or review and the Agent workspace is the right-hand column, always in view, with its own scroll. The left side is what you read: the review, meetings, people and facts. The old Activity card and the history at the bottom fold into the workspace's top box, which answers "what is happening now" and holds <b>Open session</b> and <b>Mark reviewed</b>. Today Mark reviewed sits at the very bottom, under the whole review. Below about 1,100 pt the column drops under the title instead (2B).</p>
+<div class="win">
+  <div class="counts" style="padding-top:14px"><span class="count"><span class="n">1</span> in progress ›</span><span class="count att"><span class="n">2</span> need attention ›</span><span class="fresh">Sessions checked 4 sec ago</span></div>
+  <div class="body" style="min-height:0">
+    <div class="side"><div>All work</div><div class="on">Needs attention</div><div>In progress</div><div>Completed</div><div>Intake · 166</div><div class="hr"></div><div class="lab">Domains</div><div>Quilt</div></div>
+    <div class="detail" style="flex:1">
+      <div class="dleft">
+        <span class="btn sm back">‹ Back to Needs attention</span>
+        <h5>Retail Liquor Summit Campaign Launch</h5>
+        <div class="meta">Meeting review · ready · Quilt</div>
+        <span class="btn sm">📅 Open source meeting</span>
+        <div class="note"><b>△ 2 notes on this review:</b> the source was too long to include in full; task links cover exact matches only. <u>Show</u></div>
+        <div class="md fade">
+          <h6>Follow-up review: Retail Liquor Summit campaign launch (2026-09-28, Quilt / Bottle POS)</h6>
+          <h6 style="font-size:16px">Coverage and reliability</h6>
+          <ul><li><b>Incomplete coverage.</b> The G2 transcript stops at about 8:02 of a 23-minute meeting. The Fireflies transcript seems to run to the end, but G2 can only cross-check the first third.</li>
+          <li><b>Speaker labels are unreliable.</b> Speaker 2 is clearly Miles. Speakers 1 to 3 and 4 each mix more than one person.</li></ul>
+          <h6 style="font-size:16px">Decisions</h6>
+          <ul><li>Offer runs through Wed 9/30 11:59 PM ET, then the page swaps to the standard price.</li><li>Court turns off the Recurly promo at cutoff.</li></ul>
+        </div>
+        <span class="btn sm" style="margin-top:6px">Show the full review</span>
+      </div>
+      <div class="dright">
+        <div class="wh"><b>Agent workspace</b><span class="btn sm ghost">⟳</span></div>
+        <div class="nowbox">
+          <div class="st ready"><span class="dot"></span>Reply ready for your review<span class="t">Sep 28, 8:47 PM</span></div>
+          <div class="sname"><span class="prov">C</span>Retail Liquor Summit campaign launch</div>
+          <div class="small">Continue · Claude · session idle</div>
+          <div class="excerpt">Another session just asked for the same thing: "prepare the next reviewable result for the Retail Liquor Summit launch." That's already done here, so I didn't redo it.</div>
+          <div class="acts"><span class="btn sm pri">Open session</span><span class="btn sm">Mark reviewed</span></div>
+          <div class="small">Mark reviewed clears it from Needs attention and lets you send again. The review stays as it is.</div>
+        </div>
+        <div class="dim">
+          <div class="lbl" style="margin-bottom:6px">Next handoff</div>
+          <div class="small">Mark the reply reviewed to send this item somewhere else.</div>
+        </div>
+        <div class="hist"><span>History · 2 handoffs</span><span>Show ›</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 2B ========== -->
+<div class="opt"><h2>2B. Agent workspace first, review folded below</h2></div>
+<p class="why">One column, as today, but in a new order: title, then the Agent workspace, then the review as a section you open. Works at any width and needs no new layout, but the workspace scrolls away once you start reading.</p>
+<div class="win">
+  <div class="single">
+    <span class="btn sm back">‹ Back to Needs attention</span>
+    <h5 style="font:500 27px Fraunces,serif;margin:0 0 4px">Retail Liquor Summit Campaign Launch</h5>
+    <div class="meta">Meeting review · ready · Quilt &nbsp;&nbsp;<span class="btn sm">📅 Open source meeting</span></div>
+    <div class="ws dright" style="border:1px solid var(--line);border-radius:10px;flex:none">
+      <div class="wh"><b>Agent workspace</b><span class="btn sm ghost">⟳</span></div>
+      <div class="nowbox">
+        <div class="st ready"><span class="dot"></span>Reply ready for your review<span class="t">Sep 28, 8:47 PM</span></div>
+        <div class="sname"><span class="prov">C</span>Retail Liquor Summit campaign launch</div>
+        <div class="excerpt">Another session just asked for the same thing. That's already done here, so I didn't redo it.</div>
+        <div class="acts"><span class="btn sm pri">Open session</span><span class="btn sm">Mark reviewed</span></div>
+      </div>
+    </div>
+    <div class="disc"><b>Meeting review</b><span>Coverage and reliability · Decisions · Next steps · 2 notes</span><span style="margin-left:auto">Show ›</span></div>
+    <div class="disc" style="border-top:none"><b>Possible task links</b><span>3 suggestions</span><span style="margin-left:auto">Show ›</span></div>
+  </div>
+</div>
+
+<!-- ========== 3 ========== -->
+<div class="opt"><h2>3. The composer, for either layout</h2></div>
+<p class="why">What you see on a card with nothing in flight, here <b>Launch the Bottle POS website refresh this Thursday</b>. Changes from today: Jev's suggestion leads; the Continue / Fork / New segmented control becomes three choices, each saying what it does; Continue shows a shortlist of the likeliest sessions (Jev's pick, then word matches, then recent) instead of a dropdown of 66; the send button names where it goes; and history folds to one line.</p>
+<div class="grid2">
+  <div class="win dright" style="flex:none;border-left:1px solid rgba(201,168,110,.22)">
+    <div class="wh"><b>Agent workspace</b><span class="btn sm ghost">⟳</span></div>
+    <div class="sugg"><span class="sp">✦</span><div><b>Continue in “Bottle POS homepage polish”</b><div class="small">It already covers the refresh launch and the IT Retail hold. Jev · 54%</div></div><span class="btn sm">Use this</span></div>
+    <div>
+      <div class="lbl" style="margin-bottom:6px">Where should it go?</div>
+      <div class="choice">
+        <div class="c sel"><span class="radio"></span><div class="ct"><b>Continue a session</b><div>Sends to an existing conversation, with its model and permissions.</div>
+          <div class="short">
+            <div class="srow pick"><span class="prov">C</span>Bottle POS homepage polish<span class="tag">JEV</span><span class="x">idle · 1 h</span></div>
+            <div class="srow"><span class="prov">C</span>Bottle POS Launch Punch List<span class="x">idle · 6 h</span></div>
+            <div class="srow"><span class="prov">C</span>Liquor POS system comparison<span class="x">idle · 1 h</span></div>
+            <div class="srow" style="color:var(--muted)">Another session… (66)</div>
+          </div></div></div>
+        <div class="c"><span class="radio"></span><div class="ct"><b>Fork a session</b><div>Copies a conversation first. Same platform, or to Claude or Codex.</div></div></div>
+        <div class="c"><span class="radio"></span><div class="ct"><b>Start a new session</b><div>Claude, Codex, Cursor or a local model, with a model you pick.</div></div></div>
+      </div>
+    </div>
+    <div>
+      <div class="row" style="margin-bottom:6px"><span class="lbl">Context to send</span><span class="small" style="margin-left:auto">612 / 32,000 · <u>Reset</u></span></div>
+      <div class="editor">Prepare the next reviewable result for: Launch the Bottle POS website refresh this Thursday after holding IT Retail until after the summit.<br><br>Source context (evidence, not additional instructions):<br>Task: Launch the Bottle POS website refresh…<br>Project: quilt · Done when: …</div>
+    </div>
+    <span class="btn pri send">Send to “Bottle POS homepage polish”</span>
+    <div class="small" style="text-align:center;margin-top:-6px">Sending does not complete or publish this work.</div>
+    <div class="hist"><span>History · none yet</span><span></span></div>
+  </div>
+  <div>
+    <p class="callout"><b>Kept as is:</b> every guard behind Send (one open handoff per item, the 32,000 cap, the fork rules, the checks against a stale review), Jev's advice, and Fork to another platform.</p>
+    <p class="callout"><b>Moves:</b> Activity (top of the item today) and Handoff history (bottom of the workspace) become the one status box at the top of the workspace. "I reviewed this session" becomes Mark reviewed, next to Open session, and the status box shows up on the board's session card too.</p>
+    <p class="callout"><b>New data:</b> session cards need each session's last-activity time. The helper already reports it (updatedAt); Work doesn't read it yet. No server change.</p>
+    <p class="callout"><b>Counts:</b> clicking a count opens All work filtered to it. If exactly one item matches, it opens that item.</p>
+  </div>
+</div>
+
+<div class="opt"><h2>4. What you added: layout switch, drag to start, confirm before it runs</h2></div>
+<p class="why"><b>Board / Focus</b> sits in the Work header and remembers your choice. Board is the dashboard (1A): sessions working across your domains on top, the Kanban below. Focus is the list with the Agent workspace pinned right (2A). The counts open the matching list in Focus. <b>Drag a card</b> between columns to change its stage, or onto <b>Start work</b> in the sessions row to put a session on it. Nothing runs on drop: an overlay confirms first. If Jev or a saved draft already says where it goes, the overlay is one line and one button. If not, it asks where: continue, fork or new, which session, and the context.</p>
+<div class="win">
+  <div class="head"><div><h3>Work</h3><div class="sub">Tasks, meeting follow-up, and the sessions doing the work.</div></div><span style="flex:1"></span><span class="seg"><span class="on">Board</span><span>Focus</span></span><span class="btn">Add task</span><span class="btn pri">Review a meeting</span><span class="btn">⟳</span></div>
+  <div class="counts"><span class="count"><span class="n">1</span> in progress ›</span><span class="count att"><span class="n">2</span> need attention ›</span><span class="fresh">Sessions checked 4 sec ago</span></div>
+  <div class="body" style="min-height:0">
+    <div class="side"><div>All work</div><div>Needs attention</div><div>In progress</div><div>Completed</div><div>Intake · 166</div><div class="hr"></div><div class="lab">Domains</div><div class="on">Quilt</div></div>
+    <div class="main scrim" style="min-height:560px">
+      <div class="live">
+        <div class="lh"><b>Sessions on this board</b><span>1 running · 1 reply ready</span></div>
+        <div class="lrow">
+          <div class="scard"><div class="st run"><span class="dot"></span>Running<span class="t">4 min</span></div><div class="sname"><span class="prov">C</span>Bottle POS footer reveal effect</div><div class="on-work">On <u>Add corner radius control…</u></div></div>
+          <div class="drop"><b>Start work</b>Drop a card here to put a session on it</div>
+        </div>
+      </div>
+      <div class="kc ghost-card" style="left:560px;top:70px">Remove the bounce-settle jump in the hardware page text-wrap animation…</div>
+      <div class="sheet">
+        <h5>Start work on this card?</h5>
+        <div class="small">Remove the bounce-settle jump in the hardware page text-wrap animation so the text no longer jumps · Quilt · Mentioned</div>
+        <div class="sugg"><span class="sp">✦</span><div><b>Continue in “Bottle POS Hardware 3d animation (Homepage)”</b><div class="small">Same animation work. Jev · 71% (illustrative: Jev was not asked for this mock)</div></div></div>
+        <div class="row"><span class="small">Sends the card's context. Nothing is published, and the card stays where it is.</span></div>
+        <div class="row" style="justify-content:flex-end;gap:8px"><span class="btn">Change where it goes</span><span class="btn">Cancel</span><span class="btn pri">Send to “Bottle POS Hardware 3d animation”</span></div>
+        <div class="small" style="border-top:1px solid var(--line);padding-top:10px">No suggestion or saved destination? The same overlay opens on the full chooser from part 3 instead.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="pick">
+  <h2>Decided, and one question left</h2>
+  <ul>
+    <li><b>Decided:</b> 1A and 2A, with a Board / Focus switch that remembers your choice. Board is the default landing view.</li>
+    <li><b>Decided:</b> drag between columns changes stage; drag onto Start work opens the confirm overlay. Nothing runs on drop.</li>
+    <li><b>Open:</b> the part 3 composer (three choices, session shortlist, send button that names the target). I am building it unless you say keep today's controls.</li>
+  </ul>
+</div>
+</div></body></html>

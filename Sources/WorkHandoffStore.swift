@@ -29,12 +29,23 @@ struct WorkSession: Identifiable, Codable, Equatable, Sendable {
     var status: String
     var waitingDetail: String? = nil
     var failure: String? = nil
+    /// 0.5.244: the session's last activity (ISO 8601 from the helper), for the board's session cards. Optional so
+    /// journals written by 0.5.243 and earlier still decode.
+    var updatedAt: String? = nil
     static func parse(_ value: JSONValue) -> Self? {
         guard let row = ClaudeSession(value), !row.sessionId.isEmpty else { return nil }
         return Self(id: "\(row.provider):\(row.sessionId)", nativeID: row.sessionId, provider: row.provider,
                     title: row.name, summary: row.discussionSummary, project: row.workspace, status: row.state,
-                    waitingDetail: row.waitingDetail, failure: row.failure)
+                    waitingDetail: row.waitingDetail, failure: row.failure, updatedAt: row.updatedAt.isEmpty ? nil : row.updatedAt)
     }
+    var updatedDate: Date? {
+        guard let raw = updatedAt?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+        return Self.fractionalStamp.date(from: raw) ?? Self.plainStamp.date(from: raw)
+    }
+    private nonisolated(unsafe) static let fractionalStamp: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
+    }()
+    private nonisolated(unsafe) static let plainStamp = ISO8601DateFormatter()
 }
 struct WorkModelChoice: Identifiable, Codable, Equatable, Sendable {
     let id: String
@@ -75,7 +86,60 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     var channel: String?
     var jobID: String?
     var serverInstanceID: String?
-    var blocksNewHandoff: Bool { !["completed", "failed", "refused", "reviewed"].contains(status) }
+    /// 0.5.244: when you acknowledged a finished, failed, refused or canceled handoff. The status and detail stay as
+    /// they were, so a refusal is never rewritten into a delivery (the Sessions back-link and suggestions read them).
+    /// Optional, so 0.5.243 reads these journals and simply shows the item as needing attention again.
+    var acknowledgedAt: Double?
+    /// Server-terminal states never block another handoff: completed, failed, refused, canceled (server job states:
+    /// completed | failed | canceled | interrupted; interrupted is recorded as failed).
+    nonisolated static let terminalStatuses: Set<String> = ["completed", "failed", "refused", "canceled", "reviewed"]
+    var blocksNewHandoff: Bool { !Self.terminalStatuses.contains(status) }
+    /// An unknown delivery cleared after a manual check: terminal, but never evidence that the session got the work.
+    var clearedUnconfirmed: Bool { status == "reviewed" && acknowledgedAt != nil }
+    /// A server job state as a receipt status. The server's terminal states are completed, failed, canceled and
+    /// interrupted; interrupted is recorded as failed. Unknown states stay unknown (checked again, never resent).
+    nonisolated static func receiptStatus(forJobState state: String) -> String {
+        if ["completed", "failed", "canceled"].contains(state) { return state }
+        if state == "interrupted" { return "failed" }
+        return ["accepted", "starting", "queued", "running", "answer_ready"].contains(state) ? "running" : "unknown"
+    }
+    /// A delivered reply is acknowledged by becoming "reviewed" (as in 0.5.243, which unblocks the next handoff);
+    /// completed, failed, refused and canceled keep their status and gain `acknowledgedAt`.
+    var acknowledgeable: Bool {
+        status == "delivered" || (["completed", "failed", "refused", "canceled"].contains(status) && acknowledgedAt == nil)
+    }
+}
+
+/// 0.5.244: one resolved destination for a draft, shared by the Agent workspace and the board's Start work overlay,
+/// so both send exactly what the composer would. Nil means the draft does not yet say where it goes.
+struct WorkSendPlan: Equatable {
+    let mode: WorkHandoffMode
+    let session: WorkSession?
+    let model: WorkModelChoice?
+    let crossPlatform: Bool
+    let prompt: String
+    /// Button copy names the destination; a long session title is clipped so the button stays on one line.
+    nonisolated static func clip(_ title: String, _ limit: Int = 40) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.count <= limit ? trimmed : String(trimmed.prefix(limit - 1)).trimmingCharacters(in: .whitespaces) + "\u{2026}"
+    }
+    /// The button in the Start work confirm, whose line above already names the destination.
+    var verb: String {
+        switch mode {
+        case .newSession: return "Start session"
+        case .fork: return crossPlatform ? "Fork to \(WorkHandoffStore.providerName(model?.provider ?? ""))" : "Fork and send"
+        case .continueSession: return "Send"
+        }
+    }
+    var label: String {
+        let title = Self.clip(session?.title ?? "session")
+        switch mode {
+        case .newSession: return "Start new \(WorkHandoffStore.providerName(model?.provider ?? "")) session"
+        case .fork: return crossPlatform ? "Fork to \(WorkHandoffStore.providerName(model?.provider ?? ""))"
+                                         : "Fork \u{201C}\(title)\u{201D} and send"
+        case .continueSession: return "Send to \u{201C}\(title)\u{201D}"
+        }
+    }
 }
 
 /// Operator-directed context transfers. This does not own task execution, mark
@@ -188,10 +252,65 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     /// so the Sessions page can lead back to its Work item however it was opened.
     /// A Fork keeps its parent as `sessionID` until the fork exists, and a refused handoff never reached the
     /// session, so neither names this session as doing the work.
+    /// 0.5.244: an unknown delivery you cleared ("reviewed" with `acknowledgedAt`) was never confirmed either.
     nonisolated static func latestReceipt(forSession id: String, in receipts: [WorkHandoffReceipt]) -> WorkHandoffReceipt? {
-        receipts.filter { $0.sessionID == id && $0.status != "refused" && !($0.mode == .fork && $0.sessionID == $0.sourceSessionID) }
+        receipts.filter { $0.sessionID == id && $0.status != "refused" && !$0.clearedUnconfirmed
+                          && !($0.mode == .fork && $0.sessionID == $0.sourceSessionID) }
             .max { $0.createdAt < $1.createdAt }
     }
+    /// Where this draft sends, or nil while it is incomplete or unsupported. Mirrors the composer's rules: New
+    /// session needs an available model; Fork to another platform needs an exportable source and an available
+    /// Claude or Codex model; a native Fork or Continue needs a session whose provider supports it.
+    nonisolated static func sendPlan(draft: WorkHandoffDraft, sessions: [WorkSession], models: [WorkModelChoice]) -> WorkSendPlan? {
+        let text = draft.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, draft.prompt.utf16.count <= 32_000 else { return nil }
+        let session = sessions.first { $0.id == draft.sessionID }
+        let model = models.first { $0.id == draft.modelID && $0.provider == draft.provider }
+        switch draft.mode {
+        case .newSession:
+            guard let model, model.available else { return nil }
+            return WorkSendPlan(mode: .newSession, session: nil, model: model, crossPlatform: false, prompt: draft.prompt)
+        case .fork:
+            guard let session else { return nil }
+            if crossPlatformTargets.contains(draft.provider) && draft.provider != session.provider {
+                guard let model, model.available, exportableProviders.contains(session.provider) else { return nil }
+                return WorkSendPlan(mode: .fork, session: session, model: model, crossPlatform: true, prompt: draft.prompt)
+            }
+            guard nativeForkProviders.contains(session.provider) else { return nil }
+            return WorkSendPlan(mode: .fork, session: session, model: nil, crossPlatform: false, prompt: draft.prompt)
+        case .continueSession:
+            guard let session, continueProviders.contains(session.provider) else { return nil }
+            return WorkSendPlan(mode: .continueSession, session: session, model: nil, crossPlatform: false, prompt: draft.prompt)
+        }
+    }
+
+    /// What the board's Start work overlay may confirm in one click: the saved draft when it is already complete,
+    /// else a Jev suggestion at `minConfidence` or more applied to it. Nil means the full chooser opens.
+    /// Work that already has a handoff never gets one click: its draft may be the one already sent.
+    /// Jev's confidence means different things per action (the session's own probability for Continue and Fork,
+    /// P(none) for New), so only Continue and Fork advice qualify, each at its own bar.
+    nonisolated static let oneClickContinue = 0.6
+    nonisolated static let oneClickFork = 0.6
+    nonisolated static func startPlan(draft: WorkHandoffDraft, advice: SessionAdvice?, sessions: [WorkSession],
+                                      models: [WorkModelChoice], hasHistory: Bool) -> (plan: WorkSendPlan, fromAdvice: Bool)? {
+        guard !hasHistory else { return nil }
+        if let plan = sendPlan(draft: draft, sessions: sessions, models: models) { return (plan, false) }
+        guard let advice, advice.action != .newSession,
+              advice.confidence >= (advice.action == .fork ? oneClickFork : oneClickContinue),
+              let plan = sendPlan(draft: applying(advice, to: draft), sessions: sessions, models: models) else { return nil }
+        return (plan, true)
+    }
+
+    /// The Continue shortlist: Jev's pick, then word matches, then the most recently active sessions. At most `limit`.
+    nonisolated static func shortlist(advised: String?, matches: [WorkSession], sessions: [WorkSession], limit: Int = 3) -> [WorkSession] {
+        var out: [WorkSession] = []
+        func add(_ session: WorkSession) { if out.count < limit, !out.contains(where: { $0.id == session.id }) { out.append(session) } }
+        if let advised, let session = sessions.first(where: { $0.id == advised }) { add(session) }
+        matches.forEach(add)
+        sessions.sorted { ($0.updatedDate ?? .distantPast) > ($1.updatedDate ?? .distantPast) }.forEach(add)
+        return out
+    }
+
     func draft(for source: WorkSource) -> WorkHandoffDraft {
         drafts.first { $0.sourceID == source.id && $0.sourceRevision == source.revision }
             ?? WorkHandoffDraft(sourceID: source.id, sourceRevision: source.revision, prompt: source.suggestedPrompt)
@@ -471,7 +590,7 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
             .filter { $0.count > 3 && !Self.genericRecommendationWords.contains($0) && !$0.allSatisfy(\.isNumber) })
     }
     private func priorAssociation(_ session: WorkSession, source: WorkSource) -> WorkHandoffReceipt? {
-        receipts(for: source.id).first { $0.sessionID == session.id && ["delivered", "reviewed", "completed"].contains($0.status) }
+        receipts(for: source.id).first { $0.sessionID == session.id && ["delivered", "reviewed", "completed"].contains($0.status) && !$0.clearedUnconfirmed }
     }
     func recommendationReason(for session: WorkSession, source: WorkSource) -> String {
         if let prior = priorAssociation(session, source: source) {
@@ -668,9 +787,10 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
         guard job["provider"]?.string == nil || job["provider"]?.string == row.provider else { row.status = "unknown"; row.detail = "Provider receipt mismatch. No session was linked."; return }
         row.jobID = job["jobId"]?.string
         let state = job["status"]?.string ?? "unknown"
-        row.status = ["completed", "failed", "canceled"].contains(state) ? state : (["accepted", "starting", "queued", "running", "answer_ready"].contains(state) ? "running" : "unknown")
+        row.status = WorkHandoffReceipt.receiptStatus(forJobState: state)
         row.result = job["response"]?.string ?? job["partialText"]?.string
-        row.detail = job["error"]?.object?["message"]?.string ?? (row.status == "completed" ? "Response ready for review. Task completion and publication remain separate." : "\(state). Refresh to reconcile the durable job.")
+        row.detail = job["error"]?.object?["message"]?.string ?? (row.status == "completed" ? "Response ready for review. Task completion and publication remain separate."
+            : WorkHandoffReceipt.terminalStatuses.contains(row.status) ? "The server reports this run \(state)." : "\(state). Refresh to reconcile the durable job.")
         if let provider = job["provider"]?.string, provider == row.provider,
            job["providerOwnershipConfirmedAt"]?.string != nil,
            let native = (provider == "codex" ? job["codexThreadId"]?.string : job["cliSessionId"]?.string), !native.isEmpty, provider != "ollama" {
@@ -704,12 +824,29 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
         } catch { self.error = error.localizedDescription }
     }
     func markReviewed(receiptID: String) {
-        guard !busy, var row = receipts.first(where: { $0.id == receiptID }), row.status == "delivered" else { return }
+        guard !busy, let seen = receipts.first(where: { $0.id == receiptID }), seen.acknowledgeable else { return }
         do {
             let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }
             try loadJournal()
-            guard receipts.first(where: { $0.id == receiptID })?.status == "delivered" else { return }
-            row.status = "reviewed"; row.detail = "You confirmed that you inspected this session. The task remains unchanged."
+            guard var row = receipts.first(where: { $0.id == receiptID }), row.acknowledgeable else { return }
+            if row.status == "delivered" {
+                row.status = "reviewed"; row.detail = "You confirmed that you inspected this session. The task remains unchanged."
+            } else {
+                row.acknowledgedAt = Date().timeIntervalSince1970
+            }
+            try save(row)
+        } catch { self.error = error.localizedDescription }
+    }
+    /// An unknown delivery blocks another handoff so nothing is resent blindly. After checking the session yourself,
+    /// this clears it (a confirm in the UI comes first). The earlier detail is kept.
+    func clearUnresolved(receiptID: String) {
+        guard !busy, receipts.first(where: { $0.id == receiptID })?.status == "unknown" else { return }
+        do {
+            let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }
+            try loadJournal()
+            guard var row = receipts.first(where: { $0.id == receiptID }), row.status == "unknown" else { return }
+            row.status = "reviewed"; row.acknowledgedAt = Date().timeIntervalSince1970
+            row.detail = "You checked the session and cleared this unresolved handoff. Earlier: " + row.detail
             try save(row)
         } catch { self.error = error.localizedDescription }
     }

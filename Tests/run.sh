@@ -971,6 +971,44 @@ assert "WorkHandoffStore.applying(advice, to: draft)" in src, "Use this no longe
 assert "if mode == .fork { forkTarget }" in src, "the Fork to picker is not shown in Fork mode"
 assert 'if value == .fork && mode != .fork { next.provider = ""; next.modelID = "" }' in src, "entering Fork must clear a New session provider"
 PY
+# 0.5.244: the Work dashboard's wiring. Each drop goes through its validator before acting; Start work only opens the
+# confirm overlay (it never sends); Escape and navigation close the overlay; counts open their scope; both send paths
+# share sendWorkHandoff; Mark reviewed on a card is gated on the state; the live dot honours Reduce Motion.
+python3 - "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/ActivityWindow.swift" <<'PY'
+import re, sys
+wwv, whv, aw = (open(p).read() for p in sys.argv[1:4])
+def body(src, start, end):
+    i = src.index(start); return src[i:src.index(end, i)]
+col = body(wwv, "private func boardColumn(", "private func boardCard(")
+assert "WorkWorkspaceProjection.stageDrop(id: id, items: items, to: stage)" in col and "guard canChangeStage(task) else" in col, "column drop must validate the id and write access"
+assert col.index("guard canChangeStage(task)") < col.index("move(task, to: stage)"), "column drop moves before checking write access"
+assert "if stage == .complete { state.pendingComplete = task }" in col, "a drop on Complete must ask first"
+target = body(wwv, "private func startWorkTarget(", "private func boardColumn(")
+assert "WorkWorkspaceProjection.startable(id: id, items: items)" in target and "openStart(item)" in target, "Start work drop must validate then open the overlay"
+assert "sendWorkHandoff" not in target and "submit(" not in target, "a drop must never send"
+assert "state.startItemID = item.id" in body(wwv, "private func openStart(", "@ViewBuilder private var startOverlay")
+assert "if let id = state.startItemID" in wwv and ".overlay { startOverlay }" in wwv, "the overlay must render from its route flag"
+esc = body(wwv, ".onExitCommand {", ".onChange(of: reviewStore.selectedReviewID)")
+assert esc.index("state.startItemID = nil") < esc.index("closePickerOrDetail()"), "Escape must close the overlay before the detail"
+counts = body(wwv, "@ViewBuilder private var activityCounts", "private func openScope(")
+assert counts.count("countLink(") - counts.count("func countLink(") == 2 and "scope: .progress" in counts and "scope: .attention" in counts and "openScope(scope)" in counts
+assert "state.focusOverride = true" in body(wwv, "private func openScope(", "private var activityFreshness") and "layoutRaw =" not in body(wwv, "private func openScope(", "private var activityFreshness"), "a count click must not change the remembered layout"
+card = body(wwv, "private func sessionCard(", "private func startWorkTarget(")
+assert "receipt.acknowledgeable && state.offersAcknowledge" in card and "handoffStore.markReviewed(receiptID: receipt.id)" in card
+assert whv.count("await sendWorkHandoff(store: store, source: sendingSource, plan:") == 2, "composer and overlay must share one send path"
+sheet = body(whv, "struct WorkStartSheet: View {", "struct WorkSessionsView: View {")
+assert "WorkStartOutcome.after(openedWith: openedWith, newest:" in sheet and "case .close: onClose()" in sheet, "the overlay closes on the outcome rule, not on the intent row"
+assert "let hasHistory = !store.receipts(for: source.id).isEmpty" in sheet and "models: store.models, hasHistory: hasHistory)" in sheet, "one click must be refused for work that already has a handoff"
+assert "onSendingChange: { sending = $0 }" in sheet, "a send from the chooser inside the overlay must count as sending"
+dot = body(whv, "struct WorkLiveDot: View {", "/// How a handoff reads on the board")
+assert "@Environment(\\.accessibilityReduceMotion)" in dot and "guard live, !reduceMotion" in dot
+esc_aw = body(aw, "private func handleActivityEscape() -> Bool {", "private func goBack()")
+assert esc_aw.index("workWorkspaceState.startItemID != nil") < esc_aw.index("confirmingTaskDismiss"), "Activity Escape must close the Start work overlay first"
+assert "if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }" in esc_aw, "Escape must not close the overlay mid-send"
+for fn in ["private func goHome() {", "private func goBack() {", "private func clearDetail() {", "private func openConnectedWork(_ id: String) {", "private func openHandoffWork(_ id: String) {"]:
+    assert "if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }" in aw[aw.index(fn):aw.index(fn) + 320].split("\n")[2], fn + " must close the Start work overlay unless a send is being handed over"
+assert ".sheet(" not in wwv and ".sheet(" not in whv, "Work overlays are inline, never sheets"
+PY
 # 0.5.242: the menu-bar window opens straight into ControlPanel. 0.5.240 stacked an unstyled "Open Work"
 # button above it; Work is reached from the panel's Activity chips, which come from ActivitySection.allCases.
 python3 - "$ROOT/Sources/COSControlApp.swift" <<'PY'

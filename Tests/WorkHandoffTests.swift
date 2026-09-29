@@ -225,7 +225,7 @@ private actor HandoffTransport {
         await missingTurnStore.submit(source: source, mode: .continueSession, session: target, model: nil, prompt: "Receipt expires")
         await missingTurnStore.refreshReceipts()
         precondition(missingTurnStore.receipts.first?.status == "unknown" && missingTurnStore.receipts.first?.blocksNewHandoff == true)
-        print("PASS: fork 500 and turn 404 remain unknown; initial new-job 400 is refused; review only releases delivered receipts")
+        print("PASS: fork 500 and turn 404 remain unknown; initial new-job 400 is refused; Mark reviewed never clears an unknown delivery")
 
         let held = HandoffTransport(.heldTurn)
         let holder = make("shared-lock", held)

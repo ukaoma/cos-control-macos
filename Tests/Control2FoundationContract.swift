@@ -6,6 +6,7 @@ import CryptoKit
         runControl2ActivityIntegrationChecks()
         runWorkWorkspaceProjectionChecks()
         runWorkBoardChecks()
+        try await runWorkDashboardChecks()
         runWorkMeetingConnectionsChecks()
         runWorkIntakeChecks()
         try await runWorkPeopleAndAdviceChecks()

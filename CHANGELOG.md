@@ -1,3 +1,31 @@
+## 0.5.244 (build 282)
+
+Work becomes a dashboard of the sessions doing the work, with drag to start and the Agent workspace pinned beside every item. Pairs with server 6.57.1.
+
+- **Board and Focus.** Miles, 2026-09-28: "the Agent workspace is the most important view but it gets buried", and he wanted to "quickly swap between the two layouts". Work now has a Board / Focus switch that remembers your choice. Board is the default.
+  - **Board** shows "Sessions on this board" (or "Sessions working now" across domains) above the Kanban. Each card is a session Work sent: running (a pulsing green dot), waiting for your input, a reply ready for review, needing attention, sent, awaiting delivery or queued. A card shows the item it works on, why it is in that state (the reply's first lines, or the refusal or delivery detail), and Open session, Mark reviewed or Acknowledge, and Open card.
+  - A card edited or linked while its session works stays on the row, marked as an earlier version of the card. A completed card leaves the row once its session is no longer working.
+  - The row can be hidden to give the board more room. Start work stays pinned beside it.
+  - **Focus** is the list. An open item takes the whole pane, with its Agent workspace pinned on the right when the pane is at least 760 pt wide, which the default window gives (a 400 pt column, 452 pt from 1,100 pt), and directly under the title when narrower. In Focus, picking a domain now opens that domain's list rather than its board.
+- **Counts open their work.** "1 in progress" and "2 need attention" are links. Each opens its list, or the item itself when only one matches, without changing your remembered layout.
+- **Drag to start.** Drag a card between columns to change its stage (a drop on Complete asks first), or onto Start work to put a session on it. Start work… in a card's context menu does the same without dragging. Nothing runs on a drop. An overlay first loads your sessions and Jev's advice, then:
+  - on work with no handoff yet, offers one line and one button when a Continue or Fork suggestion reaches its bar, or when a destination you saved is complete;
+  - otherwise opens the full chooser.
+  - It keeps whichever it chose ("Choose myself" skips the check). It closes once the handoff is delivered, queued or running, and stays open to show why if it was refused, failed or could not be confirmed. Escape, a click outside, Back and moving to another view close it, except while a send is being handed over; then it waits and shows the result when you return to Work.
+- **The Agent workspace.**
+  - A status box on top says what is happening now: the session, its state, the reply or the reason, with Open session and Mark reviewed (or Acknowledge for a failure). This replaces the separate Activity card and the "I reviewed this session" button at the bottom.
+  - Errors show whether or not the composer is open.
+  - Where it goes is three choices (Continue a session, Fork a session, Start a new session), each saying what it does. Continue lists the likeliest sessions first (Jev's pick, word matches, then the most recently active), with every other session one menu away.
+  - The send button names the destination, and history folds to one line.
+  - Long meeting reviews open folded with "Show the full review", and their notes collapse to one line.
+- **Handoffs that could never be cleared can be now.**
+  - A New session that finished as "completed" stayed under Needs attention forever. It can be marked reviewed.
+  - A failed or refused handoff can be acknowledged. It keeps its status and reason in history, so it never reads as a delivery (the Sessions back-link and session suggestions still treat it as refused).
+  - A canceled handoff no longer blocks the next one, and a server run reported as interrupted is recorded as failed.
+  - An unconfirmed ("unknown") delivery still blocks, and after you check the session yourself it can be cleared, with a confirm. A cleared one never counts as a delivery: the Sessions page does not link it as "From Work", and suggestions do not treat it as a confirmed handoff.
+- Session states read the same on the board, the Kanban, the Focus list and the status box. A session waiting on you or in error says so even while its receipt still reads running or delivered, and "Running" needs proof: a session seen running, a send in progress, or a New session the server is running.
+- Tests: the Work suite adds the session row and its order, domain filter and plurals; a state precedence table; earlier-version and completed cards; the send plan for every destination and its button words; the one-click rule (per-action bars, no one click with history or for New advice); the overlay's close rule; date-ordered session shortlists; stage-change guards; and acknowledging each status against a real journal, including kept history, canceled never blocking and clearing an unknown delivery. run.sh pins the drop validators, the overlay route, Escape and navigation closing it, the counts, the shared send path and Reduce Motion.
+
 ## 0.5.243 (build 281)
 
 Fork a session to another platform, and session suggestions for meeting reviews. Pairs with server 6.57.1.

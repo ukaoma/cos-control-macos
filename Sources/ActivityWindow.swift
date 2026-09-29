@@ -790,6 +790,8 @@ struct ActivityWindow: View {
     }
 
     private func goHome() {
+        // A send being handed over keeps its overlay; it shows the result when you come back to Work.
+        if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }
         if taskDetail != nil { requestCloseTaskDetail(); return }
         if isolatedWorkPreview { withOptionalAnimation { section = nil }; return }
         clearDetail()
@@ -799,6 +801,11 @@ struct ActivityWindow: View {
     /// Escape reaches these window-owned routes before TextEditor/ScrollView can
     /// consume it. Other child panes retain their own cancellation semantics.
     private func handleActivityEscape() -> Bool {
+        // 0.5.244: Work's Start work overlay sits above everything in Work; Escape closes it first (not mid-send).
+        if workWorkspaceState.startItemID != nil {
+            if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }
+            return true
+        }
         if confirmingTaskDismiss { confirmingTaskDismiss = false; return true }
         if heldNamingUndoHandle != nil { heldNamingUndoHandle = nil; return true }
         if taskDetail != nil { requestCloseTaskDetail(); return true }
@@ -812,6 +819,8 @@ struct ActivityWindow: View {
     }
 
     private func goBack() {
+        // A send being handed over keeps its overlay; it shows the result when you come back to Work.
+        if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }
         // The linked receipt reader is a child of Work in both the integrated
         // candidate and production. Header Back and Escape keep that context.
         if section == .sessions, showingLinkedSession {
@@ -894,6 +903,8 @@ struct ActivityWindow: View {
     }
 
     private func clearDetail() {
+        // A send being handed over keeps its overlay; it shows the result when you come back to Work.
+        if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }; workWorkspaceState.focusOverride = false
         guard !isolatedWorkPreview else { return }
         if !taskDetailBusy { closeTaskDetail() }
         model.closeMediaPreview()
@@ -1272,6 +1283,8 @@ struct ActivityWindow: View {
     /// A related review may name a historical row while session receipts name
     /// stable work identity. Preserve both meanings without title matching.
     private func openConnectedWork(_ id: String) {
+        // A send being handed over keeps its overlay; it shows the result when you come back to Work.
+        if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }
         if let review = reviewStore.reviews.first(where: { "meeting-review:" + $0.id == id }) {
             handoffStore.selectedWorkID = review.source.id
             workWorkspaceState.selectedID = id
@@ -1289,6 +1302,8 @@ struct ActivityWindow: View {
     }
 
     private func openHandoffWork(_ id: String) {
+        // A send being handed over keeps its overlay; it shows the result when you come back to Work.
+        if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }
         handoffStore.selectedWorkID = id
         if !isolatedWorkPreview { model.closeClaudeSession(); selectedSessionID = nil }
         showingLinkedSession = false
