@@ -1,3 +1,10 @@
+## 0.5.242 (build 280)
+
+The menu-bar panel opens straight into itself again. Pairs with server 6.57.0.
+
+- Miles, 2026-09-28: an unstyled "Open Work" button sat above the panel. 0.5.240 added it with the Work preview, outside the panel's design, and it repeated what the Activity section already does: Work has its own chip there, like every other view. It is gone.
+- Tests: run.sh now checks that the menu-bar window opens straight into the panel with nothing above it. The check fails on the 0.5.241 source.
+
 ## 0.5.241 (build 279)
 
 Work's new Intake view shows what your meetings produced that is not on the board yet. Tasks show who their meetings involved, and the Agent workspace suggests which session should take the work. Pairs with server 6.57.0.
