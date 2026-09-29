@@ -125,7 +125,7 @@ private actor HandoffTransport {
         let directCalls = await direct.recorded()
         let send = try require(directCalls.first { $0.args.first == "session-chat-send" })
         precondition(value(send.args, "--thread-id") == target.nativeID && value(send.args, "--provider") == target.provider)
-        precondition(value(send.args, "--client-turn-id") == first.id && String(data: send.data!, encoding: .utf8) == "Inspect mobile")
+        precondition(value(send.args, "--client-turn-id") == first.id && String(data: send.data!, encoding: .utf8) == "Inspect mobile" + WorkProgress.instruction(tag: WorkProgress.tag(forWorkID: source.id)))
         let callsBeforeDuplicate = directCalls.count
         await store.submit(source: source, mode: .continueSession, session: other, model: nil, prompt: "Duplicate")
         let callsAfterDuplicate = await direct.recorded()

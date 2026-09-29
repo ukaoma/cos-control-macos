@@ -108,6 +108,19 @@ enum WorkHandoffState: Equatable {
 }
 
 struct WorkHandoffView: View {
+    /// 0.5.247: where a New session runs. It is a run on this Mac through COS, never a tab in the provider's app, so
+    /// Miles looked for it in Claude's sidebar, found nothing and read the handoff as lost (2026-09-29).
+    nonisolated static func whereItRunsNote(_ receipt: WorkHandoffReceipt) -> String? {
+        guard receipt.mode == .newSession, receipt.channel == "job", ["claude", "codex"].contains(receipt.provider) else { return nil }
+        let app = receipt.provider == "codex" ? "Codex" : "Claude"
+        if receipt.sessionID == nil {
+            return receipt.blocksNewHandoff ? "Runs on this Mac through COS, not as a tab in the \(app) app. Its session shows here in a moment." : nil
+        }
+        return receipt.blocksNewHandoff
+            ? "Runs on this Mac through COS, not as a tab in the \(app) app. Open session to follow it."
+            : "Ran on this Mac through COS. Open session, then Open in platform, to keep going in the \(app) app."
+    }
+
     @ObservedObject var store: WorkHandoffStore
     let source: WorkSource
     var isPreview = false
@@ -117,9 +130,19 @@ struct WorkHandoffView: View {
     var embedded = false
     /// Tells the Start work overlay a send from this composer is being handed over, so nothing closes it mid-send.
     var onSendingChange: ((Bool) -> Void)? = nil
+    /// 0.5.247: the card's stage now, so the Progress timeline offers Undo only while the card sits where COS put it.
+    var currentStage: String? = nil
+    var onUndoMove: ((String, String) -> Void)? = nil
+    /// Offered once the session reports the task done: completing stays yours, from here or the board.
+    var onMarkComplete: (() -> Void)? = nil
+    /// After "Not done yet" sent the work back: the board moves the card back to Draft.
+    var onSentBack: (() -> Void)? = nil
     @State private var validating = false
     @State private var historyOpen = false
     @State private var confirmClear = false
+    @State private var sendBackOpen = false
+    @State private var sendBackText = ""
+    @State private var sendingBack = false
     private var draft: WorkHandoffDraft { store.draft(for: source) }
     private var mode: WorkHandoffMode { draft.mode }
     private var sessionID: String { draft.sessionID }
@@ -147,6 +170,9 @@ struct WorkHandoffView: View {
     /// conversation export). No provider means the native, same-platform fork.
     private var forkToPlatform: Bool { mode == .fork && WorkHandoffStore.crossPlatformTargets.contains(provider) && provider != selectedSession?.provider }
 
+    /// 0.5.247: the newest tracked handoff for this work (sent with a status-line instruction).
+    private var tracking: WorkTracking? { WorkTracking.latest(workID: source.id, receipts: store.receipts) }
+
     /// The newest handoff for this work, any revision: it is what blocks or explains the next send.
     private var latest: WorkActivity? {
         guard let receipt = store.receipts(for: source.id).first else { return nil }
@@ -163,7 +189,8 @@ struct WorkHandoffView: View {
                     .buttonStyle(COSQuietButtonStyle()).disabled(store.busy || validating).help("Refresh sessions and models")
             }
             if isPreview { Text("Local demonstration. No agent is contacted.").font(COSType.body(11.5)).foregroundStyle(COSPalette.muted) }
-            if let latest, WorkHandoffState(latest) != .settled || blocking != nil { statusBox(latest) }
+            if let latest, WorkHandoffState(latest) != .settled || blocking != nil || tracking?.reported == true { statusBox(latest) }
+            if let tracking { WorkProgressTimeline(tracking: tracking, currentStage: currentStage, onUndo: onUndoMove) }
             if let error = store.error {
                 Label(error, systemImage: "exclamationmark.triangle").font(COSType.body(12)).foregroundStyle(COSPalette.danger)
                     .fixedSize(horizontal: false, vertical: true)
@@ -190,11 +217,19 @@ struct WorkHandoffView: View {
     private func statusBox(_ activity: WorkActivity) -> some View {
         let state = WorkHandoffState(activity)
         let receipt = activity.receipt
+        // 0.5.247: a status line the session reported leads the box: done, needs your input or blocked.
+        let reported = tracking.flatMap { $0.receipt.id == receipt.id && $0.reported ? $0 : nil }
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 7) {
-                WorkLiveDot(color: state.tint, live: state == .running)
-                // The same words as the board, the Kanban and the Focus list.
-                Text(state == .settled ? activity.title : state.label).font(COSType.body(12, weight: .semibold)).foregroundStyle(state.tint)
+                if let reported {
+                    WorkTrackingDot(phase: reported.phase, tint: reported.tint)
+                    Text(reported.phase == .done ? (currentStage == nil ? "Done \u{00B7} ready for your review" : "Done \u{00B7} ready for your QA") : reported.label)
+                        .font(COSType.body(12, weight: .semibold)).foregroundStyle(reported.tint)
+                } else {
+                    WorkLiveDot(color: state.tint, live: state == .running)
+                    // The same words as the board, the Kanban and the Focus list.
+                    Text(state == .settled ? activity.title : state.label).font(COSType.body(12, weight: .semibold)).foregroundStyle(state.tint)
+                }
                 Spacer(minLength: 6)
                 Text(Date(timeIntervalSince1970: receipt.createdAt), format: .dateTime.month(.abbreviated).day().hour().minute())
                     .font(COSType.mono(10.5)).foregroundStyle(COSPalette.muted)
@@ -208,9 +243,21 @@ struct WorkHandoffView: View {
             if let lineage = WorkHandoffStore.lineage(of: receipt, sessions: store.sessions) {
                 Text(lineage).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
             }
+            if let note = Self.whereItRunsNote(receipt) {
+                Text(note).font(COSType.body(11)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+            }
+            if let reported, let evidence = reported.evidence {
+                Text(Self.reportedLine(reported, board: currentStage != nil))
+                    .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+                // The session's own words are quoted; Jev's reading is not the session's, so it is not.
+                Text(reported.byJev ? evidence : "\u{201C}" + evidence + "\u{201D}").font(COSType.body(11.5)).lineLimit(4).textSelection(.enabled)
+                    .padding(.leading, 8).overlay(alignment: .leading) { Rectangle().fill(reported.tint.opacity(0.6)).frame(width: 2) }
+            }
             if let failure = activity.session?.failure, !failure.isEmpty { Text(failure).font(COSType.body(11.5)).foregroundStyle(COSPalette.danger) }
             if let waiting = activity.session?.waitingDetail, !waiting.isEmpty { Text(waiting).font(COSType.body(11.5)).foregroundStyle(COSPalette.amber) }
-            if state.showsReply, let excerpt = WorkBoardSessionCard.excerpt(receipt: receipt, session: activity.session) {
+            if reported != nil {
+                // The session's own status line, above, says what it did; the reply excerpt would repeat it.
+            } else if state.showsReply, let excerpt = WorkBoardSessionCard.excerpt(receipt: receipt, session: activity.session) {
                 Text(excerpt).font(COSType.body(11.5)).foregroundStyle(COSPalette.muted).lineLimit(4)
                     .padding(.leading, 8).overlay(alignment: .leading) { Rectangle().fill(COSPalette.line).frame(width: 2) }
             } else if !receipt.detail.isEmpty {
@@ -226,6 +273,14 @@ struct WorkHandoffView: View {
                         Button("Open session") { store.selectedWorkID = source.id; onOpenSession(sessionID) }.buttonStyle(COSQuietButtonStyle())
                     }
                 }
+                if reported?.phase == .done, let onMarkComplete {
+                    Button("Mark complete") { onMarkComplete() }.buttonStyle(COSQuietButtonStyle())
+                        .help("You agree it is finished. COS never marks work complete by itself.")
+                }
+                if reported?.phase == .done, !isPreview, !sendBackOpen, store.sendBackSession(for: receipt) != nil {
+                    Button("Not done yet") { sendBackOpen = true }.buttonStyle(COSQuietButtonStyle())
+                        .help("Send it back to the same session with what is missing")
+                }
                 if receipt.acknowledgeable && state.offersAcknowledge {
                     Button(WorkHandoffView.acknowledgeTitle(receipt)) { store.markReviewed(receiptID: receipt.id) }
                         .buttonStyle(COSQuietButtonStyle()).disabled(store.busy || validating)
@@ -234,6 +289,9 @@ struct WorkHandoffView: View {
                     Button("Check status") { Task { await store.refreshReceipts() } }
                         .buttonStyle(COSTextButtonStyle()).disabled(store.busy || validating)
                 }
+            }
+            if sendBackOpen, reported?.phase == .done, let session = store.sendBackSession(for: receipt) {
+                sendBackControls(receipt, session: session)
             }
             if receipt.acknowledgeable && state.offersAcknowledge {
                 Text(WorkHandoffView.acknowledgeHint(receipt)).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
@@ -277,6 +335,47 @@ struct WorkHandoffView: View {
             .overlay(RoundedRectangle(cornerRadius: 9).stroke(state.tint.opacity(0.45)))
     }
 
+    /// "Not done yet": what is missing, sent back to the same session. It becomes a new, tracked handoff.
+    private func sendBackControls(_ receipt: WorkHandoffReceipt, session: WorkSession) -> some View {
+        let empty = sendBackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return VStack(alignment: .leading, spacing: 6) {
+            TextField("What\u{2019}s missing?", text: $sendBackText, axis: .vertical).lineLimit(2...5)
+                .textFieldStyle(.plain).font(COSType.body(12)).padding(8)
+                .background(COSPalette.panel, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(COSPalette.line))
+                .accessibilityLabel("What is missing")
+                .disabled(sendingBack)
+            HStack(spacing: 8) {
+                Button(sendingBack ? "Sending\u{2026}" : "Send back") { sendBack(receipt) }.buttonStyle(COSPrimaryButtonStyle())
+                    .disabled(sendingBack || store.busy || empty)
+                Button("Cancel") { sendBackOpen = false }.buttonStyle(COSTextButtonStyle()).disabled(sendingBack)
+            }
+            Text("Continues \u{201C}" + WorkSendPlan.clip(session.title) + "\u{201D} with this note"
+                 + (currentStage == nil ? "." : " and moves the card back to Draft."))
+                .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+        }
+    }
+    private func sendBack(_ receipt: WorkHandoffReceipt) {
+        let text = sendBackText
+        sendingBack = true; onSendingChange?(true)
+        Task {
+            let sent = await store.sendBack(receiptID: receipt.id, source: source, missing: text)
+            sendingBack = false; onSendingChange?(false)
+            if sent { sendBackOpen = false; sendBackText = ""; onSentBack?() }
+        }
+    }
+
+    /// What a reported state means for you, in the status box.
+    nonisolated static func reportedLine(_ reported: WorkTracking, board: Bool) -> String {
+        switch reported.phase {
+        case .done:
+            let who = reported.byJev ? "Jev read the session\u{2019}s reply as done." : "The session reported this done."
+            return who + (board ? " Check the result, then mark it complete when you agree." : " Check the result.")
+        case .blocked: return "The session is blocked on this."
+        default: return "The session needs you before it can finish this."
+        }
+    }
+
     nonisolated static func acknowledgeTitle(_ receipt: WorkHandoffReceipt) -> String {
         ["failed", "refused", "canceled"].contains(receipt.status) ? "Acknowledge" : "Mark reviewed"
     }
@@ -307,9 +406,9 @@ struct WorkHandoffView: View {
                 HStack {
                     Text("Context to send").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
                     Spacer()
-                    Text(forkToPlatform ? "\(prompt.utf16.count.formatted()) / 32,000 · the conversation fills the rest"
-                                        : "\(prompt.utf16.count.formatted()) / 32,000")
-                        .font(COSType.body(10.5)).foregroundStyle(prompt.utf16.count > 32_000 ? COSPalette.danger : COSPalette.muted)
+                    Text(forkToPlatform ? "\(prompt.utf16.count.formatted()) / \(WorkHandoffStore.draftLimit.formatted()) · the conversation fills the rest"
+                                        : "\(prompt.utf16.count.formatted()) / \(WorkHandoffStore.draftLimit.formatted())")
+                        .font(COSType.body(10.5)).foregroundStyle(prompt.utf16.count > WorkHandoffStore.draftLimit ? COSPalette.danger : COSPalette.muted)
                     if prompt != source.suggestedPrompt {
                         Button("Reset") {
                             var next = draft; next.prompt = source.suggestedPrompt
@@ -322,8 +421,8 @@ struct WorkHandoffView: View {
                     .overlay(RoundedRectangle(cornerRadius: 7).stroke(COSPalette.line))
                     .accessibilityLabel("Context to send")
                     .disabled(store.busy || validating)
-                if prompt.utf16.count > 32_000 {
-                    Text("Context exceeds 32,000 characters. Shorten it before sending; nothing has been removed.")
+                if prompt.utf16.count > WorkHandoffStore.draftLimit {
+                    Text("Context exceeds \(WorkHandoffStore.draftLimit.formatted()) characters, the most a handoff carries with its tracking line. Shorten it before sending; nothing has been removed.")
                         .font(COSType.body(11)).foregroundStyle(COSPalette.danger)
                 }
                 if store.earlierDraftCount(for: source) > 0 {

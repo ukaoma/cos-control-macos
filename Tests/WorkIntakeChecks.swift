@@ -375,7 +375,10 @@ import Foundation
     let longSource = WorkSource(id: "task:quilt:0123456789af", title: "L", revision: "r", project: "quilt", context: "Long one")
     await store.forkToPlatform(source: longSource, session: claude, model: codex, prompt: "Long one")
     precondition(store.receipts(for: longSource.id).first?.prompt.contains("the middle was left out to fit") == true)
-    precondition(receipt.prompt.hasSuffix("read from its transcript.]"), "a short conversation is carried whole")
+    // 0.5.247: what was sent, and what the receipt keeps, end with the status-line instruction for this item.
+    let trackingLine = WorkProgress.instruction(tag: WorkProgress.tag(forWorkID: review.id))
+    precondition(receipt.prompt.hasSuffix("read from its transcript.]" + trackingLine), "a short conversation is carried whole")
+    precondition(query.hasSuffix(trackingLine) && query.utf16.count <= 32_000, "the fork's prompt carries the tracking line within 32,000")
 
     // Refresh after Update Server: a new server instance forgets a lasting "server too old".
     final class Instance: @unchecked Sendable { var id = "old" }
@@ -424,7 +427,8 @@ import Foundation
     await jobStore.submit(source: other, mode: .newSession, session: nil, model: codex, prompt: longPrompt)
     let started = jobStore.sessions.first { $0.id == "codex:thread-1" }
     precondition(started != nil && started!.summary.count <= 2_000 && started!.summary.utf8.count <= 4_000, "\(started?.summary.count ?? -1)")
-    precondition(jobStore.receipts(for: other.id).first?.prompt == longPrompt, "an ordinary New session still journals what it sent")
+    precondition(jobStore.receipts(for: other.id).first?.prompt == longPrompt + WorkProgress.instruction(tag: WorkProgress.tag(forWorkID: other.id)),
+                 "an ordinary New session still journals what it sent (0.5.247: with its tracking line)")
 
     // The composer: fits the cap, keeps the start and the end of a long export, never splits a character.
     let long = "START " + String(repeating: "界👍x", count: 20_000) + " END"

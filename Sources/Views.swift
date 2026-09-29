@@ -630,7 +630,7 @@ struct ControlPanel: View {
                     }
                 }
                 if let message = model.jevMessage { Text(message).font(.caption2).foregroundStyle(.secondary) }
-                Text("Used by Work to suggest Continue, Fork or New for a task and to sort meetings into Intake. Keys come from typesafe.ai.")
+                Text("Used by Work to suggest Continue, Fork or New for a task, to sort meetings into Intake, and to check a reply that has no status line against the task\u{2019}s Done when (server 6.58.0). Keys come from typesafe.ai.")
                     .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }.padding(.top, 6)
         } label: {
@@ -2147,6 +2147,9 @@ struct ControlPanel: View {
             HotKeyRecorderRow(model: model)
             sessionPetSettings
             jevSettings
+            // 0.5.247: Work tracking notifications (a session received a task, finished it, or needs you).
+            Toggle("Work notifications", isOn: Binding(get: { model.workNotificationsEnabled }, set: { model.workNotificationsEnabled = $0 }))
+                .help("Notify me when a session receives Work, reports it done, or needs my input")
             DisclosureGroup("Advanced") {
                 // 0.5.234: the Meetings clock. The server sends 24-hour times and
                 // the tab used to print them raw; twelve-hour is the default here

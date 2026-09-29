@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Work: sessions move their own tasks (0.5.247)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Fraunces:opsz,wght@9..144,500&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --panel:#17120d; --card:#261d16; --raised:#30271f; --line:rgba(201,168,110,.16); --line2:rgba(201,168,110,.28);
+  --accent:#c9a86e; --gold:#c9a86e; --muted:#bbae9a; --danger:#e8a494; --green:#4fb07a; --ink:#f3ede4; --amber:#c98045;
+}
+*{box-sizing:border-box}
+body{margin:0;background:#0d0a07;color:var(--ink);font:14px/1.45 "DM Sans",system-ui,sans-serif;padding:32px 28px 80px}
+.doc{max-width:1480px;margin:0 auto}
+.doc>h1{font:500 30px "Fraunces",serif;margin:0 0 6px}
+.doc>p.lede{color:var(--muted);max-width:900px;margin:0 0 30px}
+.opt{margin:44px 0 12px;display:flex;align-items:baseline;gap:14px}
+.opt h2{font:500 22px "Fraunces",serif;margin:0}
+.opt .rec{font:600 11px "JetBrains Mono",monospace;color:#17120d;background:var(--gold);padding:2px 7px;border-radius:4px}
+.why{color:var(--muted);max-width:980px;margin:0 0 14px}
+.why b{color:var(--ink);font-weight:600}
+/* window chrome */
+.win{border:1px solid rgba(201,168,110,.22);border-radius:12px;overflow:hidden;background:var(--panel);box-shadow:0 20px 50px rgba(0,0,0,.45)}
+.bar{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);font-size:12.5px}
+.bar .crumb{color:var(--muted)} .bar .crumb b{color:var(--ink);font-weight:600}
+.bar .srv{margin-left:auto;font:11.5px "JetBrains Mono",monospace;color:var(--muted)} .bar .srv i{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:6px}
+.tabs{display:flex;justify-content:space-around;border-bottom:1px solid var(--line);font-size:13.5px;color:var(--muted)}
+.tabs span{padding:10px 18px} .tabs span.on{color:var(--ink);box-shadow:inset 0 -2px 0 var(--gold)}
+.head{display:flex;align-items:center;gap:12px;padding:16px 20px 6px}
+.head h3{font:500 25px "Fraunces",serif;margin:0} .head .sub{color:var(--muted);font-size:12px}
+.btn{font:500 12.5px "DM Sans";border:1px solid var(--line2);border-radius:7px;padding:6px 12px;color:var(--ink);background:transparent;white-space:nowrap}
+.btn.pri{background:var(--gold);color:#1b140d;border-color:var(--gold);font-weight:600}
+.btn.sm{padding:4px 9px;font-size:11.5px}
+.btn.ghost{border-color:transparent;color:var(--muted)}
+.counts{display:flex;gap:22px;align-items:center;padding:6px 20px 14px;font-size:12.5px}
+.count{color:var(--accent);border-bottom:1px dotted rgba(201,168,110,.55);cursor:pointer}
+.count.att{color:var(--ink)} .count .n{font-weight:600}
+.count:hover{border-bottom-style:solid}
+.counts .fresh{margin-left:auto;color:var(--muted)}
+.body{display:flex;border-top:1px solid var(--line);min-height:560px}
+.side{width:148px;flex:none;background:rgba(48,39,31,.55);padding:10px;font-size:12.5px;color:var(--muted)}
+.side div{padding:8px 8px 8px 10px;border-left:2px solid transparent} .side .on{color:var(--ink);font-weight:600;border-left-color:var(--gold)}
+.side .hr{border-top:1px solid var(--line);margin:10px 0;padding:0} .side .lab{font-size:11px;font-weight:600;padding:4px 10px}
+.main{flex:1;min-width:0;padding:16px 18px}
+.bhead{display:flex;align-items:flex-end;gap:12px;margin-bottom:12px}
+.bhead h4{font:500 22px "Fraunces",serif;margin:0} .bhead .sub{color:var(--muted);font-size:11.5px}
+.search{margin-left:auto;background:var(--raised);border:1px solid var(--line);border-radius:6px;padding:7px 10px;color:var(--muted);font-size:12px;width:220px}
+/* live sessions */
+.live{margin:4px 0 16px}
+.live .lh{display:flex;align-items:baseline;gap:10px;margin-bottom:8px}
+.live .lh b{font:600 13px "DM Sans"} .live .lh span{color:var(--muted);font-size:11.5px}
+.lrow{display:flex;gap:12px;overflow:hidden}
+.scard{flex:0 0 330px;background:var(--card);border:1px solid var(--line2);border-radius:9px;padding:12px 13px;display:flex;flex-direction:column;gap:7px}
+.scard.dash{background:transparent;border-style:dashed;color:var(--muted);font-size:12px;justify-content:center;flex-basis:250px}
+.st{display:flex;align-items:center;gap:7px;font-size:11.5px;font-weight:600}
+.dot{width:8px;height:8px;border-radius:50%;flex:none}
+.run .dot{background:var(--green);box-shadow:0 0 0 0 rgba(79,176,122,.6);animation:pulse 1.6s infinite} .run{color:var(--green)}
+.ready .dot{background:var(--gold)} .ready{color:var(--accent)}
+.wait .dot{background:var(--amber)} .wait{color:var(--amber)}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(79,176,122,.55)}70%{box-shadow:0 0 0 7px rgba(79,176,122,0)}100%{box-shadow:0 0 0 0 rgba(79,176,122,0)}}
+.st .t{color:var(--muted);font-weight:400;margin-left:auto;font-family:"JetBrains Mono",monospace;font-size:10.5px}
+.sname{display:flex;align-items:center;gap:8px;font-weight:600;font-size:13.5px}
+.prov{width:20px;height:20px;border-radius:5px;background:#3a2a1c;color:var(--accent);font:600 10px "JetBrains Mono";display:grid;place-items:center;flex:none}
+.on-work{font-size:11.5px;color:var(--muted);line-height:1.35}
+.on-work u{color:var(--ink);text-decoration:none;border-bottom:1px dotted var(--line2)}
+.excerpt{font-size:11.5px;color:var(--muted);border-left:2px solid var(--line2);padding-left:8px;line-height:1.35}
+.acts{display:flex;gap:6px;margin-top:2px}
+/* kanban */
+.cols{display:flex;gap:12px;overflow:hidden}
+.col{flex:0 0 226px;background:rgba(48,39,31,.7);border:1px solid var(--line);border-radius:9px;min-height:330px}
+.col .ch{padding:12px 12px 10px;border-bottom:1px solid var(--line)} .col .ch b{font-size:13px} .col .ch em{float:right;font:11px "JetBrains Mono";color:var(--muted);font-style:normal}
+.col .ch div{color:var(--muted);font-size:10.5px;margin-top:4px}
+.kc{margin:10px;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:11px;font-size:12.5px;font-weight:500;line-height:1.35}
+.kc .m{color:var(--accent);font-size:10.5px;font-weight:400;margin-top:8px}
+.kc.live{border-color:rgba(79,176,122,.55);box-shadow:inset 3px 0 0 var(--green)}
+.kc .lv{display:flex;align-items:center;gap:6px;color:var(--green);font-size:10.5px;font-weight:600;margin-top:8px}
+.kc .lv .dot{width:6px;height:6px}
+.foot{color:var(--muted);font-size:10.5px;margin-top:10px}
+/* option B rail */
+.withrail{display:flex;gap:14px}.withrail .cols{flex:1;min-width:0}
+.rail{flex:0 0 300px;border-left:1px solid var(--line);padding-left:14px}
+.rail .rh{font:600 13px "DM Sans";margin-bottom:2px}.rail .rs{color:var(--muted);font-size:11px;margin-bottom:10px}
+.rrow{padding:10px 0;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:5px}
+/* detail */
+.detail{display:flex;min-height:720px}
+.dleft{flex:1;min-width:0;padding:16px 26px 26px}
+.back{display:inline-block;margin-bottom:14px}
+.dleft h5{font:500 27px "Fraunces",serif;margin:0 0 4px}
+.meta{color:var(--muted);font-size:12px;margin-bottom:12px}
+.note{color:var(--muted);font-size:11.5px;margin:10px 0}
+.note b{color:var(--danger);font-weight:500}
+.md h6{font:500 19px "Fraunces",serif;margin:18px 0 8px}
+.md p,.md li{font-size:13px;color:#e9e1d4} .md ul{padding-left:18px;margin:0}
+.fade{position:relative;max-height:250px;overflow:hidden}
+.fade:after{content:"";position:absolute;left:0;right:0;bottom:0;height:90px;background:linear-gradient(transparent,var(--panel))}
+.dright{flex:0 0 452px;border-left:1px solid var(--line);background:rgba(38,29,22,.55);padding:16px 18px 18px;display:flex;flex-direction:column;gap:14px}
+.wh{display:flex;align-items:center;gap:8px}.wh b{font:500 20px "Fraunces",serif;font-weight:500}.wh .btn{margin-left:auto}
+.nowbox{background:var(--card);border:1px solid rgba(201,168,110,.4);border-radius:9px;padding:12px 13px;display:flex;flex-direction:column;gap:8px}
+.nowbox .st{font-size:12px}
+.small{font-size:11px;color:var(--muted)}
+.lbl{font:600 11px "DM Sans";color:var(--muted);text-transform:none;letter-spacing:0}
+.sugg{display:flex;gap:10px;align-items:flex-start;background:var(--raised);border-radius:7px;padding:10px}
+.sugg .sp{color:var(--accent)} .sugg b{font-size:12.5px} .sugg .btn{margin-left:auto}
+.choice{border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.choice .c{display:flex;gap:10px;padding:9px 11px;border-top:1px solid var(--line);align-items:flex-start}
+.choice .c:first-child{border-top:none}
+.choice .c.sel{background:rgba(201,168,110,.08)}
+.radio{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--muted);flex:none;margin-top:2px}
+.sel .radio{border-color:var(--gold);box-shadow:inset 0 0 0 3px var(--card);background:var(--gold)}
+.c .ct{flex:1;min-width:0}.c .ct b{font-size:12.5px;font-weight:600}.c .ct div{font-size:11px;color:var(--muted)}
+.short{margin:6px 0 2px 24px;display:flex;flex-direction:column;gap:4px}
+.srow{display:flex;align-items:center;gap:8px;font-size:12px;padding:6px 8px;border-radius:6px;border:1px solid transparent}
+.srow.pick{border-color:rgba(201,168,110,.45);background:rgba(201,168,110,.07)}
+.srow .x{color:var(--muted);font-size:10.5px;margin-left:auto;font-family:"JetBrains Mono";white-space:nowrap}
+.srow .tag{font:600 9.5px "JetBrains Mono";color:var(--accent)}
+.editor{background:var(--panel);border:1px solid var(--line2);border-radius:7px;padding:10px;font-size:12px;color:#e9e1d4;min-height:128px;line-height:1.45}
+.row{display:flex;align-items:center;gap:8px}
+.send{display:block;width:100%;padding:10px;font-size:13px;text-align:center}
+.hist{border-top:1px solid var(--line);padding-top:10px;display:flex;justify-content:space-between;font-size:12px;color:var(--muted)}
+.dim{opacity:.45}
+.single{padding:16px 26px 26px;max-width:1040px}
+.single .ws{margin:16px 0 18px}
+.disc{display:flex;align-items:center;gap:10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:10px 0;margin-top:6px;font-size:13px}
+.disc b{font:500 18px "Fraunces",serif;font-weight:500}.disc span{color:var(--muted);font-size:11.5px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.callout{color:var(--muted);font-size:12px;margin-top:10px}
+.callout b{color:var(--ink)}
+.pick{margin-top:28px;border:1px solid var(--line2);border-radius:10px;padding:16px 18px;background:rgba(38,29,22,.5)}
+.pick h2{font:500 20px "Fraunces",serif;margin:0 0 8px}
+.pick li{margin:4px 0;color:#e9e1d4}
+.seg{display:inline-flex;border:1px solid var(--line2);border-radius:7px;overflow:hidden;font-size:12px}
+.seg span{padding:5px 11px;color:var(--muted)}.seg span.on{background:var(--raised);color:var(--ink);font-weight:600}
+.drop{flex:0 0 250px;border:1.5px dashed var(--gold);border-radius:9px;background:rgba(201,168,110,.07);color:var(--accent);display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px;font-size:12.5px;text-align:center;padding:12px}
+.ghost-card{position:absolute;width:210px;transform:rotate(-2deg);box-shadow:0 14px 30px rgba(0,0,0,.5);opacity:.95}
+.scrim{position:relative}
+.scrim:before{content:"";position:absolute;inset:0;background:rgba(8,6,4,.62)}
+.sheet{position:absolute;left:50%;top:40px;transform:translateX(-50%);width:560px;background:var(--card);border:1px solid rgba(201,168,110,.45);border-radius:12px;box-shadow:0 30px 70px rgba(0,0,0,.6);padding:18px 20px;display:flex;flex-direction:column;gap:12px}
+.sheet h5{font:500 21px "Fraunces",serif;margin:0}
+/* 0.5.247 tracking */
+.recvh{color:var(--green)} .recvh .dot{background:transparent;border:1.5px solid var(--green)}
+.tl{display:flex;flex-direction:column;gap:5px;margin:2px 0}
+.tr{display:flex;align-items:center;gap:8px;font-size:12px}
+.tr i{width:8px;height:8px;border-radius:50%;flex:none}
+.tr span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tr em{font:500 10.5px "JetBrains Mono",monospace;font-style:normal;color:var(--muted);white-space:nowrap}
+.tr.done i{background:var(--gold)} .tr.done em{color:var(--accent)}
+.tr.work i{background:var(--green)} .tr.work em{color:var(--green)}
+.tr.recv i{background:transparent;border:1.5px solid var(--green)}
+.tr.need i{background:var(--amber)} .tr.need em{color:var(--amber)}
+.movebar{display:flex;align-items:center;gap:8px;background:rgba(201,168,110,.08);border:1px solid rgba(201,168,110,.3);border-radius:8px;padding:8px 10px;margin:0 0 12px;font-size:12px}
+.movebar .mv{flex:1;min-width:0;color:#e9e1d4}
+.kc.auto{border-color:rgba(201,168,110,.45)}
+.kc.need{border-color:rgba(201,128,69,.6);box-shadow:inset 3px 0 0 var(--amber)}
+.ps{display:flex;align-items:center;gap:6px;font-size:10.5px;font-weight:600;margin-top:8px}
+.ps .dot{width:6px;height:6px}
+.ps.work{color:var(--green)} .ps.work .dot{background:var(--green)}
+.ps.recv{color:var(--green)} .ps.recv .dot{border:1.5px solid var(--green);background:transparent;width:7px;height:7px}
+.ps.done{color:var(--accent)} .ps.done .dot{background:var(--gold)}
+.ps.need{color:var(--amber)} .ps.need .dot{background:var(--amber)}
+.why2{font-size:10.5px;color:var(--muted);font-weight:400;margin-top:5px;line-height:1.35}
+.u{color:var(--accent);margin-left:6px;border-bottom:1px dotted rgba(201,168,110,.6);cursor:pointer;white-space:nowrap}
+.q{font-size:10.5px;color:#e9e1d4;font-weight:400;margin-top:5px;font-style:italic}
+.tline{display:flex;flex-direction:column;gap:0}
+.ev{display:flex;gap:10px;position:relative;padding-bottom:12px;font-size:12px;line-height:1.4}
+.ev:not(:last-child):before{content:"";position:absolute;left:4px;top:13px;bottom:0;width:1px;background:var(--line2)}
+.ev .k{width:9px;height:9px;border-radius:50%;flex:none;margin-top:4px}
+.k.sent{border:1.5px solid var(--muted)} .k.recv{border:1.5px solid var(--green)} .k.work{background:var(--green)}
+.k.done{background:var(--gold)} .k.plain{border:1.5px solid var(--muted);background:var(--raised)} .k.need{background:var(--amber)}
+.ev b{font-weight:600}
+.mvline{margin-top:3px;font-size:11px;color:var(--accent)}
+.notes{display:flex;flex-direction:column;gap:10px}
+.nt{display:flex;gap:10px;align-items:flex-start;background:rgba(58,52,46,.92);border:1px solid rgba(255,255,255,.1);border-radius:14px;padding:11px 13px;box-shadow:0 10px 26px rgba(0,0,0,.45);font-size:12.5px;max-width:420px}
+.nt b{font-weight:600} .nt div div{color:#d8d0c4;font-size:12px}
+.ni{width:30px;height:30px;border-radius:7px;background:#261d16;border:1px solid var(--line2);color:var(--accent);font:600 9px "JetBrains Mono";display:grid;place-items:center;flex:none}
+</style>
+</head>
+<body>
+<div class="doc">
+<h1>Work: sessions move their own tasks (0.5.247)</h1>
+<p class="lede">A handoff is tracked until the session says the task is finished. A confirmed delivery moves the card to <b>Draft</b>. A session reporting <b>done</b> with evidence moves it to <b>QA</b>. Complete is always yours. Every automatic move says why and can be undone.</p>
+
+<div class="opt"><h2>1. The board while sessions work</h2><span class="rec">RECOMMENDED: 3A</span></div>
+<p class="why">A session card lists <b>every task it holds</b> and where each one stands. A Kanban card moved by COS carries <b>one line saying why</b>, plus Undo, until you touch the card. The strip above the columns shows the latest move, so a card that jumps columns is never a mystery.</p>
+<div class="win">
+  <div class="bar"><span class="crumb">Activity / <b>Work</b></span><span class="srv"><i></i>Server 6.58.0 · Control 0.5.247</span></div>
+  <div class="head"><h3>Work</h3><span class="seg" style="margin-left:14px"><span class="on">Board</span><span>Focus</span></span><span class="sub" style="margin-left:auto">Refreshed 9:52</span></div>
+  <div class="counts"><span class="count"><span class="n">2</span> in progress</span><span class="count att"><span class="n">1</span> needs your input</span><span class="count"><span class="n">1</span> ready for QA</span></div>
+  <div class="body">
+    <div class="side"><div class="on">All work</div><div>Quilt</div><div>Personal</div><div class="hr"></div><div class="lab">Meetings</div><div>Reviews</div></div>
+    <div class="main">
+      <div class="live">
+        <div class="lh"><b>Sessions on this board</b><span>2 sessions · 4 tasks · 1 needs your input</span></div>
+        <div class="lrow">
+          <div class="scard">
+            <div class="st run"><span class="dot"></span>Running<span class="t">1m</span></div>
+            <div class="sname"><span class="prov">C</span>Launch copy review</div>
+            <div class="tl">
+              <div class="tr done"><i></i><span>Draft the homepage call to action</span><em>Done · QA</em></div>
+              <div class="tr work"><i></i><span>Proof section copy</span><em>Working · Draft</em></div>
+              <div class="tr need"><i></i><span>Pricing FAQ answers</span><em>Needs input</em></div>
+            </div>
+            <div class="excerpt">COS-WORK b71e: needs input: Should the FAQ quote the $29 plan or the bundle price?</div>
+            <div class="acts"><span class="btn sm">Open session</span><span class="btn sm ghost">Answer in session</span></div>
+          </div>
+          <div class="scard">
+            <div class="st recvh"><span class="dot"></span>Received<span class="t">4m</span></div>
+            <div class="sname"><span class="prov">X</span>Mobile navigation fixes</div>
+            <div class="tl">
+              <div class="tr recv"><i></i><span>Prepare the mobile navigation build</span><em>Received · Draft</em></div>
+            </div>
+            <div class="small">The session took the turn at 9:48. No report yet.</div>
+            <div class="acts"><span class="btn sm">Open session</span></div>
+          </div>
+          <div class="drop" style="flex-basis:220px">Start work<br><span class="small">Drop a card here</span></div>
+        </div>
+      </div>
+
+      <div class="movebar"><span class="mv">Moved <b>Draft the homepage call to action</b> to QA. Launch copy review reported done: “Updated the hero CTA and checked it at 390pt.”</span><span class="btn sm">Undo</span><span class="btn sm ghost">Dismiss</span></div>
+
+      <div class="cols">
+        <div class="col"><div class="ch"><b>Mentioned</b><em>3</em></div>
+          <div class="kc">Explore a customer proof section<div class="m">📅 Website launch review</div></div>
+        </div>
+        <div class="col"><div class="ch"><b>Planned</b><em>2</em></div>
+          <div class="kc">Draft the launch email<div class="m">📅 Website launch review</div></div>
+        </div>
+        <div class="col"><div class="ch"><b>Draft</b><em>3</em></div>
+          <div class="kc auto">Proof section copy<div class="ps work"><span class="dot"></span>Working · Launch copy review</div><div class="why2">Moved here at 9:41: the session received it.<span class="u">Undo</span></div></div>
+          <div class="kc auto">Prepare the mobile navigation build<div class="ps recv"><span class="dot"></span>Received · Mobile navigation fixes</div><div class="why2">Moved here at 9:48: the session received it.<span class="u">Undo</span></div></div>
+          <div class="kc need">Pricing FAQ answers<div class="ps need"><span class="dot"></span>Needs your input · Launch copy review</div><div class="q">“Should the FAQ quote the $29 plan or the bundle price?”</div></div>
+        </div>
+        <div class="col"><div class="ch"><b>Built</b><em>0</em></div></div>
+        <div class="col"><div class="ch"><b>QA</b><em>1</em></div>
+          <div class="kc auto done">Draft the homepage call to action<div class="ps done"><span class="dot"></span>Done · Launch copy review</div><div class="why2">Moved here at 9:52: the session reported done.<span class="u">Undo</span></div></div>
+        </div>
+        <div class="col"><div class="ch"><b>Complete</b><em>6</em></div><div class="foot" style="padding:10px">Only you move work here.</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="opt"><h2>2. The item: a progress timeline in the Agent workspace</h2></div>
+<p class="why">The status box keeps its job: what is happening now. Under it, <b>Progress</b> lists each step with its time and its evidence. Automatic moves sit in the timeline where they happened, each with Undo. An undo stops further automatic moves for that handoff.</p>
+<div class="win">
+  <div class="detail" style="min-height:0">
+    <div class="dleft">
+      <span class="btn sm ghost back">Back to Board</span>
+      <h5>Draft the homepage call to action</h5>
+      <div class="meta">Quilt · QA · from Website launch review</div>
+      <div class="md"><h6>Done when</h6><p>Copy for the hero CTA is ready for review and checked on a phone.</p></div>
+    </div>
+    <div class="dright">
+      <div class="wh"><b>Agent workspace</b></div>
+      <div class="nowbox">
+        <div class="st ready"><span class="dot"></span>Done · ready for your QA<span class="t">9:52</span></div>
+        <div class="small">Launch copy review reported this task done. Check the result, then mark it complete when you agree.</div>
+        <div class="excerpt">COS-WORK 3f9a: done: Updated the hero CTA to “See it on your shelf” and checked it at 390pt.</div>
+        <div class="row"><span class="btn sm">Open session</span><span class="btn sm">Mark complete</span><span class="btn sm ghost">Not done yet</span></div>
+      </div>
+      <div>
+        <div class="lbl" style="margin-bottom:8px">Progress</div>
+        <div class="tline">
+          <div class="ev"><i class="k sent"></i><div><b>Sent</b> to Launch copy review (Continue)<div class="small">9:41</div></div></div>
+          <div class="ev"><i class="k recv"></i><div><b>Received.</b> The session took the turn.<div class="mvline">Moved from Mentioned to Draft <span class="u">Undo</span></div><div class="small">9:41</div></div></div>
+          <div class="ev"><i class="k work"></i><div><b>Replied</b><div class="small">9:52</div></div></div>
+          <div class="ev"><i class="k done"></i><div><b>Done,</b> from the session’s status line: “Updated the hero CTA to ‘See it on your shelf’ and checked it at 390pt.”<div class="mvline">Moved from Draft to QA <span class="u">Undo</span></div><div class="small">9:52</div></div></div>
+        </div>
+      </div>
+      <div class="hist"><span>Handoff history · 1</span><span>Show</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="grid2" style="margin-top:14px">
+  <div>
+    <div class="opt" style="margin-top:18px"><h2>3. When the reply has no status line</h2></div>
+    <p class="why">Jev reads that one reply against the task’s <b>Done when</b>. The card moves only on a confident yes. Anything else is recorded and the card stays where it is.</p>
+    <div class="win" style="padding:14px 16px">
+      <div class="tline">
+        <div class="ev"><i class="k work"></i><div><b>Replied</b> with no status line<div class="small">10:05</div></div></div>
+        <div class="ev"><i class="k done"></i><div><b>Jev: done, 91%.</b> Read against the Done when line.<div class="mvline">Moved from Draft to QA <span class="u">Undo</span></div><div class="small">10:05</div></div></div>
+      </div>
+      <div class="tline" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+        <div class="ev"><i class="k work"></i><div><b>Replied</b> with no status line<div class="small">10:12</div></div></div>
+        <div class="ev"><i class="k plain"></i><div><b>Jev: not sure (58%).</b> Left in Draft. Open the session to check.<div class="small">10:12</div></div></div>
+      </div>
+    </div>
+  </div>
+  <div>
+    <div class="opt" style="margin-top:18px"><h2>4. Notifications</h2></div>
+    <p class="why">Three moments only: the session <b>received</b> the task, it is <b>done</b>, or it <b>needs you</b>. Clicking a notification opens the item. A setting turns them off.</p>
+    <div class="notes">
+      <div class="nt"><div class="ni">COS</div><div><b>Received: Proof section copy</b><div>Launch copy review has it. Moved to Draft.</div></div></div>
+      <div class="nt"><div class="ni">COS</div><div><b>Done: Draft the homepage call to action</b><div>“Updated the hero CTA and checked it at 390pt.” Moved to QA.</div></div></div>
+      <div class="nt"><div class="ni">COS</div><div><b>Needs your input: Pricing FAQ answers</b><div>“Should the FAQ quote the $29 plan or the bundle price?”</div></div></div>
+    </div>
+  </div>
+</div>
+
+<div class="opt"><h2>5. What every handoff now asks the agent</h2></div>
+<p class="why">Added to every handoff when it is sent, so it can’t be edited out of a draft. The line goes at the <b>top</b> of the final reply because the server keeps a reply’s first 4,000 characters. A line naming a task this session was never given is ignored.</p>
+<div class="win" style="padding:14px 16px"><div class="editor" style="min-height:0;font-family:'JetBrains Mono',monospace;font-size:11.5px;white-space:pre-wrap">When you finish this task, or if you need input or are blocked, start your reply with this line so COS can track it:
+COS-WORK 3f9a2c1b7d4e: &lt;done, needs input or blocked&gt;: &lt;one sentence of evidence&gt;
+Use done only when the Done when line above is met. If you are handling several COS tasks, give one line per task.</div></div>
+
+<div class="pick">
+  <h2>Pick</h2>
+  <ul>
+    <li><b>3A</b> (shown): the why-line on the card, plus the latest-move strip above the columns.</li>
+    <li><b>3B</b>: the why-line on the card only, with no strip. This is quieter. A jump is explained only on the card itself.</li>
+    <li><b>Notifications:</b> received, done and needs input (shown). Or just done and needs input.</li>
+    <li><b>“Not done yet”</b> in the status box: it moves the card back and tells the session what is missing. Or leave that out for now.</li>
+  </ul>
+</div>
+</div>
+</body>
+</html>

@@ -1654,7 +1654,21 @@ struct ClaudeSession: Identifiable, Sendable {
     /// Follow-ups queued at this session and not yet delivered (6.48.1's `queued_turns`).
     let queuedTurns: Int
 
-    var isScheduledJob: Bool { origin == "job" }
+    /// 0.5.247: a Work handoff names this session. The COS server starts every Work New session with `claude -p`,
+    /// and the helper calls any run the server starts "COS server", a scheduled job, so Miles's handoff showed in
+    /// Sessions as `COS server · Scheduled job` with no transcript and no Continue (2026-09-29). Work is his work.
+    var fromWork = false
+
+    var isScheduledJob: Bool { origin == "job" && !fromWork }
+
+    /// The list with every session a Work handoff names (receipt `sessionID`, `provider:native`) marked as work.
+    static func markingWork(_ sessions: [ClaudeSession], workSessionIDs: Set<String>) -> [ClaudeSession] {
+        sessions.map { session in
+            var next = session
+            next.fromWork = workSessionIDs.contains(session.id)
+            return next
+        }
+    }
 
     /// The chip word. `error` is the failed state (a rate limit, an overloaded engine),
     /// which reads FAILED and never "Running"; `waiting` names what it waits on when the

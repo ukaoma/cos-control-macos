@@ -24,7 +24,7 @@ final class ActivityWindowPresenter: NSObject, ObservableObject, NSWindowDelegat
             return
         }
 
-        let hostingController = NSHostingController(rootView: ActivityWindow(model: model))
+        let hostingController = NSHostingController(rootView: ActivityWindow.live(model: model))
         let window = NSWindow(contentViewController: hostingController)
         window.title = "COS Activity"
         window.setContentSize(NSSize(width: 920, height: 680))
@@ -321,6 +321,13 @@ struct ActivityWindow: View {
         return view
     }
 
+    /// 0.5.247: the app's window, on the app's Work journal, which the tracker keeps current while this window is closed.
+    static func live(model: ControllerModel) -> ActivityWindow {
+        var view = ActivityWindow(model: model)
+        if let store = model.workHandoffStore { view._handoffStore = StateObject(wrappedValue: store) }
+        return view
+    }
+
     /// Uses the actual app shell; other sections are visible but cannot load live data.
     static func workPreview(model: ControllerModel) -> ActivityWindow {
         var view = ActivityWindow(model: model, isolatedWorkPreview: true)
@@ -591,12 +598,20 @@ struct ActivityWindow: View {
         .onAppear { applyLaunchSection() }
         .onChange(of: model.activityOpenSection) { _, _ in applyLaunchSection() }
         .onChange(of: model.activityOpenSessionID) { _, _ in applyLaunchSection() }
+        .onChange(of: model.activityOpenWorkID) { _, _ in applyLaunchSection() }
     }
 
     private func applyLaunchSection() {
         if isolatedWorkPreview {
             model.activityOpenSection = nil
             model.activityOpenSessionID = nil
+            model.activityOpenWorkID = nil
+            return
+        }
+        if let workID = model.activityOpenWorkID {
+            model.activityOpenWorkID = nil
+            model.activityOpenSection = nil
+            openHandoffWork(workID)
             return
         }
         let sessionID = model.activityOpenSessionID

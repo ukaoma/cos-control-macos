@@ -489,6 +489,7 @@ final class COSControlHelper {
         case "work-intake": try emitWorkIntake()
         case "work-intake-resolve": try emitWorkIntakeResolve()
         case "work-session-recommend": try emitWorkSessionRecommend()
+        case "work-completion-check": try emitWorkCompletionCheck()
         case "jev-status": try emitJevStatus()
         case "jev-key-set": try emitJevKeySet()
         case "jev-key-clear": try emitJevKeyClear()
@@ -551,6 +552,7 @@ final class COSControlHelper {
         case "session-chat-turn": try emitSessionChatTurn(args: args)
         case "session-chat-fork": try emitSessionChatFork(args: args)
         case "session-chat-reply": try emitSessionChatReply(args: args)
+        case "session-recent-replies": try emitSessionRecentReplies(args: args)
         case "meeting-stranded-save": try emitMeetingStrandedSave(args: args)
         case "meeting-stranded-save-all": try emitMeetingStrandedSaveAll()
         case "clear-stranded-video-uploads": try clearStrandedVideoUploads()
@@ -4755,6 +4757,43 @@ final class COSControlHelper {
             return
         }
         emit(ok: true, message: "Session suggestion ready", details: result)
+    }
+
+    /// 0.5.247: Jev's reading of a session's newest reply against a board task's Done when (server 6.58.0). Only
+    /// names cross: the server reads the task from the board and the reply from its own session store. A missing
+    /// route (404) is an older server; every failure is an answer with a reason, never an error, so tracking goes on.
+    private func emitWorkCompletionCheck() throws {
+        let data = try readBoundedStdin(4_096)
+        guard let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any], Self.completionCheckBodyValid(body) else {
+            throw HelperError.message("Choose an exact task and session to check.")
+        }
+        let candidate = try reviewCandidateTransport()
+        let token = try candidate?.token ?? readToken()
+        guard let response = request("/api/work-board/completion-check", method: "POST", token: token,
+                                      body: String(decoding: data, as: UTF8.self), timeout: 40, reviewCandidatePort: candidate?.port) else {
+            emit(ok: true, message: "Completion check unavailable", details: ["provider": "none", "reason": "unreachable"]); return
+        }
+        guard response.status == 200, let result = response.body else {
+            emit(ok: true, message: "Completion check unavailable", details: ["provider": "none",
+                "reason": Self.sessionRecommendFailureReason(status: response.status, body: response.body)])
+            return
+        }
+        emit(ok: true, message: "Completion check ready", details: result)
+    }
+
+    /// Exactly `domain`, a 12-hex task `id`, a `provider` and its `sessionId`, and optionally `after` (an ISO time: judge
+    /// only replies from then on).
+    static func completionCheckBodyValid(_ body: [String: Any]) -> Bool {
+        let keys = Set(body.keys)
+        if keys.contains("after") {
+            guard let after = body["after"] as? String, after.count <= 40,
+                  after.range(of: #"^\d{4}-\d{2}-\d{2}T[0-9:.]+Z$"#, options: .regularExpression) != nil else { return false }
+        }
+        guard keys.subtracting(["after"]) == ["domain", "id", "provider", "sessionId"],
+              let domain = body["domain"] as? String, !domain.isEmpty, domain.utf16.count <= 64, !domain.contains("/"), !domain.hasPrefix("."),
+              let id = body["id"] as? String, id.range(of: "^[a-f0-9]{12}$", options: .regularExpression) != nil,
+              let provider = body["provider"] as? String, let session = body["sessionId"] as? String else { return false }
+        return sessionChatValidationError(provider: provider, threadId: session) == nil
     }
 
     /// Exactly a board task (`domain`, `id`) or, with server 6.57.1, a meeting review (`reviewId`), plus `sessions`.
@@ -14973,6 +15012,48 @@ final class COSControlHelper {
         emit(ok: true, message: reply.isEmpty ? "No reply on record yet" : "Reply ready", details: [
             "state": reply.isEmpty ? "empty" : "reply",
             "reply": reply,
+        ])
+    }
+
+    /// 0.5.247: a session's recent messages with their times, for Work tracking: assistant replies (status lines the
+    /// agent writes) and the openings of user messages (a handoff arriving). Server 6.50.0 and newer serve `?turns=N`
+    /// (each message cleaned and capped at 4,000 characters, Cursor without times). Read-only: nothing is sent.
+    private func emitSessionRecentReplies(args: [String]) throws {
+        guard let provider = option("--provider", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              let sessionId = option("--session-id", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              Self.sessionChatValidationError(provider: provider, threadId: sessionId) == nil else {
+            throw HelperError.message("--provider and --session-id are required")
+        }
+        let turns = option("--turns", in: args).flatMap(Int.init).map { min(max($0, 1), 40) } ?? 24
+        let token = try speakerReviewToken()
+        guard let response = request("/api/agent-sessions/\(provider)/\(sessionId)?turns=\(turns)", token: token, timeout: 20) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if response.status == 404 {
+            emit(ok: true, message: "Session not found", details: ["state": "missing", "replies": [], "prompts": [], "runningActive": false, "agentState": "", "lastActivityAt": ""])
+            return
+        }
+        guard response.status == 200, let body = response.body else { throw HelperError.message("Session reply read failed (\(response.status))") }
+        // Without `recent_turns` (a server before 6.50.0, or its history read failed) there is no reply history to
+        // read: Control must not mistake the newest reply, which has no time, for one written after a handoff.
+        var replies: [[String: Any]] = [], prompts: [[String: Any]] = []
+        let hasTurns = body["recent_turns"] is [Any]
+        for turn in (body["recent_turns"] as? [[String: Any]]) ?? [] {
+            guard let text = turn["text"] as? String, !text.isEmpty else { continue }
+            let role = turn["role"] as? String
+            // A user message is kept only far enough to recognise a handoff arriving (its opening words).
+            var row: [String: Any] = ["text": role == "user" ? String(text.prefix(400)) : text]
+            if let at = turn["at"] as? String { row["at"] = at }
+            if role == "assistant" { replies.append(row) } else if role == "user" { prompts.append(row) }
+        }
+        emit(ok: true, message: replies.isEmpty ? "No reply on record yet" : "Replies ready", details: [
+            "state": hasTurns ? "turns" : "no_history",
+            "replies": replies,
+            "prompts": prompts,
+            "runningActive": body["running_active"] as? Bool ?? false,
+            "agentState": body["agent_state"] as? String ?? "",
+            "lastActivityAt": body["last_activity_at"] as? String ?? "",
         ])
     }
 

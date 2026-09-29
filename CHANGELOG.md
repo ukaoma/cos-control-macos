@@ -1,3 +1,75 @@
+## 0.5.247 (build 285)
+
+Sessions move their own tasks. Every handoff is followed from sent to done, and the Kanban keeps up by itself, as far as QA. Pairs with server 6.57.1. The Jev check below needs server 6.58.0.
+
+- Miles, 2026-09-29: "there should be a status update when the user has sent something to a session and it's been confirmed ... If a session is responsible for completing multiple tasks and we have evidence of the session receiving the context necessary to complete that task (as well as a confirmation that it has), then we want to be moving those tasks through the Kanban as well automatically." His choices:
+  - automatic moves go up to QA and never to Complete;
+  - done comes from the session's own status line, with Jev as the fallback;
+  - progress shows on the board, in a timeline and as a Mac notification.
+- **Every handoff asks for a status line.** COS adds one instruction after your context on every send, so no draft can leave it out. The session is asked to make its first reply line, in plain text, `COS-WORK <task id>: done, needs input or blocked: <one sentence of evidence>`, with one line per task when it holds several.
+  - It goes first because the server keeps a reply's first 4,000 characters and drops fenced code.
+  - A draft now holds up to 31,520 characters, so what is sent stays within 32,000.
+- **Received moves the card to Draft.** Either of two things counts as received:
+  - The server confirms the session has the work. A Continue turn or a queued turn landed, a fork holds the instruction, or a New session run is confirmed.
+  - The session's own conversation shows your instruction arriving. This is usually sooner: a Continue turn is confirmed only when it finishes.
+- **Done moves it to QA.**
+  - A status line of done with evidence moves the card to QA.
+  - Needs input and blocked move nothing. They notify you and show the session's question on the card, until you mark the reply reviewed.
+  - Only replies written after your instruction arrived count. For Cursor, which writes no times, replies already in the session when tracking first read it never count.
+  - A line naming a task that session was not given is ignored.
+- **Jev when there is no status line.** Jev runs when the session has gone idle and its newest reply since the handoff has no status line.
+  - Idle means its conversation untouched for 90 seconds, not running, and its turn or run finished.
+  - Jev reads the replies since the handoff arrived. It judges them against the task's Done when or, when there is none (no open task has one today), against the task itself.
+  - The server reads both itself. Control sends only names and a time.
+  - The card moves to QA on a done at 80%, or 85% without a Done when.
+  - At most twice per handoff, once per reply. A failure to reach Jev is retried after 10 minutes and never uses up a check.
+  - A server before 6.58.0 answers "needs server 6.58.0", and only status lines count.
+- **Every move says why, and can be undone.**
+  - A card COS moved says "Moved here at 9:52: the session reported done." with Undo, until you move it.
+  - The newest move also shows above the columns for 30 minutes.
+  - Undo, or moving the card back yourself, stops automatic moves for that handoff.
+  - Moves only go forward, never into or out of Complete.
+- **Moves that cannot be made now are kept.** A busy or read-only board, or a task that changed, keeps the move pending and retries it, up to 5 times, with a note on the timeline. When the board saved the move and only its refresh failed, the move counts as made.
+- **Records that find the journal busy are kept.** When a send holds the journal, the record is written on the next pass, so a moved card always gets its why-line and Undo, and a notification is recorded once.
+- **When tracking stops:**
+  - at done;
+  - when a newer handoff replaces this one for the same work;
+  - when the task is complete;
+  - after 14 days.
+
+  Quiet sessions are read less often: every pass (30 seconds) within an hour of their last message, every 5 minutes up to a day, then every 30 minutes. The tracker logs to the `work-tracking` category (Console).
+- **The session row lists what each session holds.**
+  - Tracked handoffs to one session share one card. It lists up to four tasks with their state (Sent, Received, Working, Done, Needs input, Blocked) and stage.
+  - A task waiting on you leads the card, and counts toward "need attention".
+  - Handoffs sent before 0.5.247 keep their own cards.
+- **The Agent workspace has a Progress timeline.**
+  - It shows Sent, Received, Replied, the status line, Jev's reading, each move (with Undo while the card is where COS put it), your undos, and any notes.
+  - A reported state leads the status box. A done task offers Mark complete.
+  - Jev's reading is never quoted as the session's words.
+- **Not done yet.** Miles picked it for this release. A task the session reported done shows **Not done yet** beside Mark complete.
+  - It asks what is missing.
+  - It marks the reply reviewed, continues the same session with your note (and, when the session wrote one, its earlier status line), and moves the card back to Draft from Built or QA.
+  - The old handoff's timeline records "You sent it back". The new handoff is tracked like any other, so the old done line cannot finish it.
+  - It is offered only when the session can take a Continue and no turn for this work is still in flight.
+- **Notifications** cover three moments: received, done, and needs input or blocked. Clicking one opens its item. Settings has a Work notifications switch (on by default).
+- **Tracking runs with Activity closed.** The Work journal and its tracker now live with the app, and the Activity window shares them. A journal that could not be read at launch is read again, without a relaunch. An event kind this build does not know reads as a note.
+- **Fixed: a running Continue no longer reads as lost.** The server answers 404 for a turn still running, and 0.5.244 to 0.5.246 showed that as "Delivery needs checking" until the turn finished. It now stays running. It reads as unresolved only after two hours with no receipt.
+- **Fixed: a New session from Work is findable while it runs.** Miles, 2026-09-29: a New session sent at 1:46 PM showed "session live status unavailable" in Work, and Sessions listed it only as `COS server · Scheduled job`.
+  - Work's first read of the job came 0.17 s before the server named the session, and nothing read it again while the item stayed open. Control now reads the job again after 1, 2, 4 and 8 seconds, until the server names the session or the run ends, so Open session appears within seconds.
+  - Sessions no longer shows a session Work sent as a COS server job. The COS server starts it, and the helper labels every run the server starts that way, which hid its title and transcript and removed Continue. A session a Work handoff names keeps its own title, transcript and Continue.
+  - The card says where a New session runs: on this Mac through COS, not as a tab in the Claude or Codex app. Once it has finished, Open session, then Open in platform, keeps it going in the app.
+- **Only handoffs sent from 0.5.247 on are tracked**, since earlier ones never asked for a status line.
+- **Journal compatibility.** Progress lives in a new optional receipt field, never in a new status, because the server refuses a journal with a status it does not know. Rolling back to 0.5.246 keeps every card where it is and drops the timeline.
+- **Tests:**
+  - `Tests/run-work-progress.sh`, now also run by `run.sh`, covers:
+    - pure rules: the parser (including the template filled in as instructed), delivery, stages, the tracking window at its boundary, and Jev thresholds per basis;
+    - board projections: the session list, one card per session, and the move strip;
+    - Not done yet: send-back, the prompt, what the old handoff records, and where it is not offered;
+    - the tracker end to end, over fixtures in the real helper shapes: a running turn's pending 404, arrival from the transcript, stale and foreign lines, several tasks in one session, pause and moved-back, retries, a journal held across a move, Jev gating (working, idle, transient and final reasons, once per reply), the untimed baseline, no history, a job's result, superseded handoffs, and back-off.
+  - `Tests/work-progress-helper-checks.py` runs the compiled helper against a loopback server.
+  - `run.sh` pins the wiring.
+  - QA: four reviewers. Their reports and fixes are in `operations/personal/wk40_2026/control_0_5_247_qa/`.
+
 ## 0.5.246 (build 284)
 
 Drag and drop works, a drop that meets every criterion runs and opens its session, and a handoff COS lost track of can be continued. Pairs with server 6.57.1.

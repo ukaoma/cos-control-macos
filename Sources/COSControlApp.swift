@@ -17,6 +17,7 @@ struct COSControlApp: App {
         // routed to the same presenter the chips use.
         HotKeyCenter.shared.onFire = { activityWindow.show(model: model, section: nil) }
         HotKeyCenter.shared.register(model.activityHotKey)
+        model.openActivity = { section in activityWindow.show(model: model, section: section) }
         _model = StateObject(wrappedValue: model)
         _activityWindow = StateObject(wrappedValue: activityWindow)
         _sessionPet = StateObject(wrappedValue: sessionPet)

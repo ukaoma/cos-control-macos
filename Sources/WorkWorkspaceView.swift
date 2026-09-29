@@ -133,6 +133,17 @@ enum WorkBoardSessionsProjection {
                                                 : left.state.rank < right.state.rank
         }
     }
+    /// 0.5.247: one card per session for tracked handoffs. A session holding several tracked tasks lists them all on
+    /// its first (highest ranked) tracked card (WorkTracking.forSession), so its other tracked cards would only repeat
+    /// it. Handoffs sent before 0.5.247, and a Fork that has no session of its own yet, keep their own cards.
+    static func onePerSession(_ cards: [WorkBoardSessionCard]) -> [WorkBoardSessionCard] {
+        var seen = Set<String>()
+        return cards.filter { card in
+            let receipt = card.activity.receipt
+            guard receipt.progress != nil, let session = WorkProgress.workingSession(receipt) else { return true }
+            return seen.insert(session).inserted
+        }
+    }
     static func summary(_ cards: [WorkBoardSessionCard]) -> String {
         let order: [(WorkHandoffState, String, String)] = [(.running, "running", "running"), (.waiting, "waiting for you", "waiting for you"),
             (.attention, "needs attention", "need attention"), (.replyReady, "reply ready", "replies ready"), (.sent, "sent", "sent"),
@@ -238,6 +249,8 @@ struct WorkWorkspaceItem: Identifiable {
     let inProgress: Bool
     let completed: Bool
     var activity: WorkActivity? = nil
+    /// 0.5.247: the newest tracked handoff for this work, found by work id (WorkTracking).
+    var tracking: WorkTracking? = nil
     var sourceID: String { review?.source.id ?? id }
 }
 
@@ -271,21 +284,25 @@ enum WorkWorkspaceProjection {
             let activity = WorkActivityProjection.latest(workID: source.id, revision: source.revision, receipts: receipts, sessions: sessions)
             let running = activity?.inProgress == true
             let attention = activity?.needsAttention == true && activity?.sessionRunning != true
+            let tracking = WorkTracking.latest(workID: source.id, receipts: receipts)
             let label = task.checked ? "Completed task" : task.agentState == "done" ? "Agent finished · task still open" : WorkBoardStage.stage(for: task).title
             return WorkWorkspaceItem(id: source.id, title: task.text.isEmpty ? task.title : task.text, domain: task.domain,
                 searchText: source.context, subtitle: label, task: task, review: nil,
-                needsAttention: !task.checked && (task.failed == true || task.missed == true || attention || task.agentState == "done" || task.stage == "review"),
-                inProgress: task.agentState == "running" || running, completed: task.checked, activity: activity)
+                needsAttention: !task.checked && (task.failed == true || task.missed == true || attention || task.agentState == "done" || task.stage == "review"
+                                                  || tracking?.asksForYou == true),
+                inProgress: task.agentState == "running" || running, completed: task.checked, activity: activity, tracking: tracking)
         }
         let meetingItems = reviews.map { review in
             let activity = WorkActivityProjection.latest(workID: review.source.id, revision: review.source.revision, receipts: receipts, sessions: sessions)
+            let tracking = WorkTracking.latest(workID: review.source.id, receipts: receipts)
             return WorkWorkspaceItem(id: "meeting-review:" + review.id, title: review.title, domain: review.domain,
                 searchText: review.title + " " + review.markdown + " " + review.source.context,
                 subtitle: "Meeting review · " + review.status.replacingOccurrences(of: "_", with: " "),
                 task: nil, review: review,
-                needsAttention: activity.map { $0.needsAttention && !$0.sessionRunning } ?? ["completed", "ready", "failed", "unknown", "needs_review"].contains(review.status),
+                needsAttention: (activity.map { $0.needsAttention && !$0.sessionRunning } ?? ["completed", "ready", "failed", "unknown", "needs_review"].contains(review.status))
+                    || tracking?.asksForYou == true,
                 inProgress: activity?.inProgress == true || ["preparing", "starting", "queued", "running", "accepted"].contains(review.status),
-                completed: false, activity: activity)
+                completed: false, activity: activity, tracking: tracking)
         }
         return (taskItems + meetingItems).enumerated().sorted { left, right in
             func rank(_ item: WorkWorkspaceItem) -> Int {
@@ -719,6 +736,7 @@ struct WorkWorkspaceView: View {
                     Spacer()
                 }.padding(.horizontal, 18).padding(.bottom, 10)
             }
+            latestMoveStrip
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(WorkBoardStage.allCases) { stage in boardColumn(stage) }
@@ -730,11 +748,12 @@ struct WorkWorkspaceView: View {
     }
 
     private var sessionsRow: some View {
-        let cards = WorkBoardSessionsProjection.cards(items, receipts: handoffStore.receipts, sessions: handoffStore.observedSessions(), domain: state.domain)
+        let allCards = WorkBoardSessionsProjection.cards(items, receipts: handoffStore.receipts, sessions: handoffStore.observedSessions(), domain: state.domain)
+        let cards = WorkBoardSessionsProjection.onePerSession(allCards)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(state.domain == nil ? "Sessions working now" : "Sessions on this board").font(COSType.body(13, weight: .semibold))
-                Text(WorkBoardSessionsProjection.summary(cards)).font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+                Text(WorkBoardSessionsProjection.summary(allCards)).font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
                 Spacer()
                 if !cards.isEmpty {
                     Button(sessionsCollapsed ? "Show" : "Hide") { sessionsCollapsed.toggle() }.buttonStyle(COSTextButtonStyle())
@@ -812,11 +831,22 @@ struct WorkWorkspaceView: View {
 
     private func sessionCard(_ card: WorkBoardSessionCard) -> some View {
         let receipt = card.activity.receipt, state = card.state
+        let held = receipt.progress == nil ? [] : WorkProgress.workingSession(receipt).map { sessionID in
+            WorkTracking.forSession(sessionID, receipts: handoffStore.receipts)
+                .filter { tracking in items.first { $0.sourceID == tracking.receipt.workID }?.completed != true }
+        } ?? []
+        // A task waiting on you is the most urgent thing on the card, whatever the top handoff's own state.
+        let asking = held.first(where: \.asksForYou)
         return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 7) {
-                WorkLiveDot(color: state.tint, live: state == .running)
-                // The row speaks in the summary's words ("1 running · 1 reply ready"); the item's status box adds detail.
-                Text(state.label).font(COSType.body(11.5, weight: .semibold)).foregroundStyle(state.tint).lineLimit(1)
+                if let asking {
+                    WorkTrackingDot(phase: asking.phase, tint: asking.tint)
+                    Text(asking.label).font(COSType.body(11.5, weight: .semibold)).foregroundStyle(asking.tint).lineLimit(1)
+                } else {
+                    WorkLiveDot(color: state.tint, live: state == .running)
+                    // The row speaks in the summary's words ("1 running · 1 reply ready"); the item's status box adds detail.
+                    Text(state.label).font(COSType.body(11.5, weight: .semibold)).foregroundStyle(state.tint).lineLimit(1)
+                }
                 Spacer(minLength: 6)
                 Text(card.ageText()).font(COSType.mono(10.5)).foregroundStyle(COSPalette.muted).lineLimit(1)
             }
@@ -824,11 +854,26 @@ struct WorkWorkspaceView: View {
                 WorkProviderGlyph(provider: receipt.provider)
                 Text(card.activity.session?.title ?? receipt.sessionTitle).font(COSType.body(13.5, weight: .semibold)).lineLimit(1)
             }
-            (Text("On ") + Text(inlineTitle(card.item.title)).foregroundColor(.primary)
-                + Text(" · " + (card.item.task.map { WorkBoardStage.stage(for: $0).title } ?? "Meeting review")
-                       + (card.earlierRevision ? " · an earlier version of the card" : "")))
-                .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted).lineLimit(2)
-            if state == .waiting, let waiting = card.activity.session?.waitingDetail, !waiting.isEmpty {
+            if held.isEmpty {
+                (Text("On ") + Text(inlineTitle(card.item.title)).foregroundColor(.primary)
+                    + Text(" · " + (card.item.task.map { WorkBoardStage.stage(for: $0).title } ?? "Meeting review")
+                           + (card.earlierRevision ? " · an earlier version of the card" : "")))
+                    .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted).lineLimit(2)
+            } else {
+                // 0.5.247: every task this session holds, and where each one stands.
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(held.prefix(WorkTracking.cardRows), id: \.receipt.id) { tracking in heldTaskRow(tracking) }
+                    if held.count > WorkTracking.cardRows {
+                        Text("+\(held.count - WorkTracking.cardRows) more").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    }
+                }
+                if let asking = held.last(where: \.asksForYou), let evidence = asking.evidence {
+                    Text("\u{201C}" + evidence + "\u{201D}").font(COSType.body(11.5)).foregroundStyle(COSPalette.amber).lineLimit(2)
+                }
+            }
+            if held.contains(where: \.asksForYou) {
+                // The question above says what the session needs; the reply excerpt would repeat it.
+            } else if state == .waiting, let waiting = card.activity.session?.waitingDetail, !waiting.isEmpty {
                 Text(waiting).font(COSType.body(11.5)).foregroundStyle(COSPalette.amber).lineLimit(2)
             } else if state.showsReply, let excerpt = WorkBoardSessionCard.excerpt(receipt: receipt, session: card.activity.session) {
                 Text(excerpt).font(COSType.body(11.5)).foregroundStyle(COSPalette.muted).lineLimit(2)
@@ -851,6 +896,36 @@ struct WorkWorkspaceView: View {
         }.padding(12).frame(width: WorkBoardSessionCard.cardWidth, alignment: .leading)
             .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 9))
             .overlay(RoundedRectangle(cornerRadius: 9).stroke(state.tint.opacity(0.4)))
+    }
+
+    /// One task on a session card: its title, and its tracked state and stage.
+    private func heldTaskRow(_ tracking: WorkTracking) -> some View {
+        let item = items.first { $0.sourceID == tracking.receipt.workID }
+        let stage = item?.task.map { WorkBoardStage.stage(for: $0).title } ?? (item?.review != nil ? "Review" : "")
+        return Button { if let item { select(item) } } label: {
+            HStack(spacing: 8) {
+                WorkTrackingDot(phase: tracking.phase, tint: tracking.tint)
+                Text(inlineTitle(item?.title ?? tracking.receipt.workTitle)).font(COSType.body(12)).foregroundStyle(.primary).lineLimit(1)
+                Spacer(minLength: 6)
+                Text(tracking.shortLabel + (stage.isEmpty ? "" : " · " + stage)).font(COSType.mono(10.5)).foregroundStyle(tracking.tint)
+                    .lineLimit(1).fixedSize()
+            }.contentShape(Rectangle())
+        }.buttonStyle(.plain).disabled(item == nil).help(item == nil ? "This task is not on this board" : "Open this task")
+    }
+
+    /// 0.5.247 (3A): the newest automatic move, over the columns (WorkLatestMoveStrip observes the tracker).
+    @ViewBuilder private var latestMoveStrip: some View {
+        if let tracker = model.workTracker {
+            WorkLatestMoveStrip(tracker: tracker, store: handoffStore, lookup: { workID in
+                items.first { $0.sourceID == workID }.map { ($0.title, $0.task.map { WorkBoardStage.stage(for: $0).rawValue }) }
+            }, onUndo: { receiptID, eventID in undoMove(receiptID, eventID) })
+        }
+    }
+
+    private func undoMove(_ receiptID: String, _ eventID: String) {
+        guard let tracker = model.workTracker else { return }
+        state.mutationError = nil
+        Task { if let problem = await tracker.undo(receiptID: receiptID, eventID: eventID) { state.mutationError = problem } }
     }
 
     private func startWorkTarget(empty: Bool, compact: Bool) -> some View {
@@ -907,27 +982,14 @@ struct WorkWorkspaceView: View {
     private func boardCard(_ item: WorkWorkspaceItem) -> some View {
         let handoff = item.activity.map { WorkHandoffState($0) }
         let running = handoff == .running
+        let tracking = item.tracking
+        let stageRaw = item.task.map { WorkBoardStage.stage(for: $0).rawValue }
+        let autoMove = tracking?.undoableMove(currentStage: stageRaw)
+        let asking = tracking?.asksForYou == true
         return VStack(alignment: .leading, spacing: 0) {
-            // 0.5.246: a tap gesture, not a Button. A Button swallows the drag (measured with real mouse drags: a
-            // Button-wrapped card never dropped; a tap-gesture card dropped every time), so cards could not be dragged.
-            VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(inlineTitle(item.title)).font(COSType.body(13, weight: .medium)).multilineTextAlignment(.leading).lineLimit(5)
-                    if let activity = item.activity, let handoff, handoff != .settled {
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            WorkLiveDot(color: handoff.tint, live: running).scaleEffect(0.8)
-                            Text(handoff.label + " · " + (activity.session?.title ?? activity.receipt.sessionTitle))
-                                .font(COSType.body(10.5, weight: .semibold)).foregroundStyle(handoff.tint).lineLimit(2)
-                        }
-                    } else if item.inProgress { Label("Session running", systemImage: "clock").font(COSType.body(10.5)).foregroundStyle(COSPalette.accent) }
-                    else if item.needsAttention { Label("Needs attention", systemImage: "circle.dashed").font(COSType.body(10.5)).foregroundStyle(COSPalette.accent) }
-                    if let task = item.task, task.meetingRefs.isEmpty {
-                        Text(task.source.isEmpty ? "No meeting linked" : task.source).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).lineLimit(2)
-                    }
-                }.padding(12).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-            }.onTapGesture { select(item) }
-                .accessibilityElement(children: .combine).accessibilityAddTraits(.isButton).accessibilityAction { select(item) }
-                .help(item.title)
+            cardTapArea(item, handoff: handoff, running: running)
+            // Outside the tap area: its Undo is its own control, not part of the card's single action.
+            if let autoMove, let tracking { cardWhyLine(tracking, autoMove).padding(.horizontal, 12).padding(.bottom, 10) }
             if let task = item.task {
                 ForEach(task.meetingRefs.prefix(2)) { meeting in
                     Button { onOpenMeeting(meeting) } label: {
@@ -938,8 +1000,8 @@ struct WorkWorkspaceView: View {
                 HStack { stageMenu(task); Spacer(minLength: 0) }.padding(.horizontal, 10).padding(.vertical, 6)
             }
         }.background(COSPalette.panel, in: RoundedRectangle(cornerRadius: 7))
-            .overlay(RoundedRectangle(cornerRadius: 7).stroke(running ? COSPalette.green.opacity(0.6) : COSPalette.line))
-            .overlay(alignment: .leading) { if running { Rectangle().fill(COSPalette.green).frame(width: 3).clipShape(RoundedRectangle(cornerRadius: 2)) } }
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Self.cardStroke(asking: asking, running: running, moved: autoMove != nil)))
+            .overlay(alignment: .leading) { cardRule(asking: asking, running: running) }
             .draggable(item.id) {
                 Text(inlineTitle(item.title)).font(COSType.body(12, weight: .medium)).lineLimit(3).padding(10).frame(width: 210, alignment: .leading)
                     .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 7))
@@ -954,6 +1016,56 @@ struct WorkWorkspaceView: View {
                     }
                 }
             }
+    }
+
+    /// 0.5.246: a tap gesture, not a Button. A Button swallows the drag (measured with real mouse drags: a
+    /// Button-wrapped card never dropped; a tap-gesture card dropped every time), so cards could not be dragged.
+    private func cardTapArea(_ item: WorkWorkspaceItem, handoff: WorkHandoffState?, running: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(inlineTitle(item.title)).font(COSType.body(13, weight: .medium)).multilineTextAlignment(.leading).lineLimit(5)
+                cardStatus(item, handoff: handoff, running: running)
+                if let task = item.task, task.meetingRefs.isEmpty {
+                    Text(task.source.isEmpty ? "No meeting linked" : task.source).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).lineLimit(2)
+                }
+            }.padding(12).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+        }.onTapGesture { select(item) }
+            .accessibilityElement(children: .combine).accessibilityAddTraits(.isButton).accessibilityAction { select(item) }
+            .help(item.title)
+    }
+    /// 0.5.247: what the session reported says more than the live handoff line; otherwise the live line wins, and a
+    /// tracked handoff with no live line still says where it stands.
+    @ViewBuilder private func cardStatus(_ item: WorkWorkspaceItem, handoff: WorkHandoffState?, running: Bool) -> some View {
+        if let tracking = item.tracking, tracking.reported {
+            WorkTrackingLine(tracking: tracking)
+            if tracking.asksForYou, let evidence = tracking.evidence {
+                Text("\u{201C}" + evidence + "\u{201D}").font(COSType.body(10.5)).italic().lineLimit(3)
+            }
+        } else if let activity = item.activity, let handoff, handoff != .settled {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                WorkLiveDot(color: handoff.tint, live: running).scaleEffect(0.8)
+                Text(handoff.label + " · " + (activity.session?.title ?? activity.receipt.sessionTitle))
+                    .font(COSType.body(10.5, weight: .semibold)).foregroundStyle(handoff.tint).lineLimit(2)
+            }
+        } else if let tracking = item.tracking { WorkTrackingLine(tracking: tracking) }
+        else if item.inProgress { Label("Session running", systemImage: "clock").font(COSType.body(10.5)).foregroundStyle(COSPalette.accent) }
+        else if item.needsAttention { Label("Needs attention", systemImage: "circle.dashed").font(COSType.body(10.5)).foregroundStyle(COSPalette.accent) }
+    }
+    /// "Moved here at 9:52: the session reported done." with Undo, while the card sits where COS put it.
+    private func cardWhyLine(_ tracking: WorkTracking, _ move: WorkProgressEvent) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(WorkTracking.whyLine(move)).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).lineLimit(3)
+            if model.workTracker != nil {
+                Button("Undo") { undoMove(tracking.receipt.id, move.id) }.buttonStyle(COSTextButtonStyle()).controlSize(.small)
+                    .help("Move it back to " + WorkProgress.stageTitle(move.fromStage ?? "") + ". COS will not move it again for this handoff.")
+            }
+        }
+    }
+    nonisolated static func cardStroke(asking: Bool, running: Bool, moved: Bool) -> Color {
+        asking ? COSPalette.amber.opacity(0.6) : running ? COSPalette.green.opacity(0.6) : moved ? COSPalette.gold.opacity(0.45) : COSPalette.line
+    }
+    @ViewBuilder private func cardRule(asking: Bool, running: Bool) -> some View {
+        if asking || running { Rectangle().fill(asking ? COSPalette.amber : COSPalette.green).frame(width: 3).clipShape(RoundedRectangle(cornerRadius: 2)) }
     }
 
     private func canChangeStage(_ task: TaskRow) -> Bool {
@@ -1249,7 +1361,11 @@ struct WorkWorkspaceView: View {
     }
     @ViewBuilder private func itemWorkspace(_ item: WorkWorkspaceItem) -> some View {
         if let task = item.task {
-            WorkHandoffView(store: handoffStore, source: .taskSnapshot(task), isPreview: handoffStore.isolated, onOpenSession: onOpenSession)
+            WorkHandoffView(store: handoffStore, source: .taskSnapshot(task), isPreview: handoffStore.isolated, onOpenSession: onOpenSession,
+                            currentStage: WorkBoardStage.stage(for: task).rawValue,
+                            onUndoMove: model.workTracker == nil ? nil : { receiptID, eventID in undoMove(receiptID, eventID) },
+                            onMarkComplete: task.checked || !canChangeStage(task) ? nil : { move(task, to: .complete) },
+                            onSentBack: { if [.built, .qa].contains(WorkBoardStage.stage(for: task)) { move(task, to: .draft) } })
         } else if let review = item.review {
             reviewWorkspace(review)
         }

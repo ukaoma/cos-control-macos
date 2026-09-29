@@ -48,6 +48,7 @@ python3 "$ROOT/Tests/HeldNamingTransport.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-review-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-intake-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-jev-helper-checks.py" "$TMP/cos-control-helper"
+python3 "$ROOT/Tests/work-progress-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/HeldNamingGuardMutations.py"
 
 # THE APP ITSELF MUST COMPILE.
@@ -64,7 +65,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/COSMotion.swift" \
   "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" \
-  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/ActivityWindow.swift" \
+  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" \
@@ -106,7 +107,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
-  "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
+  "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" \
   "$ROOT/Sources/SessionPet.swift" \
@@ -1016,6 +1017,51 @@ assert "Button { select(item) }" not in board_card and ".onTapGesture { select(i
 assert "WorkHandoffStore.autoStartPlan(" in sheet and "? .starting(start.plan" in sheet, "a drop that meets every criterion must start by itself"
 assert "if let sessionID = store.receipts(for: source.id).first?.sessionID { onOpenSession(sessionID) }" in sheet, "a started drop opens its session"
 PY
+# 0.5.247: Work tracking. Every send carries the status-line instruction; the tracker runs at app level only with
+# background work, shares the window's journal, never takes `busy`, never moves a card to Complete; Undo, the
+# notification tap and the Settings switch are wired. Behaviour is covered by Tests/run-work-progress.sh.
+python3 - "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/Views.swift" "$ROOT/Sources/WorkWorkspaceView.swift" <<'PY'
+import sys
+store, progress, tracker, model, aw, views, wwv = (open(p).read() for p in sys.argv[1:8])
+def body(src, start, end):
+    i = src.index(start); return src[i:src.index(end, i)]
+submit = body(store, "    func submit(source: WorkSource", "    /// The first line of a handoff's Progress timeline.")
+assert "let sent = text + instruction" in submit and '"query": sent' in submit and "Data(sent.utf8)" in submit, "every send must carry the status-line instruction"
+assert "(journalPrompt ?? text) + instruction : sent" in submit, "the receipt must keep what was sent (Continue resends it)"
+assert "text.utf16.count <= Self.draftLimit" in submit, "the draft limit leaves room for the instruction"
+target = body(progress, "nonisolated static func target(for kind:", "/// Forward only")
+assert 'case .received: return "draft"; case .done: return "qa"' in target and '"complete"' not in target, "automatic moves go as far as QA, never Complete"
+adv = body(progress, "nonisolated static func advances(from current:", "/// Undo is offered")
+assert 'current != "complete", target != "complete"' in adv and "return to > from" in adv, "moves are forward only and never touch Complete"
+assert "busy = true" not in tracker and "busy = true" not in body(store, "// MARK: - Tracking (0.5.247)", "    func markReviewed("), "the tracker must never take the send lock flag"
+for call in ("refreshReceipts(", "submit(", "lockJournal(", ".persist("):
+    assert call not in tracker, "the tracker must not hold the journal across a network call: it called " + call
+assert "store.tryUpdateReceipt(" in body(tracker, "    private func write(", "    private func flushDeferred("), "records go through the one locked, synchronous update"
+turn = body(store, "    private func applyTurn(", "    private func applyJob(")
+assert 'data["state"]?.string == "pending", Date().timeIntervalSince1970 - row.createdAt < Self.pendingTurnLimit' in turn, "a running turn's pending 404 must stay running"
+init = body(model, "    init(startBackgroundWork: Bool = true", "    private func startWorkTracking() {")
+assert "guard startBackgroundWork else { return }" in init and init.index("guard startBackgroundWork else { return }") < init.index("startWorkTracking()"), "tracking runs only with background work"
+assert "meetingAudioNotifier.onOpenWork = { [weak self] workID in self?.openWorkItem(workID) }" in model
+post = body(model, "    private func postWorkNotice(", "    func openWorkItem(")
+assert post.index("guard workNotificationsEnabled else { return }") < post.index("meetingAudioNotifier.postWork(notice)"), "the Settings switch gates every Work notification"
+assert "NSHostingController(rootView: ActivityWindow.live(model: model))" in aw and "view._handoffStore = StateObject(wrappedValue: store)" in aw, "the window must share the tracker's journal"
+assert "if let workID = model.activityOpenWorkID {" in aw and "openHandoffWork(workID)" in aw, "a notification tap opens its item"
+assert 'Toggle("Work notifications", isOn: Binding(get: { model.workNotificationsEnabled }, set: { model.workNotificationsEnabled = $0 }))' in views
+undo = body(wwv, "    private func undoMove(", "    private func startWorkTarget(")
+assert "await tracker.undo(receiptID: receiptID, eventID: eventID)" in undo, "Undo goes through the tracker, which checks the card still sits where COS put it"
+assert "WorkBoardSessionsProjection.summary(allCards)" in wwv and "WorkBoardSessionsProjection.onePerSession(allCards)" in wwv
+back = body(store, "    func sendBack(receiptID: String", "    func markReviewed(")
+assert "await submit(source: source, mode: .continueSession, session: session" in back and "let session = sendBackSession(for: old)" in back, "Not done yet continues the same session"
+assert "onSentBack: { if [.built, .qa].contains(WorkBoardStage.stage(for: task)) { move(task, to: .draft) } }" in wwv, "Not done yet moves the card back only from Built or QA"
+# Work's New session runs on the COS server, which the helper labels a scheduled job: both list loads mark the sessions
+# a handoff names as work, and a New session re-reads its job until the server names the session (2026-09-29).
+assert "claudeSessions = ClaudeSession.markingWork(next, workSessionIDs: workSessionIDs)" in model, "the fresh list marks Work's sessions"
+assert "claudeSessions = ClaudeSession.markingWork(cache.sessions, workSessionIDs: workSessionIDs)" in model, "the cached list marks Work's sessions"
+assert "claudeSessions = next\n" not in model and "claudeSessions = cache.sessions\n" not in model, "no list load may skip the Work marking"
+assert "newSessionLink = Task { [weak self] in await self?.linkNewSession(id) }" in submit, "a New session re-reads its job until it is linked"
+PY
+# The tracker's behaviour: status lines, delivery, stages, Jev gating, retries, a busy journal (synthetic transport and board).
+"$ROOT/Tests/run-work-progress.sh"
 # 0.5.242: the menu-bar window opens straight into ControlPanel. 0.5.240 stacked an unstyled "Open Work"
 # button above it; Work is reached from the panel's Activity chips, which come from ActivitySection.allCases.
 python3 - "$ROOT/Sources/COSControlApp.swift" <<'PY'
@@ -2116,7 +2162,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/COSMotion.swift" \
   "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" \
-  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/ActivityWindow.swift" \
+  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" \

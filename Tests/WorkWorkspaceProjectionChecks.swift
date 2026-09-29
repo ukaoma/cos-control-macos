@@ -215,8 +215,11 @@ import Foundation
     precondition(WorkHandoffStore.sendPlan(draft: draft(.fork, session: "cursor:k", provider: "codex", model: "frontier"), sessions: pool, models: codexDown) == nil,
                  "A fork to another platform needs its target model available")
     precondition(plan(draft(.continueSession, session: "claude:c", prompt: "   ")) == nil)
-    precondition(plan(draft(.continueSession, session: "claude:c", prompt: String(repeating: "x", count: 32_001))) == nil)
-    precondition(plan(draft(.continueSession, session: "claude:c", prompt: String(repeating: "x", count: 32_000))) != nil)
+    // 0.5.247: a draft leaves room for the tracking line every send adds, so the sent prompt stays within 32,000.
+    precondition(plan(draft(.continueSession, session: "claude:c", prompt: String(repeating: "x", count: WorkHandoffStore.draftLimit + 1))) == nil)
+    precondition(plan(draft(.continueSession, session: "claude:c", prompt: String(repeating: "x", count: WorkHandoffStore.draftLimit))) != nil)
+    precondition(WorkHandoffStore.draftLimit + WorkProgress.instruction(tag: "0123456789ab").utf16.count <= 32_000,
+                 "The instruction fits the room kept for it")
 
     // Start work: one click only for a complete saved draft, or Continue/Fork advice at its bar, on work with no history.
     func advice(_ action: String, _ session: String?, _ confidence: Double) -> SessionAdvice {

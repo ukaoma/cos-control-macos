@@ -103,6 +103,27 @@ final class MeetingAudioNotifier: NSObject, UNUserNotificationCenterDelegate, @u
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         [.banner, .sound]
     }
+
+    /// 0.5.247: Work tracking notices (received, done, needs input, blocked). Clicking one opens its Work item.
+    var onOpenWork: (@MainActor @Sendable (String) -> Void)?
+    func postWork(_ notice: WorkProgressNotice) {
+        let content = UNMutableNotificationContent()
+        content.title = notice.title
+        content.body = notice.body
+        content.sound = .default
+        content.userInfo = ["workID": notice.workID]
+        content.threadIdentifier = "work"
+        let identifier = "work-\(notice.receiptID)-\(notice.key)"
+        center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil)) { error in
+            let detail = error.map { String(describing: $0) } ?? "none"
+            meetingAudioLog.notice("post \(identifier, privacy: .public) error=\(detail, privacy: .public)")
+        }
+    }
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        guard let workID = response.notification.request.content.userInfo["workID"] as? String, !workID.isEmpty else { return }
+        let open = onOpenWork
+        await MainActor.run { open?(workID) }
+    }
 }
 
 @MainActor
@@ -152,6 +173,17 @@ final class ControllerModel: ObservableObject {
     /// Menu-bar chip → Activity tab. Consumed by the window, then cleared so the
     /// same chip can be pressed again. Nil means "just show the window."
     @Published var activityOpenSection: ActivitySection?
+    /// 0.5.247: a Work item to open (a tracking notification was clicked). Consumed by `applyLaunchSection`.
+    @Published var activityOpenWorkID: String?
+    /// Opens the Activity window at a section. Set by the app, which owns the window presenter.
+    var openActivity: ((ActivitySection?) -> Void)?
+    /// 0.5.247: the one Work handoff journal and its tracker, shared with the Activity window so tracking keeps
+    /// running while the window is closed. Nil in previews and checks (no background work).
+    private(set) var workHandoffStore: WorkHandoffStore?
+    /// The sessions Work handoffs name, so Sessions shows them as work rather than as COS server jobs (0.5.247).
+    var workSessionIDs: Set<String> { Set(workHandoffStore?.receipts.compactMap(\.sessionID) ?? []) }
+    private(set) var workTracker: WorkProgressTracker?
+    nonisolated static let workNotificationsKey = "cos.workNotifications"
     @Published var mediaPreviewStates: [String: RecentMediaPreviewState] = [:]
     @Published var selectedMediaPreview: SelectedMediaPreview?
     @Published var previewingMediaID: String?
@@ -416,6 +448,38 @@ final class ControllerModel: ObservableObject {
         loadPetSprite()
         hydrateClaudeSessionsFromCache()
         meetingAudioNotifier.requestAuthorization()
+        startWorkTracking()
+    }
+
+    private func startWorkTracking() {
+        let store = WorkHandoffStore()
+        let tracker = WorkProgressTracker(store: store, board: .init(
+            tasks: { [weak self] in self?.workTasks ?? [] },
+            writable: { [weak self] in self?.workBoardWritable ?? false },
+            reload: { [weak self] in await self?.loadWorkTasks(force: true) },
+            move: { [weak self] task, stage in
+                guard let self else { throw HelperClientError.commandFailed("COS Control is closing.") }
+                try await self.setWorkStage(task, stage: stage)
+            }),
+            notify: { [weak self] notice in self?.postWorkNotice(notice) })
+        workHandoffStore = store
+        workTracker = tracker
+        meetingAudioNotifier.onOpenWork = { [weak self] workID in self?.openWorkItem(workID) }
+        tracker.start()
+    }
+    /// Work notifications are on unless you turned them off in Settings.
+    var workNotificationsEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: Self.workNotificationsKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: Self.workNotificationsKey); objectWillChange.send() }
+    }
+    private func postWorkNotice(_ notice: WorkProgressNotice) {
+        guard workNotificationsEnabled else { return }
+        meetingAudioNotifier.postWork(notice)
+    }
+    func openWorkItem(_ workID: String) {
+        activityOpenWorkID = workID
+        // No section here: the item routes itself to Work, and a section change arriving after it could clear it.
+        openActivity?(nil)
     }
 
     /// P1 check. Silent on helper crash. The helper itself returns ok:true with
@@ -2498,7 +2562,7 @@ final class ControllerModel: ObservableObject {
         guard let cache = SessionListCache.load() else { return }
         claudeSessionsEnabled = cache.enabled
         claudeSessionsReason = cache.reason
-        claudeSessions = cache.sessions
+        claudeSessions = ClaudeSession.markingWork(cache.sessions, workSessionIDs: workSessionIDs)
         sessionListDropped = cache.dropped
         claudeSessionsCacheSavedAt = cache.savedAt
         claudeSessionsError = nil
@@ -2543,7 +2607,7 @@ final class ControllerModel: ObservableObject {
             if !next.isEmpty || !partial {
                 claudeSessionsEnabled = response.details["enabled"]?.bool ?? claudeSessionsEnabled
                 claudeSessionsReason = response.details["reason"]?.string ?? claudeSessionsReason
-                claudeSessions = next
+                claudeSessions = ClaudeSession.markingWork(next, workSessionIDs: workSessionIDs)
                 sessionListDropped = SessionListDropped(response.details["dropped"])
                 if !quick, !partial {
                     claudeSessionsCacheSavedAt = Date()

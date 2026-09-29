@@ -90,6 +90,9 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     /// they were, so a refusal is never rewritten into a delivery (the Sessions back-link and suggestions read them).
     /// Optional, so 0.5.243 reads these journals and simply shows the item as needing attention again.
     var acknowledgedAt: Double?
+    /// 0.5.247: the status line this handoff asked for and what the session has reported since (WorkProgress.swift).
+    /// Nil on handoffs sent by 0.5.246 and earlier, which never asked for one, so they are never tracked.
+    var progress: WorkProgress?
     /// Server-terminal states never block another handoff: completed, failed, refused, canceled (server job states:
     /// completed | failed | canceled | interrupted; interrupted is recorded as failed).
     nonisolated static let terminalStatuses: Set<String> = ["completed", "failed", "refused", "canceled", "reviewed"]
@@ -263,7 +266,7 @@ struct WorkSendPlan: Equatable {
     /// Claude or Codex model; a native Fork or Continue needs a session whose provider supports it.
     nonisolated static func sendPlan(draft: WorkHandoffDraft, sessions: [WorkSession], models: [WorkModelChoice]) -> WorkSendPlan? {
         let text = draft.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, draft.prompt.utf16.count <= 32_000 else { return nil }
+        guard !text.isEmpty, draft.prompt.utf16.count <= draftLimit else { return nil }
         let session = sessions.first { $0.id == draft.sessionID }
         let model = models.first { $0.id == draft.modelID && $0.provider == draft.provider }
         switch draft.mode {
@@ -459,7 +462,10 @@ struct WorkSendPlan: Equatable {
         guard let old, let new else { return false }
         return old != new
     }
-    nonisolated static let crossPlatformLimit = 32_000
+    /// 0.5.247: what a draft may hold. Every send adds the status-line instruction (WorkProgress.instruction), and
+    /// the whole prompt stays within the 32,000 the server accepts.
+    nonisolated static let draftLimit = 32_000 - WorkProgress.instructionReserve
+    nonisolated static let crossPlatformLimit = draftLimit
     nonisolated static let crossPlatformMarker = "\n\n[... the middle of the conversation is omitted to fit \(crossPlatformLimit.formatted()) characters ...]\n\n"
 
     nonisolated static func providerName(_ provider: String) -> String {
@@ -629,6 +635,7 @@ struct WorkSendPlan: Equatable {
     func refresh() async {
         guard !busy else { return }
         if isolated { return }
+        retryJournalIfUnavailable()
         busy = true; error = nil
         defer { busy = false }
         do {
@@ -688,7 +695,11 @@ struct WorkSendPlan: Equatable {
             try loadJournal()
             guard !receipts(for: source.id).contains(where: \.blocksNewHandoff) else { throw failure("This work already has an active or unresolved handoff. Inspect its receipt before starting another.") }
             let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty, text.utf16.count <= 32_000, !source.id.isEmpty, !source.revision.isEmpty else { throw failure("Provide a bounded instruction and source revision.") }
+            guard !text.isEmpty, text.utf16.count <= Self.draftLimit, !source.id.isEmpty, !source.revision.isEmpty else { throw failure("Provide a bounded instruction and source revision.") }
+            // 0.5.247: the status line the session reports back with, added here so no draft can leave it out.
+            let tag = WorkProgress.tag(forWorkID: source.id)
+            let instruction = WorkProgress.instruction(tag: tag)
+            let sent = text + instruction
             if mode == .newSession {
                 guard let model, model.available, models.contains(model) else { throw failure("Select an available model from the current catalog.") }
             } else {
@@ -700,8 +711,11 @@ struct WorkSendPlan: Equatable {
                 mode: mode, provider: mode == .newSession ? model!.provider : session!.provider,
                 modelID: mode == .newSession ? model!.id : "existing-session", sessionID: mode == .newSession ? nil : session?.id,
                 sessionTitle: mode == .newSession ? source.title : session!.title, status: "sending", detail: "Saving handoff intent",
-                prompt: mode == .newSession ? (journalPrompt ?? text) : text, createdAt: Date().timeIntervalSince1970,
+                prompt: mode == .newSession ? (journalPrompt ?? text) + instruction : sent, createdAt: Date().timeIntervalSince1970,
                 sourceSessionID: session?.id, serverInstanceID: serverInstanceID)
+            var progress = WorkProgress(tag: tag)
+            progress.record(.sent, Self.sentText(mode: mode, session: session, model: model), at: row.createdAt)
+            row.progress = progress
             receipts.insert(row, at: 0)
             do { try persist() } catch { receipts.removeAll { $0.id == id }; throw error }
             intentID = id
@@ -717,14 +731,14 @@ struct WorkSendPlan: Equatable {
             }
             if mode == .newSession {
                 row.channel = "job"; try save(row)
-                let data = try JSONSerialization.data(withJSONObject: ["clientJobId": id, "query": text, "model": model!.id])
+                let data = try JSONSerialization.data(withJSONObject: ["clientJobId": id, "query": sent, "model": model!.id])
                 let result = try await call(["work-new"], data)
                 if let http = result["httpStatus"]?.int, [400, 401, 403, 404, 422].contains(http) || (http == 409 && result["error"]?.object?["code"]?.string == "message_era_mismatch") {
                     row.status = "refused"; row.detail = result["error"]?.object?["message"]?.string ?? "New-session admission was refused (\(http))."
                 } else { applyJob(result, to: &row) }
             } else if mode == .fork {
                 row.channel = "fork"; try save(row)
-                let result = try await call(["session-chat-fork", "--provider", session!.provider, "--thread-id", session!.nativeID], Data(text.utf8))
+                let result = try await call(["session-chat-fork", "--provider", session!.provider, "--thread-id", session!.nativeID], Data(sent.utf8))
                 if result["state"]?.string == "forked" {
                     if let value = result["forkSession"], let child = WorkSession.parse(value), child.provider == row.provider, child.id != row.sourceSessionID {
                         sessions.append(child); row.sessionID = child.id; row.sessionTitle = child.title
@@ -739,6 +753,11 @@ struct WorkSendPlan: Equatable {
                 }
             } else { try await continueSession(session!, row: &row) }
             try save(row)
+            onHandoffRecorded?()
+            if row.channel == "job", row.sessionID == nil, row.blocksNewHandoff {
+                let id = row.id
+                newSessionLink = Task { [weak self] in await self?.linkNewSession(id) }
+            }
         } catch {
             if let id = intentID, let index = receipts.firstIndex(where: { $0.id == id }) {
                 receipts[index].status = "unknown"
@@ -747,6 +766,36 @@ struct WorkSendPlan: Equatable {
                 // from this catch after releasing the cross-process journal lock.
             }
             self.error = error.localizedDescription
+        }
+    }
+    /// Waits before each re-read of a New session that started without naming its session (0.5.247).
+    var newSessionLinkDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(8)]
+    /// The re-read the last New session started, so a test can wait for it.
+    private(set) var newSessionLink: Task<Void, Never>?
+
+    /// A New session's first answer comes before the server confirms which session it started. On 2026-09-29 the
+    /// receipt was written at 18:46:57.55 and the session confirmed at 18:46:57.717, so the receipt had none, and
+    /// nothing read the job again while the item stayed open: the card said "session live status unavailable" and
+    /// there was no way to the session. Read the job again a few times, briefly, until it names the session or ends.
+    func linkNewSession(_ id: String) async {
+        guard !isolated else { return }
+        for delay in newSessionLinkDelays {
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard let row = receipts.first(where: { $0.id == id }), row.channel == "job", row.sessionID == nil,
+                  row.blocksNewHandoff else { return }
+            guard let next = try? await reconciled(row), next.sessionID != nil || next.status != row.status else { continue }
+            commitDelivery(next, expecting: row)
+        }
+    }
+    /// The first line of a handoff's Progress timeline.
+    nonisolated static func sentText(mode: WorkHandoffMode, session: WorkSession?, model: WorkModelChoice?) -> String {
+        let title = WorkSendPlan.clip(session?.title ?? "session")
+        switch mode {
+        case .continueSession: return "Sent to \u{201C}\(title)\u{201D} (Continue)"
+        case .fork: return "Forked \u{201C}\(title)\u{201D} and sent"
+        case .newSession:
+            let provider = providerName(model?.provider ?? "")
+            return session == nil ? "Started a new \(provider) session" : "Forked \u{201C}\(title)\u{201D} to \(provider)"
         }
     }
     private func save(_ row: WorkHandoffReceipt) throws {
@@ -784,8 +833,18 @@ struct WorkSendPlan: Equatable {
             row.detail = result["reason"]?.string ?? "Queue refused the handoff."; return true
         }
     }
+    /// A turn with no receipt after this long is reported unresolved rather than still running.
+    nonisolated static let pendingTurnLimit: Double = 2 * 3_600
     private func applyTurn(_ data: [String: JSONValue], to row: inout WorkHandoffReceipt) {
-        if let http = data["httpStatus"]?.int, http == 0 || http == 404 || http >= 500 { row.status = "unknown"; row.detail = "Turn receipt unavailable. No automatic resend."; return }
+        if let http = data["httpStatus"]?.int, http == 0 || http == 404 || http >= 500 {
+            // 0.5.247: the server's turn ledger holds only finished turns, so a turn still running answers 404 and the
+            // helper says "pending" (as it does when the server cannot be reached). That is a turn in progress, not a
+            // lost one: the tracker polls it on every send, and calling it unknown invited a duplicate Continue.
+            if data["state"]?.string == "pending", Date().timeIntervalSince1970 - row.createdAt < Self.pendingTurnLimit {
+                row.status = "running"; row.detail = "Provider turn accepted. Waiting for its delivery receipt."; return
+            }
+            row.status = "unknown"; row.detail = "Turn receipt unavailable. No automatic resend."; return
+        }
         switch data["state"]?.string {
         case "queued", "pending": row.status = "running"; row.detail = "Provider turn accepted. Waiting for its delivery receipt."
         case "completed": row.status = "delivered"; row.detail = "Instruction delivered to the session. Inspect the response; this does not mark the task complete."
@@ -820,23 +879,157 @@ struct WorkSendPlan: Equatable {
         busy = true; error = nil; defer { busy = false }
         do {
             let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }; try loadJournal()
-            for var row in receipts where row.blocksNewHandoff && row.status != "delivered" {
-                if row.channel == "job" {
-                    let result = try await call(["work-job", "--client-job-id", row.id]); applyJob(result, to: &row)
-                } else if row.channel == "turn", let binding = row.bindingID {
-                    let result = try await call(["session-chat-turn", "--binding-id", binding, "--client-turn-id", row.id]); applyTurn(result, to: &row)
-                } else if row.channel == "queue", let sourceID = row.sourceSessionID, let target = sessions.first(where: { $0.id == sourceID }) {
-                    let result = try await call(["session-chat-queued", "--provider", target.provider, "--thread-id", target.nativeID])
-                    if let turn = result["turns"]?.array?.compactMap(\.object).first(where: { $0["clientTurnId"]?.string == row.id }) {
-                        let status = turn["status"]?.string ?? "unknown"
-                        row.status = ["waiting", "delivering"].contains(status) ? "queued" : (status == "delivered" ? "delivered" : (status == "cancelled" ? "canceled" : "unknown"))
-                        row.detail = "Queue receipt: \(status). Delivery does not complete the task."
-                    } else { row.status = "unknown"; row.detail = "Queue receipt unavailable or expired. Inspect the session before resending." }
-                }
-                try save(row)
+            for row in receipts where row.blocksNewHandoff && row.status != "delivered" {
+                try save(try await reconciled(row))
             }
         } catch { self.error = error.localizedDescription }
     }
+    /// One server read for an in-flight receipt, applied to a copy. A receipt with no channel to read is returned as is.
+    private func reconciled(_ original: WorkHandoffReceipt) async throws -> WorkHandoffReceipt {
+        var row = original
+        if row.channel == "job" {
+            let result = try await call(["work-job", "--client-job-id", row.id]); applyJob(result, to: &row)
+        } else if row.channel == "turn", let binding = row.bindingID {
+            let result = try await call(["session-chat-turn", "--binding-id", binding, "--client-turn-id", row.id]); applyTurn(result, to: &row)
+        } else if row.channel == "queue", let sourceID = row.sourceSessionID, let target = sessions.first(where: { $0.id == sourceID }) {
+            let result = try await call(["session-chat-queued", "--provider", target.provider, "--thread-id", target.nativeID])
+            if let turn = result["turns"]?.array?.compactMap(\.object).first(where: { $0["clientTurnId"]?.string == row.id }) {
+                let status = turn["status"]?.string ?? "unknown"
+                row.status = ["waiting", "delivering"].contains(status) ? "queued" : (status == "delivered" ? "delivered" : (status == "cancelled" ? "canceled" : "unknown"))
+                row.detail = "Queue receipt: \(status). Delivery does not complete the task."
+            } else { row.status = "unknown"; row.detail = "Queue receipt unavailable or expired. Inspect the session before resending." }
+        }
+        return row
+    }
+
+    // MARK: - Tracking (0.5.247)
+    //
+    // The tracker (WorkProgressTracker) runs whether or not Activity is open. It never sets `busy` and never holds the
+    // journal lock across a network call: it reads, then takes the lock for one synchronous reload-change-save. When a
+    // send or refresh holds the lock, the change waits for the next pass. Delivery and replies are only ever read.
+
+    /// Called when a handoff was recorded, so tracking starts without waiting for its next pass.
+    var onHandoffRecorded: (() -> Void)?
+
+    /// Reads delivery for these tracked handoffs while still in flight.
+    func reconcileForTracking(ids: Set<String>, now: Double = Date().timeIntervalSince1970) async {
+        guard !isolated, storageReady else { return }
+        for row in receipts where ids.contains(row.id) && row.blocksNewHandoff && row.status != "delivered" {
+            // A running New session's partial text changes on every read; comparing it would rewrite the journal
+            // every pass. Its result is recorded once the run ends.
+            guard let next = try? await reconciled(row),
+                  next.status != row.status || next.detail != row.detail || next.sessionID != row.sessionID
+                    || next.jobID != row.jobID || (next.status != "running" && next.result != row.result) else { continue }
+            commitDelivery(next, expecting: row)
+        }
+    }
+    /// Applies what a background read found, only if nobody changed the receipt meanwhile.
+    @discardableResult private func commitDelivery(_ next: WorkHandoffReceipt, expecting old: WorkHandoffReceipt) -> Bool {
+        updateReceipt(next.id) { current in
+            guard current.status == old.status, current.detail == old.detail else { return false }
+            current.status = next.status; current.detail = next.detail; current.result = next.result
+            current.jobID = next.jobID; current.sessionID = next.sessionID; current.sessionTitle = next.sessionTitle
+            return true
+        }
+    }
+    enum UpdateResult: Equatable { case written, unchanged, busy }
+    /// One locked, synchronous change to a receipt. `change` returns false to leave it alone (`unchanged`). `busy`
+    /// when the journal is held (a send or refresh) or could not be saved: the tracker keeps the change for later.
+    func tryUpdateReceipt(_ id: String, _ change: (inout WorkHandoffReceipt) -> Bool) -> UpdateResult {
+        guard storageReady else { return .busy }
+        do {
+            let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }
+            try loadJournal()
+            guard var row = receipts.first(where: { $0.id == id }), change(&row) else { return .unchanged }
+            try save(row)
+            return .written
+        } catch { return .busy }
+    }
+    /// `tryUpdateReceipt`, true only when the change was written.
+    @discardableResult func updateReceipt(_ id: String, _ change: (inout WorkHandoffReceipt) -> Bool) -> Bool {
+        tryUpdateReceipt(id, change) == .written
+    }
+    /// The store now lives as long as the app: a journal that could not be read at launch is read again, so sending and
+    /// tracking recover without a relaunch.
+    func retryJournalIfUnavailable() {
+        guard !storageReady else { return }
+        do {
+            let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }
+            try loadJournal()
+            storageReady = true; error = nil
+        } catch {}
+    }
+
+    /// One read of a session for tracking: recent replies, the openings of recent user messages, and activity. Read-only.
+    func sessionRead(sessionID: String, turns: Int) async throws -> WorkProgressTracker.SessionRead {
+        let parts = sessionID.split(separator: ":", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { throw failure("Not a session id") }
+        let details = try await call(["session-recent-replies", "--provider", parts[0], "--session-id", parts[1], "--turns", String(turns)])
+        func rows(_ key: String) -> [WorkProgress.Reply] {
+            (details[key]?.array ?? []).compactMap(\.object).compactMap { row -> WorkProgress.Reply? in
+                guard let text = row["text"]?.string, !text.isEmpty else { return nil }
+                return WorkProgress.Reply(text: text, at: row["at"]?.string.flatMap(WorkProgress.parseStamp))
+            }
+        }
+        return .init(replies: rows("replies"), prompts: rows("prompts"), runningActive: details["runningActive"]?.bool == true,
+                     agentState: details["agentState"]?.string ?? "",
+                     lastActivityAt: details["lastActivityAt"]?.string.flatMap(WorkProgress.parseStamp),
+                     hasHistory: details["state"]?.string == "turns")
+    }
+
+    /// Jev's reading of a session's replies since `after` against a board task (server 6.58.0). Nil with a reason
+    /// when there is no answer: an older server, no Jev key, a cap, or an unreachable server.
+    func completionCheck(domain: String, identity: String, sessionID: String, after: Double) async -> (verdict: WorkCompletionVerdict?, reason: String?) {
+        let parts = sessionID.split(separator: ":", maxSplits: 1).map(String.init)
+        guard !isolated, parts.count == 2 else { return (nil, "unavailable") }
+        do {
+            let body = try JSONSerialization.data(withJSONObject: ["domain": domain, "id": identity, "provider": parts[0],
+                                                                   "sessionId": parts[1], "after": WorkProgress.stamp(after)])
+            let details = try await call(["work-completion-check"], body)
+            if let verdict = WorkCompletionVerdict(details: details) { return (verdict, nil) }
+            return (nil, details["reason"]?.string ?? "unavailable")
+        } catch { return (nil, "unavailable") }
+    }
+    // MARK: - Not done yet (0.5.247)
+    //
+    // Miles, 2026-09-29, picked "Not done yet" for 0.5.247: from a task the session reported done, send it back to the
+    // same session with what is missing. The new handoff is tracked like any other.
+
+    /// Where "Not done yet" sends the work: the session that reported it done, when it takes a Continue and no turn
+    /// of this work is still in flight. Nil otherwise (a run with no session, Ollama, a fork not made yet).
+    func sendBackSession(for receipt: WorkHandoffReceipt) -> WorkSession? {
+        guard receipt.progress?.reported == .done, receipt.status == "delivered" || !receipt.blocksNewHandoff,
+              let id = WorkProgress.workingSession(receipt), let session = sessions.first(where: { $0.id == id }),
+              Self.continueProviders.contains(session.provider) else { return nil }
+        return session
+    }
+    nonisolated static func sendBackPrompt(missing: String, evidence: String?, reportedBy: String?) -> String {
+        let said = reportedBy == "session" ? evidence.map { "Your status line said: \u{201C}\($0)\u{201D}\n" } ?? "" : ""
+        return "Not done yet. " + said + "What is missing: " + missing.trimmingCharacters(in: .whitespacesAndNewlines)
+            + "\n\nFinish it, check it, and report again."
+    }
+    /// Sends the work back: marks the reply reviewed (a delivered reply blocks another handoff), continues the same
+    /// session with what is missing, and records the send-back on the old handoff. True when the session has it.
+    func sendBack(receiptID: String, source: WorkSource, missing: String) async -> Bool {
+        let text = missing.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !busy, !text.isEmpty, let old = receipts.first(where: { $0.id == receiptID }), old.workID == source.id,
+              let session = sendBackSession(for: old) else { return false }
+        if old.status == "delivered" { markReviewed(receiptID: old.id) }
+        guard !receipts(for: source.id).contains(where: \.blocksNewHandoff) else {
+            error = "This work still has a handoff in flight. Check it before sending the work back."; return false
+        }
+        await submit(source: source, mode: .continueSession, session: session, model: nil,
+                     prompt: Self.sendBackPrompt(missing: text, evidence: old.progress?.evidence, reportedBy: old.progress?.reportedBy))
+        guard let new = receipts(for: source.id).first, new.id != old.id, !["refused", "failed"].contains(new.status) else { return false }
+        let at = Date().timeIntervalSince1970
+        updateReceipt(old.id) { row in
+            guard var next = row.progress else { return false }
+            next.record(.note, "You sent it back: \u{201C}" + WorkProgress.clip(text, 200) + "\u{201D}", at: at)
+            row.progress = next; return true
+        }
+        return true
+    }
+
     func markReviewed(receiptID: String) {
         guard !busy, let seen = receipts.first(where: { $0.id == receiptID }), seen.acknowledgeable else { return }
         do {
