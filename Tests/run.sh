@@ -1172,6 +1172,18 @@ assert 'Logger(subsystem: "com.cos.control"' not in store + tracker + model, "te
 assert 'private let requestsLog = Logger(subsystem: "com.gotcos.control", category: "work-requests")' in store and 'private let trackingLog = Logger(subsystem: "com.gotcos.control", category: "work-tracking")' in tracker
 assert "+ Self.glassesMark(receipt))" in view and 'return background ? " · from the glasses · not opened in its app" : " · from the glasses"' in view, "Work history says a handoff came from the glasses, and when it was left in the background"
 assert "row.appOpen = origin == nil ? WorkAppOpen() : WorkAppOpen(skipped: WorkRequestOrigin.staysInBackground)" in submit, "a New session the glasses started is never opened by itself"
+# QA round 2 (2026-09-30). Behaviour: Tests/run-work-progress.sh test 22 y, z and o; these pin the wiring.
+assert "var draft = WorkHandoffDraft(sourceID: source.id, sourceRevision: source.revision, prompt: source.suggestedPrompt)" in inbox and "store.draft(for: source)" not in inbox, "a glasses Start sends the task's own prompt and the note, never the Mac's saved draft"
+cont = store[store.index("    private func continueSession("):store.index("    private func queue(")]
+assert cont.count("if pastWireDeadline(&row) { return }") == 3 and cont.index("if pastWireDeadline(&row) { return }") < cont.index('"session-chat-attachability"'), "a late request never asks about, attaches or sends to a session"
+assert 'nonisolated static let macBusyReason = "COS Control is sending work your glasses asked for. Try again in a moment."' in store
+def fn(src, head):
+    start = src.index(head)
+    ends = [i for i in (src.find("\n    func ", start + 1), src.find("\n    private func ", start + 1), src.find("\n    ///", start + 1)) if i > 0]
+    return src[start:min(ends)]
+for action in ("    func markReviewed(", "    func clearUnresolved(", "    func cancelAppNote(", "    func refreshReceipts("):
+    assert "refusedForGlassesSend()" in fn(store, action), action.strip() + " says why it waits while a glasses send holds the journal"
+assert "let restored = told ? WorkRequestOrigin.macBusyReason : shownError" in inbox, "outcome() keeps a Mac action's line"
 PY
 /usr/bin/python3 - "$ROOT/Sources" <<'PY'
 import pathlib, re, sys

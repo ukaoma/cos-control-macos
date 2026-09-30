@@ -186,7 +186,9 @@ struct WorkRequestOrigin: Equatable, Sendable {
     nonisolated static let lateReason = "Claimed too long ago; not sent"
     /// The `appOpen.skipped` code of a New session the glasses started: never opened by itself.
     nonisolated static let staysInBackground = "glasses"
-    nonisolated static let macBusyReason = "COS Control is sending work the glasses asked for. Try again in a moment."
+    /// What a Mac action that needs the journal is told while a glasses send holds it (a send, Mark reviewed, Clear
+    /// unresolved, Check status, Not sending it).
+    nonisolated static let macBusyReason = "COS Control is sending work your glasses asked for. Try again in a moment."
 }
 
 /// 0.5.252: one request the glasses left on the server (server 6.59.0), as COS Control lists it. Everything in it is a
@@ -258,6 +260,9 @@ struct WorkGlassesRequest: Equatable, Sendable {
     private(set) var quietSend = false
     /// Draft edits made while a quiet send holds the journal: kept in memory, written when the send lets go.
     private var draftsDirty = false
+    /// A Mac action was told to wait while the current glasses send held the journal. Its line stays on the Work page
+    /// when that send reports back (QA round 2).
+    private var macToldToWait = false
     /// The claim deadline of the glasses request being sent, checked immediately before each wire send.
     private var wireDeadline: Date?
     /// 0.5.252: the glasses requests this Mac has claimed and not yet reported, beside the journal.
@@ -823,9 +828,9 @@ struct WorkGlassesRequest: Equatable, Sendable {
                 journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil, replacing: String? = nil) async {
         guard !busy else { return }
         // 0.5.252: one send at a time. A send for the glasses does not take `busy` (the Agent workspace stays usable).
-        guard !quietSend else { if origin == nil { error = WorkRequestOrigin.macBusyReason }; return }
+        guard !quietSend else { if origin == nil { _ = refusedForGlassesSend() }; return }
         let quiet = origin != nil
-        if quiet { quietSend = true } else { busy = true }
+        if quiet { quietSend = true; macToldToWait = false } else { busy = true }
         error = nil
         wireDeadline = origin?.deadline
         defer {
@@ -1315,6 +1320,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
     }
     /// You will not send the note you took to the app: it stops blocking a new handoff. Nothing reached the session.
     func cancelAppNote(receiptID: String) {
+        if refusedForGlassesSend() { return }
         updateReceipt(receiptID) { current in
             guard current.channel == "app", current.status == "queued" else { return false }
             current.status = "canceled"; current.detail = "Not sent. You closed this note before sending it."
@@ -1411,12 +1417,16 @@ struct WorkGlassesRequest: Equatable, Sendable {
     }
     private func continueSession(_ session: WorkSession, row: inout WorkHandoffReceipt) async throws {
         let target = ["--provider", session.provider, "--thread-id", session.nativeID]
+        // 0.5.252 (QA round 2): a late glasses request never binds a session. The deadline is checked before the
+        // session is asked about and again before it is attached, as before each send.
+        if pastWireDeadline(&row) { return }
         let verdict = try await call(["session-chat-attachability"] + target)
         if Self.queueable.contains(verdict["reason"]?.string ?? "") {
             if try await queue(session, row: &row) { return }
         } else if verdict["attachable"]?.bool != true {
             row.status = "refused"; row.detail = verdict["reasonCopy"]?.string ?? "This session cannot be continued."; return
         }
+        if pastWireDeadline(&row) { return }
         let binding = try await call(["session-chat-attach"] + target)
         guard binding["state"]?.string == "attached", let bindingID = binding["bindingId"]?.string, !bindingID.isEmpty,
               let epoch = binding["epoch"]?.int, let boundTo = binding["boundTo"]?.string, !boundTo.isEmpty else {
@@ -1444,11 +1454,24 @@ struct WorkGlassesRequest: Equatable, Sendable {
     }
     /// 0.5.252: a send for the glasses is never put on the wire after its claim's deadline. True, with the receipt
     /// marked refused, when the deadline has passed. Called immediately before work-new, session-chat-fork,
-    /// session-chat-send and session-chat-queue. A send from the Mac has no deadline.
+    /// session-chat-attachability, session-chat-attach, session-chat-send and session-chat-queue. A send from the Mac
+    /// has no deadline.
     private func pastWireDeadline(_ row: inout WorkHandoffReceipt) -> Bool {
         guard let deadline = wireDeadline, Date() >= deadline else { return false }
         row.status = "refused"; row.detail = WorkRequestOrigin.lateReason
         return true
+    }
+    /// While a glasses send holds the journal, a Mac action that needs it is told so, and to try again, instead of
+    /// the lock's own error ("Another COS window..."). True when it was refused. (QA round 2, 2026-09-30.)
+    private func refusedForGlassesSend() -> Bool {
+        guard quietSend else { return false }
+        error = WorkRequestOrigin.macBusyReason; macToldToWait = true
+        return true
+    }
+    /// Whether a Mac action was told to wait during the glasses send that just finished; reading it clears it.
+    func takeMacToldToWait() -> Bool {
+        defer { macToldToWait = false }
+        return macToldToWait
     }
     /// Writes the draft edits made while a send for the glasses held the journal.
     private func writeDraftsEditedMeanwhile() {
@@ -1503,8 +1526,10 @@ struct WorkGlassesRequest: Equatable, Sendable {
             }
         }
     }
-    func refreshReceipts() async {
+    /// `asked`: Check status or Refresh, which say why they did nothing during a glasses send; the timed polls stay quiet.
+    func refreshReceipts(asked: Bool = false) async {
         guard !busy, !isolated, storageReady else { return }
+        if asked ? refusedForGlassesSend() : quietSend { return }
         busy = true; error = nil; defer { busy = false }
         do {
             let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }; try loadJournal()
@@ -1793,6 +1818,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
 
     func markReviewed(receiptID: String) {
         guard !busy, let seen = receipts.first(where: { $0.id == receiptID }), seen.acknowledgeable else { return }
+        if refusedForGlassesSend() { return }
         do {
             let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }
             try loadJournal()
@@ -1809,6 +1835,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
     /// this clears it (a confirm in the UI comes first). The earlier detail is kept.
     func clearUnresolved(receiptID: String) {
         guard !busy, receipts.first(where: { $0.id == receiptID })?.status == "unknown" else { return }
+        if refusedForGlassesSend() { return }
         do {
             let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }
             try loadJournal()
@@ -2187,7 +2214,10 @@ struct WorkRequestLedgerEntry: Codable, Equatable {
             return outcome(for: request, shownError: shown)
         }
 
-        var draft = store.draft(for: source)
+        // The task's own composed prompt (what a fresh draft on the Mac starts from) and the note: never the Mac's saved
+        // draft. Drafts save on every keystroke, so a half-typed prompt on the Mac would otherwise go to the agent unseen
+        // on the glasses (QA round 2, 2026-09-30).
+        var draft = WorkHandoffDraft(sourceID: source.id, sourceRevision: source.revision, prompt: source.suggestedPrompt)
         draft.mode = request.mode
         // The live list gives a running Claude session by its first 8 characters; the glasses name it in full. They are
         // one session here, as everywhere else in Work.
@@ -2228,13 +2258,17 @@ struct WorkRequestLedgerEntry: Codable, Equatable {
 
     /// What the send came to: its receipt's status, or why nothing was recorded. A refusal here does not stay on the
     /// Mac's Work page as an error: the glasses are told.
+    /// A Mac action told to wait while this send held the journal keeps its line on the Work page (QA round 2). (A Mac
+    /// action can only meet the send after its receipt is recorded, so that line is never read as this send's reason.)
     private func outcome(for request: WorkGlassesRequest, shownError: String?) -> WorkRequestOutcome {
+        let told = store.takeMacToldToWait()
+        let restored = told ? WorkRequestOrigin.macBusyReason : shownError
         if let receipt = store.receipts.first(where: { $0.requestId == request.id }) {
-            store.error = shownError
+            store.error = restored
             return .from(receipt)
         }
         let reason = store.error ?? Refusal.notSent
-        store.error = shownError
+        store.error = restored
         return .refused(reason: reason, receiptID: nil)
     }
 }

@@ -109,7 +109,7 @@ struct JediIdleContract {
             window.title = "Jedi walking + meditation canary • source renderer • 80% speed"
             window.contentView = hosting
             window.center()
-            window.makeKeyAndOrderFront(nil)
+            if ProcessInfo.processInfo.environment["COS_JEDI_CANARY_OUTPUT"] != nil { window.makeKeyAndOrderFront(nil) }
             if ProcessInfo.processInfo.environment["COS_JEDI_CANARY_OUTPUT"] != nil { app.activate(ignoringOtherApps: true) }
             for sample in 0..<32 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1 + Double(sample) * 0.2) {

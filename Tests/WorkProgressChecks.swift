@@ -48,6 +48,9 @@ private actor TrackingTransport {
     /// 0.5.250: the `sessionName` each work-new request carried ("<none>" when it had none).
     var sessionNames: [String] = []
     func names() -> [String] { sessionNames }
+    /// 0.5.252 (QA round 2): the query each work-new carried, as the agent would read it.
+    var newQueries: [String] = []
+    func queries() -> [String] { newQueries }
     func bodies() -> [[String: String]] { completionBodies }
     /// 0.5.252: the glasses request inbox, the model catalog and the live sessions, answered as the helper does.
     static let claimToken = String(repeating: "c", count: 32)
@@ -147,6 +150,7 @@ private actor TrackingTransport {
             let payload = (try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: Any] ?? [:]
             jobIdentity = payload["clientJobId"] as? String ?? ""
             sessionNames.append(payload["sessionName"].map { $0 as? String ?? "<not text>" } ?? "<none>")
+            newQueries.append(payload["query"] as? String ?? "<none>")
             details = job()
             if let newHTTP {
                 details["httpStatus"] = .number(Double(newHTTP))
@@ -267,7 +271,7 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         projectionChecks()
         try revisionParityChecks()
         try await trackerChecks()
-        print("PASS: Work tracking (status line, delivery, stages, projections, tracker: pending turns, arrival, reports, several tasks, pause, moved back, retries, busy journal, Jev gating, baseline, job result, superseded, back-off, New session link, Work sessions not jobs, start it then open it in the app, named after the task and linked while it runs, glasses requests, revision parity with the server's 12 golden rows)")
+        print("PASS: Work tracking (status line, delivery, stages, projections, tracker: pending turns, arrival, reports, several tasks, pause, moved back, retries, busy journal, Jev gating, baseline, job result, superseded, back-off, New session link, Work sessions not jobs, start it then open it in the app, named after the task and linked while it runs, glasses requests, revision parity with the server's 12 golden rows, a glasses Start never sends the Mac's draft, Mac actions told to wait during a glasses send, no session bound after the deadline)")
     }
 
     /// `precondition` takes an autoclosure, which cannot await.
@@ -2064,8 +2068,8 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             check(s10.updateDraft(edit, for: other) && s10.error == nil, "a draft edit during the send is kept: \(s10.error ?? "")")
             await s10.submit(source: other, mode: .newSession, session: nil, model: opus, prompt: "From the Mac")
             check(s10.error == WorkRequestOrigin.macBusyReason && s10.receipts(for: other.id).isEmpty, "a Mac send waits, and says so")
-            s10.error = nil
             await tr10.requests.waitForSend()
+            check(s10.error == WorkRequestOrigin.macBusyReason, "and that line is still there once the glasses send reported (QA round 2): \(s10.error ?? "")")
             let kept10 = WorkHandoffStore(isolated: false, storageURL: root.appendingPathComponent("glasses-heartbeat.json"),
                                           transport: { _, _ in throw HelperClientError.commandFailed("none") })
             check(kept10.draft(for: other).prompt == "Typed while the glasses' send was on the wire", "and written once the send lets go")
@@ -2123,6 +2127,32 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             check(wire == (0, 0, 0, 0), "nothing on the wire past the deadline: \(wire)")
             check(s11.receipts.count == 4 && s11.receipts.allSatisfy { $0.status == "refused" && $0.detail == "Claimed too long ago; not sent" && $0.requestedFrom == "glasses" },
                   "\(s11.receipts.map(\.status))")
+            //    A late request never binds a session (QA round 2): past the deadline the session is not even asked about.
+            let asked11 = (await t11.count("session-chat-attachability"), await t11.count("session-chat-attach"))
+            check(asked11 == (0, 0), "a late request never asks about or attaches a session: \(asked11)")
+            //    A deadline that passes while the session is being asked about stops the attach, or the queued turn; one
+            //    that passes during the attach stops the turn.
+            let (s25, t25, _, _, _, _, _) = appSetUp("glasses-deadline-mid-continue")
+            await live(t25, s25)
+            await t25.setDelay("session-chat-attachability", seconds: 0.4)
+            await s25.submit(source: source("aaaaaaaaaaaa"), mode: .continueSession, session: one, model: nil, prompt: "Go",
+                             origin: WorkRequestOrigin(requestID: "mid-1", deadline: Date().addingTimeInterval(0.2)))
+            let afterAsk = (await t25.count("session-chat-attachability"), await t25.count("session-chat-attach"))
+            check(afterAsk == (1, 0), "late once the session was asked about: no attach \(afterAsk)")
+            await t25.setAttach(attachable: false, reason: "native_thread_working")
+            await s25.submit(source: source("bbbbbbbbbbbb"), mode: .continueSession, session: two, model: nil, prompt: "Go",
+                             origin: WorkRequestOrigin(requestID: "mid-2", deadline: Date().addingTimeInterval(0.2)))
+            check(await t25.count("session-chat-queue") == 0, "late once the session was asked about: no queued turn")
+            await t25.setAttach(attachable: true)
+            await t25.setDelay("session-chat-attachability", seconds: 0)
+            await t25.setDelay("session-chat-attach", seconds: 0.4)
+            await s25.submit(source: source("cccccccccccc"), mode: .continueSession, session: one, model: nil, prompt: "Go",
+                             origin: WorkRequestOrigin(requestID: "mid-3", deadline: Date().addingTimeInterval(0.2)))
+            let mid = (await t25.count("session-chat-attachability"), await t25.count("session-chat-attach"),
+                       await t25.count("session-chat-queue"), await t25.count("session-chat-send"))
+            check(mid == (3, 1, 0, 0), "late during the attach: no turn \(mid)")
+            check(s25.receipts.count == 3 && s25.receipts.allSatisfy { $0.status == "refused" && $0.detail == WorkRequestOrigin.lateReason },
+                  "\(s25.receipts.map(\.status)) \(s25.receipts.map(\.detail))")
             //    In time, each of the four does go on the wire.
             let (s12, t12, _, _, _, _, _) = appSetUp("glasses-wire-in-time")
             await live(t12, s12)
@@ -2347,6 +2377,72 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             await pass(tr22); await pass(tr22); await pass(tr22)
             let claimLines = lines.filter { $0.contains("not claimed") }
             check(claimLines == ["glasses request \(r1): not claimed (already_claimed)"], "one line for a claim refused three times: \(lines)")
+
+            // y. A glasses Start sends the task's own prompt and the note, never the Mac's saved draft (QA round 2): drafts
+            //    save on every keystroke, so a half-typed prompt on the Mac must never reach the agent unseen on the glasses.
+            let (s23, t23, b23, _, tr23, _, _) = appSetUp("glasses-not-the-mac-draft")
+            await live(t23, s23)
+            await t23.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            let task23 = WorkSource.taskSnapshot(b23.task(idA))
+            var half = s23.draft(for: task23); half.prompt = "Half-typed on the Mac: delete the old pricing pa"
+            check(s23.updateDraft(half, for: task23) && s23.draft(for: task23).prompt == half.prompt, "a Mac draft is saved for this task")
+            await t23.setInbox([request(r1, note: "Keep the FAQ as it is.", board: b23)])
+            await pass(tr23)
+            let started23 = try require(s23.receipts.first { $0.requestId == r1 })
+            let expected23 = task23.suggestedPrompt + "\n\nNote from the glasses: Keep the FAQ as it is."
+            let queries23 = await t23.queries()
+            check(started23.prompt.hasPrefix(expected23) && !started23.prompt.contains("Half-typed"), started23.prompt)
+            check(queries23.count == 1 && queries23[0].hasPrefix(expected23) && !queries23[0].contains("Half-typed"), "\(queries23)")
+            check(s23.draft(for: task23).prompt == half.prompt, "the Mac's draft is left as it was")
+
+            // z. While a glasses send holds the journal, a Mac action that needs it (Mark reviewed, Clear unresolved, Check
+            //    status, Not sending it) is told why and to try again, never the lock's "Another COS window" error; the
+            //    timed status poll says nothing; and the line is still on the Work page after the send reports back.
+            let (s24, t24, b24, _, tr24, _, _) = appSetUp("glasses-mac-waits")
+            await live(t24, s24)
+            await t24.setNewAnswer(http: 422)
+            await s24.submit(source: source("aaaaaaaaaaaa"), mode: .newSession, session: nil, model: opus, prompt: "Refused at admission")
+            let refused24 = try row(s24, "aaaaaaaaaaaa")
+            await t24.setNewAnswer(http: nil)
+            await s24.submit(source: source("dddddddddddd"), mode: .continueSession, session: two, model: nil, prompt: "Left unresolved")
+            let unknown24 = try row(s24, "dddddddddddd").id
+            check(s24.updateReceipt(unknown24) { $0.status = "unknown"; return true })
+            let appNote24 = try row(s24, "dddddddddddd").id
+            check(refused24.status == "refused" && refused24.acknowledgeable, refused24.status)
+            await t24.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            await t24.setDelay("work-new", seconds: 0.6)
+            await t24.setInbox([request(r1, board: b24)])
+            s24.error = "An earlier line on the Work page"
+            await tr24.requests.tick()
+            try await Task.sleep(for: .milliseconds(150))
+            check(s24.quietSend, "the glasses send holds the journal")
+            s24.markReviewed(receiptID: refused24.id)
+            check(s24.error == WorkRequestOrigin.macBusyReason && s24.receipts.first { $0.id == refused24.id }?.acknowledgeable == true,
+                  "Mark reviewed is told to wait: \(s24.error ?? "")")
+            s24.error = nil
+            s24.clearUnresolved(receiptID: unknown24)
+            check(s24.error == WorkRequestOrigin.macBusyReason && s24.receipts.first { $0.id == unknown24 }?.status == "unknown",
+                  "Clear unresolved is told to wait: \(s24.error ?? "")")
+            s24.error = nil
+            s24.cancelAppNote(receiptID: appNote24)
+            check(s24.error == WorkRequestOrigin.macBusyReason, "Not sending it is told to wait: \(s24.error ?? "")")
+            s24.error = nil
+            await s24.refreshReceipts()
+            check(s24.error == nil, "the timed status poll says nothing: \(s24.error ?? "")")
+            await s24.refreshReceipts(asked: true)
+            check(s24.error == WorkRequestOrigin.macBusyReason, "Check status is told to wait: \(s24.error ?? "")")
+            check(WorkRequestOrigin.macBusyReason == "COS Control is sending work your glasses asked for. Try again in a moment.")
+            await tr24.requests.waitForSend()
+            check(!s24.quietSend && s24.error == WorkRequestOrigin.macBusyReason, "the line is still there once the send reported: \(s24.error ?? "")")
+            check(await lastPost(t24)?["state"] == "sent", "the glasses are told the send's own outcome")
+            s24.error = nil
+            s24.markReviewed(receiptID: refused24.id)
+            check(s24.error == nil && s24.receipts.first { $0.id == refused24.id }?.acknowledgeable == false, "once the send let go, Mark reviewed works")
+            //    With no Mac action meanwhile, the page's own earlier line comes back, as before.
+            await t24.setInbox([request(r2, identity: idB, board: b24)])
+            s24.error = "An earlier line on the Work page"
+            await pass(tr24)
+            check(s24.receipts.contains { $0.requestId == r2 } && s24.error == "An earlier line on the Work page", "\(s24.error ?? "")")
         }
     }
 }

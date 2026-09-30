@@ -517,7 +517,7 @@ struct WorkWorkspaceView: View {
                 state.linkTarget = nil; state.meetingPicker = true; state.selectedID = nil; reviewStore.selectedMeeting = nil
                 Task { await model.loadLibraryMeetings() }
             }.buttonStyle(COSPrimaryButtonStyle())
-            Button { Task { await model.loadWorkTasks(); await reviewStore.refresh(); await handoffStore.refreshActivity(); await handoffStore.refreshReceipts() } } label: { Image(systemName: "arrow.clockwise") }
+            Button { Task { await model.loadWorkTasks(); await reviewStore.refresh(); await handoffStore.refreshActivity(); await handoffStore.refreshReceipts(asked: true) } } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(COSQuietButtonStyle()).disabled(handoffStore.isolated || model.workTasksLoading || reviewStore.busy).help("Refresh work")
         }.padding(18)
     }

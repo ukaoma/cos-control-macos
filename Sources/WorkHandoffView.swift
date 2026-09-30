@@ -341,7 +341,7 @@ struct WorkHandoffView: View {
                             .buttonStyle(COSTextButtonStyle()).disabled(isPreview)
                     }
                 } else if receipt.blocksNewHandoff && receipt.status != "delivered" {
-                    Button("Check status") { Task { await store.refreshReceipts() } }
+                    Button("Check status") { Task { await store.refreshReceipts(asked: true) } }
                         .buttonStyle(COSTextButtonStyle()).disabled(store.busy || validating)
                 }
             }

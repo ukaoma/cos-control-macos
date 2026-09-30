@@ -431,7 +431,7 @@ struct DesktopCanary: App {
         window.center()
         normalWindow = window
         if ProcessInfo.processInfo.environment["COS_DESKTOP_CANARY"] == "1" { NSApp.activate(ignoringOtherApps: true) }
-        window.makeKeyAndOrderFront(nil)
+        if ProcessInfo.processInfo.environment["COS_DESKTOP_CANARY"] == "1" { window.makeKeyAndOrderFront(nil) }
         await pause(0.8)
         // Someone using the Mac keeps the focus, and a list closes when its app stops being active: say so plainly.
         if !window.isKeyWindow { log("W  NOTE the window is not key: another app kept the focus, so this run cannot prove W") }
