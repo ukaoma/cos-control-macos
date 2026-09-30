@@ -4755,8 +4755,7 @@ final class COSControlHelper {
                  "httpStatus": response.status, "requests": []])
             return
         }
-        emit(ok: true, message: "Glasses requests", details: ["available": true, "requests": rows,
-             "quarantined": body["quarantined"] as? Int ?? 0])
+        emit(ok: true, message: "Glasses requests", details: ["available": true, "requests": rows])
     }
 
     private func emitWorkRequestClaim(args: [String]) throws {

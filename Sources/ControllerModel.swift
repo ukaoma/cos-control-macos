@@ -465,11 +465,15 @@ final class ControllerModel: ObservableObject {
             move: { [weak self] task, stage in
                 guard let self else { throw HelperClientError.commandFailed("COS Control is closing.") }
                 try await self.setWorkStage(task, stage: stage)
-            }),
+            },
+            readOK: { [weak self] in self?.workTasksError == nil }),
             notify: { [weak self] notice in self?.postWorkNotice(notice) })
         store.opensInApp = workOpensTabs
         // 0.5.252: the glasses request inbox is asked about again whenever the server's version changes.
-        tracker.requests.serverVersion = { [weak self] in self?.status.installedVersion }
+        tracker.requests.serverVersion = { [weak self] in
+            guard let status = self?.status else { return nil }
+            return (status.version ?? "") + "|" + (status.installedVersion ?? "")
+        }
         // 0.5.250: a New session linked while it runs is Work in Sessions and on the pet at once, under its own title, and
         // opens to the app once its run finishes.
         store.onWorkSessionsChanged = { [weak self] in self?.remarkWorkSessions() }

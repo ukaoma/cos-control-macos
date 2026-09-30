@@ -180,7 +180,13 @@ struct WorkSendPlan: Equatable {
 /// where it came from, and a Continue into a session its app owns is refused (no note goes to the Mac's clipboard).
 struct WorkRequestOrigin: Equatable, Sendable {
     let requestID: String
+    /// The claim's deadline (the server's `claimExpiresAt`). Nothing is put on the wire for this request after it.
+    let deadline: Date
     nonisolated static let appOwnedReason = "This session is open in its app on the Mac. Continue it there."
+    nonisolated static let lateReason = "Claimed too long ago; not sent"
+    /// The `appOpen.skipped` code of a New session the glasses started: never opened by itself.
+    nonisolated static let staysInBackground = "glasses"
+    nonisolated static let macBusyReason = "COS Control is sending work the glasses asked for. Try again in a moment."
 }
 
 /// 0.5.252: one request the glasses left on the server (server 6.59.0), as COS Control lists it. Everything in it is a
@@ -207,7 +213,8 @@ struct WorkGlassesRequest: Equatable, Sendable {
               let revision = o["expectedTaskRevision"]?.string, let raw = o["mode"]?.string, let mode = WorkHandoffMode(rawValue: raw),
               let state = o["state"]?.string else { return nil }
         self.id = id; self.domain = domain; workIdentity = identity; expectedTaskRevision = revision; self.mode = mode; self.state = state
-        intent = o["intent"]?.string ?? "start"
+        // The server always names the intent. One this build does not know is kept as it came, and refused when claimed.
+        intent = o["intent"]?.string ?? ""
         sessionID = o["sessionId"]?.string; model = o["model"]?.string; note = o["note"]?.string; replyTo = o["replyTo"]?.string
         expiresAt = o["expiresAt"]?.string.flatMap(Self.date); claimExpiresAt = o["claimExpiresAt"]?.string.flatMap(Self.date)
     }
@@ -246,6 +253,15 @@ struct WorkGlassesRequest: Equatable, Sendable {
     private let transport: Transport
     private var storageReady = true
     private var serverInstanceID: String?
+    /// 0.5.252: a send for the glasses is in progress. It does not take `busy`, so the Agent workspace stays usable
+    /// (nothing is disabled mid-typing, an open dropdown stays open); a send from the Mac waits its turn with a line.
+    private(set) var quietSend = false
+    /// Draft edits made while a quiet send holds the journal: kept in memory, written when the send lets go.
+    private var draftsDirty = false
+    /// The claim deadline of the glasses request being sent, checked immediately before each wire send.
+    private var wireDeadline: Date?
+    /// 0.5.252: the glasses requests this Mac has claimed and not yet reported, beside the journal.
+    var requestLedgerURL: URL { storageURL.deletingPathExtension().appendingPathExtension("requests.json") }
     private var activityRefreshTask: Task<Void, Never>?
     private struct Journal: Codable { var version = 2; var receipts: [WorkHandoffReceipt]; var sessions: [WorkSession]; var drafts: [WorkHandoffDraft]? }
     private struct DraftIdentity: Hashable { let sourceID: String; let revision: String }
@@ -450,8 +466,12 @@ struct WorkGlassesRequest: Equatable, Sendable {
                   !source.id.isEmpty, !source.revision.isEmpty, candidate.prompt.utf16.count <= 256_000 else {
                 throw failure("This draft does not match the current source revision or exceeds the draft storage limit.")
             }
-            let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }
-            try loadJournal()
+            // 0.5.252: a send for the glasses holds the journal while it is on the wire. An edit made meanwhile is kept
+            // in memory and written when that send lets go (its own saves carry it too), never dropped.
+            let held = quietSend
+            let lock: Int32? = held ? nil : try lockJournal()
+            defer { if let lock { flock(lock, LOCK_UN); close(lock) } }
+            if !held { try loadJournal() }
             let current = draft(for: source)
             guard current.editVersion == candidate.editVersion, candidate.editVersion < Int.max else {
                 throw failure("This draft changed in another window. The newer saved draft was restored; review it before editing.")
@@ -461,7 +481,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
             if let index = drafts.firstIndex(where: { $0.sourceID == source.id && $0.sourceRevision == source.revision }) {
                 drafts[index] = next
             } else { drafts.append(next) }
-            do { try persist() } catch { drafts = previousDrafts; throw error }
+            if held { draftsDirty = true } else { do { try persist() } catch { drafts = previousDrafts; throw error } }
             error = nil
             return true
         } catch { self.error = error.localizedDescription; return false }
@@ -679,15 +699,18 @@ struct WorkGlassesRequest: Equatable, Sendable {
         }
         var export = "Sample conversation from \(session.title). No agent was contacted."
         if !isolated {
-            busy = true; error = nil
+            // 0.5.252: a fork for the glasses reads the conversation without taking `busy` (see submit).
+            let quiet = origin != nil
+            if !quiet { busy = true }
+            error = nil
             do {
                 let details = try await call(["claude-session-detail", "--session", session.nativeID, "--provider", session.provider])
                 export = details["copyText"]?.string ?? ""
             } catch {
-                busy = false
+                if !quiet { busy = false }
                 self.error = "The conversation could not be read: \(error.localizedDescription)"; return
             }
-            busy = false
+            if !quiet { busy = false }
         }
         guard !export.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             error = "That session has no stored conversation to carry over."; return
@@ -794,17 +817,27 @@ struct WorkGlassesRequest: Equatable, Sendable {
     /// `journalPrompt` is what the receipt keeps when it differs from what is sent (a cross-platform fork sends ~32K
     /// but journals the reviewed context and a note: handoffs.json has a 10 MB cap). Only the Continue paths resend
     /// `row.prompt`, and a fork to another platform is always a New session.
+    /// `replacing` names the delivered reply this send answers (Not done yet, Reply by voice): the fence ignores it, and
+    /// it is marked reviewed only once the new handoff is on its way (never when the send was refused or failed).
     func submit(source: WorkSource, mode: WorkHandoffMode, session: WorkSession?, model: WorkModelChoice?, prompt: String,
-                journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil) async {
+                journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil, replacing: String? = nil) async {
         guard !busy else { return }
-        busy = true; error = nil
-        defer { busy = false }
+        // 0.5.252: one send at a time. A send for the glasses does not take `busy` (the Agent workspace stays usable).
+        guard !quietSend else { if origin == nil { error = WorkRequestOrigin.macBusyReason }; return }
+        let quiet = origin != nil
+        if quiet { quietSend = true } else { busy = true }
+        error = nil
+        wireDeadline = origin?.deadline
+        defer {
+            wireDeadline = nil
+            if quiet { quietSend = false; writeDraftsEditedMeanwhile() } else { busy = false }
+        }
         var intentID: String?
         do {
             guard storageReady else { throw failure("History is unavailable; sending is disabled.") }
             let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }
             try loadJournal()
-            guard !receipts(for: source.id).contains(where: \.blocksNewHandoff) else { throw failure("This work already has an active or unresolved handoff. Inspect its receipt before starting another.") }
+            guard !receipts(for: source.id).contains(where: { $0.blocksNewHandoff && !($0.id == replacing && $0.status == "delivered") }) else { throw failure("This work already has an active or unresolved handoff. Inspect its receipt before starting another.") }
             let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty, text.utf16.count <= Self.draftLimit, !source.id.isEmpty, !source.revision.isEmpty else { throw failure("Provide a bounded instruction and source revision.") }
             // 0.5.247: the status line the session reports back with, added here so no draft can leave it out.
@@ -854,19 +887,27 @@ struct WorkGlassesRequest: Equatable, Sendable {
                 // 0.5.249 (Miles, 2026-09-29, "route 1"): the COS server starts the session, and once its first reply is
                 // done Control opens it in its app (openReadyApps), where he works alongside COS. Ollama has no app, and
                 // with Settings > Open new sessions in the app off, it stays in the background as in 0.5.247.
-                if opensInApp, Self.appProviders.contains(row.provider) { row.appOpen = WorkAppOpen() }
+                // 0.5.252 (Miles, 2026-09-30): one started from the glasses stays in the background. Its app is never
+                // opened by itself, so the COS server keeps the session and the glasses can reply to it; the card's
+                // Open in Claude or Codex still works, and from then the app owns it as usual.
+                if opensInApp, Self.appProviders.contains(row.provider) {
+                    row.appOpen = origin == nil ? WorkAppOpen() : WorkAppOpen(skipped: WorkRequestOrigin.staysInBackground)
+                }
                 row.channel = "job"; try save(row)
                 var job: [String: Any] = ["clientJobId": id, "query": sent, "model": model!.id]
                 // 0.5.250: a Claude session is named after its task (server 6.58.2 passes it to `claude -p --name`), so
                 // Claude's sidebar shows the task, not "General coding session". An older server drops the key.
                 if row.provider == "claude", let name = Self.claudeSessionName(source.sessionNameSource) { job["sessionName"] = name }
                 let data = try JSONSerialization.data(withJSONObject: job)
-                let result = try await call(["work-new"], data)
-                if let http = result["httpStatus"]?.int, [400, 401, 403, 404, 422].contains(http) || (http == 409 && result["error"]?.object?["code"]?.string == "message_era_mismatch") {
-                    row.status = "refused"; row.detail = result["error"]?.object?["message"]?.string ?? "New-session admission was refused (\(http))."
-                } else { applyJob(result, to: &row) }
+                if pastWireDeadline(&row) { row.appOpen = nil } else {
+                    let result = try await call(["work-new"], data)
+                    if let http = result["httpStatus"]?.int, [400, 401, 403, 404, 422].contains(http) || (http == 409 && result["error"]?.object?["code"]?.string == "message_era_mismatch") {
+                        row.status = "refused"; row.detail = result["error"]?.object?["message"]?.string ?? "New-session admission was refused (\(http))."
+                    } else { applyJob(result, to: &row) }
+                }
             } else if mode == .fork {
                 row.channel = "fork"; try save(row)
+                if pastWireDeadline(&row) { try save(row); onHandoffRecorded?(); return }
                 let result = try await call(["session-chat-fork", "--provider", session!.provider, "--thread-id", session!.nativeID], Data(sent.utf8))
                 if result["state"]?.string == "forked" {
                     if let value = result["forkSession"], let child = WorkSession.parse(value), child.provider == row.provider, child.id != row.sourceSessionID {
@@ -886,6 +927,13 @@ struct WorkGlassesRequest: Equatable, Sendable {
                 row.channel = "app"; try save(row)
                 try await continueInApp(session!, owner: owner, row: &row)
             } else { try await continueSession(session!, row: &row) }
+            // 0.5.252: the reply this answers is reviewed only now that the new handoff is on its way. A send that was
+            // refused or failed leaves it as it was (still delivered, still asking), so nothing is lost.
+            if let replacing, !["refused", "failed"].contains(row.status),
+               let index = receipts.firstIndex(where: { $0.id == replacing }), receipts[index].status == "delivered" {
+                receipts[index].status = "reviewed"
+                receipts[index].detail = "You confirmed that you inspected this session. The task remains unchanged."
+            }
             try save(row)
             onHandoffRecorded?()
             if row.channel == "job", row.sessionID != nil { onWorkSessionsChanged?() }
@@ -1089,6 +1137,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
     nonisolated static func appSkipText(_ code: String, provider: String) -> String? {
         switch code {
         case "not_completed": return nil
+        case WorkRequestOrigin.staysInBackground: return "Started from the glasses, so it was not opened in its app."
         case "late": return "It finished while COS Control was closed, so it did not open by itself."
         case "no_session":
             return provider == "cursor" ? "COS could not find its Cursor chat, so nothing was opened." : "The run named no session, so nothing was opened."
@@ -1376,11 +1425,13 @@ struct WorkGlassesRequest: Equatable, Sendable {
         }
         row.bindingID = bindingID; row.epoch = epoch; row.boundTo = boundTo; row.channel = "turn"
         try save(row)
+        if pastWireDeadline(&row) { return }
         let result = try await call(["session-chat-send"] + target + ["--binding-id", bindingID, "--epoch", String(epoch), "--bound-to", boundTo, "--client-turn-id", row.id], Data(row.prompt.utf8))
         if Self.queueable.contains(result["reason"]?.string ?? ""), try await queue(session, row: &row) { return }
         applyTurn(result, to: &row)
     }
     private func queue(_ session: WorkSession, row: inout WorkHandoffReceipt) async throws -> Bool {
+        if pastWireDeadline(&row) { return true }
         row.channel = "queue"; try save(row)
         let result = try await call(["session-chat-queue", "--provider", session.provider, "--thread-id", session.nativeID, "--client-turn-id", row.id], Data(row.prompt.utf8))
         switch result["state"]?.string {
@@ -1390,6 +1441,20 @@ struct WorkGlassesRequest: Equatable, Sendable {
             row.status = result["reason"]?.string == "duplicate_turn" ? "unknown" : "refused"
             row.detail = result["reason"]?.string ?? "Queue refused the handoff."; return true
         }
+    }
+    /// 0.5.252: a send for the glasses is never put on the wire after its claim's deadline. True, with the receipt
+    /// marked refused, when the deadline has passed. Called immediately before work-new, session-chat-fork,
+    /// session-chat-send and session-chat-queue. A send from the Mac has no deadline.
+    private func pastWireDeadline(_ row: inout WorkHandoffReceipt) -> Bool {
+        guard let deadline = wireDeadline, Date() >= deadline else { return false }
+        row.status = "refused"; row.detail = WorkRequestOrigin.lateReason
+        return true
+    }
+    /// Writes the draft edits made while a send for the glasses held the journal.
+    private func writeDraftsEditedMeanwhile() {
+        guard draftsDirty, storageReady, let lock = try? lockJournal() else { return }
+        defer { flock(lock, LOCK_UN); close(lock) }
+        if (try? persist()) != nil { draftsDirty = false }
     }
     /// A turn with no receipt after this long is reported unresolved rather than still running.
     nonisolated static let pendingTurnLimit: Double = 2 * 3_600
@@ -1595,13 +1660,14 @@ struct WorkGlassesRequest: Equatable, Sendable {
         let text = missing.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !busy, !text.isEmpty, let old = receipts.first(where: { $0.id == receiptID }), old.workID == source.id,
               let session = sendBackSession(for: old) else { return false }
-        if old.status == "delivered" { markReviewed(receiptID: old.id) }
-        guard !receipts(for: source.id).contains(where: \.blocksNewHandoff) else {
+        // 0.5.252: the reply is marked reviewed by submit, once the send-back is on its way. It was marked first, so a
+        // refused send-back left the item looking answered when nothing had gone.
+        guard !receipts(for: source.id).contains(where: { $0.blocksNewHandoff && $0.id != old.id }) else {
             error = "This work still has a handoff in flight. Check it before sending the work back."; return false
         }
         await submit(source: source, mode: .continueSession, session: session, model: nil,
                      prompt: Self.sendBackPrompt(missing: text, evidence: old.progress?.evidence, reportedBy: old.progress?.reportedBy),
-                     origin: origin)
+                     origin: origin, replacing: old.id)
         guard let new = receipts(for: source.id).first, new.id != old.id, !["refused", "failed"].contains(new.status) else { return false }
         let at = Date().timeIntervalSince1970
         updateReceipt(old.id) { row in
@@ -1634,13 +1700,12 @@ struct WorkGlassesRequest: Equatable, Sendable {
         let text = answer.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !busy, !text.isEmpty, let old = receipts.first(where: { $0.id == receiptID }), old.workID == source.id,
               let session = replySession(for: old) else { return false }
-        if old.status == "delivered" { markReviewed(receiptID: old.id) }
-        guard !receipts(for: source.id).contains(where: \.blocksNewHandoff) else {
+        guard !receipts(for: source.id).contains(where: { $0.blocksNewHandoff && $0.id != old.id }) else {
             error = "This work still has a handoff in flight. Check it before replying."; return false
         }
         await submit(source: source, mode: .continueSession, session: session, model: nil,
                      prompt: Self.replyPrompt(answer: text, question: old.progress?.evidence, reportedBy: old.progress?.reportedBy),
-                     origin: origin)
+                     origin: origin, replacing: old.id)
         guard let new = receipts(for: source.id).first, new.id != old.id, !["refused", "failed"].contains(new.status) else { return false }
         let at = Date().timeIntervalSince1970
         updateReceipt(old.id) { row in
@@ -1653,31 +1718,68 @@ struct WorkGlassesRequest: Equatable, Sendable {
 
     // MARK: - The glasses request inbox (0.5.252)
 
-    enum GlassesListing: Equatable { case requests([WorkGlassesRequest]), serverTooOld, unavailable }
+    enum GlassesListing: Equatable { case requests([WorkGlassesRequest]), serverTooOld, unavailable(String) }
     struct GlassesClaim: Equatable { let request: WorkGlassesRequest; let token: String }
-    enum GlassesPost: Equatable { case accepted, retry, gone(String) }
+    enum GlassesClaimAnswer: Equatable { case claimed(GlassesClaim), refused(String) }
+    enum GlassesPost: Equatable { case accepted, retry(String), gone(String) }
 
     /// The pending requests. `serverTooOld` only when the server has no inbox route at all (it predates 6.59.0).
     func glassesRequests() async throws -> GlassesListing {
         let details = try await call(["work-requests"])
         if details["available"]?.bool == true { return .requests((details["requests"]?.array ?? []).compactMap { WorkGlassesRequest($0) }) }
-        return details["reason"]?.string == "server_too_old" ? .serverTooOld : .unavailable
+        let reason = details["reason"]?.string ?? "unknown"
+        return reason == "server_too_old" ? .serverTooOld : .unavailable(reason)
     }
-    /// Takes one pending request. Nil when another claim won, it expired, or it is gone.
-    func claimGlassesRequest(_ id: String) async -> GlassesClaim? {
-        guard let details = try? await call(["work-request-claim", "--id", id]), details["claimed"]?.bool == true,
-              let token = details["claimToken"]?.string, let request = WorkGlassesRequest(details["request"]), request.id == id else { return nil }
-        return GlassesClaim(request: request, token: token)
+    /// Takes one pending request. Refused (with the server's reason) when another claim won, it expired, or it is gone.
+    /// `token` claims again under a claim this Mac already holds (after a relaunch): the server answers it the same.
+    func claimGlassesRequest(_ id: String, token: String? = nil) async -> GlassesClaimAnswer {
+        let again = token.map { ["--claim-token", $0] } ?? []
+        guard let details = try? await call(["work-request-claim", "--id", id] + again) else { return .refused("helper") }
+        guard details["claimed"]?.bool == true, let token = details["claimToken"]?.string,
+              let request = WorkGlassesRequest(details["request"]), request.id == id else {
+            return .refused(details["reason"]?.string ?? "unreadable")
+        }
+        return .claimed(GlassesClaim(request: request, token: token))
     }
     /// Reports what happened. `retry` when the server did not take it for a reason that can pass (unreachable, busy);
     /// `gone` when it never will (the claim ended, the token does not match, the request is gone).
     func postGlassesResult(_ id: String, body: [String: String]) async -> GlassesPost {
         guard let data = try? JSONSerialization.data(withJSONObject: body),
-              let details = try? await call(["work-request-result", "--id", id], data) else { return .retry }
+              let details = try? await call(["work-request-result", "--id", id], data) else { return .retry("helper") }
         if details["accepted"]?.bool == true { return .accepted }
         let reason = details["reason"]?.string ?? "unknown"
         let status = details["httpStatus"]?.int ?? 0
-        return reason == "unreachable" || status == 429 || status >= 500 || reason == "server_too_old" ? .retry : .gone(reason)
+        return Self.resultCanPass(reason: reason, status: status) ? .retry(reason) : .gone(reason)
+    }
+    /// Whether a result the server did not take may be taken later: it was unreachable, busy (429), failing (5xx), or
+    /// mid-update to a build with no inbox. Anything else (the claim ended, the token does not match) never will be.
+    nonisolated static func resultCanPass(reason: String, status: Int) -> Bool {
+        reason == "unreachable" || status == 429 || status >= 500 || reason == "server_too_old"
+    }
+    /// The model catalog and the live sessions as they are now, for resolving a glasses request. Unlike `refresh()` it
+    /// never takes `busy` and never shows an error: false when either could not be read, and then nothing changes.
+    func readDestinations() async -> Bool {
+        guard !isolated else { return true }
+        do {
+            let catalog = try await call(["work-models"])
+            guard let listedModels = catalog["models"] else { return false }
+            let fresh = try JSONDecoder().decode([WorkModelChoice].self, from: JSONEncoder().encode(listedModels))
+            let discovered = try await call(["claude-sessions", "--fresh"])
+            guard let rows = discovered["sessions"]?.array else { return false }
+            let listed = rows.compactMap(WorkSession.parse)
+            guard listed.count == rows.count else { return false }
+            let instance = catalog["serverInstanceId"]?.string
+            if Self.serverChanged(from: serverInstanceID, to: instance) { adviceUnavailable.removeAll() }
+            serverInstanceID = instance
+            models = fresh
+            activitySessions = listed; activityCheckedAt = Date(); activityError = nil
+            let linked = Set(receipts.compactMap(\.sessionID))
+            let canonical = Self.canonicalSessions(listed, linked: linked)
+            sessions = canonical + sessions.filter { previous in
+                linked.contains(previous.id) && !canonical.contains(where: { ClaudeSession.sameSession($0.id, previous.id) })
+            }
+            return true
+        } catch { return false }
     }
     /// The receipt already sent for a glasses request, read from the journal on disk (another launch may have
     /// written it), so a request is never sent twice.
@@ -1741,7 +1843,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
     ]
 }
 
-private let requestsLog = Logger(subsystem: "com.cos.control", category: "work-requests")
+private let requestsLog = Logger(subsystem: "com.gotcos.control", category: "work-requests")
 
 // MARK: - Glasses requests (0.5.252, server 6.59.0)
 //
@@ -1749,7 +1851,7 @@ private let requestsLog = Logger(subsystem: "com.cos.control", category: "work-r
 // question, or say it is not done yet. They leave a request on the server; this Mac claims it and runs its own send
 // with every guard (the journal fence, one active handoff, the status line, the session name, the server hold, the
 // app owner, open in the app). Listing is also what tells the glasses COS Control is taking requests, so it runs every
-// 30 seconds whenever COS Control runs, Activity open or not; every 5 while a request is in hand.
+// 30 seconds whenever COS Control runs, Activity open or not, a send in flight or not.
 
 /// What a glasses request came to. Posted to the server under the claim's token.
 enum WorkRequestOutcome: Equatable {
@@ -1792,10 +1894,30 @@ extension WorkRequestInbox {
         static let destination = "COS Control cannot send this there. Nothing was sent."
         static let noNote = "A reply needs its words. Nothing was sent."
         static let notSent = "COS Control did not send it."
+        static let boardUnreadable = "COS Control could not read the board just now. Nothing was sent."
+        static let destinationsUnreadable = "COS Control could not read its sessions and models just now. Nothing was sent."
+        static let noDeadline = "This request came with no deadline. Nothing was sent."
+        static let noteStatusLine = "A note cannot carry a COS-WORK line. Nothing was sent."
+        static let restarted = "COS Control restarted before it sent this. Nothing was sent."
+        static let unknownIntent = "COS Control does not know this request type. Nothing was sent."
     }
 }
 
-/// 0.5.252: lists the glasses requests every 30 seconds for as long as COS Control runs, every 5 while one is in hand.
+/// One glasses request this Mac has claimed, kept beside the journal until the server has its result. It survives a
+/// relaunch: a claim with no result yet is claimed again under its token and finished; a result not taken is posted.
+struct WorkRequestLedgerEntry: Codable, Equatable {
+    var requestId: String
+    var claimToken: String
+    var claimedAt: Double
+    /// What to post; nil while the request is claimed and not yet sent or refused.
+    var result: [String: String]?
+    /// Posts that the server did not take, and when the next is due (each wait doubles, from 5 s to 30 minutes).
+    var attempts = 0
+    var nextAt: Double = 0
+}
+
+/// 0.5.252: lists the glasses requests every 30 seconds for as long as COS Control runs. One request is sent at a time,
+/// in its own task, so the list (which tells the server COS Control is taking requests) keeps its rhythm meanwhile.
 @MainActor final class WorkRequestInbox {
     let store: WorkHandoffStore
     private let board: WorkProgressTracker.Board
@@ -1803,17 +1925,34 @@ extension WorkRequestInbox {
     /// The running server's version, so an inbox an older server lacks is asked about again after an update.
     var serverVersion: () -> String? = { nil }
     private var running = false
-    /// The server version whose inbox route was missing (404): nothing is listed again until the version changes.
-    private(set) var offForVersion: String?
-    /// Results the server has not taken yet, by request id: the claim token and the result.
-    private(set) var pending: [String: (token: String, body: [String: String])] = [:]
+    /// The server (by version) whose inbox route was missing (404), and when that was seen. Nothing is listed again
+    /// until the version changes or ten minutes pass: a server with no version on record is still asked again.
+    private(set) var off: (version: String, since: Date)?
+    /// Claimed requests not yet reported, on disk beside the journal.
+    private(set) var ledger: [WorkRequestLedgerEntry] = []
+    private var sendTask: Task<Void, Never>?
     private var loop: Task<Void, Never>?
     private var sleeper: Task<Void, Never>?
     nonisolated static let interval: Double = 30
     nonisolated static let busyInterval: Double = 5
+    nonisolated static let reprobeAfter: Double = 600
+    nonisolated static let retryBase: Double = 5
+    nonisolated static let retryCap: Double = 1_800
+    nonisolated static let giveUpAfter: Double = 86_400
+    nonisolated static let knownIntents: Set<String> = ["start", "reply", "notDone"]
+    /// Seconds between lists, and the shorter wait while a request or a result is in hand (checks shorten both).
+    var interval = WorkRequestInbox.interval
+    var busyInterval = WorkRequestInbox.busyInterval
+    /// What was last logged per topic: a state is logged when it changes, never on every pass.
+    private var logged: [String: String] = [:]
+    /// Every line this inbox logs, as it is logged (checks read it). The unified log has each one under the
+    /// subsystem com.gotcos.control, category work-requests.
+    var onLog: ((String) -> Void)?
 
     init(store: WorkHandoffStore, board: WorkProgressTracker.Board, now: @escaping () -> Date) {
         self.store = store; self.board = board; self.now = now
+        if !store.isolated, let data = try? Data(contentsOf: store.requestLedgerURL),
+           let saved = try? JSONDecoder().decode([WorkRequestLedgerEntry].self, from: data) { ledger = saved }
     }
 
     func start() {
@@ -1822,61 +1961,189 @@ extension WorkRequestInbox {
             while !Task.isCancelled {
                 guard let self else { return }
                 let soon = await self.tick()
-                let nap = Task<Void, Never> { try? await Task.sleep(for: .seconds(soon ? Self.busyInterval : Self.interval)) }
+                let seconds = soon ? self.busyInterval : self.interval
+                let nap = Task<Void, Never> { try? await Task.sleep(for: .seconds(seconds)) }
                 self.sleeper = nap
                 await nap.value
             }
         }
     }
-    /// List now.
+    func stop() { loop?.cancel(); loop = nil; sleeper?.cancel() }
+    /// List now: a send just finished, so the next request (or its result) does not wait out the interval.
     func poke() { sleeper?.cancel() }
 
-    /// One pass of the inbox. True when the next should come soon (a request was in hand, or a result is waiting).
+    /// Logs `line` when `topic`'s state changed since it was last logged.
+    private func note(_ topic: String, _ state: String, _ line: @autoclosure () -> String) {
+        guard logged[topic] != state else { return }
+        logged[topic] = state
+        let text = line()
+        requestsLog.notice("\(text, privacy: .public)")
+        onLog?(text)
+    }
+    /// The send in progress, if any (checks wait on it).
+    func waitForSend() async { await sendTask?.value }
+    var sending: Bool { sendTask != nil }
+
+    /// The wait before the next post of a result the server did not take: 5 s, doubling, at most 30 minutes.
+    nonisolated static func retryDelay(attempts: Int) -> Double {
+        min(retryCap, retryBase * pow(2, Double(max(0, min(attempts, 20)) - 1)))
+    }
+    /// Whether a server that had no inbox is asked again: its version changed, or ten minutes have passed.
+    nonisolated static func asksAgain(offVersion: String, since: Date, version: String, now: Date) -> Bool {
+        offVersion != version || now.timeIntervalSince(since) >= reprobeAfter
+    }
+
+    /// One pass of the inbox. True when the next should come soon (a request was just taken, or a result is due).
     @discardableResult func tick() async -> Bool {
         guard !running, !store.isolated else { return false }
         running = true; defer { running = false }
-        await postPendingResults()
+        await postDueResults()
         let version = serverVersion() ?? ""
-        if let off = offForVersion {
-            guard off != version else { return !pending.isEmpty }
-            offForVersion = nil
+        if let off {
+            guard Self.asksAgain(offVersion: off.version, since: off.since, version: version, now: now()) else { return resultDueSoon }
+            self.off = nil
         }
-        guard let listing = try? await store.glassesRequests() else { return !pending.isEmpty }
+        // The list is also the heartbeat: it runs on every pass, a send in flight or not.
+        let listing: WorkHandoffStore.GlassesListing
+        do { listing = try await store.glassesRequests() } catch {
+            note("list", "failed: helper", "glasses requests: list failed (\(error.localizedDescription))")
+            return resultDueSoon
+        }
         switch listing {
         case .serverTooOld:
-            // An older server has no inbox: stop asking, quietly (no banner), until its version changes.
-            offForVersion = version
-            return false
-        case .unavailable:
-            return !pending.isEmpty
+            // An older server has no inbox: stop asking, quietly (no banner), until it changes or ten minutes pass.
+            off = (version, now())
+            note("list", "off: " + version, "glasses requests: this server (\(version.isEmpty ? "version unknown" : version)) has no inbox; asking again when it changes, or every 10 minutes")
+            return resultDueSoon
+        case .unavailable(let reason):
+            note("list", "failed: " + reason, "glasses requests: list failed (\(reason))")
+            return resultDueSoon
         case .requests(let rows):
-            let open = rows.filter { $0.state == "pending" }
-            for request in open { await handle(request) }
-            return !open.isEmpty || !pending.isEmpty
+            note("list", "ok", "glasses requests: listing")
+            guard sendTask == nil else { return resultDueSoon }
+            // Claimed before a relaunch and never finished: claim it again under its token, then finish it.
+            if let unfinished = ledger.first(where: { $0.result == nil }) {
+                await resume(unfinished)
+                return true
+            }
+            guard let request = rows.first(where: { $0.state == "pending" && !($0.expiresAt.map { $0 <= now() } ?? false) }) else { return resultDueSoon }
+            let claim: WorkHandoffStore.GlassesClaim
+            switch await store.claimGlassesRequest(request.id) {
+            case .claimed(let won): claim = won
+            case .refused(let reason):
+                note("claim", request.id + ": " + reason, "glasses request \(request.id): not claimed (\(reason))")
+                return true
+            }
+            ledger.append(WorkRequestLedgerEntry(requestId: claim.request.id, claimToken: claim.token, claimedAt: now().timeIntervalSince1970))
+            saveLedger()
+            begin(claim.request)
+            return true
         }
     }
 
-    /// Claims one request, sends it (or refuses it) and reports the result.
-    private func handle(_ request: WorkGlassesRequest) async {
-        if let expires = request.expiresAt, expires <= now() { return }
-        guard let claim = await store.claimGlassesRequest(request.id) else { return }
-        let outcome = await send(claim.request)
-        requestsLog.notice("glasses request \(claim.request.id, privacy: .public): \(outcome.body["state"] ?? "", privacy: .public)")
-        pending[claim.request.id] = (claim.token, outcome.body)
-        await postPendingResults()
+    private var resultDueSoon: Bool {
+        let horizon = now().timeIntervalSince1970 + Self.busyInterval
+        return ledger.contains { $0.result != nil && $0.nextAt <= horizon }
     }
 
-    /// Results not taken yet, posted again every pass until the server takes them or will never take them.
-    func postPendingResults() async {
-        for (id, entry) in pending.sorted(by: { $0.key < $1.key }) {
-            var body = entry.body; body["claimToken"] = entry.token
-            switch await store.postGlassesResult(id, body: body) {
-            case .accepted: pending[id] = nil
+    /// Sends one claimed request in its own task, records what it came to, and reports it.
+    private func begin(_ request: WorkGlassesRequest) {
+        sendTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let outcome = await self.send(request)
+            self.note("outcome " + request.id, outcome.body["state"] ?? "", "glasses request \(request.id): \(outcome.body["state"] ?? "")")
+            self.logged["outcome " + request.id] = nil
+            self.record(outcome, for: request.id)
+            self.sendTask = nil
+            await self.postDueResults()
+            self.poke()
+        }
+    }
+
+    /// A request claimed before a relaunch. The same token claims it again while the claim holds; then it is sent
+    /// (unless it already was), and its result reported. When the claim is gone, what is known is reported.
+    private func resume(_ entry: WorkRequestLedgerEntry) async {
+        let answer = await store.claimGlassesRequest(entry.requestId, token: entry.claimToken)
+        if case .claimed(let claim) = answer {
+            begin(claim.request)
+            return
+        }
+        if case .refused(let reason) = answer {
+            note("claim", entry.requestId + ": " + reason, "glasses request \(entry.requestId): not claimed again after a relaunch (\(reason))")
+        }
+        if let earlier = store.journaledReceipt(forRequest: entry.requestId) {
+            record(.from(earlier), for: entry.requestId)
+        } else {
+            record(.refused(reason: Refusal.restarted, receiptID: nil), for: entry.requestId)
+        }
+    }
+
+    private func record(_ outcome: WorkRequestOutcome, for id: String) {
+        guard let index = ledger.firstIndex(where: { $0.requestId == id }) else { return }
+        ledger[index].result = outcome.body
+        ledger[index].attempts = 0
+        ledger[index].nextAt = 0
+        saveLedger()
+    }
+
+    /// Posts every result that is due. One the server does not take waits longer each time; after a day it is dropped.
+    func postDueResults() async {
+        let time = now().timeIntervalSince1970
+        for entry in ledger where time - entry.claimedAt > Self.giveUpAfter {
+            note("result " + entry.requestId, "dropped", "glasses request \(entry.requestId): dropped after a day, its result never taken")
+            logged["result " + entry.requestId] = nil
+            ledger.removeAll { $0.requestId == entry.requestId }
+            saveLedger()
+        }
+        for entry in ledger {
+            guard var body = entry.result, entry.nextAt <= time else { continue }
+            body["claimToken"] = entry.claimToken
+            let topic = "result " + entry.requestId
+            switch await store.postGlassesResult(entry.requestId, body: body) {
+            case .accepted:
+                if entry.attempts > 0 { note(topic, "taken", "glasses request \(entry.requestId): result taken after \(entry.attempts + 1) posts") }
+                logged[topic] = nil
+                ledger.removeAll { $0.requestId == entry.requestId }
             case .gone(let reason):
-                pending[id] = nil
-                requestsLog.notice("glasses request \(id, privacy: .public) result not taken: \(reason, privacy: .public)")
-            case .retry: continue
+                // The server will never take this one (the claim ended, the token does not match): stop, and say so.
+                note(topic, "gone", "glasses request \(entry.requestId): result not taken and not retried (\(reason))")
+                logged[topic] = nil
+                ledger.removeAll { $0.requestId == entry.requestId }
+            case .retry(let reason):
+                guard let index = ledger.firstIndex(where: { $0.requestId == entry.requestId }) else { continue }
+                ledger[index].attempts += 1
+                ledger[index].nextAt = now().timeIntervalSince1970 + Self.retryDelay(attempts: ledger[index].attempts)
+                note(topic, "retrying", "glasses request \(entry.requestId): result not taken yet (\(reason)); posting again with a growing wait")
             }
+            saveLedger()
+        }
+    }
+
+    private func saveLedger() {
+        let url = store.requestLedgerURL
+        do {
+            if ledger.isEmpty {
+                if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+                return
+            }
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try JSONEncoder().encode(ledger).write(to: url, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch {
+            requestsLog.error("glasses request ledger not saved: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Whether what Control would send is what the request named: the same mode, the same session, the same model,
+    /// and a Fork that names a model goes to that model's platform (never a copy on the session's own).
+    nonisolated static func sendsWhatWasAsked(_ plan: WorkSendPlan, request: WorkGlassesRequest, listed: WorkSession?) -> Bool {
+        guard plan.mode == request.mode else { return false }
+        switch request.mode {
+        case .newSession: return request.model != nil && plan.model?.id == request.model
+        case .continueSession: return listed != nil && plan.session?.id == listed?.id
+        case .fork:
+            guard listed != nil, plan.session?.id == listed?.id else { return false }
+            return request.model == nil ? !plan.crossPlatform : (plan.crossPlatform && plan.model?.id == request.model)
         }
     }
 
@@ -1884,19 +2151,25 @@ extension WorkRequestInbox {
     private func send(_ request: WorkGlassesRequest) async -> WorkRequestOutcome {
         // Sent before (a relaunch, or a claim answered twice): never again. Report what it came to.
         if let earlier = store.journaledReceipt(forRequest: request.id) { return .from(earlier) }
+        // A request type this build does not know (a newer server, a newer glasses app) is refused, never read as Start.
+        guard Self.knownIntents.contains(request.intent) else { return .refused(reason: Refusal.unknownIntent, receiptID: nil) }
+        // No deadline, no send: the claim's deadline is what keeps a tap from firing late.
+        guard let deadline = request.claimExpiresAt else { return .refused(reason: Refusal.noDeadline, receiptID: nil) }
         await board.reload()
+        guard board.readOK() else { return .refused(reason: Refusal.boardUnreadable, receiptID: nil) }
         guard let row = board.tasks().first(where: { $0.domain == request.domain && $0.workIdentity == request.workIdentity }) else {
             return .refused(reason: Refusal.taskGone, receiptID: nil)
         }
         guard !row.checked, row.workStage != "complete" else { return .refused(reason: Refusal.taskComplete, receiptID: nil) }
         let source = WorkSource.taskSnapshot(row)
         guard source.revision == request.expectedTaskRevision else { return .refused(reason: Refusal.taskChanged, receiptID: nil) }
-        // The sessions and models as they are now. What the glasses chose, and where the choice came from, are hints.
-        let shownError = store.error
-        await store.refresh()
-        store.error = shownError
-        let origin = WorkRequestOrigin(requestID: request.id)
+        // The sessions and models as they are now, read without taking the store's `busy`. What the glasses chose, and
+        // where the choice came from, are hints; a list that could not be read is never treated as an empty one.
+        guard await store.readDestinations() else { return .refused(reason: Refusal.destinationsUnreadable, receiptID: nil) }
+        let origin = WorkRequestOrigin(requestID: request.id, deadline: deadline)
         let note = request.note?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // A note never carries a status line of its own.
+        guard note.range(of: "COS-WORK", options: .caseInsensitive) == nil else { return .refused(reason: Refusal.noteStatusLine, receiptID: nil) }
 
         if request.intent == "reply" || request.intent == "notDone" {
             guard !note.isEmpty else { return .refused(reason: Refusal.noNote, receiptID: nil) }
@@ -1906,7 +2179,7 @@ extension WorkRequestInbox {
             let session = request.intent == "reply" ? store.replySession(for: target) : store.sendBackSession(for: target)
             guard let session, request.mode == .continueSession, let asked = request.sessionID,
                   ClaudeSession.sameSession(asked, session.id) else { return .refused(reason: Refusal.replySession, receiptID: nil) }
-            if let late = await waitForStore(request) { return late }
+            if let late = await waitForStore(deadline) { return late }
             let shown = store.error
             _ = request.intent == "reply"
                 ? await store.reply(receiptID: target.id, source: source, answer: note, origin: origin)
@@ -1923,16 +2196,18 @@ extension WorkRequestInbox {
         }
         draft.sessionID = listed?.id ?? ""
         let model = request.model.flatMap { id in store.models.first { $0.id == id } }
+        // A model the request names must be in this Mac's catalog and available. Without this a Fork to another
+        // platform whose model was missing here fell through to a copy on the session's own platform (QA, 2026-09-30).
+        if request.model != nil, model?.available != true { return .refused(reason: Refusal.modelGone, receiptID: nil) }
+        if request.mode != .newSession, listed == nil { return .refused(reason: Refusal.sessionGone, receiptID: nil) }
         draft.provider = model?.provider ?? ""
         draft.modelID = model?.id ?? ""
         if !note.isEmpty { draft.prompt += "\n\nNote from the glasses: " + note }
-        guard let plan = WorkHandoffStore.sendPlan(draft: draft, sessions: store.sessions, models: store.models) else {
-            let reason = request.mode == .newSession || (request.mode == .fork && request.model != nil)
-                ? (model?.available == true ? Refusal.destination : Refusal.modelGone)
-                : (listed == nil ? Refusal.sessionGone : Refusal.destination)
-            return .refused(reason: reason, receiptID: nil)
+        guard let plan = WorkHandoffStore.sendPlan(draft: draft, sessions: store.sessions, models: store.models),
+              Self.sendsWhatWasAsked(plan, request: request, listed: listed) else {
+            return .refused(reason: Refusal.destination, receiptID: nil)
         }
-        if let late = await waitForStore(request) { return late }
+        if let late = await waitForStore(deadline) { return late }
         let shown = store.error
         if plan.crossPlatform, let session = plan.session, let model = plan.model {
             await store.forkToPlatform(source: source, session: session, model: model, prompt: plan.prompt, origin: origin)
@@ -1943,14 +2218,11 @@ extension WorkRequestInbox {
         return outcome(for: request, shownError: shown)
     }
 
-    /// Waits for a send already in progress on this Mac to finish, then checks the claim's deadline, immediately
-    /// before sending. A refusal when it has passed.
-    private func waitForStore(_ request: WorkGlassesRequest) async -> WorkRequestOutcome? {
-        while store.busy {
-            if let deadline = request.claimExpiresAt, now() >= deadline { break }
-            try? await Task.sleep(for: .milliseconds(200))
-        }
-        if let deadline = request.claimExpiresAt, now() >= deadline { return .refused(reason: Refusal.lateClaim, receiptID: nil) }
+    /// Waits for a send already in progress on this Mac to finish, then checks the claim's deadline. A refusal when it
+    /// has passed. (The store checks it once more immediately before each wire send.)
+    private func waitForStore(_ deadline: Date) async -> WorkRequestOutcome? {
+        while store.busy, now() < deadline { try? await Task.sleep(for: .milliseconds(200)) }
+        if now() >= deadline { return .refused(reason: Refusal.lateClaim, receiptID: nil) }
         return nil
     }
 

@@ -11,6 +11,12 @@ trap 'rm -rf "$TMP"' EXIT
 
 mkdir -p "$TMP/home"
 
+# 0.5.252 (Miles, 2026-09-30: focus jumped and his clicks landed in the wrong window while gates ran): before anything
+# runs, no test may activate an app, put a window on screen, add a status item or post a system event unless a person
+# opted in by hand. The self-test proves each rule can fail.
+/usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT"
+/usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT" --selftest
+
 node "$ROOT/Tests/MemoryWorkspaceStartup.cjs"
 node "$ROOT/Tests/MemoryOwnerRaces.cjs"
 node "$ROOT/Tests/MemoriesAppliedCanary.cjs"
@@ -1078,8 +1084,9 @@ assert "newSessionLink = Task { [weak self] in await self?.linkNewSession(id) }"
 # 0.5.249: start it, then open it. A New session for Claude, Codex or Cursor runs the background job (Settings on by
 # default) and opens in its app once its first reply is done; a Continue on a session its app owns never sends a server
 # turn. Behaviour is covered by Tests/run-work-progress.sh (tests 15 to 19 and the pure rules in appChecks).
-assert "if opensInApp, Self.appProviders.contains(row.provider) { row.appOpen = WorkAppOpen() }" in submit, "open-in-app is recorded on the job receipt at send"
-assert submit.index("row.appOpen = WorkAppOpen()") < submit.index('row.channel = "job"; try save(row)'), "the intent is journaled before the run starts"
+# 0.5.252: a New session the glasses started records that it stays in the background instead (pinned in the 0.5.252 block).
+assert "if opensInApp, Self.appProviders.contains(row.provider) {\n                    row.appOpen = origin == nil ? WorkAppOpen() : WorkAppOpen(skipped: WorkRequestOrigin.staysInBackground)" in submit, "open-in-app is recorded on the job receipt at send"
+assert submit.index("row.appOpen = origin == nil ? WorkAppOpen()") < submit.index('row.channel = "job"; try save(row)'), "the intent is journaled before the run starts"
 owner_at = submit.index("} else if let owner = Self.appOwner(of: session!.id, in: receipts) {")
 assert owner_at < submit.index("} else { try await continueSession(session!, row: &row) }"), "an app-owned session is checked before any server turn"
 assert "await store.openReadyApps()" in tracker and "linkOpenedTabs" not in tracker, "every tracker pass opens what is ready; no tab linking is left"
@@ -1096,7 +1103,7 @@ python3 - "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/HelperSources/main.swift
 import sys
 store, helper, model, models, aw, petview, handoffview = (open(p).read() for p in sys.argv[1:8])
 snapshot = handoffview[handoffview.index("    static func taskSnapshot(_ task: TaskRow) -> WorkSource {"):handoffview.index("/// Sends a resolved plan exactly as the Agent workspace does.")]
-assert 'let whole = (task.text.isEmpty ? task.title : task.text).replacingOccurrences(of: "**", with: "")' in snapshot and "context: context, fullTitle: whole)" in snapshot, "a task's snapshot carries its whole title (0.5.251)"
+assert "let whole = plainTitle(task.text.isEmpty ? task.title : task.text)" in snapshot and "context: context, fullTitle: whole)" in snapshot, "a task's snapshot carries its whole title (0.5.251), without inline markdown (0.5.252)"
 assert ".disabled(row.heldByServer)" in aw and "if model.openClaudeRow?.workRunning == true {" in aw, "Sessions: no Open in platform or composer while the server holds it"
 assert petview.count("openInPlatform: session.heldByServer ? nil : {") == 2 and petview.count("if session.heldByServer {") == 2, "the pet opens a held session in Control"
 def body(src, start, end):
@@ -1152,15 +1159,46 @@ assert submit.index("if origin != nil, mode == .continueSession, Self.appOwner(o
 assert 'if let origin { row.requestedFrom = "glasses"; row.requestId = origin.requestID }' in submit, "the receipt records where it came from"
 assert submit.index('row.requestedFrom = "glasses"') < submit.index("do { try persist() } catch { receipts.removeAll { $0.id == id }; throw error }"), "journaled with the intent"
 assert 'if row.requestedFrom == "glasses" { row.status = "refused"; row.detail = WorkRequestOrigin.appOwnedReason; return }' in store, "no clipboard write for the glasses"
-assert "tracker.requests.serverVersion = { [weak self] in self?.status.installedVersion }" in model, "an older server's inbox is asked about again after an update"
-assert '(receipt.requestedFrom == "glasses" ? " · from the glasses" : "")' in view, "Work history says a handoff came from the glasses"
+assert "return (status.version ?? \"\") + \"|\" + (status.installedVersion ?? \"\")" in model and "tracker.requests.serverVersion = { [weak self] in" in model, "an older server's inbox is asked about again after an update"
+# QA round 1 (2026-09-30). Behaviour for each is in Tests/run-work-progress.sh test 22; these pin the wiring.
+assert "guard Self.knownIntents.contains(request.intent) else { return .refused(reason: Refusal.unknownIntent, receiptID: nil) }" in inbox and 'intent = o["intent"]?.string ?? ""' in store, "an unknown intent is refused, never read as Start (item 15)"
+assert inbox.index("guard Self.knownIntents.contains(request.intent)") < inbox.index("await board.reload()"), "before anything else is read"
+assert 'if request.model != nil, model?.available != true { return .refused(reason: Refusal.modelGone, receiptID: nil) }' in inbox, "a named model must be in the catalog (item 1)"
+assert "guard await store.readDestinations() else { return .refused(reason: Refusal.destinationsUnreadable, receiptID: nil) }" in inbox, "an unreadable catalog is never an empty one (item 1)"
+assert "guard board.readOK() else { return .refused(reason: Refusal.boardUnreadable, receiptID: nil) }" in inbox, "an unreadable board is said so (item 6)"
+assert "guard let deadline = request.claimExpiresAt else { return .refused(reason: Refusal.noDeadline, receiptID: nil) }" in inbox, "no deadline, no send (item 8)"
+assert store.count("if pastWireDeadline(&row)") >= 3 and "if pastWireDeadline(&row) { return }" in store, "the deadline is checked before each wire send (item 8)"
+assert 'Logger(subsystem: "com.cos.control"' not in store + tracker + model, "telemetry is under the documented subsystem (item 18)"
+assert 'private let requestsLog = Logger(subsystem: "com.gotcos.control", category: "work-requests")' in store and 'private let trackingLog = Logger(subsystem: "com.gotcos.control", category: "work-tracking")' in tracker
+assert "+ Self.glassesMark(receipt))" in view and 'return background ? " · from the glasses · not opened in its app" : " · from the glasses"' in view, "Work history says a handoff came from the glasses, and when it was left in the background"
+assert "row.appOpen = origin == nil ? WorkAppOpen() : WorkAppOpen(skipped: WorkRequestOrigin.staysInBackground)" in submit, "a New session the glasses started is never opened by itself"
+PY
+/usr/bin/python3 - "$ROOT/Sources" <<'PY'
+import pathlib, re, sys
+sources = pathlib.Path(sys.argv[1])
+# Nothing in the app changes when the themed controls take focus: the controls contract alone stands in for a Mac with
+# Keyboard navigation on. Every control reads it, and its default is what a macOS control does.
+brand = (sources / "COSBrand.swift").read_text(encoding="utf-8")
+assert "static let defaultValue = FocusInteractions.activate" in brand, "the themed controls take focus as macOS controls do"
+assert brand.count(".focusable(isEnabled, interactions: focusInteractions)") == 5 and ".focusable(isEnabled, interactions: .activate)" not in brand, "dropdown, view switch, switch, checkbox and chip all read it"
+for path in sources.glob("*.swift"):
+    if path.name != "COSBrand.swift" and "cosFocusInteractions" in path.read_text(encoding="utf-8"):
+        sys.exit(f"{path.name} sets cosFocusInteractions: only the controls contract may")
+# The open list is the approved card in a child panel, never a popover (QA round 1, item 14).
+dropdown = brand[brand.index("struct COSDropdown<Value: Hashable>: View {"):brand.index("struct COSDropdownFace: View {")]
+assert ".popover(" not in dropdown and "presenter.present(faceWidth: faceWidth)" in dropdown, "the open list is a child panel"
+presenter = brand[brand.index("@MainActor final class COSDropdownPresenter: ObservableObject {"):brand.index("private final class COSDropdownHost")]
+assert "parent.addChildWindow(panel, ordered: .above)" in presenter and "[.borderless, .nonactivatingPanel]" in presenter, "a borderless child panel that never takes the keyboard"
 PY
 
 # ── 0.5.251: the GOTCOS theme on every stock macOS control ─────────────────────
 # Miles, 2026-09-29: "we should be using our GOTCOS theme across the board." Every picker, toggle, stepper and system
 # button style now goes through the components in Sources/COSBrand.swift. This check FAILS when any other Sources file
-# brings a stock one back. Comments are stripped first: several files explain the old styles in prose. Proven able to
-# fail on 2026-09-30 by adding each banned form to a scratch copy of Sources (see the 0.5.251 CHANGELOG entry).
+# brings a stock one back. Comments (line and block) are stripped first: several files explain the old styles in
+# prose. Each file is matched whole, so a style split across lines is still found. 0.5.252 (QA round 1) widened it to
+# the long-form style names, .buttonStyle(.borderless), .progressViewStyle(.circular / .linear), a Menu with no
+# cosMenu(), and a TextField or SecureField with no .textFieldStyle(.plain). Proven able to fail by adding each banned
+# form to a scratch copy of Sources (Tests/run-controls-guard-selftest.py runs that proof on every gate).
 /usr/bin/python3 - "$ROOT" <<'PY'
 import re, sys, pathlib
 root = pathlib.Path(sys.argv[1])
@@ -1171,23 +1209,57 @@ BANNED = (
     (r"(?<![A-Za-z0-9_])Picker\s*\(", "a bare Picker(: use COSDropdown or COSViewSwitch"),
     (r"\.borderedProminent", ".borderedProminent: use COSPrimaryButtonStyle"),
     (r"\.buttonStyle\(\s*\.bordered\s*\)", ".buttonStyle(.bordered): use COSQuietButtonStyle"),
+    (r"\.buttonStyle\(\s*\.borderless\s*\)", ".buttonStyle(.borderless): use COSTextButtonStyle or COSIconButtonStyle"),
     (r"\.buttonStyle\(\s*\.link\s*\)", ".buttonStyle(.link): use COSTextButtonStyle"),
+    (r"\.buttonStyle\(\s*\.automatic\s*\)", ".buttonStyle(.automatic): name a COS button style"),
     (r"\.roundedBorder", ".roundedBorder: use .plain with cosField()"),
     (r"\.toggleStyle\(\s*\.switch\s*\)", ".toggleStyle(.switch): use COSSwitchStyle"),
     (r"\.toggleStyle\(\s*\.checkbox\s*\)", ".toggleStyle(.checkbox): use COSCheckStyle"),
+    (r"\.toggleStyle\(\s*\.button\s*\)", ".toggleStyle(.button): use COSChipToggleStyle"),
     (r"(?<![A-Za-z0-9_])Stepper\s*\(", "a Stepper(: use COSStepper"),
     (r"\.menuStyle\(\s*\.borderlessButton\s*\)", ".menuStyle(.borderlessButton): use cosMenu()"),
+    (r"\.progressViewStyle\(\s*\.(?:circular|linear|automatic)\s*\)", ".progressViewStyle(.circular / .linear): the window root's theme draws progress"),
+    (r"(?<![A-Za-z0-9_])(?:Bordered|BorderedProminent|Borderless|Link|Default|Plain)?ButtonStyle\s*\(\s*\)", "a long-form system button style: use a COS button style"),
+    (r"(?<![A-Za-z0-9_])(?:Switch|Checkbox|Button|Default)ToggleStyle\s*\(\s*\)", "a long-form system toggle style: use a COS toggle style"),
+    (r"(?<![A-Za-z0-9_])(?:Segmented|Menu|Inline|Radio|Wheel|Default|Palette|Navigation)PickerStyle\s*\(\s*\)", "a long-form picker style: use COSDropdown or COSViewSwitch"),
+    (r"(?<![A-Za-z0-9_])(?:Circular|Linear|Default)ProgressViewStyle\s*\(", "a long-form progress style: the window root's theme draws progress"),
+    (r"(?<![A-Za-z0-9_])(?:RoundedBorder|Square|Default)TextFieldStyle\s*\(\s*\)", "a long-form text field style: use .plain with cosField()"),
+    (r"(?<![A-Za-z0-9_])(?:BorderlessButton|Button|Default)MenuStyle\s*\(\s*\)", "a long-form menu style: use cosMenu()"),
+    (r"(?<![A-Za-z0-9_])(?:Group|Default)DisclosureGroupStyle\s*\(\s*\)", "a long-form disclosure style: the window root's theme draws disclosure"),
 )
-def code(line):
-    return re.sub(r"(^|\s)//.*$", "", line)
+def code(text):
+    """The file with its comments blanked (line comments, then block comments), newlines kept for line numbers."""
+    text = "\n".join(re.sub(r"(^|\s)//.*$", r"\1", line) for line in text.split("\n"))
+    return re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), text, flags=re.S)
+def line_of(text, offset):
+    return text.count("\n", 0, offset) + 1
+# `(?<![A-Za-z0-9_])ButtonStyle()`-style long forms would match the COS styles' own names (COSQuietButtonStyle()) without
+# the lookbehind; `PlainButtonStyle()` is the long form of `.plain`, which is allowed, so it is taken back out below.
+ALLOWED_LONG = re.compile(r"(?<![A-Za-z0-9_])PlainButtonStyle\s*\(\s*\)")
 hits = []
 for path in sorted((root / "Sources").glob("*.swift")):
     if path.name == COMPONENTS:
         continue
-    for number, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1):
-        for pattern, why in BANNED:
-            if re.search(pattern, code(line)):
-                hits.append(f"  Sources/{path.name}:{number}: {why}")
+    text = code(path.read_text(encoding="utf-8"))
+    for pattern, why in BANNED:
+        for match in re.finditer(pattern, text):
+            if ALLOWED_LONG.fullmatch(match.group(0)):
+                continue
+            hits.append(f"  Sources/{path.name}:{line_of(text, match.start())}: {why}")
+    # A Menu draws the system's bordered pop-up unless it takes cosMenu() before the next Menu begins.
+    menus = [m.start() for m in re.finditer(r"(?<![A-Za-z0-9_.])Menu\s*[({]", text)]
+    for index, start in enumerate(menus):
+        stop = menus[index + 1] if index + 1 < len(menus) else len(text)
+        if ".cosMenu()" not in text[start:stop]:
+            hits.append(f"  Sources/{path.name}:{line_of(text, start)}: a Menu with no .cosMenu()")
+    # A TextField or SecureField draws the system's rounded field unless it takes .textFieldStyle(.plain) (and then
+    # cosField()) before the next field begins.
+    fields = [m.start() for m in re.finditer(r"(?<![A-Za-z0-9_])(?:TextField|SecureField)\s*\(", text)]
+    for index, start in enumerate(fields):
+        stop = fields[index + 1] if index + 1 < len(fields) else len(text)
+        styles = re.findall(r"\.textFieldStyle\(\s*([^)]*?)\s*\)", text[start:stop])
+        if not styles or any(style not in (".plain", "PlainTextFieldStyle()") for style in styles):
+            hits.append(f"  Sources/{path.name}:{line_of(text, start)}: a TextField or SecureField without .textFieldStyle(.plain)")
 if hits:
     sys.exit("a stock macOS control is back outside Sources/COSBrand.swift:\n" + "\n".join(hits))
 brand = (root / "Sources" / COMPONENTS).read_text(encoding="utf-8")
@@ -1208,8 +1280,7 @@ start = views.index("    private var syncedPanel: some View {")
 if ".cosControlTheme()" not in views[start:views.index("        .onAppear {", start)]:
     sys.exit("the menu-bar panel root lost .cosControlTheme()")
 # Every Toggle names a COS style, except the pet's right-click menu items, which the system menu draws.
-sources = {p.name: "\n".join(code(l) for l in p.read_text(encoding="utf-8").split("\n"))
-           for p in (root / "Sources").glob("*.swift") if p.name != COMPONENTS}
+sources = {p.name: code(p.read_text(encoding="utf-8")) for p in (root / "Sources").glob("*.swift") if p.name != COMPONENTS}
 toggles = sum(len(re.findall(r"(?<![A-Za-z0-9_])Toggle\(", text)) for text in sources.values())
 pet = sources["SessionPet.swift"]
 menu = pet[pet.index("@ViewBuilder private var spriteMenu: some View {"):pet.index("private func handleSpriteClick()")].count("Toggle(")
@@ -1218,8 +1289,12 @@ if styled != toggles - menu:
     sys.exit(f"{toggles} Toggles, {menu} in the pet's menu, but {styled} name a COS toggle style")
 print(f"COS Control: GOTCOS controls only; {toggles} Toggles, {styled} themed, {menu} a system menu item (0.5.251)")
 PY
-# The components, executed: dropdown rules and keys, inline and popover choice, disabled dropdowns and rows, the view
-# switch, switch, checkbox and stepper by posted clicks, and the switch and checkbox by their rendered pixels.
+# The guard can fail: each banned form, added to a scratch copy of Sources, makes it fail; prose does not.
+/usr/bin/python3 "$ROOT/Tests/run-controls-guard-selftest.py" "$ROOT"
+# The components, executed: dropdown rules and keys; the open list as a child panel (clicks, keys, the face click that
+# closes it, Escape, a click or scroll elsewhere, its card's pixels, the highlight scrolled into view); the inline list;
+# disabled dropdowns and rows; no first focus by default and the keyboard with Keyboard navigation on; the view
+# switch, switch, checkbox, chip and stepper; disclosure; the root theme; light-mode contrast; rendered pixels.
 "$ROOT/Tests/run-controls.sh"
 # 0.5.242: the menu-bar window opens straight into ControlPanel. 0.5.240 stacked an unstyled "Open Work"
 # button above it; Work is reached from the panel's Activity chips, which come from ActivitySection.allCases.

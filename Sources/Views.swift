@@ -189,12 +189,13 @@ struct ControlPanel: View {
         .font(COSType.body(13))
         .background(COSPalette.panel)
         .background(WindowOpaquer())
-        // 0.5.251: GOTCOS progress, disclosure and tint for every control in the panel. Dropdowns here open as
-        // popovers, as in the Activity window: Tests/dropdown-canary drove a real MenuBarExtra(.window) with posted
-        // clicks and keys (2026-09-30). The popover opened, a row click and Down then Return both chose, and the
-        // panel stayed open each time. The same harness reproduced the 2026-08-23 finding for .confirmationDialog
-        // (Release never ran, the panel closed), so it observes this panel's failure mode. If a popover ever
-        // dismisses the panel, `.environment(\.cosDropdownInline, true)` here drops every list inline instead.
+        // 0.5.251: GOTCOS progress, disclosure and tint for every control in the panel. 0.5.252: a dropdown here
+        // opens its list as a borderless child panel under the face, as in the Activity window. Tests/dropdown-canary
+        // drove a real MenuBarExtra(.window) with posted clicks and keys (2026-09-30): the list opened, a row click,
+        // Down then Return, a click on the face, Escape and a click outside all did what they should, and this panel
+        // stayed open and key throughout. The same harness reproduced the 2026-08-23 finding for .confirmationDialog
+        // (Release never ran, the panel closed), so it observes this panel's failure mode. If the child panel ever
+        // dismisses this one, `.environment(\.cosDropdownInline, true)` here drops every list inline instead.
         .cosControlTheme()
         .onAppear {
             // Fences are rare and urgent, and the card only renders when there is

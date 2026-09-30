@@ -161,13 +161,15 @@ struct COSQuietButtonStyle: ButtonStyle {
 
         var body: some View {
             let hot = (hovered || configuration.isPressed) && isEnabled
-            let signal = tone == .destructive ? COSPalette.danger : COSPalette.gold
+            // 0.5.252: hovered ink and lines use the accent token, not raw gold. Gold on a white card is about 2.3:1 in
+            // light mode; the accent is the same gold in dark and a deeper one in light (over 3:1).
+            let signal = tone == .destructive ? COSPalette.danger : COSPalette.accent
             let ink: Color = switch tone {
             case .destructive: isEnabled ? COSPalette.danger : Color.secondary
-            case .featured: isEnabled ? (hot ? COSPalette.gold : COSPalette.accent) : Color.secondary
-            case .standard: hot ? COSPalette.gold : (isEnabled ? Color.primary : Color.secondary)
+            case .featured: isEnabled ? COSPalette.accent : Color.secondary
+            case .standard: hot ? COSPalette.accent : (isEnabled ? Color.primary : Color.secondary)
             }
-            let restLine: Color = tone == .featured && isEnabled ? COSPalette.gold.opacity(0.7) : COSPalette.line
+            let restLine: Color = tone == .featured && isEnabled ? COSPalette.accent.opacity(0.7) : COSPalette.line
             configuration.label
                 .font(COSType.body(11.5, weight: tone == .featured ? .semibold : .medium))
                 .foregroundStyle(ink)
@@ -176,7 +178,7 @@ struct COSQuietButtonStyle: ButtonStyle {
                 .background(configuration.isPressed ? signal.opacity(0.12) : COSPalette.card)
                 .clipShape(RoundedRectangle(cornerRadius: 7))
                 .overlay(RoundedRectangle(cornerRadius: 7)
-                    .stroke(hot ? signal.opacity(0.85) : restLine, lineWidth: 1))
+                    .stroke(hot ? signal : restLine, lineWidth: 1))
                 .opacity(isEnabled ? 1 : 0.55)
                 .onHover { hovered = $0 }
         }
@@ -243,7 +245,7 @@ struct COSIconButtonStyle: ButtonStyle {
                 .background(Circle().fill(prominent
                     ? COSPalette.gold.opacity(configuration.isPressed ? 0.8 : 1)
                     : (configuration.isPressed ? COSPalette.gold.opacity(0.12) : COSPalette.card)))
-                .overlay(Circle().stroke(prominent ? Color.clear : (hot ? COSPalette.gold.opacity(0.85) : COSPalette.line), lineWidth: 1))
+                .overlay(Circle().stroke(prominent ? Color.clear : (hot ? COSPalette.accent : COSPalette.line), lineWidth: 1))
                 .contentShape(Circle())
                 .opacity(isEnabled ? 1 : 0.4)
                 .onHover { hovered = $0 }
@@ -295,9 +297,10 @@ extension View {
 // panes drew is replaced by one of these, and `Tests/run.sh` fails if a Sources file
 // other than this one uses a stock picker, toggle, stepper, or system button style.
 
-/// Where a `COSDropdown` opens its list. The Activity window uses a popover, which a
-/// scroll view cannot clip. The menu-bar panel sets this to true and drops the list
-/// inline under the face (see `ControlPanel.body` for the evidence).
+/// Where a `COSDropdown` opens its list. By default it is a borderless child panel anchored under the face: the
+/// approved card, with no popover arrow or system chrome, which no scroll view can clip. True drops the list inline
+/// under the face instead, inside the pane's own layout: the fallback for a surface where a child panel cannot show.
+/// `Tests/dropdown-canary` proves the panel in a real MenuBarExtra(.window) and in a normal window.
 private struct COSDropdownInlineKey: EnvironmentKey {
     static let defaultValue = false
 }
@@ -306,6 +309,21 @@ extension EnvironmentValues {
     var cosDropdownInline: Bool {
         get { self[COSDropdownInlineKey.self] }
         set { self[COSDropdownInlineKey.self] = newValue }
+    }
+}
+
+/// When the themed controls take keyboard focus. `.activate` is what a macOS control does: focusable when Keyboard
+/// navigation is on (Tab reaches every control), and never a window's first focus without it. Nothing in the app sets
+/// this. The controls contract sets `.automatic`, which stands in for a Mac with Keyboard navigation on (a test
+/// process cannot turn that setting on for itself), so its Tab, Space and arrow keys run the shipped handlers.
+private struct COSFocusInteractionsKey: EnvironmentKey {
+    static let defaultValue = FocusInteractions.activate
+}
+
+extension EnvironmentValues {
+    var cosFocusInteractions: FocusInteractions {
+        get { self[COSFocusInteractionsKey.self] }
+        set { self[COSFocusInteractionsKey.self] = newValue }
     }
 }
 
@@ -381,6 +399,44 @@ enum COSDropdownRules {
         return current
     }
 
+    /// A click on the face of an open list first dismisses it (a click outside the list), then lands on the face. That
+    /// click must leave it closed: the face opens again only once this long has passed since the click was released.
+    static let reopenDelay: TimeInterval = 0.3
+    static func reopens(after sinceDismissal: TimeInterval) -> Bool { sinceDismissal > reopenDelay }
+
+    /// The open list is as wide as its face. It grows only when a row would not fit, so long names that differ at the
+    /// tail stay readable, and never past `widest` (a row that still does not fit truncates in the middle).
+    static let widestList: CGFloat = 440
+    static func listWidth(face: CGFloat, ideal: CGFloat, widest: CGFloat = widestList) -> CGFloat {
+        max(face, min(ideal.rounded(.up), max(face, widest)))
+    }
+
+    /// Where the list's card goes on screen (AppKit coordinates, origin bottom left): under the face, its leading
+    /// edges aligned; above the face when there is no room below and there is room above; kept on its screen.
+    static let listGap: CGFloat = 4
+    static func listOrigin(face: CGRect, card: CGSize, visible: CGRect?) -> CGPoint {
+        var origin = CGPoint(x: face.minX, y: face.minY - listGap - card.height)
+        guard let visible else { return origin }
+        if origin.y < visible.minY, face.maxY + listGap + card.height <= visible.maxY { origin.y = face.maxY + listGap }
+        origin.x = max(visible.minX, min(origin.x, visible.maxX - card.width))
+        return origin
+    }
+
+    /// The same keys from an AppKit key-down, which is how the open panel hears them (it never becomes key).
+    static func key(keyCode: UInt16, characters: String?, modifiers: NSEvent.ModifierFlags) -> COSDropdownKey? {
+        switch keyCode {
+        case 126: return .up
+        case 125: return .down
+        case 36, 76: return .confirm
+        case 49: return .space
+        case 53: return .escape
+        default:
+            guard modifiers.isDisjoint(with: [.command, .control, .option]), let characters, characters.count == 1,
+                  let character = characters.first, character.isLetter || character.isNumber else { return nil }
+            return .letter(character)
+        }
+    }
+
     /// The value a click on row `index` chooses; nil for a disabled dropdown or a row that cannot be chosen.
     static func chosen<Value: Hashable>(_ index: Int, in options: [COSDropdownOption<Value>], enabled: Bool) -> Value? {
         guard enabled, options.indices.contains(index), options[index].enabled else { return nil }
@@ -425,12 +481,229 @@ enum COSDropdownRules {
     }
 }
 
+/// The open list of a `COSDropdown`, as a borderless child panel under the face. The panel never takes the keyboard
+/// from its parent window (a menu-bar panel closes when it stops being key), so while it shows, one local event
+/// monitor feeds it the keys and closes it on a click or a scroll anywhere else.
+@MainActor final class COSDropdownPresenter: ObservableObject {
+    @Published var isOpen = false
+    @Published var highlight: Int?
+    /// Bumped when a key moved the highlight, so the list scrolls that row into view. The pointer never scrolls it.
+    @Published private(set) var revealTick = 0
+    /// Where the pointer is over the panel, in the list's own coordinates; nil outside it.
+    @Published fileprivate(set) var pointer: CGPoint?
+    /// True when the list had no window to open a panel in, and drops inline instead.
+    @Published private(set) var inlineFallback = false
+    /// The face, in the parent window.
+    fileprivate(set) weak var anchor: NSView?
+    private(set) var panel: NSPanel?
+    /// When the click that closed the list from outside was released. That same click may land on the face. Only a
+    /// click stamps it: a key, a scroll or another app taking the focus leave the face free to open at once.
+    private(set) var dismissedAt = Date.distantPast
+    /// What a key does while the list is open; true when the key was ours.
+    var onKey: ((COSDropdownKey) -> Bool)?
+
+    private var monitor: Any?
+    private var observers: [NSObjectProtocol] = []
+    private var releasePending = false
+    private var card = CGRect.zero
+
+    /// Room around the card inside the panel for its shadow (a blur of 8 pt reaches about 16 pt, offset 4 pt), so no
+    /// edge of the panel cuts it. The top has room for the offset either way: AppKit's own drawing of the panel
+    /// (cacheDisplay) puts the offset upward, and a 12 pt top cut the shadow there with a hard edge. While the list is
+    /// open the panel overlaps the face's lower edge; a click there closes the list, as a click on the face does.
+    static let shadowRoom = NSEdgeInsets(top: 22, left: 20, bottom: 26, right: 20)
+
+    func reveal() { revealTick &+= 1 }
+
+    /// Opens the panel under the face. False (and the caller drops the list inline) when the face is in no window.
+    func present<List: View>(faceWidth: CGFloat, @ViewBuilder list: () -> List, measuring: () -> some View) -> Bool {
+        closePanel()
+        guard let anchor, let parent = anchor.window else { inlineFallback = true; return false }
+        inlineFallback = false
+        let appearance = anchor.effectiveAppearance
+        let measure = NSHostingView(rootView: measuring().fixedSize())
+        measure.appearance = appearance
+        let width = COSDropdownRules.listWidth(face: faceWidth, ideal: measure.fittingSize.width)
+        let room = Self.shadowRoom
+        let host = COSDropdownHost(rootView: AnyView(list().frame(width: width)
+            .padding(EdgeInsets(top: room.top, leading: room.left, bottom: room.bottom, trailing: room.right))))
+        host.appearance = appearance
+        host.pointer = { [weak self] point in self?.pointer = point }
+        let size = host.fittingSize
+        let cardSize = CGSize(width: width, height: size.height - room.top - room.bottom)
+        let face = parent.convertToScreen(anchor.convert(anchor.bounds, to: nil))
+        let origin = COSDropdownRules.listOrigin(face: face, card: cardSize, visible: parent.screen?.visibleFrame)
+        let frame = NSRect(x: origin.x - room.left, y: origin.y - room.bottom, width: size.width, height: size.height)
+        let panel = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+        panel.level = parent.level
+        panel.appearance = appearance
+        panel.contentView = host
+        panel.setAccessibilityRole(.popover)
+        parent.addChildWindow(panel, ordered: .above)
+        self.panel = panel
+        card = NSRect(x: room.left, y: room.bottom, width: cardSize.width, height: cardSize.height)
+        watch(parent)
+        return true
+    }
+
+    /// Closes the list from code: a choice, Escape, a disabled dropdown, a view that went away.
+    func close() {
+        isOpen = false
+        releasePending = false
+        closePanel()
+    }
+
+    private func closePanel() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
+        pointer = nil
+        guard let panel else { return }
+        panel.parent?.removeChildWindow(panel)
+        panel.orderOut(nil)
+        self.panel = nil
+    }
+
+    /// Closed by something outside the list. A mouse-down keeps the monitor until its mouse-up, which stamps
+    /// `dismissedAt`: the tap that click delivers to the face then finds the list just closed and leaves it closed.
+    private func dismiss(awaitingRelease: Bool = false) {
+        guard isOpen else { return }
+        let kept = monitor
+        monitor = nil
+        isOpen = false
+        closePanel()
+        if awaitingRelease {
+            dismissedAt = Date()
+            monitor = kept
+            releasePending = true
+        } else if let kept {
+            NSEvent.removeMonitor(kept)
+        }
+    }
+
+    private func watch(_ parent: NSWindow) {
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown,
+                                                               .leftMouseUp, .scrollWheel]) { [weak self] event in
+            let swallowed = MainActor.assumeIsolated { self?.swallows(event) ?? false }
+            return swallowed ? nil : event
+        }
+        let center = NotificationCenter.default
+        let closing: @Sendable (Notification) -> Void = { [weak self] _ in MainActor.assumeIsolated { self?.dismiss() } }
+        observers = [
+            center.addObserver(forName: NSWindow.didResignKeyNotification, object: parent, queue: .main, using: closing),
+            center.addObserver(forName: NSWindow.willCloseNotification, object: parent, queue: .main, using: closing),
+            center.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main, using: closing),
+        ]
+    }
+
+    /// One event while the list is open (or while the click that closed it is still down). True swallows it.
+    private func swallows(_ event: NSEvent) -> Bool {
+        switch event.type {
+        case .leftMouseUp:
+            guard releasePending else { return false }
+            releasePending = false
+            dismissedAt = Date()
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            return false
+        case .keyDown:
+            guard isOpen else { return false }
+            guard let key = COSDropdownRules.key(keyCode: event.keyCode, characters: event.charactersIgnoringModifiers,
+                                                 modifiers: event.modifierFlags) else {
+                dismiss()     // Tab, a command key: close, and let the key do its own work.
+                return false
+            }
+            return onKey?(key) ?? false
+        case .scrollWheel:
+            guard isOpen, event.window !== panel else { return false }
+            dismiss()         // The face is about to scroll away from under the list.
+            return false
+        default:
+            guard isOpen else { return false }
+            if let panel, event.window === panel, card.contains(event.locationInWindow) { return false }
+            dismiss(awaitingRelease: event.type == .leftMouseDown)
+            return false
+        }
+    }
+
+    /// VoiceOver does not follow a highlight in a panel that is not key, so the row a key lands on is spoken.
+    func announce(_ text: String) {
+        guard NSWorkspace.shared.isVoiceOverEnabled else { return }
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+    }
+}
+
+/// The panel's content view. A panel that is never key gets no hover from SwiftUI on every macOS, so this tracks the
+/// pointer itself (active always) and takes the first click, as a menu does.
+private final class COSDropdownHost: NSHostingView<AnyView> {
+    var pointer: ((CGPoint?) -> Void)?
+    private var tracking: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseEntered(with event: NSEvent) { super.mouseEntered(with: event); report(event) }
+    override func mouseMoved(with event: NSEvent) { super.mouseMoved(with: event); report(event) }
+    override func mouseExited(with event: NSEvent) { super.mouseExited(with: event); pointer?(nil) }
+
+    /// SwiftUI's global space in this view: origin at the top left.
+    private func report(_ event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        pointer?(CGPoint(x: point.x, y: isFlipped ? point.y : bounds.height - point.y))
+    }
+}
+
+/// An invisible view behind the face: the panel is placed from its frame on screen.
+private struct COSDropdownAnchor: NSViewRepresentable {
+    let presenter: COSDropdownPresenter
+
+    private final class Anchor: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = Anchor()
+        presenter.anchor = view
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) { presenter.anchor = view }
+}
+
+/// The list inside the panel: it follows the presenter's highlight, pointer and reveal.
+private struct COSDropdownPanelList<Value: Hashable>: View {
+    @ObservedObject var presenter: COSDropdownPresenter
+    let options: [COSDropdownOption<Value>]
+    let selection: Value
+    let choose: (Int) -> Void
+
+    var body: some View {
+        COSDropdownList(options: options, selection: selection, highlight: $presenter.highlight, framed: true,
+                        reveal: presenter.revealTick, pointer: presenter.pointer, choose: choose)
+    }
+}
+
 /// A dropdown in the gotcos theme: an optional leading label, then a face drawn like a
 /// field (card, hairline, DM Sans value, a gold chevron). Open, it shows a themed card
 /// list: the chosen row carries a gold rule, the highlighted row a gold wash, and a muted
 /// row its note. Space or Return opens it; Up and Down move; Return chooses; Escape closes;
-/// a letter jumps to the next row that starts with it. VoiceOver reads the face as a
-/// button with its label and value, and each row as a button, the chosen one selected.
+/// a letter jumps to the next row that starts with it. A click on the face, or anywhere
+/// outside the list, closes it. VoiceOver reads the face as a button with its label and
+/// value, and each row as a button, the chosen one selected.
 struct COSDropdown<Value: Hashable>: View {
     let label: String
     @Binding var selection: Value
@@ -442,9 +715,9 @@ struct COSDropdown<Value: Hashable>: View {
 
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.cosDropdownInline) private var inline
+    @Environment(\.cosFocusInteractions) private var focusInteractions
     @Environment(\.font) private var environmentFont
-    @State private var isOpen = false
-    @State private var highlight: Int?
+    @StateObject private var presenter = COSDropdownPresenter()
     @State private var hovered = false
     @State private var faceWidth: CGFloat = 180
     @FocusState private var faceFocused: Bool
@@ -461,6 +734,8 @@ struct COSDropdown<Value: Hashable>: View {
     }
 
     private var current: COSDropdownOption<Value>? { options.first { $0.value == selection } }
+    /// The list drops inline when the surface asks for it, or when there was no window to open a panel in.
+    private var listsInline: Bool { inline || presenter.inlineFallback }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -474,56 +749,54 @@ struct COSDropdown<Value: Hashable>: View {
                 }
                 face
             }
-            if inline && isOpen {
+            if listsInline && presenter.isOpen {
                 HStack(spacing: 10) {
                     if showsLabel && !label.isEmpty, let labelWidth { Color.clear.frame(width: labelWidth, height: 1) }
-                    list
+                    inlineList
                 }
             }
         }
-        .onChange(of: isEnabled) { _, enabled in if !enabled { isOpen = false } }
+        .onChange(of: isEnabled) { _, enabled in if !enabled { presenter.close() } }
+        .onDisappear { presenter.close() }
     }
 
     private var face: some View {
         COSDropdownFace(title: current?.title ?? "", note: current?.note, icon: icon,
                         placeholder: current?.placeholder ?? true, muted: current?.muted ?? false,
                         sizingTitles: options.map(\.title),
-                        hot: (hovered || faceFocused) && isEnabled, open: isOpen)
+                        hot: (hovered || faceFocused) && isEnabled, open: presenter.isOpen)
             .background(GeometryReader { proxy in
                 Color.clear.onAppear { faceWidth = proxy.size.width }
                     .onChange(of: proxy.size.width) { _, width in faceWidth = width }
             })
+            .background(COSDropdownAnchor(presenter: presenter).allowsHitTesting(false))
             .contentShape(RoundedRectangle(cornerRadius: 8))
             .onTapGesture { toggle() }
             .onHover { hovered = $0 }
+            .help(current?.title ?? "")
             .opacity(isEnabled ? 1 : 0.55)
             // Focusable as a macOS pop-up button is: with keyboard navigation on (Tab reaches every control). A plain
             // `.focusable()` took a window's first focus, so a face lit gold on open and took Space and Return.
-            .focusable(isEnabled, interactions: .activate)
+            .focusable(isEnabled, interactions: focusInteractions)
             .focused($faceFocused)
             .focusEffectDisabled()
             .onKeyPress(phases: .down) { press in
-                // Closed, the face opens on a key; open, the list has focus and takes its own keys.
-                guard !isOpen, let key = COSDropdownRules.key(press) else { return .ignored }
-                return apply(key)
+                // Closed, the face opens on a key; open, the list takes its own keys (the panel through its monitor).
+                guard !presenter.isOpen, let key = COSDropdownRules.key(press) else { return .ignored }
+                return apply(key) ? .handled : .ignored
             }
             .accessibilityElement(children: .ignore)
             .accessibilityAddTraits(.isButton)
             .accessibilityLabel(label)
             .accessibilityValue(current.map { row in row.note.map { "\(row.title), \($0)" } ?? row.title } ?? "")
-            .accessibilityHint(isOpen ? "Open list" : "Opens a list")
+            .accessibilityHint(presenter.isOpen ? "Close list" : "Opens a list")
             .accessibilityAction { toggle() }
-            .popover(isPresented: Binding(get: { isOpen && !inline }, set: { if !$0 { isOpen = false } }),
-                     arrowEdge: .bottom) {
-                list
-                    .frame(width: max(faceWidth, 160))
-                    .presentationBackground(COSPalette.card)
-            }
     }
 
-    /// The open list takes the keyboard while it shows, inline or in a popover.
-    private var list: some View {
-        COSDropdownList(options: options, selection: selection, highlight: $highlight, framed: inline) { index in
+    /// The inline list takes the keyboard while it shows.
+    private var inlineList: some View {
+        COSDropdownList(options: options, selection: selection, highlight: $presenter.highlight, framed: true,
+                        reveal: presenter.revealTick) { index in
             choose(index)
         }
         .focusable()
@@ -531,19 +804,32 @@ struct COSDropdown<Value: Hashable>: View {
         .focusEffectDisabled()
         .onKeyPress(phases: .down) { press in
             guard let key = COSDropdownRules.key(press) else { return .ignored }
-            return apply(key)
+            return apply(key) ? .handled : .ignored
         }
         .onAppear { listFocused = true }
     }
 
     private func toggle() {
         guard isEnabled else { return }
-        if isOpen {
-            isOpen = false
-        } else {
-            highlight = COSDropdownRules.openingHighlight(options, selection: selection)
-            isOpen = true
+        if presenter.isOpen {
+            presenter.close()
+        } else if COSDropdownRules.reopens(after: Date().timeIntervalSince(presenter.dismissedAt)) {
+            open(COSDropdownRules.openingHighlight(options, selection: selection))
         }
+    }
+
+    private func open(_ row: Int?) {
+        presenter.highlight = row
+        presenter.onKey = { key in apply(key) }
+        if !inline {
+            _ = presenter.present(faceWidth: faceWidth) {
+                COSDropdownPanelList(presenter: presenter, options: options, selection: selection) { index in choose(index) }
+            } measuring: {
+                COSDropdownList(options: options, selection: selection, highlight: .constant(nil), framed: true) { _ in }
+            }
+        }
+        presenter.isOpen = true
+        presenter.reveal()
     }
 
     private func choose(_ index: Int) {
@@ -553,20 +839,24 @@ struct COSDropdown<Value: Hashable>: View {
 
     private func commit(_ value: Value) {
         selection = value
-        isOpen = false
+        presenter.close()
         faceFocused = true
     }
 
-    private func apply(_ key: COSDropdownKey) -> KeyPress.Result {
-        switch COSDropdownRules.handle(key, isOpen: isOpen, highlight: highlight, options: options,
+    /// True when the key was ours.
+    private func apply(_ key: COSDropdownKey) -> Bool {
+        switch COSDropdownRules.handle(key, isOpen: presenter.isOpen, highlight: presenter.highlight, options: options,
                                        selection: selection, enabled: isEnabled) {
-        case .ignored: return .ignored
-        case .open(let row): highlight = row; isOpen = true
-        case .highlight(let row): highlight = row
+        case .ignored: return false
+        case .open(let row): open(row)
+        case .highlight(let row):
+            presenter.highlight = row
+            presenter.reveal()
+            if let row, options.indices.contains(row) { presenter.announce(options[row].title) }
         case .choose(let value): commit(value)
-        case .close: isOpen = false; faceFocused = true
+        case .close: presenter.close(); faceFocused = true
         }
-        return .handled
+        return true
     }
 }
 
@@ -595,11 +885,12 @@ struct COSDropdownFace: View {
                 ForEach(Array(sizingTitles.enumerated()), id: \.offset) { _, sizing in
                     Text(sizing).font(COSType.body(12.5, weight: .medium)).lineLimit(1).hidden()
                 }
+                // A face too narrow for its value keeps both ends: model names differ at the tail.
                 Text(title)
                     .font(COSType.body(12.5, weight: placeholder ? .regular : .medium))
                     .foregroundStyle(placeholder || muted ? COSPalette.muted : Color.primary)
                     .lineLimit(1)
-                    .truncationMode(.tail)
+                    .truncationMode(.middle)
             }
             if let note {
                 Text(note).font(COSType.body(11)).foregroundStyle(COSPalette.muted).lineLimit(1)
@@ -614,28 +905,42 @@ struct COSDropdownFace: View {
         .background(COSPalette.card)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8)
-            .stroke(hot || open ? COSPalette.gold.opacity(0.85) : COSPalette.line, lineWidth: 1))
+            .stroke(hot || open ? COSPalette.accent : COSPalette.line, lineWidth: 1))
     }
 }
 
-/// The open list: warm card rows; the chosen row marked by a gold rule on its leading
-/// edge, the highlighted row by a gold wash, a muted row by its note. `framed` draws the
-/// card, its gold hairline and shadow itself (inline); in a popover the popover is the frame.
+/// The open list, the approved card: warm card rows inside an 8 pt rounded card with a gold hairline and a soft
+/// shadow; the chosen row marked by a gold rule on its leading edge, the highlighted row by a gold wash, a muted row
+/// by its note. Past ten rows it scrolls, and a key that moves the highlight brings that row into view. A title too
+/// long for the card keeps both its ends, and its tooltip gives it whole.
 struct COSDropdownList<Value: Hashable>: View {
     let options: [COSDropdownOption<Value>]
     let selection: Value
     @Binding var highlight: Int?
     var framed: Bool = true
+    /// Changes when a key moved the highlight: scroll that row into view.
+    var reveal: Int = 0
+    /// The pointer over the list (the panel tracks it itself); the row under it takes the highlight.
+    var pointer: CGPoint? = nil
     let choose: (Int) -> Void
+
+    /// More rows than this and the list scrolls inside `scrollHeight`.
+    static var scrollsPast: Int { 10 }
+    static var scrollHeight: CGFloat { 300 }
 
     var body: some View {
         let rows = VStack(alignment: .leading, spacing: 0) {
-            ForEach(options.indices, id: \.self) { index in row(index) }
+            ForEach(options.indices, id: \.self) { index in row(index).id(index) }
         }
         .padding(.vertical, 4)
         Group {
-            if options.count > 10 {
-                ScrollView { rows }.frame(maxHeight: 300)
+            if options.count > Self.scrollsPast {
+                ScrollViewReader { proxy in
+                    ScrollView { rows }
+                        .frame(maxHeight: Self.scrollHeight)
+                        .onAppear { if let highlight { proxy.scrollTo(highlight, anchor: .center) } }
+                        .onChange(of: reveal) { _, _ in if let highlight { proxy.scrollTo(highlight) } }
+                }
             } else {
                 rows
             }
@@ -643,9 +948,9 @@ struct COSDropdownList<Value: Hashable>: View {
         .background(COSPalette.card)
         .clipShape(RoundedRectangle(cornerRadius: framed ? 8 : 0))
         .overlay {
-            if framed { RoundedRectangle(cornerRadius: 8).stroke(COSPalette.gold.opacity(0.5), lineWidth: 1) }
+            if framed { RoundedRectangle(cornerRadius: 8).stroke(COSPalette.accent.opacity(0.6), lineWidth: 1) }
         }
-        .shadow(color: .black.opacity(framed ? 0.18 : 0), radius: 10, y: 4)
+        .shadow(color: .black.opacity(framed ? 0.18 : 0), radius: 8, y: 4)
     }
 
     private func row(_ index: Int) -> some View {
@@ -659,8 +964,9 @@ struct COSDropdownList<Value: Hashable>: View {
                     .font(COSType.body(12.5, weight: chosen ? .semibold : .regular))
                     .foregroundStyle(option.enabled && !option.muted ? Color.primary : COSPalette.muted)
                     .lineLimit(1)
+                    .truncationMode(.middle)
                 if let note = option.note {
-                    Text(note).font(COSType.body(11)).foregroundStyle(COSPalette.muted).lineLimit(1)
+                    Text(note).font(COSType.body(11)).foregroundStyle(COSPalette.muted).lineLimit(1).layoutPriority(1)
                 }
                 Spacer(minLength: 10)
             }
@@ -671,7 +977,13 @@ struct COSDropdownList<Value: Hashable>: View {
         }
         .buttonStyle(.plain)
         .disabled(!option.enabled)
+        .help(option.title)
         .onHover { inside in if inside && option.enabled { highlight = index } }
+        .background(GeometryReader { proxy in
+            Color.clear.onChange(of: pointer) { _, point in
+                if let point, option.enabled, proxy.frame(in: .global).contains(point) { highlight = index }
+            }
+        })
         .accessibilityLabel(option.note.map { "\(option.title), \($0)" } ?? option.title)
         .accessibilityAddTraits(chosen ? .isSelected : [])
     }
@@ -701,6 +1013,7 @@ struct COSViewSwitch<Value: Hashable>: View {
 
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.font) private var environmentFont
+    @Environment(\.cosFocusInteractions) private var focusInteractions
     @FocusState private var focused: Bool
     @State private var hovered: Int?
 
@@ -729,9 +1042,9 @@ struct COSViewSwitch<Value: Hashable>: View {
             .padding(.vertical, 2)
             .padding(.horizontal, 4)
             .overlay(RoundedRectangle(cornerRadius: 5)
-                .stroke(focused ? COSPalette.gold.opacity(0.6) : Color.clear, lineWidth: 1))
+                .stroke(focused ? COSPalette.accent : Color.clear, lineWidth: 1))
             // Focusable with keyboard navigation on, as a segmented control is; never a window's first focus.
-            .focusable(isEnabled, interactions: .activate)
+            .focusable(isEnabled, interactions: focusInteractions)
             .focused($focused)
             .focusEffectDisabled()
             .onKeyPress(.leftArrow) { move(-1) }
@@ -782,16 +1095,24 @@ struct COSSwitchStyle: ToggleStyle {
         @Environment(\.isEnabled) private var isEnabled
         @Environment(\.font) private var environmentFont
         @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        @Environment(\.cosFocusInteractions) private var focusInteractions
+        @FocusState private var focused: Bool
 
         var body: some View {
+            // The switch itself flips it; its words do not, as with a stock macOS switch (measured 2026-09-30: a click
+            // on a stock switch's label leaves it as it was). Space flips it when it has keyboard focus.
             HStack(spacing: 10) {
                 configuration.label
                     .font(environmentFont ?? COSType.body(12.5))
-                    .onTapGesture { flip() }
                 Spacer(minLength: 8)
                 COSSwitchTrack(isOn: configuration.isOn)
+                    .overlay(Capsule().stroke(focused ? COSPalette.accent : Color.clear, lineWidth: 1.5).padding(-2.5))
                     .contentShape(Capsule())
                     .onTapGesture { flip() }
+                    .focusable(isEnabled, interactions: focusInteractions)
+                    .focused($focused)
+                    .focusEffectDisabled()
+                    .onKeyPress(.space) { flip(); return .handled }
             }
             .opacity(isEnabled ? 1 : 0.5)
             .accessibilityRepresentation {
@@ -835,16 +1156,24 @@ struct COSCheckStyle: ToggleStyle {
         let configuration: Configuration
         @Environment(\.isEnabled) private var isEnabled
         @Environment(\.font) private var environmentFont
+        @Environment(\.cosFocusInteractions) private var focusInteractions
+        @FocusState private var focused: Bool
 
         var body: some View {
-            // The square sits on the label's first line, so a label of several lines keeps it at the top.
+            // The square sits on the label's first line, so a label of several lines keeps it at the top. A click on the
+            // square or the words flips it, as with a stock macOS checkbox; Space flips it when it has keyboard focus.
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 COSCheckBox(isOn: configuration.isOn)
+                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(focused ? COSPalette.accent : Color.clear, lineWidth: 1.5).padding(-2.5))
                     .alignmentGuide(.firstTextBaseline) { box in box[.bottom] - 3 }
                 configuration.label.font(environmentFont ?? COSType.body(12.5))
             }
             .contentShape(Rectangle())
             .onTapGesture { if isEnabled { configuration.isOn.toggle() } }
+            .focusable(isEnabled, interactions: focusInteractions)
+            .focused($focused)
+            .focusEffectDisabled()
+            .onKeyPress(.space) { if isEnabled { configuration.isOn.toggle() }; return .handled }
             .opacity(isEnabled ? 1 : 0.5)
             .accessibilityRepresentation {
                 Toggle(isOn: configuration.$isOn) { configuration.label }.toggleStyle(.checkbox)
@@ -883,6 +1212,8 @@ struct COSChipToggleStyle: ToggleStyle {
         let configuration: Configuration
         @Environment(\.isEnabled) private var isEnabled
         @State private var hovered = false
+        @Environment(\.cosFocusInteractions) private var focusInteractions
+        @FocusState private var focused: Bool
 
         var body: some View {
             let on = configuration.isOn
@@ -896,10 +1227,15 @@ struct COSChipToggleStyle: ToggleStyle {
                 .background(on ? COSPalette.gold : COSPalette.card)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6)
-                    .stroke(on ? Color.clear : (hovered && isEnabled ? COSPalette.gold.opacity(0.85) : COSPalette.line), lineWidth: 1))
+                    .stroke(focused && isEnabled ? Color.primary.opacity(0.7)
+                            : (on ? Color.clear : (hovered && isEnabled ? COSPalette.accent : COSPalette.line)), lineWidth: 1))
                 .contentShape(RoundedRectangle(cornerRadius: 6))
                 .onTapGesture { if isEnabled { configuration.isOn.toggle() } }
                 .onHover { hovered = $0 }
+                .focusable(isEnabled, interactions: focusInteractions)
+                .focused($focused)
+                .focusEffectDisabled()
+                .onKeyPress(.space) { if isEnabled { configuration.isOn.toggle() }; return .handled }
                 .opacity(isEnabled ? 1 : 0.5)
                 .accessibilityRepresentation {
                     Toggle(isOn: configuration.$isOn) { configuration.label }.toggleStyle(.button)
@@ -962,7 +1298,7 @@ struct COSProgressLine: View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
                 Capsule().fill(COSPalette.line)
-                Capsule().fill(COSPalette.gold).frame(width: geo.size.width * min(max(fraction, 0), 1))
+                Capsule().fill(COSPalette.accent).frame(width: geo.size.width * min(max(fraction, 0), 1))
             }
         }
         .frame(height: 3)
@@ -987,7 +1323,7 @@ struct COSSpinner: View {
         return ZStack {
             Circle().stroke(COSPalette.line, lineWidth: width)
             Circle().trim(from: 0, to: 0.28)
-                .stroke(COSPalette.gold, style: StrokeStyle(lineWidth: width, lineCap: .round))
+                .stroke(COSPalette.accent, style: StrokeStyle(lineWidth: width, lineCap: .round))
         }
         .padding(width / 2)
     }

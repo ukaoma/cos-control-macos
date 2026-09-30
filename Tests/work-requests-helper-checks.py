@@ -52,7 +52,8 @@ try:
     # The list: the pending requests, from the loopback route Control alone may call.
     listed = run(['work-requests'])
     assert listed['ok'] and listed['details']['available'] is True and listed['details']['requests'] == [REQUEST], listed
-    assert listed['details']['quarantined'] == 2 and calls[-1] == ('GET', '/api/work-board/handoff-requests?state=pending', None), calls[-1]
+    # COS Control shows no quarantine count, so the helper does not pass one on.
+    assert 'quarantined' not in listed['details'] and calls[-1] == ('GET', '/api/work-board/handoff-requests?state=pending', None), calls[-1]
     # An older server has no route (404 with no request code): server_too_old, never an error. Anything else: unavailable.
     state['list'] = (404, None)
     old = run(['work-requests'])

@@ -2,6 +2,18 @@ import SwiftUI
 import CryptoKit
 
 extension WorkSource {
+    /// A task line without its inline markdown, as the server's `taskTitle` strips it (task-store.ts) before it cuts the
+    /// display title: code ticks, links (their text stays), underscore emphasis around a word or phrase (never the
+    /// underscore inside an identifier such as cos_python), every asterisk, and runs of whitespace.
+    nonisolated static func plainTitle(_ line: String) -> String {
+        var text = line
+        for (pattern, template) in [("`([^`]*)`", "$1"), ("\\[([^\\]]*)\\]\\([^)]*\\)", "$1"),
+                                    ("(^|[\\s(])_([^_]+)_(?=[\\s).,;:!?]|$)", "$1$2"), ("\\*+", "")] {
+            text = text.replacingOccurrences(of: pattern, with: template, options: .regularExpression)
+        }
+        return text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
     /// A display snapshot fingerprint, not the canonical task writer's CAS revision.
     static func taskSnapshot(_ task: TaskRow) -> WorkSource {
         var context = "Task: \(task.text.isEmpty ? task.title : task.text)\nProject: \(task.domain)\nDone when: \(task.doneWhen)\nSource: \(task.source)"
@@ -12,9 +24,9 @@ extension WorkSource {
             context += "\nConfirmed meeting references (explicit links; transcript evidence is not included):\n" + references
         }
         let revision = SHA256.hash(data: Data(context.utf8)).map { String(format: "%02x", $0) }.joined()
-        // 0.5.251: the session name comes from the whole title (`text`; `title` is the lens row's cap), as Work's
-        // Start work sheet shows it.
-        let whole = (task.text.isEmpty ? task.title : task.text).replacingOccurrences(of: "**", with: "")
+        // 0.5.251: the session name comes from the whole title (`text`; `title` is the lens row's cap). 0.5.252: with the
+        // inline markdown the server's own display title drops, not only `**`.
+        let whole = plainTitle(task.text.isEmpty ? task.title : task.text)
         return WorkSource(id: "task:\(task.domain):\(task.workIdentity)", title: task.title, revision: revision, project: task.domain,
                           context: context, fullTitle: whole)
     }
@@ -115,6 +127,12 @@ struct WorkHandoffView: View {
     /// 0.5.247: where a New session runs. Miles looked for a background run in Claude's sidebar, found nothing and read
     /// the handoff as lost (2026-09-29). 0.5.249: it runs in the background, then opens in its app once the first reply
     /// is done, and the card says which of those it is at.
+    /// 0.5.252: how Work's history marks a handoff the glasses asked for, and one of those that was left in the background.
+    nonisolated static func glassesMark(_ receipt: WorkHandoffReceipt) -> String {
+        guard receipt.requestedFrom == "glasses" else { return "" }
+        let background = receipt.appOpen?.skipped == WorkRequestOrigin.staysInBackground && receipt.appOpen?.openedAt == nil
+        return background ? " · from the glasses · not opened in its app" : " · from the glasses"
+    }
     nonisolated static func whereItRunsNote(_ receipt: WorkHandoffReceipt) -> String? {
         guard receipt.mode == .newSession else { return nil }
         if receipt.channel == "tab" {
@@ -703,7 +721,7 @@ struct WorkHandoffView: View {
                 ForEach(receipts) { receipt in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Text(receipt.status.capitalized + " · " + receipt.mode.title + (receipt.requestedFrom == "glasses" ? " · from the glasses" : ""))
+                            Text(receipt.status.capitalized + " · " + receipt.mode.title + Self.glassesMark(receipt))
                                 .font(COSType.body(12, weight: .semibold))
                             Spacer()
                             Text(Date(timeIntervalSince1970: receipt.createdAt), format: .dateTime.month(.abbreviated).day().hour().minute())

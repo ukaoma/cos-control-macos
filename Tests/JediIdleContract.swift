@@ -95,7 +95,9 @@ struct JediIdleContract {
 
         // Optional on-device canary uses the shipping SwiftUI TimelineView.
         // It never constructs ControllerModel, polls live work or writes preferences.
-        if CommandLine.arguments.count > 2 {
+        // 0.5.252: it opens a window on screen and takes the focus, so it runs only when a person sets
+        // COS_JEDI_CANARY_OUTPUT (Tests/run.sh passes the folder only then); no gate sets it.
+        if CommandLine.arguments.count > 2, ProcessInfo.processInfo.environment["COS_JEDI_CANARY_OUTPUT"] != nil {
             let output = URL(fileURLWithPath: CommandLine.arguments[2])
             try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
             let app = NSApplication.shared
@@ -108,7 +110,7 @@ struct JediIdleContract {
             window.contentView = hosting
             window.center()
             window.makeKeyAndOrderFront(nil)
-            app.activate(ignoringOtherApps: true)
+            if ProcessInfo.processInfo.environment["COS_JEDI_CANARY_OUTPUT"] != nil { app.activate(ignoringOtherApps: true) }
             for sample in 0..<32 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1 + Double(sample) * 0.2) {
                     hosting.layoutSubtreeIfNeeded()

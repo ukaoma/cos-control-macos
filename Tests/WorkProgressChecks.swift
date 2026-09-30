@@ -58,6 +58,14 @@ private actor TrackingTransport {
     var inboxReason: String?
     var claimRefusal: String?
     var claimExpiresIn: Double = 600
+    var claimOmitsDeadline = false
+    /// Requests already claimed (never listed as pending again, as on the real server): claimable only with the token.
+    var claimedRows: [JSONValue] = []
+    var claimTokens: [String] = []
+    var catalogFails = false
+    var attachable = true
+    var attachReason: String?
+    var delays: [String: Double] = [:]
     var claims: [String] = []
     var posted: [(id: String, body: [String: String])] = []
     var postAnswers: [[String: JSONValue]] = []
@@ -65,8 +73,17 @@ private actor TrackingTransport {
     var liveSessions: [JSONValue] = []
     var lists = 0
     var newHTTP: Int?
+    /// A native fork the server made: the child session it names. Nil answers as a refused fork.
+    var forkChild: JSONValue?
+    func setFork(child: JSONValue?) { forkChild = child }
     func setInbox(_ rows: [JSONValue], reason: String? = nil) { inboxRows = rows; inboxReason = reason }
-    func setClaim(refusal: String?, expiresIn: Double = 600) { claimRefusal = refusal; claimExpiresIn = expiresIn }
+    func setClaim(refusal: String?, expiresIn: Double = 600, omitsDeadline: Bool = false) {
+        claimRefusal = refusal; claimExpiresIn = expiresIn; claimOmitsDeadline = omitsDeadline
+    }
+    func setClaimed(_ rows: [JSONValue]) { claimedRows = rows }
+    func setCatalogFails(_ fails: Bool) { catalogFails = fails }
+    func setAttach(attachable: Bool, reason: String? = nil) { self.attachable = attachable; attachReason = reason }
+    func setDelay(_ verb: String, seconds: Double) { delays[verb] = seconds }
     func queuePostAnswers(_ answers: [[String: JSONValue]]) { postAnswers = answers }
     func setNewAnswer(http: Int?) { newHTTP = http }
     func setCatalog(models: [WorkModelChoice], sessions: [WorkSession]) {
@@ -75,7 +92,13 @@ private actor TrackingTransport {
         liveSessions = sessions.map { .object(["id": .string($0.nativeID), "provider": .string($0.provider), "name": .string($0.title),
                                                "workspace": .string($0.project), "state": .string($0.status)]) }
     }
-    func inboxLog() -> (lists: Int, claims: [String], posted: [(id: String, body: [String: String])]) { (lists, claims, posted) }
+    func inboxLog() -> (lists: Int, claims: [String], posted: [(id: String, body: [String: String])], claimTokens: [String]) {
+        (lists, claims, posted, claimTokens)
+    }
+    private func value(after flag: String, in args: [String]) -> String? {
+        guard let index = args.firstIndex(of: flag), args.indices.contains(index + 1) else { return nil }
+        return args[index + 1]
+    }
     func setTurn(_ state: String) { turnState = state }
     func setRead(replies rows: [(String, String?)], prompts heads: [(String, String?)] = [], running: Bool = false,
                  agent: String = "idle", lastActivity: String = "", state: String = "turns") {
@@ -95,9 +118,17 @@ private actor TrackingTransport {
     func sent() -> [String] { sentPrompts }
     func run(_ args: [String], _ data: Data?) async throws -> HelperResponse {
         calls.append(args)
+        if let verb = args.first, let delay = delays[verb] { try? await Task.sleep(for: .seconds(delay)) }
         var details: [String: JSONValue] = [:]
         switch args.first {
-        case "session-chat-attachability": details = ["attachable": .bool(true)]
+        case "session-chat-attachability":
+            details = ["attachable": .bool(attachable)]
+            if let attachReason { details["reason"] = .string(attachReason) }
+            if !attachable { details["reasonCopy"] = .string("Sample: this session cannot be continued now.") }
+        case "session-chat-fork":
+            if let forkChild { details = ["state": .string("forked"), "forkSession": forkChild] }
+            else { details = ["state": .string("refused"), "httpStatus": .number(409), "reasonCopy": .string("Sample: the fork was refused.")] }
+        case "session-chat-queue": details = ["state": .string("parked")]
         case "session-chat-attach":
             details = ["state": .string("attached"), "bindingId": .string("binding-fixture"), "epoch": .number(1), "boundTo": .string("fixture")]
         case "session-chat-send":
@@ -135,19 +166,34 @@ private actor TrackingTransport {
             details = inboxReason.map { ["available": .bool(false), "reason": .string($0), "requests": .array([])] }
                 ?? ["available": .bool(true), "requests": .array(inboxRows)]
         case "work-request-claim":
-            let id = args.last ?? ""
-            claims.append(id)
+            // As the server: a pending request is claimed once and is never listed as pending again; a claimed one is
+            // claimed again only under its token.
+            let id = value(after: "--id", in: args) ?? ""
+            let again = value(after: "--claim-token", in: args)
+            if let again { claimTokens.append(again) } else { claims.append(id) }
+            func claimed(_ row: JSONValue) -> [String: JSONValue] {
+                var o = row.object ?? [:]
+                o["state"] = .string("claimed")
+                if !claimOmitsDeadline { o["claimExpiresAt"] = .string(Self.iso(Date().addingTimeInterval(claimExpiresIn))) }
+                return ["claimed": .bool(true), "claimToken": .string(Self.claimToken), "request": .object(o)]
+            }
             if let refusal = claimRefusal {
                 details = ["claimed": .bool(false), "reason": .string(refusal)]
-            } else if let row = inboxRows.first(where: { $0.object?["clientRequestId"]?.string == id }), var o = row.object {
-                o["state"] = .string("claimed"); o["claimExpiresAt"] = .string(Self.iso(Date().addingTimeInterval(claimExpiresIn)))
-                details = ["claimed": .bool(true), "claimToken": .string(Self.claimToken), "request": .object(o)]
+            } else if let again {
+                if again == Self.claimToken, let row = claimedRows.first(where: { $0.object?["clientRequestId"]?.string == id }) { details = claimed(row) }
+                else { details = ["claimed": .bool(false), "reason": .string("already_claimed")] }
+            } else if let index = inboxRows.firstIndex(where: { $0.object?["clientRequestId"]?.string == id }) {
+                let row = inboxRows.remove(at: index)
+                claimedRows.append(row)
+                details = claimed(row)
             } else { details = ["claimed": .bool(false), "reason": .string("request_not_found")] }
         case "work-request-result":
             let body = (try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: String] ?? [:]
-            posted.append((args.last ?? "", body))
+            posted.append((value(after: "--id", in: args) ?? "", body))
             details = postAnswers.isEmpty ? ["accepted": .bool(true)] : postAnswers.removeFirst()
-        case "work-models": details = ["models": .array(catalog), "serverInstanceId": .string("fixture")]
+        case "work-models":
+            if catalogFails { throw HelperClientError.commandFailed("Synthetic: the catalog did not answer") }
+            details = ["models": .array(catalog), "serverInstanceId": .string("fixture")]
         case "claude-sessions": details = ["sessions": .array(liveSessions)]
         default: throw HelperClientError.commandFailed("Unexpected fixture command: \(args)")
         }
@@ -170,8 +216,10 @@ private actor TrackingTransport {
 
 @MainActor private final class FakeBoard {
     var rows: [String: String] = [:]     // identity -> stage
-    /// 0.5.252: a row's whole title (`text`), when a check needs one.
+    /// 0.5.252: a row's whole title (`text`), when a check needs one; and a board read that fails.
     var texts: [String: String] = [:]
+    var readable = true
+    var checked: [String: Bool] = [:]
     var writable = true
     var moves: [(String, String)] = []
     var failNext: String?
@@ -184,7 +232,8 @@ private actor TrackingTransport {
                                         "text": .string(texts[identity] ?? "Draft the homepage call to action " + identity), "doneWhen": .string(""),
                                         "workStage": .string(rows[identity] ?? "planned"), "workIdentity": .string(identity),
                                         "workRevision": .string(String(repeating: "a", count: 64))]
-        if rows[identity] == "complete" { row["checked"] = .bool(true) }
+        if let forced = checked[identity] { row["checked"] = .bool(forced) }
+        else if rows[identity] == "complete" { row["checked"] = .bool(true) }
         if let metadataError { row["workMetadataError"] = .string(metadataError) }
         return TaskRow(.object(row))!
     }
@@ -200,7 +249,8 @@ private actor TrackingTransport {
                       self.savedButRefreshFailsNext = false
                       throw HelperClientError.commandFailed("Change saved, but refreshing Work failed: timeout")
                   }
-              })
+              },
+              readOK: { self.readable })
     }
 }
 
@@ -215,14 +265,33 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         appChecks()
         sessionNameChecks()
         projectionChecks()
+        try revisionParityChecks()
         try await trackerChecks()
-        print("PASS: Work tracking (status line, delivery, stages, projections, tracker: pending turns, arrival, reports, several tasks, pause, moved back, retries, busy journal, Jev gating, baseline, job result, superseded, back-off, New session link, Work sessions not jobs, start it then open it in the app, named after the task and linked while it runs, glasses requests)")
+        print("PASS: Work tracking (status line, delivery, stages, projections, tracker: pending turns, arrival, reports, several tasks, pause, moved back, retries, busy journal, Jev gating, baseline, job result, superseded, back-off, New session link, Work sessions not jobs, start it then open it in the app, named after the task and linked while it runs, glasses requests, revision parity with the server's 12 golden rows)")
     }
 
     /// `precondition` takes an autoclosure, which cannot await.
     private static func check(_ condition: Bool, _ message: @autoclosure () -> String = "", line: UInt = #line) {
         if !condition { fatalError("check failed at line \(line): \(message())") }
     }
+    /// 0.5.252: the glasses send the task revision the server computed; Control refuses a request whose revision is not
+    /// its own for that row. These are the server's 12 golden rows (glasses-server 6.59.0,
+    /// server/lib/__fixtures__/control-task-snapshot), whose expected revisions were computed by Control's own
+    /// taskSnapshot at 0.5.250. A change to taskSnapshot's format fails here, before it strands every glasses request.
+    @MainActor static func revisionParityChecks() throws {
+        let folder = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("fixtures/control-task-snapshot")
+        let rows = try JSONDecoder().decode([JSONValue].self, from: Data(contentsOf: folder.appendingPathComponent("rows.json")))
+        let expected = try String(contentsOf: folder.appendingPathComponent("expected.txt"), encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        check(rows.count == 12 && expected.count == 12, "12 golden rows: \(rows.count) rows, \(expected.count) expected")
+        for (index, row) in rows.enumerated() {
+            let task = try require(TaskRow(row))
+            let snapshot = WorkSource.taskSnapshot(task)
+            check(snapshot.id + " " + snapshot.revision == expected[index], "golden row \(index + 1): \(snapshot.id) \(snapshot.revision), expected \(expected[index])")
+        }
+        check(Set(expected.map { $0.split(separator: " ").last.map(String.init) ?? "" }).count >= 5, "the goldens are not one repeated value")
+    }
+
     private static func require<T>(_ value: T?, line: UInt = #line) throws -> T {
         guard let value else { throw HelperClientError.commandFailed("required value missing at line \(line)") }
         return value
@@ -659,12 +728,21 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         func source(_ identity: String) -> WorkSource {
             WorkSource(id: "task:Quilt:" + identity, title: "Task " + identity, revision: "1", project: "Quilt", context: "Task " + identity)
         }
+        /// A store in these checks never opens an app, runs Terminal or writes the clipboard of whoever uses the Mac: the
+        /// app checks put recorders in place of these; anything else that reaches one fails here (0.5.252, measured
+        /// that none did: every hook replaced by a print across this suite, run-work.sh and run-work-handoff.sh).
+        func deskless(_ store: WorkHandoffStore) {
+            store.openURL = { url in fatalError("a Work check reached the desktop: open \(url)") }
+            store.openInTerminal = { file in fatalError("a Work check reached the desktop: Terminal \(file.lastPathComponent)") }
+            store.copyToClipboard = { _ in fatalError("a Work check reached the desktop: the clipboard") }
+        }
         func setUp(_ name: String) -> (WorkHandoffStore, TrackingTransport, FakeBoard, Clock, WorkProgressTracker, NoticeBox) {
             let transport = TrackingTransport()
             let store = WorkHandoffStore(isolated: false, storageURL: root.appendingPathComponent(name + ".json"),
                                          transport: { args, data in try await transport.run(args, data) })
             store.sessions = [one, two]
             store.models = [WorkModelChoice(id: "cursor-model", provider: "cursor", title: "Cursor", available: true, reason: nil)]
+            deskless(store)
             let board = FakeBoard(); board.rows[idA] = "planned"; board.rows[idB] = "planned"
             let clock = Clock(), notices = NoticeBox()
             let tracker = WorkProgressTracker(store: store, board: board.board, notify: { notices.items.append($0) }, now: { clock.now() })
@@ -1394,12 +1472,19 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             await transport.setJob(provider: "claude", session: claudeID, afterReads: 1)
             func task(_ identity: String, _ text: String) throws -> TaskRow {
                 try require(TaskRow(.object(["id": .string(identity), "domain": .string("Quilt"), "title": .string(String(text.prefix(42))),
-                                             "text": .string("**" + text + "**"), "doneWhen": .string("It answers"),
+                                             "text": .string(text), "doneWhen": .string("It answers"),
                                              "workIdentity": .string(identity), "workRevision": .string(String(repeating: "a", count: 64))])))
             }
             let whole = "Canary 0.5.251 Claude name: reply with the single word ready, then wait for Miles ok"
             let long = "Canary 0.5.251 long name: reply with the single word ready, then keep this whole title as its name, and the tail past it is cut ok"
             check(whole.count == 84 && long.count == 130, "\(whole.count) \(long.count)")
+            // The name drops the inline markdown the server's display title drops; an identifier keeps its underscore.
+            check(WorkSource.plainTitle("**Ship** the `cos_python` fix, see [the plan](https://x.test/p) and _then_ *rest*  now")
+                  == "Ship the cos_python fix, see the plan and then rest now")
+            check(WorkSource.plainTitle("Run hermit_crabs_sync and keep snake_case; 2 * 3 stays plain") == "Run hermit_crabs_sync and keep snake_case; 2 3 stays plain",
+                  "as the server: every asterisk goes, an underscore inside a word stays")
+            let marked = WorkSource.taskSnapshot(try task("aaaaaaaaaaa0", "**Fix** the [footer links](https://x.test) in `nav.html`"))
+            check(marked.sessionNameSource == "Fix the footer links in nav.html", marked.sessionNameSource)
             let first = WorkSource.taskSnapshot(try task("aaaaaaaaaaa1", whole))
             check(first.title == String(whole.prefix(42)) && first.sessionNameSource == whole, "the display title stays; the name source is whole")
             await store.submit(source: first, mode: .newSession, session: nil, model: opus, prompt: "Go")
@@ -1553,7 +1638,8 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
 
         // 22. 0.5.252: glasses requests (server 6.59.0 inbox). Control claims a pending request, re-reads the board row and
         //     its task revision, resolves the destination against its own live sessions and catalog, sends through the
-        //     same paths as the Agent workspace, and reports the result under the claim token. Never twice, never late.
+        //     same paths as the Agent workspace, and reports the result under the claim token. Never twice, never late,
+        //     never somewhere the request did not name.
         do {
             func request(_ id: String, identity: String = idA, revision: String? = nil, intent: String = "start",
                          mode: String = "newSession", session: String? = nil, model: String? = "opus", note: String? = nil,
@@ -1572,25 +1658,34 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
                 await transport.setCatalog(models: [opus, frontier, grok], sessions: [one, two])
                 store.models = [opus, frontier, grok]
             }
+            /// One pass of the inbox, and the send it started (the send runs in its own task).
+            @discardableResult func pass(_ tracker: WorkProgressTracker) async -> Bool {
+                let soon = await tracker.requests.tick()
+                await tracker.requests.waitForSend()
+                return soon
+            }
+            func lastPost(_ transport: TrackingTransport) async -> [String: String]? { await transport.inboxLog().posted.last?.body }
+            let token = TrackingTransport.claimToken
             let r1 = "11111111-1111-4111-8111-111111111111", r2 = "22222222-2222-4222-8222-222222222222"
             let long = "Check the pricing table on mobile, then tighten the FAQ answers and the footer links for launch"
             // a. Start: a New session, with a note. Sent once, named after the task's whole title, recorded as from the
-            //    glasses, and reported as sent with its receipt and the claim token.
+            //    glasses, and reported as sent with its receipt and the claim token. Nothing stays in the ledger.
             let (store, transport, board, _, tracker, _, opened) = appSetUp("glasses-start")
             board.texts[idA] = long
             await live(transport, store)
             await transport.setJob(provider: "claude", session: claudeID, afterReads: 1)
             await transport.setInbox([request(r1, note: "Use the numbers from the 9/29 sheet.", board: board)])
-            check(await tracker.requests.tick() == true, "a request in hand lists again soon")
-            var names = await transport.names()
+            check(await pass(tracker) == true, "a request just taken lists again soon")
+            let names = await transport.names()
             check(names == [long], "\(names)")
             let sent = try require(store.receipts.first { $0.requestId == r1 })
             check(sent.requestedFrom == "glasses" && sent.mode == .newSession && sent.provider == "claude" && sent.modelID == "opus")
             check(sent.prompt.contains("\n\nNote from the glasses: Use the numbers from the 9/29 sheet."), sent.prompt)
             var log = await transport.inboxLog()
             check(log.claims == [r1] && log.posted.count == 1 && log.posted[0].id == r1
-                  && log.posted[0].body == ["state": "sent", "receiptId": sent.id, "claimToken": TrackingTransport.claimToken], "\(log.posted)")
+                  && log.posted[0].body == ["state": "sent", "receiptId": sent.id, "claimToken": token], "\(log.posted)")
             check(opened.clipboard.isEmpty, "a glasses request never writes the Mac clipboard")
+            check(tracker.requests.ledger.isEmpty && !FileManager.default.fileExists(atPath: store.requestLedgerURL.path), "a reported request leaves the ledger")
             // The receipt round-trips through the journal.
             let reread = WorkHandoffStore(isolated: false, storageURL: root.appendingPathComponent("glasses-start.json"),
                                           transport: { _, _ in throw HelperClientError.commandFailed("none") })
@@ -1599,78 +1694,178 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             // c. Another claim won: nothing is sent and nothing is reported.
             await transport.setInbox([request(r2, identity: idB, board: board)])
             await transport.setClaim(refusal: "already_claimed")
-            await tracker.requests.tick()
+            await pass(tracker)
             log = await transport.inboxLog()
-            check(await transport.count("work-new") == 1 && log.posted.count == 1 && log.claims == [r1, r2], "a lost claim race sends nothing")
+            check(await transport.count("work-new") == 1 && log.posted.count == 1 && log.claims == [r1, r2] && tracker.requests.ledger.isEmpty,
+                  "a lost claim race sends nothing")
             // d. Expired: past its expiry it is never claimed; a 410 at the claim sends nothing.
             await transport.setClaim(refusal: nil)
             await transport.setInbox([request(r2, identity: idB, expiresIn: -1, board: board)])
-            await tracker.requests.tick()
+            await pass(tracker)
             check(await transport.inboxLog().claims == [r1, r2], "an expired request is never claimed")
             await transport.setClaim(refusal: "request_expired")
             await transport.setInbox([request(r2, identity: idB, board: board)])
-            await tracker.requests.tick()
+            await pass(tracker)
             let postedAfter410 = await transport.inboxLog().posted.count
             check(await transport.count("work-new") == 1 && postedAfter410 == 1, "a 410 sends nothing")
-            await transport.setClaim(refusal: nil)
-            // e. Claimed too long ago: checked immediately before the send, never sent after it.
+            // e. Claimed too long ago, or a claim with no deadline at all: never sent.
             await transport.setClaim(refusal: nil, expiresIn: -1)
-            await tracker.requests.tick()
-            log = await transport.inboxLog()
-            check(await transport.count("work-new") == 1 && log.posted.last?.body == ["state": "refused", "reason": "Claimed too long ago; not sent",
-                  "claimToken": TrackingTransport.claimToken], "\(String(describing: log.posted.last))")
+            await pass(tracker)
+            var last = await lastPost(transport)
+            check(await transport.count("work-new") == 1 && last == ["state": "refused", "reason": "Claimed too long ago; not sent", "claimToken": token],
+                  "\(String(describing: last))")
+            await transport.setClaim(refusal: nil, omitsDeadline: true)
+            await transport.setInbox([request(r2, identity: idB, board: board)])
+            await pass(tracker)
+            last = await lastPost(transport)
+            check(await transport.count("work-new") == 1 && last?["reason"] == WorkRequestInbox.Refusal.noDeadline, "\(String(describing: last))")
             await transport.setClaim(refusal: nil)
-            // f. The task changed after the glasses read it: refused, nothing sent.
+            // f. The task changed after the glasses read it: refused, nothing sent. A board that could not be read is said
+            //    so, never checked against the rows of an earlier read and never called a missing task.
             await transport.setInbox([request(r2, identity: idB, revision: String(repeating: "0", count: 64), board: board)])
-            await tracker.requests.tick()
-            log = await transport.inboxLog()
-            check(await transport.count("work-new") == 1 && log.posted.last?.body["reason"] == WorkRequestInbox.Refusal.taskChanged)
+            await pass(tracker)
+            last = await lastPost(transport)
+            check(await transport.count("work-new") == 1 && last?["reason"] == WorkRequestInbox.Refusal.taskChanged)
+            board.readable = false
+            await transport.setInbox([request(r2, identity: idB, board: board)])
+            await pass(tracker)
+            last = await lastPost(transport)
+            check(await transport.count("work-new") == 1 && last?["reason"] == "COS Control could not read the board just now. Nothing was sent.",
+                  "\(String(describing: last))")
+            board.readable = true
             // g. The destination is gone: a session not on this Mac, a model not in the catalog.
             await transport.setInbox([request(r2, identity: idB, mode: "continueSession", session: "claude:s-gone", model: nil, board: board)])
-            await tracker.requests.tick()
-            check(await transport.inboxLog().posted.last?.body["reason"] == WorkRequestInbox.Refusal.sessionGone)
+            await pass(tracker)
+            last = await lastPost(transport)
+            check(last?["reason"] == WorkRequestInbox.Refusal.sessionGone)
             await transport.setInbox([request(r2, identity: idB, model: "haiku", board: board)])
-            await tracker.requests.tick()
-            check(await transport.inboxLog().posted.last?.body["reason"] == WorkRequestInbox.Refusal.modelGone)
+            await pass(tracker)
+            last = await lastPost(transport)
+            check(last?["reason"] == WorkRequestInbox.Refusal.modelGone)
+            //    A Fork to another platform whose model this Mac's catalog lacks is refused: never a copy on the session's
+            //    own platform (the blocker QA found on 2026-09-30).
+            await transport.setCatalog(models: [opus], sessions: [one, two])
+            await transport.setInbox([request(r2, identity: idB, mode: "fork", session: one.id, model: "codex-frontier", board: board)])
+            await pass(tracker)
+            last = await lastPost(transport)
+            var forks = await transport.count("session-chat-fork")
+            check(last?["reason"] == WorkRequestInbox.Refusal.modelGone && forks == 0 && store.receipts(for: "task:Quilt:" + idB).isEmpty,
+                  "\(String(describing: last)) forks \(forks)")
+            //    The same with an empty catalog, and with a catalog that could not be read (which is never an empty one).
+            await transport.setCatalog(models: [], sessions: [one, two])
+            await transport.setInbox([request(r2, identity: idB, mode: "fork", session: one.id, model: "codex-frontier", board: board)])
+            await pass(tracker)
+            last = await lastPost(transport)
+            forks = await transport.count("session-chat-fork")
+            check(last?["reason"] == WorkRequestInbox.Refusal.modelGone && forks == 0, "\(String(describing: last))")
+            await transport.setCatalogFails(true)
+            await transport.setInbox([request(r2, identity: idB, mode: "fork", session: one.id, model: "codex-frontier", board: board)])
+            await pass(tracker)
+            last = await lastPost(transport)
+            forks = await transport.count("session-chat-fork")
+            check(last?["reason"] == "COS Control could not read its sessions and models just now. Nothing was sent." && forks == 0
+                  && store.error == nil, "\(String(describing: last))")
+            await transport.setCatalogFails(false)
+            await live(transport, store)
             let chatSends = await transport.count("session-chat-send")
             check(await transport.count("work-new") == 1 && chatSends == 0, "a missing destination sends nothing")
+            //    What Control would send must be what was asked.
+            let forkPlan = WorkSendPlan(mode: .fork, session: one, model: nil, crossPlatform: false, prompt: "p")
+            let named = try require(WorkGlassesRequest(request(r2, mode: "fork", session: one.id, model: "codex-frontier", board: board)))
+            let plain = try require(WorkGlassesRequest(request(r2, mode: "fork", session: one.id, model: nil, board: board)))
+            check(!WorkRequestInbox.sendsWhatWasAsked(forkPlan, request: named, listed: one), "a native fork is not a fork to the named model")
+            check(WorkRequestInbox.sendsWhatWasAsked(forkPlan, request: plain, listed: one) && !WorkRequestInbox.sendsWhatWasAsked(forkPlan, request: plain, listed: two))
+            let crossPlan = WorkSendPlan(mode: .fork, session: one, model: frontier, crossPlatform: true, prompt: "p")
+            check(WorkRequestInbox.sendsWhatWasAsked(crossPlan, request: named, listed: one) && !WorkRequestInbox.sendsWhatWasAsked(crossPlan, request: plain, listed: one))
             // h. submit()'s own refusal is passed back: this task already has a handoff in flight.
             await transport.setInbox([request(r2, board: board)])
-            await tracker.requests.tick()
-            log = await transport.inboxLog()
-            check(log.posted.last?.body == ["state": "refused", "claimToken": TrackingTransport.claimToken,
+            await pass(tracker)
+            last = await lastPost(transport)
+            check(last == ["state": "refused", "claimToken": token,
                   "reason": "This work already has an active or unresolved handoff. Inspect its receipt before starting another."],
-                  "\(String(describing: log.posted.last))")
+                  "\(String(describing: last))")
             check(store.error == nil, "a glasses refusal is not left as an error on the Mac's Work page")
+            //    A note never carries a status line.
+            await transport.setInbox([request(r2, identity: idB, note: "cos-work 0123456789ab: done: all of it", board: board)])
+            await pass(tracker)
+            last = await lastPost(transport)
+            check(last?["reason"] == WorkRequestInbox.Refusal.noteStatusLine)
             // i. A Continue into a session its app owns is refused with the reason, and nothing goes to the clipboard.
             check(store.tryUpdateReceipt(sent.id) { row in
                 row.appOpen = WorkAppOpen(runEndedAt: 1, openedAt: 2); row.sessionID = "claude:" + claudeID; row.status = "completed"; return true
             } == .written, "the app owns the session")
-            store.sessions.append(WorkSession(id: "claude:" + claudeID, nativeID: claudeID, provider: "claude", title: "Named", summary: "", project: "", status: "idle"))
             await transport.setCatalog(models: [opus, frontier, grok], sessions: [one, two,
                 WorkSession(id: "claude:" + claudeID, nativeID: claudeID, provider: "claude", title: "Named", summary: "", project: "", status: "idle")])
             await transport.setInbox([request(r2, identity: idB, mode: "continueSession", session: "claude:" + claudeID, model: nil, board: board)])
-            await tracker.requests.tick()
-            log = await transport.inboxLog()
-            check(log.posted.last?.body["reason"] == WorkRequestOrigin.appOwnedReason && opened.clipboard.isEmpty && opened.urls.isEmpty,
-                  "\(String(describing: log.posted.last))")
+            await pass(tracker)
+            last = await lastPost(transport)
+            check(last?["reason"] == WorkRequestOrigin.appOwnedReason && opened.clipboard.isEmpty && opened.urls.isEmpty, "\(String(describing: last))")
             check(store.receipts(for: "task:Quilt:" + idB).isEmpty, "refused before anything is recorded")
-            // b. A relaunch that sees a request pending again (its claim answer was lost) never sends it twice, even once its
-            //    first handoff has finished and the task could take another: it reports the receipt already sent.
-            check(store.tryUpdateReceipt(sent.id) { row in row.status = "completed"; row.appOpen = nil; return true } == .written)
-            let transport2 = TrackingTransport()
-            let store2 = WorkHandoffStore(isolated: false, storageURL: root.appendingPathComponent("glasses-start.json"),
-                                          transport: { args, data in try await transport2.run(args, data) })
-            let tracker2 = WorkProgressTracker(store: store2, board: board.board, notify: { _ in })
-            await live(transport2, store2)
-            await transport2.setJob(provider: "claude", session: claudeID, afterReads: 1)
-            await transport2.setInbox([request(r1, note: "Use the numbers from the 9/29 sheet.", board: board)])
-            await tracker2.requests.tick()
-            let relaunched = await transport2.inboxLog()
-            let resent = await transport2.count("work-new")
-            check(resent == 0 && store2.receipts(for: "task:Quilt:" + idA).count == 1
-                  && relaunched.posted.map(\.body) == [["state": "sent", "receiptId": sent.id, "claimToken": TrackingTransport.claimToken]],
-                  "never sent twice across a relaunch: \(resent) \(relaunched.posted)")
+
+            // b. Across a relaunch (the real server never lists a claimed request as pending again).
+            //    b1. Sent, but the result was not taken before COS Control quit: the ledger beside the journal holds it, and
+            //        the next launch posts it under the same token. Nothing is sent again.
+            let (s2, t2, b2, _, tr2, _, _) = appSetUp("glasses-relaunch")
+            await live(t2, s2)
+            await t2.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            await t2.setInbox([request(r1, board: b2)])
+            await t2.queuePostAnswers([["accepted": .bool(false), "reason": .string("unreachable")]])
+            await pass(tr2)
+            let first = try require(s2.receipts.first { $0.requestId == r1 })
+            check(tr2.requests.ledger.map(\.requestId) == [r1] && FileManager.default.fileExists(atPath: s2.requestLedgerURL.path), "kept on disk")
+            let t2b = TrackingTransport()
+            let s2b = WorkHandoffStore(isolated: false, storageURL: root.appendingPathComponent("glasses-relaunch.json"),
+                                       transport: { args, data in try await t2b.run(args, data) })
+            let laterClock = Clock(); laterClock.offset = 60
+            let tr2b = WorkProgressTracker(store: s2b, board: b2.board, notify: { _ in }, now: { laterClock.now() })
+            await t2b.setInbox([])
+            await pass(tr2b)
+            var relaunch = await t2b.inboxLog()
+            var resent = await t2b.count("work-new")
+            check(resent == 0 && relaunch.claims.isEmpty && relaunch.posted.map(\.body) == [["state": "sent", "receiptId": first.id, "claimToken": token]]
+                  && tr2b.requests.ledger.isEmpty, "\(resent) \(relaunch.posted)")
+            //    b2. Claimed, then COS Control quit before sending: the next launch claims it again under the stored token
+            //        and sends it, once.
+            func ledger(_ name: String, _ entries: [WorkRequestLedgerEntry]) throws {
+                try JSONEncoder().encode(entries).write(to: root.appendingPathComponent(name + ".requests.json"))
+            }
+            try ledger("glasses-reclaim", [WorkRequestLedgerEntry(requestId: r2, claimToken: token, claimedAt: Date().timeIntervalSince1970)])
+            let (s3c, t3c, b3c, _, tr3c, _, _) = appSetUp("glasses-reclaim")
+            await live(t3c, s3c)
+            await t3c.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            await t3c.setInbox([]); await t3c.setClaimed([request(r2, board: b3c)])
+            await pass(tr3c)
+            relaunch = await t3c.inboxLog()
+            resent = await t3c.count("work-new")
+            let reclaimed = try require(s3c.receipts.first { $0.requestId == r2 })
+            check(resent == 1 && relaunch.claimTokens == [token] && relaunch.posted.map(\.body) == [["state": "sent", "receiptId": reclaimed.id, "claimToken": token]],
+                  "\(resent) \(relaunch.claimTokens) \(relaunch.posted)")
+            //    b3. Sent, then COS Control quit before it recorded the result: claimed again, found in the journal, reported,
+            //        never sent twice (even though its first handoff finished and the task could take another).
+            check(s3c.tryUpdateReceipt(reclaimed.id) { row in row.status = "completed"; row.appOpen = nil; return true } == .written)
+            try ledger("glasses-reclaim", [WorkRequestLedgerEntry(requestId: r2, claimToken: token, claimedAt: Date().timeIntervalSince1970)])
+            let t3d = TrackingTransport()
+            let s3d = WorkHandoffStore(isolated: false, storageURL: root.appendingPathComponent("glasses-reclaim.json"),
+                                       transport: { args, data in try await t3d.run(args, data) })
+            let tr3d = WorkProgressTracker(store: s3d, board: b3c.board, notify: { _ in })
+            await live(t3d, s3d)
+            await t3d.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            await t3d.setInbox([]); await t3d.setClaimed([request(r2, board: b3c)])
+            await pass(tr3d)
+            resent = await t3d.count("work-new")
+            last = await lastPost(t3d)
+            check(resent == 0 && s3d.receipts(for: "task:Quilt:" + idA).count == 1 && last == ["state": "sent", "receiptId": reclaimed.id, "claimToken": token],
+                  "never sent twice across a relaunch: \(resent) \(String(describing: last))")
+            //    b4. The claim is gone by the next launch and nothing was sent: that is what is reported.
+            try ledger("glasses-gone", [WorkRequestLedgerEntry(requestId: r1, claimToken: token, claimedAt: Date().timeIntervalSince1970)])
+            let (s3e, t3e, _, _, tr3e, _, _) = appSetUp("glasses-gone")
+            await live(t3e, s3e)
+            await t3e.setInbox([])
+            await pass(tr3e); await pass(tr3e)
+            resent = await t3e.count("work-new")
+            last = await lastPost(t3e)
+            check(resent == 0 && last == ["state": "refused", "reason": WorkRequestInbox.Refusal.restarted, "claimToken": token], "\(String(describing: last))")
+
             // g2. A running Claude session the live list gives by its first 8 characters is the session the glasses named
             //     in full: the request goes to it.
             let (s9, t9, b9, _, tr9, _, _) = appSetUp("glasses-short-id")
@@ -1678,30 +1873,60 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             let short = WorkSession(id: "claude:8f7a53b9", nativeID: "8f7a53b9", provider: "claude", title: "Homepage CTA", summary: "", project: "", status: "running")
             await t9.setCatalog(models: [opus], sessions: [short]); s9.models = [opus]
             await t9.setInbox([request(r2, mode: "continueSession", session: "claude:" + fullID, model: nil, board: b9)])
-            await tr9.requests.tick()
+            await pass(tr9)
             let toShort = try require(s9.receipts.first { $0.requestId == r2 })
             check(toShort.sessionID == short.id && toShort.mode == .continueSession, "\(String(describing: toShort.sessionID))")
-            check(await t9.inboxLog().posted.last?.body["state"] == "sent")
-            // j. Not done yet, with replyTo: the reply is reviewed and the same session continues with the note.
+            last = await lastPost(t9)
+            check(last?["state"] == "sent")
+
+            // j. Not done yet, with replyTo: the same session continues with the note, and the reply it answers is marked
+            //    reviewed only once that is on its way.
             let (s3, t3, b3, _, tr3, _, _) = appSetUp("glasses-not-done")
             await t3.setCatalog(models: [opus], sessions: [one, two]); s3.models = [opus]
             let snapshot = WorkSource.taskSnapshot(b3.task(idA))
             await s3.submit(source: snapshot, mode: .continueSession, session: one, model: nil, prompt: "Draft the CTA")
             await t3.setTurn("completed")
-            let first = try require(s3.receipts(for: snapshot.id).first)
-            await t3.setRead(replies: [("COS-WORK \(idA): done: Updated the hero CTA.", stamp(first.createdAt + 0.001))])
+            let firstSend = try require(s3.receipts(for: snapshot.id).first)
+            await t3.setRead(replies: [("COS-WORK \(idA): done: Updated the hero CTA.", stamp(firstSend.createdAt + 0.001))])
             await tr3.tick()
             let done = try require(s3.receipts(for: snapshot.id).first)
             check(done.progress?.reported == .done && done.status == "delivered", "\(done.status)")
+            //    Refused (the session cannot be continued now): the old reply stays delivered and reported; nothing is lost.
+            await t3.setAttach(attachable: false)
             await t3.setInbox([request(r1, intent: "notDone", mode: "continueSession", session: one.id, model: nil,
                                        note: "The mobile layout is not checked.", replyTo: done.id, board: b3)])
-            await tr3.requests.tick()
-            let fresh = try require(s3.receipts(for: snapshot.id).first)
-            check(fresh.id != done.id && fresh.requestId == r1 && fresh.requestedFrom == "glasses" && fresh.sessionID == one.id
+            await pass(tr3)
+            let refusedTry = try require(s3.receipts.first { $0.requestId == r1 })
+            let kept = try require(s3.receipts.first { $0.id == done.id })
+            last = await lastPost(t3)
+            check(refusedTry.status == "refused" && kept.status == "delivered" && kept.progress?.reported == .done
+                  && last?["state"] == "refused" && last?["receiptId"] == refusedTry.id, "a refused send-back leaves the reply as it was: \(kept.status)")
+            await t3.setAttach(attachable: true)
+            //    (The refused try is now the task's newest handoff, so the Mac sends it back, through the same path.)
+            check(await s3.sendBack(receiptID: done.id, source: snapshot, missing: "The mobile layout is not checked.",
+                                    origin: WorkRequestOrigin(requestID: r2, deadline: Date().addingTimeInterval(600))))
+            let fresh = try require(s3.receipts.first { $0.requestId == r2 })
+            check(fresh.id != done.id && fresh.requestedFrom == "glasses" && fresh.sessionID == one.id
                   && fresh.prompt.hasPrefix("Not done yet. Your status line said: \u{201C}Updated the hero CTA.\u{201D}\nWhat is missing: The mobile layout is not checked."),
                   fresh.prompt)
-            check(s3.receipts.first { $0.id == done.id }?.status == "reviewed", "the reply is marked reviewed first")
-            check(await t3.inboxLog().posted.last?.body == ["state": "sent", "receiptId": fresh.id, "claimToken": TrackingTransport.claimToken])
+            check(s3.receipts.first { $0.id == done.id }?.status == "reviewed", "reviewed once the send-back is on its way")
+            //    Through the inbox, on a fresh task: sent, reviewed, reported.
+            let (s3b, t3b, b3b, _, tr3b, _, _) = appSetUp("glasses-not-done-inbox")
+            await t3b.setCatalog(models: [opus], sessions: [one, two]); s3b.models = [opus]
+            let snapshotB = WorkSource.taskSnapshot(b3b.task(idA))
+            await s3b.submit(source: snapshotB, mode: .continueSession, session: one, model: nil, prompt: "Draft the CTA")
+            await t3b.setTurn("completed")
+            let firstB = try require(s3b.receipts(for: snapshotB.id).first)
+            await t3b.setRead(replies: [("COS-WORK \(idA): done: Updated the hero CTA.", stamp(firstB.createdAt + 0.001))])
+            await tr3b.tick()
+            let doneB = try require(s3b.receipts(for: snapshotB.id).first)
+            await t3b.setInbox([request(r1, intent: "notDone", mode: "continueSession", session: one.id, model: nil,
+                                        note: "The mobile layout is not checked.", replyTo: doneB.id, board: b3b)])
+            await pass(tr3b)
+            let freshB = try require(s3b.receipts(for: snapshotB.id).first)
+            last = await lastPost(t3b)
+            check(freshB.id != doneB.id && freshB.requestId == r1 && s3b.receipts.first { $0.id == doneB.id }?.status == "reviewed"
+                  && last == ["state": "sent", "receiptId": freshB.id, "claimToken": token], "\(String(describing: last))")
             // j2. Reply by voice, on a session that asked a question: the answer goes back to that session, quoted with it.
             let (s8, t8, b8, _, tr8, _, _) = appSetUp("glasses-reply")
             await t8.setCatalog(models: [opus], sessions: [one, two]); s8.models = [opus]
@@ -1715,66 +1940,413 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             check(waiting.progress?.reported == .needsInput && s8.replySession(for: waiting)?.id == one.id, "\(String(describing: waiting.progress?.reported))")
             await t8.setInbox([request(r2, intent: "reply", mode: "continueSession", session: one.id, model: nil,
                                        note: "The $29 plan.", replyTo: waiting.id, board: b8)])
-            await tr8.requests.tick()
+            await pass(tr8)
             let answered = try require(s8.receipts(for: asked.id).first)
             check(answered.id != waiting.id && answered.requestId == r2 && answered.sessionID == one.id
                   && answered.prompt.hasPrefix("You asked: \u{201C}Which plan should the FAQ quote?\u{201D}\nMy answer: The $29 plan."), answered.prompt)
-            check(s8.receipts.first { $0.id == waiting.id }?.progress?.events.last?.text == "You replied: \u{201C}The $29 plan.\u{201D}")
-            check(await t8.inboxLog().posted.last?.body == ["state": "sent", "receiptId": answered.id, "claimToken": TrackingTransport.claimToken])
-            // A reply that names an older handoff, or asks to reply where nothing asked, sends nothing.
+            let answeredOld = try require(s8.receipts.first { $0.id == waiting.id })
+            check(answeredOld.status == "reviewed" && answeredOld.progress?.events.last?.text == "You replied: \u{201C}The $29 plan.\u{201D}")
+            last = await lastPost(t8)
+            check(last == ["state": "sent", "receiptId": answered.id, "claimToken": token])
+            // A reply that names an older handoff sends nothing.
             await t8.setInbox([request(r1, intent: "reply", mode: "continueSession", session: one.id, model: nil,
                                        note: "Again.", replyTo: waiting.id, board: b8)])
-            await tr8.requests.tick()
-            check(await t8.inboxLog().posted.last?.body["reason"] == WorkRequestInbox.Refusal.replyTarget)
-            // k. An older server has no inbox (404): no banner, and no more lists until its version changes.
-            let (s4, t4, _, _, tr4, _, _) = appSetUp("glasses-old-server")
+            await pass(tr8)
+            last = await lastPost(t8)
+            check(last?["reason"] == WorkRequestInbox.Refusal.replyTarget)
+
+            // k. An older server has no inbox (404): no banner, and no more lists until its version changes or ten minutes
+            //    have passed (a server whose version is not on record is still asked again).
+            let (s4, t4, _, clock4, tr4, _, _) = appSetUp("glasses-old-server")
             final class Version { var value = "6.58.2" }
             let version = Version()
             tr4.requests.serverVersion = { version.value }
             await t4.setInbox([], reason: "server_too_old")
-            check(await tr4.requests.tick() == false && s4.error == nil)
-            await tr4.requests.tick(); await tr4.requests.tick()
-            check(await t4.inboxLog().lists == 1, "quiet until the server changes")
+            check(await pass(tr4) == false && s4.error == nil)
+            await pass(tr4); await pass(tr4)
+            check(await t4.inboxLog().lists == 1, "quiet while nothing changed")
             version.value = "6.59.0"
             await t4.setInbox([])
-            await tr4.requests.tick()
+            await pass(tr4)
             check(await t4.inboxLog().lists == 2, "asked again after an update")
-            // A rollback to the older server is asked once more (what the update learned is not kept), then left alone.
             version.value = "6.58.2"
             await t4.setInbox([], reason: "server_too_old")
-            await tr4.requests.tick(); await tr4.requests.tick()
+            await pass(tr4); await pass(tr4)
             check(await t4.inboxLog().lists == 3, "a rollback is asked once, then quiet")
-            // l. A result the server did not take is posted again until it is.
-            let (s5, t5, b5, _, tr5, _, _) = appSetUp("glasses-retry")
+            clock4.offset += 599
+            await pass(tr4)
+            check(await t4.inboxLog().lists == 3, "still quiet at 9 minutes 59")
+            clock4.offset += 2
+            await pass(tr4)
+            check(await t4.inboxLog().lists == 4, "asked again after ten minutes, whatever the version")
+            check(WorkRequestInbox.asksAgain(offVersion: "", since: Date(), version: "", now: Date().addingTimeInterval(600))
+                  && !WorkRequestInbox.asksAgain(offVersion: "", since: Date(), version: "", now: Date().addingTimeInterval(599)))
+
+            // l. A result the server did not take is posted again with a growing wait (5 s, 10 s, ... at most 30 minutes),
+            //    and dropped after a day.
+            let (s5, t5, b5, clock5, tr5, _, _) = appSetUp("glasses-retry")
             await live(t5, s5)
             await t5.setJob(provider: "claude", session: claudeID, afterReads: 1)
             await t5.setInbox([request(r2, board: b5)])
-            await t5.queuePostAnswers([["accepted": .bool(false), "reason": .string("unreachable")]])
-            check(await tr5.requests.tick() == true && tr5.requests.pending.count == 1, "kept for the next pass")
+            let unreachable: [String: JSONValue] = ["accepted": .bool(false), "reason": .string("unreachable")]
+            await t5.queuePostAnswers([unreachable, unreachable, unreachable])
+            await pass(tr5)
             await t5.setInbox([])
-            check(await tr5.requests.tick() == false && tr5.requests.pending.isEmpty)
+            check(tr5.requests.ledger.first?.attempts == 1, "kept for a later pass")
+            await pass(tr5)
+            var posts = await t5.inboxLog().posted.count
+            check(posts == 1, "not posted again before its wait is over: \(posts)")
+            clock5.offset += 6
+            await pass(tr5)
+            posts = await t5.inboxLog().posted.count
+            check(posts == 2 && tr5.requests.ledger.first?.attempts == 2, "posted again after 5 s: \(posts)")
+            clock5.offset += 6
+            await pass(tr5)
+            posts = await t5.inboxLog().posted.count
+            check(posts == 2, "the second wait is 10 s: \(posts)")
+            clock5.offset += 5
+            await pass(tr5)
+            posts = await t5.inboxLog().posted.count
+            check(posts == 3 && tr5.requests.ledger.first?.attempts == 3, "\(posts)")
+            clock5.offset += 21
+            await pass(tr5)
+            posts = await t5.inboxLog().posted.count
             let retriedNew = await t5.count("work-new")
-            check(await t5.inboxLog().posted.count == 2 && retriedNew == 1, "posted twice, sent once")
+            check(posts == 4 && retriedNew == 1 && tr5.requests.ledger.isEmpty, "taken on the fourth post, sent once: \(posts)")
+            check(WorkRequestInbox.retryDelay(attempts: 1) == 5 && WorkRequestInbox.retryDelay(attempts: 2) == 10
+                  && WorkRequestInbox.retryDelay(attempts: 9) == 1_280 && WorkRequestInbox.retryDelay(attempts: 10) == 1_800
+                  && WorkRequestInbox.retryDelay(attempts: 60) == 1_800, "5 s, doubling, at most 30 minutes")
+            //    After a day it is dropped, not posted.
+            try ledger("glasses-stale", [WorkRequestLedgerEntry(requestId: r1, claimToken: token, claimedAt: Date().timeIntervalSince1970 - 86_401,
+                                                                result: ["state": "sent", "receiptId": "r-old"])])
+            let (_, t5b, _, _, tr5b, _, _) = appSetUp("glasses-stale")
+            await t5b.setInbox([])
+            await pass(tr5b)
+            posts = await t5b.inboxLog().posted.count
+            check(posts == 0 && tr5b.requests.ledger.isEmpty, "a day old: dropped")
+
             // m. A refused admission is refused with its receipt, never sent; an unknown delivery is unresolved.
             let (s6, t6, b6, _, tr6, _, _) = appSetUp("glasses-refused")
             await live(t6, s6)
-            await t6.setJobState("admission_refused_fixture")
             await t6.setNewAnswer(http: 422)
             await t6.setInbox([request(r2, board: b6)])
-            await tr6.requests.tick()
+            await pass(tr6)
             let refusedRow = try require(s6.receipts.first { $0.requestId == r2 })
-            let refusedPost = await t6.inboxLog().posted.last?.body
+            let refusedPost = await lastPost(t6)
             check(refusedRow.status == "refused" && refusedPost == ["state": "refused", "reason": refusedRow.detail, "receiptId": refusedRow.id,
-                  "claimToken": TrackingTransport.claimToken], "\(refusedRow.status) \(String(describing: refusedPost))")
+                  "claimToken": token], "\(refusedRow.status) \(String(describing: refusedPost))")
             let (s7, t7, b7, _, tr7, _, _) = appSetUp("glasses-unknown")
             await live(t7, s7)
             await t7.setJobState("mystery")
             await t7.setInbox([request(r2, board: b7)])
-            await tr7.requests.tick()
+            await pass(tr7)
             let unknownRow = try require(s7.receipts.first { $0.requestId == r2 })
-            let unknownPost = await t7.inboxLog().posted.last?.body
-            check(unknownRow.status == "unknown" && unknownPost == ["state": "unresolved", "receiptId": unknownRow.id,
-                  "claimToken": TrackingTransport.claimToken], "\(unknownRow.status)")
+            let unknownPost = await lastPost(t7)
+            check(unknownRow.status == "unknown" && unknownPost == ["state": "unresolved", "receiptId": unknownRow.id, "claimToken": token],
+                  "\(unknownRow.status)")
+
+            // n. The list keeps its rhythm while a send is in flight (it is what tells the server COS Control is here), and
+            //    the send does not take the store's `busy`: the Agent workspace stays usable, a draft edit made meanwhile
+            //    is kept, and a send from the Mac is told to wait.
+            let (s10, t10, b10, _, tr10, _, _) = appSetUp("glasses-heartbeat")
+            await live(t10, s10)
+            await t10.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            await t10.setDelay("work-new", seconds: 0.5)
+            await t10.setInbox([request(r1, board: b10), request(r2, identity: idB, board: b10)])
+            await tr10.requests.tick()
+            try await Task.sleep(for: .milliseconds(150))
+            check(tr10.requests.sending && !s10.busy && s10.quietSend, "the send runs in its own task and does not take busy")
+            await tr10.requests.tick()
+            var beat = await t10.inboxLog()
+            check(beat.lists == 2 && beat.claims == [r1], "listed again during the send; the next request waits: \(beat.lists) \(beat.claims)")
+            let other = source("cccccccccccc")
+            var edit = s10.draft(for: other); edit.prompt = "Typed while the glasses' send was on the wire"
+            check(s10.updateDraft(edit, for: other) && s10.error == nil, "a draft edit during the send is kept: \(s10.error ?? "")")
+            await s10.submit(source: other, mode: .newSession, session: nil, model: opus, prompt: "From the Mac")
+            check(s10.error == WorkRequestOrigin.macBusyReason && s10.receipts(for: other.id).isEmpty, "a Mac send waits, and says so")
+            s10.error = nil
+            await tr10.requests.waitForSend()
+            let kept10 = WorkHandoffStore(isolated: false, storageURL: root.appendingPathComponent("glasses-heartbeat.json"),
+                                          transport: { _, _ in throw HelperClientError.commandFailed("none") })
+            check(kept10.draft(for: other).prompt == "Typed while the glasses' send was on the wire", "and written once the send lets go")
+            await pass(tr10)
+            beat = await t10.inboxLog()
+            check(beat.claims == [r1, r2] && s10.receipts.contains { $0.requestId == r2 }, "the waiting request is taken next")
+
+            // p. A New session the glasses started stays in the background (Miles, 2026-09-30): its app is never opened by
+            //    itself and its session is never asked about, so the server keeps it and the glasses can reply. The card's
+            //    Open in Claude still opens it, and from then its app owns it. One started on the Mac still opens.
+            let (s13, t13, b13, _, tr13, _, opened13) = appSetUp("glasses-background")
+            await live(t13, s13)
+            await t13.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            await t13.setInbox([request(r1, board: b13)])
+            await pass(tr13)
+            await s13.newSessionLink?.value
+            await t13.setJobResult("done")
+            let quietID = try require(s13.receipts.first { $0.requestId == r1 }).id
+            await s13.followToApp(quietID)
+            await tr13.tick(); await tr13.tick()
+            var background = try require(s13.receipts.first { $0.id == quietID })
+            var reveals = await t13.count("session-reveal")
+            check(background.status == "completed" && background.sessionID == "claude:" + claudeID && opened13.urls.isEmpty && reveals == 0
+                  && background.appOpen?.openedAt == nil, "not opened by itself: \(opened13.urls) reveals \(reveals) \(background.status)")
+            check(WorkHandoffStore.appOwner(of: "claude:" + claudeID, in: s13.receipts) == nil, "the app does not own it, so the glasses can reply")
+            check(WorkHandoffView.glassesMark(background) == " · from the glasses · not opened in its app"
+                  && WorkHandoffView.whereItRunsNote(background) == "Started from the glasses, so it was not opened in its app."
+                  && WorkHandoffStore.appOpenButton(background) == "Open in Claude", "\(String(describing: WorkHandoffStore.appOpenButton(background)))")
+            await s13.reopenInApp(receiptID: quietID)
+            background = try require(s13.receipts.first { $0.id == quietID })
+            check(opened13.urls.map(\.absoluteString) == ["claude://resume?session=" + claudeID] && background.appOpen?.openedAt != nil
+                  && WorkHandoffStore.appOwner(of: "claude:" + claudeID, in: s13.receipts)?.id == quietID
+                  && WorkHandoffView.glassesMark(background) == " · from the glasses", "opened from the card: its app owns it from then")
+            let (s14, t14, _, _, _, _, opened14) = appSetUp("mac-still-opens")
+            s14.models = [opus]
+            await t14.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            await s14.submit(source: source(idA), mode: .newSession, session: nil, model: opus, prompt: "Go")
+            await s14.newSessionLink?.value
+            await t14.setJobResult("done")
+            await s14.followToApp(try row(s14, idA).id)
+            reveals = await t14.count("session-reveal")
+            check(opened14.urls.map(\.absoluteString) == ["claude://resume?session=" + claudeID] && reveals >= 1, "a Mac New session still opens: \(opened14.urls)")
+
+            // o. The claim's deadline is checked again immediately before each wire send: work-new, a native fork, a turn,
+            //    and a queued turn. Past it the receipt is refused and nothing goes on the wire.
+            let (s11, t11, _, _, _, _, _) = appSetUp("glasses-wire-deadline")
+            await live(t11, s11)
+            let late = WorkRequestOrigin(requestID: r1, deadline: Date().addingTimeInterval(-1))
+            await s11.submit(source: source("aaaaaaaaaaaa"), mode: .newSession, session: nil, model: opus, prompt: "Go", origin: late)
+            await s11.submit(source: source("bbbbbbbbbbbb"), mode: .fork, session: one, model: nil, prompt: "Go", origin: late)
+            await s11.submit(source: source("cccccccccccc"), mode: .continueSession, session: one, model: nil, prompt: "Go", origin: late)
+            await t11.setAttach(attachable: false, reason: "native_thread_working")
+            await s11.submit(source: source("dddddddddddd"), mode: .continueSession, session: two, model: nil, prompt: "Go", origin: late)
+            let wire = (await t11.count("work-new"), await t11.count("session-chat-fork"), await t11.count("session-chat-send"), await t11.count("session-chat-queue"))
+            check(wire == (0, 0, 0, 0), "nothing on the wire past the deadline: \(wire)")
+            check(s11.receipts.count == 4 && s11.receipts.allSatisfy { $0.status == "refused" && $0.detail == "Claimed too long ago; not sent" && $0.requestedFrom == "glasses" },
+                  "\(s11.receipts.map(\.status))")
+            //    In time, each of the four does go on the wire.
+            let (s12, t12, _, _, _, _, _) = appSetUp("glasses-wire-in-time")
+            await live(t12, s12)
+            let inTime = WorkRequestOrigin(requestID: r2, deadline: Date().addingTimeInterval(600))
+            await s12.submit(source: source("aaaaaaaaaaaa"), mode: .newSession, session: nil, model: opus, prompt: "Go", origin: inTime)
+            await s12.submit(source: source("bbbbbbbbbbbb"), mode: .fork, session: one, model: nil, prompt: "Go", origin: inTime)
+            await s12.submit(source: source("cccccccccccc"), mode: .continueSession, session: one, model: nil, prompt: "Go", origin: inTime)
+            await t12.setAttach(attachable: false, reason: "native_thread_working")
+            await s12.submit(source: source("dddddddddddd"), mode: .continueSession, session: two, model: nil, prompt: "Go", origin: inTime)
+            let onWire = (await t12.count("work-new"), await t12.count("session-chat-fork"), await t12.count("session-chat-send"), await t12.count("session-chat-queue"))
+            check(onWire == (1, 1, 1, 1), "\(onWire)")
+
+            let r3 = "33333333-3333-4333-8333-333333333333", r4 = "44444444-4444-4444-8444-444444444444"
+            // q. A request type this build does not know is refused, never read as Start; so is one that names none.
+            let (s16, t16, b16, _, tr16, _, _) = appSetUp("glasses-unknown-intent")
+            await live(t16, s16)
+            await t16.setInbox([request(r1, intent: "archive", board: b16)])
+            await pass(tr16)
+            last = await lastPost(t16)
+            var started = await t16.count("work-new")
+            check(last == ["state": "refused", "reason": "COS Control does not know this request type. Nothing was sent.", "claimToken": token]
+                  && started == 0 && s16.receipts.isEmpty, "an unknown intent is refused: \(String(describing: last)) \(started)")
+            var bare = try require(request(r2, board: b16).object)
+            bare["intent"] = nil
+            await t16.setInbox([.object(bare)])
+            await pass(tr16)
+            last = await lastPost(t16)
+            started = await t16.count("work-new")
+            check(last?["reason"] == WorkRequestInbox.Refusal.unknownIntent && started == 0, "no intent is not Start: \(String(describing: last))")
+            check(WorkRequestInbox.knownIntents == ["start", "reply", "notDone"])
+
+            // r. A complete task takes nothing: a checked row, and a row in the Complete column. (The checked row sits in QA:
+            //    a row with no stage of its own reads a check as Complete, which would test the column twice. The mutation
+            //    gate found that on 2026-09-30.)
+            b16.rows[idB] = "qa"; b16.checked[idB] = true
+            await t16.setInbox([request(r3, identity: idB, board: b16)])
+            await pass(tr16)
+            last = await lastPost(t16)
+            started = await t16.count("work-new")
+            check(last == ["state": "refused", "reason": "This task is complete. Nothing was sent.", "claimToken": token] && started == 0,
+                  "a checked task is refused: \(String(describing: last))")
+            b16.rows[idB] = "complete"; b16.checked[idB] = false
+            await t16.setInbox([request(r4, identity: idB, board: b16)])
+            await pass(tr16)
+            last = await lastPost(t16)
+            started = await t16.count("work-new")
+            check(last?["reason"] == WorkRequestInbox.Refusal.taskComplete && started == 0 && s16.receipts.isEmpty,
+                  "a task in Complete is refused: \(String(describing: last))")
+
+            // s. What is reported is the receipt's own state: failed, canceled and refused are refused (with the receipt);
+            //    a send still going or not confirmed is unresolved; only one on its way is sent.
+            var shape = sent
+            for status in ["refused", "failed", "canceled"] {
+                shape.status = status; shape.detail = "Why: " + status
+                check(WorkRequestOutcome.from(shape) == .refused(reason: "Why: " + status, receiptID: sent.id), "\(status) is never reported as sent")
+            }
+            shape.detail = ""
+            check(WorkRequestOutcome.from(shape) == .refused(reason: "Not sent.", receiptID: sent.id), "a refusal always carries words")
+            for status in ["unknown", "sending"] {
+                shape.status = status
+                check(WorkRequestOutcome.from(shape) == .unresolved(receiptID: sent.id), "\(status) is unresolved, never sent")
+            }
+            for status in ["running", "queued", "delivered", "completed", "reviewed"] {
+                shape.status = status
+                check(WorkRequestOutcome.from(shape) == .sent(receiptID: sent.id), "\(status) is sent")
+            }
+            //    Through the inbox: a run the provider failed, and one that was canceled, are reported refused.
+            for (name, state) in [("glasses-failed", "failed"), ("glasses-canceled", "canceled")] {
+                let (sf, tf, bf, _, trf, _, _) = appSetUp(name)
+                await live(tf, sf)
+                await tf.setJob(provider: "claude", session: nil)
+                if state == "failed" { await tf.setFailed(true) } else { await tf.setJobState(state) }
+                await tf.setInbox([request(r1, board: bf)])
+                await pass(trf)
+                let ended = try require(sf.receipts.first { $0.requestId == r1 })
+                let reported = await lastPost(tf)
+                check(ended.status == state && reported?["state"] == "refused" && reported?["receiptId"] == ended.id,
+                      "\(state): receipt \(ended.status), reported \(String(describing: reported))")
+            }
+
+            // t. A result the server could not take just now (5xx, 429) is posted again; one it never will take (the claim
+            //    ended) is dropped at once and never posted again.
+            let (s17, t17, b17, clock17, tr17, _, _) = appSetUp("glasses-result-status")
+            await live(t17, s17)
+            await t17.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            await t17.setInbox([request(r1, board: b17)])
+            await t17.queuePostAnswers([
+                ["accepted": .bool(false), "reason": .string("http_500"), "httpStatus": .number(500)],
+                ["accepted": .bool(false), "reason": .string("rate_limited"), "httpStatus": .number(429)],
+                ["accepted": .bool(false), "reason": .string("claim_token_mismatch"), "httpStatus": .number(409)],
+            ])
+            var lines17: [String] = []
+            tr17.requests.onLog = { lines17.append($0) }
+            await pass(tr17)
+            await t17.setInbox([])
+            check(tr17.requests.ledger.first?.attempts == 1, "a 500 is kept for another post")
+            clock17.offset += 6
+            await pass(tr17)
+            var posts17 = await t17.inboxLog().posted.count
+            check(posts17 == 2 && tr17.requests.ledger.first?.attempts == 2, "a 429 is kept for another post: \(posts17)")
+            clock17.offset += 11
+            await pass(tr17)
+            posts17 = await t17.inboxLog().posted.count
+            check(posts17 == 3 && tr17.requests.ledger.isEmpty && !FileManager.default.fileExists(atPath: s17.requestLedgerURL.path),
+                  "a result the server will never take is given up: \(posts17) \(tr17.requests.ledger)")
+            clock17.offset += 4_000
+            await pass(tr17); await pass(tr17)
+            posts17 = await t17.inboxLog().posted.count
+            let sentOnce = await t17.count("work-new")
+            check(posts17 == 3 && sentOnce == 1, "and never posted again: \(posts17)")
+            check(WorkHandoffStore.resultCanPass(reason: "http_500", status: 500) && WorkHandoffStore.resultCanPass(reason: "http_503", status: 503)
+                  && WorkHandoffStore.resultCanPass(reason: "rate_limited", status: 429) && WorkHandoffStore.resultCanPass(reason: "unreachable", status: 0)
+                  && WorkHandoffStore.resultCanPass(reason: "server_too_old", status: 404))
+            check(!WorkHandoffStore.resultCanPass(reason: "claim_token_mismatch", status: 409) && !WorkHandoffStore.resultCanPass(reason: "request_expired", status: 410)
+                  && !WorkHandoffStore.resultCanPass(reason: "request_not_found", status: 404) && !WorkHandoffStore.resultCanPass(reason: "invalid_request", status: 400))
+            //    Telemetry: the retries are one line, not one per post; the give-up is one line.
+            let retryLines = lines17.filter { $0.contains("result not taken yet") }
+            let goneLines = lines17.filter { $0.contains("not retried") }
+            check(retryLines.count == 1 && retryLines[0].contains(r1) && retryLines[0].contains("http_500") && goneLines.count == 1
+                  && goneLines[0].contains("claim_token_mismatch"), "\(lines17)")
+
+            // u. Fork from the glasses. On the session's own platform: one native fork of that session, and the receipt
+            //    names the child. To the other platform: the conversation is read and carried into a new session on the
+            //    model the request named, and no native fork is made.
+            let (s18, t18, b18, _, tr18, _, _) = appSetUp("glasses-fork-native")
+            await live(t18, s18)
+            await t18.setFork(child: .object(["id": .string("s-child"), "provider": .string("claude"), "name": .string("Fork of Launch copy review"),
+                                              "workspace": .string("Website"), "state": .string("running")]))
+            await t18.setInbox([request(r1, mode: "fork", session: one.id, model: nil, note: "Try the shorter headline.", board: b18)])
+            await pass(tr18)
+            let forkArgs = await t18.args("session-chat-fork")
+            let forked = try require(s18.receipts.first { $0.requestId == r1 })
+            last = await lastPost(t18)
+            started = await t18.count("work-new")
+            check(forkArgs == [["session-chat-fork", "--provider", "claude", "--thread-id", "s-one"]] && started == 0, "\(forkArgs) \(started)")
+            check(forked.mode == .fork && forked.sessionID == "claude:s-child" && forked.sourceSessionID == one.id && forked.requestedFrom == "glasses"
+                  && forked.prompt.contains("Note from the glasses: Try the shorter headline."), "\(String(describing: forked.sessionID)) \(forked.mode)")
+            check(last == ["state": "sent", "receiptId": forked.id, "claimToken": token], "\(String(describing: last))")
+            let (s19, t19, b19, _, tr19, _, _) = appSetUp("glasses-fork-cross")
+            await live(t19, s19)
+            await t19.setJob(provider: "codex", session: codexID, afterReads: 1)
+            await t19.setInbox([request(r2, mode: "fork", session: one.id, model: "codex-frontier", board: b19)])
+            await pass(tr19)
+            let crossed = try require(s19.receipts.first { $0.requestId == r2 })
+            let readBack = await t19.args("claude-session-detail")
+            let nativeForks = await t19.count("session-chat-fork")
+            started = await t19.count("work-new")
+            last = await lastPost(t19)
+            check(readBack == [["claude-session-detail", "--session", "s-one", "--provider", "claude"]] && nativeForks == 0 && started == 1,
+                  "\(readBack) forks \(nativeForks) new \(started)")
+            check(crossed.provider == "codex" && crossed.modelID == "codex-frontier" && crossed.requestedFrom == "glasses"
+                  && last == ["state": "sent", "receiptId": crossed.id, "claimToken": token], "\(crossed.provider) \(String(describing: last))")
+
+            // v. The journal is read again from disk before a request is sent: another launch of COS Control already sent
+            //    this one, and this launch (whose memory does not have that receipt) reports it and sends nothing.
+            let (s20, t20, b20, _, tr20, _, _) = appSetUp("glasses-dedupe-disk")
+            await live(t20, s20)
+            check(s20.receipts.isEmpty, "this launch starts with an empty journal")
+            let tOther = TrackingTransport()
+            let other20 = WorkHandoffStore(isolated: false, storageURL: root.appendingPathComponent("glasses-dedupe-disk.json"),
+                                           transport: { args, data in try await tOther.run(args, data) })
+            other20.models = [opus]
+            deskless(other20)
+            await tOther.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            await other20.submit(source: WorkSource.taskSnapshot(b20.task(idA)), mode: .newSession, session: nil, model: opus, prompt: "Go",
+                                 origin: WorkRequestOrigin(requestID: r1, deadline: Date().addingTimeInterval(600)))
+            let theirs = try require(other20.receipts.first { $0.requestId == r1 })
+            check(!s20.receipts.contains { $0.requestId == r1 }, "this launch's memory does not have the other launch's receipt")
+            await t20.setInbox([request(r1, board: b20)])
+            await pass(tr20)
+            started = await t20.count("work-new")
+            last = await lastPost(t20)
+            check(started == 0 && last == ["state": WorkRequestOutcome.from(theirs).body["state"] ?? "", "receiptId": theirs.id, "claimToken": token],
+                  "found on disk, reported, not sent again: new \(started) \(String(describing: last))")
+            //    Found before anything else was read: a request answered from the journal on disk reads no catalog and no
+            //    sessions. (Without the re-read the send's own journal fence refused it and reported the same receipt, so
+            //    only this tells the two apart; the mutation gate found that on 2026-09-30.)
+            let readsAfterDedupe = (await t20.count("work-models"), await t20.count("claude-sessions"))
+            check(readsAfterDedupe == (0, 0), "dedupe comes before any other read: \(readsAfterDedupe)")
+
+            // w. start() runs the inbox: the tracker's start lists at once, takes a waiting request, and keeps listing
+            //    (the list is the heartbeat the server reads as "COS Control is here").
+            let (s21, t21, b21, _, tr21, _, _) = appSetUp("glasses-start-loop")
+            await live(t21, s21)
+            await t21.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            await t21.setInbox([request(r1, board: b21)])
+            tr21.requests.interval = 0.05; tr21.requests.busyInterval = 0.05
+            tr21.start()
+            try await Task.sleep(for: .milliseconds(900))
+            tr21.requests.stop()
+            await tr21.requests.waitForSend()
+            let looped = await t21.inboxLog()
+            started = await t21.count("work-new")
+            check(looped.lists >= 4 && looped.claims == [r1] && started == 1 && looped.posted.map(\.body["state"]) == ["sent"],
+                  "start() lists, takes the request once, and keeps listing: lists \(looped.lists) claims \(looped.claims) new \(started)")
+            let afterStop = looped.lists
+            try await Task.sleep(for: .milliseconds(300))
+            let settled = await t21.inboxLog().lists
+            check(settled <= afterStop + 1, "stop() ends the loop: \(afterStop) then \(settled)")
+
+            // x. Telemetry, once per change of state and never once per pass: a list that fails, an older server, a claim
+            //    that is refused.
+            let (s22, t22, b22, clock22, tr22, _, _) = appSetUp("glasses-telemetry")
+            await live(t22, s22)
+            var lines: [String] = []
+            tr22.requests.onLog = { lines.append($0) }
+            tr22.requests.serverVersion = { "6.58.2" }
+            await t22.setInbox([], reason: "unreachable")
+            await pass(tr22); await pass(tr22); await pass(tr22)
+            check(lines == ["glasses requests: list failed (unreachable)"], "one line for three failed lists: \(lines)")
+            await t22.setInbox([])
+            await pass(tr22); await pass(tr22)
+            check(lines.count == 2 && lines[1] == "glasses requests: listing", "one line when it lists again: \(lines)")
+            await t22.setInbox([], reason: "server_too_old")
+            await pass(tr22); await pass(tr22)
+            clock22.offset += 601
+            await pass(tr22); await pass(tr22)
+            check(lines.count == 3 && lines[2].hasPrefix("glasses requests: this server (6.58.2) has no inbox"), "one line for the older-server latch, its re-probe included: \(lines)")
+            await t22.setInbox([request(r1, expiresIn: 5_000, board: b22)])
+            await t22.setClaim(refusal: "already_claimed")
+            clock22.offset += 601
+            await pass(tr22); await pass(tr22); await pass(tr22)
+            let claimLines = lines.filter { $0.contains("not claimed") }
+            check(claimLines == ["glasses request \(r1): not claimed (already_claimed)"], "one line for a claim refused three times: \(lines)")
         }
     }
 }

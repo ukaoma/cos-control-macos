@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-private let trackingLog = Logger(subsystem: "com.cos.control", category: "work-tracking")
+private let trackingLog = Logger(subsystem: "com.gotcos.control", category: "work-tracking")
 
 /// A Mac notification the tracker asks for. Posted once per handoff and moment (WorkProgress.notified).
 struct WorkProgressNotice: Equatable, Sendable {
@@ -32,6 +32,9 @@ struct WorkProgressNotice: Equatable, Sendable {
         var writable: () -> Bool
         var reload: () async -> Void
         var move: (TaskRow, String) async throws -> Void
+        /// 0.5.252: whether the last `reload` read the board. A failed read leaves the old rows in `tasks`, and a
+        /// glasses request must not be checked against those.
+        var readOK: () -> Bool = { true }
     }
     /// One read of a session: its recent replies and message openings, and whether it is still working.
     struct SessionRead {
