@@ -885,8 +885,8 @@ struct WorkGlassesRequest: Equatable, Sendable {
                     throw failure(WorkRequestOrigin.appOwnedReason)
                 }
             }
-            // 0.5.253: Cursor work opens Cursor's window for a person to press Send; a request from the glasses is refused
-            // before anything is recorded (the inbox refuses it first; this holds for any other caller).
+            // 0.5.253: Cursor work opens Cursor's window for a person to press Send, so a send for the glasses (Start, Reply
+            // by voice, Not done yet: every one comes through here) is refused before anything is recorded.
             let destination = mode == .newSession ? model!.provider : session!.provider
             let prefill = Self.prefillProviders.contains(destination) && mode != .fork
             if origin != nil, prefill { throw failure(WorkRequestOrigin.cursorNeedsMac) }
@@ -1031,7 +1031,8 @@ struct WorkGlassesRequest: Equatable, Sendable {
     /// Unreserved URL characters only (RFC 3986), in ASCII: everything else is percent-encoded, including non-ASCII
     /// letters, which `.alphanumerics` would let through.
     nonisolated static let linkQueryAllowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
-    /// A session id the apps take: a lowercase UUID, which Claude CLI sessions and Codex threads are. Anything else (a trailing newline included) is refused before it reaches a link or a command.
+    /// A session id the apps take: a lowercase UUID, which Claude CLI sessions and Codex threads are. Anything else (a
+    /// trailing newline included) is refused before it reaches a link.
     /// Checked byte by byte, not with a regular expression: ICU's `$` also matches before a final newline, and which
     /// engine `range(of:options:)` uses differs between Foundation versions (on this Mac it refuses the newline and
     /// NSRegularExpression accepts it).
