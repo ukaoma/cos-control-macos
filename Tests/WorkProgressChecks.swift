@@ -1333,6 +1333,30 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             check(names.dropFirst() == ["<none>", "<none>", "<none>", "Task ffffffffffff"], "\(names)")
         }
 
+        // 20b. 0.5.251: the name is the task's WHOLE title. The 0.5.250 canary sent the board's 42-character display title
+        //      ("Canary 0.5.250 Claude name: reply with the"). Through the real snapshot and send path: an 84-character
+        //      title arrives whole; a 130-character one is cut by the same rules (100, back to the space, no trailing comma).
+        do {
+            let (store, transport, _, _, _, _, _) = appSetUp("named-whole")
+            store.models = [opus]
+            await transport.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            func task(_ identity: String, _ text: String) throws -> TaskRow {
+                try require(TaskRow(.object(["id": .string(identity), "domain": .string("Quilt"), "title": .string(String(text.prefix(42))),
+                                             "text": .string("**" + text + "**"), "doneWhen": .string("It answers"),
+                                             "workIdentity": .string(identity), "workRevision": .string(String(repeating: "a", count: 64))])))
+            }
+            let whole = "Canary 0.5.251 Claude name: reply with the single word ready, then wait for Miles ok"
+            let long = "Canary 0.5.251 long name: reply with the single word ready, then keep this whole title as its name, and the tail past it is cut ok"
+            check(whole.count == 84 && long.count == 130, "\(whole.count) \(long.count)")
+            let first = WorkSource.taskSnapshot(try task("aaaaaaaaaaa1", whole))
+            check(first.title == String(whole.prefix(42)) && first.sessionNameSource == whole, "the display title stays; the name source is whole")
+            await store.submit(source: first, mode: .newSession, session: nil, model: opus, prompt: "Go")
+            await store.submit(source: .taskSnapshot(try task("aaaaaaaaaaa2", long)), mode: .newSession, session: nil, model: opus, prompt: "Go")
+            let names = await transport.names()
+            check(names == [whole, "Canary 0.5.251 long name: reply with the single word ready, then keep this whole title as its name"],
+                  "\(names)")
+        }
+
         // 21. 0.5.250: a job that failed, was canceled or was interrupted is never linked, even when the server named its
         //     session; a job with its answer ready is. Check status links like any other read, and says so.
         do {

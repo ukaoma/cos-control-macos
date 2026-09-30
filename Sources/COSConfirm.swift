@@ -91,8 +91,7 @@ private struct COSConfirmModifier: ViewModifier {
                                     isPresented = false
                                     action.run()
                                 }
-                                .buttonStyle(.bordered)
-                                .tint(action.kind == .destructive ? COSPalette.amber : nil)
+                                .buttonStyle(COSQuietButtonStyle(tone: action.kind == .destructive ? .destructive : .standard))
                                 .keyboardShortcut(action.kind == .cancel ? .cancelAction : nil)
                             }
                         }

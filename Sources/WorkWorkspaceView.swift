@@ -502,9 +502,8 @@ struct WorkWorkspaceView: View {
                     .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
             }
             Spacer(minLength: 8)
-            Picker("Layout", selection: layoutBinding) {
-                ForEach(WorkLayout.allCases) { Text($0.title).tag($0) }
-            }.pickerStyle(.segmented).labelsHidden().fixedSize()
+            COSViewSwitch("Layout", selection: layoutBinding, options: WorkLayout.allCases.map { COSViewOption($0, $0.title) })
+                .fixedSize()
                 .help("Board: the sessions working now over the Kanban. Focus: the list; an open item shows its Agent workspace beside it, or under its title in a narrow window.")
             Button("Add task") {
                 state.captureOpen.toggle()
@@ -567,11 +566,11 @@ struct WorkWorkspaceView: View {
     private var captureForm: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                TextField("What needs to be done?", text: $state.captureText).textFieldStyle(.roundedBorder).disabled(state.captureBusy)
-                Picker("Domain", selection: $state.captureDomain) {
-                    Text("Choose domain").tag("")
-                    ForEach(model.domainOptions) { Text($0.label).tag($0.name) }
-                }.frame(maxWidth: 200).disabled(state.captureBusy)
+                TextField("What needs to be done?", text: $state.captureText).textFieldStyle(.plain).cosField().disabled(state.captureBusy)
+                COSDropdown("Domain", selection: $state.captureDomain,
+                            options: [COSDropdownOption("", "Choose domain", placeholder: true)]
+                                + model.domainOptions.map { COSDropdownOption($0.name, $0.label) })
+                    .frame(maxWidth: 200).disabled(state.captureBusy)
                 Button(state.captureBusy ? "Adding…" : "Capture") {
                     guard !handoffStore.isolated else { return }
                     let text = state.captureText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -635,18 +634,16 @@ struct WorkWorkspaceView: View {
 
     private var compactNavigation: some View {
         HStack(spacing: 18) {
-            Picker("View", selection: Binding(get: { state.scope }, set: { value in
+            COSDropdown("View", selection: Binding(get: { state.scope }, set: { value in
                 state.scope = value; state.intakeOpen = false; state.focusOverride = false; returnToList()
-            })) {
-                ForEach(WorkWorkspaceScope.allCases) { Text($0.title).tag($0) }
-            }
+            }), options: WorkWorkspaceScope.allCases.map { COSDropdownOption($0, $0.title) })
+                .fixedSize()
             if !handoffStore.isolated && model.workIntakeVisible {
-                Toggle(intakeTitle, isOn: $state.intakeOpen).toggleStyle(.button)
+                Toggle(intakeTitle, isOn: $state.intakeOpen).toggleStyle(COSChipToggleStyle())
             }
-            Picker("Domain", selection: Binding(get: { state.domain ?? "" }, set: { state.domain = $0.isEmpty ? nil : $0; returnToList() })) {
-                Text("All domains").tag("")
-                ForEach(domains, id: \.self) { Text(domainLabel($0)).tag($0) }
-            }
+            COSDropdown("Domain", selection: Binding(get: { state.domain ?? "" }, set: { state.domain = $0.isEmpty ? nil : $0; returnToList() }),
+                        options: [COSDropdownOption("", "All domains")] + domains.map { COSDropdownOption($0, domainLabel($0)) })
+                .fixedSize()
             Spacer(minLength: 0)
         }.font(COSType.body(12)).padding(.horizontal, 18).padding(.vertical, 10)
     }
@@ -731,8 +728,9 @@ struct WorkWorkspaceView: View {
             if !reviews.isEmpty {
                 HStack {
                     Text("Meeting reviews").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
-                    Menu("\(reviews.count) recorded") { ForEach(reviews) { item in Button(item.title + " · " + (item.review?.status ?? "")) { select(item) } } }
-                        .menuStyle(.borderlessButton).fixedSize()
+                    Menu { ForEach(reviews) { item in Button(item.title + " · " + (item.review?.status ?? "")) { select(item) } } }
+                        label: { COSMenuLabel(title: "\(reviews.count) recorded") }
+                        .cosMenu().fixedSize()
                     Spacer()
                 }.padding(.horizontal, 18).padding(.bottom, 10)
             }
@@ -1104,8 +1102,8 @@ struct WorkWorkspaceView: View {
                 Button(stage == .complete ? "Mark complete" : "Move to " + stage.title) { move(task, to: stage) }
                     .disabled(WorkBoardStage.stage(for: task) == stage)
             }
-        } label: { Label(WorkBoardStage.stage(for: task).title, systemImage: "arrow.left.arrow.right") }
-            .font(COSType.body(11)).menuStyle(.borderlessButton).fixedSize()
+        } label: { COSMenuLabel(title: WorkBoardStage.stage(for: task).title, icon: "arrow.left.arrow.right") }
+            .cosMenu().fixedSize()
             .disabled(!canChangeStage(task))
             .help("Change task stage")
     }
@@ -1414,10 +1412,9 @@ struct WorkWorkspaceView: View {
             Text("Review the canonical saved meeting for decisions and possible next steps. This does not create, complete, or send tasks automatically.")
                 .font(COSType.body(13)).foregroundStyle(COSPalette.muted)
             if reviewStore.available {
-                Picker("Review model", selection: $state.reviewModelID) {
-                    Text("Choose a model").tag("")
-                    ForEach(reviewStore.models) { choice in Text(choice.title + (choice.available ? "" : " · unavailable")).tag(choice.id) }
-                }
+                COSDropdown("Review model", selection: $state.reviewModelID,
+                            options: [COSDropdownOption("", "Choose a model", placeholder: true)]
+                                + reviewStore.models.map { COSDropdownOption($0.id, $0.title, note: $0.available ? nil : "unavailable", muted: !$0.available) })
                 if let reason = reviewStore.models.first(where: { $0.id == state.reviewModelID })?.reason { Text(reason).font(COSType.body(11)).foregroundStyle(COSPalette.muted) }
                 Button(reviewStore.busy ? "Reviewing…" : "Review this meeting") {
                     Task {

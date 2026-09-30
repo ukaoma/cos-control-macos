@@ -189,6 +189,13 @@ struct ControlPanel: View {
         .font(COSType.body(13))
         .background(COSPalette.panel)
         .background(WindowOpaquer())
+        // 0.5.251: GOTCOS progress, disclosure and tint for every control in the panel. Dropdowns here open as
+        // popovers, as in the Activity window: Tests/dropdown-canary drove a real MenuBarExtra(.window) with posted
+        // clicks and keys (2026-09-30). The popover opened, a row click and Down then Return both chose, and the
+        // panel stayed open each time. The same harness reproduced the 2026-08-23 finding for .confirmationDialog
+        // (Release never ran, the panel closed), so it observes this panel's failure mode. If a popover ever
+        // dismisses the panel, `.environment(\.cosDropdownInline, true)` here drops every list inline instead.
+        .cosControlTheme()
         .onAppear {
             // Fences are rare and urgent, and the card only renders when there is
             // one — so something has to look. Opening the panel is the right
@@ -545,8 +552,8 @@ struct ControlPanel: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             TextField("Search characters", text: $openPetsQuery)
-                .textFieldStyle(.roundedBorder)
-                .controlSize(.small)
+                .textFieldStyle(.plain)
+                .cosField()
             if model.openPetsLoading && model.openPetsRows.isEmpty {
                 HStack {
                     ProgressView().controlSize(.small)
@@ -560,7 +567,7 @@ struct ControlPanel: View {
                     Button("Try again") {
                         Task { await model.loadOpenPetsCatalog() }
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(COSTextButtonStyle())
                 }
             } else if model.openPetsStale {
                 Text("Showing the saved OpenPets list.")
@@ -618,7 +625,7 @@ struct ControlPanel: View {
                 if model.jevStatus?.available != false {
                     HStack {
                         SecureField(model.jevStatus?.configured == true ? "Replace key" : "TypeSafe API key", text: $jevKeyDraft)
-                            .textFieldStyle(.roundedBorder).disabled(model.jevBusy)
+                            .textFieldStyle(.plain).cosField().disabled(model.jevBusy)
                         Button(model.jevBusy ? "Checking…" : "Save") {
                             let key = jevKeyDraft
                             Task { if await model.saveJevKey(key) { jevKeyDraft = "" } }
@@ -626,7 +633,7 @@ struct ControlPanel: View {
                     }
                     if model.jevStatus?.source == "config" {
                         Button("Remove saved key", role: .destructive) { Task { await model.removeJevKey() } }
-                            .buttonStyle(.borderless).font(.caption).disabled(model.jevBusy)
+                            .buttonStyle(COSTextButtonStyle(tone: .destructive)).disabled(model.jevBusy)
                     }
                 }
                 if let message = model.jevMessage { Text(message).font(.caption2).foregroundStyle(.secondary) }
@@ -651,6 +658,7 @@ struct ControlPanel: View {
                     get: { model.petEnabled },
                     set: { model.setPetEnabled($0) }
                 ))
+                .toggleStyle(COSSwitchStyle())
                 if model.petEnabled {
                     // State the permission BEFORE a jump fails. Without this the
                     // only way to learn the grant is missing was to click the pet
@@ -668,8 +676,7 @@ struct ControlPanel: View {
                             }
                             Spacer(minLength: 0)
                             Button("Grant") { model.requestPetJumpAccessibility() }
-                                .buttonStyle(.borderless)
-                                .font(.caption.weight(.semibold))
+                                .buttonStyle(COSTextButtonStyle())
                         }
                         .padding(8)
                         .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -760,11 +767,11 @@ struct ControlPanel: View {
             Spacer()
             if model.busy { ProgressView().controlSize(.small) }
             Button { confirmResetMessageCount = true } label: { Image(systemName: "archivebox") }
-                .buttonStyle(.borderless)
+                .buttonStyle(COSIconButtonStyle(size: 24))
                 .disabled(model.busy)
                 .help("Archive live messages and start numbering at #1")
             Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }
-                .buttonStyle(.borderless).help("Refresh status")
+                .buttonStyle(COSIconButtonStyle(size: 24)).help("Refresh status")
         }
     }
 
@@ -1241,16 +1248,17 @@ struct ControlPanel: View {
                                   || model.status.transactionPending
                                   || model.status.meetingWorkBlockingRestart)
                     Button("Stop", systemImage: "stop.fill", role: .destructive) { model.perform("stop") }
+                        .buttonStyle(COSQuietButtonStyle(tone: .destructive))
                         .disabled(model.status.runtimeState == "managedInPlace" && !model.status.safeToRestart)
                 } else if model.status.runtimeState == "stopped" {
-                    Button("Start", systemImage: "play.fill") { model.perform("start") }.buttonStyle(.borderedProminent)
+                    Button("Start", systemImage: "play.fill") { model.perform("start") }.buttonStyle(COSPrimaryButtonStyle())
                 }
                 Spacer()
                 if model.status.installed && model.status.managedContract && model.status.ownershipVerified {
                     Button("Update Server") { model.perform("update") }
                         .disabled(model.status.meetingWorkBlockingRestart)
                 } else if !model.status.installed && model.status.runtimeState == "notInstalled" {
-                    Button("Install Server") { model.installCurrentRelease() }.buttonStyle(.borderedProminent)
+                    Button("Install Server") { model.installCurrentRelease() }.buttonStyle(COSPrimaryButtonStyle())
                 }
             }
             .disabled(model.busy)
@@ -1271,7 +1279,7 @@ struct ControlPanel: View {
                         .font(.caption).foregroundStyle(.secondary)
                     HStack(spacing: 8) {
                         Button("Manage in place") { model.perform("adopt-in-place") }
-                            .buttonStyle(.borderedProminent).controlSize(.small)
+                            .buttonStyle(COSPrimaryButtonStyle())
                         Button("Install managed server") {
                             confirmInstallManaged = true
                         }
@@ -1635,16 +1643,19 @@ struct ControlPanel: View {
                         get: { index < domainsDraft.count ? domainsDraft[index] : "" },
                         set: { if index < domainsDraft.count { domainsDraft[index] = $0 } }
                     ))
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
+                    .cosField()
                     Button {
                         if index > 0 { domainsDraft.swapAt(index, index - 1) }
                     } label: { Image(systemName: "chevron.up") }
                     .disabled(index == 0)
-                    .buttonStyle(.borderless)
+                    .buttonStyle(COSIconButtonStyle(size: 22))
+                    .accessibilityLabel("Move up")
                     Button {
                         if index < domainsDraft.count { domainsDraft.remove(at: index) }
-                    } label: { Image(systemName: "minus.circle") }
-                    .buttonStyle(.borderless)
+                    } label: { Image(systemName: "minus") }
+                    .buttonStyle(COSIconButtonStyle(size: 22))
+                    .accessibilityLabel("Remove")
                 }
             }
             HStack(spacing: 8) {
@@ -1761,11 +1772,14 @@ struct ControlPanel: View {
                     get: { briefDraft?.enabled ?? draft.enabled },
                     set: { briefDraft?.enabled = $0 }
                 ))
+                .toggleStyle(COSSwitchStyle())
+                .fixedSize()
                 TextField("07:00", text: Binding(
                     get: { briefDraft?.time ?? draft.time },
                     set: { briefDraft?.time = $0 }
                 ))
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
+                .cosField()
                 .frame(width: 58)
                 .multilineTextAlignment(.center)
                 Text(draft.timezone).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
@@ -1794,8 +1808,7 @@ struct ControlPanel: View {
                         briefDraft = draft
                     }
                 ))
-                .toggleStyle(.button)
-                .controlSize(.mini)
+                .toggleStyle(COSChipToggleStyle())
                 .frame(width: 26)
             }
             Spacer(minLength: 0)
@@ -1842,6 +1855,7 @@ struct ControlPanel: View {
                     }
                 }
             }
+            .toggleStyle(COSCheckStyle())
             if source.enabled, let options = spec?.options, !options.isEmpty {
                 ForEach(options) { option in
                     morningBriefOption(sourceID: source.id, option: option, value: source.options[option.key])
@@ -1865,23 +1879,23 @@ struct ControlPanel: View {
                 get: { value?.bool ?? option.defaultValue.bool ?? false },
                 set: { on in updateBriefSource(sourceID) { $0.options[option.key] = .bool(on) } }
             ))
+            .toggleStyle(COSCheckStyle())
             .font(.caption2)
         case "integer":
             let current = value?.int ?? option.defaultValue.int ?? 0
-            Stepper(value: Binding(
+            COSStepper(option.label, value: Binding(
                 get: { current },
                 set: { new in updateBriefSource(sourceID) { $0.options[option.key] = .number(Double(new)) } }
-            ), in: (option.min ?? 0)...(option.max ?? 365)) {
-                Text("\(option.label): \(current) \(option.unit ?? "")").font(.caption2)
-            }
-            .controlSize(.mini)
+            ), in: (option.min ?? 0)...(option.max ?? 365),
+                valueText: "\(current) \(option.unit ?? "")".trimmingCharacters(in: .whitespaces))
+            .font(.caption2)
         default:
             TextField(option.placeholder ?? option.label, text: Binding(
                 get: { value?.string ?? "" },
                 set: { text in updateBriefSource(sourceID) { $0.options[option.key] = .string(text) } }
             ))
-            .textFieldStyle(.roundedBorder)
-            .font(.caption2)
+            .textFieldStyle(.plain)
+            .cosField()
         }
     }
 
@@ -1896,8 +1910,7 @@ struct ControlPanel: View {
                 .help("Runs the brief right away and drops it in the inbox. Five a day.")
             Spacer()
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
+        .buttonStyle(COSQuietButtonStyle())
         if let last = model.morningBrief?.runs.first {
             // 0.5.185 — its own wrapping line, so a refusal reason is readable on
             // the 390pt card instead of truncated behind two buttons.
@@ -1954,6 +1967,16 @@ struct ControlPanel: View {
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
     }
 
+    /// Local model rows: Automatic, each pulled tag, then a configured pin gone from the daemon. The pin must
+    /// still show, or the dropdown would lie about the server's actual configuration.
+    private var ollamaModelOptions: [COSDropdownOption<String>] {
+        var rows = [COSDropdownOption("", "Automatic (newest pull)")] + model.ollamaTags.map { COSDropdownOption($0, $0) }
+        if let pinned = model.status.ollamaConfiguredModel, !model.ollamaTags.contains(pinned) {
+            rows.append(COSDropdownOption(pinned, pinned, note: "not pulled", muted: true))
+        }
+        return rows
+    }
+
     private var utilities: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("TOOLS").font(.caption2.weight(.bold)).tracking(1.3).foregroundStyle(.secondary)
@@ -1963,11 +1986,9 @@ struct ControlPanel: View {
             }
             if model.status.transcriptionRequestedTier != nil {
                 HStack(spacing: 8) {
-                    Picker("Transcription", selection: $selectedTranscriptionTier) {
-                        Text("Balanced").tag("balanced")
-                        Text("Max").tag("max")
-                    }
-                    .pickerStyle(.segmented)
+                    COSViewSwitch("Transcription", selection: $selectedTranscriptionTier,
+                                  options: [COSViewOption("balanced", "Balanced"), COSViewOption("max", "Max")], showsLabel: true)
+                    Spacer(minLength: 0)
                     Button("Apply") { model.setTranscriptionTier(selectedTranscriptionTier) }
                         .disabled(model.busy
                             || (!model.status.installed && model.status.runtimeState != "managedInPlace"))
@@ -1983,6 +2004,7 @@ struct ControlPanel: View {
             if model.status.backgroundJobsSupported {
                 HStack(spacing: 8) {
                     Toggle("Background jobs", isOn: $selectedBackgroundJobs)
+                        .toggleStyle(COSSwitchStyle())
                     Button("Apply") { model.setBackgroundJobsEnabled(selectedBackgroundJobs) }
                         .disabled(model.busy
                             || (!model.status.installed && model.status.runtimeState != "managedInPlace")
@@ -1995,6 +2017,7 @@ struct ControlPanel: View {
             if model.status.meetingPreviewSupported {
                 HStack(spacing: 8) {
                     Toggle("Meeting Turbo preview", isOn: $selectedMeetingPreview)
+                        .toggleStyle(COSSwitchStyle())
                     Button("Apply") { model.setMeetingPreviewEnabled(selectedMeetingPreview) }
                         .disabled(model.busy
                             || (!model.status.installed && model.status.runtimeState != "managedInPlace")
@@ -2006,6 +2029,7 @@ struct ControlPanel: View {
             }
             HStack(spacing: 8) {
                 Toggle("Show Claude sessions", isOn: $selectedClaudeSessions)
+                    .toggleStyle(COSSwitchStyle())
                 Button("Apply") { model.setClaudeSessionsEnabled(selectedClaudeSessions) }
                     .disabled(model.busy
                         || (!model.status.installed && model.status.runtimeState != "managedInPlace"))
@@ -2016,6 +2040,7 @@ struct ControlPanel: View {
             if model.status.threadAttachSupported {
                 HStack(spacing: 8) {
                     Toggle("Continue agent threads", isOn: $selectedThreadAttach)
+                        .toggleStyle(COSSwitchStyle())
                     Button("Apply") { model.setThreadAttachEnabled(selectedThreadAttach) }
                         .disabled(model.busy
                             || (!model.status.installed && model.status.runtimeState != "managedInPlace")
@@ -2027,18 +2052,7 @@ struct ControlPanel: View {
             }
             if model.status.ollamaReady == true || model.status.ollamaConfiguredModel != nil || !model.ollamaTags.isEmpty {
                 HStack(spacing: 8) {
-                    Picker("Local model", selection: $selectedOllamaModel) {
-                        Text("Automatic (newest pull)").tag("")
-                        ForEach(model.ollamaTags, id: \.self) { tag in
-                            Text(tag).tag(tag)
-                        }
-                        // A configured pin whose model is gone from the daemon
-                        // must still render, or the picker would lie about the
-                        // server's actual configuration.
-                        if let pinned = model.status.ollamaConfiguredModel, !model.ollamaTags.contains(pinned) {
-                            Text("\(pinned) (not pulled)").tag(pinned)
-                        }
-                    }
+                    COSDropdown("Local model", selection: $selectedOllamaModel, options: ollamaModelOptions)
                     Button("Apply") { model.setOllamaModel(selectedOllamaModel.isEmpty ? nil : selectedOllamaModel) }
                         .disabled(model.busy
                             || (!model.status.installed && model.status.runtimeState != "managedInPlace")
@@ -2053,6 +2067,7 @@ struct ControlPanel: View {
             if model.status.videoUploadV2Supported {
                 HStack(spacing: 8) {
                     Toggle("Reliable video uploads (beta)", isOn: $selectedVideoUploadV2)
+                        .toggleStyle(COSSwitchStyle())
                     Button("Apply") { model.setVideoUploadV2Enabled(selectedVideoUploadV2) }
                         .disabled(model.busy
                             || (!model.status.installed && model.status.runtimeState != "managedInPlace")
@@ -2069,6 +2084,7 @@ struct ControlPanel: View {
             if model.status.idleMetalHqSupported {
                 HStack(spacing: 8) {
                     Toggle("Idle Metal HQ", isOn: $selectedIdleMetalHq)
+                        .toggleStyle(COSSwitchStyle())
                     Button("Apply") { model.setIdleMetalHqEnabled(selectedIdleMetalHq) }
                         .disabled(model.busy
                             || (!model.status.installed && model.status.runtimeState != "managedInPlace")
@@ -2081,6 +2097,7 @@ struct ControlPanel: View {
             if model.status.adaptiveAudioCleanupSupported {
                 HStack(spacing: 8) {
                     Toggle("Adaptive audio cleanup", isOn: $selectedAdaptiveAudioCleanup)
+                        .toggleStyle(COSSwitchStyle())
                     Button("Apply") { model.setAdaptiveAudioCleanupEnabled(selectedAdaptiveAudioCleanup) }
                         .disabled(model.busy
                             || (!model.status.installed && model.status.runtimeState != "managedInPlace")
@@ -2144,28 +2161,26 @@ struct ControlPanel: View {
             }
             Divider()
             Toggle("Launch COS Control at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
+                .toggleStyle(COSSwitchStyle())
             HotKeyRecorderRow(model: model)
             sessionPetSettings
             jevSettings
             // 0.5.247: Work tracking notifications (a session received a task, finished it, or needs you).
             Toggle("Work notifications", isOn: Binding(get: { model.workNotificationsEnabled }, set: { model.workNotificationsEnabled = $0 }))
+                .toggleStyle(COSSwitchStyle())
                 .help("Notify me when a session receives Work, reports it done, or needs my input")
             // 0.5.249: a New session starts in the background, then opens in its app once its first reply is done.
             Toggle("Open new sessions in the app", isOn: Binding(get: { model.workOpensTabs }, set: { model.workOpensTabs = $0 }))
+                .toggleStyle(COSSwitchStyle())
                 .help("Start work in the background, then open it in Claude, Codex, or Terminal for Cursor, when the first reply is done. Off: it stays in the background on this Mac")
             DisclosureGroup("Advanced") {
                 // 0.5.234: the Meetings clock. The server sends 24-hour times and
                 // the tab used to print them raw; twelve-hour is the default here
                 // and the 24-hour reading is one pick away.
-                Picker("Clock", selection: Binding(
+                COSDropdown("Clock", selection: Binding(
                     get: { model.clockStyle },
                     set: { model.setClockStyle($0) }
-                )) {
-                    ForEach(ClockStyle.allCases, id: \.self) { style in
-                        Text(style.label).tag(style)
-                    }
-                }
-                .pickerStyle(.menu)
+                ), options: ClockStyle.allCases.map { COSDropdownOption($0, $0.label) })
                 .padding(.top, 6)
                 Text("How meeting times read in Meetings and Speakers.")
                     .font(.caption2)
@@ -2177,8 +2192,7 @@ struct ControlPanel: View {
                 }.padding(.top, 6)
             }.font(.caption)
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
+        .buttonStyle(COSQuietButtonStyle())
         .disabled(model.busy)
     }
 
@@ -2244,8 +2258,7 @@ struct ControlPanel: View {
                     Button("Check for updates", systemImage: "arrow.triangle.2.circlepath") {
                         Task { await model.checkForAppUpdateManually() }
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(COSQuietButtonStyle())
                     .disabled(model.busy)
                 }
             }
@@ -2272,7 +2285,7 @@ struct ControlPanel: View {
                 }
                 Spacer(minLength: 8)
                 Button("Install") { confirmInstallAppUpdate = true }
-                    .controlSize(.small)
+                    .buttonStyle(COSPrimaryButtonStyle())
                     .layoutPriority(1)
                     .disabled(model.busy)
             }
@@ -2304,8 +2317,7 @@ struct ControlPanel: View {
                 // banner and no way to ask (2026-08-24) — the ask still exists,
                 // it just is not the last thing in the panel any more.
                 Button("Quit", systemImage: "power") { NSApplication.shared.terminate(nil) }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(COSQuietButtonStyle())
             }
         }.font(COSType.mono(10)).foregroundStyle(.secondary)
     }
@@ -2800,19 +2812,14 @@ private struct VoiceRow: View {
             } else if voice.canRename {
                 if model.namingVoice == voice.label {
                     TextField("Type a name", text: $typed)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12))
+                        .textFieldStyle(.plain)
+                        .cosField()
 
                     // Scope, chosen BEFORE the name. Until 0.5.0 every rename was
                     // global, so this is the control that makes a correction mean
                     // "in this meeting" — Miles: "it should just be this call."
-                    Picker("", selection: $model.correctionScope) {
-                        ForEach(CorrectionScope.allCases) { scope in
-                            Text(scope.label).tag(scope)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
+                    COSViewSwitch("Correction scope", selection: $model.correctionScope,
+                                  options: CorrectionScope.allCases.map { COSViewOption($0, $0.label) })
                     Text(model.correctionScope.detail)
                         .font(.system(size: 10.5)).foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -3221,7 +3228,7 @@ struct SpeakerReviewPane: View {
                     HStack(spacing: 8) {
                         if !correction.refused {
                             Button("Save") { model.confirmCorrection(correction) }
-                                .buttonStyle(.borderedProminent)
+                                .buttonStyle(COSPrimaryButtonStyle())
                                 .disabled(model.mergeInFlight)
                         } else if correction.forceable {
                             // A stalled EARLIER correction is the one refusal a
@@ -3229,7 +3236,7 @@ struct SpeakerReviewPane: View {
                             // end whose own message told them to re-open the
                             // meeting, which changes nothing on the server.
                             Button("Apply anyway") { model.forceCorrection(correction) }
-                                .buttonStyle(.borderedProminent)
+                                .buttonStyle(COSPrimaryButtonStyle())
                                 .disabled(model.mergeInFlight)
                         }
                         Button(correction.refused ? "OK" : "Cancel") { model.cancelCorrection() }
@@ -3347,7 +3354,7 @@ struct ContextDetailPane: View {
                     Button { model.closeContextDetail() } label: {
                         Label(isThread ? "Threads" : "Memories", systemImage: "chevron.left")
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(COSTextButtonStyle())
                 }
                 Spacer()
                 if model.contextDetailLoading { ProgressView().controlSize(.small) }
@@ -3432,7 +3439,7 @@ struct LearningDetailPane: View {
                     Button { model.closeLearningDetail() } label: {
                         Label("Learning", systemImage: "chevron.left")
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(COSTextButtonStyle())
                 }
                 Spacer()
                 if model.learningDetailLoading { ProgressView().controlSize(.small) }
@@ -3507,7 +3514,7 @@ struct LearningDetailPane: View {
                 HStack(spacing: 10) {
                     Button("Copy context", systemImage: "doc.on.doc") { model.copyLearningContext(event, includeGraph: includeGraph) }
                     Toggle("Include related knowledge", isOn: $includeGraph)
-                        .toggleStyle(.checkbox)
+                        .toggleStyle(COSCheckStyle())
                         .font(.system(size: 10.5))
                         .disabled(model.graphEntity == nil)
                         .help(model.graphEntity == nil ? "Open an entity in Knowledge first" : "Append the open entity's description and relationships")
@@ -3627,7 +3634,7 @@ struct GraphEntityPane: View {
                     Button { model.closeGraphEntity() } label: {
                         Label("Knowledge", systemImage: "chevron.left")
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(COSTextButtonStyle())
                 }
                 Spacer()
                 if model.graphEntityLoading { ProgressView().controlSize(.small) }
@@ -3657,8 +3664,7 @@ struct GraphEntityPane: View {
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                                 Button(showAllDescriptions ? "Show less" : "Show all") { showAllDescriptions.toggle() }
-                                    .buttonStyle(.link)
-                                    .font(.system(size: 10.5))
+                                    .buttonStyle(COSTextButtonStyle())
                             }
                         }
                         if !entity.edges.isEmpty {
@@ -3668,8 +3674,7 @@ struct GraphEntityPane: View {
                                 }
                                 if entity.edges.count > Self.graphRelInlineRowLimit {
                                     Button(showAllRelationships ? "Show fewer" : "Show all \(entity.edges.count)") { showAllRelationships.toggle() }
-                                        .buttonStyle(.link)
-                                        .font(.system(size: 10.5))
+                                        .buttonStyle(COSTextButtonStyle())
                                 }
                             }
                         }
@@ -3693,8 +3698,7 @@ struct GraphEntityPane: View {
                                 }
                                 if model.graphMentions.count > Self.graphMentionInlineRowLimit {
                                     Button(showAllMentions ? "Show fewer" : "Show all \(model.graphMentions.count)") { showAllMentions.toggle() }
-                                        .buttonStyle(.link)
-                                        .font(.system(size: 10.5))
+                                        .buttonStyle(COSTextButtonStyle())
                                 }
                             }
                         }
@@ -4024,16 +4028,17 @@ private struct PetSpriteStateControls: View {
             // count, so a board-installed cell recorded at 1 could never be
             // told it is a strip.
             if model.petSpriteKit.preview(for: pose) != nil {
-                Stepper(
-                    "\(model.petSpriteFrameCount(pose))",
+                COSStepper(
+                    "\(pose.title) frames",
                     value: Binding(
                         get: { model.petSpriteFrameCount(pose) },
                         set: { model.setPetSpriteFrames(pose, frames: $0) }
                     ),
-                    in: PetSpriteStrip.minFrames...PetSpriteStrip.maxFrames
+                    in: PetSpriteStrip.minFrames...PetSpriteStrip.maxFrames,
+                    valueText: "\(model.petSpriteFrameCount(pose))",
+                    showsLabel: false
                 )
-                .font(.caption2)
-                .frame(width: 72)
+                .fixedSize()
             }
             Button("Choose") { model.choosePetSprite(for: pose) }
         }
@@ -4064,31 +4069,24 @@ private struct PetSizeControls: View {
             Text("Pet size")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Picker("Pet size", selection: Binding(
+            COSViewSwitch("Pet size", selection: Binding(
                 get: { model.petSize.preset },
                 set: { model.setPetSizePreset($0) }
-            )) {
-                ForEach(PetSizePreset.allCases, id: \.self) { preset in
-                    Text(preset.title).tag(preset)
-                }
-            }
-            .pickerStyle(.segmented)
-            .controlSize(.small)
-            .labelsHidden()
+            ), options: PetSizePreset.allCases.map { COSViewOption($0, $0.title) })
             if model.petSize.preset == .custom {
                 HStack(spacing: 8) {
                     TextField("64", text: $pixelDraft)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
+                        .cosField()
                         .frame(width: 56)
                         .onSubmit { commitPixels() }
                     Text("px")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Stepper("", value: Binding(
+                    COSStepper("Pet size in pixels", value: Binding(
                         get: { model.petSize.pixels },
                         set: { model.setPetCustomPixels($0) }
-                    ), in: PetSize.minPixels...PetSize.maxPixels)
-                    .labelsHidden()
+                    ), in: PetSize.minPixels...PetSize.maxPixels, valueText: nil, showsLabel: false)
                 }
                 Text("Sprite size. Medium is \(PetSize.mediumPixels) px.")
                     .font(.caption2)
@@ -4144,16 +4142,10 @@ private struct PetSizeControls: View {
                 .foregroundStyle(.secondary)
             Divider()
                 .padding(.vertical, 2)
-            Picker("Motion", selection: Binding(
+            COSViewSwitch("Motion", selection: Binding(
                 get: { model.petMotion },
                 set: { model.setPetMotion($0) }
-            )) {
-                ForEach(PetMotion.allCases) { motion in
-                    Text(motion.shortTitle).tag(motion)
-                }
-            }
-            .pickerStyle(.segmented)
-            .controlSize(.small)
+            ), options: PetMotion.allCases.map { COSViewOption($0, $0.shortTitle) }, showsLabel: true)
             .font(.caption)
             Text("Full plays every state. Calm rests the character on its idle loop "
                  + "instead of the multi-session fights. None holds one still frame. "

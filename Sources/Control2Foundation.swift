@@ -240,6 +240,7 @@ struct Control2FoundationView: View {
         }
         .font(COSType.body(13)).foregroundStyle(.primary)
         .background(COSPalette.panel).tint(COSPalette.accent)
+        .cosControlTheme()
         .task {
             if let task = selectedTask, task.completed { workFilter = "Completed" }
             await model.refresh()

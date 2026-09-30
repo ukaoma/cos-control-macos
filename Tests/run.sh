@@ -1089,15 +1089,20 @@ PY
 # 0.5.250: a Claude New session is named after its task (server 6.58.2 passes `sessionName` to `claude -p --name`), a
 # session linked while it runs is Work in Sessions at once, and the fresh list reads the name from the transcript.
 # Behaviour: Tests/run-work-progress.sh (sessionNameChecks, test 20) and the helper self-tests.
-python3 - "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/HelperSources/main.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/Models.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/SessionPet.swift" <<'PY'
+python3 - "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/HelperSources/main.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/Models.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/SessionPet.swift" "$ROOT/Sources/WorkHandoffView.swift" <<'PY'
 import sys
-store, helper, model, models, aw, petview = (open(p).read() for p in sys.argv[1:7])
+store, helper, model, models, aw, petview, handoffview = (open(p).read() for p in sys.argv[1:8])
+snapshot = handoffview[handoffview.index("    static func taskSnapshot(_ task: TaskRow) -> WorkSource {"):handoffview.index("/// Sends a resolved plan exactly as the Agent workspace does.")]
+assert 'let whole = (task.text.isEmpty ? task.title : task.text).replacingOccurrences(of: "**", with: "")' in snapshot and "context: context, fullTitle: whole)" in snapshot, "a task's snapshot carries its whole title (0.5.251)"
 assert ".disabled(row.heldByServer)" in aw and "if model.openClaudeRow?.workRunning == true {" in aw, "Sessions: no Open in platform or composer while the server holds it"
 assert petview.count("openInPlatform: session.heldByServer ? nil : {") == 2 and petview.count("if session.heldByServer {") == 2, "the pet opens a held session in Control"
 def body(src, start, end):
     i = src.index(start); return src[i:src.index(end, i)]
 submit = body(store, "    func submit(source: WorkSource", "    // MARK: - Start it, then open it (0.5.249)")
-assert 'if row.provider == "claude", let name = Self.claudeSessionName(source.title) { job["sessionName"] = name }' in submit, "only a Claude New session is named, after its task"
+assert 'if row.provider == "claude", let name = Self.claudeSessionName(source.sessionNameSource) { job["sessionName"] = name }' in submit, "only a Claude New session is named, after its task"
+# 0.5.251: after its WHOLE title. The 0.5.250 canary sent the board's 42-character display title; Tests/run-work-progress.sh
+# test 20b sends an 84-character title whole and cuts a 130-character one by the rules, through the real snapshot.
+assert "var sessionNameSource: String { fullTitle ?? title }" in store, "the name source is the whole title when there is one"
 assert "let data = try JSONSerialization.data(withJSONObject: job)" in submit, "the name rides in the job request"
 new = body(helper, "    private func emitWorkNew() throws {", "    // MARK: - Cursor chats for Work (0.5.249)")
 assert "let sessionName = try Self.workNewSessionName(body)" in new and "messageEra: era, sessionName: sessionName)" in new, "the helper cleans the name and posts it"
@@ -1120,6 +1125,72 @@ assert "Self.linkableJobStates.contains(state)" in store, "only a running or wel
 PY
 # The tracker's behaviour: status lines, delivery, stages, Jev gating, retries, a busy journal (synthetic transport and board).
 "$ROOT/Tests/run-work-progress.sh"
+
+# ── 0.5.251: the GOTCOS theme on every stock macOS control ─────────────────────
+# Miles, 2026-09-29: "we should be using our GOTCOS theme across the board." Every picker, toggle, stepper and system
+# button style now goes through the components in Sources/COSBrand.swift. This check FAILS when any other Sources file
+# brings a stock one back. Comments are stripped first: several files explain the old styles in prose. Proven able to
+# fail on 2026-09-30 by adding each banned form to a scratch copy of Sources (see the 0.5.251 CHANGELOG entry).
+/usr/bin/python3 - "$ROOT" <<'PY'
+import re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+COMPONENTS = "COSBrand.swift"
+BANNED = (
+    (r"\.pickerStyle\(\s*\.segmented\s*\)", ".pickerStyle(.segmented): use COSViewSwitch"),
+    (r"\.pickerStyle\(\s*\.menu\s*\)", ".pickerStyle(.menu): use COSDropdown"),
+    (r"(?<![A-Za-z0-9_])Picker\s*\(", "a bare Picker(: use COSDropdown or COSViewSwitch"),
+    (r"\.borderedProminent", ".borderedProminent: use COSPrimaryButtonStyle"),
+    (r"\.buttonStyle\(\s*\.bordered\s*\)", ".buttonStyle(.bordered): use COSQuietButtonStyle"),
+    (r"\.buttonStyle\(\s*\.link\s*\)", ".buttonStyle(.link): use COSTextButtonStyle"),
+    (r"\.roundedBorder", ".roundedBorder: use .plain with cosField()"),
+    (r"\.toggleStyle\(\s*\.switch\s*\)", ".toggleStyle(.switch): use COSSwitchStyle"),
+    (r"\.toggleStyle\(\s*\.checkbox\s*\)", ".toggleStyle(.checkbox): use COSCheckStyle"),
+    (r"(?<![A-Za-z0-9_])Stepper\s*\(", "a Stepper(: use COSStepper"),
+    (r"\.menuStyle\(\s*\.borderlessButton\s*\)", ".menuStyle(.borderlessButton): use cosMenu()"),
+)
+def code(line):
+    return re.sub(r"(^|\s)//.*$", "", line)
+hits = []
+for path in sorted((root / "Sources").glob("*.swift")):
+    if path.name == COMPONENTS:
+        continue
+    for number, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1):
+        for pattern, why in BANNED:
+            if re.search(pattern, code(line)):
+                hits.append(f"  Sources/{path.name}:{number}: {why}")
+if hits:
+    sys.exit("a stock macOS control is back outside Sources/COSBrand.swift:\n" + "\n".join(hits))
+brand = (root / "Sources" / COMPONENTS).read_text(encoding="utf-8")
+for decl in ("struct COSDropdown<Value: Hashable>: View", "struct COSViewSwitch<Value: Hashable>: View", "struct COSSwitchStyle: ToggleStyle",
+             "struct COSCheckStyle: ToggleStyle", "struct COSChipToggleStyle: ToggleStyle", "struct COSProgressStyle: ProgressViewStyle",
+             "struct COSStepper: View", "struct COSDisclosureStyle: DisclosureGroupStyle", "func cosControlTheme() -> some View",
+             "func cosEditor() -> some View", "func cosMenu() -> some View"):
+    if decl not in brand:
+        sys.exit(f"COSBrand.swift lost {decl}")
+# Progress, disclosure and the default button style are set once per window root.
+roots = (("ActivityWindow.swift", "        .background(COSPalette.panel)\n        // 0.5.251: GOTCOS progress, disclosure and tint for every control in the window.\n        .cosControlTheme()"),
+         ("Control2Foundation.swift", ".background(COSPalette.panel).tint(COSPalette.accent)\n        .cosControlTheme()"))
+for name, needle in roots:
+    if needle not in (root / "Sources" / name).read_text(encoding="utf-8"):
+        sys.exit(f"{name}: the window root lost .cosControlTheme()")
+views = (root / "Sources/Views.swift").read_text(encoding="utf-8")
+start = views.index("    private var syncedPanel: some View {")
+if ".cosControlTheme()" not in views[start:views.index("        .onAppear {", start)]:
+    sys.exit("the menu-bar panel root lost .cosControlTheme()")
+# Every Toggle names a COS style, except the pet's right-click menu items, which the system menu draws.
+sources = {p.name: "\n".join(code(l) for l in p.read_text(encoding="utf-8").split("\n"))
+           for p in (root / "Sources").glob("*.swift") if p.name != COMPONENTS}
+toggles = sum(len(re.findall(r"(?<![A-Za-z0-9_])Toggle\(", text)) for text in sources.values())
+pet = sources["SessionPet.swift"]
+menu = pet[pet.index("@ViewBuilder private var spriteMenu: some View {"):pet.index("private func handleSpriteClick()")].count("Toggle(")
+styled = sum(len(re.findall(r"\.toggleStyle\(COS(?:Switch|Check|ChipToggle)Style\(\)\)", text)) for text in sources.values())
+if styled != toggles - menu:
+    sys.exit(f"{toggles} Toggles, {menu} in the pet's menu, but {styled} name a COS toggle style")
+print(f"COS Control: GOTCOS controls only; {toggles} Toggles, {styled} themed, {menu} a system menu item (0.5.251)")
+PY
+# The components, executed: dropdown rules and keys, inline and popover choice, disabled dropdowns and rows, the view
+# switch, switch, checkbox and stepper by posted clicks, and the switch and checkbox by their rendered pixels.
+"$ROOT/Tests/run-controls.sh"
 # 0.5.242: the menu-bar window opens straight into ControlPanel. 0.5.240 stacked an unstyled "Open Work"
 # button above it; Work is reached from the panel's Activity chips, which come from ActivitySection.allCases.
 python3 - "$ROOT/Sources/COSControlApp.swift" <<'PY'
@@ -1220,8 +1291,8 @@ fi
 /usr/bin/grep -q 'visibleSessionSearchHits' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'visibleMemorySearchHits' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'visibleThreadSearchHits' "$ROOT/Sources/ControllerModel.swift"
-/usr/bin/grep -q 'Picker("Recency"' "$ROOT/Sources/ActivityMeetings.swift"
-/usr/bin/grep -q 'Picker("Recency"' "$ROOT/Sources/ActivityWindow.swift"
+/usr/bin/grep -q 'COSDropdown("Recency", selection: $model.searchRecency' "$ROOT/Sources/ActivityMeetings.swift"
+/usr/bin/grep -q 'COSDropdown("Recency", selection: $model.searchRecency' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/python3 - "$ROOT" <<'PY'
 from pathlib import Path
 import sys
@@ -1335,7 +1406,7 @@ need("func rank(" in body and "a.offset < b.offset" in body,
      "filterTaskRows lost its stable urgency ranking")
 
 # 2. The picker reads the server's list; no hardcoded business units anywhere.
-need("ForEach(model.domainOptions)" in activity, "the domain picker is not server-driven")
+need("options: model.domainOptions.map { COSDropdownOption($0.name, $0.label) }" in activity, "the domain picker is not server-driven")
 for name in ('Text("Quilt").tag', 'Text("Hermit Crabs").tag', 'Text("Sprocket Rocket").tag'):
     need(name not in activity, f"the picker still hardcodes {name}")
 need('let known = ["quilt", "sprocket_rocket", "hermit_crabs", "personal"]' not in model,
@@ -2438,7 +2509,7 @@ need('contextListCard' not in main_panel.group(1), "Memory/Threads are still nes
 need('SessionPetPresenter' in app, "the pet presenter is not constructed at launch")
 need('sessionPet.bindIfNeeded' in app, "the pet does not start unless the menu opens")
 need('Toggle("Session pet"' in views, "the Session pet toggle is missing")
-need('Picker("Pet size"' in views, "Session pet has no size picker")
+need('COSViewSwitch("Pet size"' in views, "Session pet has no size picker")
 need('setPetSizePreset' in model, "pet size presets are not wired")
 need('setPetCustomPixels' in model, "custom pet pixels are not wired")
 need('petSizeKey' in model, "pet size is not persisted")
@@ -3048,7 +3119,7 @@ need('case "set-ollama-model"' in helper and "withMutationLock" in helper,
 need('"ollamaConfiguredModel": loadedEnvironmentValue("COS_OLLAMA_MODEL")' in helper,
      "status does not expose the configured pin")
 need('perform("set-ollama-model"' in model, "the picker does not route through perform()")
-need('(not pulled)' in views, "a pin whose model is gone from the daemon must still render")
+need('rows.append(COSDropdownOption(pinned, pinned, note: "not pulled", muted: true))' in views, "a pin whose model is gone from the daemon must still render")
 need('Automatic (newest pull)' in views, "the automatic option is not rendered")
 need('"daemon_down"' in model and "Ollama is not running" in views,
      "an unreachable daemon must render as a state, not an error")
@@ -4029,7 +4100,7 @@ need("UserDefaults.standard.set(enabled, forKey: Self.petCalmMotionKey)" in _cal
 need("UserDefaults.standard.bool(forKey: ControllerModel.petCalmMotionKey)" in model_code,
      "the calm preference is never read back at launch")
 _views_src = (root / "Sources/Views.swift").read_text()
-need('Picker("Motion"' in _views_src and "model.setPetMotion($0)" in _views_src,
+need('COSViewSwitch("Motion"' in _views_src and "model.setPetMotion($0)" in _views_src,
      "motion has no control in Session Pet settings")
 need("func setPetCalmMotion(" in model_code and "setPetCalmMotion(motion.calm)" in model_code,
      "setPetMotion must write the calm flag through its own persisting setter")
@@ -4088,9 +4159,9 @@ need("semanticSearchEnabled" not in _pet_pane,
      "the search flag is back in the pet settings pane")
 # The first version of that flag orphaned calm motion's caption: it sat between
 # the toggle and the text explaining it, so the text read as the flag's.
-_calm_gap = _pet_pane[_pet_pane.index('Picker("Motion"'):
+_calm_gap = _pet_pane[_pet_pane.index('COSViewSwitch("Motion"'):
                       _pet_pane.index("Full plays every state")]
-need("Toggle(" not in _calm_gap and _calm_gap.count("Picker(") == 1,
+need("Toggle(" not in _calm_gap and _calm_gap.count("COSViewSwitch(") == 1 and "COSDropdown(" not in _calm_gap,
      "another control sits between the Motion picker and its own caption; "
      "the caption now reads as that control's")
 
@@ -4421,7 +4492,7 @@ need("petNotice = " in settle_src and "loadPetSessions()" in settle_src,
 views_src = (root / "Sources/Views.swift").read_text()
 adv = views_src[views_src.index('DisclosureGroup("Advanced")'):]
 adv = adv[:adv.index("}.font(.caption)")]
-need('Picker("Clock"' in adv and "model.setClockStyle($0)" in adv and "ClockStyle.allCases" in adv,
+need('COSDropdown("Clock"' in adv and "model.setClockStyle($0)" in adv and "ClockStyle.allCases" in adv,
      "the clock picker is not under Advanced, or does not persist through the model")
 meetings_src = (root / "Sources/ActivityMeetings.swift").read_text()
 for _needle in ("meeting.subtitle(clock: model.clockStyle)", "hit.meeting.subtitle(clock: model.clockStyle)",
@@ -4518,7 +4589,7 @@ need("selectedLearningID != nil" in activity and "selectedGraphEntityID != nil" 
      "learning and graph details have no window-local selection gate")
 
 # 2. The picker exists, Knowledge is a peer segment, and switching clears all three selections.
-need('Picker("Memories view", selection: $memoriesSubview)' in activity, "the Memories picker is missing")
+need('COSViewSwitch("Memories view", selection: $memoriesSubview' in activity, "the Memories picker is missing")
 need(re.search(r"case knowledge\b", activity) is not None and "case toReview" in activity and "case recentLearning" in activity,
      "MemoriesSubview lost a segment")
 on_change = re.search(r"\.onChange\(of: memoriesSubview\) \{ _, next in(.*?)\n                \}", activity, re.S)
@@ -5283,8 +5354,9 @@ for need in ("case .meetings: meetingsToReviewList", "case .samples: voiceSample
              "model.addVoiceResult = nil", ".textFieldStyle(.plain)\n                        .cosField()"):
     if need not in speakers:
         fail(f"speakersList lost {need!r}")
-if ".roundedBorder" in speakers or speakers.count(".menuStyle(.button)") != 2 or speakers.count(".buttonStyle(COSQuietButtonStyle())") < 2:
-    fail("the Speakers controls row must use cosField and COS quiet menus, not system styles")
+# 0.5.251: the two sort menus are COS dropdowns (their Picker was the dropdown), with the sort glyph on the face.
+if ".roundedBorder" in speakers or "Menu {" in speakers or speakers.count('showsLabel: false, icon: "arrow.up.arrow.down")') != 2:
+    fail("the Speakers controls row must use cosField and COS dropdowns, not system styles")
 loader = body(activity, "private func loadSpeakerSubview(", "\n    }\n")
 for need in ("case .meetings: await model.loadReviewableMeetings()", "case .samples:\n            await model.loadExtAudio()",
              "if model.voiceDirectory.isEmpty { await model.loadVoiceDirectory() }", "case .voices: await model.loadVoiceDirectory(refresh: refresh)"):
@@ -6145,9 +6217,9 @@ run_card = body(meetings, "private var runCard: some View {")
 for banned in ('Text("Last 7 days").tag(7)', 'Text("Free").tag("free")', "Free is 50, Pro is 500"):
     if banned in run_card:
         fail(f"the import card restates {banned!r}; the server owns that number")
-if "ForEach(model.meetingImport.windowOptions" not in run_card:
+if "options: model.meetingImport.windowOptions.map {" not in run_card:
     fail("the window picker must be built from the windows in force")
-if "ForEach(model.meetingImport.planCaps" not in run_card:
+if "options: model.meetingImport.planCaps.map {" not in run_card:
     fail("the plan picker must be built from the plans in force")
 if "Text(model.meetingImport.planCapLine)" not in run_card:
     fail("the plan sentence must be built from the caps, never typed")

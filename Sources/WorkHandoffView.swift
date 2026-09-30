@@ -12,7 +12,11 @@ extension WorkSource {
             context += "\nConfirmed meeting references (explicit links; transcript evidence is not included):\n" + references
         }
         let revision = SHA256.hash(data: Data(context.utf8)).map { String(format: "%02x", $0) }.joined()
-        return WorkSource(id: "task:\(task.domain):\(task.workIdentity)", title: task.title, revision: revision, project: task.domain, context: context)
+        // 0.5.251: the session name comes from the whole title (`text`; `title` is the lens row's cap), as Work's
+        // Start work sheet shows it.
+        let whole = (task.text.isEmpty ? task.title : task.text).replacingOccurrences(of: "**", with: "")
+        return WorkSource(id: "task:\(task.domain):\(task.workIdentity)", title: task.title, revision: revision, project: task.domain,
+                          context: context, fullTitle: whole)
     }
 }
 
@@ -455,8 +459,7 @@ struct WorkHandoffView: View {
                     }
                 }
                 TextEditor(text: draftBinding(\.prompt)).font(COSType.body(12)).frame(minHeight: 120, maxHeight: 220)
-                    .scrollContentBackground(.hidden).padding(6).background(COSPalette.panel)
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(COSPalette.line))
+                    .cosEditor()
                     .accessibilityLabel("Context to send")
                     .disabled(store.busy || validating)
                 if prompt.utf16.count > WorkHandoffStore.draftLimit {
@@ -567,14 +570,15 @@ struct WorkHandoffView: View {
                 if !sessionID.isEmpty && selectedSession == nil {
                     Text("Saved session unavailable. Refresh to resolve it or choose another.").font(COSType.body(11)).foregroundStyle(COSPalette.danger)
                 }
-                Menu("Another session… (\(store.sessions.count))") {
+                Menu {
                     ForEach(store.sessions) { session in
                         Button("\(session.title) · \(WorkHandoffStore.providerName(session.provider))") {
                             var next = draft; next.sessionID = session.id
                             store.updateDraft(next, for: source)
                         }
                     }
-                }.menuStyle(.borderlessButton).fixedSize().font(COSType.body(11.5)).disabled(store.busy || validating)
+                } label: { COSMenuLabel(title: "Another session… (\(store.sessions.count))") }
+                    .cosMenu().fixedSize().disabled(store.busy || validating)
                 if mode == .fork { forkTarget }
                 if let session = selectedSession {
                     if plan == nil && !forkToPlatform {
@@ -627,24 +631,35 @@ struct WorkHandoffView: View {
             .accessibilityAddTraits(picked ? .isSelected : [])
     }
 
+    /// The Provider rows: a placeholder, a saved provider no longer offered (muted), then the catalog's.
+    private var providerOptions: [COSDropdownOption<String>] {
+        var rows = [COSDropdownOption("", "Choose provider", placeholder: true)]
+        if !provider.isEmpty && !providers.contains(provider) { rows.append(COSDropdownOption(provider, provider, note: "unavailable", muted: true)) }
+        return rows + providers.map { COSDropdownOption($0, WorkHandoffStore.providerName($0)) }
+    }
+
+    /// The Model rows: a placeholder, a saved model gone from the catalog, then the catalog's; an unavailable
+    /// model stays choosable (its reason shows once chosen), muted with its note.
+    private var modelOptions: [COSDropdownOption<String>] {
+        var rows = [COSDropdownOption("", "Choose model", placeholder: true)]
+        if !modelID.isEmpty && selectedModel == nil { rows.append(COSDropdownOption(modelID, "Saved model unavailable", muted: true)) }
+        return rows + choices.map { COSDropdownOption($0.id, $0.title, note: $0.available ? nil : "unavailable", muted: !$0.available) }
+    }
+
     /// Fork to: the same platform (native copy of the conversation) or any catalog provider and model.
     private var forkTarget: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker("Fork to", selection: Binding(get: { forkToPlatform ? provider : "" }, set: { value in
+            COSDropdown("Fork to", selection: Binding(get: { forkToPlatform ? provider : "" }, set: { value in
                 var next = draft; next.provider = value; next.modelID = ""
                 store.updateDraft(next, for: source)
-            })) {
-                Text("Same platform (copy the conversation)").tag("")
-                ForEach(providers.filter { WorkHandoffStore.crossPlatformTargets.contains($0) && $0 != selectedSession?.provider }, id: \.self) {
-                    Text(WorkHandoffStore.providerName($0)).tag($0)
-                }
-            }.disabled(store.busy || validating)
+            }), options: [COSDropdownOption("", "Same platform (copy the conversation)")]
+                + providers.filter { WorkHandoffStore.crossPlatformTargets.contains($0) && $0 != selectedSession?.provider }
+                    .map { COSDropdownOption($0, WorkHandoffStore.providerName($0)) },
+                labelWidth: 56)
+                .disabled(store.busy || validating)
             if forkToPlatform {
-                Picker("Model", selection: draftBinding(\.modelID)) {
-                    Text("Choose model").tag("")
-                    if !modelID.isEmpty && selectedModel == nil { Text("Saved model unavailable").tag(modelID) }
-                    ForEach(choices) { choice in Text(choice.title + (choice.available ? "" : " · unavailable")).tag(choice.id) }
-                }.disabled(store.busy || validating)
+                COSDropdown("Model", selection: draftBinding(\.modelID), options: modelOptions, labelWidth: 56)
+                    .disabled(store.busy || validating)
             }
         }
     }
@@ -652,19 +667,13 @@ struct WorkHandoffView: View {
     private var newDestination: some View {
         VStack(alignment: .leading, spacing: 8) {
             if store.models.isEmpty { Text("No configured models available.").font(COSType.body(11.5)).foregroundStyle(COSPalette.muted) }
-            Picker("Provider", selection: Binding(get: { provider }, set: { value in
+            COSDropdown("Provider", selection: Binding(get: { provider }, set: { value in
                 var next = draft; next.provider = value; next.modelID = ""
                 store.updateDraft(next, for: source)
-            })) {
-                Text("Choose provider").tag("")
-                if !provider.isEmpty && !providers.contains(provider) { Text("\(provider) · unavailable").tag(provider) }
-                ForEach(providers, id: \.self) { Text(WorkHandoffStore.providerName($0)).tag($0) }
-            }.disabled(store.busy || validating)
-            Picker("Model", selection: draftBinding(\.modelID)) {
-                Text("Choose model").tag("")
-                if !modelID.isEmpty && selectedModel == nil { Text("Saved model unavailable").tag(modelID) }
-                ForEach(choices) { choice in Text(choice.title + (choice.available ? "" : " · unavailable")).tag(choice.id) }
-            }.disabled(store.busy || validating)
+            }), options: providerOptions, labelWidth: 56)
+                .disabled(store.busy || validating)
+            COSDropdown("Model", selection: draftBinding(\.modelID), options: modelOptions, labelWidth: 56)
+                .disabled(store.busy || validating)
             if let reason = selectedModel?.reason, !reason.isEmpty {
                 Text(reason).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
             }

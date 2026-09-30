@@ -133,24 +133,17 @@ struct MeetingLibraryBody: View {
                 .frame(maxWidth: 320)
 
                 if domainOptions.count > 2 || model.isLibraryQueryActive {
-                    Picker("Domain", selection: $model.libraryDomainFilter) {
-                        Text("All domains").tag("all")
-                        ForEach(domainOptions.filter { $0 != "all" }, id: \.self) { domain in
-                            Text(domain.replacingOccurrences(of: "_", with: " ").localizedCapitalized).tag(domain)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: 180)
+                    COSDropdown("Domain", selection: $model.libraryDomainFilter,
+                                options: [COSDropdownOption("all", "All domains")]
+                                    + domainOptions.filter { $0 != "all" }.map {
+                                        COSDropdownOption($0, $0.replacingOccurrences(of: "_", with: " ").localizedCapitalized)
+                                    })
+                    .fixedSize()
                 }
 
-                Picker("Recency", selection: $model.searchRecency) {
-                    ForEach(SearchRecency.allCases) { option in
-                        Text(option.title).tag(option)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: 150)
-                .accessibilityLabel("Recency")
+                COSDropdown("Recency", selection: $model.searchRecency,
+                            options: SearchRecency.allCases.map { COSDropdownOption($0, $0.title) })
+                .fixedSize()
 
                 Spacer()
                 Text(listDetail)
@@ -366,18 +359,18 @@ struct MeetingMonthCalendar: View {
         VStack(spacing: 10) {
             HStack {
                 Button { onShift(-1) } label: {
-                    Image(systemName: "chevron.left").font(.system(size: 12, weight: .semibold))
+                    Image(systemName: "chevron.left")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(COSIconButtonStyle(size: 24))
                 .accessibilityLabel("Previous month")
                 Spacer()
                 Text(MeetingMonth.title(month))
                     .font(COSType.display(15, weight: .medium))
                 Spacer()
                 Button { onShift(1) } label: {
-                    Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
+                    Image(systemName: "chevron.right")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(COSIconButtonStyle(size: 24))
                 .accessibilityLabel("Next month")
             }
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7), spacing: 6) {
@@ -915,21 +908,12 @@ struct MeetingImportPane: View {
             // plans it knows are the server's, and a menu built from literals
             // goes stale silently when it changes them.
             ChipFlowLayout(spacing: 8) {
-                Picker("How far back", selection: $model.meetingImportWindow) {
-                    ForEach(model.meetingImport.windowOptions, id: \.self) { days in
-                        Text("Last \(days) days").tag(days)
-                    }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
+                COSDropdown("How far back", selection: $model.meetingImportWindow,
+                            options: model.meetingImport.windowOptions.map { COSDropdownOption($0, "Last \($0) days") },
+                            showsLabel: false)
                 .frame(maxWidth: 160)
-                Picker("Plan", selection: planBinding) {
-                    ForEach(model.meetingImport.planCaps, id: \.id) { plan in
-                        Text(plan.label).tag(plan.id)
-                    }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
+                COSDropdown("Plan", selection: planBinding,
+                            options: model.meetingImport.planCaps.map { COSDropdownOption($0.id, $0.label) }, showsLabel: false)
                 .frame(maxWidth: 130)
                 Button("Import now") { Task { await model.runMeetingImport() } }
                     .buttonStyle(COSQuietButtonStyle())
@@ -941,7 +925,7 @@ struct MeetingImportPane: View {
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
             Toggle("Keep bringing in new meetings", isOn: keepImportingBinding)
-                .toggleStyle(.switch)
+                .toggleStyle(COSSwitchStyle())
                 .font(COSType.body(11.5))
                 .disabled(!model.firefliesKey.configured)
             Text(model.meetingImport.budgetLine)

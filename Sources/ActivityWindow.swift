@@ -536,6 +536,8 @@ struct ActivityWindow: View {
         .frame(minWidth: 760, minHeight: 560)
         .font(COSType.body(13))
         .background(COSPalette.panel)
+        // 0.5.251: GOTCOS progress, disclosure and tint for every control in the window.
+        .cosControlTheme()
         .task {
             if connectedWorkTest {
                 await model.refresh(quiet: true)
@@ -638,14 +640,14 @@ struct ActivityWindow: View {
             Button { goHome() } label: {
                 Label("Home", systemImage: "house")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(COSQuietButtonStyle())
             .keyboardShortcut("h", modifiers: [.command, .shift])
             .help("Activity home")
 
             Button { goBack() } label: {
                 Label("Back", systemImage: "chevron.left")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(COSQuietButtonStyle())
             .disabled(!canGoBack)
             .keyboardShortcut(.leftArrow, modifiers: .command)
             .help("Go back one step")
@@ -1413,14 +1415,9 @@ struct ActivityWindow: View {
                 stats: sessionsStats,
                 accessory: {
                     if !model.isSessionQueryActive {
-                        Picker("Clock", selection: $model.sessionClock) {
-                            ForEach(SessionClock.allCases) { clock in
-                                Text(clock.title).tag(clock)
-                            }
-                        }
-                        .pickerStyle(.segmented)
+                        COSViewSwitch("Clock", selection: $model.sessionClock,
+                                      options: SessionClock.allCases.map { COSViewOption($0, $0.title) })
                         .frame(maxWidth: 278)
-                        .labelsHidden()
                     }
                 }
             )
@@ -1523,13 +1520,9 @@ struct ActivityWindow: View {
                     // four business units, so a second COS install had nothing
                     // it could file a task against. Falls back to the four only
                     // while an older server has no /api/domains to answer with.
-                    Picker("Domain", selection: $taskDomain) {
-                        ForEach(model.domainOptions) { option in
-                            Text(option.label).tag(option.name)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 140)
+                    COSDropdown("Domain", selection: $taskDomain,
+                                options: model.domainOptions.map { COSDropdownOption($0.name, $0.label) }, showsLabel: false)
+                    .frame(width: 160)
                     Button("Capture") {
                         Task { await captureTask() }
                     }
@@ -1734,6 +1727,7 @@ struct ActivityWindow: View {
         VStack(alignment: .leading, spacing: 14) {
             TextEditor(text: $taskDetailDraft)
                 .font(COSType.body(13.5))
+                .cosEditor()
                 .disabled(taskDetailBusy)
                 .frame(minHeight: 72, maxHeight: 140)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(COSPalette.line))
@@ -1743,8 +1737,8 @@ struct ActivityWindow: View {
                 HStack(spacing: 8) {
                     TextField("What does finished look like?", text: $taskDoneWhenDraft)
                         .disabled(taskDetailBusy)
-                        .textFieldStyle(.roundedBorder)
-                        .font(COSType.body(12))
+                        .textFieldStyle(.plain)
+                        .cosField()
                     Button("Set") {
                         // Sheet stays open: setting the finish line is what UNBLOCKS
                         // Run now, so closing here would hide the button it enables.
@@ -1934,14 +1928,9 @@ struct ActivityWindow: View {
                 }
                 .cosField()
                 .frame(maxWidth: 320)
-                Picker("Recency", selection: $model.searchRecency) {
-                    ForEach(SearchRecency.allCases) { option in
-                        Text(option.title).tag(option)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: 150)
-                .accessibilityLabel("Recency")
+                COSDropdown("Recency", selection: $model.searchRecency,
+                            options: SearchRecency.allCases.map { COSDropdownOption($0, $0.title) })
+                .fixedSize()
                 Spacer()
             }
             if model.isSessionQueryActive, !model.sessionSemanticAvailable {
@@ -2437,11 +2426,9 @@ struct ActivityWindow: View {
             // daily conversation store, which on a working install runs to months of
             // history that nothing in Control could reach before 0.5.72.
             HStack(spacing: 12) {
-                Picker("Message view", selection: $messagesSubview) {
-                    ForEach(MessagesSubview.allCases) { item in Text(item.title).tag(item) }
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 260)
+                COSViewSwitch("Message view", selection: $messagesSubview,
+                              options: MessagesSubview.allCases.map { COSViewOption($0, $0.title) }, showsLabel: true)
+                .frame(maxWidth: 260, alignment: .leading)
                 .onChange(of: messagesSubview) { _, next in
                     selectedTurnID = nil
                     // Switching Recent/Archive must also unwind the archive drill-
@@ -2461,13 +2448,14 @@ struct ActivityWindow: View {
                 // it is a handful of turns in memory; the archive is a real scan
                 // of months, so it still runs on Return.
                 TextField("Search recent and archive", text: $model.archiveQuery)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
+                    .cosField()
                     .frame(maxWidth: 260)
                     .onSubmit { Task { await model.runArchiveSearch() } }
                 if model.archiveSearching { ProgressView().controlSize(.small) }
                 if !model.archiveQuery.isEmpty {
                     Button("Clear") { model.clearArchiveSearch() }
-                        .buttonStyle(.link).font(.system(size: 11))
+                        .buttonStyle(COSTextButtonStyle())
                 }
                 Spacer()
                 // The one control in Control that spends model tokens. It
@@ -2477,9 +2465,8 @@ struct ActivityWindow: View {
                     get: { model.semanticSearchEnabled },
                     set: { model.setSemanticSearchEnabled($0) }
                 ))
-                .toggleStyle(.checkbox)
-                .controlSize(.small)
-                .font(.system(size: 11))
+                .toggleStyle(COSCheckStyle())
+                .font(COSType.body(11))
                 // Each concatenated chunk is a whole clause on purpose: a
                 // phrase split across the + never appears in the source, so a
                 // pin on it would be asserting where the line happens to wrap.
@@ -2547,10 +2534,8 @@ struct ActivityWindow: View {
             )
 
             HStack(spacing: 12) {
-                Picker("Speaker view", selection: $speakerSubview) {
-                    ForEach(SpeakerSubview.allCases) { item in Text(item.title).tag(item) }
-                }
-                .pickerStyle(.segmented)
+                COSViewSwitch("Speaker view", selection: $speakerSubview,
+                              options: SpeakerSubview.allCases.map { COSViewOption($0, $0.title) }, showsLabel: true)
                 .fixedSize()
                 .onChange(of: speakerSubview) { _, next in
                     selectedVoiceName = nil
@@ -2567,15 +2552,9 @@ struct ActivityWindow: View {
                         .cosField()
                         .frame(maxWidth: 280)
                         .accessibilityLabel("Search enrolled voices")
-                    Menu {
-                        Picker("Sort voices", selection: $voiceSort) {
-                            ForEach(VoiceDirectorySort.allCases) { sort in Text(sort.title).tag(sort) }
-                        }
-                    } label: {
-                        Label(voiceSort.title, systemImage: "arrow.up.arrow.down")
-                    }
-                    .menuStyle(.button)
-                    .buttonStyle(COSQuietButtonStyle())
+                    COSDropdown("Sort voices", selection: $voiceSort,
+                                options: VoiceDirectorySort.allCases.map { COSDropdownOption($0, $0.title) },
+                                showsLabel: false, icon: "arrow.up.arrow.down")
                     .fixedSize()
                     .help("Needs attention puts voices with meetings to review first. Lowest confidence puts the weakest profiles with enough matched speech first.")
                 } else if speakerSubview == .meetings {
@@ -2583,22 +2562,14 @@ struct ActivityWindow: View {
                         get: { model.hideReviewedMeetings },
                         set: { model.setHideReviewed($0) }
                     ))
-                    .toggleStyle(.checkbox)
-                    .tint(COSPalette.accent)
+                    .toggleStyle(COSCheckStyle())
                     .font(COSType.body(11))
                     .help("Keep finished meetings off the list while you work through names.")
-                    Menu {
-                        Picker("Sort meetings", selection: Binding(
-                            get: { model.meetingReviewSort },
-                            set: { model.setMeetingReviewSort($0) }
-                        )) {
-                            ForEach(MeetingReviewSort.allCases) { sort in Text(sort.title).tag(sort) }
-                        }
-                    } label: {
-                        Label(model.meetingReviewSort.title, systemImage: "arrow.up.arrow.down")
-                    }
-                    .menuStyle(.button)
-                    .buttonStyle(COSQuietButtonStyle())
+                    COSDropdown("Sort meetings", selection: Binding(
+                        get: { model.meetingReviewSort },
+                        set: { model.setMeetingReviewSort($0) }
+                    ), options: MeetingReviewSort.allCases.map { COSDropdownOption($0, $0.title) },
+                        showsLabel: false, icon: "arrow.up.arrow.down")
                     .fixedSize()
                     .help("Needs review first is the naming queue. Newest or oldest reads the list by capture time instead.")
                 }
@@ -3574,11 +3545,9 @@ struct ActivityWindow: View {
     private func memoriesPane() -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Picker("Memories view", selection: $memoriesSubview) {
-                    ForEach(MemoriesSubview.allCases) { item in Text(item.title).tag(item) }
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 460)
+                COSViewSwitch("Memories view", selection: $memoriesSubview,
+                              options: MemoriesSubview.allCases.map { COSViewOption($0, $0.title) }, showsLabel: true)
+                .frame(maxWidth: 460, alignment: .leading)
                 .onChange(of: memoriesSubview) { _, next in
                     // A switch unwinds every drill-through, or an open lesson would
                     // survive into Knowledge and render under the wrong segment.
@@ -4134,14 +4103,9 @@ struct ActivityWindow: View {
                 }
                 .cosField()
                 .frame(maxWidth: 320)
-                Picker("Recency", selection: $model.searchRecency) {
-                    ForEach(SearchRecency.allCases) { option in
-                        Text(option.title).tag(option)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: 150)
-                .accessibilityLabel("Recency")
+                COSDropdown("Recency", selection: $model.searchRecency,
+                            options: SearchRecency.allCases.map { COSDropdownOption($0, $0.title) })
+                .fixedSize()
                 Spacer()
             }
             if queryActive, !semanticAvailable {
@@ -4796,9 +4760,9 @@ struct ActivityWindow: View {
             Spacer(minLength: 8)
             if model.archiveMatchingChats > 0 {
                 Toggle("Only matches", isOn: $model.archiveOnlyMatches)
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                    .font(.system(size: 10.5))
+                    .toggleStyle(COSSwitchStyle())
+                    .font(COSType.body(10.5))
+                    .fixedSize()
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 6)
@@ -4996,8 +4960,8 @@ struct ActivityWindow: View {
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
             TextField("Find in this chat", text: $chatQuery)
-                .textFieldStyle(.roundedBorder)
-                .controlSize(.small)
+                .textFieldStyle(.plain)
+                .cosField()
                 .frame(maxWidth: 260)
                 .onSubmit { jumpToMatch(step: 1, ids: ids, proxy: proxy) }
             if chatQuery.count >= 2 {
@@ -5014,7 +4978,7 @@ struct ActivityWindow: View {
                 }
                 .controlSize(.small).disabled(ids.isEmpty)
                 Button("Clear") { chatQuery = ""; chatMatchCursor = 0 }
-                    .buttonStyle(.link).controlSize(.small)
+                    .buttonStyle(COSTextButtonStyle())
             }
             Spacer()
         }
@@ -5770,7 +5734,8 @@ struct SessionChatComposer: View {
             }
             HStack(alignment: .bottom, spacing: 8) {
                 TextField("Continue this session…", text: $model.chatDraft, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
+                    .cosField()
                     .lineLimit(1...6)
                     .disabled(model.chatSending || model.chatPolling || model.chatForking)
                     .onSubmit { model.sendChatMessage() }
@@ -6282,13 +6247,13 @@ struct HeldNamingReviewSheet: View {
                         Text(preview.ownerWarning ?? "This is your owner voice. Confirm these samples are your own voice.")
                             .font(COSType.body(11, weight: .medium)).foregroundStyle(COSPalette.accent)
                         Toggle("I confirm these samples are my own voice.", isOn: $model.heldNamingOwnerAck)
-                            .toggleStyle(.checkbox).font(COSType.body(12))
+                            .toggleStyle(COSCheckStyle()).font(COSType.body(12))
                             .accessibilityIdentifier("held-owner-ack")
                     }
                 }
                 if preview.requiresListening {
                     Toggle("I listened and these segments sound like the same person.", isOn: $model.heldNamingListened)
-                        .toggleStyle(.checkbox).font(COSType.body(12))
+                        .toggleStyle(COSCheckStyle()).font(COSType.body(12))
                         .accessibilityIdentifier("held-listening-ack")
                 }
                 TimelineView(.periodic(from: .now, by: 1)) { _ in

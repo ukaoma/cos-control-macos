@@ -1531,7 +1531,7 @@ private struct SessionPetRoot: View {
         ZStack {
             Circle().fill(COSPalette.card)
             Circle().stroke(COSPalette.line, lineWidth: 1)
-            ProgressView().controlSize(.small).scaleEffect(0.65)
+            ProgressView().controlSize(.small).progressViewStyle(COSProgressStyle()).scaleEffect(0.65)
         }
         .transition(.opacity)
     }
