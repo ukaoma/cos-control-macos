@@ -68,6 +68,9 @@ struct WorkProgressNotice: Equatable, Sendable {
     private var sessionDigest: [String: String] = [:]
     /// Per handoff: when Jev was last tried without an answer. Transient failures retry, at most every 10 minutes.
     private var jevTriedAt: [String: Date] = [:]
+    /// 0.5.252: the glasses request inbox (WorkHandoffStore.swift). It sends through the store like the Agent workspace,
+    /// so it holds the journal during a send; the tracker's own passes never do, and it runs on its own loop.
+    let requests: WorkRequestInbox
 
     /// Seconds between passes while something is tracked, and while nothing is.
     nonisolated static let activeInterval: Double = 30
@@ -82,6 +85,7 @@ struct WorkProgressNotice: Equatable, Sendable {
 
     init(store: WorkHandoffStore, board: Board, notify: @escaping (WorkProgressNotice) -> Void, now: @escaping () -> Date = Date.init) {
         self.store = store; self.board = board; self.notify = notify; self.now = now
+        requests = WorkRequestInbox(store: store, board: board, now: now)
     }
 
     func start() {
@@ -98,6 +102,8 @@ struct WorkProgressNotice: Equatable, Sendable {
                 await nap.value
             }
         }
+        // 0.5.252: the glasses request inbox lists for as long as COS Control runs.
+        requests.start()
     }
     /// Run the next pass now (a handoff was just recorded).
     func poke() { sleeper?.cancel() }

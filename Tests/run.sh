@@ -52,7 +52,8 @@ fi
 /usr/bin/python3 -c '
 import json, sys
 value = json.loads(sys.argv[1])
-if not value.get("ok") or value.get("details", {}).get("checks", 0) < 51:
+# 68 at 0.5.252 (the glasses request result body and failure codes); 51 at 0.5.250.
+if not value.get("ok") or value.get("details", {}).get("checks", 0) < 68:
     sys.exit("helper self-test-work FAILED: " + str(value)[:2000])
 ' "$WORK_SELF_TEST"
 
@@ -62,6 +63,8 @@ python3 "$ROOT/Tests/work-review-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-intake-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-jev-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-progress-helper-checks.py" "$TMP/cos-control-helper"
+# 0.5.252: the glasses request inbox commands (list, claim, result) against a loopback fixture.
+python3 "$ROOT/Tests/work-requests-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/HeldNamingGuardMutations.py"
 
 # THE APP ITSELF MUST COMPILE.
@@ -1125,6 +1128,33 @@ assert "Self.linkableJobStates.contains(state)" in store, "only a running or wel
 PY
 # The tracker's behaviour: status lines, delivery, stages, Jev gating, retries, a busy journal (synthetic transport and board).
 "$ROOT/Tests/run-work-progress.sh"
+
+# ── 0.5.252: glasses requests (server 6.59.0 inbox) ─────────────────────────────
+# Behaviour: Tests/run-work-progress.sh test 22 (claim race, expiry, a late claim, a changed task, a missing destination,
+# submit's refusal passed back, an app-owned Continue refused with no clipboard, Not done yet, an older server, result
+# retries, refused and unresolved results, never twice across a relaunch) and Tests/work-requests-helper-checks.py.
+python3 - "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/WorkHandoffView.swift" <<'PY'
+import sys
+tracker, store, model, view = (open(p).read() for p in sys.argv[1:5])
+# The inbox sends through the store, holding the journal as any send does, so it is its own class on its own loop;
+# the tracker only starts it (its passes still never hold the journal: the 0.5.247 check above).
+assert "        requests.start()\n    }" in tracker and "requests = WorkRequestInbox(store: store, board: board, now: now)" in tracker, "the inbox runs whenever COS Control runs"
+inbox = store[store.index("@MainActor final class WorkRequestInbox {"):]
+assert "guard loop == nil, !store.isolated else { return }" in inbox, "the inbox never runs on the sample data"
+assert "nonisolated static let interval: Double = 30" in inbox and "nonisolated static let busyInterval: Double = 5" in inbox, "30 s, 5 s while a request is in hand"
+assert "if let earlier = store.journaledReceipt(forRequest: request.id) { return .from(earlier) }" in inbox, "a request is never sent twice"
+assert "guard source.revision == request.expectedTaskRevision else" in inbox, "the task-level revision is checked"
+assert "WorkHandoffStore.sendPlan(draft: draft, sessions: store.sessions, models: store.models)" in inbox, "the destination is resolved on this Mac"
+send = inbox[inbox.index("    private func waitForStore("):inbox.index("    private func outcome(")]
+assert "now() >= deadline { return .refused(reason: Refusal.lateClaim, receiptID: nil) }" in send, "never sent after the claim deadline"
+submit = store[store.index("    func submit(source: WorkSource"):store.index("    // MARK: - Start it, then open it (0.5.249)")]
+assert submit.index("if origin != nil, mode == .continueSession, Self.appOwner(of: session.id, in: receipts) != nil {") < submit.index("let id = UUID().uuidString.lowercased()"), "an app-owned Continue from the glasses is refused before anything is recorded"
+assert 'if let origin { row.requestedFrom = "glasses"; row.requestId = origin.requestID }' in submit, "the receipt records where it came from"
+assert submit.index('row.requestedFrom = "glasses"') < submit.index("do { try persist() } catch { receipts.removeAll { $0.id == id }; throw error }"), "journaled with the intent"
+assert 'if row.requestedFrom == "glasses" { row.status = "refused"; row.detail = WorkRequestOrigin.appOwnedReason; return }' in store, "no clipboard write for the glasses"
+assert "tracker.requests.serverVersion = { [weak self] in self?.status.installedVersion }" in model, "an older server's inbox is asked about again after an update"
+assert '(receipt.requestedFrom == "glasses" ? " · from the glasses" : "")' in view, "Work history says a handoff came from the glasses"
+PY
 
 # ── 0.5.251: the GOTCOS theme on every stock macOS control ─────────────────────
 # Miles, 2026-09-29: "we should be using our GOTCOS theme across the board." Every picker, toggle, stepper and system

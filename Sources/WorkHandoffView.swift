@@ -703,7 +703,8 @@ struct WorkHandoffView: View {
                 ForEach(receipts) { receipt in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Text(receipt.status.capitalized + " · " + receipt.mode.title).font(COSType.body(12, weight: .semibold))
+                            Text(receipt.status.capitalized + " · " + receipt.mode.title + (receipt.requestedFrom == "glasses" ? " · from the glasses" : ""))
+                                .font(COSType.body(12, weight: .semibold))
                             Spacer()
                             Text(Date(timeIntervalSince1970: receipt.createdAt), format: .dateTime.month(.abbreviated).day().hour().minute())
                                 .font(COSType.mono(10.5)).foregroundStyle(COSPalette.muted)

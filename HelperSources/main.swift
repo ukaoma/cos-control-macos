@@ -549,6 +549,9 @@ final class COSControlHelper {
         case "work-new": try emitWorkNew()
         case "work-job": try emitWorkJob(args: args)
         case "work-cursor-chat": try emitWorkCursorChat(args: args)
+        case "work-requests": try emitWorkRequests()
+        case "work-request-claim": try emitWorkRequestClaim(args: args)
+        case "work-request-result": try emitWorkRequestResult(args: args)
         case "self-test-work": try selfTestWork()
         case "session-chat-turn": try emitSessionChatTurn(args: args)
         case "session-chat-fork": try emitSessionChatFork(args: args)
@@ -4698,6 +4701,108 @@ final class COSControlHelper {
         "intake_store_closed": "Intake is unavailable while the server restarts. Try again shortly.",
         "work_intake_unavailable": "Intake is unavailable right now. Try again shortly.",
     ]
+
+    // MARK: - Glasses requests (0.5.252, server 6.59.0)
+    //
+    // The glasses leave a Work request on the server (Start work, Reply by voice, Not done yet); COS Control lists the
+    // pending ones, claims one, runs its own send with every guard, and reports the result under the claim's token.
+    // These three routes answer only loopback callers, which `request` always is. A 404 with no request code means the
+    // server predates the inbox: Control stops asking, quietly, until the server's version changes.
+
+    /// A result body Control may post: `sent` and `unresolved` name the receipt, `refused` says why, and every result
+    /// carries the 32-hex claim token. Nil for anything else.
+    static func workRequestResultBody(_ body: [String: Any]) -> [String: Any]? {
+        guard Set(body.keys).isSubset(of: ["state", "receiptId", "reason", "claimToken"]),
+              let state = body["state"] as? String, ["sent", "refused", "unresolved"].contains(state),
+              let token = body["claimToken"] as? String, token.range(of: "^[a-f0-9]{32}$", options: .regularExpression) != nil else { return nil }
+        var out: [String: Any] = ["state": state, "claimToken": token]
+        if let receipt = body["receiptId"] {
+            guard let id = receipt as? String, id.range(of: "^[^\\s\\p{Cc}]{1,256}$", options: .regularExpression) != nil else { return nil }
+            out["receiptId"] = id
+        }
+        if let raw = body["reason"] {
+            guard let reason = raw as? String else { return nil }
+            let flat = String(reason.unicodeScalars.map { CharacterSet.controlCharacters.contains($0) ? " " : Character($0) })
+                .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            if !flat.isEmpty { out["reason"] = String(flat.prefix(500)) }
+        }
+        if state != "refused", out["receiptId"] == nil { return nil }
+        if state == "refused", out["reason"] == nil { return nil }
+        return out
+    }
+
+    /// What a failed inbox call means, from its status and error code. `server_too_old` only for a 404 that names no
+    /// request code (the route itself is missing).
+    static func workRequestFailure(status: Int, code: String?) -> String {
+        if status == 404 { return code == "request_not_found" ? "request_not_found" : "server_too_old" }
+        if let code, code.range(of: "^[a-z_]{1,64}$", options: .regularExpression) != nil { return code }
+        return status == 410 ? "request_expired" : "http_\(status)"
+    }
+
+    private func workRequestErrorCode(_ response: HTTPResponse) -> String? {
+        (response.body?["error"] as? [String: Any])?["code"] as? String
+    }
+
+    private func emitWorkRequests() throws {
+        let token = try readToken()
+        guard let response = request("/api/work-board/handoff-requests?state=pending", token: token, timeout: 10) else {
+            emit(ok: true, message: "Glasses requests are unreachable", details: ["available": false, "reason": "unreachable", "requests": []])
+            return
+        }
+        guard response.status == 200, let body = response.body, let rows = body["requests"] as? [[String: Any]] else {
+            let reason = Self.workRequestFailure(status: response.status, code: workRequestErrorCode(response))
+            emit(ok: true, message: "Glasses requests are unavailable", details: ["available": false, "reason": reason,
+                 "httpStatus": response.status, "requests": []])
+            return
+        }
+        emit(ok: true, message: "Glasses requests", details: ["available": true, "requests": rows,
+             "quarantined": body["quarantined"] as? Int ?? 0])
+    }
+
+    private func emitWorkRequestClaim(args: [String]) throws {
+        guard let id = option("--id", in: args)?.lowercased(), Self.workJobID(id) else {
+            throw HelperError.message("--id must be the request's UUIDv4")
+        }
+        var payload: [String: Any] = [:]
+        if let again = option("--claim-token", in: args) {
+            guard again.range(of: "^[a-f0-9]{32}$", options: .regularExpression) != nil else { throw HelperError.message("--claim-token must be 32 hex") }
+            payload["claimToken"] = again
+        }
+        let json = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
+        guard let response = request("/api/work-board/handoff-requests/\(id)/claim", method: "POST", token: try readToken(),
+                                     body: json, timeout: 10) else {
+            emit(ok: true, message: "The claim could not be confirmed", details: ["claimed": false, "reason": "unreachable"]); return
+        }
+        guard response.status == 200, let body = response.body, let row = body["request"] as? [String: Any],
+              let claimToken = body["claimToken"] as? String, claimToken.range(of: "^[a-f0-9]{32}$", options: .regularExpression) != nil else {
+            emit(ok: true, message: "Not claimed", details: ["claimed": false, "httpStatus": response.status,
+                 "reason": Self.workRequestFailure(status: response.status, code: workRequestErrorCode(response))])
+            return
+        }
+        emit(ok: true, message: "Claimed", details: ["claimed": true, "request": row, "claimToken": claimToken])
+    }
+
+    private func emitWorkRequestResult(args: [String]) throws {
+        guard let id = option("--id", in: args)?.lowercased(), Self.workJobID(id) else {
+            throw HelperError.message("--id must be the request's UUIDv4")
+        }
+        let data = try readBoundedStdin(4_096)
+        guard data.count <= 4_096, let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let body = Self.workRequestResultBody(raw) else {
+            throw HelperError.message("A result is { state, receiptId?, reason?, claimToken }")
+        }
+        let json = String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self)
+        guard let response = request("/api/work-board/handoff-requests/\(id)/result", method: "POST", token: try readToken(),
+                                     body: json, timeout: 10) else {
+            emit(ok: true, message: "The result could not be confirmed", details: ["accepted": false, "reason": "unreachable"]); return
+        }
+        guard response.status == 200, let row = response.body?["request"] as? [String: Any] else {
+            emit(ok: true, message: "The result was not taken", details: ["accepted": false, "httpStatus": response.status,
+                 "reason": Self.workRequestFailure(status: response.status, code: workRequestErrorCode(response))])
+            return
+        }
+        emit(ok: true, message: "Result recorded", details: ["accepted": true, "request": row])
+    }
 
     private func emitWorkIntakeResolve() throws {
         var data = Data()
@@ -15100,7 +15205,28 @@ final class COSControlHelper {
               Self.workCursorChatMeta(Data(#"{"cwd":"/a"}"#.utf8)) == nil else {
             throw HelperError.message("Work Cursor chat self-test failed")
         }
-        emit(ok: true, message: "Work model/admission contract passed", details: ["checks": 51])
+        // 0.5.252: glasses request results and failures.
+        let token32 = String(repeating: "a", count: 32)
+        guard Self.workRequestResultBody(["state": "sent", "receiptId": "r1", "claimToken": token32]) != nil,
+              Self.workRequestResultBody(["state": "sent", "claimToken": token32]) == nil,
+              Self.workRequestResultBody(["state": "unresolved", "claimToken": token32]) == nil,
+              Self.workRequestResultBody(["state": "refused", "claimToken": token32]) == nil,
+              Self.workRequestResultBody(["state": "refused", "reason": " \n ", "claimToken": token32]) == nil,
+              Self.workRequestResultBody(["state": "refused", "reason": "Gone\nnow", "receiptId": "r1", "claimToken": token32])?["reason"] as? String == "Gone now",
+              (Self.workRequestResultBody(["state": "refused", "reason": String(repeating: "x", count: 900), "claimToken": token32])?["reason"] as? String)?.count == 500,
+              Self.workRequestResultBody(["state": "sent", "receiptId": "r1", "claimToken": "A" + String(repeating: "a", count: 31)]) == nil,
+              Self.workRequestResultBody(["state": "sent", "receiptId": "r1"]) == nil,
+              Self.workRequestResultBody(["state": "done", "receiptId": "r1", "claimToken": token32]) == nil,
+              Self.workRequestResultBody(["state": "sent", "receiptId": "r 1", "claimToken": token32]) == nil,
+              Self.workRequestResultBody(["state": "sent", "receiptId": "r1", "claimToken": token32, "extra": 1]) == nil,
+              Self.workRequestFailure(status: 404, code: nil) == "server_too_old",
+              Self.workRequestFailure(status: 404, code: "request_not_found") == "request_not_found",
+              Self.workRequestFailure(status: 410, code: nil) == "request_expired",
+              Self.workRequestFailure(status: 409, code: "already_claimed") == "already_claimed",
+              Self.workRequestFailure(status: 502, code: "<b>") == "http_502" else {
+            throw HelperError.message("Work glasses request self-test failed")
+        }
+        emit(ok: true, message: "Work model/admission contract passed", details: ["checks": 68])
     }
 
     private func emitSessionChatTurn(args: [String]) throws {

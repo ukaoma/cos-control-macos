@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import SwiftUI
 import Darwin
+import os
 
 enum WorkHandoffMode: String, Codable, CaseIterable, Identifiable {
     case continueSession, fork, newSession
@@ -118,6 +119,11 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     /// 0.5.249: open the session in its app once the first reply is done (WorkAppOpen). Nil on handoffs that stay in the
     /// background (Settings off, Ollama) and on everything sent before 0.5.249.
     var appOpen: WorkAppOpen?
+    /// 0.5.252: "glasses" when Control sent this for a request left on the server by the glasses (Start work, Reply by
+    /// voice, Not done yet), and that request's id (its clientRequestId). Optional, never a new status: the server
+    /// projects both, and an older journal reads them as absent.
+    var requestedFrom: String?
+    var requestId: String?
     /// Server-terminal states never block another handoff: completed, failed, refused, canceled (server job states:
     /// completed | failed | canceled | interrupted; interrupted is recorded as failed).
     nonisolated static let terminalStatuses: Set<String> = ["completed", "failed", "refused", "canceled", "reviewed"]
@@ -167,6 +173,48 @@ struct WorkSendPlan: Equatable {
                                          : "Fork \u{201C}\(title)\u{201D} and send"
         case .continueSession: return "Send to \u{201C}\(title)\u{201D}"
         }
+    }
+}
+
+/// 0.5.252: a send made for a request the glasses left on the server. Every guard still applies; the receipt records
+/// where it came from, and a Continue into a session its app owns is refused (no note goes to the Mac's clipboard).
+struct WorkRequestOrigin: Equatable, Sendable {
+    let requestID: String
+    nonisolated static let appOwnedReason = "This session is open in its app on the Mac. Continue it there."
+}
+
+/// 0.5.252: one request the glasses left on the server (server 6.59.0), as COS Control lists it. Everything in it is a
+/// hint: the task, its revision and the destination are all resolved again on this Mac before anything is sent.
+struct WorkGlassesRequest: Equatable, Sendable {
+    let id: String
+    let domain: String
+    let workIdentity: String
+    let expectedTaskRevision: String
+    /// start, reply (needs input or blocked) or notDone (a reported done); the last two name `replyTo`.
+    let intent: String
+    let mode: WorkHandoffMode
+    let sessionID: String?
+    let model: String?
+    let note: String?
+    let replyTo: String?
+    let state: String
+    let expiresAt: Date?
+    let claimExpiresAt: Date?
+
+    init?(_ value: JSONValue?) {
+        guard let o = value?.object, let id = o["clientRequestId"]?.string?.lowercased(), !id.isEmpty,
+              let domain = o["domain"]?.string, let identity = o["workIdentity"]?.string,
+              let revision = o["expectedTaskRevision"]?.string, let raw = o["mode"]?.string, let mode = WorkHandoffMode(rawValue: raw),
+              let state = o["state"]?.string else { return nil }
+        self.id = id; self.domain = domain; workIdentity = identity; expectedTaskRevision = revision; self.mode = mode; self.state = state
+        intent = o["intent"]?.string ?? "start"
+        sessionID = o["sessionId"]?.string; model = o["model"]?.string; note = o["note"]?.string; replyTo = o["replyTo"]?.string
+        expiresAt = o["expiresAt"]?.string.flatMap(Self.date); claimExpiresAt = o["claimExpiresAt"]?.string.flatMap(Self.date)
+    }
+    nonisolated static func date(_ text: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text)
     }
 }
 
@@ -617,7 +665,8 @@ struct WorkSendPlan: Equatable {
     }
 
     /// Fork `session` to another platform: `model` names the target provider and model.
-    func forkToPlatform(source: WorkSource, session: WorkSession, model: WorkModelChoice, prompt: String) async {
+    func forkToPlatform(source: WorkSource, session: WorkSession, model: WorkModelChoice, prompt: String,
+                        origin: WorkRequestOrigin? = nil) async {
         guard !busy else { return }
         guard Self.exportableProviders.contains(session.provider) else {
             error = "This session has no readable transcript to carry over."; return
@@ -648,7 +697,8 @@ struct WorkSendPlan: Equatable {
         }
         await submit(source: source, mode: .newSession, session: session, model: model, prompt: text,
                      journalPrompt: Self.crossPlatformJournal(context: prompt, sessionTitle: session.title, provider: session.provider,
-                                                              exportLength: export.count, trimmed: text.contains(Self.crossPlatformMarker)))
+                                                              exportLength: export.count, trimmed: text.contains(Self.crossPlatformMarker)),
+                     origin: origin)
     }
 
     private static let genericRecommendationWords: Set<String> = [
@@ -745,7 +795,7 @@ struct WorkSendPlan: Equatable {
     /// but journals the reviewed context and a note: handoffs.json has a 10 MB cap). Only the Continue paths resend
     /// `row.prompt`, and a fork to another platform is always a New session.
     func submit(source: WorkSource, mode: WorkHandoffMode, session: WorkSession?, model: WorkModelChoice?, prompt: String,
-                journalPrompt: String? = nil) async {
+                journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil) async {
         guard !busy else { return }
         busy = true; error = nil
         defer { busy = false }
@@ -770,6 +820,11 @@ struct WorkSendPlan: Equatable {
                 if mode == .continueSession, Self.serverHold(onSession: session.id, in: receipts) != nil {
                     throw failure("\u{201C}\(session.title)\u{201D} is still running its first turn on the COS server. Continue it once that has finished.")
                 }
+                // 0.5.252: the app owns this session, and Continue there puts a note on the Mac's clipboard for you to
+                // paste. A request from the glasses never does that: it is refused before anything is recorded.
+                if origin != nil, mode == .continueSession, Self.appOwner(of: session.id, in: receipts) != nil {
+                    throw failure(WorkRequestOrigin.appOwnedReason)
+                }
             }
             let id = UUID().uuidString.lowercased()
             var row = WorkHandoffReceipt(id: id, workID: source.id, workTitle: source.title, sourceRevision: source.revision,
@@ -778,6 +833,7 @@ struct WorkSendPlan: Equatable {
                 sessionTitle: mode == .newSession ? source.title : session!.title, status: "sending", detail: "Saving handoff intent",
                 prompt: mode == .newSession ? (journalPrompt ?? text) + instruction : sent, createdAt: Date().timeIntervalSince1970,
                 sourceSessionID: session?.id, serverInstanceID: serverInstanceID)
+            if let origin { row.requestedFrom = "glasses"; row.requestId = origin.requestID }
             var progress = WorkProgress(tag: tag)
             progress.record(.sent, Self.sentText(mode: mode, session: session, model: model), at: row.createdAt)
             row.progress = progress
@@ -1220,6 +1276,8 @@ struct WorkSendPlan: Equatable {
     /// Cursor put it on the clipboard. The tracker sees it arrive in the session's conversation, and follows it from there.
     private func continueInApp(_ session: WorkSession, owner: WorkHandoffReceipt, row: inout WorkHandoffReceipt) async throws {
         let place = Self.openPlace(session.provider)
+        // 0.5.252: submit refuses this for the glasses before recording anything; never a clipboard write for them.
+        if row.requestedFrom == "glasses" { row.status = "refused"; row.detail = WorkRequestOrigin.appOwnedReason; return }
         // Cursor writes no message times: what the chat holds now is kept, so your note is recognised when it arrives.
         if session.provider == "cursor", var progress = row.progress,
            let read = try? await sessionRead(sessionID: session.id, turns: WorkProgressTracker.turnsPerRead), read.hasHistory {
@@ -1533,7 +1591,7 @@ struct WorkSendPlan: Equatable {
     }
     /// Sends the work back: marks the reply reviewed (a delivered reply blocks another handoff), continues the same
     /// session with what is missing, and records the send-back on the old handoff. True when the session has it.
-    func sendBack(receiptID: String, source: WorkSource, missing: String) async -> Bool {
+    func sendBack(receiptID: String, source: WorkSource, missing: String, origin: WorkRequestOrigin? = nil) async -> Bool {
         let text = missing.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !busy, !text.isEmpty, let old = receipts.first(where: { $0.id == receiptID }), old.workID == source.id,
               let session = sendBackSession(for: old) else { return false }
@@ -1542,7 +1600,8 @@ struct WorkSendPlan: Equatable {
             error = "This work still has a handoff in flight. Check it before sending the work back."; return false
         }
         await submit(source: source, mode: .continueSession, session: session, model: nil,
-                     prompt: Self.sendBackPrompt(missing: text, evidence: old.progress?.evidence, reportedBy: old.progress?.reportedBy))
+                     prompt: Self.sendBackPrompt(missing: text, evidence: old.progress?.evidence, reportedBy: old.progress?.reportedBy),
+                     origin: origin)
         guard let new = receipts(for: source.id).first, new.id != old.id, !["refused", "failed"].contains(new.status) else { return false }
         let at = Date().timeIntervalSince1970
         updateReceipt(old.id) { row in
@@ -1551,6 +1610,83 @@ struct WorkSendPlan: Equatable {
             row.progress = next; return true
         }
         return true
+    }
+
+    // MARK: - Reply by voice (0.5.252)
+    //
+    // From the glasses, on a task whose session said it needs input or is blocked: the answer goes back to that
+    // session, the same way Not done yet does (the reply is marked reviewed, then the same session is continued).
+
+    /// Where a reply goes: the session that asked, when it takes a Continue. Nil otherwise.
+    func replySession(for receipt: WorkHandoffReceipt) -> WorkSession? {
+        guard let reported = receipt.progress?.reported, [.needsInput, .blocked].contains(reported),
+              receipt.status == "delivered" || !receipt.blocksNewHandoff,
+              let id = WorkProgress.workingSession(receipt), let session = sessions.first(where: { $0.id == id }),
+              Self.continueProviders.contains(session.provider) else { return nil }
+        return session
+    }
+    nonisolated static func replyPrompt(answer: String, question: String?, reportedBy: String?) -> String {
+        let asked = reportedBy == "session" ? question.map { "You asked: \u{201C}\($0)\u{201D}\n" } ?? "" : ""
+        return asked + "My answer: " + answer.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\nCarry on with the work, and report again."
+    }
+    /// Sends the answer back to the session that asked. True when the session has it.
+    func reply(receiptID: String, source: WorkSource, answer: String, origin: WorkRequestOrigin? = nil) async -> Bool {
+        let text = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !busy, !text.isEmpty, let old = receipts.first(where: { $0.id == receiptID }), old.workID == source.id,
+              let session = replySession(for: old) else { return false }
+        if old.status == "delivered" { markReviewed(receiptID: old.id) }
+        guard !receipts(for: source.id).contains(where: \.blocksNewHandoff) else {
+            error = "This work still has a handoff in flight. Check it before replying."; return false
+        }
+        await submit(source: source, mode: .continueSession, session: session, model: nil,
+                     prompt: Self.replyPrompt(answer: text, question: old.progress?.evidence, reportedBy: old.progress?.reportedBy),
+                     origin: origin)
+        guard let new = receipts(for: source.id).first, new.id != old.id, !["refused", "failed"].contains(new.status) else { return false }
+        let at = Date().timeIntervalSince1970
+        updateReceipt(old.id) { row in
+            guard var next = row.progress else { return false }
+            next.record(.note, "You replied: \u{201C}" + WorkProgress.clip(text, 200) + "\u{201D}", at: at)
+            row.progress = next; return true
+        }
+        return true
+    }
+
+    // MARK: - The glasses request inbox (0.5.252)
+
+    enum GlassesListing: Equatable { case requests([WorkGlassesRequest]), serverTooOld, unavailable }
+    struct GlassesClaim: Equatable { let request: WorkGlassesRequest; let token: String }
+    enum GlassesPost: Equatable { case accepted, retry, gone(String) }
+
+    /// The pending requests. `serverTooOld` only when the server has no inbox route at all (it predates 6.59.0).
+    func glassesRequests() async throws -> GlassesListing {
+        let details = try await call(["work-requests"])
+        if details["available"]?.bool == true { return .requests((details["requests"]?.array ?? []).compactMap { WorkGlassesRequest($0) }) }
+        return details["reason"]?.string == "server_too_old" ? .serverTooOld : .unavailable
+    }
+    /// Takes one pending request. Nil when another claim won, it expired, or it is gone.
+    func claimGlassesRequest(_ id: String) async -> GlassesClaim? {
+        guard let details = try? await call(["work-request-claim", "--id", id]), details["claimed"]?.bool == true,
+              let token = details["claimToken"]?.string, let request = WorkGlassesRequest(details["request"]), request.id == id else { return nil }
+        return GlassesClaim(request: request, token: token)
+    }
+    /// Reports what happened. `retry` when the server did not take it for a reason that can pass (unreachable, busy);
+    /// `gone` when it never will (the claim ended, the token does not match, the request is gone).
+    func postGlassesResult(_ id: String, body: [String: String]) async -> GlassesPost {
+        guard let data = try? JSONSerialization.data(withJSONObject: body),
+              let details = try? await call(["work-request-result", "--id", id], data) else { return .retry }
+        if details["accepted"]?.bool == true { return .accepted }
+        let reason = details["reason"]?.string ?? "unknown"
+        let status = details["httpStatus"]?.int ?? 0
+        return reason == "unreachable" || status == 429 || status >= 500 || reason == "server_too_old" ? .retry : .gone(reason)
+    }
+    /// The receipt already sent for a glasses request, read from the journal on disk (another launch may have
+    /// written it), so a request is never sent twice.
+    func journaledReceipt(forRequest id: String) -> WorkHandoffReceipt? {
+        if !isolated, storageReady, !busy, let lock = try? lockJournal() {
+            defer { flock(lock, LOCK_UN); close(lock) }
+            try? loadJournal()
+        }
+        return receipts.first { $0.requestId == id }
     }
 
     func markReviewed(receiptID: String) {
@@ -1603,4 +1739,230 @@ struct WorkSendPlan: Equatable {
         .init(id: "fable", provider: "claude", title: "Claude · Fable (sample)", available: true, reason: nil),
         .init(id: "ollama", provider: "ollama", title: "Ollama · configured local model (sample)", available: true, reason: nil)
     ]
+}
+
+private let requestsLog = Logger(subsystem: "com.cos.control", category: "work-requests")
+
+// MARK: - Glasses requests (0.5.252, server 6.59.0)
+//
+// Miles, 2026-09-30 (PLAN_work_on_glasses_6_9_561, contract v3): the glasses can ask for Work to start, reply to a
+// question, or say it is not done yet. They leave a request on the server; this Mac claims it and runs its own send
+// with every guard (the journal fence, one active handoff, the status line, the session name, the server hold, the
+// app owner, open in the app). Listing is also what tells the glasses COS Control is taking requests, so it runs every
+// 30 seconds whenever COS Control runs, Activity open or not; every 5 while a request is in hand.
+
+/// What a glasses request came to. Posted to the server under the claim's token.
+enum WorkRequestOutcome: Equatable {
+    case sent(receiptID: String)
+    case refused(reason: String, receiptID: String?)
+    case unresolved(receiptID: String)
+
+    var body: [String: String] {
+        switch self {
+        case .sent(let id): return ["state": "sent", "receiptId": id]
+        case .refused(let reason, let id):
+            var out = ["state": "refused", "reason": reason]
+            if let id { out["receiptId"] = id }
+            return out
+        case .unresolved(let id): return ["state": "unresolved", "receiptId": id]
+        }
+    }
+    /// A receipt's status as a result: refused, failed or canceled is refused (with its receipt), a delivery that could
+    /// not be confirmed is unresolved, and anything sent on its way is sent.
+    nonisolated static func from(_ receipt: WorkHandoffReceipt) -> WorkRequestOutcome {
+        switch receipt.status {
+        case "refused", "failed", "canceled": return .refused(reason: receipt.detail.isEmpty ? "Not sent." : receipt.detail, receiptID: receipt.id)
+        case "unknown", "sending": return .unresolved(receiptID: receipt.id)
+        default: return .sent(receiptID: receipt.id)
+        }
+    }
+}
+
+extension WorkRequestInbox {
+    /// Reasons a request is refused before anything is sent. Plain words: the glasses show them.
+    enum Refusal {
+        static let taskGone = "This task is not on the board any more. Nothing was sent."
+        static let taskComplete = "This task is complete. Nothing was sent."
+        static let taskChanged = "This task changed after the glasses read it. Nothing was sent. Open it again and retry."
+        static let lateClaim = "Claimed too long ago; not sent"
+        static let replyTarget = "That handoff is no longer this task's newest. Nothing was sent."
+        static let replySession = "That session cannot take a reply from here now. Nothing was sent."
+        static let modelGone = "That model is not available on this Mac now. Nothing was sent."
+        static let sessionGone = "That session is not on this Mac now. Nothing was sent."
+        static let destination = "COS Control cannot send this there. Nothing was sent."
+        static let noNote = "A reply needs its words. Nothing was sent."
+        static let notSent = "COS Control did not send it."
+    }
+}
+
+/// 0.5.252: lists the glasses requests every 30 seconds for as long as COS Control runs, every 5 while one is in hand.
+@MainActor final class WorkRequestInbox {
+    let store: WorkHandoffStore
+    private let board: WorkProgressTracker.Board
+    private let now: () -> Date
+    /// The running server's version, so an inbox an older server lacks is asked about again after an update.
+    var serverVersion: () -> String? = { nil }
+    private var running = false
+    /// The server version whose inbox route was missing (404): nothing is listed again until the version changes.
+    private(set) var offForVersion: String?
+    /// Results the server has not taken yet, by request id: the claim token and the result.
+    private(set) var pending: [String: (token: String, body: [String: String])] = [:]
+    private var loop: Task<Void, Never>?
+    private var sleeper: Task<Void, Never>?
+    nonisolated static let interval: Double = 30
+    nonisolated static let busyInterval: Double = 5
+
+    init(store: WorkHandoffStore, board: WorkProgressTracker.Board, now: @escaping () -> Date) {
+        self.store = store; self.board = board; self.now = now
+    }
+
+    func start() {
+        guard loop == nil, !store.isolated else { return }
+        loop = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let soon = await self.tick()
+                let nap = Task<Void, Never> { try? await Task.sleep(for: .seconds(soon ? Self.busyInterval : Self.interval)) }
+                self.sleeper = nap
+                await nap.value
+            }
+        }
+    }
+    /// List now.
+    func poke() { sleeper?.cancel() }
+
+    /// One pass of the inbox. True when the next should come soon (a request was in hand, or a result is waiting).
+    @discardableResult func tick() async -> Bool {
+        guard !running, !store.isolated else { return false }
+        running = true; defer { running = false }
+        await postPendingResults()
+        let version = serverVersion() ?? ""
+        if let off = offForVersion {
+            guard off != version else { return !pending.isEmpty }
+            offForVersion = nil
+        }
+        guard let listing = try? await store.glassesRequests() else { return !pending.isEmpty }
+        switch listing {
+        case .serverTooOld:
+            // An older server has no inbox: stop asking, quietly (no banner), until its version changes.
+            offForVersion = version
+            return false
+        case .unavailable:
+            return !pending.isEmpty
+        case .requests(let rows):
+            let open = rows.filter { $0.state == "pending" }
+            for request in open { await handle(request) }
+            return !open.isEmpty || !pending.isEmpty
+        }
+    }
+
+    /// Claims one request, sends it (or refuses it) and reports the result.
+    private func handle(_ request: WorkGlassesRequest) async {
+        if let expires = request.expiresAt, expires <= now() { return }
+        guard let claim = await store.claimGlassesRequest(request.id) else { return }
+        let outcome = await send(claim.request)
+        requestsLog.notice("glasses request \(claim.request.id, privacy: .public): \(outcome.body["state"] ?? "", privacy: .public)")
+        pending[claim.request.id] = (claim.token, outcome.body)
+        await postPendingResults()
+    }
+
+    /// Results not taken yet, posted again every pass until the server takes them or will never take them.
+    func postPendingResults() async {
+        for (id, entry) in pending.sorted(by: { $0.key < $1.key }) {
+            var body = entry.body; body["claimToken"] = entry.token
+            switch await store.postGlassesResult(id, body: body) {
+            case .accepted: pending[id] = nil
+            case .gone(let reason):
+                pending[id] = nil
+                requestsLog.notice("glasses request \(id, privacy: .public) result not taken: \(reason, privacy: .public)")
+            case .retry: continue
+            }
+        }
+    }
+
+    /// Resolves a claimed request on this Mac, then sends it through the same paths the Agent workspace uses.
+    private func send(_ request: WorkGlassesRequest) async -> WorkRequestOutcome {
+        // Sent before (a relaunch, or a claim answered twice): never again. Report what it came to.
+        if let earlier = store.journaledReceipt(forRequest: request.id) { return .from(earlier) }
+        await board.reload()
+        guard let row = board.tasks().first(where: { $0.domain == request.domain && $0.workIdentity == request.workIdentity }) else {
+            return .refused(reason: Refusal.taskGone, receiptID: nil)
+        }
+        guard !row.checked, row.workStage != "complete" else { return .refused(reason: Refusal.taskComplete, receiptID: nil) }
+        let source = WorkSource.taskSnapshot(row)
+        guard source.revision == request.expectedTaskRevision else { return .refused(reason: Refusal.taskChanged, receiptID: nil) }
+        // The sessions and models as they are now. What the glasses chose, and where the choice came from, are hints.
+        let shownError = store.error
+        await store.refresh()
+        store.error = shownError
+        let origin = WorkRequestOrigin(requestID: request.id)
+        let note = request.note?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if request.intent == "reply" || request.intent == "notDone" {
+            guard !note.isEmpty else { return .refused(reason: Refusal.noNote, receiptID: nil) }
+            guard let replyTo = request.replyTo, let target = store.receipts(for: source.id).first, target.id == replyTo else {
+                return .refused(reason: Refusal.replyTarget, receiptID: nil)
+            }
+            let session = request.intent == "reply" ? store.replySession(for: target) : store.sendBackSession(for: target)
+            guard let session, request.mode == .continueSession, let asked = request.sessionID,
+                  ClaudeSession.sameSession(asked, session.id) else { return .refused(reason: Refusal.replySession, receiptID: nil) }
+            if let late = await waitForStore(request) { return late }
+            let shown = store.error
+            _ = request.intent == "reply"
+                ? await store.reply(receiptID: target.id, source: source, answer: note, origin: origin)
+                : await store.sendBack(receiptID: target.id, source: source, missing: note, origin: origin)
+            return outcome(for: request, shownError: shown)
+        }
+
+        var draft = store.draft(for: source)
+        draft.mode = request.mode
+        // The live list gives a running Claude session by its first 8 characters; the glasses name it in full. They are
+        // one session here, as everywhere else in Work.
+        let listed = request.sessionID.flatMap { id in
+            store.sessions.first { $0.id == id } ?? store.sessions.first { ClaudeSession.sameSession($0.id, id) }
+        }
+        draft.sessionID = listed?.id ?? ""
+        let model = request.model.flatMap { id in store.models.first { $0.id == id } }
+        draft.provider = model?.provider ?? ""
+        draft.modelID = model?.id ?? ""
+        if !note.isEmpty { draft.prompt += "\n\nNote from the glasses: " + note }
+        guard let plan = WorkHandoffStore.sendPlan(draft: draft, sessions: store.sessions, models: store.models) else {
+            let reason = request.mode == .newSession || (request.mode == .fork && request.model != nil)
+                ? (model?.available == true ? Refusal.destination : Refusal.modelGone)
+                : (listed == nil ? Refusal.sessionGone : Refusal.destination)
+            return .refused(reason: reason, receiptID: nil)
+        }
+        if let late = await waitForStore(request) { return late }
+        let shown = store.error
+        if plan.crossPlatform, let session = plan.session, let model = plan.model {
+            await store.forkToPlatform(source: source, session: session, model: model, prompt: plan.prompt, origin: origin)
+        } else {
+            await store.submit(source: source, mode: plan.mode, session: plan.mode == .newSession ? nil : plan.session,
+                               model: plan.model, prompt: plan.prompt, origin: origin)
+        }
+        return outcome(for: request, shownError: shown)
+    }
+
+    /// Waits for a send already in progress on this Mac to finish, then checks the claim's deadline, immediately
+    /// before sending. A refusal when it has passed.
+    private func waitForStore(_ request: WorkGlassesRequest) async -> WorkRequestOutcome? {
+        while store.busy {
+            if let deadline = request.claimExpiresAt, now() >= deadline { break }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        if let deadline = request.claimExpiresAt, now() >= deadline { return .refused(reason: Refusal.lateClaim, receiptID: nil) }
+        return nil
+    }
+
+    /// What the send came to: its receipt's status, or why nothing was recorded. A refusal here does not stay on the
+    /// Mac's Work page as an error: the glasses are told.
+    private func outcome(for request: WorkGlassesRequest, shownError: String?) -> WorkRequestOutcome {
+        if let receipt = store.receipts.first(where: { $0.requestId == request.id }) {
+            store.error = shownError
+            return .from(receipt)
+        }
+        let reason = store.error ?? Refusal.notSent
+        store.error = shownError
+        return .refused(reason: reason, receiptID: nil)
+    }
 }

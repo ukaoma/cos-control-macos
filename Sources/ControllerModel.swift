@@ -468,6 +468,8 @@ final class ControllerModel: ObservableObject {
             }),
             notify: { [weak self] notice in self?.postWorkNotice(notice) })
         store.opensInApp = workOpensTabs
+        // 0.5.252: the glasses request inbox is asked about again whenever the server's version changes.
+        tracker.requests.serverVersion = { [weak self] in self?.status.installedVersion }
         // 0.5.250: a New session linked while it runs is Work in Sessions and on the pet at once, under its own title, and
         // opens to the app once its run finishes.
         store.onWorkSessionsChanged = { [weak self] in self?.remarkWorkSessions() }
