@@ -58,8 +58,9 @@ fi
 /usr/bin/python3 -c '
 import json, sys
 value = json.loads(sys.argv[1])
-# 68 at 0.5.252 (the glasses request result body and failure codes); 51 at 0.5.250.
-if not value.get("ok") or value.get("details", {}).get("checks", 0) < 68:
+# 62 at 0.5.253 (the 13 Cursor chat finder checks went with the finder, 7 for the re-claim token on stdin came in); 68 at
+# 0.5.252 (the glasses request result body and failure codes); 51 at 0.5.250.
+if not value.get("ok") or value.get("details", {}).get("checks", 0) < 62:
     sys.exit("helper self-test-work FAILED: " + str(value)[:2000])
 ' "$WORK_SELF_TEST"
 
@@ -1114,7 +1115,7 @@ assert 'if row.provider == "claude", let name = Self.claudeSessionName(source.se
 # test 20b sends an 84-character title whole and cuts a 130-character one by the rules, through the real snapshot.
 assert "var sessionNameSource: String { fullTitle ?? title }" in store, "the name source is the whole title when there is one"
 assert "let data = try JSONSerialization.data(withJSONObject: job)" in submit, "the name rides in the job request"
-new = body(helper, "    private func emitWorkNew() throws {", "    // MARK: - Cursor chats for Work (0.5.249)")
+new = body(helper, "    private func emitWorkNew() throws {", "    private func emitWorkJob(args: [String]) throws {")
 assert "let sessionName = try Self.workNewSessionName(body)" in new and "messageEra: era, sessionName: sessionName)" in new, "the helper cleans the name and posts it"
 fresh = body(helper, "    private func emitFreshClaudeSessions(", "    private func emitSessionList(")
 assert fresh.index("Self.applyClaudeDesktopTitles(peers") < fresh.index("Self.applyClaudeCustomTitles(peers") < fresh.index("peers.removeAll { Self.isWarmUpRow($0) }"), "transcript titles apply after Desktop's, before the warm-up filter"
@@ -1162,10 +1163,10 @@ assert 'if row.requestedFrom == "glasses" { row.status = "refused"; row.detail =
 assert "return (status.version ?? \"\") + \"|\" + (status.installedVersion ?? \"\")" in model and "tracker.requests.serverVersion = { [weak self] in" in model, "an older server's inbox is asked about again after an update"
 # QA round 1 (2026-09-30). Behaviour for each is in Tests/run-work-progress.sh test 22; these pin the wiring.
 assert "guard Self.knownIntents.contains(request.intent) else { return .refused(reason: Refusal.unknownIntent, receiptID: nil) }" in inbox and 'intent = o["intent"]?.string ?? ""' in store, "an unknown intent is refused, never read as Start (item 15)"
-assert inbox.index("guard Self.knownIntents.contains(request.intent)") < inbox.index("await board.reload()"), "before anything else is read"
+assert inbox.index("guard Self.knownIntents.contains(request.intent)") < inbox.index("await board.readFresh()"), "before anything else is read"
 assert 'if request.model != nil, model?.available != true { return .refused(reason: Refusal.modelGone, receiptID: nil) }' in inbox, "a named model must be in the catalog (item 1)"
 assert "guard await store.readDestinations() else { return .refused(reason: Refusal.destinationsUnreadable, receiptID: nil) }" in inbox, "an unreadable catalog is never an empty one (item 1)"
-assert "guard board.readOK() else { return .refused(reason: Refusal.boardUnreadable, receiptID: nil) }" in inbox, "an unreadable board is said so (item 6)"
+assert "guard await board.readFresh() else { return .refused(reason: Refusal.boardUnreadable, receiptID: nil) }" in inbox, "an unreadable board is said so (item 6; 0.5.253: a fresh read)"
 assert "guard let deadline = request.claimExpiresAt else { return .refused(reason: Refusal.noDeadline, receiptID: nil) }" in inbox, "no deadline, no send (item 8)"
 assert store.count("if pastWireDeadline(&row)") >= 3 and "if pastWireDeadline(&row) { return }" in store, "the deadline is checked before each wire send (item 8)"
 assert 'Logger(subsystem: "com.cos.control"' not in store + tracker + model, "telemetry is under the documented subsystem (item 18)"
@@ -1201,6 +1202,54 @@ dropdown = brand[brand.index("struct COSDropdown<Value: Hashable>: View {"):bran
 assert ".popover(" not in dropdown and "presenter.present(faceWidth: faceWidth)" in dropdown, "the open list is a child panel"
 presenter = brand[brand.index("@MainActor final class COSDropdownPresenter: ObservableObject {"):brand.index("private final class COSDropdownHost")]
 assert "parent.addChildWindow(panel, ordered: .above)" in presenter and "[.borderless, .nonactivatingPanel]" in presenter, "a borderless child panel that never takes the keyboard"
+PY
+
+# ── 0.5.253: Cursor filled in for you to send; the deferred 0.5.252 QA items ─────────────────────────────────────
+# Behaviour: Tests/run-work-progress.sh (appChecks, tests 17, 18, 19b, 22 A to F and the WorkBoardReads rule),
+# Tests/work-requests-helper-checks.py and Tests/run-controls.sh (an open list whose options change). These pin the wiring.
+python3 - "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/HelperSources/main.swift" "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/Views.swift" "$ROOT/CHANGELOG.md" <<'PY'
+import re, sys
+store, tracker, model, helper, brand, view, views, changelog = (open(p).read() for p in sys.argv[1:9])
+def body(src, start, end):
+    i = src.index(start); return src[i:src.index(end, i)]
+# Item 2 (Miles, 2026-09-30 13:27): Cursor opens its own window, filled in; no background run, no Terminal hand-off.
+assert 'nonisolated static let prefillProviders: Set<String> = ["cursor"]' in store and 'nonisolated static let appProviders: Set<String> = ["claude", "codex"]' in store
+assert '"cursor://anysphere.cursor-deeplink/prompt?text=\(encoded)&mode=agent"' in store, "Cursor's own prompt link"
+for gone in ("openInTerminal", "cursorResumeScript", "Terminal.app", "cursor-agent --resume", "work-cursor-chat", "linkCursorChat", "cursorChatMatch", ".findChat"):
+    assert gone not in store, "the Terminal hand-off is gone: " + gone
+assert 'case "work-cursor-chat"' not in helper and "func workCursorChats(" not in helper, "the helper's Cursor chat finder is gone"
+submit = body(store, "    func submit(source: WorkSource", "    // MARK: - Start it, then open it (0.5.249)")
+assert "if origin != nil, prefill { throw failure(WorkRequestOrigin.cursorNeedsMac) }" in submit
+assert submit.index("if origin != nil, prefill { throw failure(WorkRequestOrigin.cursorNeedsMac) }") < submit.index("let id = UUID().uuidString.lowercased()"), "refused before anything is recorded"
+assert submit.index("if prefill {") < submit.index("} else if mode == .newSession {"), "Cursor never reaches work-new"
+inbox = store[store.index("@MainActor final class WorkRequestInbox {"):]
+assert inbox.count("return .refused(reason: Refusal.cursorNeedsMac, receiptID: nil)") == 2, "a glasses start and a glasses reply to Cursor are refused"
+assert 'nonisolated static let cursorNeedsMac = "Cursor needs you at the Mac to press send. Start it from COS Control."' in store
+tick = body(tracker, "    func tick() async {", "    /// One pass over the handoffs being followed.")
+assert "await store.linkCursorPrefills()" in tick and "store.writeOpenedMeanwhile()" in tick, "every pass finds a sent Cursor chat and writes a held opened note"
+assert "Cursor opens its own window with the handoff filled in, and you press Send there." in view and "Cursor always opens its own window with the handoff filled in, for you to send" in views
+# The Accessibility automation the pet's Open in platform uses for a Cursor session keeps its callers, so it stays.
+assert "if await searchAndPressCursorAgentTab(named: agentTab, of: running) { return }" in model and "postKeyboardText(want, to: app.processIdentifier)" in model
+# Item 3 (QA, deferred from 0.5.252).
+post = body(inbox, "    func postDueResults() async {", "    private func postDuePass() async {")
+assert "while let running = posting { await running.value }" in post, "results post one pass at a time"
+sync = body(inbox, "    func syncLedger() {", "    /// Whether a change is waiting for the ledger's lock")
+assert 'open(url.path + ".lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)' in sync and "flock(lock, LOCK_EX | LOCK_NB)" in sync, "the ledger is locked across processes"
+assert "try file.synchronize()" in sync and "fsync(directory) == 0" in sync, "each ledger write reaches the disk"
+assert "if let signer = entry.owner, ownerAlive(signer) { others.append(entry); continue }" in sync, "another running launch's claims stay as they are"
+assert '["work-request-claim", "--id", id] + (body == nil ? [] : ["--again"]), body)' in store and "--claim-token" not in store, "the claim token goes on stdin"
+claim = body(helper, "    private func emitWorkRequestClaim(args: [String]) throws {", "    private func emitWorkRequestResult(args: [String]) throws {")
+assert 'if args.contains("--claim-token") {' in claim and 'Self.workRequestClaimToken(try readBoundedStdin(256))' in claim and "print(" not in claim, "the helper reads it from stdin and never prints it"
+assert 'reason == "unreachable" || status == 401 || status == 403 || status == 429 || status >= 500' in store, "401 and 403 are retried"
+assert "readFresh: { [weak self] in await self?.reloadWorkTasksFresh() ?? false })" in model and "return workBoardReads.readOK(since: mark)" in model
+load = body(model, "    private func performLoadWorkTasks(generation: Int) async {", "    @Published var workIntake:")
+assert load.count("guard workBoardReads.current(generation) else { return }") == 2 and "workBoardReads.record(generation, ok: true)" in load and "workBoardReads.record(generation, ok: false)" in load
+assert ".onChange(of: COSDropdownRules.signature(options)) { _, _ in refreshOpenList() }" in brand, "an open list follows its options"
+reopen = body(store, "    func reopenInApp(receiptID: String) async {", "    /// 0.5.253 (QA, deferred from 0.5.252): an Open in Claude")
+assert "recordOpened(row.id, at: Date().timeIntervalSince1970)" in reopen, "an opened note is recorded, or kept until the journal is free"
+assert "if quiet { quietSend = false; writeDraftsEditedMeanwhile(); writeOpenedMeanwhile() }" in submit
+entry = changelog[changelog.index("## 0.5.252 (build 291)"):changelog.index("## 0.5.251 (build 289)")]
+assert "every 5 seconds while it has one in hand" not in entry, "the 0.5.252 notes say what the inbox does (0.5.253)"
 PY
 
 # ── 0.5.251: the GOTCOS theme on every stock macOS control ─────────────────────
