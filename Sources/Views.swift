@@ -2173,7 +2173,7 @@ struct ControlPanel: View {
             // 0.5.249: a New session starts in the background, then opens in its app once its first reply is done.
             Toggle("Open new sessions in the app", isOn: Binding(get: { model.workOpensTabs }, set: { model.workOpensTabs = $0 }))
                 .toggleStyle(COSSwitchStyle())
-                .help("Start work in the background, then open it in Claude, Codex, or Terminal for Cursor, when the first reply is done. Off: it stays in the background on this Mac")
+                .help("Start Claude and Codex work in the background, then open it in their app when the first reply is done. Off: it stays in the background on this Mac. Cursor always opens its own window with the handoff filled in, for you to send")
             DisclosureGroup("Advanced") {
                 // 0.5.234: the Meetings clock. The server sends 24-hour times and
                 // the tab used to print them raw; twelve-hour is the default here

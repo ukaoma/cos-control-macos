@@ -134,6 +134,13 @@ struct WorkHandoffView: View {
         return background ? " · from the glasses · not opened in its app" : " · from the glasses"
     }
     nonisolated static func whereItRunsNote(_ receipt: WorkHandoffReceipt) -> String? {
+        // 0.5.253: Cursor opens its own window, filled in, for you to send; Work follows the chat once you have.
+        if receipt.channel == "prefill" {
+            if WorkHandoffStore.awaitingCursorSend(receipt) {
+                return "Opened in Cursor for you to send. Nothing runs until you press Send there. Work follows the chat once you do."
+            }
+            return receipt.sessionID != nil ? "Runs in the Cursor app, where you sent it. Open session shows it here too." : nil
+        }
         guard receipt.mode == .newSession else { return nil }
         if receipt.channel == "tab" {
             // A session started from a 0.5.248 tab, which the app owns. An unsent one reads as never started.
@@ -336,7 +343,7 @@ struct WorkHandoffView: View {
                     // 0.5.249: the same session in its app again (never while its run is going), or a note you took there.
                     Button(open) { Task { await store.reopenInApp(receiptID: receipt.id) } }
                         .buttonStyle(COSQuietButtonStyle()).disabled(isPreview)
-                    if receipt.channel == "app" {
+                    if receipt.channel == "app" || receipt.channel == "prefill" {
                         Button("Not sending it") { store.cancelAppNote(receiptID: receipt.id) }
                             .buttonStyle(COSTextButtonStyle()).disabled(isPreview)
                     }
@@ -455,11 +462,11 @@ struct WorkHandoffView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Where should it go?").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
                 VStack(spacing: 0) {
-                    choiceRow(.continueSession, title: "Continue a session", detail: "Sends to an existing conversation, with its model and permissions.")
+                    choiceRow(.continueSession, title: "Continue a session", detail: "Sends to an existing conversation, with its model and permissions. For Cursor, a new Cursor chat opens with your note filled in, and you press Send there.")
                     Divider().overlay(COSPalette.line)
                     choiceRow(.fork, title: "Fork a session", detail: "Copies a conversation first. Same platform, or to Claude or Codex.")
                     Divider().overlay(COSPalette.line)
-                    choiceRow(.newSession, title: "Start a new session", detail: store.opensInApp ? "Runs in the background with a model you pick, then opens in Claude or Codex, or in Terminal for Cursor, when the first reply is done. A local model stays in the background." : "Claude, Codex, Cursor or a local model, with a model you pick.")
+                    choiceRow(.newSession, title: "Start a new session", detail: store.opensInApp ? "Claude and Codex run in the background with a model you pick, then open in their app when the first reply is done. Cursor opens its own window with the handoff filled in, and you press Send there. A local model stays in the background." : "Claude, Codex or a local model in the background, with a model you pick. Cursor opens its own window with the handoff filled in, and you press Send there.")
                 }.overlay(RoundedRectangle(cornerRadius: 8).stroke(COSPalette.line))
             }
             VStack(alignment: .leading, spacing: 6) {

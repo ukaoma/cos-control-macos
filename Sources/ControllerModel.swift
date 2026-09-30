@@ -466,7 +466,7 @@ final class ControllerModel: ObservableObject {
                 guard let self else { throw HelperClientError.commandFailed("COS Control is closing.") }
                 try await self.setWorkStage(task, stage: stage)
             },
-            readOK: { [weak self] in self?.workTasksError == nil }),
+            readFresh: { [weak self] in await self?.reloadWorkTasksFresh() ?? false }),
             notify: { [weak self] notice in self?.postWorkNotice(notice) })
         store.opensInApp = workOpensTabs
         // 0.5.252: the glasses request inbox is asked about again whenever the server's version changes.
@@ -2664,7 +2664,8 @@ final class ControllerModel: ObservableObject {
     @Published var workBoardWritable = false
     private var workTasksRequested = false
     private var workTasksLoadInFlight: Task<Void, Never>?
-    private var workTasksLoadGeneration = 0
+    /// 0.5.253: which load the rows and the error on record come from (WorkBoardReads).
+    private var workBoardReads = WorkBoardReads()
 
     func loadWorkTasks(force: Bool = false) async {
         workTasksRequested = true
@@ -2672,20 +2673,29 @@ final class ControllerModel: ObservableObject {
             await pending.value
             if !force { return }
         }
-        workTasksLoadGeneration += 1
-        let generation = workTasksLoadGeneration
+        let generation = workBoardReads.begin()
         let pending = Task { await performLoadWorkTasks(generation: generation) }
         workTasksLoadInFlight = pending
         await pending.value
-        if workTasksLoadGeneration == generation { workTasksLoadInFlight = nil }
+        if workBoardReads.current(generation) { workTasksLoadInFlight = nil }
+    }
+
+    /// 0.5.253 (QA, deferred from 0.5.252): reloads the board for a glasses request and says whether the rows now come
+    /// from a read that began after this call and read the board. A newer load that started meanwhile is waited for
+    /// (its rows are the ones on record); one that superseded this load never makes this load's failure read as OK.
+    func reloadWorkTasksFresh() async -> Bool {
+        let mark = workBoardReads.started
+        await loadWorkTasks(force: true)
+        while workBoardReads.pending, let pending = workTasksLoadInFlight { await pending.value }
+        return workBoardReads.readOK(since: mark)
     }
 
     private func performLoadWorkTasks(generation: Int) async {
         workTasksLoading = true
-        defer { if workTasksLoadGeneration == generation { workTasksLoading = false } }
+        defer { if workBoardReads.current(generation) { workTasksLoading = false } }
         do {
             let response = try await helper.run(["work-tasks"], timeout: 30)
-            guard workTasksLoadGeneration == generation else { return }
+            guard workBoardReads.current(generation) else { return }
             guard response.ok else { throw HelperClientError.commandFailed(response.message) }
             guard let values = response.details["tasks"]?.array else { throw HelperClientError.invalidResponse("Work task inventory is missing its task array.") }
             let parsed = values.compactMap(TaskRow.init)
@@ -2697,9 +2707,11 @@ final class ControllerModel: ObservableObject {
             let capabilities = response.details["capabilities"]?.object ?? [:]
             workBoardWritable = capabilities["version"]?.int == 1 && capabilities["writable"]?.bool == true
             workTasksError = nil
+            workBoardReads.record(generation, ok: true)
         } catch {
-            guard workTasksLoadGeneration == generation else { return }
+            guard workBoardReads.current(generation) else { return }
             workTasksError = error.localizedDescription; workTasksComplete = false; workBoardWritable = false
+            workBoardReads.record(generation, ok: false)
         }
     }
 

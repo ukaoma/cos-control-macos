@@ -84,7 +84,8 @@ struct WorkAppOpen: Codable, Equatable, Sendable {
     var openedAt: Double? = nil
     /// Why it was not opened by itself (WorkHandoffStore.appSkipText). Nil while it may still open.
     var skipped: String? = nil
-    /// Cursor: the folder its chat ran in, where `cursor-agent --resume` finds it.
+    /// 0.5.249 to 0.5.252: the folder a Cursor run's chat ran in, for `cursor-agent --resume` in Terminal. 0.5.253 opens
+    /// Cursor itself instead and never writes it; kept so those journals still read.
     var folder: String? = nil
 }
 struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
@@ -157,8 +158,13 @@ struct WorkSendPlan: Equatable {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.count <= limit ? trimmed : String(trimmed.prefix(limit - 1)).trimmingCharacters(in: .whitespaces) + "\u{2026}"
     }
+    /// 0.5.253: Cursor opens its own window, filled in, for you to send (a Continue opens a new Cursor chat).
+    var opensCursor: Bool {
+        !crossPlatform && WorkHandoffStore.prefillProviders.contains((mode == .newSession ? model?.provider : session?.provider) ?? "")
+    }
     /// The button in the Start work confirm, whose line above already names the destination.
     var verb: String {
+        if opensCursor && mode != .fork { return "Open in Cursor" }
         switch mode {
         case .newSession: return "Start session"
         case .fork: return crossPlatform ? "Fork to \(WorkHandoffStore.providerName(model?.provider ?? ""))" : "Fork and send"
@@ -167,6 +173,8 @@ struct WorkSendPlan: Equatable {
     }
     var label: String {
         let title = Self.clip(session?.title ?? "session")
+        if opensCursor && mode == .newSession { return "Open in Cursor to send" }
+        if opensCursor && mode == .continueSession { return "Open a new Cursor chat to send" }
         switch mode {
         case .newSession: return "Start new \(WorkHandoffStore.providerName(model?.provider ?? "")) session"
         case .fork: return crossPlatform ? "Fork to \(WorkHandoffStore.providerName(model?.provider ?? ""))"
@@ -189,6 +197,10 @@ struct WorkRequestOrigin: Equatable, Sendable {
     /// What a Mac action that needs the journal is told while a glasses send holds it (a send, Mark reviewed, Clear
     /// unresolved, Check status, Not sending it).
     nonisolated static let macBusyReason = "COS Control is sending work your glasses asked for. Try again in a moment."
+    /// 0.5.253 (Miles, 2026-09-30 13:27): Cursor work opens Cursor's own window with the handoff filled in, and a person
+    /// presses Send there. From the glasses nobody is at the Mac to do that, so a request whose destination is Cursor is
+    /// refused with this, before anything is recorded.
+    nonisolated static let cursorNeedsMac = "Cursor needs you at the Mac to press send. Start it from COS Control."
 }
 
 /// 0.5.252: one request the glasses left on the server (server 6.59.0), as COS Control lists it. Everything in it is a
@@ -309,6 +321,8 @@ struct WorkGlassesRequest: Equatable, Sendable {
             var row = row
             if ["preparing", "sending"].contains(row.status) { row.status = "unknown"; row.detail = "Delivery was interrupted. Refresh the receipt or inspect the target session before further work." }
             if Self.unsentTab(row) { row.status = "canceled"; row.detail = Self.unsentTabDetail }
+            // 0.5.253: a Cursor run 0.5.249 to 0.5.252 started, still waiting to open in Terminal, never will.
+            if Self.retiredCursorOpen(row) { row.appOpen?.skipped = Self.cursorRetired }
             return row
         }
         let known = sessions
@@ -322,6 +336,13 @@ struct WorkGlassesRequest: Equatable, Sendable {
         row.channel == "tab" && row.status == "queued" && row.sessionID == nil
     }
     nonisolated static let unsentTabDetail = "Not started. COS Control 0.5.248 opened this as a tab for you to send, and it was never linked to a session. If you sent it in the app, keep working there. Otherwise start the work again."
+    /// 0.5.253: a New session on Cursor that 0.5.249 to 0.5.252 ran in the background, set to open in Terminal once its
+    /// first reply was done, and not opened yet. Terminal is no longer how Cursor work opens, so it is marked as never
+    /// opening by itself; its reply stays in Work.
+    nonisolated static func retiredCursorOpen(_ row: WorkHandoffReceipt) -> Bool {
+        row.provider == "cursor" && row.channel == "job" && row.appOpen != nil && row.appOpen?.openedAt == nil && row.appOpen?.skipped == nil
+    }
+    nonisolated static let cursorRetired = "cursor_retired"
     private func persist() throws {
         guard storageReady else { throw failure("History is unavailable; sending is disabled.") }
         let folder = storageURL.deletingLastPathComponent()
@@ -835,7 +856,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
         wireDeadline = origin?.deadline
         defer {
             wireDeadline = nil
-            if quiet { quietSend = false; writeDraftsEditedMeanwhile() } else { busy = false }
+            if quiet { quietSend = false; writeDraftsEditedMeanwhile(); writeOpenedMeanwhile() } else { busy = false }
         }
         var intentID: String?
         do {
@@ -864,6 +885,11 @@ struct WorkGlassesRequest: Equatable, Sendable {
                     throw failure(WorkRequestOrigin.appOwnedReason)
                 }
             }
+            // 0.5.253: Cursor work opens Cursor's window for a person to press Send; a request from the glasses is refused
+            // before anything is recorded (the inbox refuses it first; this holds for any other caller).
+            let destination = mode == .newSession ? model!.provider : session!.provider
+            let prefill = Self.prefillProviders.contains(destination) && mode != .fork
+            if origin != nil, prefill { throw failure(WorkRequestOrigin.cursorNeedsMac) }
             let id = UUID().uuidString.lowercased()
             var row = WorkHandoffReceipt(id: id, workID: source.id, workTitle: source.title, sourceRevision: source.revision,
                 mode: mode, provider: mode == .newSession ? model!.provider : session!.provider,
@@ -873,7 +899,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
                 sourceSessionID: session?.id, serverInstanceID: serverInstanceID)
             if let origin { row.requestedFrom = "glasses"; row.requestId = origin.requestID }
             var progress = WorkProgress(tag: tag)
-            progress.record(.sent, Self.sentText(mode: mode, session: session, model: model), at: row.createdAt)
+            progress.record(.sent, Self.sentText(mode: mode, session: session, model: model, prefill: prefill), at: row.createdAt)
             row.progress = progress
             receipts.insert(row, at: 0)
             do { try persist() } catch { receipts.removeAll { $0.id == id }; throw error }
@@ -888,7 +914,14 @@ struct WorkGlassesRequest: Equatable, Sendable {
                 row.status = "queued"; row.detail = "Simulated handoff. No message was sent to a provider. Use the test controls to advance it."
                 try save(row); return
             }
-            if mode == .newSession {
+            if prefill {
+                // 0.5.253 (Miles, 2026-09-30 13:27): Cursor runs nothing in the background. Its own window opens with the
+                // handoff filled in, and he presses Send; the tracker then finds that chat (linkCursorPrefills). A
+                // Continue opens a new chat with the note: Cursor's link cannot name an existing one.
+                row.channel = "prefill"; row.sessionID = nil
+                try save(row)
+                openCursorPrefill(&row)
+            } else if mode == .newSession {
                 // 0.5.249 (Miles, 2026-09-29, "route 1"): the COS server starts the session, and once its first reply is
                 // done Control opens it in its app (openReadyApps), where he works alongside COS. Ollama has no app, and
                 // with Settings > Open new sessions in the app off, it stays in the background as in 0.5.247.
@@ -965,23 +998,18 @@ struct WorkGlassesRequest: Equatable, Sendable {
     //   continued there. An import has no owner check, so nothing is imported while the run still writes.
     // - The ChatGPT app (26.928) resumes a finished Codex thread (`codex://threads/<id>`). One opened while
     //   `codex exec` still writes stays view only ("already has an active writer") and is never retried.
-    // - The Cursor app cannot open a chat the CLI started; `cursor-agent --resume <id>` picks it up in Terminal.
+    // - The Cursor app cannot open a chat the CLI started. 0.5.249 to 0.5.252 opened it in Terminal with
+    //   `cursor-agent --resume <id>`; 0.5.253 opens Cursor's own window with the handoff filled in instead (below).
     // So nothing opens while a run is going, and each session opens once.
 
-    /// Providers whose New session opens once its first reply is done. Ollama has no app, so it stays in the background.
-    nonisolated static let appProviders: Set<String> = ["claude", "codex", "cursor"]
+    /// Providers whose New session opens once its first reply is done. Ollama has no app, so it stays in the background;
+    /// Cursor (0.5.253) runs nothing in the background and opens filled in (prefillProviders).
+    nonisolated static let appProviders: Set<String> = ["claude", "codex"]
     /// New sessions open in their app (Settings > Open new sessions in the app, on unless turned off). Off, they stay in
     /// the background as in 0.5.247. The choice is kept on each receipt when it is sent.
     var opensInApp = true
     /// Opens a link in its app; replaced in tests, which never open a real app.
     var openURL: @MainActor (URL) -> Bool = { NSWorkspace.shared.open($0) }
-    /// Opens a `.command` file in Terminal, which runs it (no Apple Events permission is needed); replaced in tests.
-    var openInTerminal: @MainActor (URL) async -> Bool = { file in
-        await withCheckedContinuation { done in
-            NSWorkspace.shared.open([file], withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"),
-                                    configuration: NSWorkspace.OpenConfiguration()) { _, error in done.resume(returning: error == nil) }
-        }
-    }
     /// Puts your note on the clipboard, to paste in the app; replaced in tests.
     var copyToClipboard: @MainActor (String) -> Void = { text in
         NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
@@ -991,24 +1019,19 @@ struct WorkGlassesRequest: Equatable, Sendable {
     nonisolated static let defaultAppOpenSettle: Double = 5
     /// A run that ended longer ago than this (COS Control was closed) does not open by itself; the card offers it.
     nonisolated static let appOpenWindow: Double = 3_600
-    /// Cursor names no chat in its run, so Control looks for it this long after the run ended, then gives up.
-    nonisolated static let cursorChatSearch: Double = 120
     /// Receipts being opened right now, so two passes never open one twice while a call is out.
     private var appOpening: Set<String> = []
 
     nonisolated static func appName(_ provider: String) -> String {
         switch provider { case "codex": "Codex"; case "cursor": "Cursor"; default: "Claude" }
     }
-    /// Where a provider's session opens, as the card says it: its app, or Terminal for Cursor.
-    nonisolated static func openPlace(_ provider: String) -> String {
-        provider == "cursor" ? "Terminal with cursor-agent" : appName(provider)
-    }
+    /// Where a provider's session opens, as the card says it: its app (0.5.253: Cursor's too, never Terminal).
+    nonisolated static func openPlace(_ provider: String) -> String { appName(provider) }
     nonisolated static func openedText(_ provider: String) -> String { "Opened in \(openPlace(provider)). Continue there." }
     /// Unreserved URL characters only (RFC 3986), in ASCII: everything else is percent-encoded, including non-ASCII
     /// letters, which `.alphanumerics` would let through.
     nonisolated static let linkQueryAllowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
-    /// A session id the apps and cursor-agent take: a lowercase UUID, which Claude CLI sessions, Codex threads and Cursor
-    /// chats all are. Anything else (a trailing newline included) is refused before it reaches a link or a command.
+    /// A session id the apps take: a lowercase UUID, which Claude CLI sessions and Codex threads are. Anything else (a trailing newline included) is refused before it reaches a link or a command.
     /// Checked byte by byte, not with a regular expression: ICU's `$` also matches before a final newline, and which
     /// engine `range(of:options:)` uses differs between Foundation versions (on this Mac it refuses the newline and
     /// NSRegularExpression accepts it).
@@ -1048,21 +1071,6 @@ struct WorkGlassesRequest: Equatable, Sendable {
         guard raw.hasPrefix(focus), appSessionID(String(raw.dropFirst(focus.count))) != nil else { return nil }
         return URL(string: raw)
     }
-    /// One shell word in single quotes: nothing inside is expanded, and a quote in it closes, escapes and reopens.
-    nonisolated static func shellQuote(_ text: String) -> String { "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-    /// Cursor: its app cannot open a chat the CLI started (canary 4), so the chat opens in Terminal, in the folder it ran
-    /// in, with `cursor-agent --resume <chat id>` (canary 5). Terminal runs this as a `.command` file. Nil unless the id
-    /// is a chat id and the folder a plain absolute path with no control characters.
-    nonisolated static func cursorResumeScript(chatID: String, folder: String) -> String? {
-        guard let id = appSessionID(chatID), folder.hasPrefix("/"), folder.utf8.count <= 1_024,
-              !folder.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return nil }
-        return "#!/bin/zsh\n# COS Control: the Cursor chat Work started. Continue it here.\n"
-            + "cd -- \(shellQuote(folder)) || exit 1\nexec cursor-agent --resume \(shellQuote(id))\n"
-    }
-    /// A file kept beside Work's history (Application Support, never the user's repository), such as a Terminal command.
-    func appFile(_ id: String, _ ext: String) -> URL {
-        storageURL.deletingLastPathComponent().appendingPathComponent("tabs", isDirectory: true).appendingPathComponent(id + "." + ext)
-    }
 
     /// 0.5.250: the name a Claude New session gets, from the Work item's title (Miles, 2026-09-29: an imported session
     /// showed as "General coding session" and he could not find it). Cleaned as server 6.58.2 cleans it, so the two
@@ -1096,7 +1104,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
         return name.isEmpty ? nil : name
     }
 
-    enum AppOpenStep: Equatable { case wait, findChat, open, skip(String) }
+    enum AppOpenStep: Equatable { case wait, open, skip(String) }
     /// What a New session that opens in its app needs now. Nil when it never asked to, or is settled (opened or skipped).
     /// It opens only once the server's run has completed, `settle` seconds after it ended, within `appOpenWindow`. A run
     /// still going waits; one that failed, was refused or was canceled opens nothing.
@@ -1106,7 +1114,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
         guard r.status == "completed" else { return r.blocksNewHandoff ? .wait : .skip("not_completed") }
         guard let ended = open.runEndedAt, now - ended >= settle else { return .wait }
         if now - ended > appOpenWindow { return .skip("late") }
-        guard r.sessionID != nil else { return r.provider == "cursor" && now - ended <= cursorChatSearch ? .findChat : .skip("no_session") }
+        guard r.sessionID != nil else { return .skip("no_session") }
         return .open
     }
     /// The receipt that handed this session to its app, if any: one Work opened in its app (0.5.249), or one you started
@@ -1128,14 +1136,16 @@ struct WorkGlassesRequest: Equatable, Sendable {
     nonisolated static func serverHold(onSession id: String, in receipts: [WorkHandoffReceipt]) -> WorkHandoffReceipt? {
         receipts.first { row in serverHolds(row) && (row.sessionID.map { ClaudeSession.sameSession($0, id) } ?? false) }
     }
-    /// The card's button: Open again once it opened (or for a note you have not sent yet), "Open in <app>" when it did
-    /// not open by itself. Nil while it still may, when it has no session, and while its run is still going.
+    /// The card's button: Open again once it opened (or for a note you have not sent yet, or a Cursor chat filled in and
+    /// not sent), "Open in <app>" when it did not open by itself. Nil while it still may, when it has no session, and
+    /// while its run is still going. 0.5.253: a Cursor run from 0.5.249 to 0.5.252 has none (Terminal is not offered).
     nonisolated static func appOpenButton(_ r: WorkHandoffReceipt) -> String? {
         if r.channel == "app" { return r.status == "queued" && r.sessionID != nil ? "Open again" : nil }
+        if r.channel == "prefill" { return awaitingCursorSend(r) ? "Open again" : nil }
+        guard appProviders.contains(r.provider) else { return nil }
         guard r.mode == .newSession, r.channel == "job", let open = r.appOpen, r.status == "completed", r.sessionID != nil else { return nil }
         if open.openedAt != nil { return "Open again" }
         guard open.skipped != nil else { return nil }
-        if r.provider == "cursor" { return open.folder == nil ? nil : "Open in Terminal" }
         return "Open in \(appName(r.provider))"
     }
     /// Why a session did not open by itself, for the card. Nil when the card already says why (a run that failed).
@@ -1147,7 +1157,8 @@ struct WorkGlassesRequest: Equatable, Sendable {
         case "no_session":
             return provider == "cursor" ? "COS could not find its Cursor chat, so nothing was opened." : "The run named no session, so nothing was opened."
         case "open_failed": return "\(openPlace(provider)) could not be opened."
-        case "cursor_app": return "This Cursor chat lives in the Cursor app, which has no link to open it."
+        case cursorRetired:
+            return "COS Control no longer opens Cursor chats in Terminal, so this one was not opened. Its reply is here. New Cursor work opens Cursor with the handoff filled in."
         case "unreachable": return "COS could not check this session just now. Try again in a moment."
         case "claude:no_desktop": return "The Claude app is not installed, so it was not opened."
         case "claude:desktop_too_old": return "This Claude app is too old to open it. Update Claude, then open it."
@@ -1157,51 +1168,21 @@ struct WorkGlassesRequest: Equatable, Sendable {
         default: return "\(openPlace(provider)) could not open it."
         }
     }
-    /// The one chat the helper found for a Cursor run, with its folder. Nil when there is none or more than one: never a
-    /// guess. A chat another handoff already has is never it.
-    nonisolated static func cursorChatMatch(_ rows: [JSONValue], taken: Set<String>) -> (id: String, folder: String)? {
-        let found = rows.compactMap(\.object).compactMap { row -> (id: String, folder: String)? in
-            guard let id = row["id"]?.string.flatMap(appSessionID), let folder = row["folder"]?.string, !folder.isEmpty,
-                  !taken.contains("cursor:" + id) else { return nil }
-            return (id, folder)
-        }
-        return found.count == 1 ? found[0] : nil
-    }
-
-    enum AppTarget: Equatable { case link(URL), terminal(String) }
-    private enum AppTargetResult { case ready(AppTarget), wait, unavailable(String) }
+    private enum AppTargetResult { case ready(URL), wait, unavailable(String) }
     /// How to open this session in its app now. Claude asks the helper (session-reveal), which gives no link while the
     /// transcript is still being written.
-    private func appTarget(provider: String, native: String, folder: String?, note: String?) async -> AppTargetResult {
+    private func appTarget(provider: String, native: String, note: String?) async -> AppTargetResult {
         switch provider {
         case "claude":
             guard let details = try? await call(["session-reveal", "--provider", "claude", "--session", native]) else { return .unavailable("unreachable") }
             let reason = details["revealReason"]?.string ?? ""
             if reason == "running" { return .wait }
             guard let url = Self.claudeAppLink(details["deepLink"]?.string, sessionID: native) else { return .unavailable("claude:" + reason) }
-            return .ready(.link(url))
+            return .ready(url)
         case "codex":
             guard let url = Self.codexThreadLink(threadID: native, note: note) else { return .unavailable("no_link") }
-            return .ready(.link(url))
-        case "cursor":
-            guard let folder else { return .unavailable("cursor_app") }
-            guard let script = Self.cursorResumeScript(chatID: native, folder: folder) else { return .unavailable("no_link") }
-            return .ready(.terminal(script))
+            return .ready(url)
         default: return .unavailable("no_link")
-        }
-    }
-    private func launch(_ target: AppTarget, receiptID: String) async -> Bool {
-        switch target {
-        case .link(let url): return openURL(url)
-        case .terminal(let script):
-            let file = appFile(receiptID, "command")
-            do {
-                try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true,
-                                                        attributes: [.posixPermissions: 0o700])
-                try Data(script.utf8).write(to: file, options: .atomic)
-                try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: file.path)
-            } catch { return false }
-            return await openInTerminal(file)
         }
     }
 
@@ -1218,7 +1199,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
         }
     }
     private func openWhenReady(_ id: String) async {
-        guard var row = receipts.first(where: { $0.id == id }) else { return }
+        guard let row = receipts.first(where: { $0.id == id }) else { return }
         let now = Date().timeIntervalSince1970
         if row.status == "completed", row.appOpen != nil, row.appOpen?.runEndedAt == nil {
             // Seen finished without a time from the server: the settle starts now.
@@ -1232,14 +1213,10 @@ struct WorkGlassesRequest: Equatable, Sendable {
         switch step {
         case .wait: return
         case .skip(let code): skipAppOpen(id, code); return
-        case .findChat:
-            guard await linkCursorChat(row), let linked = receipts.first(where: { $0.id == id }),
-                  Self.appOpenStep(linked, now: now, settle: appOpenSettle) == .open else { return }
-            row = linked
         case .open: break
         }
         guard let sessionID = row.sessionID, let native = Self.nativeID(sessionID) else { return }
-        switch await appTarget(provider: row.provider, native: native, folder: row.appOpen?.folder, note: nil) {
+        switch await appTarget(provider: row.provider, native: native, note: nil) {
         case .wait: return
         case .unavailable("unreachable"): return   // the helper did not answer: ask again on the next pass
         case .unavailable(let code): skipAppOpen(id, code)
@@ -1254,7 +1231,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
                 if var progress = current.progress { progress.record(.note, Self.openedText(current.provider), at: at); current.progress = progress }
                 return true
             }) else { return }
-            guard await launch(target, receiptID: id) else {
+            guard openURL(target) else {
                 updateReceipt(id) { current in
                     guard current.appOpen?.openedAt == at else { return false }
                     current.appOpen?.openedAt = nil; current.appOpen?.skipped = "open_failed"
@@ -1271,90 +1248,202 @@ struct WorkGlassesRequest: Equatable, Sendable {
             current.appOpen?.skipped = code; return true
         }
     }
-    /// Cursor names no chat in its run. The helper finds it (`work-cursor-chat`): a chat created since the handoff whose
-    /// first message holds this task's status-line id. Linked only when exactly one matches.
-    private func linkCursorChat(_ row: WorkHandoffReceipt) async -> Bool {
-        let tag = row.progress?.tag ?? WorkProgress.tag(forWorkID: row.workID)
-        guard let details = try? await call(["work-cursor-chat", "--tag", tag, "--since", String(Int(row.createdAt))]),
-              let chats = details["chats"]?.array,
-              let chat = Self.cursorChatMatch(chats, taken: Set(receipts.compactMap(\.sessionID))) else { return false }
-        let session = WorkSession(id: "cursor:" + chat.id, nativeID: chat.id, provider: "cursor", title: row.sessionTitle,
-                                  summary: Self.utf8Prefix(row.prompt, characters: 2_000, bytes: 4_000), project: "", status: "completed")
-        let linked = updateReceipt(row.id) { current in
-            guard current.sessionID == nil, current.appOpen != nil else { return false }
-            current.sessionID = session.id; current.appOpen?.folder = chat.folder
-            // A new chat: nothing in it predates this handoff, so its untimed replies (Cursor writes no times) all count.
-            if var progress = current.progress, progress.baseline == nil { progress.baseline = []; current.progress = progress }
-            return true
+    // MARK: - Cursor, filled in for you to send (0.5.253)
+    //
+    // Miles, 2026-09-30 13:27, on the 0.5.249 Cursor route (the COS server ran cursor-agent, then Control opened its chat
+    // in Terminal with cursor-agent --resume): "it's a fragile path. If it just passes to the platform and opens the
+    // window so I can submit that is sufficient for now if we can't auto create the thread like Claude and Codex." So a
+    // New session or a Continue on Cursor runs nothing in the background. Control opens Cursor's own window with the
+    // handoff filled in (Cursor's prompt link, as 0.5.248 did), and you press Send there. Cursor's link can name no chat,
+    // so a Continue opens a new chat with your note. Once you send it, the tracker finds that chat by the handoff's first
+    // line and follows it, as it follows every handoff. Claude and Codex keep start-then-open.
+
+    /// Providers whose work opens in their own window, filled in, for a person to send: Cursor.
+    nonisolated static let prefillProviders: Set<String> = ["cursor"]
+    /// The most of a handoff Cursor's link carries, in UTF-16 units. On 2026-09-29 Cursor opened a 9,000-character prompt
+    /// and dropped one of 10,000 or more without a dialog or a log line; past this the handoff is cut and said so, and
+    /// the whole of it goes on the clipboard.
+    nonisolated static let cursorPrefillLimit = 8_500
+    /// The first line of a Cursor handoff. It names the task's status-line id, so the tracker can tell this chat from
+    /// every other once it is sent (the helper keeps only a message's first 400 characters).
+    nonisolated static func cursorPrefillHeader(tag: String) -> String { "COS Work handoff \(tag)" }
+    nonisolated static let cursorCutMarker = "[COS Control cut this handoff to fit Cursor's link. The whole handoff is on the clipboard.]"
+    /// What Cursor's box is filled with, and the whole handoff when that had to be cut (nil when it fits). A cut keeps the
+    /// first line and the status line, and says it was cut.
+    nonisolated static func cursorPrefill(_ sent: String, tag: String, instruction: String) -> (text: String, whole: String?) {
+        let header = cursorPrefillHeader(tag: tag) + "\n\n"
+        let whole = header + sent
+        guard whole.utf16.count > cursorPrefillLimit else { return (whole, nil) }
+        let body = sent.hasSuffix(instruction) ? String(sent.dropLast(instruction.count)) : sent
+        let tail = "\n\n" + cursorCutMarker + instruction
+        let room = cursorPrefillLimit - header.utf16.count - tail.utf16.count
+        var kept = "", used = 0
+        for character in body {
+            let units = String(character).utf16.count
+            if used + units > room { break }
+            kept.append(character); used += units
         }
-        if linked, !sessions.contains(where: { $0.id == session.id }) { sessions.append(session) }
-        if linked { onWorkSessionsChanged?() }
-        return linked
+        return (header + kept + tail, whole)
+    }
+    /// Cursor's prompt link (canaried 2026-09-29): a "Create chat with prompt" dialog, then a new chat in the workspace
+    /// Cursor has open, filled in and never sent. The link takes no folder and no model.
+    nonisolated static func cursorPrefillLink(_ text: String) -> URL? {
+        guard !text.isEmpty, let encoded = text.addingPercentEncoding(withAllowedCharacters: linkQueryAllowed) else { return nil }
+        return URL(string: "cursor://anysphere.cursor-deeplink/prompt?text=\(encoded)&mode=agent")
+    }
+    /// The card's line once Cursor is open. `cut` is (characters filled in, characters in the whole handoff).
+    nonisolated static func cursorOpenedText(mode: WorkHandoffMode, cut: (shown: Int, whole: Int)?) -> String {
+        var text = mode == .continueSession
+            ? "Opened a new Cursor chat with your note filled in (Cursor's link cannot open an existing chat). Choose Create Chat, then press Send there."
+            : "Opened in Cursor with the handoff filled in. Choose Create Chat, then press Send there."
+        if let cut {
+            text += " Cursor takes about 9,000 characters from a link, so it holds the first \(cut.shown.formatted()) of \(cut.whole.formatted()): the whole handoff is on the clipboard. Paste it over the text there before you send."
+        }
+        return text
+    }
+    /// A Cursor handoff filled in and not sent yet (or not found yet).
+    nonisolated static func awaitingCursorSend(_ r: WorkHandoffReceipt) -> Bool {
+        r.channel == "prefill" && r.status == "queued" && r.sessionID == nil
+    }
+    /// Opens Cursor filled in with this receipt's handoff; the whole of a cut one goes on the clipboard.
+    private func openCursorPrefill(_ row: inout WorkHandoffReceipt) {
+        let tag = row.progress?.tag ?? WorkProgress.tag(forWorkID: row.workID)
+        let (text, whole) = Self.cursorPrefill(row.prompt, tag: tag, instruction: WorkProgress.instruction(tag: tag))
+        guard let url = Self.cursorPrefillLink(text), openURL(url) else {
+            row.status = "refused"; row.detail = "Cursor could not be opened. Nothing was sent."; return
+        }
+        if let whole { copyToClipboard(whole) }
+        row.status = "queued"
+        row.detail = Self.cursorOpenedText(mode: row.mode, cut: whole.map { (text.count, $0.count) })
     }
 
-    /// Open again: the same session in its app, or its Terminal command; "Open in <app>" for one that did not open by
-    /// itself. For a note you have not sent yet it is filled in again (Codex) or copied again (Claude, Cursor).
+    /// How many new Cursor chats one pass reads, per handoff waiting to be sent.
+    nonisolated static let prefillCandidatesPerPass = 6
+    /// Cursor chats that could be the one a filled-in handoff became: Cursor's, created once it was opened (5 s slack),
+    /// not linked to another handoff; oldest first.
+    nonisolated static func cursorPrefillCandidates(_ rows: [JSONValue], openedAt: Double, taken: Set<String>) -> [WorkSession] {
+        rows.compactMap(\.object).compactMap { row -> (WorkSession, Double)? in
+            guard row["provider"]?.string == "cursor", let native = row["id"]?.string, !native.isEmpty, native.utf8.count <= 128,
+                  !native.contains("/"), !native.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) || CharacterSet.whitespaces.contains($0) }),
+                  let created = row["createdAt"]?.string.flatMap(WorkProgress.parseStamp), created >= openedAt - 5 else { return nil }
+            let id = "cursor:" + native
+            guard !taken.contains(id) else { return nil }
+            return (WorkSession(id: id, nativeID: native, provider: "cursor", title: row["name"]?.string ?? "", summary: "",
+                                project: row["workspace"]?.string ?? "", status: row["state"]?.string ?? "running"), created)
+        }.sorted { $0.1 < $1.1 }.map(\.0)
+    }
+    /// Whether a chat holds this handoff: one of its messages carries the first line Control filled in (and put on the
+    /// clipboard), `COS Work handoff <tag>`.
+    nonisolated static func carriesPrefill(tag: String, prompts: [WorkProgress.Reply]) -> Bool {
+        let header = cursorPrefillHeader(tag: tag)
+        return prompts.contains { $0.text.contains(header) }
+    }
+    /// Links each Cursor handoff filled in and waiting to the chat it became once you pressed Send: Cursor's chats
+    /// created since it opened, not linked to another handoff, whose message carries its first line. Exactly one, never
+    /// a guess. Called by every tracker pass; never holds the journal across a call.
+    func linkCursorPrefills() async {
+        guard !isolated, storageReady else { return }
+        let waiting = receipts.filter(Self.awaitingCursorSend)
+        guard !waiting.isEmpty, let listed = (try? await call(["claude-sessions", "--fresh"]))?["sessions"]?.array else { return }
+        var taken = Set(receipts.compactMap(\.sessionID))
+        for row in waiting {
+            let tag = row.progress?.tag ?? WorkProgress.tag(forWorkID: row.workID)
+            var found: [WorkSession] = []
+            for candidate in Self.cursorPrefillCandidates(listed, openedAt: row.createdAt, taken: taken).prefix(Self.prefillCandidatesPerPass) {
+                guard let read = try? await sessionRead(sessionID: candidate.id, turns: 4), read.hasHistory,
+                      Self.carriesPrefill(tag: tag, prompts: read.prompts) else { continue }
+                found.append(candidate)
+            }
+            guard found.count == 1, let session = found.first else { continue }
+            let linked = updateReceipt(row.id) { current in
+                guard Self.awaitingCursorSend(current) else { return false }
+                current.sessionID = session.id
+                if !session.title.isEmpty { current.sessionTitle = session.title }
+                current.status = "delivered"; current.detail = "Sent in Cursor. Work follows it from here."
+                // A new chat: nothing in it predates this handoff, so its untimed replies (Cursor writes no times) all count.
+                if var progress = current.progress, progress.baseline == nil { progress.baseline = []; progress.promptBaseline = []; current.progress = progress }
+                return true
+            }
+            guard linked else { continue }
+            taken.insert(session.id)
+            if !sessions.contains(where: { $0.id == session.id }) { sessions.append(session) }
+            onWorkSessionsChanged?()
+        }
+    }
+
+    /// Open again: the same session in its app, a note you have not sent yet filled in again (Codex) or copied again
+    /// (Claude), or a Cursor handoff filled in again. "Open in <app>" for one that did not open by itself.
     func reopenInApp(receiptID: String) async {
-        guard !isolated, let row = receipts.first(where: { $0.id == receiptID }), Self.appOpenButton(row) != nil,
-              let sessionID = row.sessionID, let native = Self.nativeID(sessionID) else { return }
-        let owner = row.channel == "app" ? Self.appOwner(of: sessionID, in: receipts) : row
+        guard !isolated, let row = receipts.first(where: { $0.id == receiptID }), Self.appOpenButton(row) != nil else { return }
+        if row.channel == "prefill" {
+            let tag = row.progress?.tag ?? WorkProgress.tag(forWorkID: row.workID)
+            let (text, whole) = Self.cursorPrefill(row.prompt, tag: tag, instruction: WorkProgress.instruction(tag: tag))
+            guard let url = Self.cursorPrefillLink(text), openURL(url) else { error = "Cursor could not be opened."; return }
+            if let whole { copyToClipboard(whole) }
+            error = nil
+            return
+        }
+        guard let sessionID = row.sessionID, let native = Self.nativeID(sessionID) else { return }
         let note = row.channel == "app" ? row.prompt : nil
         let place = Self.openPlace(row.provider)
-        switch await appTarget(provider: row.provider, native: native, folder: owner?.appOpen?.folder, note: row.provider == "codex" ? note : nil) {
+        switch await appTarget(provider: row.provider, native: native, note: row.provider == "codex" ? note : nil) {
         case .wait: error = "\(place) is still writing this session. Try again in a moment."
         case .unavailable(let code): error = Self.appSkipText(code, provider: row.provider) ?? "\(place) could not open it."
         case .ready(let target):
             if let note, row.provider != "codex" { copyToClipboard(note) }
-            guard await launch(target, receiptID: row.id) else { error = "\(place) could not be opened."; return }
+            guard openURL(target) else { error = "\(place) could not be opened."; return }
             error = nil
             guard row.channel == "job", row.appOpen?.openedAt == nil else { return }
-            let at = Date().timeIntervalSince1970
-            updateReceipt(row.id) { current in
-                guard current.appOpen != nil, current.appOpen?.openedAt == nil else { return false }
-                current.appOpen?.openedAt = at; current.appOpen?.skipped = nil
-                current.detail = Self.openedText(current.provider)
-                if var progress = current.progress { progress.record(.note, Self.openedText(current.provider), at: at); current.progress = progress }
-                return true
-            }
+            recordOpened(row.id, at: Date().timeIntervalSince1970)
         }
     }
-    /// You will not send the note you took to the app: it stops blocking a new handoff. Nothing reached the session.
+    /// 0.5.253 (QA, deferred from 0.5.252): an Open in Claude (or Codex) made while a glasses send holds the journal. The
+    /// app was opened, and from then it owns the session, so its note must be on record: it is kept here and in memory,
+    /// and written as soon as the journal is free (when that send lets go, or on the tracker's next pass).
+    private var openedMeanwhile: [String: Double] = [:]
+    private func recordOpened(_ id: String, at: Double) {
+        let change: (inout WorkHandoffReceipt) -> Bool = { current in
+            guard current.appOpen != nil, current.appOpen?.openedAt == nil else { return false }
+            current.appOpen?.openedAt = at; current.appOpen?.skipped = nil
+            current.detail = Self.openedText(current.provider)
+            if var progress = current.progress { progress.record(.note, Self.openedText(current.provider), at: at); current.progress = progress }
+            return true
+        }
+        guard tryUpdateReceipt(id, change) == .busy else { openedMeanwhile[id] = nil; return }
+        openedMeanwhile[id] = at
+        // In memory at once: this window's own checks (who owns the session) see it, and a save the send makes carries it.
+        if let index = receipts.firstIndex(where: { $0.id == id }) { _ = change(&receipts[index]) }
+    }
+    /// Writes the opened notes kept while the journal was held. Called when a glasses send lets go and by the tracker.
+    func writeOpenedMeanwhile() {
+        for (id, at) in openedMeanwhile { recordOpened(id, at: at) }
+    }
+    /// You will not send the note you took to the app, or the Cursor chat filled in for you: it stops blocking a new
+    /// handoff. Nothing reached a session.
     func cancelAppNote(receiptID: String) {
         if refusedForGlassesSend() { return }
         updateReceipt(receiptID) { current in
-            guard current.channel == "app", current.status == "queued" else { return false }
-            current.status = "canceled"; current.detail = "Not sent. You closed this note before sending it."
+            guard ["app", "prefill"].contains(current.channel ?? ""), current.status == "queued" else { return false }
+            current.status = "canceled"
+            current.detail = current.channel == "prefill" ? "Not sent. You closed this Cursor chat before sending it." : "Not sent. You closed this note before sending it."
             return true
         }
     }
-    /// Continue on a session its app owns: your note goes to the app, where you send it. Codex fills it in; Claude and
-    /// Cursor put it on the clipboard. The tracker sees it arrive in the session's conversation, and follows it from there.
+    /// Continue on a session its app owns: your note goes to the app, where you send it. Codex fills it in; Claude puts it
+    /// on the clipboard. The tracker sees it arrive in the session's conversation, and follows it from there. (Cursor never
+    /// comes here: 0.5.253 opens a new Cursor chat for every Cursor Continue.)
     private func continueInApp(_ session: WorkSession, owner: WorkHandoffReceipt, row: inout WorkHandoffReceipt) async throws {
         let place = Self.openPlace(session.provider)
         // 0.5.252: submit refuses this for the glasses before recording anything; never a clipboard write for them.
         if row.requestedFrom == "glasses" { row.status = "refused"; row.detail = WorkRequestOrigin.appOwnedReason; return }
-        // Cursor writes no message times: what the chat holds now is kept, so your note is recognised when it arrives.
-        if session.provider == "cursor", var progress = row.progress,
-           let read = try? await sessionRead(sessionID: session.id, turns: WorkProgressTracker.turnsPerRead), read.hasHistory {
-            progress.baseline = Array(read.replies.filter { $0.at == nil }.map(\.digest).suffix(WorkProgress.maxSeen))
-            progress.promptBaseline = Array(read.prompts.filter { $0.at == nil }.map(\.digest).suffix(WorkProgress.maxSeen))
-            row.progress = progress
-        }
-        switch await appTarget(provider: session.provider, native: session.nativeID, folder: owner.appOpen?.folder,
-                               note: session.provider == "codex" ? row.prompt : nil) {
+        switch await appTarget(provider: session.provider, native: session.nativeID, note: session.provider == "codex" ? row.prompt : nil) {
         case .wait:
             row.status = "refused"; row.detail = "\(place) is still writing this session. Nothing was sent. Try again in a moment."
         case .unavailable(let code):
-            if code == "cursor_app" {
-                copyToClipboard(row.prompt)
-                row.status = "refused"
-                row.detail = "This Cursor chat lives in the Cursor app, which has no link to open it. Your note is on the clipboard: paste it in that chat."
-            } else {
-                row.status = "refused"; row.detail = (Self.appSkipText(code, provider: session.provider) ?? "\(place) could not open it.") + " Nothing was sent."
-            }
+            row.status = "refused"; row.detail = (Self.appSkipText(code, provider: session.provider) ?? "\(place) could not open it.") + " Nothing was sent."
         case .ready(let target):
             if session.provider != "codex" { copyToClipboard(row.prompt) }
-            guard await launch(target, receiptID: row.id) else {
+            guard openURL(target) else {
                 row.status = "refused"; row.detail = "\(place) could not be opened. Nothing was sent."; return
             }
             row.status = "queued"
@@ -1401,8 +1490,12 @@ struct WorkGlassesRequest: Equatable, Sendable {
         }
     }
     /// The first line of a handoff's Progress timeline.
-    nonisolated static func sentText(mode: WorkHandoffMode, session: WorkSession?, model: WorkModelChoice?) -> String {
+    /// `prefill` (0.5.253): Cursor, opened filled in for you to send.
+    nonisolated static func sentText(mode: WorkHandoffMode, session: WorkSession?, model: WorkModelChoice?, prefill: Bool = false) -> String {
         let title = WorkSendPlan.clip(session?.title ?? "session")
+        if prefill {
+            return mode == .continueSession ? "Opened a new Cursor chat with your note, for you to send" : "Opened in Cursor, for you to send"
+        }
         switch mode {
         case .continueSession: return "Sent to \u{201C}\(title)\u{201D} (Continue)"
         case .fork: return "Forked \u{201C}\(title)\u{201D} and sent"
@@ -1757,9 +1850,12 @@ struct WorkGlassesRequest: Equatable, Sendable {
     }
     /// Takes one pending request. Refused (with the server's reason) when another claim won, it expired, or it is gone.
     /// `token` claims again under a claim this Mac already holds (after a relaunch): the server answers it the same.
+    /// 0.5.253 (QA, deferred from 0.5.252): the token goes to the helper on its standard input (`--again`), never on its
+    /// command line, where any process on the Mac could read it; the helper never logs it.
     func claimGlassesRequest(_ id: String, token: String? = nil) async -> GlassesClaimAnswer {
-        let again = token.map { ["--claim-token", $0] } ?? []
-        guard let details = try? await call(["work-request-claim", "--id", id] + again) else { return .refused("helper") }
+        let body = token.flatMap { try? JSONSerialization.data(withJSONObject: ["claimToken": $0]) }
+        if token != nil, body == nil { return .refused("helper") }
+        guard let details = try? await call(["work-request-claim", "--id", id] + (body == nil ? [] : ["--again"]), body) else { return .refused("helper") }
         guard details["claimed"]?.bool == true, let token = details["claimToken"]?.string,
               let request = WorkGlassesRequest(details["request"]), request.id == id else {
             return .refused(details["reason"]?.string ?? "unreadable")
@@ -1776,10 +1872,12 @@ struct WorkGlassesRequest: Equatable, Sendable {
         let status = details["httpStatus"]?.int ?? 0
         return Self.resultCanPass(reason: reason, status: status) ? .retry(reason) : .gone(reason)
     }
-    /// Whether a result the server did not take may be taken later: it was unreachable, busy (429), failing (5xx), or
-    /// mid-update to a build with no inbox. Anything else (the claim ended, the token does not match) never will be.
+    /// Whether a result the server did not take may be taken later: it was unreachable, busy (429), failing (5xx), not
+    /// letting this Mac in just now (401 or 403: its API token is being replaced, or the server is restarting), or
+    /// mid-update to a build with no inbox. Anything else (the claim ended, the token does not match: 409) never will be.
+    /// 0.5.253 (QA, deferred from 0.5.252): a 401 or 403 was dropped at once, and with it a result the server would take.
     nonisolated static func resultCanPass(reason: String, status: Int) -> Bool {
-        reason == "unreachable" || status == 429 || status >= 500 || reason == "server_too_old"
+        reason == "unreachable" || status == 401 || status == 403 || status == 429 || status >= 500 || reason == "server_too_old"
     }
     /// The model catalog and the live sessions as they are now, for resolving a glasses request. Unlike `refresh()` it
     /// never takes `busy` and never shows an error: false when either could not be read, and then nothing changes.
@@ -1927,6 +2025,8 @@ extension WorkRequestInbox {
         static let noteStatusLine = "A note cannot carry a COS-WORK line. Nothing was sent."
         static let restarted = "COS Control restarted before it sent this. Nothing was sent."
         static let unknownIntent = "COS Control does not know this request type. Nothing was sent."
+        /// 0.5.253: Cursor opens its own window for a person to press Send.
+        static let cursorNeedsMac = WorkRequestOrigin.cursorNeedsMac
     }
 }
 
@@ -1941,6 +2041,9 @@ struct WorkRequestLedgerEntry: Codable, Equatable {
     /// Posts that the server did not take, and when the next is due (each wait doubles, from 5 s to 30 minutes).
     var attempts = 0
     var nextAt: Double = 0
+    /// 0.5.253: the launch of COS Control holding this claim ("pid:launch id"). Nil in a 0.5.252 ledger. Only that launch
+    /// sends it or posts its result; a launch that is gone (a relaunch) is taken over by the next to read the ledger.
+    var owner: String? = nil
 }
 
 /// 0.5.252: lists the glasses requests every 30 seconds for as long as COS Control runs. One request is sent at a time,
@@ -1975,11 +2078,30 @@ struct WorkRequestLedgerEntry: Codable, Equatable {
     /// Every line this inbox logs, as it is logged (checks read it). The unified log has each one under the
     /// subsystem com.gotcos.control, category work-requests.
     var onLog: ((String) -> Void)?
+    /// 0.5.253: this launch, as it signs the claims it holds in the ledger ("pid:launch id").
+    let owner: String
+    /// Whether the launch that signed a claim is still running (another COS Control on this Mac); replaced in checks.
+    var ownerAlive: (String) -> Bool = WorkRequestInbox.launchRunning
+    /// A ledger change the lock kept out (another COS Control held it): written on the next pass.
+    private var ledgerUnsaved = false
+    /// The post pass running now (postDueResults runs one at a time).
+    private var posting: Task<Void, Never>?
 
-    init(store: WorkHandoffStore, board: WorkProgressTracker.Board, now: @escaping () -> Date) {
+    init(store: WorkHandoffStore, board: WorkProgressTracker.Board, now: @escaping () -> Date, owner: String? = nil) {
         self.store = store; self.board = board; self.now = now
-        if !store.isolated, let data = try? Data(contentsOf: store.requestLedgerURL),
-           let saved = try? JSONDecoder().decode([WorkRequestLedgerEntry].self, from: data) { ledger = saved }
+        // The ledger is read on the first pass (syncLedger), which takes over what a launch that is gone left in it.
+        self.owner = owner ?? "\(getpid()):\(UUID().uuidString.lowercased())"
+    }
+
+    /// Whether the COS Control that signed `owner` is still running: a live process of this app that is not this one.
+    /// This process's own earlier launch id (never seen in the app: one inbox per launch) and any other process count
+    /// as gone, and their claims are taken over.
+    nonisolated static func launchRunning(_ owner: String) -> Bool {
+        guard let pid = owner.split(separator: ":").first.flatMap({ Int32($0) }), pid > 0, pid != getpid(),
+              kill(pid, 0) == 0 || errno == EPERM else { return false }
+        var name = [UInt8](repeating: 0, count: 1_024)
+        guard proc_name(pid, &name, UInt32(name.count)) > 0 else { return false }
+        return String(decoding: name.prefix { $0 != 0 }, as: UTF8.self) == ProcessInfo.processInfo.processName
     }
 
     func start() {
@@ -2024,6 +2146,8 @@ struct WorkRequestLedgerEntry: Codable, Equatable {
     @discardableResult func tick() async -> Bool {
         guard !running, !store.isolated else { return false }
         running = true; defer { running = false }
+        // Takes over claims a launch that is gone left in the ledger, and writes a change the lock kept out.
+        syncLedger()
         await postDueResults()
         let version = serverVersion() ?? ""
         if let off {
@@ -2061,7 +2185,8 @@ struct WorkRequestLedgerEntry: Codable, Equatable {
                 note("claim", request.id + ": " + reason, "glasses request \(request.id): not claimed (\(reason))")
                 return true
             }
-            ledger.append(WorkRequestLedgerEntry(requestId: claim.request.id, claimToken: claim.token, claimedAt: now().timeIntervalSince1970))
+            ledger.append(WorkRequestLedgerEntry(requestId: claim.request.id, claimToken: claim.token, claimedAt: now().timeIntervalSince1970,
+                                                 owner: owner))
             saveLedger()
             begin(claim.request)
             return true
@@ -2114,7 +2239,18 @@ struct WorkRequestLedgerEntry: Codable, Equatable {
     }
 
     /// Posts every result that is due. One the server does not take waits longer each time; after a day it is dropped.
+    /// 0.5.253 (QA, deferred from 0.5.252): one pass at a time. A pass and a send that just finished both post; two passes
+    /// at once could post one result twice. A call made while a pass runs waits for it, then runs its own.
     func postDueResults() async {
+        while let running = posting { await running.value }
+        let pass = Task { @MainActor [weak self] in
+            await self?.postDuePass()
+            self?.posting = nil
+        }
+        posting = pass
+        await pass.value
+    }
+    private func postDuePass() async {
         let time = now().timeIntervalSince1970
         for entry in ledger where time - entry.claimedAt > Self.giveUpAfter {
             note("result " + entry.requestId, "dropped", "glasses request \(entry.requestId): dropped after a day, its result never taken")
@@ -2146,19 +2282,61 @@ struct WorkRequestLedgerEntry: Codable, Equatable {
         }
     }
 
-    private func saveLedger() {
+    private func saveLedger() { syncLedger() }
+
+    /// 0.5.253 (QA, deferred from 0.5.252): the ledger is shared by every COS Control on this Mac, so it is read, changed
+    /// and written under one lock (flock on `<ledger>.lock`), and each write reaches the disk (fsync of the file and its
+    /// folder) before the lock is let go. This launch's claims are the ones in memory; another running launch's stay as
+    /// they are on disk; a launch that is gone (or a 0.5.252 ledger, which signs nothing) is taken over. When the lock
+    /// stays busy the change is kept and written on the next pass.
+    func syncLedger() {
         let url = store.requestLedgerURL
+        let folder = url.deletingLastPathComponent()
         do {
-            if ledger.isEmpty {
-                if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
-                return
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let lock = open(url.path + ".lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
+            guard lock >= 0 else { throw HelperClientError.commandFailed("cannot open the ledger lock") }
+            defer { close(lock) }
+            var tries = 0
+            while flock(lock, LOCK_EX | LOCK_NB) != 0 {
+                tries += 1
+                guard tries < 10 else { ledgerUnsaved = true; return }
+                usleep(20_000)
             }
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            try JSONEncoder().encode(ledger).write(to: url, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            defer { flock(lock, LOCK_UN) }
+            let onDisk = (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode([WorkRequestLedgerEntry].self, from: $0) } ?? []
+            var others: [WorkRequestLedgerEntry] = []
+            for entry in onDisk where entry.owner != owner && !ledger.contains(where: { $0.requestId == entry.requestId }) {
+                if let signer = entry.owner, ownerAlive(signer) { others.append(entry); continue }
+                var taken = entry; taken.owner = owner
+                ledger.append(taken)
+            }
+            let next = others + ledger
+            if next == onDisk && FileManager.default.fileExists(atPath: url.path) == !next.isEmpty { ledgerUnsaved = false; return }
+            if next.isEmpty {
+                if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+            } else {
+                try JSONEncoder().encode(next).write(to: url, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+                let file = try FileHandle(forWritingTo: url)
+                try file.synchronize(); try file.close()
+            }
+            let directory = open(folder.path, O_RDONLY | O_DIRECTORY)
+            guard directory >= 0 else { throw HelperClientError.commandFailed("cannot open the ledger folder") }
+            defer { close(directory) }
+            guard fsync(directory) == 0 else { throw HelperClientError.commandFailed("cannot synchronize the ledger folder") }
+            ledgerUnsaved = false
         } catch {
+            ledgerUnsaved = true
             requestsLog.error("glasses request ledger not saved: \(error.localizedDescription, privacy: .public)")
         }
+    }
+    /// Whether a change is waiting for the ledger's lock (checks read it).
+    var ledgerWaiting: Bool { ledgerUnsaved }
+
+    /// The platform a plan sends to: the model's for a New session or a fork to another platform, else the session's.
+    nonisolated static func destination(of plan: WorkSendPlan) -> String? {
+        plan.mode == .newSession || plan.crossPlatform ? plan.model?.provider : plan.session?.provider
     }
 
     /// Whether what Control would send is what the request named: the same mode, the same session, the same model,
@@ -2182,8 +2360,9 @@ struct WorkRequestLedgerEntry: Codable, Equatable {
         guard Self.knownIntents.contains(request.intent) else { return .refused(reason: Refusal.unknownIntent, receiptID: nil) }
         // No deadline, no send: the claim's deadline is what keeps a tap from firing late.
         guard let deadline = request.claimExpiresAt else { return .refused(reason: Refusal.noDeadline, receiptID: nil) }
-        await board.reload()
-        guard board.readOK() else { return .refused(reason: Refusal.boardUnreadable, receiptID: nil) }
+        // 0.5.253 (QA, deferred from 0.5.252): a read of the board that began after this request was claimed, and read it.
+        // An older read that failed, or one a newer read superseded, never counts as read because a newer one ran.
+        guard await board.readFresh() else { return .refused(reason: Refusal.boardUnreadable, receiptID: nil) }
         guard let row = board.tasks().first(where: { $0.domain == request.domain && $0.workIdentity == request.workIdentity }) else {
             return .refused(reason: Refusal.taskGone, receiptID: nil)
         }
@@ -2206,6 +2385,8 @@ struct WorkRequestLedgerEntry: Codable, Equatable {
             let session = request.intent == "reply" ? store.replySession(for: target) : store.sendBackSession(for: target)
             guard let session, request.mode == .continueSession, let asked = request.sessionID,
                   ClaudeSession.sameSession(asked, session.id) else { return .refused(reason: Refusal.replySession, receiptID: nil) }
+            // 0.5.253: a reply into a Cursor chat opens Cursor for a person to press Send.
+            if WorkHandoffStore.prefillProviders.contains(session.provider) { return .refused(reason: Refusal.cursorNeedsMac, receiptID: nil) }
             if let late = await waitForStore(deadline) { return late }
             let shown = store.error
             _ = request.intent == "reply"
@@ -2237,6 +2418,8 @@ struct WorkRequestLedgerEntry: Codable, Equatable {
               Self.sendsWhatWasAsked(plan, request: request, listed: listed) else {
             return .refused(reason: Refusal.destination, receiptID: nil)
         }
+        // 0.5.253: Cursor (a new chat or a Continue) opens Cursor's window for a person to press Send.
+        if Self.destination(of: plan).map(WorkHandoffStore.prefillProviders.contains) == true { return .refused(reason: Refusal.cursorNeedsMac, receiptID: nil) }
         if let late = await waitForStore(deadline) { return late }
         let shown = store.error
         if plan.crossPlatform, let session = plan.session, let model = plan.model {

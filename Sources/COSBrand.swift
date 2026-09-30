@@ -393,6 +393,13 @@ enum COSDropdownEffect<Value: Hashable>: Equatable {
 }
 
 enum COSDropdownRules {
+    /// 0.5.253 (QA, deferred from 0.5.252): everything about the options a list shows, so an open list notices when
+    /// they change under it (a model catalog or a session list refreshed while it was open).
+    static func signature<Value: Hashable>(_ options: [COSDropdownOption<Value>]) -> [AnyHashable] {
+        options.map { AnyHashable([AnyHashable($0.value), AnyHashable($0.title), AnyHashable($0.note ?? ""), AnyHashable($0.muted),
+                                   AnyHashable($0.enabled), AnyHashable($0.placeholder)]) }
+    }
+
     /// The row to highlight when the list opens: the selection, else the first row that can be chosen.
     static func openingHighlight<Value: Hashable>(_ options: [COSDropdownOption<Value>], selection: Value) -> Int? {
         if let index = options.firstIndex(where: { $0.value == selection && $0.enabled }) { return index }
@@ -781,7 +788,23 @@ struct COSDropdown<Value: Hashable>: View {
             }
         }
         .onChange(of: isEnabled) { _, enabled in if !enabled { presenter.close() } }
+        // 0.5.253 (QA, deferred from 0.5.252): the options changed while the list was open. It shows them at once, and
+        // its keys and clicks choose from them: an open list kept the rows (and the key handler) it opened with, so a
+        // row could choose a value no longer offered.
+        .onChange(of: COSDropdownRules.signature(options)) { _, _ in refreshOpenList() }
         .onDisappear { presenter.close() }
+    }
+
+    /// Re-opens an open list on the options it has now, highlighting the selection (or the first row that can be chosen).
+    private func refreshOpenList() {
+        guard presenter.isOpen else { return }
+        let row = COSDropdownRules.openingHighlight(options, selection: selection)
+        if listsInline {
+            presenter.highlight = row
+            presenter.onKey = { key in apply(key) }
+        } else {
+            open(row)
+        }
     }
 
     private var face: some View {

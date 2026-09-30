@@ -93,38 +93,11 @@ try:
                 dict(good, after='yesterday'), dict(good, after=12), dict(good, after='2026-09-29T15:01:00.000Z' + '0' * 30)):
         assert not run(['work-completion-check'], json.dumps(bad).encode())['ok'], bad
     assert not run(['work-completion-check'], b' ' * 4097)['ok'] and len(calls) == before, 'No invalid check reaches the server'
-    # 0.5.249: work-cursor-chat finds the chat a Cursor run started (the server names none): chats created since the
-    # handoff whose first message carries the task's status-line id. It reads local files only, never the server.
-    TAG = '0123456789ab'
-    def chat(cid, created, cwd, first, transcript=True):
-        d = root / '.cursor/chats/60fc7c58c7dadd270c274dbf6df2a648' / cid
-        d.mkdir(parents=True, exist_ok=True)
-        (d / 'meta.json').write_text(json.dumps({'schemaVersion': 1, 'createdAtMs': int(created * 1000), 'hasConversation': True, 'cwd': cwd}))
-        if not transcript: return
-        t = root / '.cursor/projects/Users-x-Work-Repo/agent-transcripts' / cid
-        t.mkdir(parents=True, exist_ok=True)
-        rows = [{'role': 'user', 'message': {'content': [{'type': 'text', 'text': first}]}},
-                {'role': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'OK'}]}}]
-        (t / (cid + '.jsonl')).write_text('\n'.join(json.dumps(x) for x in rows) + '\n')
-    since = 1790723000
-    handoff = ('<user_query>\nSYSTEM INSTRUCTIONS\nYou are COS.\n\nUSER REQUEST\nCheck every heading.\n\nCOS-WORK ' + TAG
-               + ': <done, needs input or blocked>: <one sentence of evidence>\n</user_query>')
-    A, B, C, D, E, F = ('%s-1111-4222-8333-444444444444' % (c * 8) for c in 'abcdef')
-    chat(A, since + 3, '/Users/x/Work Repo', handoff)                               # this handoff's chat
-    chat(B, since - 600, '/Users/x/Work Repo', handoff)                             # older than the handoff
-    chat(C, since + 4, '/Users/x/Work Repo', handoff.replace(TAG, 'bbbbbbbbbbbb'))  # another task's
-    chat(D, since + 5, '/Users/x/Work Repo', handoff, transcript=False)             # no transcript to prove it
-    chat(E.upper(), since + 6, '/Users/x/Work Repo', handoff)                       # not a chat id the CLI writes
+    # 0.5.253: Cursor runs nothing in the background, so the 0.5.249 Cursor chat finder is gone: the command is unknown, and
+    # nothing reaches the server.
     before = len(calls)
-    r = run(['work-cursor-chat', '--tag', TAG, '--since', str(since)])
-    assert r['ok'] and r['details']['chats'] == [{'id': A, 'folder': '/Users/x/Work Repo', 'createdAt': since + 3}], r
-    assert len(calls) == before, 'it reads local files only, never the server'
-    chat(F, since + 7, '/Users/x/Work Repo', handoff)                               # a second match: both are reported
-    r = run(['work-cursor-chat', '--tag', TAG, '--since', str(since)])
-    assert [c['id'] for c in r['details']['chats']] == [A, F], r
-    for bad in (['--tag', 'ZZZZZZZZZZZZ', '--since', str(since)], ['--tag', TAG], ['--tag', TAG, '--since', 'yesterday'],
-                ['--tag', TAG + '\n', '--since', str(since)], ['--tag', '0123456789AB', '--since', str(since)], ['--since', str(since)]):
-        assert not run(['work-cursor-chat', *bad])['ok'], bad
-    print('PASS compiled helper: recent messages (replies with times, user openings, capped turns, no history without recent_turns, unknown session, refused inputs), completion check (names and time only, reasons for failures, refused inputs), Cursor chat finder (by status-line id since the handoff, local files only, refused inputs)')
+    gone = run(['work-cursor-chat', '--tag', '0123456789ab', '--since', '1790723000'])
+    assert not gone['ok'] and len(calls) == before, gone
+    print('PASS compiled helper: recent messages (replies with times, user openings, capped turns, no history without recent_turns, unknown session, refused inputs), completion check (names and time only, reasons for failures, refused inputs), no Cursor chat finder (0.5.253)')
 finally:
     server.shutdown(); shutil.rmtree(root)

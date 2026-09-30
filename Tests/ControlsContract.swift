@@ -33,6 +33,9 @@ import SwiftUI
     @Published var count = 3
     @Published var disclosed = false
     @Published var pressed = 0
+    /// 0.5.253: options that change while a list is open.
+    @Published var changing = "claude"
+    @Published var changingOptions = providers
     var frames: [String: CGRect] = [:]
 }
 
@@ -131,6 +134,23 @@ private struct KeyboardBoard: View {
 }
 
 
+/// 0.5.253 (QA, deferred from 0.5.252): a dropdown whose options change while its list is open.
+private struct ChangingBoard: View {
+    @ObservedObject var probe: Probe
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            COSDropdown("Changing", selection: $probe.changing, options: probe.changingOptions, labelWidth: 60)
+                .modifier(Frame(key: "changing", probe: probe))
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(width: 360, height: Self.height, alignment: .top)
+        .background(COSPalette.card)
+        .cosControlTheme()
+    }
+    static let height: CGFloat = 240
+}
+
 /// 0.5.253: labels with an icon, under every COS style and the window root's theme, on one line and wrapped to two.
 /// Each title and icon reports its own frame, so the check reads where the style put them.
 private struct LabelBoard: View {
@@ -193,9 +213,10 @@ private struct LabelBoard: View {
         theme()
         renders()
         await labels()
+        await changingOptions()
         panel()
         check(!activated && !app.isActive, "the contract never became the active app (a shared desktop is left alone)")
-        print("PASS: GOTCOS controls (dropdown rules and keys; the open list as a child panel: opens, chooses, keys, face click closes, outside click, Escape, Tab, card pixels, scrolls the highlight into view; inline list; disabled dropdown and row; no first focus by default; keyboard: face keys, view switch arrows, Space on switch, checkbox and chip; switch label does not flip; checkbox, chip, stepper bounds; disclosure expands; root theme: button, progress, disclosure, tint; light-mode contrast; switch and checkbox pixels; spinner sizes; labels: icon in the middle of one and two lines under every style, the system's gap and wrapping; the menu-bar panel's Check for updates and Create Folders, rendered)")
+        print("PASS: GOTCOS controls (dropdown rules and keys; the open list as a child panel: opens, chooses, keys, face click closes, outside click, Escape, Tab, card pixels, scrolls the highlight into view; inline list; disabled dropdown and row; no first focus by default; keyboard: face keys, view switch arrows, Space on switch, checkbox and chip; switch label does not flip; checkbox, chip, stepper bounds; disclosure expands; root theme: button, progress, disclosure, tint; light-mode contrast; switch and checkbox pixels; spinner sizes; an open list whose options change shows and chooses the new ones; labels: icon in the middle of one and two lines under every style, the system's gap and wrapping; the menu-bar panel's Check for updates and Create Folders, rendered)")
     }
 
     private static func check(_ condition: Bool, _ message: @autoclosure () -> String = "", line: UInt = #line) {
@@ -628,6 +649,29 @@ private struct LabelBoard: View {
         }
     }
 
+
+
+    /// 0.5.253 (QA, deferred from 0.5.252): an open list whose options change shows the new rows at once, and its keys
+    /// choose from them. The list used to keep the rows and the key handler it opened with, so Down and Return could
+    /// choose a value no longer offered.
+    @MainActor static func changingOptions() async {
+        let probe = Probe()
+        let window = open(ChangingBoard(probe: probe), height: ChangingBoard.height)
+        defer { window.orderOut(nil) }
+        await settle(400)
+        guard let face = probe.frames["changing"] else { fatalError("ControlsContract: no frame for the changing dropdown") }
+        click(window, NSPoint(x: face.minX + 200, y: ChangingBoard.height - face.midY)); await settle(350)
+        guard let before = openList(window) else { fatalError("ControlsContract: the changing dropdown opened no list") }
+        let fiveRows = before.frame.height
+        probe.changingOptions = [COSDropdownOption("claude", "Claude"), COSDropdownOption("gemini", "Gemini")]
+        await settle(350)
+        guard let after = openList(window) else { fatalError("ControlsContract: the list closed instead of showing the new options") }
+        check(after.frame.height < fiveRows - 50, "the open list shows the two new rows, not the five it opened with: \(after.frame.height) vs \(fiveRows)")
+        appKey(.down); await settle(150)
+        appKey(.return); await settle(250)
+        check(probe.changing == "gemini", "Down and Return choose from the new options: \(probe.changing)")
+        check(openList(window) == nil, "choosing closes the list")
+    }
 
     // MARK: - Labels (0.5.253)
 

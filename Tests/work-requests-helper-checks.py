@@ -70,8 +70,16 @@ try:
     assert claimed['ok'] and claimed['details']['claimed'] is True and claimed['details']['claimToken'] == CLAIM, claimed
     assert claimed['details']['request']['claimExpiresAt'] == '2026-09-30T13:11:00.000Z'
     assert calls[-1] == ('POST', f'/api/work-board/handoff-requests/{RID}/claim', {}), calls[-1]
-    again = run(['work-request-claim', '--id', RID, '--claim-token', CLAIM])
+    # 0.5.253: the same token claims again, read from standard input (--again), never from the command line.
+    again = run(['work-request-claim', '--id', RID, '--again'], json.dumps({'claimToken': CLAIM}).encode())
     assert again['details']['claimed'] is True and calls[-1][2] == {'claimToken': CLAIM}, 'the same token claims again'
+    before_argv = len(calls)
+    for bad_stdin in (b'', b'not json', json.dumps({'claimToken': 'C' * 32}).encode(), json.dumps({'claimToken': CLAIM, 'x': 1}).encode(),
+                      json.dumps({'claimToken': CLAIM + '\n'}).encode(), b' ' * 257):
+        assert not run(['work-request-claim', '--id', RID, '--again'], bad_stdin)['ok'], bad_stdin
+    refused = run(['work-request-claim', '--id', RID, '--claim-token', CLAIM])
+    assert not refused['ok'] and 'standard input' in refused['message'], refused
+    assert len(calls) == before_argv, 'a token on the command line, or a malformed one on stdin, never reaches the server'
     for status, code, reason in ((409, 'already_claimed', 'already_claimed'), (410, 'request_expired', 'request_expired'),
                                  (404, 'request_not_found', 'request_not_found'), (404, None, 'server_too_old')):
         state['claim'] = (status, code)
@@ -105,8 +113,9 @@ try:
         assert not run(['work-request-claim', '--id', bad_id])['ok'], bad_id
         assert not run(['work-request-result', '--id', bad_id], json.dumps(sent).encode())['ok'], bad_id
     assert not run(['work-request-claim', '--id', RID, '--claim-token', 'x'])['ok']
+    assert not run(['work-request-claim', '--id', RID, '--again'], b'{}')['ok']
     assert len(calls) == before, 'No malformed claim or result reaches the server'
-    print('PASS compiled helper: glasses requests list, 404 server_too_old, claim and re-claim, claim refusals, exact result body, refusals, no malformed dispatch')
+    print('PASS compiled helper: glasses requests list, 404 server_too_old, claim and re-claim (its token on stdin, never argv), claim refusals, exact result body, refusals, no malformed dispatch')
 finally:
     server.shutdown()
     shutil.rmtree(root)

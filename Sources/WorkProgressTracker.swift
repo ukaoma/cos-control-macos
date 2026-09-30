@@ -25,6 +25,30 @@ struct WorkProgressNotice: Equatable, Sendable {
 /// Moves go forward only, never to Complete. Undo, or moving a card back yourself, stops automatic moves for that
 /// handoff. A move that cannot be made now (a busy or read-only board) is kept and retried; a record that finds the
 /// journal busy is kept and written on a later pass, so a moved card always gets its why-line and Undo.
+/// 0.5.253 (QA, deferred from 0.5.252): which read of the board the rows on record come from. Each load takes a
+/// generation when it starts; a load a newer one superseded records nothing. A caller that marks `started` before it
+/// reloads, and waits while a newer load is still to finish, reads OK only when the result on record is from a load
+/// that started after its mark, and that load read the board: the rows are that read's, never an earlier one's.
+struct WorkBoardReads: Equatable, Sendable {
+    /// The newest load started, the load whose result is on record, and whether that load read the board.
+    private(set) var started = 0
+    private(set) var recorded = 0
+    private(set) var recordedOK = false
+    mutating func begin() -> Int { started += 1; return started }
+    /// Whether `generation` is still the newest load (only the newest records its result).
+    func current(_ generation: Int) -> Bool { generation == started }
+    /// Records a load's result; false (and nothing recorded) when a newer load superseded it.
+    @discardableResult mutating func record(_ generation: Int, ok: Bool) -> Bool {
+        guard current(generation) else { return false }
+        recorded = generation; recordedOK = ok
+        return true
+    }
+    /// A load started and not recorded yet.
+    var pending: Bool { started > recorded }
+    /// Whether the result on record is from a load that started after `mark` and read the board.
+    func readOK(since mark: Int) -> Bool { recorded > mark && recordedOK }
+}
+
 @MainActor final class WorkProgressTracker: ObservableObject {
     /// What the tracker needs from the board. Closures, so checks can run it against a fake board.
     struct Board {
@@ -32,9 +56,11 @@ struct WorkProgressNotice: Equatable, Sendable {
         var writable: () -> Bool
         var reload: () async -> Void
         var move: (TaskRow, String) async throws -> Void
-        /// 0.5.252: whether the last `reload` read the board. A failed read leaves the old rows in `tasks`, and a
-        /// glasses request must not be checked against those.
-        var readOK: () -> Bool = { true }
+        /// 0.5.252: a glasses request is checked only against a board that was just read; a failed read leaves the old
+        /// rows in `tasks`. 0.5.253 (QA, deferred from 0.5.252): reloads the board and says whether the rows now come
+        /// from a read that began after this call and read the board (WorkBoardReads). An older read that failed, or one
+        /// a newer read superseded, never counts as read because a newer one ran.
+        var readFresh: () async -> Bool
     }
     /// One read of a session: its recent replies and message openings, and whether it is still working.
     struct SessionRead {
@@ -140,6 +166,10 @@ struct WorkProgressNotice: Equatable, Sendable {
         // 0.5.249: a New session whose first reply is done opens in its app, tracked or not (a done first reply ends
         // tracking), once, and never while its run is going.
         await store.openReadyApps()
+        // 0.5.253: a Cursor chat filled in for you is found once you sent it; an Open in Claude made while a glasses send
+        // held the journal is written.
+        await store.linkCursorPrefills()
+        store.writeOpenedMeanwhile()
     }
 
     /// One pass over the handoffs being followed.

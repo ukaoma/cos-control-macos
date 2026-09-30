@@ -27,13 +27,12 @@ private actor TrackingTransport {
     var sessionAfterReads = 0
     var workJobReads = 0
     func setClaudeJob(session: String, afterReads: Int) { jobClaudeSession = session; sessionAfterReads = afterReads }
-    /// 0.5.249 (start it, then open it): the provider the job runs on and the session it names, a run that fails, what
-    /// the helper's session-reveal says about a Claude session, and the Cursor chats `work-cursor-chat` finds.
+    /// 0.5.249 (start it, then open it): the provider the job runs on and the session it names, a run that fails, and what
+    /// the helper's session-reveal says about a Claude session.
     var jobProvider: String?
     var jobFailed = false
     var revealReason = "import"
     var revealLink: String?
-    var cursorChats: [JSONValue] = []
     func setJob(provider: String, session: String?, afterReads: Int = 1) {
         jobProvider = provider; jobClaudeSession = session; sessionAfterReads = afterReads
     }
@@ -43,7 +42,10 @@ private actor TrackingTransport {
     func setJobState(_ state: String?) { jobStateOverride = state }
     var revealFails = false
     func setReveal(_ reason: String, link: String? = nil, fails: Bool = false) { revealReason = reason; revealLink = link; revealFails = fails }
-    func setCursorChats(_ rows: [JSONValue]) { cursorChats = rows }
+    /// 0.5.253: the live session list as raw rows (a Cursor chat carries its `createdAt`).
+    func setLiveRows(_ rows: [JSONValue]) { liveSessions = rows }
+    /// Whether any command line this transport was given carries `text` (a claim token must never).
+    func argvCarries(_ text: String) -> Bool { calls.contains { $0.contains { $0.contains(text) } } }
     func args(_ verb: String) -> [[String]] { calls.filter { $0.first == verb } }
     /// 0.5.250: the `sessionName` each work-new request carried ("<none>" when it had none).
     var sessionNames: [String] = []
@@ -164,7 +166,6 @@ private actor TrackingTransport {
             let link = revealLink ?? (revealReason == "import" ? "claude://resume?session=" + id : nil)
             details = ["provider": .string("claude"), "sessionId": .string(id), "revealReason": .string(revealReason),
                        "deepLink": link.map(JSONValue.string) ?? .null]
-        case "work-cursor-chat": details = ["chats": .array(cursorChats)]
         case "work-requests":
             lists += 1
             details = inboxReason.map { ["available": .bool(false), "reason": .string($0), "requests": .array([])] }
@@ -173,7 +174,10 @@ private actor TrackingTransport {
             // As the server: a pending request is claimed once and is never listed as pending again; a claimed one is
             // claimed again only under its token.
             let id = value(after: "--id", in: args) ?? ""
-            let again = value(after: "--claim-token", in: args)
+            // 0.5.253: a claim made again carries its token on standard input (`--again`), as the helper reads it.
+            let again = args.contains("--again")
+                ? ((try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: String])?["claimToken"] ?? "<no token on stdin>"
+                : nil
             if let again { claimTokens.append(again) } else { claims.append(id) }
             func claimed(_ row: JSONValue) -> [String: JSONValue] {
                 var o = row.object ?? [:]
@@ -204,7 +208,8 @@ private actor TrackingTransport {
         return HelperResponse(ok: true, message: "Synthetic transport", details: details)
     }
     private func job() -> [String: JSONValue] {
-        let provider = jobProvider ?? (jobClaudeSession == nil ? "cursor" : "claude")
+        // 0.5.253: a run with no session of its own is a local model's (Cursor runs nothing in the background now).
+        let provider = jobProvider ?? (jobClaudeSession == nil ? "ollama" : "claude")
         var job: [String: JSONValue] = ["clientJobId": .string(jobIdentity), "generation": .number(1), "jobId": .string("job-fixture"),
                                          "status": .string(jobStateOverride ?? (jobFailed ? "failed" : jobResult == nil ? "running" : "completed")),
                                          "provider": .string(provider)]
@@ -254,7 +259,7 @@ private actor TrackingTransport {
                       throw HelperClientError.commandFailed("Change saved, but refreshing Work failed: timeout")
                   }
               },
-              readOK: { self.readable })
+              readFresh: { self.readable })
     }
 }
 
@@ -271,7 +276,7 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         projectionChecks()
         try revisionParityChecks()
         try await trackerChecks()
-        print("PASS: Work tracking (status line, delivery, stages, projections, tracker: pending turns, arrival, reports, several tasks, pause, moved back, retries, busy journal, Jev gating, baseline, job result, superseded, back-off, New session link, Work sessions not jobs, start it then open it in the app, named after the task and linked while it runs, glasses requests, revision parity with the server's 12 golden rows, a glasses Start never sends the Mac's draft, Mac actions told to wait during a glasses send, no session bound after the deadline)")
+        print("PASS: Work tracking (status line, delivery, stages, projections, tracker: pending turns, arrival, reports, several tasks, pause, moved back, retries, busy journal, Jev gating, baseline, job result, superseded, back-off, New session link, Work sessions not jobs, start it then open it in the app, named after the task and linked while it runs, glasses requests, revision parity with the server's 12 golden rows, a glasses Start never sends the Mac's draft, Mac actions told to wait during a glasses send, no session bound after the deadline; 0.5.253: Cursor filled in for you to send (New session and Continue, cut and clipboard, found once sent, never a guess, Not sending it, a 0.5.252 Cursor run), Cursor refused from the glasses, results posted one pass at a time, a shared, locked ledger, the claim token never on a command line, 401 and 403 retried, fresh board reads, Open in Claude recorded while the journal is held)")
     }
 
     /// `precondition` takes an autoclosure, which cannot await.
@@ -304,6 +309,19 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
     // MARK: - Pure rules
 
     @MainActor static func pureChecks() {
+        // 0.5.253 (QA, deferred from 0.5.252): the board read a glasses request is checked against. A newer read never makes
+        // an older failed one read as OK, a superseded read records nothing, and a read that began before the mark is old.
+        var reads = WorkBoardReads()
+        let mark = reads.started
+        let mine = reads.begin(), newer = reads.begin()
+        precondition(!reads.record(mine, ok: false) && reads.pending && !reads.readOK(since: mark), "superseded: nothing recorded, not fresh")
+        precondition(reads.record(newer, ok: true) && !reads.pending && reads.readOK(since: mark), "the newer read, once it read the board, is fresh")
+        let mark2 = reads.started
+        let failed = reads.begin()
+        precondition(reads.record(failed, ok: false) && !reads.readOK(since: mark2), "a read that failed is never fresh")
+        let good = reads.begin()
+        precondition(reads.record(good, ok: true) && reads.readOK(since: mark2) && !reads.readOK(since: reads.started), "a read begun before the mark is not fresh")
+
         precondition(WorkProgress.tag(forWorkID: "task:Quilt:0123456789ab") == "0123456789ab")
         let review = WorkProgress.tag(forWorkID: "review:wr_" + String(repeating: "c", count: 32))
         precondition(review.count == 12 && review.allSatisfy(\.isHexDigit))
@@ -627,15 +645,47 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
                                   "claude://code/continue?session=\(id)", "https://claude.ai", nil]
         for bad in refused { precondition(WorkHandoffStore.claudeAppLink(bad, sessionID: id) == nil, bad ?? "nil") }
         precondition(WorkHandoffStore.claudeAppLink("claude://resume?session=../x", sessionID: "../x") == nil)
-        // Cursor: the Terminal command, character by character. Folder and id are quoted; anything odd is refused.
-        precondition(WorkHandoffStore.cursorResumeScript(chatID: id, folder: "/Users/x/Miles's $HOME `repo`")
-                     == "#!/bin/zsh\n# COS Control: the Cursor chat Work started. Continue it here.\ncd -- '/Users/x/Miles'\\''s $HOME `repo`' || exit 1\nexec cursor-agent --resume '\(id)'\n")
-        precondition(WorkHandoffStore.cursorResumeScript(chatID: id, folder: "/Users/x/Caf\u{E9} Repo")?.contains("cd -- '/Users/x/Caf\u{E9} Repo' || exit 1\n") == true)
-        for folder in ["relative/repo", "", "/Users/x/a\nrm -rf ~", "/Users/x/a\u{0}b", "/Users/x/\u{202E}gpj.command", "/" + String(repeating: "a", count: 1_024)] {
-            precondition(WorkHandoffStore.cursorResumeScript(chatID: id, folder: folder) == nil, folder)
+        // 0.5.253, Cursor filled in for you to send (Miles, 2026-09-30 13:27). The link, character by character; the box
+        // is led by the task's first line; a handoff too long for Cursor's link is cut at the limit, never through a
+        // character, keeps its status line and says so, and the whole goes on the clipboard.
+        let tag = "0123456789ab", instruction = WorkProgress.instruction(tag: tag)
+        precondition(WorkHandoffStore.cursorPrefillLink("caf\u{E9} & 100% #1 / ?x=y\nnext")?.absoluteString
+                     == "cursor://anysphere.cursor-deeplink/prompt?text=caf%C3%A9%20%26%20100%25%20%231%20%2F%20%3Fx%3Dy%0Anext&mode=agent")
+        precondition(WorkHandoffStore.cursorPrefillLink("") == nil)
+        let short = "Check every heading" + instruction
+        let filled = WorkHandoffStore.cursorPrefill(short, tag: tag, instruction: instruction)
+        precondition(filled.whole == nil && filled.text == "COS Work handoff \(tag)\n\n" + short, filled.text)
+        let long = String(repeating: "Tighten the pricing FAQ. ", count: 600) + instruction
+        let cut = WorkHandoffStore.cursorPrefill(long, tag: tag, instruction: instruction)
+        precondition(cut.text.utf16.count == WorkHandoffStore.cursorPrefillLimit, "\(cut.text.utf16.count)")
+        precondition(cut.text.hasPrefix("COS Work handoff \(tag)\n\nTighten the pricing FAQ.") && cut.text.hasSuffix("\n\n" + WorkHandoffStore.cursorCutMarker + instruction))
+        precondition(cut.whole == "COS Work handoff \(tag)\n\n" + long)
+        let fits = String(repeating: "a", count: WorkHandoffStore.cursorPrefillLimit - 31 - instruction.utf16.count) + instruction
+        precondition(WorkHandoffStore.cursorPrefill(fits, tag: tag, instruction: instruction).whole == nil, "exactly at the limit: not cut")
+        precondition(WorkHandoffStore.cursorPrefill("b" + fits, tag: tag, instruction: instruction).whole != nil, "one over: cut")
+        let faces = String(repeating: "\u{1F600}", count: 5_000) + instruction
+        let cutFaces = WorkHandoffStore.cursorPrefill(faces, tag: tag, instruction: instruction)
+        let keptFaces = cutFaces.text.dropFirst(31).prefix { $0 == "\u{1F600}" }
+        precondition(cutFaces.text.utf16.count <= WorkHandoffStore.cursorPrefillLimit && !keptFaces.isEmpty
+                     && cutFaces.text.utf16.count == 31 + keptFaces.utf16.count + ("\n\n" + WorkHandoffStore.cursorCutMarker + instruction).utf16.count,
+                     "an emoji is kept whole or not at all")
+        // The card says what was filled in, and how much of it when it was cut.
+        precondition(WorkHandoffStore.cursorOpenedText(mode: .newSession, cut: nil) == "Opened in Cursor with the handoff filled in. Choose Create Chat, then press Send there.")
+        precondition(WorkHandoffStore.cursorOpenedText(mode: .newSession, cut: (8_500, 15_031)).hasSuffix("so it holds the first 8,500 of 15,031: the whole handoff is on the clipboard. Paste it over the text there before you send."))
+        // Which chat a filled-in handoff became: Cursor's, made once it opened (5 s slack), not another handoff's, oldest
+        // first; and it is the one whose message carries the first line.
+        let openedAt = 1_790_730_000.0
+        func chatRow(_ id: String, _ provider: String = "cursor", at: Double) -> JSONValue {
+            .object(["id": .string(id), "provider": .string(provider), "name": .string("Chat " + id), "createdAt": .string(WorkProgress.stamp(at))])
         }
-        precondition(WorkHandoffStore.cursorResumeScript(chatID: "x'; rm -rf ~; '", folder: "/tmp") == nil)
-        precondition(WorkHandoffStore.shellQuote("a'b") == "'a'\\''b'" && WorkHandoffStore.shellQuote("") == "''")
+        let chats = [chatRow("chat-new", at: openedAt + 10), chatRow("chat-old", at: openedAt - 60), chatRow("chat-claude", "claude", at: openedAt + 10),
+                     chatRow("../x", at: openedAt + 10), chatRow("chat taken", at: openedAt + 3), chatRow("chat-taken", at: openedAt + 2),
+                     chatRow("chat-early", at: openedAt - 4), .object(["id": .string("chat-untimed"), "provider": .string("cursor")])]
+        precondition(WorkHandoffStore.cursorPrefillCandidates(chats, openedAt: openedAt, taken: ["cursor:chat-taken"]).map(\.id) == ["cursor:chat-early", "cursor:chat-new"],
+                     "\(WorkHandoffStore.cursorPrefillCandidates(chats, openedAt: openedAt, taken: ["cursor:chat-taken"]).map(\.id))")
+        precondition(WorkHandoffStore.carriesPrefill(tag: tag, prompts: [.init(text: "<user_query>\nCOS Work handoff \(tag)\n\nCheck", at: nil)]))
+        precondition(!WorkHandoffStore.carriesPrefill(tag: tag, prompts: [.init(text: "COS Work handoff bbbbbbbbbbbb\n\nCheck", at: nil)]))
+        precondition(!WorkHandoffStore.carriesPrefill(tag: tag, prompts: [.init(text: "Check every heading", at: nil)]))
         // When it opens: only once the first turn completed, after the settle, within the window, and once.
         let now = 1_790_730_000.0
         var r = WorkHandoffReceipt(id: "r", workID: "task:Quilt:0123456789ab", workTitle: "T", sourceRevision: "1", mode: .newSession,
@@ -665,9 +715,9 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         }
         var noSession = r; noSession.sessionID = nil
         precondition(WorkHandoffStore.appOpenStep(noSession, now: now + 1) == .skip("no_session"))
+        // 0.5.253: Cursor runs nothing in the background, so no Cursor run opens (a 0.5.249 to 0.5.252 one included).
         noSession.provider = "cursor"
-        precondition(WorkHandoffStore.appOpenStep(noSession, now: now + 1) == .findChat)
-        precondition(WorkHandoffStore.appOpenStep(noSession, now: now - 4 + WorkHandoffStore.cursorChatSearch + 1) == .skip("no_session"))
+        precondition(WorkHandoffStore.appOpenStep(noSession, now: now + 1) == nil && !WorkHandoffStore.appProviders.contains("cursor"))
         var ollama = r; ollama.provider = "ollama"
         precondition(WorkHandoffStore.appOpenStep(ollama, now: now + 1) == nil)
         var turn = r; turn.mode = .continueSession
@@ -685,23 +735,21 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         precondition(WorkHandoffStore.appOpenButton(skipped) == "Open in Claude")
         var running = opened; running.status = "running"
         precondition(WorkHandoffStore.appOpenButton(running) == nil, "never while running")
-        var cursorSkipped = skipped; cursorSkipped.provider = "cursor"
-        precondition(WorkHandoffStore.appOpenButton(cursorSkipped) == nil, "a Cursor chat with no folder has no command")
-        cursorSkipped.appOpen?.folder = "/Users/x/Repo"
-        precondition(WorkHandoffStore.appOpenButton(cursorSkipped) == "Open in Terminal")
+        var cursorSkipped = skipped; cursorSkipped.provider = "cursor"; cursorSkipped.appOpen?.folder = "/Users/x/Repo"
+        precondition(WorkHandoffStore.appOpenButton(cursorSkipped) == nil, "no Terminal for a 0.5.249 to 0.5.252 Cursor run")
+        var cursorOpened = opened; cursorOpened.provider = "cursor"
+        precondition(WorkHandoffStore.appOpenButton(cursorOpened) == nil, "nor Open again")
+        // A Cursor handoff filled in and not sent yet: Open again, until it is found.
+        var waiting = r; waiting.channel = "prefill"; waiting.provider = "cursor"; waiting.appOpen = nil; waiting.status = "queued"; waiting.sessionID = nil
+        precondition(WorkHandoffStore.awaitingCursorSend(waiting) && WorkHandoffStore.appOpenButton(waiting) == "Open again")
+        var found = waiting; found.sessionID = "cursor:chat"; found.status = "delivered"
+        precondition(!WorkHandoffStore.awaitingCursorSend(found) && WorkHandoffStore.appOpenButton(found) == nil)
+        var closed = waiting; closed.status = "canceled"
+        precondition(!WorkHandoffStore.awaitingCursorSend(closed) && WorkHandoffStore.appOpenButton(closed) == nil)
         var note = r; note.mode = .continueSession; note.channel = "app"; note.appOpen = nil; note.status = "queued"
         precondition(WorkHandoffStore.appOpenButton(note) == "Open again")
         note.status = "delivered"
         precondition(WorkHandoffStore.appOpenButton(note) == nil)
-        // The one chat the helper found, never a guess.
-        let chat: JSONValue = .object(["id": .string(id), "folder": .string("/Users/x/Repo")])
-        let other: JSONValue = .object(["id": .string("11111111-2222-4333-8444-555555555555"), "folder": .string("/Users/x/Repo")])
-        precondition(WorkHandoffStore.cursorChatMatch([chat], taken: [])?.id == id && WorkHandoffStore.cursorChatMatch([chat], taken: [])?.folder == "/Users/x/Repo")
-        precondition(WorkHandoffStore.cursorChatMatch([chat, other], taken: []) == nil, "two: never a guess")
-        precondition(WorkHandoffStore.cursorChatMatch([chat, other], taken: ["cursor:11111111-2222-4333-8444-555555555555"])?.id == id)
-        precondition(WorkHandoffStore.cursorChatMatch([chat], taken: ["cursor:" + id]) == nil, "one another handoff has")
-        precondition(WorkHandoffStore.cursorChatMatch([.object(["id": .string("../x"), "folder": .string("/a")])], taken: []) == nil)
-        precondition(WorkHandoffStore.cursorChatMatch([.object(["id": .string(id)])], taken: []) == nil)
         // A note you send yourself in Terminal: an untimed message that newly appears.
         let text = "Now check the footer links, every one of them"
         precondition(WorkProgress.untimedArrival(prompt: text, messages: [.init(text: text, at: nil)], baseline: []))
@@ -709,21 +757,27 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         precondition(!WorkProgress.untimedArrival(prompt: text, messages: [.init(text: text, at: 5)], baseline: []), "a timed message is promptArrival's")
         precondition(!WorkProgress.untimedArrival(prompt: text, messages: [.init(text: "Something else entirely, not the note", at: nil)], baseline: []))
         // Every line the card can show: plain, no em dash, no arrow.
-        var lines = ["not_completed", "late", "no_session", "open_failed", "cursor_app", "unreachable", "claude:no_desktop", "claude:desktop_too_old",
+        var lines = ["not_completed", "late", "no_session", "open_failed", WorkHandoffStore.cursorRetired, "unreachable", "claude:no_desktop", "claude:desktop_too_old",
                      "claude:archived", "claude:desktop_lineage", "claude:no_transcript", "other"].flatMap { code in
             ["claude", "codex", "cursor"].compactMap { WorkHandoffStore.appSkipText(code, provider: $0) } }
         lines += ["claude", "codex", "cursor"].flatMap { [WorkHandoffStore.openedText($0), WorkHandoffView.appOwnedNote($0)] }
         lines.append(WorkHandoffStore.unsentTabDetail)
+        lines += [WorkHandoffStore.cursorOpenedText(mode: .newSession, cut: nil), WorkHandoffStore.cursorOpenedText(mode: .continueSession, cut: (1, 2)),
+                  WorkHandoffView.whereItRunsNote(waiting) ?? "", WorkHandoffView.whereItRunsNote(found) ?? "", WorkRequestOrigin.cursorNeedsMac,
+                  WorkHandoffStore.cursorCutMarker]
         for state in ["running", "completed"] { var x = r; x.status = state; x.appOpen?.runEndedAt = nil; lines += [WorkHandoffView.whereItRunsNote(x) ?? ""] }
         precondition(lines.allSatisfy { !$0.contains("\u{2014}") && !$0.contains("\u{2192}") && !$0.contains("->") }, "\(lines)")
         precondition(WorkHandoffStore.appSkipText("no_session", provider: "cursor") == "COS could not find its Cursor chat, so nothing was opened.")
-        precondition(WorkHandoffStore.openedText("cursor") == "Opened in Terminal with cursor-agent. Continue there.")
+        precondition(WorkHandoffStore.openedText("cursor") == "Opened in Cursor. Continue there.")
+        precondition(WorkHandoffStore.appSkipText(WorkHandoffStore.cursorRetired, provider: "cursor")
+                     == "COS Control no longer opens Cursor chats in Terminal, so this one was not opened. Its reply is here. New Cursor work opens Cursor with the handoff filled in.")
     }
 
     // MARK: - The tracker, end to end
 
     @MainActor static func trackerChecks() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("work-progress-checks-" + UUID().uuidString)
+        let localModel = WorkModelChoice(id: "local-model", provider: "ollama", title: "Ollama", available: true, reason: nil)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: root) }
         let one = WorkSession(id: "claude:s-one", nativeID: "s-one", provider: "claude", title: "Launch copy review", summary: "", project: "Website", status: "idle")
@@ -737,7 +791,6 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         /// that none did: every hook replaced by a print across this suite, run-work.sh and run-work-handoff.sh).
         func deskless(_ store: WorkHandoffStore) {
             store.openURL = { url in fatalError("a Work check reached the desktop: open \(url)") }
-            store.openInTerminal = { file in fatalError("a Work check reached the desktop: Terminal \(file.lastPathComponent)") }
             store.copyToClipboard = { _ in fatalError("a Work check reached the desktop: the clipboard") }
         }
         func setUp(_ name: String) -> (WorkHandoffStore, TrackingTransport, FakeBoard, Clock, WorkProgressTracker, NoticeBox) {
@@ -745,7 +798,7 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             let store = WorkHandoffStore(isolated: false, storageURL: root.appendingPathComponent(name + ".json"),
                                          transport: { args, data in try await transport.run(args, data) })
             store.sessions = [one, two]
-            store.models = [WorkModelChoice(id: "cursor-model", provider: "cursor", title: "Cursor", available: true, reason: nil)]
+            store.models = [localModel]
             deskless(store)
             let board = FakeBoard(); board.rows[idA] = "planned"; board.rows[idB] = "planned"
             let clock = Clock(), notices = NoticeBox()
@@ -1068,9 +1121,8 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         // 11. A run with no session of its own reports through its result.
         do {
             let (store, transport, board, _, tracker, _) = setUp("job")
-            store.opensInApp = false   // the background run (Settings off, or Ollama); tabs are test 15
-            let model = WorkModelChoice(id: "cursor-model", provider: "cursor", title: "Cursor", available: true, reason: nil)
-            await store.submit(source: source(idA), mode: .newSession, session: nil, model: model, prompt: "Go")
+            store.opensInApp = false   // the background run (Settings off, or Ollama); opening in the app is test 15
+            await store.submit(source: source(idA), mode: .newSession, session: nil, model: localModel, prompt: "Go")
             await transport.setJobResult("COS-WORK \(idA): done: answered in full")
             await tracker.tick()
             check(board.rows[idA] == "qa", "\(board.rows)")
@@ -1143,22 +1195,17 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
 
         // 0.5.249, start it, then open it (Miles, 2026-09-29, "route 1"). The COS server runs the New session; once its
         // first reply is done Control opens it in its app, once, and never while the run is going.
-        final class Opened { var urls: [URL] = []; var files: [URL] = []; var scripts: [String] = []; var clipboard: [String] = [] }
+        final class Opened { var urls: [URL] = []; var clipboard: [String] = [] }
         func appSetUp(_ name: String, passes: Int = 4) -> (WorkHandoffStore, TrackingTransport, FakeBoard, Clock, WorkProgressTracker, NoticeBox, Opened) {
             let (store, transport, board, clock, tracker, notices) = setUp(name)
             let opened = Opened()
             store.openURL = { opened.urls.append($0); return true }
-            store.openInTerminal = { file in
-                opened.files.append(file)
-                opened.scripts.append((try? String(contentsOf: file, encoding: .utf8)) ?? "")
-                return true
-            }
             store.copyToClipboard = { opened.clipboard.append($0) }
             store.newSessionLinkDelays = [.zero]; store.appFollowDelay = .zero; store.appFollowPasses = passes; store.appOpenSettle = 0
             return (store, transport, board, clock, tracker, notices, opened)
         }
         let claudeID = "9380e0d8-960f-4d68-b1f2-f604a6657ec6", codexID = "01a0ef66-0b31-7c11-a469-464d5e725a01"
-        let cursorID = "baf1968a-7f0e-4d58-9ebb-26d0dd1656c8", folder = "/Users/test/Miles's Work Repo"
+        let cursorID = "baf1968a-7f0e-4d58-9ebb-26d0dd1656c8"
         let opus = WorkModelChoice(id: "opus", provider: "claude", title: "Opus", available: true, reason: nil)
         let frontier = WorkModelChoice(id: "codex-frontier", provider: "codex", title: "Codex", available: true, reason: nil)
         let grok = WorkModelChoice(id: "cursor-grok", provider: "cursor", title: "Cursor", available: true, reason: nil)
@@ -1289,47 +1336,90 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             check(localOpened.urls.isEmpty && localRow.appOpen == nil && localRow.channel == "job", "Ollama has no app")
         }
 
-        // 17. Cursor: its run names no chat, so the helper finds it by the task's status-line id; exactly one match opens
-        //     in Terminal with cursor-agent --resume, from a .command file beside Work's history. Two matches open nothing.
+        // 17. 0.5.253 (Miles, 2026-09-30 13:27: "If it just passes to the platform and opens the window so I can submit
+        //     that is sufficient"): a Cursor New session runs nothing in the background. Cursor's own window opens with the
+        //     handoff filled in, led by its first line; once it is sent the tracker finds that chat (one match, never a
+        //     guess) and follows it: received moves the card to Draft, its done line to QA.
         do {
             let (store, transport, board, _, tracker, _, opened) = appSetUp("app-cursor")
             store.models = [grok]
             final class CursorLinks { var count = 0 }
             let cursorLinks = CursorLinks()
             store.onWorkSessionsChanged = { cursorLinks.count += 1 }
-            await transport.setJob(provider: "cursor", session: nil)
             await store.submit(source: source(idA), mode: .newSession, session: nil, model: grok, prompt: "Check every heading")
-            await store.newSessionLink?.value
             var r = try row(store, idA)
-            check(r.sessionID == nil && opened.files.isEmpty)
-            check(WorkHandoffView.whereItRunsNote(r) == "Running in the background. It opens in Terminal with cursor-agent when the first reply is done.")
-            // Two chats carry the id (never a guess), then only one.
-            let created = r.createdAt
-            let chat: (String) -> JSONValue = { id in .object(["id": .string(id), "folder": .string(folder), "createdAt": .number(created + 2)]) }
-            await transport.setCursorChats([chat(cursorID), chat("11111111-2222-4333-8444-555555555555")])
-            await transport.setJobResult("COS-WORK \(idA): done: every heading checked")
-            await tracker.tick()
-            r = try row(store, idA)
-            check(r.status == "completed" && r.sessionID == nil && opened.files.isEmpty && board.rows[idA] == "qa", "ambiguous: nothing opened")
-            let search = try require(await transport.args("work-cursor-chat").last)
-            check(search == ["work-cursor-chat", "--tag", idA, "--since", String(Int(r.createdAt))], "\(search)")
-            await transport.setCursorChats([chat(cursorID)])
-            await tracker.tick()
-            r = try row(store, idA)
-            check(r.sessionID == "cursor:" + cursorID && r.appOpen?.folder == folder && r.appOpen?.openedAt != nil, "\(String(describing: r.sessionID))")
-            check(cursorLinks.count == 1, "a Cursor chat found is marked in Sessions at once")
-            check(opened.files == [store.appFile(r.id, "command")] && opened.urls.isEmpty, "\(opened.files)")
-            check(opened.scripts == ["#!/bin/zsh\n# COS Control: the Cursor chat Work started. Continue it here.\ncd -- '/Users/test/Miles'\\''s Work Repo' || exit 1\nexec cursor-agent --resume '" + cursorID + "'\n"],
-                  opened.scripts.first ?? "")
-            let mode = (try FileManager.default.attributesOfItem(atPath: opened.files[0].path)[.posixPermissions] as? NSNumber)?.intValue
-            check(mode == 0o700 && opened.files[0].path.hasPrefix(root.path), "executable, private, beside the journal: \(String(describing: mode))")
-            check(WorkHandoffView.whereItRunsNote(r) == "Opened in Terminal with cursor-agent. Continue there.")
-            check(r.progress?.baseline == [], "a new chat: its untimed replies all count")
-            await tracker.tick()
-            check(opened.files.count == 1, "opened once")
+            let background = (await transport.count("work-new"), await transport.count("session-chat-send"), await transport.count("session-chat-attach"))
+            check(background == (0, 0, 0), "nothing runs in the background: \(background)")
+            let filled = "COS Work handoff \(idA)\n\n" + r.prompt
+            check(r.prompt.hasSuffix(WorkProgress.instruction(tag: idA)), "the handoff and its status line are unchanged")
+            check(opened.urls.map(\.absoluteString) == [try require(WorkHandoffStore.cursorPrefillLink(filled)).absoluteString] && opened.clipboard.isEmpty,
+                  "\(opened.urls)")
+            check(r.channel == "prefill" && r.status == "queued" && r.sessionID == nil && r.blocksNewHandoff && r.appOpen == nil, "\(r.channel ?? "") \(r.status)")
+            check(r.detail == "Opened in Cursor with the handoff filled in. Choose Create Chat, then press Send there.", r.detail)
+            check(r.progress?.events.first?.text == "Opened in Cursor, for you to send")
+            check(WorkHandoffView.whereItRunsNote(r) == "Opened in Cursor for you to send. Nothing runs until you press Send there. Work follows the chat once you do.")
             check(WorkHandoffStore.appOpenButton(r) == "Open again")
             await store.reopenInApp(receiptID: r.id)
-            check(opened.files.count == 2 && opened.scripts[1] == opened.scripts[0], "Open again runs the same command")
+            check(opened.urls.count == 2 && opened.urls[1] == opened.urls[0], "Open again fills in the same words")
+            // Not sent yet: no chat carries its first line, so nothing is linked.
+            let created = r.createdAt
+            func chat(_ id: String, at: Double) -> JSONValue {
+                .object(["id": .string(id), "provider": .string("cursor"), "name": .string("Check every heading"), "workspace": .string("Website"),
+                         "state": .string("idle"), "createdAt": .string(stamp(at))])
+            }
+            let otherChat = "11111111-2222-4333-8444-555555555555"
+            await transport.setLiveRows([chat(cursorID, at: created + 20), chat(otherChat, at: created + 30)])
+            await transport.setRead(replies: [], prompts: [("Something else entirely", nil)])
+            await tracker.tick()
+            r = try row(store, idA)
+            check(r.status == "queued" && r.sessionID == nil && board.rows[idA] == "planned", "not sent yet: \(r.status)")
+            // Two new chats carry it: never a guess. Then one (the other is older than the handoff).
+            await transport.setRead(replies: [], prompts: [(String(filled.prefix(400)), nil)])
+            await tracker.tick()
+            r = try row(store, idA)
+            check(r.sessionID == nil && cursorLinks.count == 0, "two chats with its first line: nothing linked")
+            await transport.setLiveRows([chat(cursorID, at: created + 20), chat(otherChat, at: created - 60)])
+            await tracker.tick()
+            r = try row(store, idA)
+            check(r.sessionID == "cursor:" + cursorID && r.status == "delivered" && r.detail == "Sent in Cursor. Work follows it from here."
+                  && r.sessionTitle == "Check every heading" && cursorLinks.count == 1, "\(String(describing: r.sessionID)) \(r.status)")
+            check(r.progress?.baseline == [] && store.sessions.contains { $0.id == "cursor:" + cursorID })
+            check(WorkHandoffView.whereItRunsNote(r) == "Runs in the Cursor app, where you sent it. Open session shows it here too.")
+            // Its reply (Cursor writes no times) is followed: received moves the card to Draft, the done line to QA.
+            await transport.setRead(replies: [("COS-WORK \(idA): done: every heading checked", nil)], prompts: [(String(filled.prefix(400)), nil)])
+            await tracker.tick(); await tracker.tick()
+            r = try row(store, idA)
+            check(r.progress?.receivedAt != nil && r.progress?.reported == .done && board.rows[idA] == "qa", "\(board.rows) \(String(describing: r.progress?.reported))")
+            check(opened.urls.count == 2 && WorkHandoffStore.appOpenButton(r) == nil, "nothing else opens")
+            // Not sending it: a Cursor chat filled in and never sent stops blocking the item.
+            await store.submit(source: source(idB), mode: .newSession, session: nil, model: grok, prompt: "Another")
+            let unsent = try row(store, idB)
+            store.cancelAppNote(receiptID: unsent.id)
+            let dropped = try row(store, idB)
+            check(dropped.status == "canceled" && dropped.detail == "Not sent. You closed this Cursor chat before sending it." && !dropped.blocksNewHandoff, dropped.detail)
+            // Cursor could not be opened: refused, nothing on the clipboard.
+            let (shut, _, _, _, _, _, shutOpened) = appSetUp("app-cursor-shut")
+            shut.models = [grok]
+            shut.openURL = { _ in false }
+            await shut.submit(source: source(idA), mode: .newSession, session: nil, model: grok, prompt: "Go")
+            let refused = try row(shut, idA)
+            check(refused.status == "refused" && refused.detail == "Cursor could not be opened. Nothing was sent." && shutOpened.clipboard.isEmpty, refused.detail)
+
+            // A handoff too long for Cursor's link: the first 8,500 characters, led by its first line and ending with the cut
+            // note and its status line; the whole goes on the clipboard, and the card says both.
+            let (big, _, _, _, _, _, bigOpened) = appSetUp("app-cursor-long")
+            big.models = [grok]
+            await big.submit(source: source(idA), mode: .newSession, session: nil, model: grok, prompt: String(repeating: "Tighten the pricing FAQ. ", count: 600))
+            let b = try row(big, idA)
+            let shown = try require(bigOpened.urls.first.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "text" }?.value })
+            let whole = "COS Work handoff \(idA)\n\n" + b.prompt
+            check(shown.utf16.count == WorkHandoffStore.cursorPrefillLimit && shown.hasPrefix("COS Work handoff \(idA)\n\nTighten")
+                  && shown.hasSuffix(WorkHandoffStore.cursorCutMarker + WorkProgress.instruction(tag: idA)), "\(shown.utf16.count)")
+            check(bigOpened.clipboard == [whole], "the whole handoff is on the clipboard")
+            check(b.status == "queued" && b.detail == WorkHandoffStore.cursorOpenedText(mode: .newSession, cut: (shown.count, whole.count))
+                  && b.detail.contains("holds the first 8,500 of \(whole.count.formatted())"), b.detail)
+            await big.reopenInApp(receiptID: b.id)
+            check(bigOpened.urls.count == 2 && bigOpened.clipboard == [whole, whole], "Open again copies it again")
         }
 
         // 18. Continue on a session its app owns never sends a server turn: Claude and Cursor open it with the note on
@@ -1387,28 +1477,33 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             let codexTurns = await codexTransport.count("session-chat-send")
             check(codexNote.detail == "Opened in Codex with your note filled in. Press Send there." && codexTurns == 0)
 
-            // Cursor: Terminal again, the note on the clipboard; its untimed message counts only once it newly appears.
+            // Cursor (0.5.253): a Continue runs no turn. A new Cursor chat opens with the note filled in (Cursor's link cannot
+            // open an existing chat); once it is sent there, the tracker finds that chat and follows it.
             let (cursor, cursorTransport, cursorBoard, _, cursorTracker, _, cursorOpened) = appSetUp("app-continue-cursor")
             cursor.models = [grok]
-            await cursorTransport.setJob(provider: "cursor", session: nil)
-            await cursorTransport.setJobResult("done")
-            await cursorTransport.setCursorChats([.object(["id": .string(cursorID), "folder": .string(folder)])])
-            await cursor.submit(source: source(idA), mode: .newSession, session: nil, model: grok, prompt: "Go")
-            await cursor.newSessionLink?.value
-            let chat = try require(cursor.sessions.first { $0.id == "cursor:" + cursorID })
-            await cursorTransport.setRead(replies: [("an earlier answer", nil)], prompts: [("an earlier question from the chat", nil)])
+            let chat = WorkSession(id: "cursor:" + cursorID, nativeID: cursorID, provider: "cursor", title: "Mobile navigation fixes", summary: "",
+                                   project: "Website", status: "idle")
+            cursor.sessions.append(chat)
             await cursor.submit(source: source(idB), mode: .continueSession, session: chat, model: nil, prompt: "Now check the footer links")
             var cursorNote = try row(cursor, idB)
-            check(cursorOpened.files.count == 2 && cursorOpened.scripts[1] == cursorOpened.scripts[0] && cursorOpened.clipboard == [cursorNote.prompt])
-            check(cursorNote.detail == "Opened in Terminal with cursor-agent. Your note is on the clipboard. Paste it there." && cursorNote.progress?.promptBaseline?.count == 1)
-            await cursorTracker.tick()
-            check((try row(cursor, idB)).status == "queued", "not sent yet")
-            await cursorTransport.setRead(replies: [("an earlier answer", nil), ("COS-WORK \(idB): done: the footer links work", nil)],
-                                          prompts: [("an earlier question from the chat", nil), (String(cursorNote.prompt.prefix(80)), nil)])
-            await cursorTracker.tick(); await cursorTracker.tick()
+            let cursorTurns = await cursorTransport.count("session-chat-attachability") + cursorTransport.count("session-chat-send") + cursorTransport.count("session-chat-queue")
+            check(cursorTurns == 0 && cursorNote.channel == "prefill" && cursorNote.status == "queued" && cursorNote.sessionID == nil
+                  && cursorNote.sourceSessionID == chat.id && cursorNote.mode == .continueSession, "\(cursorTurns) \(cursorNote.status)")
+            check(cursorNote.detail == "Opened a new Cursor chat with your note filled in (Cursor's link cannot open an existing chat). Choose Create Chat, then press Send there.",
+                  cursorNote.detail)
+            check(cursorNote.progress?.events.first?.text == "Opened a new Cursor chat with your note, for you to send")
+            check(cursorOpened.urls.map(\.absoluteString) == [try require(WorkHandoffStore.cursorPrefillLink("COS Work handoff \(idB)\n\n" + cursorNote.prompt)).absoluteString]
+                  && cursorOpened.clipboard.isEmpty, "\(cursorOpened.urls)")
+            let newChat = "22222222-3333-4444-8555-666666666666"
+            await cursorTransport.setLiveRows([.object(["id": .string(newChat), "provider": .string("cursor"), "name": .string("Footer links"),
+                                                        "createdAt": .string(stamp(cursorNote.createdAt + 5))])])
+            await cursorTransport.setRead(replies: [("COS-WORK \(idB): done: the footer links work", nil)],
+                                          prompts: [("COS Work handoff \(idB)\n\nNow check the footer links", nil)])
+            await cursorTracker.tick(); await cursorTracker.tick(); await cursorTracker.tick()
             cursorNote = try row(cursor, idB)
-            check(cursorNote.status == "delivered" && cursorNote.progress?.reported == .done && cursorBoard.rows[idB] == "qa",
-                  "\(cursorNote.status) \(String(describing: cursorNote.progress?.reported)) \(cursorBoard.rows)")
+            check(cursorNote.sessionID == "cursor:" + newChat && cursorNote.status == "delivered" && cursorNote.sessionTitle == "Footer links"
+                  && cursorNote.progress?.reported == .done && cursorBoard.rows[idB] == "qa",
+                  "\(String(describing: cursorNote.sessionID)) \(cursorNote.status) \(String(describing: cursorNote.progress?.reported)) \(cursorBoard.rows)")
         }
 
         // 20. 0.5.250: a Claude New session is named after its task, and with server 6.58.2 its job names the session
@@ -1456,15 +1551,17 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             check(opened.urls.map(\.absoluteString) == ["claude://resume?session=" + claudeID], "opens once the run completed")
             check(count.changed == 2 && WorkHandoffStore.serverHold(onSession: running.id, in: store.receipts) == nil,
                   "the end of the hold is marked at once: \(count.changed)")
-            // Only Claude sessions carry a name: not Codex, not Cursor, not a fork to Codex. A fork to Claude is named after its task.
+            // Only Claude sessions carry a name: not Codex, not a fork to Codex. A fork to Claude is named after its task. (A
+            // Cursor New session sends no job at all from 0.5.253: it opens Cursor, filled in.)
             await store.submit(source: source("cccccccccccc"), mode: .newSession, session: nil, model: frontier, prompt: "Go")
             await store.submit(source: source("dddddddddddd"), mode: .newSession, session: nil, model: grok, prompt: "Go")
+            check(store.receipts(for: "task:Quilt:dddddddddddd").first?.channel == "prefill", "Cursor opens filled in")
             await store.forkToPlatform(source: source("eeeeeeeeeeee"), session: two, model: frontier, prompt: "Carry on")
             let codexSession = WorkSession(id: "codex:" + codexID, nativeID: codexID, provider: "codex", title: "Pricing thread", summary: "", project: "", status: "idle")
             store.sessions.append(codexSession)
             await store.forkToPlatform(source: source("ffffffffffff"), session: codexSession, model: opus, prompt: "Carry on")
             names = await transport.names()
-            check(names.dropFirst() == ["<none>", "<none>", "<none>", "Task ffffffffffff"], "\(names)")
+            check(names.dropFirst() == ["<none>", "<none>", "Task ffffffffffff"], "\(names)")
         }
 
         // 20b. 0.5.251: the name is the task's WHOLE title. The 0.5.250 canary sent the board's 42-character display title
@@ -1553,6 +1650,38 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             let linked = try require(store.receipts.first { $0.workID == "task:Quilt:" + idB })
             check(linked.status == "delivered" && WorkHandoffStore.appOwner(of: linkedSession, in: store.receipts)?.id == linked.id)
             check(WorkHandoffView.whereItRunsNote(linked) == "Runs in the Claude app, where you can work with it. Open session shows it here too.")
+        }
+
+        // 19b. 0.5.253: a 0.5.252 journal with a Cursor run still waiting to open in Terminal reads as never opening by itself,
+        //      with no button (Terminal is not offered), and its reply stays; one it already opened keeps its note, with no
+        //      Open again. Neither is ever asked about or opened.
+        do {
+            let journal = """
+            {"version":2,"sessions":[],"drafts":[],"receipts":[
+             {"id":"bbbbbbbb-0000-4000-8000-000000000001","workID":"task:Quilt:\(idA)","workTitle":"Task","sourceRevision":"1","mode":"newSession",
+              "provider":"cursor","modelID":"cursor-grok","sessionTitle":"Task","status":"completed","detail":"Response ready for review.",
+              "prompt":"Check it","createdAt":1790720000,"channel":"job","result":"COS-WORK \(idA): done: checked","appOpen":{"runEndedAt":1790720050}},
+             {"id":"bbbbbbbb-0000-4000-8000-000000000002","workID":"task:Quilt:\(idB)","workTitle":"Task","sourceRevision":"1","mode":"newSession",
+              "provider":"cursor","modelID":"cursor-grok","sessionID":"cursor:\(cursorID)","sessionTitle":"Task","status":"completed",
+              "detail":"Opened in Terminal with cursor-agent. Continue there.","prompt":"Check it","createdAt":1790720100,"channel":"job",
+              "appOpen":{"runEndedAt":1790720150,"openedAt":1790720160,"folder":"/Users/x/Repo"}}]}
+            """
+            let url = root.appendingPathComponent("from-0.5.252-cursor.json")
+            try Data(journal.utf8).write(to: url)
+            let transport = TrackingTransport()
+            let store = WorkHandoffStore(isolated: false, storageURL: url, transport: { args, data in try await transport.run(args, data) })
+            deskless(store)
+            check(store.error == nil && store.receipts.count == 2, store.error ?? "")
+            let waiting = try require(store.receipts.first { $0.workID == "task:Quilt:" + idA })
+            check(waiting.appOpen?.skipped == WorkHandoffStore.cursorRetired && waiting.status == "completed" && waiting.result == "COS-WORK \(idA): done: checked")
+            check(WorkHandoffStore.appOpenButton(waiting) == nil
+                  && WorkHandoffView.whereItRunsNote(waiting) == WorkHandoffStore.appSkipText(WorkHandoffStore.cursorRetired, provider: "cursor"))
+            let terminal = try require(store.receipts.first { $0.workID == "task:Quilt:" + idB })
+            check(terminal.appOpen?.skipped == nil && terminal.appOpen?.openedAt != nil && WorkHandoffStore.appOpenButton(terminal) == nil)
+            await store.openReadyApps()
+            await store.reopenInApp(receiptID: waiting.id); await store.reopenInApp(receiptID: terminal.id)
+            let asked = await transport.calls.count
+            check(asked == 0, "never asked about or opened: \(asked)")
         }
 
         // 12. A newer handoff replaces the older: the older one's session no longer moves the card.
@@ -2443,6 +2572,201 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             s24.error = "An earlier line on the Work page"
             await pass(tr24)
             check(s24.receipts.contains { $0.requestId == r2 } && s24.error == "An earlier line on the Work page", "\(s24.error ?? "")")
+
+            // ── 0.5.253 ──────────────────────────────────────────────────────────────────────────────────────────────
+            // A. Cursor needs a person at the Mac to press Send (Miles, 2026-09-30 13:27), so a request whose destination is
+            //    Cursor is refused before anything is recorded or opened: a New session on a Cursor model, a Continue into a
+            //    Cursor chat, a reply to a Cursor chat that asked; and submit() refuses it for any caller that is not the Mac.
+            let (sc, tc, bc, _, trc, _, openedC) = appSetUp("glasses-cursor")
+            let cursorChat = WorkSession(id: "cursor:" + cursorID, nativeID: cursorID, provider: "cursor", title: "Mobile navigation fixes",
+                                         summary: "", project: "Website", status: "idle")
+            await tc.setCatalog(models: [opus, frontier, grok], sessions: [one, two, cursorChat]); sc.models = [opus, frontier, grok]
+            await tc.setInbox([request(r1, model: "cursor-grok", board: bc)])
+            await pass(trc)
+            last = await lastPost(tc)
+            check(last == ["state": "refused", "reason": "Cursor needs you at the Mac to press send. Start it from COS Control.", "claimToken": token]
+                  && sc.receipts.isEmpty && openedC.urls.isEmpty && openedC.clipboard.isEmpty, "\(String(describing: last))")
+            await tc.setInbox([request(r2, identity: idB, mode: "continueSession", session: cursorChat.id, model: nil, board: bc)])
+            await pass(trc)
+            last = await lastPost(tc)
+            check(last?["reason"] == WorkRequestOrigin.cursorNeedsMac && sc.receipts.isEmpty && openedC.urls.isEmpty, "\(String(describing: last))")
+            await sc.submit(source: source(idA), mode: .newSession, session: nil, model: grok, prompt: "Go",
+                            origin: WorkRequestOrigin(requestID: r3, deadline: Date().addingTimeInterval(600)))
+            check(sc.receipts.isEmpty && sc.error == WorkRequestOrigin.cursorNeedsMac && openedC.urls.isEmpty, sc.error ?? "")
+            sc.error = nil
+            //    A reply: the Mac sent a Cursor Continue, the chat asked a question; the glasses' answer is refused.
+            let askedTask = WorkSource.taskSnapshot(bc.task(idA))
+            await sc.submit(source: askedTask, mode: .continueSession, session: cursorChat, model: nil, prompt: "Draft the FAQ")
+            let askedRow = try require(sc.receipts(for: askedTask.id).first)
+            let replyChat = "33333333-4444-4555-8666-777777777777"
+            await tc.setLiveRows([.object(["id": .string(replyChat), "provider": .string("cursor"), "name": .string("FAQ"),
+                                           "createdAt": .string(stamp(askedRow.createdAt + 5))])])
+            await tc.setRead(replies: [("COS-WORK \(idA): needs input: Which plan should the FAQ quote?", nil)],
+                             prompts: [("COS Work handoff \(idA)\n\nDraft the FAQ", nil)])
+            await trc.tick(); await trc.tick(); await trc.tick()
+            let asking = try require(sc.receipts(for: askedTask.id).first)
+            check(asking.sessionID == "cursor:" + replyChat && asking.progress?.reported == .needsInput, "\(String(describing: asking.sessionID)) \(String(describing: asking.progress?.reported))")
+            let urlsBefore = openedC.urls.count
+            await tc.setInbox([request(r4, intent: "reply", mode: "continueSession", session: "cursor:" + replyChat, model: nil,
+                                       note: "The $29 plan.", replyTo: asking.id, board: bc)])
+            await pass(trc)
+            last = await lastPost(tc)
+            check(last?["reason"] == WorkRequestOrigin.cursorNeedsMac && sc.receipts(for: askedTask.id).count == 1 && openedC.urls.count == urlsBefore,
+                  "\(String(describing: last))")
+
+            // B. Results post one pass at a time (QA, deferred from 0.5.252): a pass and a send that just finished both post,
+            //    and two passes at once posted one result twice.
+            try ledger("glasses-serial", [WorkRequestLedgerEntry(requestId: r1, claimToken: token, claimedAt: Date().timeIntervalSince1970,
+                                                                 result: ["state": "sent", "receiptId": "r-one"])])
+            let (_, tS, _, _, trS, _, _) = appSetUp("glasses-serial")
+            trS.requests.syncLedger()
+            check(trS.requests.ledger.map(\.requestId) == [r1], "the claim a gone launch left is taken over")
+            await tS.setDelay("work-request-result", seconds: 0.3)
+            async let firstPass: Void = trS.requests.postDueResults()
+            async let secondPass: Void = trS.requests.postDueResults()
+            _ = await (firstPass, secondPass)
+            let serialPosts = await tS.inboxLog().posted.count
+            check(serialPosts == 1 && trS.requests.ledger.isEmpty, "two passes at once post it once: \(serialPosts)")
+
+            // C. The ledger is shared by every COS Control on this Mac (QA, deferred from 0.5.252): read, changed and written
+            //    under one lock, fsynced; each launch posts only its own claims, and keeps the other's on disk.
+            let (sA, tA, bA, clockA, trA, _, _) = appSetUp("glasses-shared")
+            await live(tA, sA); await tA.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            let tB = TrackingTransport()
+            let sB = WorkHandoffStore(isolated: false, storageURL: root.appendingPathComponent("glasses-shared.json"),
+                                      transport: { args, data in try await tB.run(args, data) })
+            deskless(sB)
+            let clockB = Clock()
+            let trB = WorkProgressTracker(store: sB, board: bA.board, notify: { _ in }, now: { clockB.now() })
+            trA.requests.ownerAlive = { _ in true }; trB.requests.ownerAlive = { _ in true }   // two launches, both running
+            check(trA.requests.owner != trB.requests.owner)
+            func onDisk() throws -> [WorkRequestLedgerEntry] {
+                guard FileManager.default.fileExists(atPath: sA.requestLedgerURL.path) else { return [] }
+                return try JSONDecoder().decode([WorkRequestLedgerEntry].self, from: Data(contentsOf: sA.requestLedgerURL))
+            }
+            await tA.queuePostAnswers([["accepted": .bool(false), "reason": .string("unreachable")]])
+            await tA.setInbox([request(r1, board: bA)])
+            await pass(trA)
+            let disk1 = try onDisk()
+            check(disk1.map(\.requestId) == [r1] && disk1.first?.owner == trA.requests.owner, "A's claim is on disk, signed")
+            await live(tB, sB); await tB.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            await tB.queuePostAnswers([["accepted": .bool(false), "reason": .string("unreachable")]])
+            await tB.setInbox([request(r2, identity: idB, board: bA)])
+            await pass(trB)
+            let bPosted = await tB.inboxLog().posted.map(\.id)
+            let disk2 = try onDisk().map(\.requestId)
+            check(Set(disk2) == [r1, r2] && trB.requests.ledger.map(\.requestId) == [r2] && bPosted == [r2],
+                  "B keeps A's claim on disk and never posts it: \(disk2) \(bPosted)")
+            clockA.offset += 6
+            await pass(trA)
+            let aPosted = await tA.inboxLog().posted.map(\.id)
+            let disk3 = try onDisk().map(\.requestId)
+            check(disk3 == [r2] && aPosted == [r1, r1], "A's result taken, B's claim left: \(disk3) \(aPosted)")
+            //    While another COS Control holds the lock, a change waits in memory, and is written once the lock is free.
+            let held = open(sA.requestLedgerURL.path + ".lock", O_RDWR)
+            check(held >= 0 && flock(held, LOCK_EX | LOCK_NB) == 0, "the test holds the ledger's lock")
+            clockB.offset += 6
+            await pass(trB)
+            let disk4 = try onDisk().map(\.requestId)
+            check(trB.requests.ledger.isEmpty && trB.requests.ledgerWaiting && disk4 == [r2], "kept out by the lock: \(disk4)")
+            flock(held, LOCK_UN); close(held)
+            await pass(trB)
+            check(!trB.requests.ledgerWaiting && !FileManager.default.fileExists(atPath: sA.requestLedgerURL.path), "written once the lock is free")
+            //    A launch that is gone: its claim is taken over; one still running keeps its own.
+            try ledger("glasses-takeover", [
+                WorkRequestLedgerEntry(requestId: r1, claimToken: token, claimedAt: Date().timeIntervalSince1970, result: ["state": "sent", "receiptId": "r-a"], owner: "1:gone"),
+                WorkRequestLedgerEntry(requestId: r2, claimToken: token, claimedAt: Date().timeIntervalSince1970, result: ["state": "sent", "receiptId": "r-b"], owner: "2:running")])
+            let (sT, tT, _, _, trT, _, _) = appSetUp("glasses-takeover")
+            trT.requests.ownerAlive = { $0 == "2:running" }
+            await tT.setInbox([])
+            await pass(trT)
+            let takenOver = await tT.inboxLog().posted.map(\.id)
+            let left = try JSONDecoder().decode([WorkRequestLedgerEntry].self, from: Data(contentsOf: sT.requestLedgerURL))
+            check(takenOver == [r1] && left.map(\.requestId) == [r2] && left[0].owner == "2:running", "\(takenOver) \(left.map(\.requestId))")
+            check(!WorkRequestInbox.launchRunning("\(getpid()):an-earlier-launch") && !WorkRequestInbox.launchRunning("0:x") && !WorkRequestInbox.launchRunning("x"),
+                  "this process's own earlier launch, and nonsense, are gone")
+
+            // D. The claim token never rides on a command line (QA, deferred from 0.5.252): a claim made again passes it on
+            //    standard input, and no command in this suite ever carried it.
+            for each in [transport, t2, t2b, t3c, t3d, t3e, t5, t10, t17, tA, tB, tS, tT] {
+                let carried = await each.argvCarries(token)
+                check(!carried, "a command line carried the claim token")
+            }
+            let reclaimTokens = await t3c.inboxLog().claimTokens
+            check(reclaimTokens == [token], "the re-claim's token arrived on standard input: \(reclaimTokens)")
+
+            // E. A 401 or 403 on a result is posted again with the growing wait, never dropped (QA, deferred from 0.5.252).
+            let (s27, t27, b27, clock27, tr27, _, _) = appSetUp("glasses-result-auth")
+            await live(t27, s27)
+            await t27.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            await t27.setInbox([request(r1, board: b27)])
+            await t27.queuePostAnswers([["accepted": .bool(false), "reason": .string("unauthorized"), "httpStatus": .number(401)],
+                                        ["accepted": .bool(false), "reason": .string("local_only"), "httpStatus": .number(403)]])
+            await pass(tr27)
+            await t27.setInbox([])
+            check(tr27.requests.ledger.first?.attempts == 1, "a 401 is kept for another post")
+            clock27.offset += 6
+            await pass(tr27)
+            check(tr27.requests.ledger.first?.attempts == 2, "a 403 is kept for another post")
+            clock27.offset += 11
+            await pass(tr27)
+            let authPosts = await t27.inboxLog().posted.count
+            check(authPosts == 3 && tr27.requests.ledger.isEmpty, "taken on the third post: \(authPosts)")
+            check(WorkHandoffStore.resultCanPass(reason: "unauthorized", status: 401) && WorkHandoffStore.resultCanPass(reason: "local_only", status: 403)
+                  && !WorkHandoffStore.resultCanPass(reason: "claim_token_mismatch", status: 409))
+
+            // F. Open in Claude while a glasses send holds the journal (QA, deferred from 0.5.252): Claude opens, its note
+            //    (the app owns the session from then) is on record in this window at once, and on disk once the send lets go.
+            let (s26, t26, b26, _, tr26, _, opened26) = appSetUp("glasses-open-during-send")
+            await live(t26, s26)
+            await t26.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            await t26.setInbox([request(r1, board: b26)])
+            await pass(tr26)
+            await s26.newSessionLink?.value
+            await t26.setJobResult("done")
+            let quiet26 = try require(s26.receipts.first { $0.requestId == r1 }).id
+            await tr26.tick(); await tr26.tick()
+            check(WorkHandoffStore.appOpenButton(try require(s26.receipts.first { $0.id == quiet26 })) == "Open in Claude")
+            await t26.setDelay("session-chat-attachability", seconds: 0.6)
+            await t26.setInbox([request(r2, identity: idB, mode: "continueSession", session: two.id, model: nil, board: b26)])
+            await tr26.requests.tick()
+            try await Task.sleep(for: .milliseconds(150))
+            check(s26.quietSend, "the glasses send holds the journal")
+            await s26.reopenInApp(receiptID: quiet26)
+            check(opened26.urls.map(\.absoluteString) == ["claude://resume?session=" + claudeID], "Claude opens during the send: \(opened26.urls)")
+            check(s26.receipts.first { $0.id == quiet26 }?.appOpen?.openedAt != nil
+                  && WorkHandoffStore.appOwner(of: "claude:" + claudeID, in: s26.receipts)?.id == quiet26, "on record in this window at once")
+            await tr26.requests.waitForSend()
+            func onDisk26() throws -> WorkHandoffReceipt {
+                let reread = WorkHandoffStore(isolated: false, storageURL: root.appendingPathComponent("glasses-open-during-send.json"),
+                                              transport: { _, _ in throw HelperClientError.commandFailed("none") })
+                return try require(reread.receipts.first { $0.id == quiet26 })
+            }
+            let written26 = try onDisk26()
+            check(written26.appOpen?.openedAt != nil && written26.detail == "Opened in Claude. Continue there."
+                  && written26.progress?.events.last?.text == "Opened in Claude. Continue there.", "and on disk once the send let go")
+            //    Another COS Control holding the journal: the note waits, and the next tracker pass writes it.
+            let (s28, t28, _, _, tr28, _, opened28) = appSetUp("mac-open-journal-held")
+            s28.models = [opus]
+            await t28.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            await s28.submit(source: source(idA), mode: .newSession, session: nil, model: opus, prompt: "Go",
+                             origin: WorkRequestOrigin(requestID: r1, deadline: Date().addingTimeInterval(600)))
+            await s28.newSessionLink?.value
+            await t28.setJobResult("done")
+            let id28 = try row(s28, idA).id
+            await tr28.tick(); await tr28.tick()
+            let journalLock = open(root.appendingPathComponent("mac-open-journal-held.json").path + ".lock", O_RDWR)
+            check(journalLock >= 0 && flock(journalLock, LOCK_EX | LOCK_NB) == 0, "another COS Control holds the journal")
+            await s28.reopenInApp(receiptID: id28)
+            check(opened28.urls.count == 1 && s28.receipts.first { $0.id == id28 }?.appOpen?.openedAt != nil, "opened, and on record in memory")
+            flock(journalLock, LOCK_UN); close(journalLock)
+            let reread28 = WorkHandoffStore(isolated: false, storageURL: root.appendingPathComponent("mac-open-journal-held.json"),
+                                            transport: { _, _ in throw HelperClientError.commandFailed("none") })
+            check(reread28.receipts.first { $0.id == id28 }?.appOpen?.openedAt == nil, "not on disk while the journal was held")
+            await tr28.tick()
+            let written28 = WorkHandoffStore(isolated: false, storageURL: root.appendingPathComponent("mac-open-journal-held.json"),
+                                             transport: { _, _ in throw HelperClientError.commandFailed("none") })
+            check(written28.receipts.first { $0.id == id28 }?.appOpen?.openedAt != nil, "the next tracker pass writes it")
         }
     }
 }
