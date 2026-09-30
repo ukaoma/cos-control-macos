@@ -140,8 +140,9 @@ private struct COSField: ViewModifier {
 /// whole text block. The system's label style lines the icon up with the FIRST line, so a label that wraps ("Check for
 /// updates" in the updates card, "Create Folders" in the menu-bar panel's grid) showed its icon at the top, 8.5 pt above
 /// the middle. The gap is the system's own (8 pt, measured at every size the app uses), so no button changes width or
-/// wraps differently, and a wrapped title stays leading-aligned. Every COS button style, the menu face and the dropdown
-/// set it, and `cosControlTheme()` sets it on each window root, so a Label anywhere else takes it too.
+/// wraps differently, and a wrapped title stays leading-aligned. Every COS button style sets it (a `cosMenu()` face is a
+/// quiet button, and `COSMenuLabel` and the dropdown's face and rows center their own glyphs), and `cosControlTheme()`
+/// sets it on each window root, so a Label anywhere else takes it too.
 /// Pinned by Tests/ControlsContract.swift (labels) and the panel render in Tests/PanelLabelsRender.swift.
 struct COSLabelStyle: LabelStyle {
     /// The system label style's gap between icon and title (8 pt at 10, 11.5 and 13 pt, caption and headline).
@@ -992,7 +993,6 @@ struct COSDropdownList<Value: Hashable>: View {
                 rows
             }
         }
-        .labelStyle(COSLabelStyle())
         .background(COSPalette.card)
         .clipShape(RoundedRectangle(cornerRadius: framed ? 8 : 0))
         .overlay {
@@ -1504,7 +1504,7 @@ extension View {
 
     /// A `Menu` drawn as a quiet button with its own gold chevron.
     func cosMenu() -> some View {
-        menuStyle(.button).menuIndicator(.hidden).buttonStyle(COSQuietButtonStyle()).labelStyle(COSLabelStyle())
+        menuStyle(.button).menuIndicator(.hidden).buttonStyle(COSQuietButtonStyle())
     }
 
     /// Everything a window root sets once: progress, disclosure, the quiet button for any

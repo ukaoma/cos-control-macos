@@ -2025,8 +2025,6 @@ extension WorkRequestInbox {
         static let noteStatusLine = "A note cannot carry a COS-WORK line. Nothing was sent."
         static let restarted = "COS Control restarted before it sent this. Nothing was sent."
         static let unknownIntent = "COS Control does not know this request type. Nothing was sent."
-        /// 0.5.253: Cursor opens its own window for a person to press Send.
-        static let cursorNeedsMac = WorkRequestOrigin.cursorNeedsMac
     }
 }
 
@@ -2334,11 +2332,6 @@ struct WorkRequestLedgerEntry: Codable, Equatable {
     /// Whether a change is waiting for the ledger's lock (checks read it).
     var ledgerWaiting: Bool { ledgerUnsaved }
 
-    /// The platform a plan sends to: the model's for a New session or a fork to another platform, else the session's.
-    nonisolated static func destination(of plan: WorkSendPlan) -> String? {
-        plan.mode == .newSession || plan.crossPlatform ? plan.model?.provider : plan.session?.provider
-    }
-
     /// Whether what Control would send is what the request named: the same mode, the same session, the same model,
     /// and a Fork that names a model goes to that model's platform (never a copy on the session's own).
     nonisolated static func sendsWhatWasAsked(_ plan: WorkSendPlan, request: WorkGlassesRequest, listed: WorkSession?) -> Bool {
@@ -2385,8 +2378,6 @@ struct WorkRequestLedgerEntry: Codable, Equatable {
             let session = request.intent == "reply" ? store.replySession(for: target) : store.sendBackSession(for: target)
             guard let session, request.mode == .continueSession, let asked = request.sessionID,
                   ClaudeSession.sameSession(asked, session.id) else { return .refused(reason: Refusal.replySession, receiptID: nil) }
-            // 0.5.253: a reply into a Cursor chat opens Cursor for a person to press Send.
-            if WorkHandoffStore.prefillProviders.contains(session.provider) { return .refused(reason: Refusal.cursorNeedsMac, receiptID: nil) }
             if let late = await waitForStore(deadline) { return late }
             let shown = store.error
             _ = request.intent == "reply"
@@ -2418,8 +2409,8 @@ struct WorkRequestLedgerEntry: Codable, Equatable {
               Self.sendsWhatWasAsked(plan, request: request, listed: listed) else {
             return .refused(reason: Refusal.destination, receiptID: nil)
         }
-        // 0.5.253: Cursor (a new chat or a Continue) opens Cursor's window for a person to press Send.
-        if Self.destination(of: plan).map(WorkHandoffStore.prefillProviders.contains) == true { return .refused(reason: Refusal.cursorNeedsMac, receiptID: nil) }
+        // 0.5.253: a destination on Cursor (a New session, a Continue, a reply or Not done yet into a Cursor chat) is refused
+        // by submit(), which every send for the glasses goes through, before anything is recorded (cursorNeedsMac).
         if let late = await waitForStore(deadline) { return late }
         let shown = store.error
         if plan.crossPlatform, let session = plan.session, let model = plan.model {

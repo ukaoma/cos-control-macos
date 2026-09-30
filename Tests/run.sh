@@ -1223,7 +1223,9 @@ assert "if origin != nil, prefill { throw failure(WorkRequestOrigin.cursorNeedsM
 assert submit.index("if origin != nil, prefill { throw failure(WorkRequestOrigin.cursorNeedsMac) }") < submit.index("let id = UUID().uuidString.lowercased()"), "refused before anything is recorded"
 assert submit.index("if prefill {") < submit.index("} else if mode == .newSession {"), "Cursor never reaches work-new"
 inbox = store[store.index("@MainActor final class WorkRequestInbox {"):]
-assert inbox.count("return .refused(reason: Refusal.cursorNeedsMac, receiptID: nil)") == 2, "a glasses start and a glasses reply to Cursor are refused"
+# Every send for the glasses (Start, Reply by voice, Not done yet) goes through submit(), which refuses Cursor; the inbox
+# holds no second copy of the rule to drift from it.
+assert "cursorNeedsMac" not in inbox and "origin: origin" in body(store, "    func reply(receiptID: String", "    // MARK: - The glasses request inbox (0.5.252)")
 assert 'nonisolated static let cursorNeedsMac = "Cursor needs you at the Mac to press send. Start it from COS Control."' in store
 tick = body(tracker, "    func tick() async {", "    /// One pass over the handoffs being followed.")
 assert "await store.linkCursorPrefills()" in tick and "store.writeOpenedMeanwhile()" in tick, "every pass finds a sent Cursor chat and writes a held opened note"
