@@ -98,12 +98,13 @@ import Vision
             if let output {
                 let card = buttons["Check for updates"]!
                 write(rep, size: size, crop: CGRect(x: 0, y: max(0, card.minY - 20), width: size.width, height: card.height + 40),
-                      to: output.appendingPathComponent("\(label)-updates-card-\(word).png"))
+                      appearance: appearance, to: output.appendingPathComponent("\(label)-updates-card-\(word).png"))
                 let grid = buttons["Create Folders"]!.union(buttons["Work Folder"]!)
                 let top = max(0, grid.minY - 80), bottom = min(size.height, grid.maxY + 80)
                 write(rep, size: size, crop: CGRect(x: 0, y: top, width: size.width, height: bottom - top),
-                      to: output.appendingPathComponent("\(label)-buttons-grid-\(word).png"))
-                write(rep, size: size, crop: CGRect(origin: .zero, size: size), to: output.appendingPathComponent("\(label)-panel-\(word).png"))
+                      appearance: appearance, to: output.appendingPathComponent("\(label)-buttons-grid-\(word).png"))
+                write(rep, size: size, crop: CGRect(origin: .zero, size: size), appearance: appearance,
+                      to: output.appendingPathComponent("\(label)-panel-\(word).png"))
             }
         }
         return out
@@ -197,11 +198,20 @@ import Vision
                        blockMid: CGFloat(top + bottom + 1) / 2 / scale, button: button)
     }
 
-    static func write(_ rep: NSBitmapImageRep, size: CGSize, crop: CGRect, to url: URL) {
+    /// Writes a crop of the render as a PNG, over the panel's own background (the scroll view's document draws none).
+    static func write(_ rep: NSBitmapImageRep, size: CGSize, crop: CGRect, appearance: NSAppearance.Name, to url: URL) {
         let scale = CGFloat(rep.pixelsWide) / size.width
         let pixels = CGRect(x: crop.minX * scale, y: crop.minY * scale, width: crop.width * scale, height: crop.height * scale).integral
-        guard let image = rep.cgImage?.cropping(to: pixels) else { fatalError("no crop") }
-        guard let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { fatalError("no PNG") }
+        guard let image = rep.cgImage?.cropping(to: pixels),
+              let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { fatalError("no crop") }
+        var panel = NSColor.white
+        NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance { panel = NSColor(COSPalette.panel).usingColorSpace(.sRGB) ?? .white }
+        context.setFillColor(panel.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        guard let flat = context.makeImage(), let png = NSBitmapImageRep(cgImage: flat).representation(using: .png, properties: [:]) else { fatalError("no PNG") }
         do { try png.write(to: url) } catch { fatalError("could not write \(url.path): \(error)") }
     }
 }
