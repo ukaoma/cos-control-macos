@@ -54,6 +54,9 @@ struct WorkProgress: Codable, Equatable, Sendable {
     /// Untimed replies (Cursor writes no times) already in the session when tracking first read it. They answered
     /// earlier work.
     var baseline: [String]? = nil
+    /// 0.5.249: the same for your own untimed messages, so a note you send yourself in Terminal is recognised when it
+    /// arrives (WorkProgress.untimedArrival).
+    var promptBaseline: [String]? = nil
     /// Replies Jev has judged (digests), at most `maxJevAsks`.
     var jevAsked: [String]? = nil
     /// You undid an automatic move, or moved the card back yourself: this handoff never moves the card again.
@@ -185,12 +188,13 @@ struct WorkProgress: Codable, Equatable, Sendable {
             return at
         }.min()
     }
-    /// A tab's handoff showing as a message in the session (0.5.248). No time check: tabCandidates only offers sessions
-    /// created after the tab opened, so none of their messages is older, and Cursor writes no message times at all.
-    nonisolated static func tabPromptSeen(prompt: String, messages: [Reply]) -> Bool {
+    /// 0.5.249: a note you send yourself in Terminal (Continue on a Cursor chat its app owns). Cursor writes no message
+    /// times, so it arrives when an untimed message that starts like it appears that was not in the chat when tracking
+    /// first read it (`promptBaseline`).
+    nonisolated static func untimedArrival(prompt: String, messages: [Reply], baseline: [String]) -> Bool {
         let head = promptKey(prompt)
         guard head.count >= 12 else { return false }
-        return messages.contains { promptKey($0.text) == head }
+        return messages.contains { $0.at == nil && !baseline.contains($0.digest) && promptKey($0.text) == head }
     }
     nonisolated static func promptKey(_ text: String) -> String {
         String(text.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.prefix(60).map(Character.init))

@@ -127,11 +127,14 @@ struct WorkProgressNotice: Equatable, Sendable {
             await attemptMove(row.id)
         }
         let open = candidates(now: start)
-        guard !open.isEmpty else { return }
-        // 0.5.248: a tab Work opened in an app becomes a session once you press Send there.
-        if open.contains(where: { $0.channel == "tab" && $0.sessionID == nil }) {
-            await store.linkOpenedTabs(ids: Set(open.map(\.id)))
-        }
+        if !open.isEmpty { await trackPass(open, start: start) }
+        // 0.5.249: a New session whose first reply is done opens in its app, tracked or not (a done first reply ends
+        // tracking), once, and never while its run is going.
+        await store.openReadyApps()
+    }
+
+    /// One pass over the handoffs being followed.
+    private func trackPass(_ open: [WorkHandoffReceipt], start: Double) async {
         await store.reconcileForTracking(ids: Set(open.map(\.id)), now: start)
 
         // One read per session, backing off while a session stays quiet.
@@ -180,15 +183,21 @@ struct WorkProgressNotice: Equatable, Sendable {
         // Untimed replies already in the session answered earlier work (Cursor writes no times).
         if let read, read.hasHistory, !read.fromJobResult, progress.baseline == nil {
             let untimed = read.replies.filter { $0.at == nil }.map(\.digest)
+            let untimedPrompts = read.prompts.filter { $0.at == nil }.map(\.digest)
             guard store.updateReceipt(id, { current in
                 guard var next = current.progress, next.baseline == nil else { return false }
-                next.baseline = Array(untimed.suffix(WorkProgress.maxSeen)); current.progress = next; return true
+                next.baseline = Array(untimed.suffix(WorkProgress.maxSeen))
+                next.promptBaseline = Array(untimedPrompts.suffix(WorkProgress.maxSeen))
+                current.progress = next; return true
             }) else { return }
         }
         // The session's own conversation shows the instruction arriving.
         var arrival: Double?
         if let read, read.hasHistory, progress.promptAt == nil, row.mode != .newSession {
             arrival = WorkProgress.promptArrival(prompt: row.prompt, messages: read.prompts, since: row.createdAt)
+            // 0.5.249: a note you send yourself in Terminal (Cursor writes no times) arrives when it first appears.
+            if arrival == nil, row.channel == "app", let seen = progress.promptBaseline,
+               WorkProgress.untimedArrival(prompt: row.prompt, messages: read.prompts, baseline: seen) { arrival = at }
         }
         // 1. Received: record once, move to Draft, notify.
         if progress.receivedAt == nil && (WorkProgress.deliveryConfirmed(row) || arrival != nil) {
@@ -200,7 +209,13 @@ struct WorkProgressNotice: Equatable, Sendable {
                 if let arrival { next.promptAt = arrival }
                 next.record(.received, text, at: arrival ?? at)
                 if let target, next.pendingStage == nil { next.pendingStage = target }
-                current.progress = next; return true
+                current.progress = next
+                // 0.5.249: a note you took to the app is delivered once its session shows it arriving.
+                if current.channel == "app", current.status == "queued" {
+                    current.status = "delivered"
+                    current.detail = "Sent in \(WorkHandoffStore.openPlace(current.provider)). Work follows it from here."
+                }
+                return true
             }) else { return }
             trackingLog.notice("received receipt=\(id, privacy: .public) transcript=\(arrival != nil, privacy: .public)")
             await attemptMove(id)

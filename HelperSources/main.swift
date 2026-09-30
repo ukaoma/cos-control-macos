@@ -548,7 +548,7 @@ final class COSControlHelper {
         case "work-models": try emitWorkModels()
         case "work-new": try emitWorkNew()
         case "work-job": try emitWorkJob(args: args)
-        case "work-tab-folder": try emitWorkTabFolder(args: args)
+        case "work-cursor-chat": try emitWorkCursorChat(args: args)
         case "self-test-work": try selfTestWork()
         case "session-chat-turn": try emitSessionChatTurn(args: args)
         case "session-chat-fork": try emitSessionChatFork(args: args)
@@ -14837,35 +14837,73 @@ final class COSControlHelper {
         try emitWorkJobResponse(response)
     }
 
-    /// 0.5.248: the folder a Work tab opens in, the one the COS server runs agents in. A mirror of
-    /// `resolveProviderWorkDir` (server/lib/launch-dir.ts): a COS brain folder (COS_WORKDIR, else COS_LAUNCH_DIR, as the
-    /// server's `??`) holding `.cos/manifest.json`, `AGENTS.md` or `CLAUDE.md`; for Codex, CODEX_GLASSES_WORKDIR; then
-    /// two levels above COS_SCRIPTS_DIR. Nil when none is configured.
-    static func workTabFolder(provider: String, environment env: [String: String], fileExists: (String) -> Bool) -> String? {
-        func clean(_ raw: String?) -> String? {
-            let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return trimmed.isEmpty ? nil : URL(fileURLWithPath: trimmed).standardizedFileURL.path
-        }
-        if let brain = clean(env["COS_WORKDIR"] ?? env["COS_LAUNCH_DIR"]),
-           [".cos/manifest.json", "AGENTS.md", "CLAUDE.md"].contains(where: { fileExists((brain as NSString).appendingPathComponent($0)) }) {
-            return brain
-        }
-        if provider == "codex", let legacy = clean(env["CODEX_GLASSES_WORKDIR"]) { return legacy }
-        if let scripts = clean(env["COS_SCRIPTS_DIR"]) {
-            return URL(fileURLWithPath: scripts).appendingPathComponent("..").appendingPathComponent("..").standardizedFileURL.path
+    // MARK: - Cursor chats for Work (0.5.249)
+    //
+    // A Cursor New session from Work runs `cursor-agent -p` on the COS server, and the server's job names no chat id.
+    // Control opens the chat in Terminal with `cursor-agent --resume <id>` once its first reply is done, so this finds
+    // it: a CLI chat (~/.cursor/chats/<hash>/<id>/meta.json) created since the handoff, whose first message (its
+    // transcript under ~/.cursor/projects) holds the task's status-line id. Read-only.
+
+    /// A Work task's status-line id: 12 lowercase hex characters, nothing else. Checked byte by byte: ICU's `$` also
+    /// matches before a final newline.
+    static func workStatusTag(_ tag: String) -> Bool {
+        let bytes = Array(tag.utf8)
+        return bytes.count == 12 && bytes.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+    /// Whether a chat's first message is this handoff: every Work handoff carries `COS-WORK <tag>:` in its status-line
+    /// instruction.
+    static func workCursorChatMatches(firstMessage: String, tag: String) -> Bool {
+        workStatusTag(tag) && firstMessage.contains("COS-WORK \(tag):")
+    }
+    /// A chat's meta.json as far as Work needs it: when it was created and the folder it ran in. Nil for anything else.
+    static func workCursorChatMeta(_ data: Data) -> (createdAt: Double, folder: String)? {
+        guard let meta = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let ms = (meta["createdAtMs"] as? NSNumber)?.doubleValue, ms.isFinite, ms > 0,
+              let folder = meta["cwd"] as? String, folder.hasPrefix("/"),
+              !folder.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return nil }
+        return (ms / 1000, folder)
+    }
+    /// The first user message of a Cursor transcript (JSONL), read from its first megabyte.
+    static func workCursorFirstMessage(_ jsonl: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: jsonl) else { return nil }
+        defer { try? handle.close() }
+        let text = String(decoding: handle.readData(ofLength: 1_024 * 1_024), as: UTF8.self)
+        for line in text.split(whereSeparator: \.isNewline) {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  obj["role"] as? String == "user", let message = obj["message"] as? [String: Any] else { continue }
+            return claudeMessageText(message)
         }
         return nil
     }
-
-    private func emitWorkTabFolder(args: [String]) throws {
-        let provider = option("--provider", in: args) ?? "claude"
-        guard ["claude", "codex", "cursor"].contains(provider) else { throw HelperError.message("--provider must be claude, codex or cursor") }
-        var isDirectory: ObjCBool = false
-        guard let folder = Self.workTabFolder(provider: provider, environment: serverEnvironment(), fileExists: { fm.fileExists(atPath: $0) }),
-              fm.fileExists(atPath: folder, isDirectory: &isDirectory), isDirectory.boolValue else {
-            emit(ok: true, message: "No COS work folder is configured", details: ["folder": ""]); return
+    /// Chats created at or after `since` (5 s slack) whose first message is the handoff tagged `tag`, oldest first.
+    static func workCursorChats(tag: String, since: Double, chatsRoot: URL, projectsRoot: URL) -> [[String: Any]] {
+        guard workStatusTag(tag), since.isFinite else { return [] }
+        let fm = FileManager.default
+        var found: [(id: String, folder: String, createdAt: Double)] = []
+        for hash in (try? fm.contentsOfDirectory(at: chatsRoot, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? [] {
+            for chat in (try? fm.contentsOfDirectory(at: hash, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? [] {
+                let id = chat.lastPathComponent
+                guard UUID(uuidString: id) != nil, id == id.lowercased(),
+                      let data = try? Data(contentsOf: chat.appendingPathComponent("meta.json")), data.count < 65_536,
+                      let meta = workCursorChatMeta(data), meta.createdAt >= since - 5,
+                      let transcript = findCursorSessionFile(sessionId: id, projectsRoot: projectsRoot),
+                      let first = workCursorFirstMessage(transcript),
+                      workCursorChatMatches(firstMessage: first, tag: tag) else { continue }
+                found.append((id, meta.folder, meta.createdAt))
+            }
         }
-        emit(ok: true, message: "Work tab folder", details: ["folder": folder])
+        return found.sorted { $0.createdAt < $1.createdAt }.map { ["id": $0.id, "folder": $0.folder, "createdAt": $0.createdAt] }
+    }
+
+    private func emitWorkCursorChat(args: [String]) throws {
+        guard let tag = option("--tag", in: args), Self.workStatusTag(tag),
+              let raw = option("--since", in: args), let since = Double(raw), since.isFinite, since > 0 else {
+            throw HelperError.message("--tag must be a 12-character Work id and --since a time in seconds")
+        }
+        let chats = Self.workCursorChats(tag: tag, since: since,
+                                         chatsRoot: home.appendingPathComponent(".cursor/chats", isDirectory: true),
+                                         projectsRoot: home.appendingPathComponent(".cursor/projects", isDirectory: true))
+        emit(ok: true, message: chats.isEmpty ? "No Cursor chat found yet" : "Cursor chats found", details: ["chats": chats])
     }
 
     private func emitWorkJob(args: [String]) throws {
@@ -14906,20 +14944,22 @@ final class COSControlHelper {
               Self.workMessageEra(["era": "bad/era"]) == nil else {
             throw HelperError.message("Work model/admission contract self-test failed")
         }
-        // 0.5.248: the Work tab folder mirrors the server's agent folder, rule by rule.
-        let tabEnv = ["COS_SCRIPTS_DIR": "/Users/x/Repo/operations/scripts"]
-        func withEnv(_ extra: [String: String]) -> [String: String] { tabEnv.merging(extra) { _, new in new } }
-        guard Self.workTabFolder(provider: "claude", environment: tabEnv, fileExists: { _ in false }) == "/Users/x/Repo",
-              Self.workTabFolder(provider: "claude", environment: withEnv(["COS_WORKDIR": "/Users/x/Brain"]), fileExists: { $0 == "/Users/x/Brain/CLAUDE.md" }) == "/Users/x/Brain",
-              Self.workTabFolder(provider: "claude", environment: withEnv(["COS_WORKDIR": "/Users/x/Empty"]), fileExists: { _ in false }) == "/Users/x/Repo",
-              Self.workTabFolder(provider: "claude", environment: withEnv(["COS_WORKDIR": " ", "COS_LAUNCH_DIR": "/Users/x/Brain"]), fileExists: { _ in true }) == "/Users/x/Repo",
-              Self.workTabFolder(provider: "claude", environment: withEnv(["COS_LAUNCH_DIR": "/Users/x/Brain"]), fileExists: { $0 == "/Users/x/Brain/AGENTS.md" }) == "/Users/x/Brain",
-              Self.workTabFolder(provider: "codex", environment: withEnv(["CODEX_GLASSES_WORKDIR": "/Users/x/Codex"]), fileExists: { _ in false }) == "/Users/x/Codex",
-              Self.workTabFolder(provider: "claude", environment: withEnv(["CODEX_GLASSES_WORKDIR": "/Users/x/Codex"]), fileExists: { _ in false }) == "/Users/x/Repo",
-              Self.workTabFolder(provider: "claude", environment: [:], fileExists: { _ in true }) == nil else {
-            throw HelperError.message("Work tab folder self-test failed")
+        // 0.5.249: finding the Cursor chat a Work run started, only by its status-line id.
+        let meta = Data(#"{"schemaVersion":1,"createdAtMs":1790723017862,"hasConversation":true,"cwd":"/Users/x/Work Repo"}"#.utf8)
+        let first = "<user_query>\nSYSTEM INSTRUCTIONS\nYou are COS.\n\nUSER REQUEST\nDraft it.\nCOS-WORK 0123456789ab: <done, needs input or blocked>: <one sentence of evidence>\n</user_query>"
+        guard Self.workStatusTag("0123456789ab"), !Self.workStatusTag("0123456789AB"), !Self.workStatusTag("0123456789a"),
+              !Self.workStatusTag("0123456789ab\n"), !Self.workStatusTag("../../etc/pa"),
+              Self.workCursorChatMatches(firstMessage: first, tag: "0123456789ab"),
+              !Self.workCursorChatMatches(firstMessage: first, tag: "0123456789ac"),
+              !Self.workCursorChatMatches(firstMessage: "COS-WORK 0123456789ab done", tag: "0123456789ab"),
+              Self.workCursorChatMeta(meta)?.folder == "/Users/x/Work Repo",
+              Self.workCursorChatMeta(meta)?.createdAt == 1_790_723_017.862,
+              Self.workCursorChatMeta(Data(#"{"createdAtMs":1790723017862,"cwd":"relative/dir"}"#.utf8)) == nil,
+              Self.workCursorChatMeta(Data(#"{"createdAtMs":1790723017862,"cwd":"/a\nb"}"#.utf8)) == nil,
+              Self.workCursorChatMeta(Data(#"{"cwd":"/a"}"#.utf8)) == nil else {
+            throw HelperError.message("Work Cursor chat self-test failed")
         }
-        emit(ok: true, message: "Work model/admission contract passed", details: ["checks": 27])
+        emit(ok: true, message: "Work model/admission contract passed", details: ["checks": 33])
     }
 
     private func emitSessionChatTurn(args: [String]) throws {

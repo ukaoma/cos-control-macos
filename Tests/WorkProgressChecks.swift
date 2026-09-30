@@ -27,10 +27,21 @@ private actor TrackingTransport {
     var sessionAfterReads = 0
     var workJobReads = 0
     func setClaudeJob(session: String, afterReads: Int) { jobClaudeSession = session; sessionAfterReads = afterReads }
-    /// 0.5.248 tabs: the folder the helper names, and the session list the tracker reads to link a tab.
-    var tabFolder = "/Users/test/Work Repo"
-    var listed: [JSONValue] = []
-    func setListed(_ rows: [JSONValue]) { listed = rows }
+    /// 0.5.249 (start it, then open it): the provider the job runs on and the session it names, a run that fails, what
+    /// the helper's session-reveal says about a Claude session, and the Cursor chats `work-cursor-chat` finds.
+    var jobProvider: String?
+    var jobFailed = false
+    var revealReason = "import"
+    var revealLink: String?
+    var cursorChats: [JSONValue] = []
+    func setJob(provider: String, session: String?, afterReads: Int = 1) {
+        jobProvider = provider; jobClaudeSession = session; sessionAfterReads = afterReads
+    }
+    func setFailed(_ failed: Bool) { jobFailed = failed }
+    var revealFails = false
+    func setReveal(_ reason: String, link: String? = nil, fails: Bool = false) { revealReason = reason; revealLink = link; revealFails = fails }
+    func setCursorChats(_ rows: [JSONValue]) { cursorChats = rows }
+    func args(_ verb: String) -> [[String]] { calls.filter { $0.first == verb } }
     func bodies() -> [[String: String]] { completionBodies }
     func setTurn(_ state: String) { turnState = state }
     func setRead(replies rows: [(String, String?)], prompts heads: [(String, String?)] = [], running: Bool = false,
@@ -73,19 +84,27 @@ private actor TrackingTransport {
             jobIdentity = payload["clientJobId"] as? String ?? ""
             details = job()
         case "work-job": workJobReads += 1; details = job()
-        case "work-tab-folder": details = ["folder": .string(tabFolder)]
-        case "claude-sessions": details = ["sessions": .array(listed)]
+        case "session-reveal":
+            if revealFails { throw HelperClientError.commandFailed("Synthetic: the helper did not answer") }
+            let id = args.last ?? ""
+            let link = revealLink ?? (revealReason == "import" ? "claude://resume?session=" + id : nil)
+            details = ["provider": .string("claude"), "sessionId": .string(id), "revealReason": .string(revealReason),
+                       "deepLink": link.map(JSONValue.string) ?? .null]
+        case "work-cursor-chat": details = ["chats": .array(cursorChats)]
         default: throw HelperClientError.commandFailed("Unexpected fixture command: \(args)")
         }
         return HelperResponse(ok: true, message: "Synthetic transport", details: details)
     }
     private func job() -> [String: JSONValue] {
+        let provider = jobProvider ?? (jobClaudeSession == nil ? "cursor" : "claude")
         var job: [String: JSONValue] = ["clientJobId": .string(jobIdentity), "generation": .number(1), "jobId": .string("job-fixture"),
-                                         "status": .string(jobResult == nil ? "running" : "completed"),
-                                         "provider": .string(jobClaudeSession == nil ? "cursor" : "claude")]
+                                         "status": .string(jobFailed ? "failed" : jobResult == nil ? "running" : "completed"),
+                                         "provider": .string(provider)]
         if let jobResult { job["response"] = .string(jobResult) }
-        if let session = jobClaudeSession, workJobReads > 0, workJobReads >= sessionAfterReads {
-            job["providerOwnershipConfirmedAt"] = .string("2026-09-29T18:46:57.717Z"); job["cliSessionId"] = .string(session)
+        if jobFailed { job["error"] = .object(["code": .string("provider_failed"), "message": .string("Sample: the provider stopped.")]) }
+        if let session = jobClaudeSession, workJobReads >= sessionAfterReads {
+            job["providerOwnershipConfirmedAt"] = .string("2026-09-29T18:46:57.717Z")
+            job[provider == "codex" ? "codexThreadId" : "cliSessionId"] = .string(session)
         }
         return ["job": .object(job)]
     }
@@ -133,9 +152,10 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
 @main struct WorkProgressChecks {
     @MainActor static func main() async throws {
         pureChecks()
+        appChecks()
         projectionChecks()
         try await trackerChecks()
-        print("PASS: Work tracking (status line, delivery, stages, projections, tracker: pending turns, arrival, reports, several tasks, pause, moved back, retries, busy journal, Jev gating, baseline, job result, superseded, back-off, New session link, Work sessions not jobs, tabs in the apps)")
+        print("PASS: Work tracking (status line, delivery, stages, projections, tracker: pending turns, arrival, reports, several tasks, pause, moved back, retries, busy journal, Jev gating, baseline, job result, superseded, back-off, New session link, Work sessions not jobs, start it then open it in the app)")
     }
 
     /// `precondition` takes an autoclosure, which cannot await.
@@ -360,6 +380,124 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         precondition(WorkLatestMoveStrip.shown(latest: ("a", "s1"), receipts: [stripped], lookup: { _ in ("t", "draft") }, now: now) == nil)
         var pausedStrip = stripped; pausedStrip.progress?.paused = true
         precondition(WorkLatestMoveStrip.shown(latest: ("a", "s1"), receipts: [pausedStrip], lookup: lookup, now: now) == nil)
+    }
+
+    // MARK: - Start it, then open it (0.5.249): the pure rules
+
+    @MainActor static func appChecks() {
+        let id = "9380e0d8-960f-4d68-b1f2-f604a6657ec6"
+        // A session id reaches a link or a command only as a lowercase UUID.
+        precondition(WorkHandoffStore.appSessionID(id) == id)
+        for bad in [id.uppercased(), id + "\n", " " + id, String(id.dropLast()), id + "0", "../../etc/passwd", "abc; rm -rf ~",
+                    "9380e0d8-960f-4d68-b1f2-f604a6657ec\u{E9}", "9380e0d8_960f_4d68_b1f2_f604a6657ec6", ""] {
+            precondition(WorkHandoffStore.appSessionID(bad) == nil, bad)
+        }
+        // Codex, character by character: every reserved and non-ASCII character is encoded.
+        precondition(WorkHandoffStore.codexThreadLink(threadID: id)?.absoluteString == "codex://threads/" + id)
+        precondition(WorkHandoffStore.codexThreadLink(threadID: id, note: "caf\u{E9} & 100% #1 / ?x=y\nnext")?.absoluteString
+                     == "codex://threads/\(id)?prompt=caf%C3%A9%20%26%20100%25%20%231%20%2F%20%3Fx%3Dy%0Anext")
+        precondition(WorkHandoffStore.codexThreadLink(threadID: id, note: "")?.absoluteString == "codex://threads/" + id)
+        precondition(WorkHandoffStore.codexThreadLink(threadID: "../" + id) == nil && WorkHandoffStore.codexThreadLink(threadID: id + "?prompt=x") == nil)
+        // Claude: only the two links the helper gives, for this session.
+        precondition(WorkHandoffStore.claudeAppLink("claude://resume?session=" + id, sessionID: id)?.absoluteString == "claude://resume?session=" + id)
+        let tab = "claude://code/continue?session=local_2441104d-9cde-4948-a036-9cb4b7be8539"
+        precondition(WorkHandoffStore.claudeAppLink(tab, sessionID: id)?.absoluteString == tab)
+        let refused: [String?] = ["claude://resume?session=2441104d-9cde-4948-a036-9cb4b7be8539", "claude://resume?session=\(id)&q=send",
+                                  "claude://code/new?folder=%2F&q=x", "claude://code/continue?session=local_\(id)&q=x",
+                                  "claude://code/continue?session=\(id)", "https://claude.ai", nil]
+        for bad in refused { precondition(WorkHandoffStore.claudeAppLink(bad, sessionID: id) == nil, bad ?? "nil") }
+        precondition(WorkHandoffStore.claudeAppLink("claude://resume?session=../x", sessionID: "../x") == nil)
+        // Cursor: the Terminal command, character by character. Folder and id are quoted; anything odd is refused.
+        precondition(WorkHandoffStore.cursorResumeScript(chatID: id, folder: "/Users/x/Miles's $HOME `repo`")
+                     == "#!/bin/zsh\n# COS Control: the Cursor chat Work started. Continue it here.\ncd -- '/Users/x/Miles'\\''s $HOME `repo`' || exit 1\nexec cursor-agent --resume '\(id)'\n")
+        precondition(WorkHandoffStore.cursorResumeScript(chatID: id, folder: "/Users/x/Caf\u{E9} Repo")?.contains("cd -- '/Users/x/Caf\u{E9} Repo' || exit 1\n") == true)
+        for folder in ["relative/repo", "", "/Users/x/a\nrm -rf ~", "/Users/x/a\u{0}b", "/Users/x/\u{202E}gpj.command", "/" + String(repeating: "a", count: 1_024)] {
+            precondition(WorkHandoffStore.cursorResumeScript(chatID: id, folder: folder) == nil, folder)
+        }
+        precondition(WorkHandoffStore.cursorResumeScript(chatID: "x'; rm -rf ~; '", folder: "/tmp") == nil)
+        precondition(WorkHandoffStore.shellQuote("a'b") == "'a'\\''b'" && WorkHandoffStore.shellQuote("") == "''")
+        // When it opens: only once the first turn completed, after the settle, within the window, and once.
+        let now = 1_790_730_000.0
+        var r = WorkHandoffReceipt(id: "r", workID: "task:Quilt:0123456789ab", workTitle: "T", sourceRevision: "1", mode: .newSession,
+                                   provider: "claude", modelID: "opus", sessionID: "claude:" + id, sessionTitle: "T", status: "running",
+                                   detail: "", prompt: "p", createdAt: now - 100, channel: "job")
+        precondition(WorkHandoffStore.appOpenStep(r, now: now) == nil, "never asked to open")
+        r.appOpen = WorkAppOpen()
+        precondition(WorkHandoffStore.appOpenStep(r, now: now) == .wait, "running: wait")
+        // Still going waits even with an end time on record (the status decides, not the time alone).
+        for status in ["running", "queued", "sending", "unknown"] {
+            var x = r; x.status = status; x.appOpen?.runEndedAt = now - 60
+            precondition(WorkHandoffStore.appOpenStep(x, now: now) == .wait, status)
+        }
+        r.status = "completed"
+        precondition(WorkHandoffStore.appOpenStep(r, now: now) == .wait, "no end time yet")
+        r.appOpen?.runEndedAt = now - 4
+        precondition(WorkHandoffStore.appOpenStep(r, now: now) == .wait, "settling")
+        precondition(WorkHandoffStore.appOpenStep(r, now: now + 1) == .open, "settled")
+        precondition(WorkHandoffStore.appOpenStep(r, now: now - 4 + WorkHandoffStore.appOpenWindow + 1) == .skip("late"))
+        var opened = r; opened.appOpen?.openedAt = now
+        precondition(WorkHandoffStore.appOpenStep(opened, now: now + 1) == nil, "once")
+        var skipped = r; skipped.appOpen?.skipped = "late"
+        precondition(WorkHandoffStore.appOpenStep(skipped, now: now + 1) == nil)
+        for status in ["failed", "refused", "canceled", "reviewed"] {
+            var x = r; x.status = status
+            precondition(WorkHandoffStore.appOpenStep(x, now: now + 1) == .skip("not_completed"), status)
+        }
+        var noSession = r; noSession.sessionID = nil
+        precondition(WorkHandoffStore.appOpenStep(noSession, now: now + 1) == .skip("no_session"))
+        noSession.provider = "cursor"
+        precondition(WorkHandoffStore.appOpenStep(noSession, now: now + 1) == .findChat)
+        precondition(WorkHandoffStore.appOpenStep(noSession, now: now - 4 + WorkHandoffStore.cursorChatSearch + 1) == .skip("no_session"))
+        var ollama = r; ollama.provider = "ollama"
+        precondition(WorkHandoffStore.appOpenStep(ollama, now: now + 1) == nil)
+        var turn = r; turn.mode = .continueSession
+        precondition(WorkHandoffStore.appOpenStep(turn, now: now + 1) == nil)
+        var tabbed = r; tabbed.channel = "tab"
+        precondition(WorkHandoffStore.appOpenStep(tabbed, now: now + 1) == nil)
+        // Who owns a session: one Work opened in its app, or one started from a 0.5.248 tab. Not one still running.
+        precondition(WorkHandoffStore.appOwner(of: "claude:" + id, in: [r]) == nil, "not opened yet: the server may still continue it")
+        precondition(WorkHandoffStore.appOwner(of: "claude:" + id, in: [opened])?.id == "r")
+        precondition(WorkHandoffStore.appOwner(of: "claude:other", in: [opened]) == nil)
+        tabbed.appOpen = nil
+        precondition(WorkHandoffStore.appOwner(of: "claude:" + id, in: [tabbed])?.id == "r")
+        // The card's button.
+        precondition(WorkHandoffStore.appOpenButton(r) == nil && WorkHandoffStore.appOpenButton(opened) == "Open again")
+        precondition(WorkHandoffStore.appOpenButton(skipped) == "Open in Claude")
+        var running = opened; running.status = "running"
+        precondition(WorkHandoffStore.appOpenButton(running) == nil, "never while running")
+        var cursorSkipped = skipped; cursorSkipped.provider = "cursor"
+        precondition(WorkHandoffStore.appOpenButton(cursorSkipped) == nil, "a Cursor chat with no folder has no command")
+        cursorSkipped.appOpen?.folder = "/Users/x/Repo"
+        precondition(WorkHandoffStore.appOpenButton(cursorSkipped) == "Open in Terminal")
+        var note = r; note.mode = .continueSession; note.channel = "app"; note.appOpen = nil; note.status = "queued"
+        precondition(WorkHandoffStore.appOpenButton(note) == "Open again")
+        note.status = "delivered"
+        precondition(WorkHandoffStore.appOpenButton(note) == nil)
+        // The one chat the helper found, never a guess.
+        let chat: JSONValue = .object(["id": .string(id), "folder": .string("/Users/x/Repo")])
+        let other: JSONValue = .object(["id": .string("11111111-2222-4333-8444-555555555555"), "folder": .string("/Users/x/Repo")])
+        precondition(WorkHandoffStore.cursorChatMatch([chat], taken: [])?.id == id && WorkHandoffStore.cursorChatMatch([chat], taken: [])?.folder == "/Users/x/Repo")
+        precondition(WorkHandoffStore.cursorChatMatch([chat, other], taken: []) == nil, "two: never a guess")
+        precondition(WorkHandoffStore.cursorChatMatch([chat, other], taken: ["cursor:11111111-2222-4333-8444-555555555555"])?.id == id)
+        precondition(WorkHandoffStore.cursorChatMatch([chat], taken: ["cursor:" + id]) == nil, "one another handoff has")
+        precondition(WorkHandoffStore.cursorChatMatch([.object(["id": .string("../x"), "folder": .string("/a")])], taken: []) == nil)
+        precondition(WorkHandoffStore.cursorChatMatch([.object(["id": .string(id)])], taken: []) == nil)
+        // A note you send yourself in Terminal: an untimed message that newly appears.
+        let text = "Now check the footer links, every one of them"
+        precondition(WorkProgress.untimedArrival(prompt: text, messages: [.init(text: text, at: nil)], baseline: []))
+        precondition(!WorkProgress.untimedArrival(prompt: text, messages: [.init(text: text, at: nil)], baseline: [WorkProgress.Reply(text: text, at: nil).digest]))
+        precondition(!WorkProgress.untimedArrival(prompt: text, messages: [.init(text: text, at: 5)], baseline: []), "a timed message is promptArrival's")
+        precondition(!WorkProgress.untimedArrival(prompt: text, messages: [.init(text: "Something else entirely, not the note", at: nil)], baseline: []))
+        // Every line the card can show: plain, no em dash, no arrow.
+        var lines = ["not_completed", "late", "no_session", "open_failed", "cursor_app", "unreachable", "claude:no_desktop", "claude:desktop_too_old",
+                     "claude:archived", "claude:desktop_lineage", "claude:no_transcript", "other"].flatMap { code in
+            ["claude", "codex", "cursor"].compactMap { WorkHandoffStore.appSkipText(code, provider: $0) } }
+        lines += ["claude", "codex", "cursor"].flatMap { [WorkHandoffStore.openedText($0), WorkHandoffView.appOwnedNote($0)] }
+        lines.append(WorkHandoffStore.unsentTabDetail)
+        for state in ["running", "completed"] { var x = r; x.status = state; x.appOpen?.runEndedAt = nil; lines += [WorkHandoffView.whereItRunsNote(x) ?? ""] }
+        precondition(lines.allSatisfy { !$0.contains("\u{2014}") && !$0.contains("\u{2192}") && !$0.contains("->") }, "\(lines)")
+        precondition(WorkHandoffStore.appSkipText("no_session", provider: "cursor") == "COS could not find its Cursor chat, so nothing was opened.")
+        precondition(WorkHandoffStore.openedText("cursor") == "Opened in Terminal with cursor-agent. Continue there.")
     }
 
     // MARK: - The tracker, end to end
@@ -701,7 +839,7 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         // 11. A run with no session of its own reports through its result.
         do {
             let (store, transport, board, _, tracker, _) = setUp("job")
-            store.opensTabs = false   // the background run (Settings off, or Ollama); tabs are test 15
+            store.opensInApp = false   // the background run (Settings off, or Ollama); tabs are test 15
             let model = WorkModelChoice(id: "cursor-model", provider: "cursor", title: "Cursor", available: true, reason: nil)
             await store.submit(source: source(idA), mode: .newSession, session: nil, model: model, prompt: "Go")
             await transport.setJobResult("COS-WORK \(idA): done: answered in full")
@@ -716,7 +854,7 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         do {
             let (store, transport, _, _, _, _) = setUp("link")
             store.newSessionLinkDelays = [.zero, .zero, .zero]
-            store.opensTabs = false
+            store.opensInApp = false
             let opus = WorkModelChoice(id: "opus", provider: "claude", title: "Opus", available: true, reason: nil)
             store.models = [opus]
             await transport.setClaudeJob(session: "e836fff6", afterReads: 2)
@@ -753,7 +891,7 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         do {
             let (store, transport, _, _, _, _) = setUp("link-never")
             store.newSessionLinkDelays = [.zero, .zero, .zero]
-            store.opensTabs = false
+            store.opensInApp = false
             let opus = WorkModelChoice(id: "opus", provider: "claude", title: "Opus", available: true, reason: nil)
             store.models = [opus]
             await transport.setClaudeJob(session: "e836fff6", afterReads: 99)
@@ -764,7 +902,7 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
 
             let (done, doneTransport, _, _, _, _) = setUp("link-done")
             done.newSessionLinkDelays = [.zero, .zero, .zero]
-            done.opensTabs = false
+            done.opensInApp = false
             done.models = [opus]
             await doneTransport.setClaudeJob(session: "e836fff6", afterReads: 99)
             await done.submit(source: source(idA), mode: .newSession, session: nil, model: opus, prompt: "Go")
@@ -774,121 +912,294 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             check((try row(done, idA)).status == "completed" && doneReads == 1, "a finished run is recorded once: \(doneReads)")
         }
 
-        // 15. New session opens a tab in the provider's app (0.5.248, Miles: "Tabs right away, in claude, ChatGPT and
-        //     Cursor"): no background run, the link carries the whole handoff with its status line, and the tracker
-        //     links the session once it shows the handoff as its first message. An older session, or another app's,
-        //     is never it.
+        // 0.5.249, start it, then open it (Miles, 2026-09-29, "route 1"). The COS server runs the New session; once its
+        // first reply is done Control opens it in its app, once, and never while the run is going.
+        final class Opened { var urls: [URL] = []; var files: [URL] = []; var scripts: [String] = []; var clipboard: [String] = [] }
+        func appSetUp(_ name: String, passes: Int = 4) -> (WorkHandoffStore, TrackingTransport, FakeBoard, Clock, WorkProgressTracker, NoticeBox, Opened) {
+            let (store, transport, board, clock, tracker, notices) = setUp(name)
+            let opened = Opened()
+            store.openURL = { opened.urls.append($0); return true }
+            store.openInTerminal = { file in
+                opened.files.append(file)
+                opened.scripts.append((try? String(contentsOf: file, encoding: .utf8)) ?? "")
+                return true
+            }
+            store.copyToClipboard = { opened.clipboard.append($0) }
+            store.newSessionLinkDelays = [.zero]; store.appFollowDelay = .zero; store.appFollowPasses = passes; store.appOpenSettle = 0
+            return (store, transport, board, clock, tracker, notices, opened)
+        }
+        let claudeID = "9380e0d8-960f-4d68-b1f2-f604a6657ec6", codexID = "01a0ef66-0b31-7c11-a469-464d5e725a01"
+        let cursorID = "baf1968a-7f0e-4d58-9ebb-26d0dd1656c8", folder = "/Users/test/Miles's Work Repo"
+        let opus = WorkModelChoice(id: "opus", provider: "claude", title: "Opus", available: true, reason: nil)
+        let frontier = WorkModelChoice(id: "codex-frontier", provider: "codex", title: "Codex", available: true, reason: nil)
+        let grok = WorkModelChoice(id: "cursor-grok", provider: "cursor", title: "Cursor", available: true, reason: nil)
+
+        // 15. Claude: the background run starts (no tab, no link while it runs), the session opens once the first reply
+        //     is done and the helper says the transcript is quiet, exactly once, and Open again focuses its tab.
         do {
-            let (store, transport, board, _, tracker, _) = setUp("tab-claude")
-            var opened: [URL] = []
-            store.openURL = { opened.append($0); return true }
-            let opus = WorkModelChoice(id: "opus", provider: "claude", title: "Opus", available: true, reason: nil)
+            let (store, transport, board, _, tracker, _, opened) = appSetUp("app-claude")
             store.models = [opus]
+            await transport.setJob(provider: "claude", session: claudeID)
             await store.submit(source: source(idA), mode: .newSession, session: nil, model: opus, prompt: "Draft the CTA & ship it")
             var r = try row(store, idA)
-            check(r.channel == "tab" && r.status == "queued" && r.sessionID == nil && r.detail == "Opened in Claude. Press Send there to start it.",
-                  "\(r.channel ?? "") \(r.status) \(r.detail)")
             let workNew = await transport.count("work-new")
-            check(workNew == 0 && opened.count == 1, "no background run")
-            let link = opened[0].absoluteString
-            check(link.hasPrefix("claude://code/new?folder=%2FUsers%2Ftest%2FWork%20Repo&q=Draft%20the%20CTA%20%26%20ship%20it"), link)
-            check(link.contains(WorkProgress.tag(forWorkID: "task:Quilt:" + idA)), "the status-line instruction rides along")
-            check(FileManager.default.fileExists(atPath: store.tabFile(r.id).path), "the words are kept for Open again")
-            // Before Send: an older session with the same first message is never it; the card stays Planned.
-            await transport.setListed([.object(["id": .string("s-old"), "provider": .string("claude"), "createdAt": .string(stamp(r.createdAt - 600))])])
-            await transport.setRead(replies: [], prompts: [(r.prompt, stamp(r.createdAt + 20))])
-            await tracker.tick()
+            check(workNew == 1 && r.channel == "job" && r.appOpen == WorkAppOpen(), "the COS server starts it: \(workNew) \(r.channel ?? "")")
+            check(r.prompt.hasSuffix(WorkProgress.instruction(tag: idA)), "the handoff and its status line are unchanged")
+            await store.newSessionLink?.value
             r = try row(store, idA)
-            check(r.sessionID == nil && board.rows[idA] == "planned", "a session older than the tab is never it")
-            // After Send: the new session shows the handoff first. Linked, received, Draft.
-            await transport.setListed([
-                .object(["id": .string("s-old"), "provider": .string("claude"), "createdAt": .string(stamp(r.createdAt - 600))]),
-                .object(["id": .string("s-other"), "provider": .string("codex"), "createdAt": .string(stamp(r.createdAt + 10))]),
-                .object(["id": .string("s-new"), "provider": .string("claude"), "createdAt": .string(stamp(r.createdAt + 15)), "name": .string("CTA draft")]),
-            ])
-            await tracker.tick()
-            r = try row(store, idA)
-            check(r.sessionID == "claude:s-new" && r.status == "delivered" && r.sessionTitle == "CTA draft", "\(String(describing: r.sessionID)) \(r.status)")
-            check(r.progress?.receivedAt != nil && board.rows[idA] == "draft", "\(board.rows)")
-            check(WorkHandoffView.whereItRunsNote(r) == "Runs in the Claude app, where you can work with it. Open session shows it here too.")
-            // Not sending it leaves a linked tab alone: it reached a session.
-            store.cancelTab(receiptID: r.id)
-            check((try row(store, idA)).status == "delivered", "a sent tab is never canceled")
-            // A second tab (another item, same words) never takes the session the first already has.
-            await store.submit(source: source(idB), mode: .newSession, session: nil, model: opus, prompt: "Draft the CTA & ship it")
-            var second = try row(store, idB)
-            await transport.setRead(replies: [], prompts: [(second.prompt, stamp(second.createdAt + 5))])
-            await transport.setListed([.object(["id": .string("s-new"), "provider": .string("claude"), "createdAt": .string(stamp(second.createdAt + 1))])])
-            await tracker.tick()
-            second = try row(store, idB)
-            check(second.sessionID == nil && second.status == "queued", "one session, one handoff: \(String(describing: second.sessionID))")
-        }
-
-        // 16. Cursor: a handoff too long for its link goes in a file and the link names it, led by the task tag; Open
-        //     again reopens the same words; Cursor writes no times, so an untimed first message in a session created
-        //     after the tab links it, and a done line already there counts (a new session has nothing before it).
-        do {
-            let (store, transport, board, _, tracker, _) = setUp("tab-cursor")
-            var opened: [URL] = []
-            store.openURL = { opened.append($0); return true }
-            let cursor = WorkModelChoice(id: "cursor-model", provider: "cursor", title: "Cursor", available: true, reason: nil)
-            let long = String(repeating: "Check every heading on the page. ", count: 400)
-            await store.submit(source: source(idA), mode: .newSession, session: nil, model: cursor, prompt: long)
-            var r = try row(store, idA)
-            check(r.status == "queued" && r.detail == "Opened in Cursor. Choose Create Chat, then press Send there.", r.detail)
-            let link = opened[0].absoluteString
-            check(link.hasPrefix("cursor://anysphere.cursor-deeplink/prompt?text=COS%20Work%20handoff%20") && link.hasSuffix("&mode=agent")
-                  && link.utf16.count <= WorkHandoffStore.cursorTabLinkLimit, "\(link.utf16.count)")
-            let saved = String(decoding: try Data(contentsOf: store.tabFile(r.id)), as: UTF8.self)
-            let named = try require(store.tabFile(r.id).path.addingPercentEncoding(withAllowedCharacters: WorkHandoffStore.tabQueryAllowed))
-            check(saved.hasPrefix(long.trimmingCharacters(in: .whitespacesAndNewlines)) && link.contains(named), "the file holds the whole handoff and the link names it")
-            check(r.prompt.hasPrefix("COS Work handoff " + WorkProgress.tag(forWorkID: "task:Quilt:" + idA)), "the tag leads the short prompt")
-            await store.reopenTab(receiptID: r.id)
-            check(opened.count == 2 && opened[1] == opened[0], "Open again reopens the same words")
-            await transport.setListed([.object(["id": .string("c-new"), "provider": .string("cursor"), "createdAt": .string(stamp(r.createdAt + 30))])])
-            await transport.setRead(replies: [("COS-WORK \(idA): done: every heading checked", nil)], prompts: [(r.prompt, nil)])
+            check(r.sessionID == "claude:" + claudeID && r.status == "running", "\(String(describing: r.sessionID)) \(r.status)")
+            check(WorkHandoffView.whereItRunsNote(r) == "Running in the background. It opens in Claude when the first reply is done.")
             await tracker.tick(); await tracker.tick()
+            var reveals = await transport.count("session-reveal")
+            check(opened.urls.isEmpty && reveals == 0, "never opened, nor asked about, while the run is going")
+            check(WorkHandoffStore.appOpenButton(try row(store, idA)) == nil, "no Open again while it runs")
+            // The first reply is done, but the helper still sees the transcript being written: wait.
+            await transport.setReveal("running")
+            await transport.setRead(replies: [("COS-WORK \(idA): done: drafted the CTA and checked it", stamp(r.createdAt + 5))])
+            await transport.setJobResult("COS-WORK \(idA): done: drafted the CTA and checked it")
+            await tracker.tick()
             r = try row(store, idA)
-            check(r.sessionID == "cursor:c-new" && r.progress?.reported == .done && board.rows[idA] == "qa",
-                  "\(board.rows) \(String(describing: r.progress?.reported)) \(String(describing: r.sessionID))")
-            // A short Cursor handoff goes whole in the link.
-            let (short, _, _, _, _, _) = setUp("tab-cursor-short")
-            var shortOpened: [URL] = []
-            short.openURL = { shortOpened.append($0); return true }
-            await short.submit(source: source(idA), mode: .newSession, session: nil, model: cursor, prompt: "Fix the footer")
-            check(shortOpened.first?.absoluteString.hasPrefix("cursor://anysphere.cursor-deeplink/prompt?text=Fix%20the%20footer") == true)
+            reveals = await transport.count("session-reveal")
+            check(r.status == "completed" && r.appOpen?.runEndedAt != nil && r.appOpen?.openedAt == nil && opened.urls.isEmpty && reveals == 1,
+                  "never imported while the transcript is written: \(reveals)")
+            check(WorkHandoffView.whereItRunsNote(r) == "The first reply is done. Opening it in Claude.")
+            check(board.rows[idA] == "qa", "tracking is unchanged: \(board.rows)")
+            // A second store on the same journal (another window), loaded before it opened.
+            let (twin, twinTransport, _, _, _, _, twinOpened) = appSetUp("app-claude")
+            // The helper does not answer: nothing opens, and it is asked again on the next pass (never given up on).
+            await transport.setReveal("import", fails: true)
+            await tracker.tick()
+            r = try row(store, idA)
+            check(opened.urls.isEmpty && r.appOpen?.skipped == nil && r.appOpen?.openedAt == nil, "\(String(describing: r.appOpen))")
+            // Quiet: it imports as a Claude tab, once.
+            await transport.setReveal("import")
+            await tracker.tick()
+            r = try row(store, idA)
+            check(opened.urls.map(\.absoluteString) == ["claude://resume?session=" + claudeID], "\(opened.urls)")
+            check(r.appOpen?.openedAt != nil && r.detail == "Opened in Claude. Continue there." && r.status == "completed")
+            check(WorkHandoffView.whereItRunsNote(r) == "Opened in Claude. Continue there.")
+            check(r.progress?.events.last?.text == "Opened in Claude. Continue there.", "the timeline says so")
+            await tracker.tick(); await store.openReadyApps(); await store.followToApp(r.id)
+            check(opened.urls.count == 1, "opened once: \(opened.urls.count)")
+            // Open again focuses the Claude tab that now holds it.
+            check(WorkHandoffStore.appOpenButton(r) == "Open again")
+            let tab = "claude://code/continue?session=local_" + claudeID
+            await transport.setReveal("desktop", link: tab)
+            await store.reopenInApp(receiptID: r.id)
+            check(opened.urls.map(\.absoluteString).last == tab && opened.urls.count == 2)
+            // The other window still holds it as not opened, and the journal stops it opening it again.
+            check(twin.receipts.first { $0.id == r.id }?.appOpen?.openedAt == nil)
+            await twin.openReadyApps()
+            let twinReveals = await twinTransport.count("session-reveal")
+            check(twinOpened.urls.isEmpty && twinReveals == 1, "the journal records it opened: \(twinOpened.urls)")
+
+            // Two passes at once (the follow loop and a tracker pass) open it once.
+            let (race, raceTransport, _, _, _, _, raceOpened) = appSetUp("app-race", passes: 0)
+            race.models = [opus]
+            await raceTransport.setJob(provider: "claude", session: claudeID, afterReads: 0)
+            await raceTransport.setJobResult("finished")
+            await race.submit(source: source(idB), mode: .newSession, session: nil, model: opus, prompt: "Go")
+            await race.newSessionLink?.value
+            async let first: Void = race.openReadyApps()
+            async let second: Void = race.openReadyApps()
+            _ = await (first, second)
+            let raceReveals = await raceTransport.count("session-reveal")
+            check(raceOpened.urls.count == 1 && raceReveals == 1, "one open, and one check, for two passes: \(raceOpened.urls.count) \(raceReveals)")
         }
 
-        // 17. An app that will not open refuses the handoff and nothing is sent; Not sending it clears a queued tab so a
-        //     new handoff can start; Ollama, which has no app, still runs in the background.
+        // 16. Codex opens its thread once the run completed; a failed or refused run opens nothing; Settings off and
+        //     Ollama stay in the background.
         do {
-            let (store, transport, _, _, _, _) = setUp("tab-refused")
-            let codex = WorkModelChoice(id: "codex-frontier", provider: "codex", title: "Codex", available: true, reason: nil)
-            let local = WorkModelChoice(id: "local-model", provider: "ollama", title: "Ollama", available: true, reason: nil)
-            store.models = [codex, local]
-            store.openURL = { _ in false }
-            await store.submit(source: source(idA), mode: .newSession, session: nil, model: codex, prompt: "Go")
-            let refused = try row(store, idA)
-            check(refused.status == "refused" && refused.detail == "Codex could not be opened. Nothing was sent.", refused.detail)
-            var codexLink: URL?
-            store.openURL = { codexLink = $0; return true }
-            await store.submit(source: source(idA), mode: .newSession, session: nil, model: codex, prompt: "Go")
-            let queued = try row(store, idA)
-            check(queued.status == "queued" && codexLink?.absoluteString.hasPrefix("codex://threads/new?path=%2FUsers%2Ftest%2FWork%20Repo&prompt=Go") == true)
-            store.cancelTab(receiptID: queued.id)
-            let canceled = try row(store, idA)
-            check(canceled.status == "canceled" && !store.receipts(for: "task:Quilt:" + idA).contains(where: \.blocksNewHandoff))
-            await store.submit(source: source(idB), mode: .newSession, session: nil, model: local, prompt: "Go")
-            let ollamaRuns = await transport.count("work-new")
-            let ollama = try row(store, idB)
-            check(ollamaRuns == 1 && ollama.channel == "job", "Ollama has no app: it runs in the background")
-            // A link never lets a non-ASCII letter or a reserved character through unencoded.
-            let odd = try require(WorkHandoffStore.tabLink(provider: "codex", folder: "/tmp/a b", prompt: "caf\u{E9} & 100% #1 / ?x=y"))
-            check(odd.absoluteString == "codex://threads/new?path=%2Ftmp%2Fa%20b&prompt=caf%C3%A9%20%26%20100%25%20%231%20%2F%20%3Fx%3Dy", odd.absoluteString)
-            check(WorkHandoffStore.tabLink(provider: "ollama", folder: "/tmp", prompt: "x") == nil && WorkHandoffStore.tabLink(provider: "claude", folder: "", prompt: "x") == nil)
-            // Claude refuses a prompt link that starts with "/"; a leading space keeps it a message, not a command.
-            check(WorkHandoffStore.tabLink(provider: "claude", folder: "/tmp", prompt: "/review the page")?.absoluteString == "claude://code/new?folder=%2Ftmp&q=%20%2Freview%20the%20page")
-            check(WorkHandoffStore.tabLink(provider: "codex", folder: "/tmp", prompt: "/review")?.absoluteString == "codex://threads/new?path=%2Ftmp&prompt=%2Freview")
+            let (store, transport, _, _, _, _, opened) = appSetUp("app-codex")
+            store.models = [frontier]
+            await transport.setJob(provider: "codex", session: codexID)
+            await store.submit(source: source(idA), mode: .newSession, session: nil, model: frontier, prompt: "Go")
+            await store.newSessionLink?.value
+            let stillRunning = try row(store, idA)
+            check(opened.urls.isEmpty && stillRunning.status == "running", "running: nothing opened")
+            await transport.setJobResult("done")
+            await store.followToApp(try row(store, idA).id)
+            let r = try row(store, idA)
+            check(opened.urls.map(\.absoluteString) == ["codex://threads/" + codexID] && r.appOpen?.openedAt != nil, "\(opened.urls)")
+            check(WorkHandoffView.whereItRunsNote(r) == "Opened in Codex. Continue there.")
+
+            let (failed, failedTransport, _, _, _, _, failedOpened) = appSetUp("app-failed")
+            failed.models = [frontier]
+            await failedTransport.setJob(provider: "codex", session: codexID)
+            await failedTransport.setFailed(true)
+            await failed.submit(source: source(idA), mode: .newSession, session: nil, model: frontier, prompt: "Go")
+            await failed.newSessionLink?.value
+            let f = try row(failed, idA)
+            check(f.status == "failed" && failedOpened.urls.isEmpty && f.appOpen?.skipped == "not_completed" && f.appOpen?.openedAt == nil,
+                  "a failed run opens nothing: \(f.status)")
+            check(WorkHandoffView.whereItRunsNote(f) == nil && WorkHandoffStore.appOpenButton(f) == nil, "the card shows the failure as before")
+
+            let (off, offTransport, _, _, _, _, offOpened) = appSetUp("app-off")
+            off.models = [frontier]; off.opensInApp = false
+            await offTransport.setJob(provider: "codex", session: codexID, afterReads: 0)
+            await offTransport.setJobResult("done")
+            await off.submit(source: source(idA), mode: .newSession, session: nil, model: frontier, prompt: "Go")
+            await off.newSessionLink?.value
+            await off.openReadyApps()
+            let offRow = try row(off, idA)
+            check(offOpened.urls.isEmpty && offRow.appOpen == nil, "Settings off: background only, as in 0.5.247")
+            check(WorkHandoffView.whereItRunsNote(try row(off, idA)) == "Ran on this Mac through COS. Open session, then Open in platform, to keep going in the Codex app.")
+
+            let (local, localTransport, _, _, _, _, localOpened) = appSetUp("app-ollama")
+            let ollama = WorkModelChoice(id: "local-model", provider: "ollama", title: "Ollama", available: true, reason: nil)
+            local.models = [ollama]
+            await localTransport.setJob(provider: "ollama", session: nil)
+            await localTransport.setJobResult("done")
+            await local.submit(source: source(idA), mode: .newSession, session: nil, model: ollama, prompt: "Go")
+            await local.openReadyApps()
+            let localRow = try row(local, idA)
+            check(localOpened.urls.isEmpty && localRow.appOpen == nil && localRow.channel == "job", "Ollama has no app")
+        }
+
+        // 17. Cursor: its run names no chat, so the helper finds it by the task's status-line id; exactly one match opens
+        //     in Terminal with cursor-agent --resume, from a .command file beside Work's history. Two matches open nothing.
+        do {
+            let (store, transport, board, _, tracker, _, opened) = appSetUp("app-cursor")
+            store.models = [grok]
+            await transport.setJob(provider: "cursor", session: nil)
+            await store.submit(source: source(idA), mode: .newSession, session: nil, model: grok, prompt: "Check every heading")
+            await store.newSessionLink?.value
+            var r = try row(store, idA)
+            check(r.sessionID == nil && opened.files.isEmpty)
+            check(WorkHandoffView.whereItRunsNote(r) == "Running in the background. It opens in Terminal with cursor-agent when the first reply is done.")
+            // Two chats carry the id (never a guess), then only one.
+            let created = r.createdAt
+            let chat: (String) -> JSONValue = { id in .object(["id": .string(id), "folder": .string(folder), "createdAt": .number(created + 2)]) }
+            await transport.setCursorChats([chat(cursorID), chat("11111111-2222-4333-8444-555555555555")])
+            await transport.setJobResult("COS-WORK \(idA): done: every heading checked")
+            await tracker.tick()
+            r = try row(store, idA)
+            check(r.status == "completed" && r.sessionID == nil && opened.files.isEmpty && board.rows[idA] == "qa", "ambiguous: nothing opened")
+            let search = try require(await transport.args("work-cursor-chat").last)
+            check(search == ["work-cursor-chat", "--tag", idA, "--since", String(Int(r.createdAt))], "\(search)")
+            await transport.setCursorChats([chat(cursorID)])
+            await tracker.tick()
+            r = try row(store, idA)
+            check(r.sessionID == "cursor:" + cursorID && r.appOpen?.folder == folder && r.appOpen?.openedAt != nil, "\(String(describing: r.sessionID))")
+            check(opened.files == [store.appFile(r.id, "command")] && opened.urls.isEmpty, "\(opened.files)")
+            check(opened.scripts == ["#!/bin/zsh\n# COS Control: the Cursor chat Work started. Continue it here.\ncd -- '/Users/test/Miles'\\''s Work Repo' || exit 1\nexec cursor-agent --resume '" + cursorID + "'\n"],
+                  opened.scripts.first ?? "")
+            let mode = (try FileManager.default.attributesOfItem(atPath: opened.files[0].path)[.posixPermissions] as? NSNumber)?.intValue
+            check(mode == 0o700 && opened.files[0].path.hasPrefix(root.path), "executable, private, beside the journal: \(String(describing: mode))")
+            check(WorkHandoffView.whereItRunsNote(r) == "Opened in Terminal with cursor-agent. Continue there.")
+            check(r.progress?.baseline == [], "a new chat: its untimed replies all count")
+            await tracker.tick()
+            check(opened.files.count == 1, "opened once")
+            check(WorkHandoffStore.appOpenButton(r) == "Open again")
+            await store.reopenInApp(receiptID: r.id)
+            check(opened.files.count == 2 && opened.scripts[1] == opened.scripts[0], "Open again runs the same command")
+        }
+
+        // 18. Continue on a session its app owns never sends a server turn: Claude and Cursor open it with the note on
+        //     the clipboard, Codex with it filled in. The note is delivered when the session shows it arriving; a note
+        //     you will not send can be dropped; Not done yet goes the same way.
+        do {
+            let (store, transport, board, _, tracker, _, opened) = appSetUp("app-continue")
+            store.models = [opus]
+            await transport.setJob(provider: "claude", session: claudeID, afterReads: 0)
+            await transport.setJobResult("COS-WORK \(idA): done: drafted it")
+            await store.submit(source: source(idA), mode: .newSession, session: nil, model: opus, prompt: "Draft the CTA")
+            await store.newSessionLink?.value
+            let first = try row(store, idA)
+            let owned = try require(store.sessions.first { $0.id == "claude:" + claudeID })
+            check(first.appOpen?.openedAt != nil && WorkHandoffStore.appOwner(of: owned.id, in: store.receipts)?.id == first.id)
+            check(WorkHandoffView.appOwnedNote("claude").hasPrefix("This session is open in Claude. Continue opens it there"))
+            let tab = "claude://code/continue?session=local_" + claudeID
+            await transport.setReveal("desktop", link: tab)
+            await store.submit(source: source(idB), mode: .continueSession, session: owned, model: nil, prompt: "Now the footer")
+            var note = try row(store, idB)
+            let turns = await transport.count("session-chat-attachability") + transport.count("session-chat-attach") + transport.count("session-chat-send") + transport.count("session-chat-queue")
+            check(turns == 0, "no server turn into a session the app owns: \(turns)")
+            check(note.channel == "app" && note.status == "queued" && note.detail == "Opened in Claude. Your note is on the clipboard. Paste it there.", note.detail)
+            check(opened.urls.last?.absoluteString == tab && opened.clipboard == [note.prompt] && note.prompt.hasSuffix(WorkProgress.instruction(tag: idB)))
+            check(note.blocksNewHandoff && WorkHandoffStore.appOpenButton(note) == "Open again")
+            // You paste it and send it in Claude: the session shows it arriving. Delivered, received, Draft.
+            await transport.setRead(replies: [("COS-WORK \(idA): done: drafted it", stamp(first.createdAt + 5))],
+                                    prompts: [(String(note.prompt.prefix(80)), stamp(note.createdAt + 20))])
+            await tracker.tick()
+            note = try row(store, idB)
+            check(note.status == "delivered" && note.detail == "Sent in Claude. Work follows it from here." && note.progress?.receivedAt != nil && board.rows[idB] == "draft",
+                  "\(note.status) \(board.rows)")
+            // Not done yet, on the app's session, goes the same way.
+            check((try row(store, idA)).progress?.reported == .done && board.rows[idA] == "qa")
+            check(await store.sendBack(receiptID: first.id, source: source(idA), missing: "The mobile layout is not checked."))
+            let back = try row(store, idA)
+            let turnsAfter = await transport.count("session-chat-send")
+            check(back.channel == "app" && back.status == "queued" && turnsAfter == 0 && opened.clipboard.last == back.prompt, "\(back.channel ?? "") \(back.status)")
+            // A note you will not send: dropped, and the item can take a new handoff.
+            store.cancelAppNote(receiptID: back.id)
+            check((try row(store, idA)).status == "canceled" && !store.receipts(for: "task:Quilt:" + idA).contains(where: \.blocksNewHandoff))
+
+            // Codex: the note is filled in on the thread, nothing on the clipboard.
+            let (codex, codexTransport, _, _, _, _, codexOpened) = appSetUp("app-continue-codex")
+            codex.models = [frontier]
+            await codexTransport.setJob(provider: "codex", session: codexID, afterReads: 0)
+            await codexTransport.setJobResult("done")
+            await codex.submit(source: source(idA), mode: .newSession, session: nil, model: frontier, prompt: "Go")
+            await codex.newSessionLink?.value
+            let thread = try require(codex.sessions.first { $0.id == "codex:" + codexID })
+            await codex.submit(source: source(idB), mode: .continueSession, session: thread, model: nil, prompt: "caf\u{E9} & 100% #1 / ?x=y")
+            let codexNote = try row(codex, idB)
+            let encoded = try require(codexNote.prompt.addingPercentEncoding(withAllowedCharacters: WorkHandoffStore.linkQueryAllowed))
+            check(codexOpened.urls.last?.absoluteString == "codex://threads/\(codexID)?prompt=" + encoded && codexOpened.clipboard.isEmpty)
+            let codexTurns = await codexTransport.count("session-chat-send")
+            check(codexNote.detail == "Opened in Codex with your note filled in. Press Send there." && codexTurns == 0)
+
+            // Cursor: Terminal again, the note on the clipboard; its untimed message counts only once it newly appears.
+            let (cursor, cursorTransport, cursorBoard, _, cursorTracker, _, cursorOpened) = appSetUp("app-continue-cursor")
+            cursor.models = [grok]
+            await cursorTransport.setJob(provider: "cursor", session: nil)
+            await cursorTransport.setJobResult("done")
+            await cursorTransport.setCursorChats([.object(["id": .string(cursorID), "folder": .string(folder)])])
+            await cursor.submit(source: source(idA), mode: .newSession, session: nil, model: grok, prompt: "Go")
+            await cursor.newSessionLink?.value
+            let chat = try require(cursor.sessions.first { $0.id == "cursor:" + cursorID })
+            await cursorTransport.setRead(replies: [("an earlier answer", nil)], prompts: [("an earlier question from the chat", nil)])
+            await cursor.submit(source: source(idB), mode: .continueSession, session: chat, model: nil, prompt: "Now check the footer links")
+            var cursorNote = try row(cursor, idB)
+            check(cursorOpened.files.count == 2 && cursorOpened.scripts[1] == cursorOpened.scripts[0] && cursorOpened.clipboard == [cursorNote.prompt])
+            check(cursorNote.detail == "Opened in Terminal with cursor-agent. Your note is on the clipboard. Paste it there." && cursorNote.progress?.promptBaseline?.count == 1)
+            await cursorTracker.tick()
+            check((try row(cursor, idB)).status == "queued", "not sent yet")
+            await cursorTransport.setRead(replies: [("an earlier answer", nil), ("COS-WORK \(idB): done: the footer links work", nil)],
+                                          prompts: [("an earlier question from the chat", nil), (String(cursorNote.prompt.prefix(80)), nil)])
+            await cursorTracker.tick(); await cursorTracker.tick()
+            cursorNote = try row(cursor, idB)
+            check(cursorNote.status == "delivered" && cursorNote.progress?.reported == .done && cursorBoard.rows[idB] == "qa",
+                  "\(cursorNote.status) \(String(describing: cursorNote.progress?.reported)) \(cursorBoard.rows)")
+        }
+
+        // 19. A 0.5.248 journal: an unsent tab reads as a handoff that never started (it no longer blocks the item), a tab
+        //     it linked keeps its session, which the app owns, and neither has the new field.
+        do {
+            let linkedSession = "claude:" + claudeID
+            let journal = """
+            {"version":2,"sessions":[],"drafts":[],"receipts":[
+             {"id":"aaaaaaaa-0000-4000-8000-000000000001","workID":"task:Quilt:\(idA)","workTitle":"Task","sourceRevision":"1","mode":"newSession",
+              "provider":"claude","modelID":"opus","sessionTitle":"Task","status":"queued","detail":"Opened in Claude. Press Send there to start it.",
+              "prompt":"Draft it","createdAt":1790720000,"channel":"tab",
+              "progress":{"tag":"\(idA)","events":[{"id":"e1","at":1790720000,"kind":"sent","text":"Started a new Claude session"}],"seenReplies":[],"notified":[]}},
+             {"id":"aaaaaaaa-0000-4000-8000-000000000002","workID":"task:Quilt:\(idB)","workTitle":"Task","sourceRevision":"1","mode":"newSession",
+              "provider":"claude","modelID":"opus","sessionID":"\(linkedSession)","sessionTitle":"CTA draft","status":"delivered",
+              "detail":"Started in Claude. Work follows it from here.","prompt":"Draft it","createdAt":1790720100,"channel":"tab",
+              "progress":{"tag":"\(idB)","events":[],"seenReplies":[],"notified":[],"baseline":[]}}]}
+            """
+            let url = root.appendingPathComponent("from-0.5.248.json")
+            try Data(journal.utf8).write(to: url)
+            let transport = TrackingTransport()
+            let store = WorkHandoffStore(isolated: false, storageURL: url, transport: { args, data in try await transport.run(args, data) })
+            check(store.error == nil && store.receipts.count == 2, store.error ?? "")
+            let unsent = try require(store.receipts.first { $0.workID == "task:Quilt:" + idA })
+            check(unsent.status == "canceled" && unsent.detail == WorkHandoffStore.unsentTabDetail && !unsent.blocksNewHandoff && unsent.appOpen == nil)
+            check(WorkHandoffView.whereItRunsNote(unsent) == nil && WorkHandoffStore.appOpenButton(unsent) == nil && !unsent.detail.contains("\u{2014}"))
+            let linked = try require(store.receipts.first { $0.workID == "task:Quilt:" + idB })
+            check(linked.status == "delivered" && WorkHandoffStore.appOwner(of: linkedSession, in: store.receipts)?.id == linked.id)
+            check(WorkHandoffView.whereItRunsNote(linked) == "Runs in the Claude app, where you can work with it. Open session shows it here too.")
         }
 
         // 12. A newer handoff replaces the older: the older one's session no longer moves the card.

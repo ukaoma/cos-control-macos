@@ -42,7 +42,7 @@ count = value.get("details", {}).get("tests", 0)
 if count < 727:
     sys.exit(f"helper self-test ran only {count} checks; expected at least 727 (727 at 0.5.238: the Codex rollout reader, open-thread list, discovery and the pet pipeline over them)")
 ' "$SELF_TEST"
-# The Work contract self-test (the model catalog, admission, and from 0.5.248 the tab folder rules) is its own command,
+# The Work contract self-test (the model catalog, admission, and from 0.5.249 the Cursor chat finder) is its own command,
 # and nothing ran it: a mutation of the tab folder rules survived because of it (2026-09-29).
 if ! WORK_SELF_TEST="$(COS_CONTROL_TEST_HOME="$TMP/home" "$TMP/cos-control-helper" self-test-work 2>&1)"; then
   print -u2 "helper self-test-work FAILED (helper exited non-zero):"
@@ -52,7 +52,7 @@ fi
 /usr/bin/python3 -c '
 import json, sys
 value = json.loads(sys.argv[1])
-if not value.get("ok") or value.get("details", {}).get("checks", 0) < 27:
+if not value.get("ok") or value.get("details", {}).get("checks", 0) < 33:
     sys.exit("helper self-test-work FAILED: " + str(value)[:2000])
 ' "$WORK_SELF_TEST"
 
@@ -1072,12 +1072,18 @@ assert "claudeSessions = ClaudeSession.markingWork(next, workSessionIDs: workSes
 assert "claudeSessions = ClaudeSession.markingWork(cache.sessions, workSessionIDs: workSessionIDs)" in model, "the cached list marks Work's sessions"
 assert "claudeSessions = next\n" not in model and "claudeSessions = cache.sessions\n" not in model, "no list load may skip the Work marking"
 assert "newSessionLink = Task { [weak self] in await self?.linkNewSession(id) }" in submit, "a New session re-reads its job until it is linked"
-# 0.5.248: New session opens a tab in Claude, Codex or Cursor (Settings, on by default), the tracker links it once it
-# is sent, and Ollama keeps the background run. Behaviour is covered by Tests/run-work-progress.sh (tests 15 to 17).
-tab_at = submit.index("if mode == .newSession, opensTabs, Self.tabProviders.contains(row.provider) {")
-assert tab_at < submit.index('row.channel = "job"; try save(row)'), "the tab branch must come before the background run"
-assert 'await store.linkOpenedTabs(ids: Set(open.map(\\.id)))' in tracker, "the tracker links opened tabs"
-assert "store.opensTabs = workOpensTabs" in model and "workHandoffStore?.opensTabs = newValue" in model, "the Settings switch reaches the store at launch and on change"
+# 0.5.249: start it, then open it. A New session for Claude, Codex or Cursor runs the background job (Settings on by
+# default) and opens in its app once its first reply is done; a Continue on a session its app owns never sends a server
+# turn. Behaviour is covered by Tests/run-work-progress.sh (tests 15 to 19 and the pure rules in appChecks).
+assert "if opensInApp, Self.appProviders.contains(row.provider) { row.appOpen = WorkAppOpen() }" in submit, "open-in-app is recorded on the job receipt at send"
+assert submit.index("row.appOpen = WorkAppOpen()") < submit.index('row.channel = "job"; try save(row)'), "the intent is journaled before the run starts"
+owner_at = submit.index("} else if let owner = Self.appOwner(of: session!.id, in: receipts) {")
+assert owner_at < submit.index("} else { try await continueSession(session!, row: &row) }"), "an app-owned session is checked before any server turn"
+assert "await store.openReadyApps()" in tracker and "linkOpenedTabs" not in tracker, "every tracker pass opens what is ready; no tab linking is left"
+for dead in ("func tabLink(", "func openTab(", "func linkOpenedTabs(", "func reopenTab(", "func cancelTab(", "cursorFilePrompt", "tabPromptSeen", "\"work-tab-folder\""):
+    assert dead not in store and dead not in progress, "the 0.5.248 prefill route is gone: " + dead
+assert "store.opensInApp = workOpensTabs" in model and "workHandoffStore?.opensInApp = newValue" in model, "the Settings switch reaches the store at launch and on change"
+assert 'nonisolated static let workOpensTabsKey = "cos.workOpensTabs"' in model, "the Settings key is unchanged"
 assert 'Toggle("Open new sessions in the app", isOn: Binding(get: { model.workOpensTabs }, set: { model.workOpensTabs = $0 }))' in views
 PY
 # The tracker's behaviour: status lines, delivery, stages, Jev gating, retries, a busy journal (synthetic transport and board).

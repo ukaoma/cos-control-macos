@@ -108,17 +108,25 @@ enum WorkHandoffState: Equatable {
 }
 
 struct WorkHandoffView: View {
-    /// 0.5.247: where a New session runs. It is a run on this Mac through COS, never a tab in the provider's app, so
-    /// Miles looked for it in Claude's sidebar, found nothing and read the handoff as lost (2026-09-29).
+    /// 0.5.247: where a New session runs. Miles looked for a background run in Claude's sidebar, found nothing and read
+    /// the handoff as lost (2026-09-29). 0.5.249: it runs in the background, then opens in its app once the first reply
+    /// is done, and the card says which of those it is at.
     nonisolated static func whereItRunsNote(_ receipt: WorkHandoffReceipt) -> String? {
         guard receipt.mode == .newSession else { return nil }
         if receipt.channel == "tab" {
-            // 0.5.248: a tab in the provider's app, which Miles works in alongside COS.
-            let app = WorkHandoffStore.tabAppName(receipt.provider)
-            if receipt.sessionID != nil { return "Runs in the \(app) app, where you can work with it. Open session shows it here too." }
-            return receipt.status == "queued" ? "Work links the session once you send it in \(app)." : nil
+            // A session started from a 0.5.248 tab, which the app owns. An unsent one reads as never started.
+            guard receipt.sessionID != nil else { return nil }
+            return "Runs in the \(WorkHandoffStore.appName(receipt.provider)) app, where you can work with it. Open session shows it here too."
         }
-        guard receipt.channel == "job", ["claude", "codex"].contains(receipt.provider) else { return nil }
+        guard receipt.channel == "job" else { return nil }
+        if let open = receipt.appOpen {
+            let place = WorkHandoffStore.openPlace(receipt.provider)
+            if open.openedAt != nil { return WorkHandoffStore.openedText(receipt.provider) }
+            if let skipped = open.skipped { return WorkHandoffStore.appSkipText(skipped, provider: receipt.provider) }
+            if receipt.blocksNewHandoff { return "Running in the background. It opens in \(place) when the first reply is done." }
+            return receipt.status == "completed" ? "The first reply is done. Opening it in \(place)." : nil
+        }
+        guard ["claude", "codex"].contains(receipt.provider) else { return nil }
         let app = receipt.provider == "codex" ? "Codex" : "Claude"
         if receipt.sessionID == nil {
             return receipt.blocksNewHandoff ? "Runs on this Mac through COS, not as a tab in the \(app) app. Its session shows here in a moment." : nil
@@ -126,6 +134,12 @@ struct WorkHandoffView: View {
         return receipt.blocksNewHandoff
             ? "Runs on this Mac through COS, not as a tab in the \(app) app. Open session to follow it."
             : "Ran on this Mac through COS. Open session, then Open in platform, to keep going in the \(app) app."
+    }
+    /// 0.5.249: Continue on a session its app owns takes your note there; COS never sends a turn into it.
+    nonisolated static func appOwnedNote(_ provider: String) -> String {
+        provider == "codex"
+            ? "This session is open in Codex. Continue opens it there with your note filled in, and you send it, so the app stays the only one writing to it."
+            : "This session is open in \(WorkHandoffStore.openPlace(provider)). Continue opens it there and puts your note on the clipboard, and you send it, so the app stays the only one writing to it."
     }
 
     @ObservedObject var store: WorkHandoffStore
@@ -292,12 +306,14 @@ struct WorkHandoffView: View {
                     Button(WorkHandoffView.acknowledgeTitle(receipt)) { store.markReviewed(receiptID: receipt.id) }
                         .buttonStyle(COSQuietButtonStyle()).disabled(store.busy || validating)
                 }
-                if receipt.channel == "tab", receipt.status == "queued", receipt.sessionID == nil {
-                    // 0.5.248: the tab was closed or the app was not running; or you will not send it.
-                    Button("Open again") { Task { await store.reopenTab(receiptID: receipt.id) } }
+                if let open = WorkHandoffStore.appOpenButton(receipt) {
+                    // 0.5.249: the same session in its app again (never while its run is going), or a note you took there.
+                    Button(open) { Task { await store.reopenInApp(receiptID: receipt.id) } }
                         .buttonStyle(COSQuietButtonStyle()).disabled(isPreview)
-                    Button("Not sending it") { store.cancelTab(receiptID: receipt.id) }
-                        .buttonStyle(COSTextButtonStyle()).disabled(isPreview)
+                    if receipt.channel == "app" {
+                        Button("Not sending it") { store.cancelAppNote(receiptID: receipt.id) }
+                            .buttonStyle(COSTextButtonStyle()).disabled(isPreview)
+                    }
                 } else if receipt.blocksNewHandoff && receipt.status != "delivered" {
                     Button("Check status") { Task { await store.refreshReceipts() } }
                         .buttonStyle(COSTextButtonStyle()).disabled(store.busy || validating)
@@ -351,6 +367,12 @@ struct WorkHandoffView: View {
     /// "Not done yet": what is missing, sent back to the same session. It becomes a new, tracked handoff.
     private func sendBackControls(_ receipt: WorkHandoffReceipt, session: WorkSession) -> some View {
         let empty = sendBackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let title = WorkSendPlan.clip(session.title)
+        // 0.5.249: a session its app owns gets the note in the app, for you to send there.
+        let how: String = WorkHandoffStore.appOwner(of: session.id, in: store.receipts) != nil
+            ? "Opens \u{201C}\(title)\u{201D} in \(WorkHandoffStore.openPlace(session.provider)) with this note for you to send"
+            : "Continues \u{201C}\(title)\u{201D} with this note"
+        let then: String = currentStage == nil ? "." : " and moves the card back to Draft."
         return VStack(alignment: .leading, spacing: 6) {
             TextField("What\u{2019}s missing?", text: $sendBackText, axis: .vertical).lineLimit(2...5)
                 .textFieldStyle(.plain).font(COSType.body(12)).padding(8)
@@ -363,8 +385,7 @@ struct WorkHandoffView: View {
                     .disabled(sendingBack || store.busy || empty)
                 Button("Cancel") { sendBackOpen = false }.buttonStyle(COSTextButtonStyle()).disabled(sendingBack)
             }
-            Text("Continues \u{201C}" + WorkSendPlan.clip(session.title) + "\u{201D} with this note"
-                 + (currentStage == nil ? "." : " and moves the card back to Draft."))
+            Text(how + then)
                 .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
         }
     }
@@ -412,7 +433,7 @@ struct WorkHandoffView: View {
                     Divider().overlay(COSPalette.line)
                     choiceRow(.fork, title: "Fork a session", detail: "Copies a conversation first. Same platform, or to Claude or Codex.")
                     Divider().overlay(COSPalette.line)
-                    choiceRow(.newSession, title: "Start a new session", detail: store.opensTabs ? "Opens a new tab in Claude, Codex or Cursor with this context; you press Send there. A local model runs in the background." : "Claude, Codex, Cursor or a local model, with a model you pick.")
+                    choiceRow(.newSession, title: "Start a new session", detail: store.opensInApp ? "Runs in the background with a model you pick, then opens in Claude or Codex, or in Terminal for Cursor, when the first reply is done. A local model stays in the background." : "Claude, Codex, Cursor or a local model, with a model you pick.")
                 }.overlay(RoundedRectangle(cornerRadius: 8).stroke(COSPalette.line))
             }
             VStack(alignment: .leading, spacing: 6) {
@@ -562,8 +583,10 @@ struct WorkHandoffView: View {
                     }
                     Text("\(session.status.capitalized) · \(session.project.isEmpty ? "Workspace unavailable" : session.project)")
                         .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
-                    Text(forkToPlatform && store.opensTabs
-                         ? "Opens a new \(WorkHandoffStore.tabAppName(provider)) tab with this context plus the conversation up to now from \u{201C}\(session.title)\u{201D}, read from its transcript (up to 32,000 characters in all). You press Send there. The original session is unchanged."
+                    Text(forkToPlatform && store.opensInApp
+                         ? "Starts a new \(WorkHandoffStore.providerName(provider)) session in the background with this context plus the conversation up to now from \u{201C}\(session.title)\u{201D}, read from its transcript (up to 32,000 characters in all), then opens it in \(WorkHandoffStore.appName(provider)) when the first reply is done. The original session is unchanged."
+                         : mode == .continueSession && WorkHandoffStore.appOwner(of: session.id, in: store.receipts) != nil
+                         ? Self.appOwnedNote(session.provider)
                          : forkToPlatform
                          ? "Starts a new \(WorkHandoffStore.providerName(provider)) session with this context plus the conversation up to now from \u{201C}\(session.title)\u{201D}, read from its transcript (up to 32,000 characters in all). It uses the server\u{2019}s configured workspace and permissions, not the original session\u{2019}s. The original session is unchanged."
                          : mode == .fork ? "Creates a copy with \(WorkHandoffStore.providerName(session.provider)); the original remains unchanged." : "Uses this session’s model and permissions. Busy sessions may queue or refuse.")

@@ -65,6 +65,22 @@ struct WorkHandoffDraft: Codable, Equatable, Sendable {
     var prompt: String
     var editVersion = 0
 }
+/// 0.5.249 ("start it, then open it"): a New session from Work runs in the background on the COS server, then opens in
+/// its app once its first reply is done: Claude and Codex in their own apps, Cursor in Terminal with cursor-agent.
+/// Present on a receipt means Control opens it when that reply is done. `openedAt` means it did: from then on the app
+/// owns the session, so Continue opens it there and never sends a server turn into it.
+/// Optional on the receipt, and never a new status: the server's journal validator refuses a status it does not know.
+struct WorkAppOpen: Codable, Equatable, Sendable {
+    /// When the server's run finished (its completedAt, or when Control first saw it finished). The session opens a
+    /// few seconds after this, never while the run is still going.
+    var runEndedAt: Double? = nil
+    /// When Control opened the session in its app.
+    var openedAt: Double? = nil
+    /// Why it was not opened by itself (WorkHandoffStore.appSkipText). Nil while it may still open.
+    var skipped: String? = nil
+    /// Cursor: the folder its chat ran in, where `cursor-agent --resume` finds it.
+    var folder: String? = nil
+}
 struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     var id: String
     var workID: String
@@ -94,6 +110,9 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     /// 0.5.247: the status line this handoff asked for and what the session has reported since (WorkProgress.swift).
     /// Nil on handoffs sent by 0.5.246 and earlier, which never asked for one, so they are never tracked.
     var progress: WorkProgress?
+    /// 0.5.249: open the session in its app once the first reply is done (WorkAppOpen). Nil on handoffs that stay in the
+    /// background (Settings off, Ollama) and on everything sent before 0.5.249.
+    var appOpen: WorkAppOpen?
     /// Server-terminal states never block another handoff: completed, failed, refused, canceled (server job states:
     /// completed | failed | canceled | interrupted; interrupted is recorded as failed).
     nonisolated static let terminalStatuses: Set<String> = ["completed", "failed", "refused", "canceled", "reviewed"]
@@ -215,11 +234,20 @@ struct WorkSendPlan: Equatable {
         receipts = journal.receipts.map { row in
             var row = row
             if ["preparing", "sending"].contains(row.status) { row.status = "unknown"; row.detail = "Delivery was interrupted. Refresh the receipt or inspect the target session before further work." }
+            if Self.unsentTab(row) { row.status = "canceled"; row.detail = Self.unsentTabDetail }
             return row
         }
         let known = sessions
         sessions = known + journal.sessions.filter { saved in !known.contains(where: { $0.id == saved.id }) }
     }
+    /// A tab 0.5.248 opened with the handoff filled in and never linked to a session (channel "tab", still queued, no
+    /// session). 0.5.249 starts sessions itself and no longer follows unsent tabs, so it reads as a handoff that never
+    /// started: it stops blocking the item, and a New session can start the work again. A tab 0.5.248 did link keeps
+    /// its session, which the app owns.
+    nonisolated static func unsentTab(_ row: WorkHandoffReceipt) -> Bool {
+        row.channel == "tab" && row.status == "queued" && row.sessionID == nil
+    }
+    nonisolated static let unsentTabDetail = "Not started. COS Control 0.5.248 opened this as a tab for you to send, and it was never linked to a session. If you sent it in the app, keep working there. Otherwise start the work again."
     private func persist() throws {
         guard storageReady else { throw failure("History is unavailable; sending is disabled.") }
         let folder = storageURL.deletingLastPathComponent()
@@ -448,9 +476,9 @@ struct WorkSendPlan: Equatable {
     // The receipt is an ordinary newSession whose sourceSessionID names the original: no new mode, so an older
     // Control can still read the journal after a rollback.
 
-    /// Where a fork to another platform can go. A Cursor or Ollama run started from Work is a one-shot answer with no
-    /// session to open (the server links no Cursor chat id; Ollama keeps no session), and Cursor runs read-only, so
-    /// neither is offered as a target yet. A Cursor session can still be the source.
+    /// Where a fork to another platform can go. Ollama keeps no session. The server links no Cursor chat id and runs
+    /// Cursor read-only; since 0.5.249 Control finds a New session's chat afterwards to open it in Terminal, but a fork
+    /// to Cursor has not been checked, so it is not offered yet. A Cursor session can still be the source.
     nonisolated static let crossPlatformTargets: Set<String> = ["claude", "codex"]
     /// Providers whose sessions fork natively (server session-chat-fork; server FORKABLE_PROVIDERS).
     nonisolated static let nativeForkProviders: Set<String> = ["claude", "codex"]
@@ -730,13 +758,11 @@ struct WorkSendPlan: Equatable {
                 row.status = "queued"; row.detail = "Simulated handoff. No message was sent to a provider. Use the test controls to advance it."
                 try save(row); return
             }
-            if mode == .newSession, opensTabs, Self.tabProviders.contains(row.provider) {
-                // 0.5.248: a tab in the provider's app, prompt filled in, that you send yourself (Miles, 2026-09-29:
-                // "Tabs right away, in claude, ChatGPT and Cursor ... We can't see or recover those headless sessions
-                // with the GUI."). The tracker links the session once you press Send.
-                row.channel = "tab"; try save(row)
-                try await openTab(&row, sent: sent, instruction: instruction)
-            } else if mode == .newSession {
+            if mode == .newSession {
+                // 0.5.249 (Miles, 2026-09-29, "route 1"): the COS server starts the session, and once its first reply is
+                // done Control opens it in its app (openReadyApps), where he works alongside COS. Ollama has no app, and
+                // with Settings > Open new sessions in the app off, it stays in the background as in 0.5.247.
+                if opensInApp, Self.appProviders.contains(row.provider) { row.appOpen = WorkAppOpen() }
                 row.channel = "job"; try save(row)
                 let data = try JSONSerialization.data(withJSONObject: ["clientJobId": id, "query": sent, "model": model!.id])
                 let result = try await call(["work-new"], data)
@@ -758,10 +784,15 @@ struct WorkSendPlan: Equatable {
                     row.status = result["orphanPossible"]?.bool == true || http == 0 || http >= 500 ? "unknown" : "refused"
                     row.detail = result["reasonCopy"]?.string ?? "Fork could not be confirmed."
                 }
+            } else if let owner = Self.appOwner(of: session!.id, in: receipts) {
+                // 0.5.249: the app owns this session. A server turn would write its transcript while the app does, so
+                // Continue takes your note to the app instead, and you send it there.
+                row.channel = "app"; try save(row)
+                try await continueInApp(session!, owner: owner, row: &row)
             } else { try await continueSession(session!, row: &row) }
             try save(row)
             onHandoffRecorded?()
-            if row.channel == "job", row.sessionID == nil, row.blocksNewHandoff {
+            if row.channel == "job", (row.sessionID == nil && row.blocksNewHandoff) || row.appOpen != nil {
                 let id = row.id
                 newSessionLink = Task { [weak self] in await self?.linkNewSession(id) }
             }
@@ -775,133 +806,289 @@ struct WorkSendPlan: Equatable {
             self.error = error.localizedDescription
         }
     }
-    // MARK: - Tabs in the apps (0.5.248)
+    // MARK: - Start it, then open it (0.5.249)
+    //
+    // Miles, 2026-09-29, chose "route 1": the COS server starts the session (the 0.5.247 background run, with its
+    // handoff, status line and tracking unchanged), and once the first reply is done Control opens the session in its
+    // app, where he works alongside COS. The canaries that day decided the rules:
+    // - Claude 2.16120.0 imports a finished CLI session as a Desktop tab (`claude://resume?session=<id>`), and it can be
+    //   continued there. An import has no owner check, so nothing is imported while the run still writes.
+    // - The ChatGPT app (26.928) resumes a finished Codex thread (`codex://threads/<id>`). One opened while
+    //   `codex exec` still writes stays view only ("already has an active writer") and is never retried.
+    // - The Cursor app cannot open a chat the CLI started; `cursor-agent --resume <id>` picks it up in Terminal.
+    // So nothing opens while a run is going, and each session opens once.
 
-    /// Providers whose New session opens as a tab in their own app. Ollama has no app, so it keeps the background run.
-    nonisolated static let tabProviders: Set<String> = ["claude", "codex", "cursor"]
-    /// Longest Cursor link that is safe. Cursor drops a prompt link of about 10,000 characters or more without any
-    /// dialog or log line (9,000 opened, 10,000 did not, 2026-09-29), so a longer handoff goes in a file.
-    nonisolated static let cursorTabLinkLimit = 8_000
-    /// New sessions open as tabs (Settings, on unless turned off). Off, they run in the background as before.
-    var opensTabs = true
-    /// Opens a link in its app; replaced in tests.
+    /// Providers whose New session opens once its first reply is done. Ollama has no app, so it stays in the background.
+    nonisolated static let appProviders: Set<String> = ["claude", "codex", "cursor"]
+    /// New sessions open in their app (Settings > Open new sessions in the app, on unless turned off). Off, they stay in
+    /// the background as in 0.5.247. The choice is kept on each receipt when it is sent.
+    var opensInApp = true
+    /// Opens a link in its app; replaced in tests, which never open a real app.
     var openURL: @MainActor (URL) -> Bool = { NSWorkspace.shared.open($0) }
+    /// Opens a `.command` file in Terminal, which runs it (no Apple Events permission is needed); replaced in tests.
+    var openInTerminal: @MainActor (URL) async -> Bool = { file in
+        await withCheckedContinuation { done in
+            NSWorkspace.shared.open([file], withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"),
+                                    configuration: NSWorkspace.OpenConfiguration()) { _, error in done.resume(returning: error == nil) }
+        }
+    }
+    /// Puts your note on the clipboard, to paste in the app; replaced in tests.
+    var copyToClipboard: @MainActor (String) -> Void = { text in
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+    }
+    /// Seconds after a run ended before its session opens: the provider may still be closing its transcript.
+    var appOpenSettle: Double = WorkHandoffStore.defaultAppOpenSettle
+    nonisolated static let defaultAppOpenSettle: Double = 5
+    /// A run that ended longer ago than this (COS Control was closed) does not open by itself; the card offers it.
+    nonisolated static let appOpenWindow: Double = 3_600
+    /// Cursor names no chat in its run, so Control looks for it this long after the run ended, then gives up.
+    nonisolated static let cursorChatSearch: Double = 120
+    /// Receipts being opened right now, so two passes never open one twice while a call is out.
+    private var appOpening: Set<String> = []
 
-    nonisolated static func tabAppName(_ provider: String) -> String {
+    nonisolated static func appName(_ provider: String) -> String {
         switch provider { case "codex": "Codex"; case "cursor": "Cursor"; default: "Claude" }
     }
+    /// Where a provider's session opens, as the card says it: its app, or Terminal for Cursor.
+    nonisolated static func openPlace(_ provider: String) -> String {
+        provider == "cursor" ? "Terminal with cursor-agent" : appName(provider)
+    }
+    nonisolated static func openedText(_ provider: String) -> String { "Opened in \(openPlace(provider)). Continue there." }
     /// Unreserved URL characters only (RFC 3986), in ASCII: everything else is percent-encoded, including non-ASCII
     /// letters, which `.alphanumerics` would let through.
-    nonisolated static let tabQueryAllowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
-    /// The link that opens a new chat in the provider's app with `prompt` filled in, never sent (canaried 2026-09-29).
-    nonisolated static func tabLink(provider: String, folder: String, prompt: String) -> URL? {
-        func q(_ text: String) -> String? { text.addingPercentEncoding(withAllowedCharacters: tabQueryAllowed) }
-        guard let text = q(prompt), !prompt.isEmpty else { return nil }
+    nonisolated static let linkQueryAllowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+    /// A session id the apps and cursor-agent take: a lowercase UUID, which Claude CLI sessions, Codex threads and Cursor
+    /// chats all are. Anything else (a trailing newline included) is refused before it reaches a link or a command.
+    /// Checked byte by byte, not with a regular expression: ICU's `$` also matches before a final newline, and which
+    /// engine `range(of:options:)` uses differs between Foundation versions (on this Mac it refuses the newline and
+    /// NSRegularExpression accepts it).
+    nonisolated static func appSessionID(_ raw: String) -> String? {
+        let bytes = Array(raw.utf8)
+        guard bytes.count == 36 else { return nil }
+        for (index, byte) in bytes.enumerated() {
+            if [8, 13, 18, 23].contains(index) {
+                guard byte == UInt8(ascii: "-") else { return nil }
+            } else {
+                guard (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte) || (UInt8(ascii: "a")...UInt8(ascii: "f")).contains(byte) else { return nil }
+            }
+        }
+        return raw
+    }
+    /// "provider:native" to native.
+    nonisolated static func nativeID(_ sessionID: String) -> String? {
+        let parts = sessionID.split(separator: ":", maxSplits: 1).map(String.init)
+        return parts.count == 2 && !parts[1].isEmpty ? parts[1] : nil
+    }
+    /// Codex: the thread in the ChatGPT app (canary 2, 2026-09-29), with `note` filled in for you to send when given (a
+    /// Continue on a thread the app owns). Nil for anything that is not a thread id.
+    nonisolated static func codexThreadLink(threadID: String, note: String? = nil) -> URL? {
+        guard let id = appSessionID(threadID) else { return nil }
+        guard let note, !note.isEmpty else { return URL(string: "codex://threads/\(id)") }
+        guard let text = note.addingPercentEncoding(withAllowedCharacters: linkQueryAllowed) else { return nil }
+        return URL(string: "codex://threads/\(id)?prompt=\(text)")
+    }
+    /// Claude: only the two links the helper's session-reveal gives for this session, ever. It imports a finished CLI
+    /// session with `claude://resume?session=<id>` (canary 1), or focuses the Code tab that already holds it with
+    /// `claude://code/continue?session=local_<tab id>`. It gives none while the transcript is still being written, or
+    /// when another Claude tab already claims it. Anything else is refused.
+    nonisolated static func claudeAppLink(_ raw: String?, sessionID: String) -> URL? {
+        guard let raw, let id = appSessionID(sessionID) else { return nil }
+        if raw == "claude://resume?session=" + id { return URL(string: raw) }
+        let focus = "claude://code/continue?session=local_"
+        guard raw.hasPrefix(focus), appSessionID(String(raw.dropFirst(focus.count))) != nil else { return nil }
+        return URL(string: raw)
+    }
+    /// One shell word in single quotes: nothing inside is expanded, and a quote in it closes, escapes and reopens.
+    nonisolated static func shellQuote(_ text: String) -> String { "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+    /// Cursor: its app cannot open a chat the CLI started (canary 4), so the chat opens in Terminal, in the folder it ran
+    /// in, with `cursor-agent --resume <chat id>` (canary 5). Terminal runs this as a `.command` file. Nil unless the id
+    /// is a chat id and the folder a plain absolute path with no control characters.
+    nonisolated static func cursorResumeScript(chatID: String, folder: String) -> String? {
+        guard let id = appSessionID(chatID), folder.hasPrefix("/"), folder.utf8.count <= 1_024,
+              !folder.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return nil }
+        return "#!/bin/zsh\n# COS Control: the Cursor chat Work started. Continue it here.\n"
+            + "cd -- \(shellQuote(folder)) || exit 1\nexec cursor-agent --resume \(shellQuote(id))\n"
+    }
+    /// A file kept beside Work's history (Application Support, never the user's repository), such as a Terminal command.
+    func appFile(_ id: String, _ ext: String) -> URL {
+        storageURL.deletingLastPathComponent().appendingPathComponent("tabs", isDirectory: true).appendingPathComponent(id + "." + ext)
+    }
+
+    enum AppOpenStep: Equatable { case wait, findChat, open, skip(String) }
+    /// What a New session that opens in its app needs now. Nil when it never asked to, or is settled (opened or skipped).
+    /// It opens only once the server's run has completed, `settle` seconds after it ended, within `appOpenWindow`. A run
+    /// still going waits; one that failed, was refused or was canceled opens nothing.
+    nonisolated static func appOpenStep(_ r: WorkHandoffReceipt, now: Double, settle: Double = defaultAppOpenSettle) -> AppOpenStep? {
+        guard r.mode == .newSession, r.channel == "job", let open = r.appOpen, open.openedAt == nil, open.skipped == nil,
+              appProviders.contains(r.provider) else { return nil }
+        guard r.status == "completed" else { return r.blocksNewHandoff ? .wait : .skip("not_completed") }
+        guard let ended = open.runEndedAt, now - ended >= settle else { return .wait }
+        if now - ended > appOpenWindow { return .skip("late") }
+        guard r.sessionID != nil else { return r.provider == "cursor" && now - ended <= cursorChatSearch ? .findChat : .skip("no_session") }
+        return .open
+    }
+    /// The receipt that handed this session to its app, if any: one Work opened in its app (0.5.249), or one you started
+    /// from a 0.5.248 tab. The app writes the session's transcript from then on, so COS never delivers a server turn into
+    /// it: the app and the server would write one transcript at once.
+    nonisolated static func appOwner(of sessionID: String, in receipts: [WorkHandoffReceipt]) -> WorkHandoffReceipt? {
+        receipts.filter { $0.sessionID == sessionID && ($0.appOpen?.openedAt != nil || $0.channel == "tab") }
+            .max { $0.createdAt < $1.createdAt }
+    }
+    /// The card's button: Open again once it opened (or for a note you have not sent yet), "Open in <app>" when it did
+    /// not open by itself. Nil while it still may, when it has no session, and while its run is still going.
+    nonisolated static func appOpenButton(_ r: WorkHandoffReceipt) -> String? {
+        if r.channel == "app" { return r.status == "queued" && r.sessionID != nil ? "Open again" : nil }
+        guard r.mode == .newSession, r.channel == "job", let open = r.appOpen, r.status == "completed", r.sessionID != nil else { return nil }
+        if open.openedAt != nil { return "Open again" }
+        guard open.skipped != nil else { return nil }
+        if r.provider == "cursor" { return open.folder == nil ? nil : "Open in Terminal" }
+        return "Open in \(appName(r.provider))"
+    }
+    /// Why a session did not open by itself, for the card. Nil when the card already says why (a run that failed).
+    nonisolated static func appSkipText(_ code: String, provider: String) -> String? {
+        switch code {
+        case "not_completed": return nil
+        case "late": return "It finished while COS Control was closed, so it did not open by itself."
+        case "no_session":
+            return provider == "cursor" ? "COS could not find its Cursor chat, so nothing was opened." : "The run named no session, so nothing was opened."
+        case "open_failed": return "\(openPlace(provider)) could not be opened."
+        case "cursor_app": return "This Cursor chat lives in the Cursor app, which has no link to open it."
+        case "unreachable": return "COS could not check this session just now. Try again in a moment."
+        case "claude:no_desktop": return "The Claude app is not installed, so it was not opened."
+        case "claude:desktop_too_old": return "This Claude app is too old to open it. Update Claude, then open it."
+        case "claude:archived": return "Its Claude tab is archived."
+        case "claude:desktop_lineage": return "A Claude tab already holds this conversation."
+        case "claude:no_transcript": return "Its conversation was not found on this Mac."
+        default: return "\(openPlace(provider)) could not open it."
+        }
+    }
+    /// The one chat the helper found for a Cursor run, with its folder. Nil when there is none or more than one: never a
+    /// guess. A chat another handoff already has is never it.
+    nonisolated static func cursorChatMatch(_ rows: [JSONValue], taken: Set<String>) -> (id: String, folder: String)? {
+        let found = rows.compactMap(\.object).compactMap { row -> (id: String, folder: String)? in
+            guard let id = row["id"]?.string.flatMap(appSessionID), let folder = row["folder"]?.string, !folder.isEmpty,
+                  !taken.contains("cursor:" + id) else { return nil }
+            return (id, folder)
+        }
+        return found.count == 1 ? found[0] : nil
+    }
+
+    enum AppTarget: Equatable { case link(URL), terminal(String) }
+    private enum AppTargetResult { case ready(AppTarget), wait, unavailable(String) }
+    /// How to open this session in its app now. Claude asks the helper (session-reveal), which gives no link while the
+    /// transcript is still being written.
+    private func appTarget(provider: String, native: String, folder: String?, note: String?) async -> AppTargetResult {
         switch provider {
         case "claude":
-            // Claude refuses a link whose prompt starts with "/" (a slash command), so it gets a leading space.
-            guard let path = q(folder), !folder.isEmpty, let safe = prompt.hasPrefix("/") ? q(" " + prompt) : text else { return nil }
-            return URL(string: "claude://code/new?folder=\(path)&q=\(safe)")
+            guard let details = try? await call(["session-reveal", "--provider", "claude", "--session", native]) else { return .unavailable("unreachable") }
+            let reason = details["revealReason"]?.string ?? ""
+            if reason == "running" { return .wait }
+            guard let url = Self.claudeAppLink(details["deepLink"]?.string, sessionID: native) else { return .unavailable("claude:" + reason) }
+            return .ready(.link(url))
         case "codex":
-            guard let path = q(folder), !folder.isEmpty else { return nil }
-            return URL(string: "codex://threads/new?path=\(path)&prompt=\(text)")
+            guard let url = Self.codexThreadLink(threadID: native, note: note) else { return .unavailable("no_link") }
+            return .ready(.link(url))
         case "cursor":
-            // Cursor's link takes no folder: the chat opens in the workspace Cursor has open.
-            return URL(string: "cursor://anysphere.cursor-deeplink/prompt?text=\(text)&mode=agent")
-        default: return nil
+            guard let folder else { return .unavailable("cursor_app") }
+            guard let script = Self.cursorResumeScript(chatID: native, folder: folder) else { return .unavailable("no_link") }
+            return .ready(.terminal(script))
+        default: return .unavailable("no_link")
         }
     }
-    /// The short Cursor prompt for a handoff too long for its link. The task tag leads, so two such handoffs never
-    /// share a first line (the tracker links a tab by its first line).
-    nonisolated static func cursorFilePrompt(tag: String, path: String, instruction: String) -> String {
-        "COS Work handoff \(tag): the whole task is in the file \(path). Read all of it first, then do what it asks." + instruction
-    }
-    /// Sessions that could be the one a tab became: the tab's provider, created once the tab opened (5 s slack), not
-    /// already linked to another handoff; oldest first, since the first one after opening is the likeliest.
-    nonisolated static func tabCandidates(_ rows: [JSONValue], provider: String, openedAt: Double, taken: Set<String>) -> [WorkSession] {
-        rows.compactMap(\.object).compactMap { row -> (WorkSession, Double)? in
-            guard (row["provider"]?.string ?? "claude") == provider, let native = row["id"]?.string, !native.isEmpty,
-                  let created = row["createdAt"]?.string.flatMap(WorkProgress.parseStamp), created >= openedAt - 5 else { return nil }
-            let id = "\(provider):\(native)"
-            guard !taken.contains(id) else { return nil }
-            return (WorkSession(id: id, nativeID: native, provider: provider, title: row["name"]?.string ?? "", summary: "",
-                                project: row["workspace"]?.string ?? "", status: row["state"]?.string ?? "running"), created)
-        }.sorted { $0.1 < $1.1 }.map(\.0)
-    }
-
-    private func openTab(_ row: inout WorkHandoffReceipt, sent: String, instruction: String) async throws {
-        let app = Self.tabAppName(row.provider)
-        let folder = (try await call(["work-tab-folder", "--provider", row.provider]))["folder"]?.string ?? ""
-        guard !folder.isEmpty else {
-            row.status = "refused"; row.detail = "COS could not tell which folder to open \(app) in. Nothing was opened or sent."; return
-        }
-        // The exact words go in a file beside the journal: Open again reopens them (the journal keeps only a note for a
-        // fork to another platform), and a Cursor handoff too long for its link is read from it.
-        let file = tabFile(row.id)
-        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data(sent.utf8).write(to: file, options: .atomic)
-        var prompt = sent
-        if row.provider == "cursor", (Self.tabLink(provider: "cursor", folder: folder, prompt: sent)?.absoluteString.utf16.count ?? .max) > Self.cursorTabLinkLimit {
-            prompt = Self.cursorFilePrompt(tag: WorkProgress.tag(forWorkID: row.workID), path: file.path, instruction: instruction)
-            row.prompt = prompt
-        }
-        guard let url = Self.tabLink(provider: row.provider, folder: folder, prompt: prompt), openURL(url) else {
-            row.status = "refused"; row.detail = "\(app) could not be opened. Nothing was sent."; return
-        }
-        row.status = "queued"
-        row.detail = row.provider == "cursor" ? "Opened in Cursor. Choose Create Chat, then press Send there."
-                                              : "Opened in \(app). Press Send there to start it."
-    }
-
-    /// Opens a queued tab again (it was closed, or the app was not running). The same words, so linking still works.
-    func reopenTab(receiptID: String) async {
-        guard !isolated, let row = receipts.first(where: { $0.id == receiptID }), row.channel == "tab", row.status == "queued",
-              row.sessionID == nil else { return }
-        let folder = (try? await call(["work-tab-folder", "--provider", row.provider]))?["folder"]?.string ?? ""
-        // A Cursor handoff sent through a file reopens with its short prompt; any other reopens the saved words.
-        let saved = (try? Data(contentsOf: tabFile(row.id))).map { String(decoding: $0, as: UTF8.self) }
-        let text = row.prompt.hasPrefix("COS Work handoff ") ? row.prompt : (saved ?? row.prompt)
-        guard let url = Self.tabLink(provider: row.provider, folder: folder, prompt: text), openURL(url) else {
-            error = "\(Self.tabAppName(row.provider)) could not be opened."; return
-        }
-    }
-    /// Where a tab's exact words are kept, beside the journal (Application Support, never the user's repository).
-    func tabFile(_ id: String) -> URL {
-        storageURL.deletingLastPathComponent().appendingPathComponent("tabs", isDirectory: true).appendingPathComponent(id + ".md")
-    }
-    /// You will not send this tab: it stops blocking a new handoff for the item. Nothing reached a session.
-    func cancelTab(receiptID: String) {
-        updateReceipt(receiptID) { current in
-            guard current.channel == "tab", current.status == "queued", current.sessionID == nil else { return false }
-            current.status = "canceled"; current.detail = "Not sent. You closed this handoff before sending it."
-            return true
+    private func launch(_ target: AppTarget, receiptID: String) async -> Bool {
+        switch target {
+        case .link(let url): return openURL(url)
+        case .terminal(let script):
+            let file = appFile(receiptID, "command")
+            do {
+                try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])
+                try Data(script.utf8).write(to: file, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: file.path)
+            } catch { return false }
+            return await openInTerminal(file)
         }
     }
 
-    /// Links each tab Work opened to the session it became once you pressed Send: that provider's sessions created
-    /// since the tab opened whose first message is this handoff (WorkProgress.tabPromptSeen). Called by the tracker.
-    func linkOpenedTabs(ids: Set<String>) async {
+    /// Opens each New session whose first reply is done in its app, once. Called by the follow loop after a send and by
+    /// every tracker pass. Never holds the journal across a call: each record is one locked, synchronous update.
+    func openReadyApps(only ids: Set<String>? = nil) async {
         guard !isolated, storageReady else { return }
-        let waiting = receipts.filter { ids.contains($0.id) && $0.channel == "tab" && $0.sessionID == nil && $0.status == "queued" }
-        guard !waiting.isEmpty, let listed = (try? await call(["claude-sessions", "--fresh"]))?["sessions"]?.array else { return }
-        var taken = Set(receipts.compactMap(\.sessionID))
-        for row in waiting {
-            for candidate in Self.tabCandidates(listed, provider: row.provider, openedAt: row.createdAt, taken: taken).prefix(4) {
-                guard let read = try? await sessionRead(sessionID: candidate.id, turns: 4),
-                      WorkProgress.tabPromptSeen(prompt: row.prompt, messages: read.prompts) else { continue }
-                if commitTabLink(row, session: candidate) { taken.insert(candidate.id) }
-                break
+        let now = Date().timeIntervalSince1970
+        let due = receipts.filter { (ids?.contains($0.id) ?? true) && Self.appOpenStep($0, now: now, settle: appOpenSettle) != nil }.map(\.id)
+        for id in due where !appOpening.contains(id) {
+            appOpening.insert(id)
+            await openWhenReady(id)
+            appOpening.remove(id)
+        }
+    }
+    private func openWhenReady(_ id: String) async {
+        guard var row = receipts.first(where: { $0.id == id }) else { return }
+        let now = Date().timeIntervalSince1970
+        if row.status == "completed", row.appOpen != nil, row.appOpen?.runEndedAt == nil {
+            // Seen finished without a time from the server: the settle starts now.
+            updateReceipt(id) { current in
+                guard current.appOpen != nil, current.appOpen?.runEndedAt == nil else { return false }
+                current.appOpen?.runEndedAt = now; return true
+            }
+            return
+        }
+        guard let step = Self.appOpenStep(row, now: now, settle: appOpenSettle) else { return }
+        switch step {
+        case .wait: return
+        case .skip(let code): skipAppOpen(id, code); return
+        case .findChat:
+            guard await linkCursorChat(row), let linked = receipts.first(where: { $0.id == id }),
+                  Self.appOpenStep(linked, now: now, settle: appOpenSettle) == .open else { return }
+            row = linked
+        case .open: break
+        }
+        guard let sessionID = row.sessionID, let native = Self.nativeID(sessionID) else { return }
+        switch await appTarget(provider: row.provider, native: native, folder: row.appOpen?.folder, note: nil) {
+        case .wait: return
+        case .unavailable("unreachable"): return   // the helper did not answer: ask again on the next pass
+        case .unavailable(let code): skipAppOpen(id, code)
+        case .ready(let target):
+            // Claimed in the journal before opening, so no other pass, window or instance opens it again.
+            let at = Date().timeIntervalSince1970
+            guard updateReceipt(id, { current in
+                guard current.status == "completed", current.appOpen != nil, current.appOpen?.openedAt == nil,
+                      current.appOpen?.skipped == nil else { return false }
+                current.appOpen?.openedAt = at
+                current.detail = Self.openedText(current.provider)
+                if var progress = current.progress { progress.record(.note, Self.openedText(current.provider), at: at); current.progress = progress }
+                return true
+            }) else { return }
+            guard await launch(target, receiptID: id) else {
+                updateReceipt(id) { current in
+                    guard current.appOpen?.openedAt == at else { return false }
+                    current.appOpen?.openedAt = nil; current.appOpen?.skipped = "open_failed"
+                    current.detail = Self.appSkipText("open_failed", provider: current.provider) ?? current.detail
+                    return true
+                }
+                return
             }
         }
     }
-    @discardableResult private func commitTabLink(_ row: WorkHandoffReceipt, session: WorkSession) -> Bool {
-        let app = Self.tabAppName(row.provider)
+    private func skipAppOpen(_ id: String, _ code: String) {
+        updateReceipt(id) { current in
+            guard current.appOpen != nil, current.appOpen?.openedAt == nil, current.appOpen?.skipped == nil else { return false }
+            current.appOpen?.skipped = code; return true
+        }
+    }
+    /// Cursor names no chat in its run. The helper finds it (`work-cursor-chat`): a chat created since the handoff whose
+    /// first message holds this task's status-line id. Linked only when exactly one matches.
+    private func linkCursorChat(_ row: WorkHandoffReceipt) async -> Bool {
+        let tag = row.progress?.tag ?? WorkProgress.tag(forWorkID: row.workID)
+        guard let details = try? await call(["work-cursor-chat", "--tag", tag, "--since", String(Int(row.createdAt))]),
+              let chats = details["chats"]?.array,
+              let chat = Self.cursorChatMatch(chats, taken: Set(receipts.compactMap(\.sessionID))) else { return false }
+        let session = WorkSession(id: "cursor:" + chat.id, nativeID: chat.id, provider: "cursor", title: row.sessionTitle,
+                                  summary: Self.utf8Prefix(row.prompt, characters: 2_000, bytes: 4_000), project: "", status: "completed")
         let linked = updateReceipt(row.id) { current in
-            guard current.sessionID == nil, current.status == "queued" else { return false }
-            current.sessionID = session.id
-            if !session.title.isEmpty { current.sessionTitle = session.title }
-            current.status = "delivered"; current.detail = "Started in \(app). Work follows it from here."
-            // A new session: nothing in it predates this handoff, so an untimed reply (Cursor) is never baseline.
+            guard current.sessionID == nil, current.appOpen != nil else { return false }
+            current.sessionID = session.id; current.appOpen?.folder = chat.folder
+            // A new chat: nothing in it predates this handoff, so its untimed replies (Cursor writes no times) all count.
             if var progress = current.progress, progress.baseline == nil { progress.baseline = []; current.progress = progress }
             return true
         }
@@ -909,8 +1096,80 @@ struct WorkSendPlan: Equatable {
         return linked
     }
 
+    /// Open again: the same session in its app, or its Terminal command; "Open in <app>" for one that did not open by
+    /// itself. For a note you have not sent yet it is filled in again (Codex) or copied again (Claude, Cursor).
+    func reopenInApp(receiptID: String) async {
+        guard !isolated, let row = receipts.first(where: { $0.id == receiptID }), Self.appOpenButton(row) != nil,
+              let sessionID = row.sessionID, let native = Self.nativeID(sessionID) else { return }
+        let owner = row.channel == "app" ? Self.appOwner(of: sessionID, in: receipts) : row
+        let note = row.channel == "app" ? row.prompt : nil
+        let place = Self.openPlace(row.provider)
+        switch await appTarget(provider: row.provider, native: native, folder: owner?.appOpen?.folder, note: row.provider == "codex" ? note : nil) {
+        case .wait: error = "\(place) is still writing this session. Try again in a moment."
+        case .unavailable(let code): error = Self.appSkipText(code, provider: row.provider) ?? "\(place) could not open it."
+        case .ready(let target):
+            if let note, row.provider != "codex" { copyToClipboard(note) }
+            guard await launch(target, receiptID: row.id) else { error = "\(place) could not be opened."; return }
+            error = nil
+            guard row.channel == "job", row.appOpen?.openedAt == nil else { return }
+            let at = Date().timeIntervalSince1970
+            updateReceipt(row.id) { current in
+                guard current.appOpen != nil, current.appOpen?.openedAt == nil else { return false }
+                current.appOpen?.openedAt = at; current.appOpen?.skipped = nil
+                current.detail = Self.openedText(current.provider)
+                if var progress = current.progress { progress.record(.note, Self.openedText(current.provider), at: at); current.progress = progress }
+                return true
+            }
+        }
+    }
+    /// You will not send the note you took to the app: it stops blocking a new handoff. Nothing reached the session.
+    func cancelAppNote(receiptID: String) {
+        updateReceipt(receiptID) { current in
+            guard current.channel == "app", current.status == "queued" else { return false }
+            current.status = "canceled"; current.detail = "Not sent. You closed this note before sending it."
+            return true
+        }
+    }
+    /// Continue on a session its app owns: your note goes to the app, where you send it. Codex fills it in; Claude and
+    /// Cursor put it on the clipboard. The tracker sees it arrive in the session's conversation, and follows it from there.
+    private func continueInApp(_ session: WorkSession, owner: WorkHandoffReceipt, row: inout WorkHandoffReceipt) async throws {
+        let place = Self.openPlace(session.provider)
+        // Cursor writes no message times: what the chat holds now is kept, so your note is recognised when it arrives.
+        if session.provider == "cursor", var progress = row.progress,
+           let read = try? await sessionRead(sessionID: session.id, turns: WorkProgressTracker.turnsPerRead), read.hasHistory {
+            progress.baseline = Array(read.replies.filter { $0.at == nil }.map(\.digest).suffix(WorkProgress.maxSeen))
+            progress.promptBaseline = Array(read.prompts.filter { $0.at == nil }.map(\.digest).suffix(WorkProgress.maxSeen))
+            row.progress = progress
+        }
+        switch await appTarget(provider: session.provider, native: session.nativeID, folder: owner.appOpen?.folder,
+                               note: session.provider == "codex" ? row.prompt : nil) {
+        case .wait:
+            row.status = "refused"; row.detail = "\(place) is still writing this session. Nothing was sent. Try again in a moment."
+        case .unavailable(let code):
+            if code == "cursor_app" {
+                copyToClipboard(row.prompt)
+                row.status = "refused"
+                row.detail = "This Cursor chat lives in the Cursor app, which has no link to open it. Your note is on the clipboard: paste it in that chat."
+            } else {
+                row.status = "refused"; row.detail = (Self.appSkipText(code, provider: session.provider) ?? "\(place) could not open it.") + " Nothing was sent."
+            }
+        case .ready(let target):
+            if session.provider != "codex" { copyToClipboard(row.prompt) }
+            guard await launch(target, receiptID: row.id) else {
+                row.status = "refused"; row.detail = "\(place) could not be opened. Nothing was sent."; return
+            }
+            row.status = "queued"
+            row.detail = session.provider == "codex" ? "Opened in Codex with your note filled in. Press Send there."
+                                                     : "Opened in \(place). Your note is on the clipboard. Paste it there."
+        }
+    }
+
     /// Waits before each re-read of a New session that started without naming its session (0.5.247).
     var newSessionLinkDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(8)]
+    /// 0.5.249: then, for a session that opens in its app, a read this often until its first reply is done and it has
+    /// opened, at most `appFollowPasses` times. The tracker's pass (every 30 seconds) covers a longer run.
+    var appFollowDelay: Duration = .seconds(5)
+    var appFollowPasses = 60
     /// The re-read the last New session started, so a test can wait for it.
     private(set) var newSessionLink: Task<Void, Never>?
 
@@ -918,14 +1177,28 @@ struct WorkSendPlan: Equatable {
     /// receipt was written at 18:46:57.55 and the session confirmed at 18:46:57.717, so the receipt had none, and
     /// nothing read the job again while the item stayed open: the card said "session live status unavailable" and
     /// there was no way to the session. Read the job again a few times, briefly, until it names the session or ends.
+    /// 0.5.249: a session that opens in its app is then followed until its first reply is done (followToApp).
     func linkNewSession(_ id: String) async {
         guard !isolated else { return }
         for delay in newSessionLinkDelays {
             do { try await Task.sleep(for: delay) } catch { return }
             guard let row = receipts.first(where: { $0.id == id }), row.channel == "job", row.sessionID == nil,
-                  row.blocksNewHandoff else { return }
+                  row.blocksNewHandoff else { break }
             guard let next = try? await reconciled(row), next.sessionID != nil || next.status != row.status else { continue }
             commitDelivery(next, expecting: row)
+        }
+        await followToApp(id)
+    }
+    /// Reads a New session that opens in its app until its first reply is done, then opens it (openReadyApps).
+    func followToApp(_ id: String) async {
+        for pass in 0..<appFollowPasses {
+            guard let row = receipts.first(where: { $0.id == id }), let open = row.appOpen, open.openedAt == nil, open.skipped == nil else { return }
+            if pass > 0 { do { try await Task.sleep(for: appFollowDelay) } catch { return } }
+            if let current = receipts.first(where: { $0.id == id }), current.blocksNewHandoff, let next = try? await reconciled(current),
+               next.status != current.status || next.sessionID != current.sessionID {
+                commitDelivery(next, expecting: current)
+            }
+            await openReadyApps(only: [id])
         }
     }
     /// The first line of a handoff's Progress timeline.
@@ -1005,6 +1278,10 @@ struct WorkSendPlan: Equatable {
         row.result = job["response"]?.string ?? job["partialText"]?.string
         row.detail = job["error"]?.object?["message"]?.string ?? (row.status == "completed" ? "Response ready for review. Task completion and publication remain separate."
             : WorkHandoffReceipt.terminalStatuses.contains(row.status) ? "The server reports this run \(state)." : "\(state). Refresh to reconcile the durable job.")
+        // 0.5.249: when the run ended, so its session opens in the app a few seconds later, never before.
+        if row.status == "completed", row.appOpen != nil, row.appOpen?.runEndedAt == nil {
+            row.appOpen?.runEndedAt = job["completedAt"]?.string.flatMap(WorkProgress.parseStamp) ?? Date().timeIntervalSince1970
+        }
         if let provider = job["provider"]?.string, provider == row.provider,
            job["providerOwnershipConfirmedAt"]?.string != nil,
            let native = (provider == "codex" ? job["codexThreadId"]?.string : job["cliSessionId"]?.string), !native.isEmpty, provider != "ollama" {
@@ -1070,6 +1347,7 @@ struct WorkSendPlan: Equatable {
             guard current.status == old.status, current.detail == old.detail else { return false }
             current.status = next.status; current.detail = next.detail; current.result = next.result
             current.jobID = next.jobID; current.sessionID = next.sessionID; current.sessionTitle = next.sessionTitle
+            if current.appOpen != nil, current.appOpen?.runEndedAt == nil { current.appOpen?.runEndedAt = next.appOpen?.runEndedAt }
             return true
         }
     }

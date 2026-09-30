@@ -463,7 +463,7 @@ final class ControllerModel: ObservableObject {
                 try await self.setWorkStage(task, stage: stage)
             }),
             notify: { [weak self] notice in self?.postWorkNotice(notice) })
-        store.opensTabs = workOpensTabs
+        store.opensInApp = workOpensTabs
         workHandoffStore = store
         workTracker = tracker
         meetingAudioNotifier.onOpenWork = { [weak self] workID in self?.openWorkItem(workID) }
@@ -474,11 +474,12 @@ final class ControllerModel: ObservableObject {
         get { UserDefaults.standard.object(forKey: Self.workNotificationsKey) as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: Self.workNotificationsKey); objectWillChange.send() }
     }
-    /// 0.5.248: New sessions open as a tab in Claude, Codex or Cursor (on unless turned off). Off, they run in the
-    /// background on the COS server, as before.
+    /// New sessions open in their app (on unless turned off; the key is from 0.5.248, when they opened as a prefilled
+    /// tab). Since 0.5.249 the COS server starts the session and it opens in Claude, Codex or Terminal (Cursor) once its
+    /// first reply is done. Off, it stays in the background on the COS server, as in 0.5.247.
     var workOpensTabs: Bool {
         get { UserDefaults.standard.object(forKey: Self.workOpensTabsKey) as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: Self.workOpensTabsKey); workHandoffStore?.opensTabs = newValue; objectWillChange.send() }
+        set { UserDefaults.standard.set(newValue, forKey: Self.workOpensTabsKey); workHandoffStore?.opensInApp = newValue; objectWillChange.send() }
     }
     private func postWorkNotice(_ notice: WorkProgressNotice) {
         guard workNotificationsEnabled else { return }

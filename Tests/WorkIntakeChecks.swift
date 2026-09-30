@@ -334,7 +334,7 @@ import Foundation
     store.sessions = [claude, WorkSession(id: "ollama:z", nativeID: "z", provider: "ollama", title: "Local", summary: "", project: "MU", status: "idle")]
     let codex = WorkModelChoice(id: "codex-frontier", provider: "codex", title: "OpenAI via Codex · Frontier", available: true, reason: nil)
     store.models = [codex]
-    store.opensTabs = false   // the background run; a fork to another platform as a tab is checked just below it
+    store.opensInApp = false   // the background run only; a fork that opens in the app is checked just below it
 
     // A review asks by its id, with the sessions, and nothing that names a task.
     await store.loadAdvice(for: review)
@@ -357,34 +357,31 @@ import Foundation
     precondition(receipt.prompt.hasPrefix("Prepare the next reviewable result for: RLS") && receipt.prompt.contains("[Carried over:")
                  && !receipt.prompt.contains("ASSISTANT: built it"), receipt.prompt)
     precondition(WorkHandoffStore.lineage(of: receipt, sessions: store.sessions) == "Forked from \u{201C}Retail Liquor Summit campaign launch\u{201D} (Claude)")
-    // 0.5.248: with tabs on (the default), the fork opens a Codex tab in the COS folder carrying context and export, and
-    // nothing runs in the background; the receipt keeps the note, and the saved words hold the whole export.
-    let tabCalls = Calls()
-    let tabRoot = root.appendingPathComponent("tabs-store", isDirectory: true)
-    try FileManager.default.createDirectory(at: tabRoot, withIntermediateDirectories: true)
-    let tabStore = WorkHandoffStore(storageURL: tabRoot.appendingPathComponent("journal.json"), transport: { args, data in
-        tabCalls.list.append((args, [:]))
+    // 0.5.249: with Open new sessions in the app on (the default), the fork runs in the background exactly as above,
+    // with the export in the query, and records that its session opens in Codex once the first reply is done.
+    let appCalls = Calls()
+    let appRoot = root.appendingPathComponent("app-store", isDirectory: true)
+    try FileManager.default.createDirectory(at: appRoot, withIntermediateDirectories: true)
+    let appStore = WorkHandoffStore(storageURL: appRoot.appendingPathComponent("journal.json"), transport: { args, data in
+        appCalls.list.append((args, (try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: Any] ?? [:]))
         switch args.first {
-        case "claude-session-detail": return HelperResponse(ok: true, message: "", details: ["copyText": .string(tabCalls.export)])
-        case "work-tab-folder": return HelperResponse(ok: true, message: "", details: ["folder": .string("/Users/test/COS Repo")])
+        case "claude-session-detail": return HelperResponse(ok: true, message: "", details: ["copyText": .string(appCalls.export)])
         default: return HelperResponse(ok: true, message: "", details: [:])
         }
     })
-    tabStore.sessions = store.sessions; tabStore.models = [codex]
+    appStore.sessions = store.sessions; appStore.models = [codex]
+    appStore.newSessionLinkDelays = []; appStore.appFollowPasses = 0
     final class Opened: @unchecked Sendable { var urls: [URL] = [] }
     let opened = Opened()
-    tabStore.openURL = { opened.urls.append($0); return true }
-    await tabStore.forkToPlatform(source: review, session: claude, model: codex, prompt: "Prepare the next reviewable result for: RLS")
-    precondition(tabCalls.list.map { $0.0.first ?? "" } == ["claude-session-detail", "work-tab-folder"], "\(tabCalls.list.map(\.0))")
-    let tabLink = opened.urls.first?.absoluteString ?? ""
-    precondition(tabLink.hasPrefix("codex://threads/new?path=%2FUsers%2Ftest%2FCOS%20Repo&prompt=Prepare%20the%20next%20reviewable%20result%20for%3A%20RLS")
-                 && tabLink.contains("ASSISTANT%3A%20built%20it"), tabLink)
-    let tabReceipt = tabStore.receipts(for: review.id).first!
-    precondition(tabReceipt.channel == "tab" && tabReceipt.status == "queued" && tabReceipt.prompt.contains("[Carried over:")
-                 && !tabReceipt.prompt.contains("ASSISTANT: built it"), tabReceipt.prompt)
-    let savedWords = String(decoding: try Data(contentsOf: tabStore.tabFile(tabReceipt.id)), as: UTF8.self)
-    precondition(savedWords.contains("ASSISTANT: built it") && savedWords.contains("=== End export "), "Open again needs the whole export")
-    precondition(WorkHandoffStore.lineage(of: tabReceipt, sessions: tabStore.sessions) == "Forked from \u{201C}Retail Liquor Summit campaign launch\u{201D} (Claude)")
+    appStore.openURL = { opened.urls.append($0); return true }
+    await appStore.forkToPlatform(source: review, session: claude, model: codex, prompt: "Prepare the next reviewable result for: RLS")
+    precondition(appCalls.list.map { $0.0.first ?? "" } == ["claude-session-detail", "work-new"], "\(appCalls.list.map(\.0))")
+    let appQuery = appCalls.list[1].1["query"] as? String ?? ""
+    precondition(appQuery.contains("ASSISTANT: built it") && appQuery.contains("=== End export ") && opened.urls.isEmpty, "nothing opens before its first reply")
+    let appReceipt = appStore.receipts(for: review.id).first!
+    precondition(appReceipt.channel == "job" && appReceipt.appOpen == WorkAppOpen() && appReceipt.prompt.contains("[Carried over:")
+                 && !appReceipt.prompt.contains("ASSISTANT: built it"), appReceipt.prompt)
+    precondition(WorkHandoffStore.lineage(of: appReceipt, sessions: appStore.sessions) == "Forked from \u{201C}Retail Liquor Summit campaign launch\u{201D} (Claude)")
 
     // Claude and Codex are the only targets: a Cursor or Ollama run from Work has no session to continue yet.
     calls.list.removeAll()
@@ -453,7 +450,7 @@ import Foundation
             "status": .string("running"), "providerOwnershipConfirmedAt": .string("2026-09-28T22:00:00Z"), "codexThreadId": .string("thread-1")])])
     })
     jobStore.models = [codex]
-    jobStore.opensTabs = false   // the background run's receipts
+    jobStore.opensInApp = false   // the background run's receipts
     let longPrompt = String(repeating: "é", count: 5_000)
     await jobStore.submit(source: other, mode: .newSession, session: nil, model: codex, prompt: longPrompt)
     let started = jobStore.sessions.first { $0.id == "codex:thread-1" }

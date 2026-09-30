@@ -104,7 +104,7 @@ private actor HandoffTransport {
         func make(_ name: String, _ mock: HandoffTransport, isolated: Bool = false) -> WorkHandoffStore {
             let store = WorkHandoffStore(isolated: isolated, storageURL: root.appendingPathComponent(name + ".json"), transport: { args, data in try await mock.run(args, data) })
             store.sessions = [target, other]; store.models = [choice]
-            store.opensTabs = false   // these check the background run; tabs are covered in WorkProgressChecks (0.5.248)
+            store.opensInApp = false   // these check the background run; opening in the app is covered in WorkProgressChecks (0.5.249)
             return store
         }
         func value(_ args: [String], _ flag: String) -> String? {
@@ -200,6 +200,46 @@ private actor HandoffTransport {
         await job.setJobProvider("codex"); await jobStore.refreshReceipts()
         precondition(jobStore.receipts.first?.sessionID == "codex:new-child-fixture")
         print("PASS: new job requires matching intent/generation and provider ownership before session binding")
+
+        // 0.5.249: with Open new sessions in the app on (the default), a New session is the same background job, and its
+        // intent to open is journaled with the handoff and survives a reload.
+        let appJob = HandoffTransport(.newJob)
+        let appURL = root.appendingPathComponent("app-new.json")
+        let appStore = WorkHandoffStore(storageURL: appURL, transport: { args, data in try await appJob.run(args, data) })
+        appStore.sessions = [target, other]; appStore.models = [choice]
+        appStore.newSessionLinkDelays = []; appStore.appFollowPasses = 0
+        await appStore.submit(source: source, mode: .newSession, session: nil, model: choice, prompt: "Fresh work")
+        let appCalls = await appJob.recorded()
+        precondition(appCalls.map { $0.args.first ?? "" } == ["work-new"], "\(appCalls.map(\.args))")
+        let appReloaded = WorkHandoffStore(storageURL: appURL, transport: { _, _ in throw HelperClientError.commandFailed("no transport") })
+        precondition(appReloaded.receipts.first?.appOpen == WorkAppOpen() && appReloaded.receipts.first?.channel == "job")
+        print("PASS: a New session that opens in its app runs the same background job; its intent to open is journaled with it")
+
+        // Continue on a session its app owns never reaches the server's turn path, even when no link can be built for it
+        // (this fixture's thread id is not a UUID). A session no app owns still takes the server's turn.
+        struct Journal: Encodable { var version = 2; var receipts: [WorkHandoffReceipt]; var sessions: [WorkSession] = []; var drafts: [WorkHandoffDraft] = [] }
+        var owner = WorkHandoffReceipt(id: UUID().uuidString.lowercased(), workID: "work-owner", workTitle: "Owner", sourceRevision: "1",
+                                       mode: .newSession, provider: "codex", modelID: "fixture-model", sessionID: target.id,
+                                       sessionTitle: target.title, status: "completed", detail: "", prompt: "p",
+                                       createdAt: Date().timeIntervalSince1970 - 60, channel: "job")
+        owner.appOpen = WorkAppOpen(runEndedAt: owner.createdAt + 10, openedAt: owner.createdAt + 15)
+        let ownedURL = root.appendingPathComponent("app-owned.json")
+        try JSONEncoder().encode(Journal(receipts: [owner])).write(to: ownedURL)
+        let owned = HandoffTransport(.continueTurn)
+        let ownedStore = WorkHandoffStore(storageURL: ownedURL, transport: { args, data in try await owned.run(args, data) })
+        ownedStore.sessions = [target, other]; ownedStore.models = [choice]
+        final class Opened { var urls: [URL] = [] }
+        let opened = Opened()
+        ownedStore.openURL = { opened.urls.append($0); return true }
+        await ownedStore.submit(source: second, mode: .continueSession, session: target, model: nil, prompt: "Next step")
+        let ownedCalls = await owned.recorded()
+        let note = ownedStore.receipts(for: second.id).first!
+        precondition(ownedCalls.isEmpty && note.channel == "app" && note.status == "refused" && note.detail.hasSuffix("Nothing was sent.")
+                     && opened.urls.isEmpty, "\(ownedCalls.map(\.args)) \(note.detail)")
+        await ownedStore.submit(source: source, mode: .continueSession, session: other, model: nil, prompt: "Next step")
+        let otherCalls = await owned.recorded()
+        precondition(otherCalls.contains { $0.args.first == "session-chat-send" }, "a session no app owns still continues on the server")
+        print("PASS: Continue on a session its app owns never sends a server turn; a session no app owns still does")
 
         let failedFork = HandoffTransport(.failedFork)
         let failedForkStore = make("failed-fork", failedFork)
