@@ -1214,9 +1214,11 @@ def body(src, start, end):
     i = src.index(start); return src[i:src.index(end, i)]
 # Item 2 (Miles, 2026-09-30 13:27): Cursor opens its own window, filled in; no background run, no Terminal hand-off.
 assert 'nonisolated static let prefillProviders: Set<String> = ["cursor"]' in store and 'nonisolated static let appProviders: Set<String> = ["claude", "codex"]' in store
-assert '"cursor://anysphere.cursor-deeplink/prompt?text=\(encoded)&mode=agent"' in store, "Cursor's own prompt link"
-for gone in ("openInTerminal", "cursorResumeScript", "Terminal.app", "cursor-agent --resume", "work-cursor-chat", "linkCursorChat", "cursorChatMatch", ".findChat"):
-    assert gone not in store, "the Terminal hand-off is gone: " + gone
+assert r'"cursor://anysphere.cursor-deeplink/prompt?text=\(encoded)&mode=agent"' in store, "Cursor's own prompt link"
+# Code only: comments still tell how 0.5.249 to 0.5.252 opened Cursor in Terminal.
+store_code = "\n".join(re.sub(r"(^|\s)//.*$", r"\1", line) for line in store.split("\n"))
+for gone in ("openInTerminal", "cursorResumeScript", "Terminal.app", "cursor-agent", "work-cursor-chat", "linkCursorChat", "cursorChatMatch", ".findChat"):
+    assert gone not in store_code, "the Terminal hand-off is gone: " + gone
 assert 'case "work-cursor-chat"' not in helper and "func workCursorChats(" not in helper, "the helper's Cursor chat finder is gone"
 submit = body(store, "    func submit(source: WorkSource", "    // MARK: - Start it, then open it (0.5.249)")
 assert "if origin != nil, prefill { throw failure(WorkRequestOrigin.cursorNeedsMac) }" in submit
@@ -1225,7 +1227,8 @@ assert submit.index("if prefill {") < submit.index("} else if mode == .newSessio
 inbox = store[store.index("@MainActor final class WorkRequestInbox {"):]
 # Every send for the glasses (Start, Reply by voice, Not done yet) goes through submit(), which refuses Cursor; the inbox
 # holds no second copy of the rule to drift from it.
-assert "cursorNeedsMac" not in inbox and "origin: origin" in body(store, "    func reply(receiptID: String", "    // MARK: - The glasses request inbox (0.5.252)")
+inbox_code = "\n".join(re.sub(r"(^|\s)//.*$", r"\1", line) for line in inbox.split("\n"))
+assert "cursorNeedsMac" not in inbox_code and "origin: origin" in body(store, "    func reply(receiptID: String", "    // MARK: - The glasses request inbox (0.5.252)")
 assert 'nonisolated static let cursorNeedsMac = "Cursor needs you at the Mac to press send. Start it from COS Control."' in store
 tick = body(tracker, "    func tick() async {", "    /// One pass over the handoffs being followed.")
 assert "await store.linkCursorPrefills()" in tick and "store.writeOpenedMeanwhile()" in tick, "every pass finds a sent Cursor chat and writes a held opened note"
