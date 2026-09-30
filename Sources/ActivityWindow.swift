@@ -5536,7 +5536,10 @@ struct ClaudeSessionDetailPane: View {
             if let row = model.openClaudeRow, !row.isScheduledJob {
                 Divider()
                 HStack(spacing: 10) {
+                    // 0.5.250: not while the COS server is still running a Work New session's first turn (two writers).
                     Button("Open in platform") { model.openSessionInPlatform(row) }
+                        .disabled(row.heldByServer)
+                        .help(row.heldByServer ? "Still running on the COS server. It opens in the app when the first reply is done." : "")
                     if let detail = model.claudeSessionDetail {
                         Button("Copy session") { model.copyClaudeSession() }
                             .disabled(detail.copyText.isEmpty)
@@ -5565,7 +5568,12 @@ struct ClaudeSessionDetailPane: View {
             // Desktop-store session has no local JSONL, and it is exactly the
             // session the server-side Continue can still reach. 0.5.229: a
             // scheduled job has nothing to continue.
-            if model.openClaudeRow?.isScheduledJob != true {
+            if model.openClaudeRow?.workRunning == true {
+                // 0.5.250: the COS server is still writing this Work New session; a Continue now would be a second writer.
+                Text("Still running its first turn on the COS server. You can continue it once that finishes.")
+                    .font(COSType.body(11.5)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 24).padding(.vertical, 12)
+            } else if model.openClaudeRow?.isScheduledJob != true {
                 SessionChatComposer(model: model)
             }
         }

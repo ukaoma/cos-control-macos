@@ -49,7 +49,7 @@ enum WorkActivityProjection {
             .sorted(by: { $0.createdAt == $1.createdAt ? $0.id > $1.id : $0.createdAt > $1.createdAt }).first else { return nil }
         // Only a receipt establishes this association. A suggestion or matching
         // title must not paint somebody else's session as this task's activity.
-        let session = sessions.first { $0.id == receipt.sessionID && $0.provider == receipt.provider }
+        let session = WorkHandoffStore.listedSession(for: receipt, in: sessions)
         return WorkActivity(receipt: receipt, session: session)
     }
 }
@@ -122,7 +122,7 @@ enum WorkBoardSessionsProjection {
             guard domain == nil || item.domain == domain else { return nil }
             var activity = item.activity, earlier = false
             if activity == nil, let receipt = receipts.filter({ $0.workID == item.sourceID }).max(by: { $0.createdAt < $1.createdAt }) {
-                activity = WorkActivity(receipt: receipt, session: sessions.first { $0.id == receipt.sessionID && $0.provider == receipt.provider })
+                activity = WorkActivity(receipt: receipt, session: WorkHandoffStore.listedSession(for: receipt, in: sessions))
                 earlier = true
             }
             guard let activity, activity.inProgress || activity.needsAttention else { return nil }

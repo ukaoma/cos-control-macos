@@ -9306,7 +9306,7 @@ final class COSControlHelper {
     }
 
     static func isPetLiveRow(_ row: [String: Any]) -> Bool {
-        if isKeepWarmSessionTitle((row["name"] as? String) ?? "") { return false }
+        if isWarmUpRow(row) { return false }
         if row["alive"] as? Bool == true { return true }
         let state = row["state"] as? String ?? ""
         return state == "running" || state == "waiting"
@@ -9489,7 +9489,9 @@ final class COSControlHelper {
         guard let handle = try? FileHandle(forReadingFrom: jsonl) else { return nil }
         defer { try? handle.close() }
         func scan(_ data: Data) -> String? {
-            guard let text = String(data: data, encoding: .utf8) else { return nil }
+            // 0.5.250: decoded leniently. A window cut inside a multibyte character made the strict decode return nil,
+            // so the whole window, and the title in it, was lost. A line cut at the window's edge fails its own parse.
+            let text = String(decoding: data, as: UTF8.self)
             var found: String?
             for line in text.split(whereSeparator: \.isNewline) {
                 guard line.contains("custom-title") else { continue }
@@ -9622,20 +9624,24 @@ final class COSControlHelper {
                 if !pinned && !fresh { continue }
                 let desktop = index[sessionId.lowercased()] ?? index[shortId]
                 var title = desktop?.title ?? ""
+                // 0.5.250: a title someone gave the session (Desktop's, or a custom-title) is never read as a warm-up.
+                var named = !title.isEmpty
                 if title.isEmpty {
-                    title = lastCustomTitle(in: file) ?? firstClaudeUserTitle(in: file) ?? ""
+                    if let custom = lastCustomTitle(in: file) { title = custom; named = true }
+                    else { title = firstClaudeUserTitle(in: file) ?? "" }
                 }
                 var workspace = Self.workspaceLabel(dir.lastPathComponent)
                 if workspace.isEmpty, let cwd = desktop?.cwd, !cwd.isEmpty {
                     workspace = workspaceLabel(cwd)
                 }
                 title = title.isEmpty ? "Claude session" : title
-                if isKeepWarmSessionTitle(title) { continue }
+                if !named && isKeepWarmSessionTitle(title) { continue }
                 let created = values?.creationDate ?? mtime
                 let row: [String: Any] = [
                     "id": shortId,
                     "provider": "claude",
                     "name": title,
+                    "namedTitle": named,
                     "workspace": workspace,
                     "state": "recent",
                     "status": "recent",
@@ -11330,6 +11336,62 @@ final class COSControlHelper {
         }
     }
 
+    /// 0.5.250: a Claude row Claude Desktop has not titled takes the newest `custom-title` in its transcript. A New
+    /// session from Work is named after its task (`claude -p --name`, server 6.58.2), and the name is written near the
+    /// top of the transcript. The server's list reads only a transcript's last 256 KB, so a long run lost its name there
+    /// and showed its first prompt. Desktop's own title still wins: it is what Claude's sidebar shows.
+    /// Rows named by a title someone gave the session carry `namedTitle`, so they are never hidden as warm-ups
+    /// (isWarmUpRow): a Work item called "Ready" stays listed.
+    static func applyClaudeCustomTitles(_ rows: [[String: Any]], desktopIndex: [String: ClaudeDesktopSession],
+                                        transcriptTitle: (String) -> String?) -> [[String: Any]] {
+        rows.map { row in
+            guard (row["provider"] as? String ?? "claude").lowercased() == "claude",
+                  let id = row["id"] as? String, !id.isEmpty else { return row }
+            let key = normalizeClaudeSessionId(id)
+            var titled = row
+            if let desktop = (desktopIndex[key] ?? desktopIndex[String(key.prefix(8))])?.title
+                .trimmingCharacters(in: .whitespacesAndNewlines), !desktop.isEmpty {
+                titled["namedTitle"] = true
+                return titled
+            }
+            guard let title = transcriptTitle(key) else { return row }
+            titled["name"] = title
+            titled["namedTitle"] = true
+            return titled
+        }
+    }
+    /// 0.5.250: a warm-up is known by its first prompt ("ready", the readiness check), never by a title someone gave
+    /// the session.
+    static func isWarmUpRow(_ row: [String: Any]) -> Bool {
+        row["namedTitle"] as? Bool != true && isKeepWarmSessionTitle((row["name"] as? String) ?? "")
+    }
+    /// Claude CLI transcripts by session id (lowercase UUID), from one listing of the projects folder, never a scan per
+    /// row. The newest file wins when an id appears in two project folders.
+    static func claudeTranscriptIndex(projectsRoot: URL) -> [String: URL] {
+        let fm = FileManager.default
+        var index: [String: (url: URL, mtime: Date)] = [:]
+        for dir in (try? fm.contentsOfDirectory(at: projectsRoot, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? [] {
+            guard (try? dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { continue }
+            for file in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
+                let id = file.deletingPathExtension().lastPathComponent.lowercased()
+                guard file.pathExtension == "jsonl", UUID(uuidString: id) != nil else { continue }
+                let mtime = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                if let known = index[id], known.mtime >= mtime { continue }
+                index[id] = (file, mtime)
+            }
+        }
+        return index.mapValues(\.url)
+    }
+    /// A session's transcript in the index: its full id, or the one transcript whose id starts with a short (8+
+    /// character) id, as the live list gives it. Nil when none or several match.
+    static func claudeTranscript(_ id: String, in index: [String: URL]) -> URL? {
+        let key = normalizeClaudeSessionId(id)
+        if let exact = index[key] { return exact }
+        guard key.count >= 8 else { return nil }
+        let matches = index.filter { $0.key.hasPrefix(key) }
+        return matches.count == 1 ? matches.first?.value : nil
+    }
+
     /// The whole `session-pet-live` row pipeline, pure so the self-test runs it end to end.
     /// `livePeers` nil means the server did not answer, and cached liveness stands.
     static func petLiveRows(
@@ -11339,6 +11401,7 @@ final class COSControlHelper {
         composerActivity: [String: CursorComposerActivity] = [:],
         codexActivity: (String) -> CodexThreadActivity? = { _ in nil },
         discovered: [[String: Any]] = [],
+        transcriptTitle: ((String) -> String?)? = nil,
         now: Date = Date()
     ) -> [[String: Any]] {
         let cachedIds = Set(cached.compactMap { ($0["id"] as? String)?.lowercased() })
@@ -11348,7 +11411,16 @@ final class COSControlHelper {
         rows = refreshClaudeTranscriptActivity(rows, transcriptActivity: transcriptActivity)
         rows = refreshCodexRolloutActivity(rows, codexActivity: codexActivity)
         rows = applyLiveWorkingState(rows, now: now, composerActivity: composerActivity)
-        rows.removeAll { isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
+        // 0.5.250: rows the fresh list has not named yet (a Work run that just started) take their transcript's title,
+        // before the warm-up filter, which never hides a named row.
+        if let transcriptTitle {
+            let unnamed = rows.filter { $0["namedTitle"] as? Bool != true }
+            let titled = applyClaudeCustomTitles(unnamed, desktopIndex: [:], transcriptTitle: transcriptTitle)
+            var byID: [String: [String: Any]] = [:]
+            for row in titled { if let id = row["id"] as? String { byID[id] = row } }
+            rows = rows.map { row in (row["id"] as? String).flatMap { byID[$0] } ?? row }
+        }
+        rows.removeAll { isWarmUpRow($0) }
         return rows.filter { isPetLiveRow($0) }
     }
 
@@ -11648,6 +11720,7 @@ final class COSControlHelper {
         let claudeProjects = home.appendingPathComponent(".claude/projects", isDirectory: true)
         let codexSessions = home.appendingPathComponent(".codex/sessions", isDirectory: true)
         let previousRows = peers
+        let transcripts = Self.claudeTranscriptIndex(projectsRoot: claudeProjects)
         // 0.5.238: Codex threads a Codex process has open, and Cursor composers active now,
         // that the cache has never listed. Names only when there is something to name.
         let existing = Set(peers.compactMap { ($0["id"] as? String)?.lowercased() })
@@ -11669,7 +11742,11 @@ final class COSControlHelper {
                     openCodex.contains(id.lowercased()) || Date().timeIntervalSince(modified) <= Self.petUnfinishedMaxAge
                 }
             },
-            discovered: discovered
+            discovered: discovered,
+            transcriptTitle: { id in
+                // 0.5.250: a Work New session shows on the pet under its task's name from the start.
+                Self.claudeTranscript(id, in: transcripts).flatMap(Self.lastCustomTitle(in:))
+            }
         )
         // 0.5.229: a live row that COS automation started reads as that scheduled job.
         peers = annotatedScheduledJobs(peers, home: home, previous: previousRows)
@@ -11695,7 +11772,7 @@ final class COSControlHelper {
                 },
                 composerActivity: composerMeta.activity
             )
-            peers.removeAll { Self.isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
+            peers.removeAll { Self.isWarmUpRow($0) }
             emitSessionList(
                 peers, liveOnly: false,
                 enabled: payload["enabled"] as? Bool ?? true,
@@ -11719,7 +11796,7 @@ final class COSControlHelper {
             codexPinned: codexPinned
         )
         var peers = Self.applyLiveWorkingState(indexed.rows, composerActivity: composerMeta.activity)
-        peers.removeAll { Self.isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
+        peers.removeAll { Self.isWarmUpRow($0) }
         emitSessionList(
             peers, liveOnly: false, enabled: true, reason: "",
             counts: ["alive": 0, "reachable": 0, "stale": 0],
@@ -11810,9 +11887,14 @@ final class COSControlHelper {
             peers = Self.overlayLiveState(onto: serverRows, live: peers)
         }
         peers = Self.applyClaudeDesktopTitles(peers, desktopIndex: desktopIndex)
+        // 0.5.250: the name a Work New session was given (`claude -p --name`), read from its own transcript.
+        let transcripts = Self.claudeTranscriptIndex(projectsRoot: claudeProjects)
+        peers = Self.applyClaudeCustomTitles(peers, desktopIndex: desktopIndex) { id in
+            Self.claudeTranscript(id, in: transcripts).flatMap(Self.lastCustomTitle(in:))
+        }
         peers = Self.refreshClaudeTranscriptActivity(peers) { Self.claudeSessionActivity(sessionId: $0, projectsRoot: claudeProjects) }
         peers = Self.applyLiveWorkingState(peers, composerActivity: composerMeta.activity)
-        peers.removeAll { Self.isKeepWarmSessionTitle(($0["name"] as? String) ?? "") }
+        peers.removeAll { Self.isWarmUpRow($0) }
         // 0.5.229: live runs that COS automation started read as scheduled jobs; a finished run
         // that left a transcript keeps its label from the previous list.
         peers = annotatedScheduledJobs(
@@ -14794,12 +14876,46 @@ final class COSControlHelper {
         return era
     }
 
-    static func workNewPayload(clientJobId: String, query: String, model: String, messageEra: String) -> [String: Any] {
+    static func workNewPayload(clientJobId: String, query: String, model: String, messageEra: String,
+                               sessionName: String? = nil) -> [String: Any] {
         // An unknown supplied session ID is NOT a request to create that ID.
         // The coordinator allocates and durably reuses the session for this
         // clientJobId/generation; inventing one causes session_identity_mismatch.
-        ["clientJobId": clientJobId, "generation": 1, "query": query, "model": model,
-         "cursorExecutionMode": "ask", "messageEra": messageEra]
+        var payload: [String: Any] = ["clientJobId": clientJobId, "generation": 1, "query": query, "model": model,
+                                      "cursorExecutionMode": "ask", "messageEra": messageEra]
+        // 0.5.250: server 6.58.2 passes it to `claude -p --name` when it starts a new Claude session; an older server
+        // drops keys it does not know.
+        if let sessionName { payload["sessionName"] = sessionName }
+        return payload
+    }
+
+    /// 0.5.250: the name for a Work New session, cleaned again here exactly as server 6.58.2 cleans it: C0 and C1
+    /// controls, U+200B, the direction marks and overrides (U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069) and
+    /// U+FEFF become spaces (never U+200C, U+200D or tag characters); whitespace runs collapse to one space; the ends are
+    /// trimmed; at most 100 grapheme clusters, cut at 100 and then back to the last space when it is at index 50 or
+    /// later. Nil when nothing is left.
+    static func workSessionName(_ raw: String) -> String? {
+        var spaced = String.UnicodeScalarView()
+        for scalar in raw.unicodeScalars {
+            switch scalar.value {
+            case 0x0000...0x001F, 0x007F...0x009F, 0x200B, 0x200E, 0x200F, 0x202A...0x202E, 0x2066...0x2069, 0xFEFF: spaced.append(" ")
+            default: spaced.append(scalar)
+            }
+        }
+        var name = String(spaced).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        if name.count > 100 {
+            name = String(name.prefix(100))
+            if let space = name.lastIndex(of: " "), name.distance(from: name.startIndex, to: space) >= 50 { name = String(name[..<space]) }
+        }
+        return name.isEmpty ? nil : name
+    }
+    /// The optional `sessionName` of a work-new request: absent or null is none, text is cleaned, anything else is refused.
+    static func workNewSessionName(_ body: [String: Any]) throws -> String? {
+        switch body["sessionName"] {
+        case nil, is NSNull: return nil
+        case let value as String: return workSessionName(value)
+        default: throw HelperError.message("sessionName must be text")
+        }
     }
 
     private func emitWorkNew() throws {
@@ -14817,6 +14933,7 @@ final class COSControlHelper {
               query.utf16.count <= 48_000, let model = body["model"] as? String else {
             throw HelperError.message("Work needs a UUIDv4 clientJobId, bounded query and explicit model slot")
         }
+        let sessionName = try Self.workNewSessionName(body)
         let token = try readToken()
         let models = try fetchWorkModels(token: token).models
         guard models.contains(where: { $0["id"] as? String == model && $0["available"] as? Bool == true }) else {
@@ -14829,7 +14946,7 @@ final class COSControlHelper {
               let counterBody = counter.body, let era = Self.workMessageEra(counterBody) else {
             throw HelperError.message("Cannot verify the current conversation era; no handoff was sent")
         }
-        let payload = Self.workNewPayload(clientJobId: id, query: query, model: model, messageEra: era)
+        let payload = Self.workNewPayload(clientJobId: id, query: query, model: model, messageEra: era, sessionName: sessionName)
         let json = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
         guard let response = request("/api/query-jobs", method: "POST", token: token, body: json, timeout: 30) else {
             throw HelperError.message("Conversation admission timed out; delivery is unknown. Recover the original receipt before trying again")
@@ -14944,6 +15061,30 @@ final class COSControlHelper {
               Self.workMessageEra(["era": "bad/era"]) == nil else {
             throw HelperError.message("Work model/admission contract self-test failed")
         }
+        // 0.5.250: a Claude New session's name rides in the job request only when there is one, cleaned again here.
+        let named = Self.workNewPayload(clientJobId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", query: "test", model: "opus",
+                                        messageEra: "era-contract", sessionName: "Homepage CTA")
+        let long = String(repeating: "abcdefghij", count: 11)
+        func parsed(_ body: [String: Any]) -> String {
+            do { return try Self.workNewSessionName(body) ?? "<none>" } catch { return "<refused>" }
+        }
+        guard named["sessionName"] as? String == "Homepage CTA", newPayload["sessionName"] == nil,
+              named.count == newPayload.count + 1,
+              Self.workSessionName("  Fix\tthe\n\n  footer\u{0}\u{202E} links  ") == "Fix the footer links",
+              Self.workSessionName(long)?.count == 100, Self.workSessionName(String(repeating: "\u{1F600}", count: 150))?.count == 100,
+              Self.workSessionName(String(repeating: "\u{1F600}", count: 60))?.count == 60,
+              Self.workSessionName("Plan \u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F467} trip \u{0645}\u{06CC}\u{200C}\u{062E}\u{0648}\u{0627}\u{0647}\u{0645}")
+                == "Plan \u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F467} trip \u{0645}\u{06CC}\u{200C}\u{062E}\u{0648}\u{0627}\u{0647}\u{0645}",
+              Self.workSessionName(String(repeating: "a", count: 60) + " " + String(repeating: "b", count: 60)) == String(repeating: "a", count: 60),
+              Self.workSessionName("a " + String(repeating: "b", count: 120)) == "a " + String(repeating: "b", count: 98),
+              Self.workSessionName("Price\u{00A0}\u{00A0}list\u{2028}now") == "Price list now",
+              Self.workSessionName("\u{200B}\u{FEFF}\u{0}\u{2066}") == nil,
+              Self.workSessionName(" \n\t\u{0} ") == nil, Self.workSessionName("") == nil,
+              parsed(["sessionName": "  Homepage   CTA "]) == "Homepage CTA",
+              parsed([:]) == "<none>", parsed(["sessionName": NSNull()]) == "<none>",
+              parsed(["sessionName": 7]) == "<refused>" else {
+            throw HelperError.message("Work session name self-test failed")
+        }
         // 0.5.249: finding the Cursor chat a Work run started, only by its status-line id.
         let meta = Data(#"{"schemaVersion":1,"createdAtMs":1790723017862,"hasConversation":true,"cwd":"/Users/x/Work Repo"}"#.utf8)
         let first = "<user_query>\nSYSTEM INSTRUCTIONS\nYou are COS.\n\nUSER REQUEST\nDraft it.\nCOS-WORK 0123456789ab: <done, needs input or blocked>: <one sentence of evidence>\n</user_query>"
@@ -14959,7 +15100,7 @@ final class COSControlHelper {
               Self.workCursorChatMeta(Data(#"{"cwd":"/a"}"#.utf8)) == nil else {
             throw HelperError.message("Work Cursor chat self-test failed")
         }
-        emit(ok: true, message: "Work model/admission contract passed", details: ["checks": 33])
+        emit(ok: true, message: "Work model/admission contract passed", details: ["checks": 51])
     }
 
     private func emitSessionChatTurn(args: [String]) throws {
@@ -18506,6 +18647,80 @@ final class COSControlHelper {
                    "jsonl custom-title is the Activity label")
         try expect(Self.claudeCustomTitle(sessionId: "d3786335", projectsRoot: tmp) == "Fireflies meeting sync",
                    "an 8-char presence id still finds the /rename title")
+        // 0.5.250: a Work New session is named near the top of its transcript (`claude -p --name`). A long run keeps
+        // that name even when the first 256 KB ends inside a multibyte character, and a newer title in the tail wins.
+        let titleRoot = FileManager.default.temporaryDirectory.appendingPathComponent("cos-claude-name-\(UUID().uuidString)", isDirectory: true)
+        let titleProject = titleRoot.appendingPathComponent("proj", isDirectory: true)
+        try FileManager.default.createDirectory(at: titleProject, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: titleRoot) }
+        try Data("{\"type\":\"custom-title\",\"customTitle\":\"Fireflies meeting sync\"}\n".utf8)
+            .write(to: titleProject.appendingPathComponent("d3786335-cfb4-4556-9a4a-7308ce66eab1.jsonl"))
+        func longTranscript(title: String, tailTitle: String?) throws -> URL {
+            var body = Data((#"{"type":"queue-operation","operation":"enqueue"}"# + "\n"
+                + #"{"type":"custom-title","customTitle":""# + title + #"","sessionId":"x"}"# + "\n").utf8)
+            let filler = Data((#"{"type":"assistant","message":{"content":[{"type":"text","text":""# + String(repeating: "\u{E9}", count: 400) + #""}]}}"# + "\n").utf8)
+            while body.count < 400 * 1024 { body.append(filler) }
+            if String(data: body.prefix(256 * 1024), encoding: .utf8) != nil { body.insert(0x20, at: 0) }
+            if let tailTitle { body.append(Data((#"{"type":"custom-title","customTitle":""# + tailTitle + #"","sessionId":"x"}"# + "\n").utf8)) }
+            body.append(filler)
+            let file = titleProject.appendingPathComponent(UUID().uuidString.lowercased() + ".jsonl")
+            try body.write(to: file)
+            return file
+        }
+        let named = try longTranscript(title: "Homepage CTA for the launch", tailTitle: nil)
+        let namedHead = try FileHandle(forReadingFrom: named).readData(ofLength: 256 * 1024)
+        try expect(String(data: namedHead, encoding: .utf8) == nil, "the fixture's first 256 KB ends inside a character")
+        try expect(Self.lastCustomTitle(in: named) == "Homepage CTA for the launch", "a name near the top survives a window cut inside a character")
+        let renamed = try longTranscript(title: "First name", tailTitle: "Renamed later")
+        try expect(Self.lastCustomTitle(in: renamed) == "Renamed later", "the newest title, in the tail, wins")
+        // The fresh list names Claude rows by their transcript's title unless Claude Desktop has titled them.
+        let transcriptIndex = Self.claudeTranscriptIndex(projectsRoot: titleRoot)
+        let namedID = named.deletingPathExtension().lastPathComponent
+        try expect(Self.claudeTranscript(String(namedID.prefix(8)), in: transcriptIndex)?.lastPathComponent == named.lastPathComponent
+                   && Self.claudeTranscript(namedID.uppercased(), in: transcriptIndex)?.lastPathComponent == named.lastPathComponent
+                   && Self.claudeTranscript(String(namedID.prefix(7)), in: transcriptIndex) == nil,
+                   "a transcript is found by its full id or a unique 8-character id, never a shorter one")
+        let desktopTitled = ClaudeDesktopSession(id: "d3786335-cfb4-4556-9a4a-7308ce66eab1", cliSessionId: "d3786335-cfb4-4556-9a4a-7308ce66eab1",
+                                                 title: "Desktop tab name", cwd: "/repo", mtime: Date(), created: Date())
+        let titled = Self.applyClaudeCustomTitles([
+            ["id": namedID, "provider": "claude", "name": "Prepare the next reviewable result for: Homepage"],
+            ["id": String(namedID.prefix(8)), "provider": "claude", "name": "live row"],
+            ["id": "d3786335-cfb4-4556-9a4a-7308ce66eab1", "provider": "claude", "name": "Desktop tab name"],
+            ["id": namedID, "provider": "codex", "name": "Codex thread"],
+            ["id": "99999999-0000-4000-8000-000000000000", "provider": "claude", "name": "Server name"],
+        ], desktopIndex: ["d3786335-cfb4-4556-9a4a-7308ce66eab1": desktopTitled]) { id in
+            Self.claudeTranscript(id, in: transcriptIndex).flatMap(Self.lastCustomTitle(in:))
+        }.map { $0["name"] as? String ?? "" }
+        try expect(titled == ["Homepage CTA for the launch", "Homepage CTA for the launch", "Desktop tab name", "Codex thread", "Server name"],
+                   "transcript titles name untitled Claude rows only: \(titled)")
+        // A title someone gave the session is never read as a warm-up, even "Ready"; a first prompt of "ready" is one.
+        let readyFile = titleProject.appendingPathComponent("eeeeeeee-1111-4222-8333-444444444444.jsonl")
+        try Data((#"{"type":"custom-title","customTitle":"Ready","sessionId":"eeeeeeee-1111-4222-8333-444444444444"}"# + "\n"
+                  + #"{"type":"user","message":{"role":"user","content":"ready"}}"# + "\n").utf8).write(to: readyFile)
+        let readyIndex = Self.claudeTranscriptIndex(projectsRoot: titleRoot)
+        let flagged = Self.applyClaudeCustomTitles([
+            ["id": "eeeeeeee-1111-4222-8333-444444444444", "provider": "claude", "name": "ready"],
+            ["id": "d3786335-cfb4-4556-9a4a-7308ce66eab1", "provider": "claude", "name": "Desktop tab name"],
+            ["id": "99999999-0000-4000-8000-000000000000", "provider": "claude", "name": "ready"],
+        ], desktopIndex: ["d3786335-cfb4-4556-9a4a-7308ce66eab1": desktopTitled]) { id in
+            Self.claudeTranscript(id, in: readyIndex).flatMap(Self.lastCustomTitle(in:))
+        }
+        try expect(flagged.map { $0["namedTitle"] as? Bool == true } == [true, true, false] && flagged[0]["name"] as? String == "Ready",
+                   "Desktop and transcript titles are named titles; a first prompt is not")
+        try expect(!Self.isWarmUpRow(flagged[0]) && Self.isWarmUpRow(flagged[2]) && !Self.isWarmUpRow(flagged[1]),
+                   "a session named Ready stays listed; a warm-up whose first prompt is ready does not")
+        let petRows = Self.petLiveRows(
+            cached: [],
+            livePeers: [["id": "eeeeeeee", "provider": "claude", "name": "ready", "alive": true, "state": "running"],
+                        ["id": "99999999", "provider": "claude", "name": "ready", "alive": true, "state": "running"]],
+            transcriptActivity: { _ in nil },
+            transcriptTitle: { id in Self.claudeTranscript(id, in: readyIndex).flatMap(Self.lastCustomTitle(in:)) }
+        )
+        try expect(petRows.map { $0["name"] as? String ?? "" } == ["Ready"],
+                   "the pet names a live row by its transcript title before the warm-up filter: \(petRows.map { $0["name"] as? String ?? "" })")
+        let recentReady = Self.recentClaudeConversations(liveIds: [], projectsRoot: titleRoot)
+        try expect(recentReady.contains { $0["name"] as? String == "Ready" && $0["namedTitle"] as? Bool == true },
+                   "a recent session named Ready is listed, flagged as named")
         try expect(Self.recentClaudeConversations(liveIds: ["d3786335"], projectsRoot: tmp).isEmpty,
                    "live sessions are not duplicated as recent")
         try expect(

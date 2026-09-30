@@ -280,6 +280,30 @@ struct WorkSendPlan: Equatable {
         return r.details
     }
     func receipts(for workID: String) -> [WorkHandoffReceipt] { receipts.filter { $0.workID == workID }.sorted { $0.createdAt > $1.createdAt } }
+    /// 0.5.250: the listed sessions with each short id a receipt knows in full replaced by that full id (the live list
+    /// gives a running Claude session by its first 8 characters), and one row per session. Every lookup by a receipt's
+    /// id then finds it, and the Continue picker lists it once.
+    nonisolated static func canonicalSessions(_ listed: [WorkSession], linked: Set<String>) -> [WorkSession] {
+        var seen = Set<String>()
+        return listed.compactMap { row in
+            var next = row
+            if !linked.contains(row.id), let full = linked.first(where: { $0.count > row.id.count && ClaudeSession.sameSession($0, row.id) }),
+               let native = nativeID(full) {
+                next = WorkSession(id: full, nativeID: native, provider: row.provider, title: row.title, summary: row.summary,
+                                   project: row.project, status: row.status, waitingDetail: row.waitingDetail, failure: row.failure,
+                                   updatedAt: row.updatedAt)
+            }
+            return seen.insert(next.id).inserted ? next : nil
+        }
+    }
+    /// The listed session a receipt names: the exact id, else the same session by a short id (ClaudeSession.sameSession).
+    /// 0.5.250: with server 6.58.2 a New session is linked from the start of its run, while the live list may still give
+    /// it by its first 8 characters; the card showed "session live status unavailable" when only the exact id counted.
+    nonisolated static func listedSession(for receipt: WorkHandoffReceipt, in sessions: [WorkSession]) -> WorkSession? {
+        guard let id = receipt.sessionID else { return nil }
+        return sessions.first { $0.id == id && $0.provider == receipt.provider }
+            ?? sessions.first { $0.provider == receipt.provider && ClaudeSession.sameSession($0.id, id) }
+    }
     /// 0.5.241: the newest handoff that started or sent to this Activity session ("provider:native"),
     /// so the Sessions page can lead back to its Work item however it was opened.
     /// A Fork keeps its parent as `sessionID` until the fork exists, and a refused handoff never reached the
@@ -676,10 +700,13 @@ struct WorkSendPlan: Equatable {
             models = try JSONDecoder().decode([WorkModelChoice].self, from: JSONEncoder().encode(catalog["models"] ?? .array([])))
             await refreshActivity()
             if let activityError { throw failure(activityError) }
-            let fresh = activitySessions
-            // Preserve exact receipt-bound targets even if discovery has aged them out.
+            // Preserve exact receipt-bound targets even if discovery has aged them out. 0.5.250: a listed session the live
+            // list gives by a short id takes the full id its receipt names, so the picker lists it once.
             let linked = Set(receipts.compactMap(\.sessionID))
-            sessions = fresh + sessions.filter { previous in linked.contains(previous.id) && !fresh.contains(where: { $0.id == previous.id }) }
+            let fresh = Self.canonicalSessions(activitySessions, linked: linked)
+            sessions = fresh + sessions.filter { previous in
+                linked.contains(previous.id) && !fresh.contains(where: { ClaudeSession.sameSession($0.id, previous.id) })
+            }
         } catch { models = []; self.error = error.localizedDescription }
     }
     func refreshActivity() async {
@@ -734,6 +761,10 @@ struct WorkSendPlan: Equatable {
             } else {
                 guard let session, sessions.contains(where: { $0.id == session.id && $0.provider == session.provider && $0.nativeID == session.nativeID }), session.id == "\(session.provider):\(session.nativeID)" else { throw failure("Refresh and select an exact session.") }
                 guard (mode == .fork ? Self.nativeForkProviders : Self.continueProviders).contains(session.provider) else { throw failure("This provider does not support that session action.") }
+                // 0.5.250: the COS server is still running this session's first turn; a Continue now would be a second writer.
+                if mode == .continueSession, Self.serverHold(onSession: session.id, in: receipts) != nil {
+                    throw failure("\u{201C}\(session.title)\u{201D} is still running its first turn on the COS server. Continue it once that has finished.")
+                }
             }
             let id = UUID().uuidString.lowercased()
             var row = WorkHandoffReceipt(id: id, workID: source.id, workTitle: source.title, sourceRevision: source.revision,
@@ -764,7 +795,11 @@ struct WorkSendPlan: Equatable {
                 // with Settings > Open new sessions in the app off, it stays in the background as in 0.5.247.
                 if opensInApp, Self.appProviders.contains(row.provider) { row.appOpen = WorkAppOpen() }
                 row.channel = "job"; try save(row)
-                let data = try JSONSerialization.data(withJSONObject: ["clientJobId": id, "query": sent, "model": model!.id])
+                var job: [String: Any] = ["clientJobId": id, "query": sent, "model": model!.id]
+                // 0.5.250: a Claude session is named after its task (server 6.58.2 passes it to `claude -p --name`), so
+                // Claude's sidebar shows the task, not "General coding session". An older server drops the key.
+                if row.provider == "claude", let name = Self.claudeSessionName(source.title) { job["sessionName"] = name }
+                let data = try JSONSerialization.data(withJSONObject: job)
                 let result = try await call(["work-new"], data)
                 if let http = result["httpStatus"]?.int, [400, 401, 403, 404, 422].contains(http) || (http == 409 && result["error"]?.object?["code"]?.string == "message_era_mismatch") {
                     row.status = "refused"; row.detail = result["error"]?.object?["message"]?.string ?? "New-session admission was refused (\(http))."
@@ -792,6 +827,7 @@ struct WorkSendPlan: Equatable {
             } else { try await continueSession(session!, row: &row) }
             try save(row)
             onHandoffRecorded?()
+            if row.channel == "job", row.sessionID != nil { onWorkSessionsChanged?() }
             if row.channel == "job", (row.sessionID == nil && row.blocksNewHandoff) || row.appOpen != nil {
                 let id = row.id
                 newSessionLink = Task { [weak self] in await self?.linkNewSession(id) }
@@ -914,6 +950,38 @@ struct WorkSendPlan: Equatable {
         storageURL.deletingLastPathComponent().appendingPathComponent("tabs", isDirectory: true).appendingPathComponent(id + "." + ext)
     }
 
+    /// 0.5.250: the name a Claude New session gets, from the Work item's title (Miles, 2026-09-29: an imported session
+    /// showed as "General coding session" and he could not find it). Cleaned as server 6.58.2 cleans it, so the two
+    /// agree:
+    /// - the characters `sessionNameInvisible` names become spaces (never the joiners U+200C and U+200D or tag
+    ///   characters, which hold emoji and words together);
+    /// - whitespace runs collapse to one space, and the ends are trimmed;
+    /// - at most 100 characters, counted as grapheme clusters (the server counts with Intl.Segmenter). Past that it is
+    ///   cut at 100, then back to the last space when that space is at index 50 or later.
+    /// Then Control's own step: no trailing punctuation (sentence marks, dashes, bullets, a dangling slash or ampersand;
+    /// closing brackets and quotes stay, and so do the signs in names such as C++ or C#). Nil when nothing is left, and
+    /// then no name is sent.
+    nonisolated static let sessionNameLimit = 100
+    nonisolated static let sessionNameTrailing = CharacterSet(charactersIn: ".,;:!?\u{2026}-\u{2010}\u{2011}\u{2012}\u{2013}\u{2014}\u{2015}\u{00B7}\u{2022}/\\|&").union(.whitespaces)
+    /// C0 and C1 controls, the zero-width space, the direction marks and overrides, and the byte-order mark.
+    nonisolated static func sessionNameInvisible(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x0000...0x001F, 0x007F...0x009F, 0x200B, 0x200E, 0x200F, 0x202A...0x202E, 0x2066...0x2069, 0xFEFF: return true
+        default: return false
+        }
+    }
+    nonisolated static func claudeSessionName(_ title: String) -> String? {
+        var spaced = String.UnicodeScalarView()
+        for scalar in title.unicodeScalars { spaced.append(sessionNameInvisible(scalar) ? " " : scalar) }
+        var name = String(spaced).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        if name.count > sessionNameLimit {
+            name = String(name.prefix(sessionNameLimit))
+            if let space = name.lastIndex(of: " "), name.distance(from: name.startIndex, to: space) >= 50 { name = String(name[..<space]) }
+        }
+        while let last = name.unicodeScalars.last, sessionNameTrailing.contains(last) { name.unicodeScalars.removeLast() }
+        return name.isEmpty ? nil : name
+    }
+
     enum AppOpenStep: Equatable { case wait, findChat, open, skip(String) }
     /// What a New session that opens in its app needs now. Nil when it never asked to, or is settled (opened or skipped).
     /// It opens only once the server's run has completed, `settle` seconds after it ended, within `appOpenWindow`. A run
@@ -931,8 +999,20 @@ struct WorkSendPlan: Equatable {
     /// from a 0.5.248 tab. The app writes the session's transcript from then on, so COS never delivers a server turn into
     /// it: the app and the server would write one transcript at once.
     nonisolated static func appOwner(of sessionID: String, in receipts: [WorkHandoffReceipt]) -> WorkHandoffReceipt? {
-        receipts.filter { $0.sessionID == sessionID && ($0.appOpen?.openedAt != nil || $0.channel == "tab") }
-            .max { $0.createdAt < $1.createdAt }
+        receipts.filter { row in
+            (row.sessionID.map { ClaudeSession.sameSession($0, sessionID) } ?? false) && (row.appOpen?.openedAt != nil || row.channel == "tab")
+        }.max { $0.createdAt < $1.createdAt }
+    }
+    /// 0.5.250: job states whose session a receipt may take: a run going (running, answer_ready) or finished well.
+    nonisolated static let linkableJobStates: Set<String> = ["running", "answer_ready", "completed"]
+    /// 0.5.250: a Work New session the COS server is still running: its job-channel receipt names a session and has
+    /// not finished. Until it has, nothing but the server may write to that session: no Open in platform, no Continue,
+    /// no pet tap into the app (QA, 2026-09-29: two writers into one Claude session).
+    nonisolated static func serverHolds(_ receipt: WorkHandoffReceipt) -> Bool {
+        receipt.channel == "job" && receipt.mode == .newSession && receipt.sessionID != nil && receipt.blocksNewHandoff
+    }
+    nonisolated static func serverHold(onSession id: String, in receipts: [WorkHandoffReceipt]) -> WorkHandoffReceipt? {
+        receipts.first { row in serverHolds(row) && (row.sessionID.map { ClaudeSession.sameSession($0, id) } ?? false) }
     }
     /// The card's button: Open again once it opened (or for a note you have not sent yet), "Open in <app>" when it did
     /// not open by itself. Nil while it still may, when it has no session, and while its run is still going.
@@ -1093,6 +1173,7 @@ struct WorkSendPlan: Equatable {
             return true
         }
         if linked, !sessions.contains(where: { $0.id == session.id }) { sessions.append(session) }
+        if linked { onWorkSessionsChanged?() }
         return linked
     }
 
@@ -1282,7 +1363,9 @@ struct WorkSendPlan: Equatable {
         if row.status == "completed", row.appOpen != nil, row.appOpen?.runEndedAt == nil {
             row.appOpen?.runEndedAt = job["completedAt"]?.string.flatMap(WorkProgress.parseStamp) ?? Date().timeIntervalSince1970
         }
-        if let provider = job["provider"]?.string, provider == row.provider,
+        // 0.5.250: server 6.58.2 names a Claude session from the start of the run, so a run that failed, was canceled or
+        // was interrupted can carry an id too. Only a run that is going or finished well is linked (QA, 2026-09-29).
+        if let provider = job["provider"]?.string, provider == row.provider, Self.linkableJobStates.contains(state),
            job["providerOwnershipConfirmedAt"]?.string != nil,
            let native = (provider == "codex" ? job["codexThreadId"]?.string : job["cliSessionId"]?.string), !native.isEmpty, provider != "ollama" {
             row.sessionID = "\(provider):\(native)"
@@ -1297,9 +1380,14 @@ struct WorkSendPlan: Equatable {
         busy = true; error = nil; defer { busy = false }
         do {
             let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }; try loadJournal()
+            var changed = false
             for row in receipts where row.blocksNewHandoff && row.status != "delivered" {
-                try save(try await reconciled(row))
+                let next = try await reconciled(row)
+                try save(next)
+                if Self.changesWorkSessions(from: row, to: next) { changed = true }
             }
+            // 0.5.250: a session linked (or released) by Check status or a Work refresh is marked at once, as elsewhere.
+            if changed { onWorkSessionsChanged?() }
         } catch { self.error = error.localizedDescription }
     }
     /// One server read for an in-flight receipt, applied to a copy. A receipt with no channel to read is returned as is.
@@ -1328,6 +1416,14 @@ struct WorkSendPlan: Equatable {
 
     /// Called when a handoff was recorded, so tracking starts without waiting for its next pass.
     var onHandoffRecorded: (() -> Void)?
+    /// 0.5.250: called when a receipt first names its session (a New session's job named it, or its Cursor chat was
+    /// found), and when the COS server stops holding one (its run finished), so Sessions and the pet mark it at once
+    /// instead of at the next list load: Work, not a "COS server" scheduled job, and open to the app once it is done.
+    var onWorkSessionsChanged: (() -> Void)?
+    /// A read that links a session, or ends the server's hold on one, changes what Sessions and the pet show.
+    nonisolated static func changesWorkSessions(from old: WorkHandoffReceipt, to next: WorkHandoffReceipt) -> Bool {
+        (old.sessionID == nil && next.sessionID != nil) || serverHolds(old) != serverHolds(next)
+    }
 
     /// Reads delivery for these tracked handoffs while still in flight.
     func reconcileForTracking(ids: Set<String>, now: Double = Date().timeIntervalSince1970) async {
@@ -1343,13 +1439,16 @@ struct WorkSendPlan: Equatable {
     }
     /// Applies what a background read found, only if nobody changed the receipt meanwhile.
     @discardableResult private func commitDelivery(_ next: WorkHandoffReceipt, expecting old: WorkHandoffReceipt) -> Bool {
-        updateReceipt(next.id) { current in
+        let changed = Self.changesWorkSessions(from: old, to: next)
+        let written = updateReceipt(next.id) { current in
             guard current.status == old.status, current.detail == old.detail else { return false }
             current.status = next.status; current.detail = next.detail; current.result = next.result
             current.jobID = next.jobID; current.sessionID = next.sessionID; current.sessionTitle = next.sessionTitle
             if current.appOpen != nil, current.appOpen?.runEndedAt == nil { current.appOpen?.runEndedAt = next.appOpen?.runEndedAt }
             return true
         }
+        if written && changed { onWorkSessionsChanged?() }
+        return written
     }
     enum UpdateResult: Equatable { case written, unchanged, busy }
     /// One locked, synchronous change to a receipt. `change` returns false to leave it alone (`unchanged`). `busy`

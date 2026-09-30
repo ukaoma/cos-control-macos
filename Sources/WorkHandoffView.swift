@@ -185,7 +185,11 @@ struct WorkHandoffView: View {
     private var choices: [WorkModelChoice] { store.models.filter { $0.provider == provider } }
     private var plan: WorkSendPlan? { WorkHandoffStore.sendPlan(draft: draft, sessions: store.sessions, models: store.models) }
     private var blocking: WorkHandoffReceipt? { store.receipts(for: source.id).first(where: \.blocksNewHandoff) }
-    private var canSend: Bool { !validating && !store.busy && blocking == nil && plan != nil }
+    /// 0.5.250: a Continue into a session the COS server is still running (a Work New session's first turn) waits.
+    private var heldTarget: Bool {
+        mode == .continueSession && selectedSession.map { WorkHandoffStore.serverHold(onSession: $0.id, in: store.receipts) != nil } == true
+    }
+    private var canSend: Bool { !validating && !store.busy && blocking == nil && plan != nil && !heldTarget }
 
     /// 0.5.243: a Fork with a target provider picked is a fork to another platform (a New session seeded with the
     /// conversation export). No provider means the native, same-platform fork.
@@ -197,7 +201,7 @@ struct WorkHandoffView: View {
     /// The newest handoff for this work, any revision: it is what blocks or explains the next send.
     private var latest: WorkActivity? {
         guard let receipt = store.receipts(for: source.id).first else { return nil }
-        let session = store.observedSessions().first { $0.id == receipt.sessionID && $0.provider == receipt.provider }
+        let session = WorkHandoffStore.listedSession(for: receipt, in: store.observedSessions())
         return WorkActivity(receipt: receipt, session: session)
     }
 
@@ -583,6 +587,10 @@ struct WorkHandoffView: View {
                     }
                     Text("\(session.status.capitalized) · \(session.project.isEmpty ? "Workspace unavailable" : session.project)")
                         .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    if heldTarget {
+                        Text("Still running its first turn on the COS server. You can continue it once that finishes.")
+                            .font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+                    }
                     Text(forkToPlatform && store.opensInApp
                          ? "Starts a new \(WorkHandoffStore.providerName(provider)) session in the background with this context plus the conversation up to now from \u{201C}\(session.title)\u{201D}, read from its transcript (up to 32,000 characters in all), then opens it in \(WorkHandoffStore.appName(provider)) when the first reply is done. The original session is unchanged."
                          : mode == .continueSession && WorkHandoffStore.appOwner(of: session.id, in: store.receipts) != nil

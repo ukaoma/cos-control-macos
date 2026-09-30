@@ -802,7 +802,8 @@ private struct SessionPetRoot: View {
             dim: false,
             primary: {
                 model.petFocusID = session.id
-                if session.isScheduledJob {
+                // 0.5.250: a Work New session still running on the COS server opens in Control, as a scheduled job does.
+                if session.heldByServer {
                     // 0.5.229: a scheduled job has no platform window; it opens in Control.
                     presenter.openInControl(session)
                 } else {
@@ -810,7 +811,7 @@ private struct SessionPetRoot: View {
                 }
             },
             actions: PetRowActions(
-                openInPlatform: session.isScheduledJob ? nil : {
+                openInPlatform: session.heldByServer ? nil : {
                     model.petFocusID = session.id
                     model.openSessionInPlatform(session)
                 },
@@ -841,14 +842,15 @@ private struct SessionPetRoot: View {
             dim: true,
             primary: {
                 model.petFocusID = session.id
-                if session.isScheduledJob {
+                // 0.5.250: a Work New session still running on the COS server opens in Control, as a scheduled job does.
+                if session.heldByServer {
                     presenter.openInControl(session)
                 } else {
                     model.openSessionInPlatform(session)
                 }
             },
             actions: PetRowActions(
-                openInPlatform: session.isScheduledJob ? nil : {
+                openInPlatform: session.heldByServer ? nil : {
                     model.petFocusID = session.id
                     model.openSessionInPlatform(session)
                 },

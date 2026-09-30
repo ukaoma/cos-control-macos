@@ -182,6 +182,10 @@ final class ControllerModel: ObservableObject {
     private(set) var workHandoffStore: WorkHandoffStore?
     /// The sessions Work handoffs name, so Sessions shows them as work rather than as COS server jobs (0.5.247).
     var workSessionIDs: Set<String> { Set(workHandoffStore?.receipts.compactMap(\.sessionID) ?? []) }
+    /// 0.5.250: sessions of Work New sessions the COS server is still running; nothing else writes to them until they finish.
+    var runningWorkSessionIDs: Set<String> {
+        Set(workHandoffStore?.receipts.filter(WorkHandoffStore.serverHolds).compactMap(\.sessionID) ?? [])
+    }
     private(set) var workTracker: WorkProgressTracker?
     nonisolated static let workNotificationsKey = "cos.workNotifications"
     nonisolated static let workOpensTabsKey = "cos.workOpensTabs"
@@ -464,6 +468,9 @@ final class ControllerModel: ObservableObject {
             }),
             notify: { [weak self] notice in self?.postWorkNotice(notice) })
         store.opensInApp = workOpensTabs
+        // 0.5.250: a New session linked while it runs is Work in Sessions and on the pet at once, under its own title, and
+        // opens to the app once its run finishes.
+        store.onWorkSessionsChanged = { [weak self] in self?.remarkWorkSessions() }
         workHandoffStore = store
         workTracker = tracker
         meetingAudioNotifier.onOpenWork = { [weak self] workID in self?.openWorkItem(workID) }
@@ -2566,12 +2573,18 @@ final class ControllerModel: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
+    /// Marks the listed sessions Work receipts name, again, when a receipt links its session between list loads.
+    func remarkWorkSessions() {
+        claudeSessions = ClaudeSession.markingWork(claudeSessions, workSessionIDs: workSessionIDs, runningWorkSessionIDs: runningWorkSessionIDs)
+        applyPetSessions(petSessionsRaw)
+    }
+
     func hydrateClaudeSessionsFromCache() {
         guard claudeSessions.isEmpty else { return }
         guard let cache = SessionListCache.load() else { return }
         claudeSessionsEnabled = cache.enabled
         claudeSessionsReason = cache.reason
-        claudeSessions = ClaudeSession.markingWork(cache.sessions, workSessionIDs: workSessionIDs)
+        claudeSessions = ClaudeSession.markingWork(cache.sessions, workSessionIDs: workSessionIDs, runningWorkSessionIDs: runningWorkSessionIDs)
         sessionListDropped = cache.dropped
         claudeSessionsCacheSavedAt = cache.savedAt
         claudeSessionsError = nil
@@ -2616,7 +2629,7 @@ final class ControllerModel: ObservableObject {
             if !next.isEmpty || !partial {
                 claudeSessionsEnabled = response.details["enabled"]?.bool ?? claudeSessionsEnabled
                 claudeSessionsReason = response.details["reason"]?.string ?? claudeSessionsReason
-                claudeSessions = ClaudeSession.markingWork(next, workSessionIDs: workSessionIDs)
+                claudeSessions = ClaudeSession.markingWork(next, workSessionIDs: workSessionIDs, runningWorkSessionIDs: runningWorkSessionIDs)
                 sessionListDropped = SessionListDropped(response.details["dropped"])
                 if !quick, !partial {
                     claudeSessionsCacheSavedAt = Date()
@@ -3558,6 +3571,9 @@ final class ControllerModel: ObservableObject {
         authoritative: Bool = false,
         suppressedIDs: Set<String> = []
     ) {
+        // 0.5.250: the pet marks Work sessions too, so a Work New session is never a "Scheduled job" there, and the
+        // ledger never records it as a scheduled run.
+        let sessions = ClaudeSession.markingWork(sessions, workSessionIDs: workSessionIDs, runningWorkSessionIDs: runningWorkSessionIDs)
         petSessionsRaw = sessions
         // 0.5.235: the row's queued count is the server's word; when it moves
         // under an open card, the card's list follows without a click.
@@ -3755,6 +3771,14 @@ final class ControllerModel: ObservableObject {
     }
 
     func openSessionInPlatform(_ session: ClaudeSession) {
+        // 0.5.250: a session only the COS server may write (a scheduled job, or a Work New session still running its
+        // first turn) opens in Control instead, whatever asked (the pet's figure, its Waiting jump, a row): importing it
+        // into the app now would give it a second writer.
+        guard !session.heldByServer else {
+            if session.workRunning { petNotice = "Still running on the COS server. It opens in the app when the first reply is done." }
+            openPetSessionInControl(session)
+            return
+        }
         petFocusID = session.id
         markPetCompletionSeen(id: session.id)
         Task { await revealPetSession(session) }
@@ -5584,7 +5608,8 @@ final class ControllerModel: ObservableObject {
     /// as bindable, with Continue on. `sessionChatGateMessage` is the pane's
     /// gate, reused so the two surfaces cannot disagree about a provider.
     func canMessagePetSession(_ session: ClaudeSession) -> Bool {
-        !session.isScheduledJob && sessionChatGateMessage(for: session) == nil
+        // 0.5.250: nor a Work New session the COS server is still running (heldByServer).
+        !session.heldByServer && sessionChatGateMessage(for: session) == nil
     }
 
     func openPetComposer(for session: ClaudeSession) {

@@ -39,8 +39,8 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 727:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 727 (727 at 0.5.238: the Codex rollout reader, open-thread list, discovery and the pet pipeline over them)")
+if count < 774:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 774 (774 at 0.5.250: the Work session name, transcript titles and named rows that are never warm-ups; 727 at 0.5.238)")
 ' "$SELF_TEST"
 # The Work contract self-test (the model catalog, admission, and from 0.5.249 the Cursor chat finder) is its own command,
 # and nothing ran it: a mutation of the tab folder rules survived because of it (2026-09-29).
@@ -52,7 +52,7 @@ fi
 /usr/bin/python3 -c '
 import json, sys
 value = json.loads(sys.argv[1])
-if not value.get("ok") or value.get("details", {}).get("checks", 0) < 33:
+if not value.get("ok") or value.get("details", {}).get("checks", 0) < 51:
     sys.exit("helper self-test-work FAILED: " + str(value)[:2000])
 ' "$WORK_SELF_TEST"
 
@@ -1068,8 +1068,8 @@ assert "await submit(source: source, mode: .continueSession, session: session" i
 assert "onSentBack: { if [.built, .qa].contains(WorkBoardStage.stage(for: task)) { move(task, to: .draft) } }" in wwv, "Not done yet moves the card back only from Built or QA"
 # Work's New session runs on the COS server, which the helper labels a scheduled job: both list loads mark the sessions
 # a handoff names as work, and a New session re-reads its job until the server names the session (2026-09-29).
-assert "claudeSessions = ClaudeSession.markingWork(next, workSessionIDs: workSessionIDs)" in model, "the fresh list marks Work's sessions"
-assert "claudeSessions = ClaudeSession.markingWork(cache.sessions, workSessionIDs: workSessionIDs)" in model, "the cached list marks Work's sessions"
+assert "claudeSessions = ClaudeSession.markingWork(next, workSessionIDs: workSessionIDs, runningWorkSessionIDs: runningWorkSessionIDs)" in model, "the fresh list marks Work's sessions"
+assert "claudeSessions = ClaudeSession.markingWork(cache.sessions, workSessionIDs: workSessionIDs, runningWorkSessionIDs: runningWorkSessionIDs)" in model, "the cached list marks Work's sessions"
 assert "claudeSessions = next\n" not in model and "claudeSessions = cache.sessions\n" not in model, "no list load may skip the Work marking"
 assert "newSessionLink = Task { [weak self] in await self?.linkNewSession(id) }" in submit, "a New session re-reads its job until it is linked"
 # 0.5.249: start it, then open it. A New session for Claude, Codex or Cursor runs the background job (Settings on by
@@ -1085,6 +1085,38 @@ for dead in ("func tabLink(", "func openTab(", "func linkOpenedTabs(", "func reo
 assert "store.opensInApp = workOpensTabs" in model and "workHandoffStore?.opensInApp = newValue" in model, "the Settings switch reaches the store at launch and on change"
 assert 'nonisolated static let workOpensTabsKey = "cos.workOpensTabs"' in model, "the Settings key is unchanged"
 assert 'Toggle("Open new sessions in the app", isOn: Binding(get: { model.workOpensTabs }, set: { model.workOpensTabs = $0 }))' in views
+PY
+# 0.5.250: a Claude New session is named after its task (server 6.58.2 passes `sessionName` to `claude -p --name`), a
+# session linked while it runs is Work in Sessions at once, and the fresh list reads the name from the transcript.
+# Behaviour: Tests/run-work-progress.sh (sessionNameChecks, test 20) and the helper self-tests.
+python3 - "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/HelperSources/main.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/Models.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/SessionPet.swift" <<'PY'
+import sys
+store, helper, model, models, aw, petview = (open(p).read() for p in sys.argv[1:7])
+assert ".disabled(row.heldByServer)" in aw and "if model.openClaudeRow?.workRunning == true {" in aw, "Sessions: no Open in platform or composer while the server holds it"
+assert petview.count("openInPlatform: session.heldByServer ? nil : {") == 2 and petview.count("if session.heldByServer {") == 2, "the pet opens a held session in Control"
+def body(src, start, end):
+    i = src.index(start); return src[i:src.index(end, i)]
+submit = body(store, "    func submit(source: WorkSource", "    // MARK: - Start it, then open it (0.5.249)")
+assert 'if row.provider == "claude", let name = Self.claudeSessionName(source.title) { job["sessionName"] = name }' in submit, "only a Claude New session is named, after its task"
+assert "let data = try JSONSerialization.data(withJSONObject: job)" in submit, "the name rides in the job request"
+new = body(helper, "    private func emitWorkNew() throws {", "    // MARK: - Cursor chats for Work (0.5.249)")
+assert "let sessionName = try Self.workNewSessionName(body)" in new and "messageEra: era, sessionName: sessionName)" in new, "the helper cleans the name and posts it"
+fresh = body(helper, "    private func emitFreshClaudeSessions(", "    private func emitSessionList(")
+assert fresh.index("Self.applyClaudeDesktopTitles(peers") < fresh.index("Self.applyClaudeCustomTitles(peers") < fresh.index("peers.removeAll { Self.isWarmUpRow($0) }"), "transcript titles apply after Desktop's, before the warm-up filter"
+assert "Self.isKeepWarmSessionTitle(($0[\"name\"] as? String) ?? \"\") }" not in helper, "no list hides a row as a warm-up by a title someone gave it (isWarmUpRow)"
+live = body(helper, "    private func emitLiveClaudeSessions(", "    private func emitQuickClaudeSessions(")
+assert "transcriptTitle: { id in" in live and "Self.claudeTranscript(id, in: transcripts).flatMap(Self.lastCustomTitle(in:))" in live, "the pet's live list names Work sessions by their transcript title too"
+assert "store.onWorkSessionsChanged = { [weak self] in self?.remarkWorkSessions() }" in model, "a session linked while it runs is marked as Work at once"
+assert "next.fromWork = workSessionIDs.contains { sameSession($0, session.id) }" in models, "Work sessions match by short or full id"
+assert "next.workRunning = runningWorkSessionIDs.contains { sameSession($0, session.id) }" in models, "a Work session the server still runs is held"
+# QA 2026-09-29 (W1, User #2): while the COS server runs a Work New session, nothing else writes to it.
+pet = body(model, "    private func applyPetSessions(", "        petSessionsRaw = sessions")
+assert "let sessions = ClaudeSession.markingWork(sessions, workSessionIDs: workSessionIDs, runningWorkSessionIDs: runningWorkSessionIDs)" in pet, "the pet marks Work sessions"
+reveal = body(model, "    func openSessionInPlatform(_ session: ClaudeSession) {", "    func openPetSessionInControl(")
+assert reveal.index("guard !session.heldByServer else {") < reveal.index("Task { await revealPetSession(session) }"), "no Open in platform while the server holds the session"
+assert "!session.heldByServer && sessionChatGateMessage(for: session) == nil" in model, "no pet Continue while the server holds the session"
+assert "if mode == .continueSession, Self.serverHold(onSession: session.id, in: receipts) != nil {" in submit, "no Work Continue while the server holds the session"
+assert "Self.linkableJobStates.contains(state)" in store, "only a running or well-finished job links its session (QA W2)"
 PY
 # The tracker's behaviour: status lines, delivery, stages, Jev gating, retries, a busy journal (synthetic transport and board).
 "$ROOT/Tests/run-work-progress.sh"
@@ -5556,11 +5588,14 @@ opener = body(model, "func openClaudeSession(")
 guard_at = opener.find("guard !session.isScheduledJob")
 if guard_at < 0 or guard_at > opener.find("claudeSessionDetailTask = Task") or guard_at > opener.find("prepareSessionChat(session)"):
     fail("opening a scheduled job must not fetch a transcript or prepare Continue")
+# 0.5.250: the pet rows gate on heldByServer, which is a scheduled job or a Work New session the COS server still runs.
+if "var heldByServer: Bool { isScheduledJob || workRunning }" not in (root / "Sources/Models.swift").read_text():
+    fail("heldByServer must cover every scheduled job")
 for fn in ("private func missionRow(", "private func idleRow("):
     row_body = body(pet, fn)
-    if "openInPlatform: session.isScheduledJob ? nil :" not in row_body:
+    if "openInPlatform: session.heldByServer ? nil :" not in row_body:
         fail(f"{fn} still offers a platform window for a scheduled job")
-    branch_at = row_body.find("if session.isScheduledJob {")
+    branch_at = row_body.find("if session.heldByServer {")
     else_at = row_body.find("} else {", branch_at) if branch_at >= 0 else -1
     if branch_at < 0 or else_at < 0 or "presenter.openInControl(session)" not in row_body[branch_at:else_at]:
         fail(f"{fn}: tapping a scheduled job must open it in Control, not a platform window")

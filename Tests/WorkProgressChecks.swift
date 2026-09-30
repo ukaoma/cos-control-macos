@@ -38,10 +38,16 @@ private actor TrackingTransport {
         jobProvider = provider; jobClaudeSession = session; sessionAfterReads = afterReads
     }
     func setFailed(_ failed: Bool) { jobFailed = failed }
+    /// A raw server job state to answer with (canceled, interrupted, answer_ready), whatever the result.
+    var jobStateOverride: String?
+    func setJobState(_ state: String?) { jobStateOverride = state }
     var revealFails = false
     func setReveal(_ reason: String, link: String? = nil, fails: Bool = false) { revealReason = reason; revealLink = link; revealFails = fails }
     func setCursorChats(_ rows: [JSONValue]) { cursorChats = rows }
     func args(_ verb: String) -> [[String]] { calls.filter { $0.first == verb } }
+    /// 0.5.250: the `sessionName` each work-new request carried ("<none>" when it had none).
+    var sessionNames: [String] = []
+    func names() -> [String] { sessionNames }
     func bodies() -> [[String: String]] { completionBodies }
     func setTurn(_ state: String) { turnState = state }
     func setRead(replies rows: [(String, String?)], prompts heads: [(String, String?)] = [], running: Bool = false,
@@ -82,7 +88,9 @@ private actor TrackingTransport {
         case "work-new":
             let payload = (try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: Any] ?? [:]
             jobIdentity = payload["clientJobId"] as? String ?? ""
+            sessionNames.append(payload["sessionName"].map { $0 as? String ?? "<not text>" } ?? "<none>")
             details = job()
+        case "claude-session-detail": details = ["copyText": .string("YOU: build the page\nASSISTANT: built it")]
         case "work-job": workJobReads += 1; details = job()
         case "session-reveal":
             if revealFails { throw HelperClientError.commandFailed("Synthetic: the helper did not answer") }
@@ -98,7 +106,7 @@ private actor TrackingTransport {
     private func job() -> [String: JSONValue] {
         let provider = jobProvider ?? (jobClaudeSession == nil ? "cursor" : "claude")
         var job: [String: JSONValue] = ["clientJobId": .string(jobIdentity), "generation": .number(1), "jobId": .string("job-fixture"),
-                                         "status": .string(jobFailed ? "failed" : jobResult == nil ? "running" : "completed"),
+                                         "status": .string(jobStateOverride ?? (jobFailed ? "failed" : jobResult == nil ? "running" : "completed")),
                                          "provider": .string(provider)]
         if let jobResult { job["response"] = .string(jobResult) }
         if jobFailed { job["error"] = .object(["code": .string("provider_failed"), "message": .string("Sample: the provider stopped.")]) }
@@ -153,9 +161,10 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
     @MainActor static func main() async throws {
         pureChecks()
         appChecks()
+        sessionNameChecks()
         projectionChecks()
         try await trackerChecks()
-        print("PASS: Work tracking (status line, delivery, stages, projections, tracker: pending turns, arrival, reports, several tasks, pause, moved back, retries, busy journal, Jev gating, baseline, job result, superseded, back-off, New session link, Work sessions not jobs, start it then open it in the app)")
+        print("PASS: Work tracking (status line, delivery, stages, projections, tracker: pending turns, arrival, reports, several tasks, pause, moved back, retries, busy journal, Jev gating, baseline, job result, superseded, back-off, New session link, Work sessions not jobs, start it then open it in the app, named after the task and linked while it runs)")
     }
 
     /// `precondition` takes an autoclosure, which cannot await.
@@ -380,6 +389,92 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         precondition(WorkLatestMoveStrip.shown(latest: ("a", "s1"), receipts: [stripped], lookup: { _ in ("t", "draft") }, now: now) == nil)
         var pausedStrip = stripped; pausedStrip.progress?.paused = true
         precondition(WorkLatestMoveStrip.shown(latest: ("a", "s1"), receipts: [pausedStrip], lookup: lookup, now: now) == nil)
+    }
+
+    // MARK: - Named after the task, found while it runs (0.5.250): the pure rules
+
+    @MainActor static func sessionNameChecks() {
+        func name(_ title: String) -> String? { WorkHandoffStore.claudeSessionName(title) }
+        precondition(name("  Homepage\tCTA\n for the  launch  ") == "Homepage CTA for the launch", "whitespace collapsed")
+        precondition(name("Fix\u{0}the\u{202E}footer\u{200B}links\u{FEFF}now\u{2066}ok\u{85}end") == "Fix the footer links now ok end",
+                     "controls, direction marks and invisible spaces become spaces (as server 6.58.2 cleans them)")
+        precondition(name("Plan \u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F467} trip \u{0645}\u{06CC}\u{200C}\u{062E}\u{0648}\u{0627}\u{0647}\u{0645} \u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}")
+                     == "Plan \u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F467} trip \u{0645}\u{06CC}\u{200C}\u{062E}\u{0648}\u{0627}\u{0647}\u{0645} \u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}",
+                     "joiners and tag characters stay: emoji and words hold together")
+        precondition(name("Price\u{00A0}\u{00A0}list\u{2028}now") == "Price list now", "every whitespace run collapses")
+        precondition(name("\u{200B}\u{FEFF}\u{0}\u{2066} ") == nil, "an all-invisible title is no name")
+        precondition(name("Draft the brief: part one, two,") == "Draft the brief: part one, two", "no trailing comma")
+        precondition(name("Why is it slow?!\u{2026}") == "Why is it slow", "no trailing marks")
+        precondition(name("Pricing \u{2014}") == "Pricing" && name("Sales &") == "Sales" && name("A / ") == "A", "no dangling dash, ampersand or slash")
+        precondition(name("Ship C++") == "Ship C++" && name("Port to C#") == "Port to C#" && name("Fix (mobile)") == "Fix (mobile)"
+                     && name("Say \u{201C}hello\u{201D}") == "Say \u{201C}hello\u{201D}", "closing brackets, quotes and signs in names stay")
+        precondition(name("Caf\u{E9} \u{E9}l\u{E9}gant menu") == "Caf\u{E9} \u{E9}l\u{E9}gant menu", "non-ASCII letters stay")
+        precondition(name("  \n\t ") == nil && name("") == nil && name(" ... , ") == nil, "nothing left, no name")
+        // Cut on a word boundary at 100 UTF-16 units, as the server counts, then without trailing punctuation.
+        let words = (1...40).map { "word\($0)," }.joined(separator: " ")
+        let cut = name(words)!
+        precondition(cut.count <= 100 && words.hasPrefix(cut) && !cut.hasSuffix(",") && words.dropFirst(cut.count).hasPrefix(", "), cut)
+        precondition(cut == "word1, word2, word3, word4, word5, word6, word7, word8, word9, word10, word11, word12, word13", cut)
+        let exact = String(repeating: "a", count: 94) + " bcdef"
+        precondition(exact.count == 100 && name(exact) == exact, "exactly 100 fits")
+        precondition(name(exact + " g") == String(repeating: "a", count: 94), "past 100: cut at 100, then back to the last space (index 94)")
+        precondition(name(String(repeating: "a", count: 95) + " bcdef") == String(repeating: "a", count: 95), "101 cuts back to the space")
+        precondition(name("a " + String(repeating: "b", count: 120)) == "a " + String(repeating: "b", count: 98), "a space before index 50 is ignored: hard cut at 100")
+        precondition(name(String(repeating: "x", count: 150)) == String(repeating: "x", count: 100), "one long word is cut inside it")
+        precondition(name(String(repeating: "\u{1F600}", count: 60)) == String(repeating: "\u{1F600}", count: 60)
+                     && name(String(repeating: "\u{1F600}", count: 150)) == String(repeating: "\u{1F600}", count: 100),
+                     "counted in characters, as the server counts: never splits one")
+        // A listed session by its short or full id, never another provider's, never a shorter prefix.
+        let full = "claude:8f7a53b9-b478-4d88-88e4-4a915b256da5"
+        precondition(ClaudeSession.sameSession(full, "claude:8f7a53b9") && ClaudeSession.sameSession("claude:8F7A53B9", full) && ClaudeSession.sameSession(full, full))
+        precondition(!ClaudeSession.sameSession(full, "claude:8f7a53b") && !ClaudeSession.sameSession(full, "codex:8f7a53b9")
+                     && !ClaudeSession.sameSession(full, "claude:8f7a53b9-0000") && !ClaudeSession.sameSession("claude:", "claude:")
+                     && !ClaudeSession.sameSession(full, "8f7a53b9-b478-4d88-88e4-4a915b256da5"))
+        let short = WorkSession(id: "claude:8f7a53b9", nativeID: "8f7a53b9", provider: "claude", title: "Homepage CTA", summary: "", project: "", status: "running")
+        let other = WorkSession(id: "claude:11111111", nativeID: "11111111", provider: "claude", title: "Other", summary: "", project: "", status: "idle")
+        var receipt = WorkHandoffReceipt(id: "r", workID: "task:Quilt:0123456789ab", workTitle: "T", sourceRevision: "1", mode: .newSession,
+                                         provider: "claude", modelID: "opus", sessionID: full, sessionTitle: "T", status: "running",
+                                         detail: "", prompt: "p", createdAt: 0, channel: "job")
+        precondition(WorkHandoffStore.listedSession(for: receipt, in: [other, short])?.id == short.id, "the live list's short id is this session")
+        let exactRow = WorkSession(id: full, nativeID: String(full.dropFirst(7)), provider: "claude", title: "Exact", summary: "", project: "", status: "running")
+        precondition(WorkHandoffStore.listedSession(for: receipt, in: [short, exactRow])?.id == full, "the exact id wins")
+        receipt.provider = "codex"
+        precondition(WorkHandoffStore.listedSession(for: receipt, in: [short]) == nil, "never another provider's")
+        receipt.sessionID = nil
+        precondition(WorkHandoffStore.listedSession(for: receipt, in: [short]) == nil)
+        // The Continue picker lists the session once, under the full id its receipt names.
+        let canonical = WorkHandoffStore.canonicalSessions([short, other, exactRow], linked: [full])
+        precondition(canonical.map(\.id) == [full, other.id] && canonical[0].nativeID == String(full.dropFirst(7))
+                     && canonical[0].title == "Homepage CTA" && canonical[0].status == "running", "\(canonical.map(\.id))")
+        precondition(WorkHandoffStore.canonicalSessions([short], linked: []).map(\.id) == [short.id], "no receipt, no change")
+        // A session is app-owned, or held by the server, whichever id it is listed under.
+        var opened = WorkHandoffReceipt(id: "o", workID: "task:Quilt:0123456789ab", workTitle: "T", sourceRevision: "1", mode: .newSession,
+                                        provider: "claude", modelID: "opus", sessionID: full, sessionTitle: "T", status: "completed",
+                                        detail: "", prompt: "p", createdAt: 0, channel: "job")
+        opened.appOpen = WorkAppOpen(runEndedAt: 1, openedAt: 2)
+        precondition(WorkHandoffStore.appOwner(of: "claude:8f7a53b9", in: [opened])?.id == "o", "app-owned by its short id too")
+        var running = opened; running.appOpen = WorkAppOpen(); running.status = "running"
+        precondition(WorkHandoffStore.serverHolds(running) && WorkHandoffStore.serverHold(onSession: "claude:8f7a53b9", in: [running])?.id == "o")
+        for status in ["completed", "failed", "canceled", "refused"] {
+            var ended = running; ended.status = status
+            precondition(!WorkHandoffStore.serverHolds(ended), status)
+        }
+        var unlinked = running; unlinked.sessionID = nil
+        var continued = running; continued.mode = .continueSession; continued.channel = "turn"
+        precondition(!WorkHandoffStore.serverHolds(unlinked) && !WorkHandoffStore.serverHolds(continued))
+        precondition(WorkHandoffStore.changesWorkSessions(from: unlinked, to: running) && WorkHandoffStore.changesWorkSessions(from: running, to: opened)
+                     && !WorkHandoffStore.changesWorkSessions(from: running, to: running), "a link, and the end of the hold, change what Sessions shows")
+        // Sessions and the pet: a Work session still running is held by the server (no Open in platform, no Continue).
+        let liveRow = ClaudeSession(.object(["id": .string("8f7a53b9"), "name": .string("Homepage CTA"), "origin": .string("job"),
+                                              "jobLabel": .string("COS server"), "state": .string("running")]))!
+        let held = ClaudeSession.markingWork([liveRow], workSessionIDs: [full], runningWorkSessionIDs: [full])[0]
+        let done = ClaudeSession.markingWork([liveRow], workSessionIDs: [full], runningWorkSessionIDs: [])[0]
+        precondition(!held.isScheduledJob && held.workRunning && held.heldByServer && held.title == "Homepage CTA")
+        precondition(!done.isScheduledJob && !done.workRunning && !done.heldByServer)
+        precondition(ClaudeSession.markingWork([liveRow], workSessionIDs: [])[0].heldByServer, "a server job is always held")
+        // A warm-up is known by its first prompt, never by a title someone gave the session.
+        precondition(ClaudeSession(.object(["id": .string("r1"), "name": .string("Ready")]))!.isKeepWarm
+                     && !ClaudeSession(.object(["id": .string("r2"), "name": .string("Ready"), "namedTitle": .bool(true)]))!.isKeepWarm)
     }
 
     // MARK: - Start it, then open it (0.5.249): the pure rules
@@ -939,6 +1034,9 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         do {
             let (store, transport, board, _, tracker, _, opened) = appSetUp("app-claude")
             store.models = [opus]
+            final class Links { var count = 0 }
+            let links = Links()
+            store.onWorkSessionsChanged = { links.count += 1 }
             await transport.setJob(provider: "claude", session: claudeID)
             await store.submit(source: source(idA), mode: .newSession, session: nil, model: opus, prompt: "Draft the CTA & ship it")
             var r = try row(store, idA)
@@ -948,6 +1046,7 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             await store.newSessionLink?.value
             r = try row(store, idA)
             check(r.sessionID == "claude:" + claudeID && r.status == "running", "\(String(describing: r.sessionID)) \(r.status)")
+            check(links.count == 1, "a link found by reading the job again is marked in Sessions at once: \(links.count)")
             check(WorkHandoffView.whereItRunsNote(r) == "Running in the background. It opens in Claude when the first reply is done.")
             await tracker.tick(); await tracker.tick()
             var reveals = await transport.count("session-reveal")
@@ -1061,6 +1160,9 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         do {
             let (store, transport, board, _, tracker, _, opened) = appSetUp("app-cursor")
             store.models = [grok]
+            final class CursorLinks { var count = 0 }
+            let cursorLinks = CursorLinks()
+            store.onWorkSessionsChanged = { cursorLinks.count += 1 }
             await transport.setJob(provider: "cursor", session: nil)
             await store.submit(source: source(idA), mode: .newSession, session: nil, model: grok, prompt: "Check every heading")
             await store.newSessionLink?.value
@@ -1081,6 +1183,7 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             await tracker.tick()
             r = try row(store, idA)
             check(r.sessionID == "cursor:" + cursorID && r.appOpen?.folder == folder && r.appOpen?.openedAt != nil, "\(String(describing: r.sessionID))")
+            check(cursorLinks.count == 1, "a Cursor chat found is marked in Sessions at once")
             check(opened.files == [store.appFile(r.id, "command")] && opened.urls.isEmpty, "\(opened.files)")
             check(opened.scripts == ["#!/bin/zsh\n# COS Control: the Cursor chat Work started. Continue it here.\ncd -- '/Users/test/Miles'\\''s Work Repo' || exit 1\nexec cursor-agent --resume '" + cursorID + "'\n"],
                   opened.scripts.first ?? "")
@@ -1172,6 +1275,91 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             cursorNote = try row(cursor, idB)
             check(cursorNote.status == "delivered" && cursorNote.progress?.reported == .done && cursorBoard.rows[idB] == "qa",
                   "\(cursorNote.status) \(String(describing: cursorNote.progress?.reported)) \(cursorBoard.rows)")
+        }
+
+        // 20. 0.5.250: a Claude New session is named after its task, and with server 6.58.2 its job names the session
+        //     from the start. The receipt links it while the run is going (the link loop's first read, as in production),
+        //     Sessions lists it as Work under its own title at once, and nothing else may write to it until the run
+        //     finishes: no app open, no Continue. It opens in Claude once the run completed.
+        do {
+            let (store, transport, board, _, tracker, _, opened) = appSetUp("named-early")
+            store.models = [opus, frontier, grok]
+            final class Count { var changed = 0 }
+            let count = Count()
+            store.onWorkSessionsChanged = { count.changed += 1 }
+            await transport.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            let titled = WorkSource(id: "task:Quilt:" + idA, title: "  Draft the homepage\n call to action, then ship it:  ",
+                                    revision: "1", project: "Quilt", context: "Task")
+            await store.submit(source: titled, mode: .newSession, session: nil, model: opus, prompt: "Go")
+            var r = try row(store, idA)
+            var names = await transport.names()
+            check(names == ["Draft the homepage call to action, then ship it"], "\(names)")
+            check(r.sessionID == nil && count.changed == 0, "the admission answer names no session")
+            await store.newSessionLink?.value
+            r = try row(store, idA)
+            check(r.sessionID == "claude:" + claudeID && r.status == "running" && count.changed == 1, "linked by the first read, while it runs")
+            await tracker.tick(); await tracker.tick()
+            r = try row(store, idA)
+            let reveals = await transport.count("session-reveal")
+            check(opened.urls.isEmpty && reveals == 0 && r.appOpen?.openedAt == nil && r.appOpen?.runEndedAt == nil,
+                  "a running job that names its session does not open the app")
+            check(WorkHandoffView.whereItRunsNote(r) == "Running in the background. It opens in Claude when the first reply is done.")
+            check(board.rows[idA] == "draft", "received: the job named its session")
+            // Held by the server: Sessions marks it as Work (its own title), with no Open in platform and no Continue.
+            let live = try require(ClaudeSession(.object(["id": .string(String(claudeID.prefix(8))), "name": .string("Draft the homepage call to action, then ship it"),
+                                                          "origin": .string("job"), "jobLabel": .string("COS server"), "state": .string("running")])))
+            let listed = ClaudeSession.markingWork([live], workSessionIDs: Set(store.receipts.compactMap(\.sessionID)),
+                                                   runningWorkSessionIDs: Set(store.receipts.filter(WorkHandoffStore.serverHolds).compactMap(\.sessionID)))
+            check(!listed[0].isScheduledJob && listed[0].heldByServer && listed[0].title == "Draft the homepage call to action, then ship it",
+                  "Sessions: its own title, not COS server, and held")
+            let running = try require(store.sessions.first { $0.id == "claude:" + claudeID })
+            await store.submit(source: source("aaaaaaaaaaaa"), mode: .continueSession, session: running, model: nil, prompt: "More")
+            let turns = await transport.count("session-chat-attachability") + transport.count("session-chat-send")
+            check(store.receipts(for: "task:Quilt:aaaaaaaaaaaa").isEmpty && turns == 0 && store.error?.contains("still running its first turn") == true,
+                  "no Continue into a session the server is still running: \(store.error ?? "")")
+            await transport.setJobResult("done")
+            await store.followToApp(r.id)
+            check(opened.urls.map(\.absoluteString) == ["claude://resume?session=" + claudeID], "opens once the run completed")
+            check(count.changed == 2 && WorkHandoffStore.serverHold(onSession: running.id, in: store.receipts) == nil,
+                  "the end of the hold is marked at once: \(count.changed)")
+            // Only Claude sessions carry a name: not Codex, not Cursor, not a fork to Codex. A fork to Claude is named after its task.
+            await store.submit(source: source("cccccccccccc"), mode: .newSession, session: nil, model: frontier, prompt: "Go")
+            await store.submit(source: source("dddddddddddd"), mode: .newSession, session: nil, model: grok, prompt: "Go")
+            await store.forkToPlatform(source: source("eeeeeeeeeeee"), session: two, model: frontier, prompt: "Carry on")
+            let codexSession = WorkSession(id: "codex:" + codexID, nativeID: codexID, provider: "codex", title: "Pricing thread", summary: "", project: "", status: "idle")
+            store.sessions.append(codexSession)
+            await store.forkToPlatform(source: source("ffffffffffff"), session: codexSession, model: opus, prompt: "Carry on")
+            names = await transport.names()
+            check(names.dropFirst() == ["<none>", "<none>", "<none>", "Task ffffffffffff"], "\(names)")
+        }
+
+        // 21. 0.5.250: a job that failed, was canceled or was interrupted is never linked, even when the server named its
+        //     session; a job with its answer ready is. Check status links like any other read, and says so.
+        do {
+            for state in ["failed", "canceled", "interrupted", "answer_ready"] {
+                let (store, transport, _, _, _, _, _) = appSetUp("link-" + state, passes: 0)
+                store.models = [opus]; store.newSessionLinkDelays = []
+                final class Marked { var count = 0 }
+                let marked = Marked()
+                store.onWorkSessionsChanged = { marked.count += 1 }
+                await transport.setJob(provider: "claude", session: claudeID, afterReads: 0)
+                await transport.setJobState(state)
+                await store.submit(source: source(idA), mode: .newSession, session: nil, model: opus, prompt: "Go")
+                let r = try row(store, idA)
+                check((r.sessionID != nil) == (state == "answer_ready") && marked.count == (state == "answer_ready" ? 1 : 0),
+                      "\(state): \(String(describing: r.sessionID)) \(r.status) \(marked.count)")
+            }
+            let (store, transport, _, _, _, _, _) = appSetUp("link-check-status", passes: 0)
+            store.models = [opus]; store.newSessionLinkDelays = []
+            final class Seen { var changed = 0 }
+            let seen = Seen()
+            store.onWorkSessionsChanged = { seen.changed += 1 }
+            await transport.setJob(provider: "claude", session: claudeID, afterReads: 1)
+            await store.submit(source: source(idA), mode: .newSession, session: nil, model: opus, prompt: "Go")
+            await store.newSessionLink?.value
+            check((try row(store, idA)).sessionID == nil && seen.changed == 0)
+            await store.refreshReceipts()
+            check((try row(store, idA)).sessionID == "claude:" + claudeID && seen.changed == 1, "Check status marks the link at once: \(seen.changed)")
         }
 
         // 19. A 0.5.248 journal: an unsent tab reads as a handoff that never started (it no longer blocks the item), a tab

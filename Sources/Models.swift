@@ -1658,16 +1658,42 @@ struct ClaudeSession: Identifiable, Sendable {
     /// and the helper calls any run the server starts "COS server", a scheduled job, so Miles's handoff showed in
     /// Sessions as `COS server · Scheduled job` with no transcript and no Continue (2026-09-29). Work is his work.
     var fromWork = false
+    /// 0.5.250: a Work New session the COS server is still running (its job-channel receipt has not finished). The
+    /// server is writing it, so nothing else may: no Open in platform, no Continue, no pet tap into the app (QA,
+    /// 2026-09-29: two writers into one Claude session).
+    var workRunning = false
+    /// 0.5.250: the name came from a title someone gave the session (Claude Desktop's, or a `custom-title` in its
+    /// transcript, such as a Work session named after its task), never from its first prompt. Such a row is never
+    /// hidden as a warm-up, even when it is called "Ready".
+    var namedTitle = false
 
     var isScheduledJob: Bool { origin == "job" && !fromWork }
+    /// Only the COS server may write this session now: a scheduled job, or a Work New session still running.
+    var heldByServer: Bool { isScheduledJob || workRunning }
 
     /// The list with every session a Work handoff names (receipt `sessionID`, `provider:native`) marked as work.
-    static func markingWork(_ sessions: [ClaudeSession], workSessionIDs: Set<String>) -> [ClaudeSession] {
+    /// 0.5.250: matched with `sameSession`, since the live list can give a Claude session by its first 8 characters while
+    /// the receipt holds the full id its job named (from the start of the run with server 6.58.2).
+    /// `runningWorkSessionIDs`: the sessions of Work New sessions the COS server is still running (WorkHandoffStore.serverHolds).
+    static func markingWork(_ sessions: [ClaudeSession], workSessionIDs: Set<String>,
+                            runningWorkSessionIDs: Set<String> = []) -> [ClaudeSession] {
         sessions.map { session in
             var next = session
-            next.fromWork = workSessionIDs.contains(session.id)
+            next.fromWork = workSessionIDs.contains { sameSession($0, session.id) }
+            next.workRunning = runningWorkSessionIDs.contains { sameSession($0, session.id) }
             return next
         }
+    }
+
+    /// 0.5.250: two `provider:native` ids name the same session when the provider matches and the native ids are equal,
+    /// or one is the first 8 or more characters of the other (the live list's short Claude id).
+    static func sameSession(_ a: String, _ b: String) -> Bool {
+        let x = a.split(separator: ":", maxSplits: 1).map { String($0).lowercased() }
+        let y = b.split(separator: ":", maxSplits: 1).map { String($0).lowercased() }
+        guard x.count == 2, y.count == 2, x[0] == y[0], !x[1].isEmpty, !y[1].isEmpty else { return false }
+        if x[1] == y[1] { return true }
+        let (short, long) = x[1].count <= y[1].count ? (x[1], y[1]) : (y[1], x[1])
+        return short.count >= 8 && long.hasPrefix(short)
     }
 
     /// The chip word. `error` is the failed state (a rate limit, an overloaded engine),
@@ -1749,8 +1775,9 @@ struct ClaudeSession: Identifiable, Sendable {
         return dupes
     }
 
+    /// A warm-up is known by its first prompt, never by a title someone gave the session (0.5.250).
     var isKeepWarm: Bool {
-        Self.isKeepWarmSessionTitle(name)
+        !namedTitle && Self.isKeepWarmSessionTitle(name)
     }
 
     /// Live pet gate: keep-warm off, then `alive` or Running/Waiting.
@@ -1965,6 +1992,7 @@ struct ClaudeSession: Identifiable, Sendable {
         failure = o["failure"]?.string ?? ""
         lastReply = o["lastReply"]?.string ?? ""
         queuedTurns = o["queuedTurns"]?.int ?? 0
+        namedTitle = o["namedTitle"]?.bool ?? false
     }
 
     static func isKeepWarmSessionTitle(_ title: String) -> Bool {
