@@ -135,6 +135,26 @@ private struct COSField: ViewModifier {
     }
 }
 
+/// 0.5.253 (Miles, 2026-09-30 16:51, with screenshots: "Center the refresh icon on Check for updates." and "There are
+/// several places where that same top vertical alignment is happening."): a label's icon sits in the middle of its
+/// whole text block. The system's label style lines the icon up with the FIRST line, so a label that wraps ("Check for
+/// updates" in the updates card, "Create Folders" in the menu-bar panel's grid) showed its icon at the top, 8.5 pt above
+/// the middle. The gap is the system's own (8 pt, measured at every size the app uses), so no button changes width or
+/// wraps differently, and a wrapped title stays leading-aligned. Every COS button style, the menu face and the dropdown
+/// set it, and `cosControlTheme()` sets it on each window root, so a Label anywhere else takes it too.
+/// Pinned by Tests/ControlsContract.swift (labels) and the panel render in Tests/PanelLabelsRender.swift.
+struct COSLabelStyle: LabelStyle {
+    /// The system label style's gap between icon and title (8 pt at 10, 11.5 and 13 pt, caption and headline).
+    static let spacing: CGFloat = 8
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(alignment: .center, spacing: Self.spacing) {
+            configuration.icon
+            configuration.title.multilineTextAlignment(.leading)
+        }
+    }
+}
+
 /// A quiet button: DM Sans, card fill, hairline; gold when hovered or pressed.
 /// `.destructive` (0.5.221) is for the CONFIRMING step of a destructive action:
 /// danger ink at rest and a danger hairline when hovered. Arming one stays a
@@ -171,6 +191,7 @@ struct COSQuietButtonStyle: ButtonStyle {
             }
             let restLine: Color = tone == .featured && isEnabled ? COSPalette.accent.opacity(0.7) : COSPalette.line
             configuration.label
+                .labelStyle(COSLabelStyle())
                 .font(COSType.body(11.5, weight: tone == .featured ? .semibold : .medium))
                 .foregroundStyle(ink)
                 .padding(.horizontal, 10)
@@ -207,6 +228,7 @@ struct COSTextButtonStyle: ButtonStyle {
             let hot = (hovered || configuration.isPressed) && isEnabled
             let signal = tone == .destructive ? COSPalette.danger : COSPalette.accent
             configuration.label
+                .labelStyle(COSLabelStyle())
                 .font(COSType.body(11.5, weight: .medium))
                 .foregroundStyle(hot ? signal : COSPalette.muted)
                 .padding(.horizontal, 2)
@@ -239,6 +261,7 @@ struct COSIconButtonStyle: ButtonStyle {
         var body: some View {
             let hot = (hovered || configuration.isPressed) && isEnabled
             configuration.label
+                .labelStyle(COSLabelStyle())
                 .font(.system(size: max(7, size * 0.40), weight: .semibold))
                 .foregroundStyle(prominent ? COSPalette.ink : (hot ? COSPalette.accent : COSPalette.muted))
                 .frame(width: size, height: size)
@@ -273,6 +296,7 @@ struct COSPrimaryButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            .labelStyle(COSLabelStyle())
             .font(COSType.body(11.5, weight: .semibold))
             .foregroundStyle(COSPalette.ink)
             .padding(.horizontal, 12)
@@ -875,7 +899,7 @@ struct COSDropdownFace: View {
     var open: Bool = false
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .center, spacing: 8) {
             if let icon {
                 Image(systemName: icon)
                     .font(.system(size: 10, weight: .semibold))
@@ -945,6 +969,7 @@ struct COSDropdownList<Value: Hashable>: View {
                 rows
             }
         }
+        .labelStyle(COSLabelStyle())
         .background(COSPalette.card)
         .clipShape(RoundedRectangle(cornerRadius: framed ? 8 : 0))
         .overlay {
@@ -958,7 +983,7 @@ struct COSDropdownList<Value: Hashable>: View {
         let chosen = option.value == selection
         let lit = highlight == index && option.enabled
         return Button { choose(index) } label: {
-            HStack(spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
                 Rectangle().fill(chosen ? COSPalette.gold : Color.clear).frame(width: 2, height: 16)
                 Text(option.title)
                     .font(COSType.body(12.5, weight: chosen ? .semibold : .regular))
@@ -1443,7 +1468,7 @@ struct COSMenuLabel: View {
     var icon: String? = nil
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(alignment: .center, spacing: 6) {
             if let icon { Image(systemName: icon).font(.system(size: 10, weight: .semibold)) }
             Text(title).lineLimit(1)
             Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(COSPalette.accent)
@@ -1456,16 +1481,19 @@ extension View {
 
     /// A `Menu` drawn as a quiet button with its own gold chevron.
     func cosMenu() -> some View {
-        menuStyle(.button).menuIndicator(.hidden).buttonStyle(COSQuietButtonStyle())
+        menuStyle(.button).menuIndicator(.hidden).buttonStyle(COSQuietButtonStyle()).labelStyle(COSLabelStyle())
     }
 
     /// Everything a window root sets once: progress, disclosure, the quiet button for any
-    /// button that names no style of its own (a stock push button otherwise), and a gold
-    /// tint as the backstop for the two controls that stay native (Slider, DatePicker).
+    /// button that names no style of its own (a stock push button otherwise), the centered
+    /// label (0.5.253), and a gold tint as the backstop for the two controls that stay
+    /// native (Slider, DatePicker).
     func cosControlTheme() -> some View {
         progressViewStyle(COSProgressStyle())
             .disclosureGroupStyle(COSDisclosureStyle())
             .buttonStyle(COSQuietButtonStyle())
+            // 0.5.253: a Label anywhere in the window has its icon in the middle of its words, not by the first line.
+            .labelStyle(COSLabelStyle())
             .tint(COSPalette.gold)
     }
 }

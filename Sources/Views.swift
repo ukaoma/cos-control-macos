@@ -1952,7 +1952,7 @@ struct ControlPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("DOCTOR").font(.caption2.weight(.bold)).tracking(1.3).foregroundStyle(.secondary)
             ForEach(model.doctorChecks) { check in
-                HStack(alignment: .top, spacing: 8) {
+                HStack(alignment: .center, spacing: 8) {
                     Image(systemName: check.state == "ok" ? "checkmark.circle.fill" : check.state == "error" ? "xmark.circle.fill" : "exclamationmark.triangle.fill")
                         .foregroundStyle(check.state == "ok" ? COSPalette.green : check.state == "error" ? .red : COSPalette.amber)
                     VStack(alignment: .leading, spacing: 1) {
@@ -2209,7 +2209,7 @@ struct ControlPanel: View {
     /// never comes back.
     @ViewBuilder private var noticeBanner: some View {
         if let notice = model.visibleNotice, let id = notice.noticeId {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
                 Image(systemName: "sparkles").foregroundStyle(COSPalette.gold)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(notice.noticeTitle ?? "")
@@ -2272,7 +2272,7 @@ struct ControlPanel: View {
 
     @ViewBuilder private var updateBanner: some View {
         if model.appUpdate.shouldSurface {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
                 Image(systemName: "arrow.down.circle.fill").foregroundStyle(COSPalette.amber)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Update available: \(model.appUpdate.latestVersion ?? "")")
@@ -2741,7 +2741,7 @@ private struct VoiceRow: View {
             } else {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(voice.phrases) { phrase in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        HStack(alignment: .center, spacing: 8) {
                             // Play THIS line. Miles: playback is for the stored
                             // audio of the chunk being trained on — hearing the
                             // actual segment is what settles who spoke. Shown only

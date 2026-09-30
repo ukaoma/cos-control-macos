@@ -130,6 +130,54 @@ private struct KeyboardBoard: View {
     static let height: CGFloat = 300
 }
 
+
+/// 0.5.253: labels with an icon, under every COS style and the window root's theme, on one line and wrapped to two.
+/// Each title and icon reports its own frame, so the check reads where the style put them.
+private struct LabelBoard: View {
+    @ObservedObject var probe: Probe
+    /// The width that wraps "Check for updates" to two lines in each button style (the words get 58 to 70 pt).
+    static let narrow: CGFloat = 110
+    enum Kind: String, CaseIterable { case quiet, primary, text, themed, plain, bare, menu, system }
+
+    private func label(_ key: String) -> some View {
+        Label {
+            Text("Check for updates").modifier(Frame(key: key + ".title", probe: probe))
+        } icon: {
+            Image(systemName: "arrow.triangle.2.circlepath").modifier(Frame(key: key + ".icon", probe: probe))
+        }
+    }
+    @ViewBuilder private func item(_ kind: Kind, _ key: String) -> some View {
+        switch kind {
+        case .quiet: Button {} label: { label(key) }.buttonStyle(COSQuietButtonStyle())
+        case .primary: Button {} label: { label(key) }.buttonStyle(COSPrimaryButtonStyle())
+        case .text: Button {} label: { label(key) }.buttonStyle(COSTextButtonStyle())
+        // No style of its own: the window root's theme gives it the quiet button, and its label the COS style.
+        case .themed: Button {} label: { label(key) }
+        case .plain: Button {} label: { label(key) }.buttonStyle(.plain)
+        case .bare: label(key)
+        case .menu: Menu { Button("Now") {} } label: { label(key) }.cosMenu()
+        // The system's own label style inside the quiet button: the reference for widths and wrapping.
+        case .system: Button {} label: { label(key).labelStyle(.titleAndIcon) }.buttonStyle(COSQuietButtonStyle())
+        }
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Kind.allCases, id: \.self) { kind in
+                HStack(alignment: .top, spacing: 12) {
+                    item(kind, kind.rawValue + ".one").fixedSize().modifier(Frame(key: kind.rawValue + ".one", probe: probe))
+                    item(kind, kind.rawValue + ".two").frame(width: Self.narrow, alignment: .leading)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(width: 360, height: Self.height, alignment: .top)
+        .background(COSPalette.card)
+        .cosControlTheme()
+    }
+    static let height: CGFloat = 640
+}
+
 @main struct ControlsContract {
     @MainActor static func main() async throws {
         let app = NSApplication.shared
@@ -144,8 +192,10 @@ private struct KeyboardBoard: View {
         try await keyboard()
         theme()
         renders()
+        await labels()
+        panel()
         check(!activated && !app.isActive, "the contract never became the active app (a shared desktop is left alone)")
-        print("PASS: GOTCOS controls (dropdown rules and keys; the open list as a child panel: opens, chooses, keys, face click closes, outside click, Escape, Tab, card pixels, scrolls the highlight into view; inline list; disabled dropdown and row; no first focus by default; keyboard: face keys, view switch arrows, Space on switch, checkbox and chip; switch label does not flip; checkbox, chip, stepper bounds; disclosure expands; root theme: button, progress, disclosure, tint; light-mode contrast; switch and checkbox pixels; spinner sizes)")
+        print("PASS: GOTCOS controls (dropdown rules and keys; the open list as a child panel: opens, chooses, keys, face click closes, outside click, Escape, Tab, card pixels, scrolls the highlight into view; inline list; disabled dropdown and row; no first focus by default; keyboard: face keys, view switch arrows, Space on switch, checkbox and chip; switch label does not flip; checkbox, chip, stepper bounds; disclosure expands; root theme: button, progress, disclosure, tint; light-mode contrast; switch and checkbox pixels; spinner sizes; labels: icon in the middle of one and two lines under every style, the system's gap and wrapping; the menu-bar panel's Check for updates and Create Folders, rendered)")
     }
 
     private static func check(_ condition: Bool, _ message: @autoclosure () -> String = "", line: UInt = #line) {
@@ -576,6 +626,58 @@ private struct KeyboardBoard: View {
             check(isGold(tinted(10, 10)), "the theme's tint is gold (\(word)): \(tinted(10, 10))")
             check(!isGold(untinted(10, 10)), "and the system's is not (\(word))")
         }
+    }
+
+
+    // MARK: - Labels (0.5.253)
+
+    /// Miles, 2026-09-30 16:51: a wrapped label showed its icon by its first line. Under every COS button style, the
+    /// menu face, a plain button and a bare Label under the root theme, the icon's middle is the words' middle (within
+    /// 1 pt) on one line and on two, the gap is the system's 8 pt, and a label is as wide, and wraps where, the system's
+    /// own style would have it.
+    @MainActor static func labels() async {
+        let probe = Probe()
+        let window = open(LabelBoard(probe: probe), height: LabelBoard.height)
+        defer { window.orderOut(nil) }
+        await settle(400)
+        func frame(_ key: String) -> CGRect {
+            guard let frame = probe.frames[key] else { fatalError("ControlsContract: no frame for \(key)") }
+            return frame
+        }
+        let oneLine = frame("system.one.title").height
+        for kind in LabelBoard.Kind.allCases where kind != .system {
+            for lines in ["one", "two"] {
+                let key = kind.rawValue + "." + lines
+                let icon = frame(key + ".icon"), title = frame(key + ".title")
+                check(abs(icon.midY - title.midY) <= 1, "\(key): the icon's middle \(icon.midY) is the words' middle \(title.midY)")
+                check(abs((title.minX - icon.maxX) - COSLabelStyle.spacing) <= 0.5, "\(key): the system's 8 pt gap, not \(title.minX - icon.maxX)")
+                if lines == "two" { check(title.height >= 1.8 * oneLine, "\(key): the narrow label wraps to two lines (\(title.height) vs \(oneLine))") }
+                else { check(abs(title.height - oneLine) <= 0.5, "\(key): one line (\(title.height))") }
+            }
+        }
+        // Widths stay: the quiet button is as wide on one line, and its words wrap to the same height, as with the
+        // system's own style; and that style still puts the icon by the first line (so this board can see the fault).
+        check(abs(frame("quiet.one").width - frame("system.one").width) <= 0.5, "a label is as wide as the system's: \(frame("quiet.one").width) vs \(frame("system.one").width)")
+        check(abs(frame("quiet.two.title").width - frame("system.two.title").width) <= 0.5 && abs(frame("quiet.two.title").height - frame("system.two.title").height) <= 0.5,
+              "a narrow label wraps as the system's does")
+        let systemTwo = (icon: frame("system.two.icon"), title: frame("system.two.title"))
+        check(systemTwo.title.midY - systemTwo.icon.midY > 4, "the system style still tops the icon of two lines (the fault this pins): \(systemTwo.icon.midY) vs \(systemTwo.title.midY)")
+    }
+
+    /// The real menu-bar panel, off screen, light and dark: Check for updates (the updates card) and Create Folders
+    /// (the buttons grid) wrap to two lines there, and each icon is within 1 pt of its text block's middle; so are the
+    /// one-line Work Folder and Run Doctor. COS_PANEL_RENDER_OUT names a folder for its PNGs.
+    @MainActor static func panel() {
+        let output = ProcessInfo.processInfo.environment["COS_PANEL_RENDER_OUT"].map { URL(fileURLWithPath: $0) }
+        let measures = PanelLabels.run(output: output, label: "after")
+        for measure in measures {
+            print("  panel: \(measure)")
+            check(measure.offBy <= 1, "the panel's \(measure)")
+        }
+        for name in ["Check for updates", "Create Folders"] {
+            check(measures.contains { $0.name == name && $0.lines == 2 }, "\(name) wraps to two lines in the panel render, so it measures the case Miles saw")
+        }
+        check(measures.contains { $0.lines == 1 }, "the panel render measures a one-line label too")
     }
 
     // MARK: - Pixels

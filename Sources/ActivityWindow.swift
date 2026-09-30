@@ -2799,7 +2799,7 @@ struct ActivityWindow: View {
     /// A result or a reason, set on the card's raised strip rather than as loose
     /// grey text, so it reads as the answer to what was just done.
     private func addVoiceNotice(_ text: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .center, spacing: 8) {
             Image(systemName: "info.circle")
                 .font(.system(size: 12))
                 .foregroundStyle(COSPalette.accent)
@@ -4356,7 +4356,7 @@ struct ActivityWindow: View {
     }
 
     private func directoryNotice(_ text: String, stale: Bool) -> some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .center, spacing: 8) {
             Image(systemName: stale ? "clock.badge.exclamationmark" : "info.circle")
                 .foregroundStyle(stale ? COSPalette.amber : COSPalette.accent)
             Text(text)
@@ -5680,7 +5680,7 @@ struct SessionChatComposer: View {
             // message and it lands when the turn ends, as it does from the pet and the lens.
             if model.chatRefusal == nil, let hint = model.chatParkHint {
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    HStack(alignment: .center, spacing: 6) {
                         Image(systemName: "clock")
                             .font(.system(size: 10.5))
                             .foregroundStyle(.secondary)

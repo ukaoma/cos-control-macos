@@ -546,7 +546,7 @@ struct WorkHandoffView: View {
             let session = advice.sessionID.flatMap { id in store.sessions.first { $0.id == id } }
             let applied = mode == (advice.action == .continueSession ? .continueSession : advice.action == .fork ? .fork : .newSession)
                 && (advice.action == .newSession || sessionID == advice.sessionID) && !(advice.action == .fork && !provider.isEmpty)
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
                 Image(systemName: "sparkle").foregroundStyle(COSPalette.accent)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(adviceTitle(advice, session)).font(COSType.body(12.5, weight: .semibold))
@@ -806,7 +806,7 @@ struct WorkStartSheet: View {
                 }
             case let .starting(plan, fromAdvice):
                 // Every criterion holds: it runs by itself after a short countdown, then opens the session.
-                HStack(alignment: .top, spacing: 10) {
+                HStack(alignment: .center, spacing: 10) {
                     Image(systemName: fromAdvice ? "sparkle" : "arrow.turn.down.right").foregroundStyle(COSPalette.accent)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(plan.label).font(COSType.body(12.5, weight: .semibold))
@@ -835,7 +835,7 @@ struct WorkStartSheet: View {
                         .padding(.trailing, 6)
                 }.frame(minHeight: 160, maxHeight: max(160, maxHeight - 170))
             case let .confirm(plan, fromAdvice):
-                HStack(alignment: .top, spacing: 10) {
+                HStack(alignment: .center, spacing: 10) {
                     Image(systemName: fromAdvice ? "sparkle" : "arrow.turn.down.right").foregroundStyle(COSPalette.accent)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(plan.label).font(COSType.body(12.5, weight: .semibold))

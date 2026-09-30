@@ -1303,6 +1303,11 @@ print(f"COS Control: GOTCOS controls only; {toggles} Toggles, {styled} themed, {
 PY
 # The guard can fail: each banned form, added to a scratch copy of Sources, makes it fail; prose does not.
 /usr/bin/python3 "$ROOT/Tests/run-controls-guard-selftest.py" "$ROOT"
+# 0.5.253 (Miles, 2026-09-30 16:51): an icon beside words that can wrap sits in their middle. COSLabelStyle does it for
+# every Label; this fails when a Sources file aligns an icon to the first line of its words again, and its self-test
+# proves each banned form fails. Behaviour: Tests/run-controls.sh (labels, and the real panel rendered off screen).
+/usr/bin/python3 "$ROOT/Tests/label-alignment-guard.py" "$ROOT"
+/usr/bin/python3 "$ROOT/Tests/label-alignment-guard.py" "$ROOT" --selftest
 # The components, executed: dropdown rules and keys; the open list as a child panel (clicks, keys, the face click that
 # closes it, Escape, a click or scroll elsewhere, its card's pixels, the highlight scrolled into view); the inline list;
 # disabled dropdowns and rows; no first focus by default and the keyboard with Keyboard navigation on; the view
