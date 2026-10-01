@@ -1595,6 +1595,13 @@ struct WorkCardFilesSection: View {
         .task { files.loadIfNeeded(); files.reload(source.id) }
     }
 
+    private static func link(_ words: String, _ target: String) -> AttributedString {
+        var link = AttributedString(words)
+        link.link = URL(string: "cos-card-files://" + target)
+        link.foregroundColor = COSPalette.accent
+        return link
+    }
+
     private func rightLabel(all: [WorkContextFile], plan: WorkHandoffFiles, carried: [WorkContextFile]) -> String {
         guard !all.isEmpty else { return "" }
         if delta && !carried.isEmpty && !resendAll {
@@ -1607,17 +1614,18 @@ struct WorkCardFilesSection: View {
     @ViewBuilder private func noteLine(plan: WorkHandoffFiles, carried: [WorkContextFile], total: Int) -> some View {
         if delta && !carried.isEmpty {
             let title = sessionTitle.map { "\u{201C}" + WorkSendPlan.clip($0) + "\u{201D}" } ?? "this session"
-            HStack(spacing: 4) {
-                if resendAll {
-                    Text("Sends all \(total) again, including the \(carried.count) already in \(title).")
-                    Button("Send only the new ones") { resendAll = false }.buttonStyle(.plain).foregroundStyle(COSPalette.accent)
-                } else {
-                    let n = plan.sending.count
-                    Text(n == 0 ? "Nothing new to send. All \(carried.count) are already in \(title)."
-                                : "Sends the \(n) new file\(n == 1 ? "" : "s"). The other \(carried.count) \(carried.count == 1 ? "is" : "are") already in \(title).")
-                    Button("Send all \(total) again") { resendAll = true }.buttonStyle(.plain).foregroundStyle(COSPalette.accent)
-                }
-            }.font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+            let n = plan.sending.count
+            let sentence = resendAll ? "Sends all \(total) again, including the \(carried.count) already in \(title)."
+                : n == 0 ? "Nothing new to send. All \(carried.count) are already in \(title)."
+                : "Sends the \(n) new file\(n == 1 ? "" : "s"). The other \(carried.count) \(carried.count == 1 ? "is" : "are") already in \(title)."
+            // The link runs on in the sentence, as in the mock; it toggles this send only.
+            Text(AttributedString(sentence + " ") + Self.link(resendAll ? "Send only the new ones" : "Send all \(total) again", resendAll ? "new" : "all"))
+                .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+                .environment(\.openURL, OpenURLAction { url in
+                    guard url.scheme == "cos-card-files" else { return .systemAction }
+                    resendAll = url.host == "all"
+                    return .handled
+                })
         } else {
             Text(WorkCardFiles.noteText).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
         }
@@ -1728,7 +1736,7 @@ struct WorkCardFilesSection: View {
             let parts = Self.metaParts(file)
             (Text(word).bold().foregroundColor(tint) + Text(parts.isEmpty ? "" : " \u{00B7} " + parts.joined(separator: " \u{00B7} ")).foregroundColor(COSPalette.muted)
              + Text(file.kind == "video" ? " \u{00B7} Transcript: 0.5.255" : "").foregroundColor(COSPalette.muted.opacity(0.6)))
-                .font(COSType.body(10.5)).lineLimit(2)
+                .font(COSType.body(10.5)).lineLimit(3).fixedSize(horizontal: false, vertical: true)
                 .help(file.kind == "video" ? "The video's transcript comes with COS Control 0.5.255. This release sends its frames." : (file.failure ?? ""))
         }
     }
