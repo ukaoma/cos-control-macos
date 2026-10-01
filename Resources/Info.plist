@@ -23,7 +23,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.5.254</string>
 	<key>CFBundleVersion</key>
-	<string>293</string>
+	<string>294</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
@@ -33,14 +33,14 @@
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>
-			<key>UTTypeIdentifier</key>
-			<string>com.gotcos.work-card</string>
-			<key>UTTypeDescription</key>
-			<string>COS Work card</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.data</string>
 			</array>
+			<key>UTTypeDescription</key>
+			<string>COS Work card</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.gotcos.work-card</string>
 			<key>UTTypeTagSpecification</key>
 			<dict/>
 		</dict>

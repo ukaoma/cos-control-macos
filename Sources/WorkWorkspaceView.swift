@@ -459,8 +459,11 @@ struct WorkWorkspaceView: View {
             await model.loadWorkTasks()
             await reviewStore.refresh()
             await model.loadWorkIntake()
-            // 0.5.254: card folders 14 days after the card completes or leaves the board (never in the preview).
-            cardFiles.cleanup(tasks: model.workTasks, inventoryComplete: model.workTasksComplete, receipts: handoffStore.receipts)
+            // 0.5.254: a card's folder 14 days after the card completes and its last file or handoff (never in the preview),
+            // decided from the journal as it is on disk.
+            if let receipts = handoffStore.receiptsOnDisk() {
+                await cardFiles.cleanup(tasks: model.workTasks, inventoryComplete: model.workTasksComplete, receipts: receipts)
+            }
             if let id = handoffStore.selectedWorkID { state.selectedID = WorkWorkspaceProjection.rowID(forSourceID: id, currentID: state.selectedID, items: items) ?? id }
         }
         .task(id: scenePhase) {

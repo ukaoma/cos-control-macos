@@ -1951,6 +1951,15 @@ struct WorkGlassesRequest: Equatable, Sendable {
         return receipts.first { $0.requestId == id }
     }
 
+    /// 0.5.254 fix pass 1 (QA, "both journals"): the journal as it is on disk now (another COS Control may have sent since),
+    /// for card-file cleanup. Nil while a send or another window holds it: cleanup then waits for its next run.
+    func receiptsOnDisk() -> [WorkHandoffReceipt]? {
+        guard !isolated, storageReady, !busy, !quietSend, let lock = try? lockJournal() else { return nil }
+        defer { flock(lock, LOCK_UN); close(lock) }
+        guard (try? loadJournal()) != nil else { return nil }
+        return receipts
+    }
+
     func markReviewed(receiptID: String) {
         guard !busy, let seen = receipts.first(where: { $0.id == receiptID }), seen.acknowledgeable else { return }
         if refusedForGlassesSend() { return }

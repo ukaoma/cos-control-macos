@@ -469,7 +469,9 @@ final class ControllerModel: ObservableObject {
             readFresh: { [weak self] in await self?.reloadWorkTasksFresh() ?? false }),
             notify: { [weak self] notice in self?.postWorkNotice(notice) })
         store.opensInApp = workOpensTabs
-        // 0.5.254: card files load, and copies a relaunch interrupted start again (with background work only).
+        // 0.5.254: card files load, and copies a relaunch interrupted start again (with background work only). A card's
+        // identity is stamped on its task before its first file is saved (fix pass 1, QA W1).
+        store.cardFiles.stampIdentity = { [weak self] workID in await self?.stampWorkIdentity(workID) ?? false }
         store.cardFiles.start()
         // 0.5.252: the glasses request inbox is asked about again whenever the server's version changes.
         tracker.requests.serverVersion = { [weak self] in
@@ -2852,6 +2854,17 @@ final class ControllerModel: ObservableObject {
         }
         await loadWorkIntake()
         if let failure { workIntakeError = failure }
+    }
+
+    /// 0.5.254 fix pass 1 (QA W1, Miles approved Q1): stamps a card's work identity on its task before the card's first
+    /// file is saved, so a later rename outside COS keeps the card's id and its files. It is the Work stage write the
+    /// board already makes, with the stage the card has: task_write runs `metadata.setdefault("workIdentity", ...)` on
+    /// every Work write. No server change. A task already carrying an identity other than its row id was stamped by an
+    /// earlier rename through COS, and is left alone. False when the card is not on the board or the write failed.
+    func stampWorkIdentity(_ workID: String) async -> Bool {
+        guard let task = workTasks.first(where: { $0.workSourceID == workID }) else { return false }
+        if task.workIdentity != task.id { return true }
+        do { try await setWorkStage(task, stage: task.checked ? "complete" : task.workStage); return true } catch { return false }
     }
 
     func setWorkStage(_ task: TaskRow, stage: String) async throws {

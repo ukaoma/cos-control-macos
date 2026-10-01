@@ -106,10 +106,44 @@ need('Text(calls.isEmpty ? plan.verb : "Send anyway")' in sheet and "WorkStartFi
 cleanup = body(files, "    func cleanup(tasks: [TaskRow]", "    // MARK: Lines on the card")
 need("guard let root, !isolated else { return }" in cleanup, "cleanup never runs in a preview")
 need(files.count('"cos-data/work-context"') == 1 and "nonisolated static let storeFolder = \"cos-data/work-context\"" in files, "the store's folder is one constant")
-need("cardFiles.cleanup(tasks: model.workTasks, inventoryComplete: model.workTasksComplete, receipts: handoffStore.receipts)" in board
-     and board.index("guard !handoffStore.isolated else { return }") < board.index("cardFiles.cleanup("), "the board cleans only when it is live")
+need("if let receipts = handoffStore.receiptsOnDisk() {" in board
+     and "await cardFiles.cleanup(tasks: model.workTasks, inventoryComplete: model.workTasksComplete, receipts: receipts)" in board
+     and board.index("guard !handoffStore.isolated else { return }") < board.index("cardFiles.cleanup("), "the board cleans only when it is live, from the journal on disk")
 need("store.cardFiles.start()" in code("Sources/ControllerModel.swift"), "interrupted copies resume with background work")
 need("var context: [WorkContextRef]?" in store, "the receipt's optional context field")
+
+# 6b. Fix pass 1 (QA round 1).
+# B1: nothing is deleted, opened or written from a manifest name except through the guards.
+for line in files_code.split("\n"):
+    if "removeItem(at:" in line:
+        arg = line.split("removeItem(at:", 1)[1].split(")", 1)[0].strip()
+        need(arg in ("target", "staging", "staged", "movedTo", "folder"), "a delete takes a path that is not a guarded target, a generated staging name or a guarded folder: " + line.strip())
+        need("appendingPathComponent" not in arg, "a delete joins a name itself: " + line.strip())
+dc = body(files, "    nonisolated static func deleteCopies(", "    /// Cleanup over every card's folder")
+need("guard !file.isLink, WorkCardFiles.validEntry(file) else { return }" in dc and "try? WorkCardFiles.guardTarget(root: root, folder: folder, name: name)" in dc,
+     "deleteCopies goes through the grammar and guardTarget")
+upd = body(files, "    nonisolated static func update<T>(", "    // MARK: Snapshots")
+need("let folder = try preparedFolder(root: root, workID: workID)" in upd, "every manifest write goes through the guarded folder")
+need("try guardFolder(root: root, folder: folder)" in body(files, "    nonisolated static func clean(root: URL", "    // MARK: Snapshots"), "cleanup guards the folder it deletes")
+mc = body(files, "    nonisolated static func makeCompanion(", "        switch companion.kind {")
+need(mc.count("try? guardTarget(root: root, folder: folder, name:") >= 3 and "validCompanion(companion, of: file)" in mc, "a companion opens and writes only guarded names")
+need("guard let root, WorkCardFiles.validEntry(file) else { return }" in files, "a companion with a name Control does not write is never restarted")
+# W2 and Q4: Remove only hides.
+rm = body(files, "    func remove(_ fileID: String, workID: String) {", "    /// Undo: the file is back on the card, as it was.")
+need("removeItem" not in rm and "deleteCopies" not in rm and "setHidden(fileID, workID: workID, at: Date().timeIntervalSince1970)" in rm, "Remove hides and never deletes")
+# B2: links with a user or password.
+web = body(files, "    nonisolated static func commitWebLink(", "    nonisolated static func commitLinkEntry(")
+need("if linkHasCredentials(text) { return .failure(.linkCredentials) }" in web, "a link with a user or password is refused")
+# W1: the identity stamp, before anything is saved.
+for intake in ("    func intake(urls: [URL], source: WorkSource) async {", "    func intake(providers: [NSItemProvider], source: WorkSource) async {"):
+    section_text = body(files, intake, "\n    }\n")
+    need(section_text.index("guard await ensureIdentity(workID) else { flash([.identity], on: workID); return }") < section_text.index("begin(workID,"),
+         "the identity is stamped before a card's first file is taken")
+need("store.cardFiles.stampIdentity = { [weak self] workID in await self?.stampWorkIdentity(workID) ?? false }" in code("Sources/ControllerModel.swift"),
+     "the app stamps through its Work stage write")
+# W6: the board line comes on the drop, never on hover.
+entered = body(files, "    func dropEntered(info: DropInfo) {\n        switch route(info) {", "    func dropExited(")
+need("onRefusedFiles" not in entered, "the Files go on a card line shows on drop only")
 
 # 7. Every compile list builds the new file.
 for rel in ("Tests/run.sh", "scripts/build-release.sh", "scripts/build-foundation-lab.sh", "Tests/run-held-ui.sh", "Tests/run-merge-ui.sh",

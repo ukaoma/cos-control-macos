@@ -477,7 +477,8 @@ struct WorkHandoffView: View {
                     Text("Context to send").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
                     Spacer()
                     WorkContextCounter(files: store.cardFiles, store: store, source: source, prompt: prompt,
-                                       mode: forkToPlatform ? .newSession : mode, sessionID: sessionID, forkToPlatform: forkToPlatform)
+                                       mode: forkToPlatform ? .newSession : mode, sessionID: sessionID, forkToPlatform: forkToPlatform,
+                                       resendAll: resendAllFiles)
                     if prompt != source.suggestedPrompt {
                         Button("Reset") {
                             var next = draft; next.prompt = source.suggestedPrompt

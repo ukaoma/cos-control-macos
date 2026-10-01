@@ -36,7 +36,10 @@ import UniformTypeIdentifiers
         try await providerChecks(home, fixtures)
         try await sendChecks(home, fixtures)
         try await storeCleanupChecks(home, fixtures)
-        print("PASS: Work card files (names, sniffing, secrets, caps, duplicates, apps and disk images, iCloud timeout, the block never first and right before the instruction, Cursor keeps every path or refuses, Continue and Fork send only what is new, cleanup and its references, the manifest under its lock, companions made and resumed, drop routes and the private card type, the countdown waits and stops, glasses sends carry the files)")
+        try await containmentChecks(home, fixtures)
+        try await secretAndFolderChecks(home, fixtures)
+        try await identityAndFolderChecks(home, fixtures)
+        print("PASS: Work card files (names, sniffing, secrets, caps, duplicates, apps and disk images, iCloud timeout, the block never first and right before the instruction, Cursor keeps every path or refuses, Continue and Fork send only what is new, cleanup and its references, the manifest under its lock, companions made and resumed, drop routes and the private card type, the countdown waits and stops, glasses sends carry the files; fix pass 1: no delete, write or open outside the store or through a link (P1 to P4), no link with a password, secrets by name, content and alias, folders too wide or holding secrets, the identity stamped before the first file, Remove hides with Undo, cleanup only 14 days after completion and the newest file or handoff, never on leaving the board)")
     }
 
     /// Names the behaviour a failure is about, so a mutation is credited to the check that names it.
@@ -269,31 +272,49 @@ extension WorkCardFilesChecks {
 
     static func cleanupPlanChecks() {
         let day = 86_400.0, now = 10_000_000.0
+        func plan(_ m: WorkContextManifest, onBoard: Bool? = true, completed: Bool = true, inUse: Bool = false, carried: Set<String> = [],
+                  newest: Double? = nil) -> WorkCardCleanupPlan {
+            WorkCardFiles.cleanupPlan(m, onBoard: onBoard, completed: completed, inUse: inUse, carried: carried, newestReceipt: newest, now: now)
+        }
         var manifest = WorkContextManifest(workSourceID: workID)
-        manifest.files = [file("a", seq: 1), file("h", seq: 2, hidden: 5), file("k", seq: 3, hidden: 5)]
+        var old = file("a", seq: 1); old.addedAt = now - 40 * day
+        manifest.files = [old]
         manifest.completedSeenAt = now - 13 * day
-        check(!WorkCardFiles.cleanupPlan(manifest, onBoard: true, completed: true, live: [], now: now).deleteFolder, "cleanup refcount", "13 days after completion is kept")
+        check(!plan(manifest).deleteFolder, "cleanup clock", "13 days after completion is kept")
         manifest.completedSeenAt = now - 15 * day
-        check(WorkCardFiles.cleanupPlan(manifest, onBoard: true, completed: true, live: [], now: now).deleteFolder, "cleanup refcount", "15 days after completion is deleted")
-        let held = WorkCardFiles.cleanupPlan(manifest, onBoard: true, completed: true, live: ["a"], now: now)
-        check(!held.deleteFolder, "cleanup refcount", "a folder a running handoff references is kept")
-        check(held.purge == ["h", "k"], "cleanup refcount", "hidden files nothing references go: \(held.purge)")
-        check(WorkCardFiles.cleanupPlan(manifest, onBoard: true, completed: true, live: ["k"], now: now).purge == ["h"], "cleanup refcount", "a referenced hidden file stays")
-        let reopened = WorkCardFiles.cleanupPlan(manifest, onBoard: true, completed: false, live: [], now: now)
-        check(reopened.completedSeenAt == nil && !reopened.deleteFolder, "cleanup refcount", "a reopened card restarts the clock")
-        var fresh = WorkContextManifest(workSourceID: workID)
-        check(WorkCardFiles.cleanupPlan(fresh, onBoard: true, completed: true, live: [], now: now).completedSeenAt == now, "cleanup refcount", "completion is stamped when first seen")
-        check(WorkCardFiles.cleanupPlan(fresh, onBoard: false, completed: false, live: [], now: now).orphanedSeenAt == now, "cleanup refcount", "a card gone from the board is stamped")
-        check(WorkCardFiles.cleanupPlan(fresh, onBoard: nil, completed: false, live: [], now: now).orphanedSeenAt == nil, "cleanup refcount", "an unread board never marks a card gone")
-        fresh.orphanedSeenAt = now - 15 * day
-        check(WorkCardFiles.cleanupPlan(fresh, onBoard: false, completed: false, live: [], now: now).deleteFolder, "cleanup refcount", "14 days orphaned is deleted")
-        check(!WorkCardFiles.cleanupPlan(fresh, onBoard: true, completed: false, live: [], now: now).deleteFolder, "cleanup refcount", "a card back on the board is kept")
-        let refs = [WorkContextRef(id: "a", sha256: "x")]
-        let live = WorkCardFiles.liveReferences(workID: workID, receipts: [
-            receipt("q", session: nil, status: "queued", context: refs), receipt("d", session: nil, status: "delivered", context: [WorkContextRef(id: "d", sha256: "x")]),
-            receipt("u", session: nil, status: "running", context: [WorkContextRef(id: "u", sha256: "x")]),
-            receipt("o", work: "task:other:000000000000", session: nil, status: "running", context: [WorkContextRef(id: "o", sha256: "x")])])
-        check(live == ["a", "u"], "cleanup refcount", "only handoffs in flight for this card hold files: \(live)")
+        check(plan(manifest).deleteFolder, "cleanup clock", "15 days after completion is deleted")
+        check(!plan(manifest, inUse: true).deleteFolder, "cleanup refcount", "a card with a handoff in flight keeps its folder")
+        // QA W3: the clock is the latest of completion, the newest file and the newest handoff.
+        var fresh = manifest; var added = file("b", seq: 2); added.addedAt = now - 2 * day; fresh.files.append(added)
+        check(!plan(fresh).deleteFolder, "cleanup clock", "a file added 2 days ago restarts the 14 days (P10)")
+        check(!plan(manifest, newest: now - 3 * day).deleteFolder, "cleanup clock", "a handoff 3 days ago restarts the 14 days")
+        check(plan(manifest, newest: now - 20 * day).deleteFolder, "cleanup clock", "an older handoff does not")
+        let reopened = plan(manifest, completed: false)
+        check(reopened.completedSeenAt == nil && !reopened.deleteFolder, "cleanup clock", "a reopened card restarts the clock")
+        // QA W1: leaving the board is stamped, never acted on.
+        var orphan = WorkContextManifest(workSourceID: workID); orphan.files = [old]
+        check(plan(orphan, onBoard: false, completed: false).orphanedSeenAt == now, "orphan keep", "a card gone from the board is stamped")
+        orphan.orphanedSeenAt = now - 400 * day
+        check(!plan(orphan, onBoard: false, completed: false).deleteFolder, "orphan keep", "a card gone from the board is never deleted (P10b)")
+        check(plan(orphan, onBoard: nil, completed: false).orphanedSeenAt == orphan.orphanedSeenAt, "orphan keep", "an unread board changes nothing")
+        check(plan(WorkContextManifest(workSourceID: workID)).completedSeenAt == now, "cleanup clock", "completion is stamped when first seen")
+        // Q4: a removed file goes only when no handoff ever carried it, and only after its Undo has had its time.
+        var hidden = WorkContextManifest(workSourceID: workID)
+        hidden.files = [file("n", seq: 1, hidden: now - 2 * 3_600), file("s", seq: 2, hidden: now - 2 * 3_600), file("r", seq: 3, hidden: now - 60)]
+        check(plan(hidden, completed: false, carried: ["s"]).purge == ["n"], "remove hides", "carried or recently removed files stay: \(plan(hidden, completed: false, carried: ["s"]).purge)")
+        // The in-use rule (QA W2, N1): each of these four states keeps the card; a delivered or finished one does not.
+        for status in ["sending", "queued", "running", "unknown"] {
+            check(WorkCardFiles.cardInUse(workID: workID, receipts: [receipt(status, session: nil, status: status, context: [])]), "in use: \(status)", "\(status) must keep the card's folder")
+        }
+        for status in ["delivered", "completed", "reviewed", "refused", "failed", "canceled"] {
+            check(!WorkCardFiles.cardInUse(workID: workID, receipts: [receipt(status, session: nil, status: status, context: [])]), "in use", "\(status) is not in flight")
+        }
+        check(!WorkCardFiles.cardInUse(workID: workID, receipts: [receipt("o", work: "task:other:000000000000", session: nil, status: "running", context: [])]), "in use", "another card's handoff")
+        let ever = WorkCardFiles.everCarried(workID: workID, receipts: [
+            receipt("d", session: nil, status: "delivered", context: [WorkContextRef(id: "a", sha256: "x")]),
+            receipt("f", session: nil, status: "failed", context: [WorkContextRef(id: "b", sha256: "x")]),
+            receipt("o", work: "task:other:000000000000", session: nil, status: "running", context: [WorkContextRef(id: "c", sha256: "x")])])
+        check(ever == ["a", "b"], "remove hides", "every handoff of this card counts as having carried its files: \(ever)")
         check(!WorkCardFiles.rootAllowed(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/GitHub/x/cos-data")), "store root", "the iCloud repo is refused")
         check(WorkCardFiles.rootAllowed(WorkCardFiles.defaultRoot()), "store root", "~/cos-data/work-context is allowed")
         check(WorkCardFiles.defaultRoot().path.hasSuffix("/cos-data/work-context"), "store root", "the root")
@@ -547,7 +568,7 @@ extension WorkCardFilesChecks {
         let view = big.companions.first { $0.kind == "view" }!
         check(view.state == "ready" && max(view.pixelWidth ?? 0, view.pixelHeight ?? 0) == 2_048 && view.stored.hasSuffix(".2048.png"), "companions", "view copy \(view)")
         let brand = one("Brand assets.d")
-        check(brand.kind == "folder" && brand.fileCount == 3 && brand.original == fx.folder.path && brand.stored.isEmpty, "intake", "folder link \(brand)")
+        check(brand.kind == "folder" && brand.fileCount == 3 && brand.original == WorkCardFiles.resolved(fx.folder) && brand.stored.isEmpty, "intake", "folder link \(brand)")
         if let heic = fx.heic {
             let photo = one(heic.lastPathComponent)
             let jpeg = photo.companions.first { $0.kind == "jpeg" }!
@@ -589,7 +610,7 @@ extension WorkCardFilesChecks {
         check(flashText(store) == WorkCardRefusal.cap.message && store.files(for: workID).count == WorkCardFiles.maxFiles, "cap", flashText(store))
         noStrays(store)
         // Remove the extras again for the send checks.
-        for file in store.files(for: workID) where file.display.hasPrefix("extra ") { store.remove(file.id, workID: workID, receipts: []) }
+        for file in store.files(for: workID) where file.display.hasPrefix("extra ") { store.remove(file.id, workID: workID) }
         check(store.files(for: workID).count == urls.count, "remove", "\(store.files(for: workID).count)")
         noStrays(store)
 
@@ -606,7 +627,13 @@ extension WorkCardFilesChecks {
         let after = relaunched.files(for: workID)
         let resumed = after.first { $0.kind == "pdf" }!.companions[0], stopped = after.first { $0.kind == "docx" }!.companions[0]
         check(resumed.state == "ready" && resumed.attempts == 2, "companion resume", "\(resumed)")
-        check(stopped.state == "failed" && after.first { $0.kind == "docx" }!.state == "failed", "companion resume", "\(stopped)")
+        check(stopped.state == "failed", "companion resume", "\(stopped)")
+        // QA W7: a companion that failed leaves the copy Ready, with its own note, and never stops a start.
+        let docx = after.first { $0.kind == "docx" }!
+        check(docx.state == "ready" && WorkCardFiles.companionNote(stopped) == "No text copy.", "companion failure", "\(docx.state) \(String(describing: WorkCardFiles.companionNote(stopped)))")
+        let docxPlan = relaunched.handoff(for: workID, mode: .newSession, sessionID: nil, receipts: [], resendAll: false)
+        check(WorkCardFiles.startCheck(docxPlan, provider: "claude", folderExists: { _ in true }) == .clear, "companion failure", "a failed companion stopped the start")
+        check(docxPlan.block.contains(docx.stored), "companion failure", "the original still goes")
         // Put the Word file's text back for what follows.
         try WorkCardFiles.update(root: root, workID: workID) { manifest, _ in
             let d = manifest.files.firstIndex { $0.kind == "docx" }!
@@ -643,7 +670,7 @@ extension WorkCardFilesChecks {
         check(png?.sniffed == "image/png" && png?.display.hasSuffix(".png") == true, "providers", "image data as PNG \(String(describing: png))")
         let web = files.first { $0.kind == "link" }
         check(web?.original == "https://bottlepos.com/pricing" && flashText(store, id) == WorkCardRefusal.linkAdded.message, "providers", "link \(String(describing: web)) \(flashText(store, id))")
-        check(files.contains { $0.kind == "folder" && $0.original == fx.folder.path }, "providers", "a Finder folder")
+        check(files.contains { $0.kind == "folder" && $0.original == WorkCardFiles.resolved(fx.folder) }, "providers", "a Finder folder")
         noStrays(store, id)
         // Text is not a file, and a card drag is never taken by a card.
         let text = NSItemProvider(object: "just words" as NSString)
@@ -787,32 +814,52 @@ extension WorkCardFilesChecks {
         await files.intake(urls: [fx.notes, fx.png], source: source)
         let note = files.files(for: workID).first { $0.kind == "text" }!, image = files.files(for: workID).first { $0.kind == "image" }!
         let folder = files.folder(for: workID)!
-        // Removing a file a running session was sent hides it and keeps it until that finishes.
-        let running = receipt("run", session: session, status: "running", context: [note.ref])
-        files.remove(note.id, workID: workID, receipts: [running])
-        check(!files.files(for: workID).contains { $0.id == note.id } && FileManager.default.fileExists(atPath: folder.appendingPathComponent(note.stored).path),
-              "cleanup refcount", "a referenced file must stay on disk, hidden")
-        files.remove(image.id, workID: workID, receipts: [running])
-        check(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(image.stored).path), "cleanup refcount", "an unreferenced file is deleted")
-        let task = TaskRow(.object(["id": .string("t"), "domain": .string("quilt"), "workIdentity": .string("3f9a1c2b7d4e"), "checked": .bool(true), "text": .string("x")]))!
-        files.cleanup(tasks: [task], inventoryComplete: true, receipts: [running])
-        check(FileManager.default.fileExists(atPath: folder.appendingPathComponent(note.stored).path), "cleanup refcount", "kept while the session runs")
-        var finished = running; finished.status = "completed"
-        files.cleanup(tasks: [task], inventoryComplete: true, receipts: [finished])
-        check(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(note.stored).path), "cleanup refcount", "purged once it finished")
-        check(WorkCardFiles.readManifest(folder)?.completedSeenAt != nil, "cleanup refcount", "completion stamped")
-        try WorkCardFiles.update(root: root, workID: workID) { manifest, _ in manifest.completedSeenAt = Date().timeIntervalSince1970 - 15 * 86_400 }
+        func exists(_ file: WorkContextFile) -> Bool { FileManager.default.fileExists(atPath: folder.appendingPathComponent(file.stored).path) }
+        let task = TaskRow(.object(["id": .string("t"), "domain": .string("quilt"), "workIdentity": .string("3f9a1c2b7d4e"), "checked": .bool(false), "text": .string("x")]))!
+        let done = TaskRow(.object(["id": .string("t"), "domain": .string("quilt"), "workIdentity": .string("3f9a1c2b7d4e"), "checked": .bool(true), "text": .string("x")]))!
+        // Remove only hides, with Undo; nothing is deleted at once (Q4).
+        let sent = receipt("sent", session: session, status: "delivered", context: [note.ref])
+        files.remove(note.id, workID: workID)
+        files.remove(image.id, workID: workID)
+        check(files.files(for: workID).isEmpty && exists(note) && exists(image), "remove hides", "Remove deleted a file at once")
+        check(files.recentlyRemoved(for: workID).count == 2, "remove hides", "both removed rows offer Undo")
+        files.undoRemove(image.id, workID: workID)
+        check(files.files(for: workID).map(\.id) == [image.id], "remove hides", "Undo puts it back")
+        files.remove(image.id, workID: workID)
+        // The next cleanup within the grace keeps both; after it, only the file no handoff carried goes.
+        await files.cleanup(tasks: [task], inventoryComplete: true, receipts: [sent])
+        check(exists(note) && exists(image), "remove hides", "a cleanup inside the Undo grace deleted a file")
+        let later = Date().timeIntervalSince1970 + WorkCardFiles.removeGrace + 60
+        await files.cleanup(tasks: [task], inventoryComplete: true, receipts: [sent], now: later)
+        check(exists(note) && !exists(image), "remove hides", "a carried file must stay, an unsent one goes after the grace: note \(exists(note)) image \(exists(image))")
+        // Completed: 14 days from the clock, and never while a handoff is in flight.
+        await files.cleanup(tasks: [done], inventoryComplete: true, receipts: [sent])
+        check(WorkCardFiles.readManifest(folder)?.completedSeenAt != nil, "cleanup clock", "completion stamped")
+        try WorkCardFiles.update(root: root, workID: workID) { manifest, _ in
+            manifest.completedSeenAt = Date().timeIntervalSince1970 - 15 * 86_400
+            for index in manifest.files.indices { manifest.files[index].addedAt = Date().timeIntervalSince1970 - 30 * 86_400 }
+        }
         files.reload(workID)
-        files.cleanup(tasks: [task], inventoryComplete: true, receipts: [receipt("q", session: nil, status: "queued", context: [WorkContextRef(id: "z", sha256: "z")])])
+        await files.cleanup(tasks: [done], inventoryComplete: true, receipts: [receipt("q", session: nil, status: "queued", context: [])])
         check(FileManager.default.fileExists(atPath: folder.path), "cleanup refcount", "a queued handoff holds the folder")
-        files.cleanup(tasks: [task], inventoryComplete: true, receipts: [])
-        check(!FileManager.default.fileExists(atPath: folder.path), "cleanup refcount", "deleted 14 days after completion")
+        await files.cleanup(tasks: [done], inventoryComplete: true, receipts: [sent])
+        check(!FileManager.default.fileExists(atPath: folder.path), "cleanup clock", "deleted 14 days after completion")
+        // P10: a file added to a card completed long ago restarts its clock; cleanup reads the manifest again under the lock.
+        await files.intake(urls: [fx.notes], source: source)
+        try WorkCardFiles.update(root: root, workID: workID) { manifest, _ in manifest.completedSeenAt = Date().timeIntervalSince1970 - 30 * 86_400 }
+        await files.cleanup(tasks: [done], inventoryComplete: true, receipts: [])
+        check(FileManager.default.fileExists(atPath: files.folder(for: workID)!.path) && files.files(for: workID).count == 1, "cleanup clock", "a just-added file was deleted (P10)")
+        // P10b: a card gone from the board keeps its files however long.
+        try WorkCardFiles.update(root: root, workID: workID) { manifest, _ in manifest.completedSeenAt = nil; manifest.orphanedSeenAt = 1 }
+        files.reload(workID)
+        await files.cleanup(tasks: [], inventoryComplete: true, receipts: [], now: Date().timeIntervalSince1970 + 400 * 86_400)
+        check(files.files(for: workID).count == 1, "orphan keep", "a card renamed outside COS lost its files (P10b)")
         // Never in a preview.
         let preview = WorkCardFileStore.preview()
         await preview.intake(urls: [fx.notes], source: source)
         try WorkCardFiles.update(root: preview.root!, workID: workID) { manifest, _ in manifest.completedSeenAt = 1 }
         preview.reload(workID)
-        preview.cleanup(tasks: [task], inventoryComplete: true, receipts: [])
+        await preview.cleanup(tasks: [done], inventoryComplete: true, receipts: [], now: Date().timeIntervalSince1970 + 400 * 86_400)
         check(FileManager.default.fileExists(atPath: preview.folder(for: workID)!.path), "cleanup refcount", "a preview never cleans")
         try? FileManager.default.removeItem(at: preview.root!)
     }
@@ -864,5 +911,197 @@ extension WorkCardFilesChecks {
         try await Task.sleep(for: .seconds(2.5))
         let raceLeftovers = ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).filter { $0 != "manifest.json" }
         check(store.files(for: id).isEmpty && raceLeftovers.isEmpty, "iCloud timeout", "a read granted after the deadline copied: \(raceLeftovers)")
+    }
+}
+
+// MARK: - Fix pass 1 (QA round 1): containment, links with credentials, secrets, folders, identity
+
+extension WorkCardFilesChecks {
+    static func entry(_ id: String, stored: String, seq: Int, kind: String = "text", companions: [WorkContextCompanion] = [], hiddenAgo: Double? = 7_200) -> WorkContextFile {
+        var f = file(id, kind: kind, seq: seq, stored: stored, companions: companions)
+        f.hiddenAt = hiddenAgo.map { Date().timeIntervalSince1970 - $0 }
+        return f
+    }
+    static let farFuture = Date().timeIntervalSince1970 + 3_600 * 3
+
+    /// QA B1, P1 to P4, and one case for each guard on its own.
+    static func containmentChecks(_ home: URL, _ fx: Fixtures) async throws {
+        let base = home.appendingPathComponent("contain", isDirectory: true)
+        let root = base.appendingPathComponent("cos-data/work-context", isDirectory: true)
+        let victim = base.appendingPathComponent("victim", isDirectory: true)
+        try FileManager.default.createDirectory(at: victim, withIntermediateDirectories: true)
+        try Data("keep".utf8).write(to: victim.appendingPathComponent("precious"))
+        let store = WorkCardFileStore(root: root)
+        await store.intake(urls: [fx.notes], source: source)
+        let folder = store.folder(for: workID)!
+        let real = store.files(for: workID)[0]
+        let task = TaskRow(.object(["id": .string("t"), "domain": .string("quilt"), "workIdentity": .string("3f9a1c2b7d4e"), "checked": .bool(false), "text": .string("x")]))!
+        // P1: "../../../victim" in a removed entry. P3: an empty name. A stray file named outside the grammar ("notes").
+        // A companion whose name is another file's copy (the grammar ties a companion to its own file).
+        try Data("stray".utf8).write(to: folder.appendingPathComponent("notes"))
+        try WorkCardFiles.update(root: root, workID: workID) { manifest, _ in
+            manifest.files += [entry("p1", stored: "../../../victim", seq: 7), entry("p3", stored: "", seq: 8), entry("bare", stored: "notes", seq: 9),
+                               entry("borrow", stored: "10-borrow.pdf", seq: 10, kind: "pdf",
+                                     companions: [WorkContextCompanion(kind: "text", stored: real.stored, state: "ready")])]
+        }
+        store.reload(workID)
+        let block = store.handoff(for: workID, mode: .newSession, sessionID: nil, receipts: [], resendAll: true).block
+        check(!block.contains("victim") && !block.contains("10-borrow"), "name grammar", "a name Control does not write reached the block: \(block)")
+        await store.cleanup(tasks: [task], inventoryComplete: true, receipts: [], now: farFuture)
+        check(FileManager.default.fileExists(atPath: victim.appendingPathComponent("precious").path), "name grammar", "P1: a manifest name deleted a folder outside the store")
+        check(FileManager.default.fileExists(atPath: folder.appendingPathComponent(real.stored).path), "name grammar", "P3 or a borrowed companion name deleted another file's copy")
+        check(FileManager.default.fileExists(atPath: folder.appendingPathComponent("notes").path), "name grammar", "a name outside the grammar was deleted")
+        check(FileManager.default.fileExists(atPath: folder.appendingPathComponent("manifest.json").path), "name grammar", "P3: the card's folder went")
+        // P2: a preparing companion named outside the store, restarted at launch, writes and deletes nothing.
+        let victim2 = base.appendingPathComponent("victim2", isDirectory: true)
+        try FileManager.default.createDirectory(at: victim2, withIntermediateDirectories: true)
+        try Data("keep".utf8).write(to: victim2.appendingPathComponent("precious"))
+        try WorkCardFiles.update(root: root, workID: workID) { manifest, _ in
+            manifest.files.append(entry("p2", stored: "11-img.heic", seq: 11, kind: "heic",
+                                        companions: [WorkContextCompanion(kind: "jpeg", stored: "../../../victim2", state: "preparing")], hiddenAgo: nil))
+        }
+        try FileManager.default.copyItem(at: fx.png, to: folder.appendingPathComponent("11-img.heic"))
+        let relaunch = WorkCardFileStore(root: root)
+        relaunch.start()
+        await relaunch.waitForCompanions()
+        var isDir: ObjCBool = false
+        check(FileManager.default.fileExists(atPath: victim2.appendingPathComponent("precious").path)
+              && FileManager.default.fileExists(atPath: victim2.path, isDirectory: &isDir) && isDir.boolValue, "name grammar", "P2: a restarted companion wrote outside the store")
+        // A target that is a link: guardTarget refuses it even with a valid name.
+        let outsideFile = base.appendingPathComponent("outside.txt"); try Data("x".utf8).write(to: outsideFile)
+        try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("12-link.txt"), withDestinationURL: outsideFile)
+        check((try? WorkCardFiles.guardTarget(root: root, folder: folder, name: "12-link.txt")) == nil, "symlink refusal", "a linked copy was accepted")
+        // Containment on its own.
+        check(!WorkCardFiles.contained("/s/f/../x", in: "/s/f") && !WorkCardFiles.contained("/s/f/..", in: "/s/f") && !WorkCardFiles.contained("/s/x", in: "/s/f")
+              && WorkCardFiles.contained("/s/f/01-a.txt", in: "/s/f"), "containment", "contained() accepted a path outside its folder")
+        // P4: a card folder that is a link to a folder outside the store: nothing written or deleted there.
+        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try Data("a".utf8).write(to: outside.appendingPathComponent("01-a.txt"))
+        let p4 = "task:quilt:444444444444"
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("444444444444"), withDestinationURL: outside)
+        await store.intake(urls: [fx.png], source: WorkSource(id: p4, title: "P4", revision: "r", project: "quilt", context: "c"))
+        let outsideNow = try FileManager.default.contentsOfDirectory(atPath: outside.path)
+        check(outsideNow == ["01-a.txt"], "symlink refusal", "P4: a linked card folder was written: \(outsideNow)")
+        check(flashText(store, p4).hasPrefix("Not added: COS couldn't open this card's file store."), "symlink refusal", flashText(store, p4))
+        // A card folder linked to another card's folder inside the store (containment alone passes): never deleted through.
+        let sibling = "task:quilt:bbbbbbbbbbbb", alias = "task:quilt:aaaaaaaaaaaa"
+        await store.intake(urls: [fx.notes], source: WorkSource(id: sibling, title: "B", revision: "r", project: "quilt", context: "c"))
+        let siblingFolder = store.folder(for: sibling)!, siblingFile = store.files(for: sibling)[0]
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("aaaaaaaaaaaa"), withDestinationURL: siblingFolder)
+        var forged = WorkCardFiles.readManifest(siblingFolder)!
+        forged.workSourceID = alias; forged.completedSeenAt = 1; forged.files[0].hiddenAt = 1
+        let encoder = JSONEncoder(); try encoder.encode(forged).write(to: siblingFolder.appendingPathComponent("manifest.json"))
+        // Not complete, so the plan purges the hidden file (deleting the folder would only take the link itself away).
+        WorkCardFiles.clean(root: root, workID: alias, onBoard: true, completed: false, inUse: false, carried: [], newestReceipt: nil, now: farFuture)
+        check(FileManager.default.fileExists(atPath: siblingFolder.appendingPathComponent(siblingFile.stored).path) && FileManager.default.fileExists(atPath: siblingFolder.path),
+              "symlink refusal", "a card folder linked to another card's was cleaned through the link")
+        // Load and the staging sweep skip anything under the root that is not a real card folder.
+        check(WorkCardFileStore.cardFolders(root).allSatisfy { WorkCardFiles.fileType($0) == S_IFDIR }, "symlink refusal", "a linked folder was listed")
+    }
+
+    /// QA B2, W4, W5.
+    static func secretAndFolderChecks(_ home: URL, _ fx: Fixtures) async throws {
+        let root = home.appendingPathComponent("secrets/work-context", isDirectory: true)
+        let store = WorkCardFileStore(root: root)
+        let card = WorkSource(id: "task:quilt:555555555555", title: "S", revision: "r", project: "quilt", context: "c")
+        // B2: a link with a user or password never reaches the manifest or the block.
+        let creds = NSItemProvider(object: NSURL(string: "https://miles:hunter2@example.com/private/doc?token=abc123")!)
+        await store.intake(providers: [creds], source: card)
+        check(flashText(store, card.id) == "Not added: this link has a username or password in it. Copy the link without them.", "link credentials", flashText(store, card.id))
+        check(store.files(for: card.id).isEmpty, "link credentials", "a link with a password was added")
+        check(WorkCardFiles.linkHasCredentials("https://miles@example.com/x") && !WorkCardFiles.linkHasCredentials("https://example.com/x?token=1"), "link credentials", "user only, and a plain link")
+        try WorkCardFiles.update(root: root, workID: card.id) { manifest, _ in
+            var link = file("l", kind: "link", seq: 1, stored: "", original: "https://miles:hunter2@example.com/doc"); link.sniffed = "text/uri-list"
+            manifest.files = [link]
+        }
+        store.reload(card.id)
+        check(!store.handoff(for: card.id, mode: .newSession, sessionID: nil, receipts: [], resendAll: false).block.contains("hunter2"), "link credentials", "a planted link's password reached the block")
+        // W4 by name.
+        for name in ["prod.env", "secrets.env", ".npmrc", ".netrc", ".pypirc", ".pgpass", ".git-credentials", "credentials", "key.ppk", "vault.kdbx"] {
+            check(WorkCardFiles.looksSecret(name: name), "secret names", "\(name) is not a secret by name")
+        }
+        check(WorkCardFiles.looksSecret(path: "/x/.docker/config.json") && !WorkCardFiles.looksSecret(path: "/x/app/config.json"), "secret names", "the Docker login")
+        check(!WorkCardFiles.looksSecret(name: "credentials.md") && !WorkCardFiles.looksSecret(name: "envelope.png"), "secret names", "ordinary names")
+        // W4 by content.
+        for text in ["API_TOKEN=abc", "export DB_PASSWORD=x", "OPENAI_API_KEY=sk-1", "github_access_key = z", "[default]\naws_access_key_id = AKIAABCDEFGHIJKLMNOP",
+                     "//registry.npmjs.org/:_authToken=xyz", "machine github.com\n  login me\n  password hunter2"] {
+            check(WorkCardFiles.secretContent(text), "secret content", "not caught: \(text)")
+        }
+        for text in ["We use machine learning.\nSend a password reset email.", "KEY_COUNT=4\nMONKEY=1", "TOKEN_COUNT is how many we read", "PASSWORD="] {
+            check(!WorkCardFiles.secretContent(text), "secret content", "a false secret: \(text)")
+        }
+        let dotenv = fx.dir.appendingPathComponent("renamed-env.txt"); try Data("STRIPE_SECRET_KEY=sk_live_123\n".utf8).write(to: dotenv)
+        let aws = fx.dir.appendingPathComponent("aws-creds.txt"); try Data("[default]\naws_access_key_id = AKIAABCDEFGHIJKLMNOP\naws_secret_access_key = x\n".utf8).write(to: aws)
+        let alias = fx.dir.appendingPathComponent("notes-alias.txt"); try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: fx.env)
+        for url in [dotenv, aws, alias] {
+            await store.intake(urls: [url], source: card)
+            check(flashText(store, card.id).contains("looks like a secrets file"), "secret content", "\(url.lastPathComponent): \(flashText(store, card.id))")
+        }
+        check(store.files(for: card.id).filter { !$0.isLink }.isEmpty, "secret content", "a secret was added")
+        let keynote = fx.dir.appendingPathComponent("Q3 deck.key")
+        try Data([0x50, 0x4B, 0x03, 0x04] + Array("....Index/Document.iwa....".utf8)).write(to: keynote)
+        await store.intake(urls: [keynote], source: card)
+        check(store.files(for: card.id).contains { $0.display == "Q3 deck.key" }, "secret names", "a Keynote deck was refused: \(flashText(store, card.id))")
+        // W5: folders too wide, folders that are or sit in secret folders, and folders holding secrets.
+        let user = FileManager.default.homeDirectoryForCurrentUser
+        for url in [user, user.appendingPathComponent("Library"), URL(fileURLWithPath: "/"), URL(fileURLWithPath: "/Users"), URL(fileURLWithPath: "/System")] {
+            await store.intake(urls: [url], source: card)
+            check(flashText(store, card.id).contains("too wide a folder"), "folder roots", "\(url.path): \(flashText(store, card.id))")
+        }
+        let ssh = fx.dir.appendingPathComponent("fake/.ssh", isDirectory: true); try FileManager.default.createDirectory(at: ssh, withIntermediateDirectories: true)
+        let sshLink = fx.dir.appendingPathComponent("innocent"); try FileManager.default.createSymbolicLink(at: sshLink, withDestinationURL: ssh)
+        await store.intake(urls: [sshLink], source: card)
+        check(flashText(store, card.id).contains("looks like a secrets file"), "folder roots", "a link to .ssh: \(flashText(store, card.id))")
+        let project = fx.dir.appendingPathComponent("project", isDirectory: true)
+        try FileManager.default.createDirectory(at: project.appendingPathComponent("sub/deeper", isDirectory: true), withIntermediateDirectories: true)
+        try Data("readme".utf8).write(to: project.appendingPathComponent("README.md"))
+        try Data("API_KEY=1".utf8).write(to: project.appendingPathComponent("sub/deeper/.env"))
+        await store.intake(urls: [project], source: card)
+        check(store.files(for: card.id).contains { $0.kind == "folder" && $0.display == "project" }, "folder scan", "a secret three levels down is past the scan: \(flashText(store, card.id))")
+        let project2 = fx.dir.appendingPathComponent("project2", isDirectory: true)
+        try FileManager.default.createDirectory(at: project2.appendingPathComponent("sub", isDirectory: true), withIntermediateDirectories: true)
+        try Data("PROD_PASSWORD=hunter2".utf8).write(to: project2.appendingPathComponent("sub/settings.txt"))
+        await store.intake(urls: [project2], source: card)
+        check(flashText(store, card.id) == "Not added: this folder holds secrets (sub/settings.txt). Add the files you need one by one.", "folder scan", flashText(store, card.id))
+        check(WorkCardFiles.broadFolder(user.path + "/Library/Caches", home: user) && !WorkCardFiles.broadFolder(user.path + "/Projects", home: user), "folder roots", "under ~/Library")
+    }
+
+    /// QA W1 (the identity stamp), N2 (a root reached through a link), N3 (two domains, one identity).
+    static func identityAndFolderChecks(_ home: URL, _ fx: Fixtures) async throws {
+        let root = home.appendingPathComponent("identity/work-context", isDirectory: true)
+        let store = WorkCardFileStore(root: root)
+        let card = WorkSource(id: "task:quilt:666666666666", title: "I", revision: "r", project: "quilt", context: "c")
+        var stamps: [String] = []
+        var answer = false
+        store.stampIdentity = { id in stamps.append(id); return answer }
+        await store.intake(urls: [fx.notes], source: card)
+        check(stamps == [card.id] && store.files(for: card.id).isEmpty, "identity stamp", "a failed stamp must add nothing: \(stamps) \(store.files(for: card.id).count)")
+        check(flashText(store, card.id).hasPrefix("Not added: COS couldn't save this card's identity first"), "identity stamp", flashText(store, card.id))
+        check(WorkCardFiles.readManifest(WorkCardFiles.folder(root: root, workID: card.id)) == nil, "identity stamp", "a manifest was written before the stamp")
+        answer = true
+        await store.intake(urls: [fx.notes], source: card)
+        check(stamps == [card.id, card.id] && store.files(for: card.id).count == 1, "identity stamp", "the stamp comes before the first file: \(stamps)")
+        await store.intake(urls: [fx.png], source: card)
+        check(stamps.count == 2 && store.files(for: card.id).count == 2, "identity stamp", "a card with files is not stamped again: \(stamps)")
+        let preview = WorkCardFileStore.preview()
+        preview.stampIdentity = { id in stamps.append("preview " + id); return false }
+        await preview.intake(urls: [fx.notes], source: card)
+        check(preview.files(for: card.id).count == 1 && !stamps.contains { $0.hasPrefix("preview") }, "identity stamp", "the preview never writes a task")
+        try? FileManager.default.removeItem(at: preview.root!)
+        // N2: a root reached through a link into Documents is refused.
+        let fakeHome = home.appendingPathComponent("fake home", isDirectory: true)
+        try FileManager.default.createDirectory(at: fakeHome.appendingPathComponent("Documents/cd", isDirectory: true), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: fakeHome.appendingPathComponent("cos-data"), withDestinationURL: fakeHome.appendingPathComponent("Documents/cd"))
+        check(!WorkCardFiles.rootAllowed(fakeHome.appendingPathComponent("cos-data/work-context"), home: fakeHome), "store root", "a root linked into Documents was allowed")
+        // N3: the second card keeps its folder once the first card's folder is gone.
+        let a = "task:quilt:777777777777", b = "task:personal:777777777777"
+        await store.intake(urls: [fx.notes], source: WorkSource(id: a, title: "A", revision: "r", project: "quilt", context: "c"))
+        await store.intake(urls: [fx.notes], source: WorkSource(id: b, title: "B", revision: "r", project: "personal", context: "c"))
+        let bFolder = store.folder(for: b)!
+        check(bFolder != store.folder(for: a)!, "folder collision", "two domains share a folder")
+        try FileManager.default.removeItem(at: store.folder(for: a)!)
+        check(store.folder(for: b) == bFolder && store.handoff(for: b, mode: .newSession, sessionID: nil, receipts: [], resendAll: false).sending.count == 1,
+              "folder collision", "card B lost its folder once A's was gone (P15)")
     }
 }
