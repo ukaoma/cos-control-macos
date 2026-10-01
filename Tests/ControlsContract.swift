@@ -180,20 +180,28 @@ private struct LabelBoard: View {
         case .system: Button {} label: { label(key).labelStyle(.titleAndIcon) }.buttonStyle(COSQuietButtonStyle())
         }
     }
+    /// The button styles (and the menu face, a quiet button) with no window root theme above them: each must center its
+    /// label itself (a window without the theme, a panel of its own). The rest under the root theme, which is what gives
+    /// a plain button, a bare Label and a button with no style of its own theirs.
+    static let ownStyle: [Kind] = [.quiet, .primary, .text, .menu, .system]
+    private func row(_ kind: Kind) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            item(kind, kind.rawValue + ".one").fixedSize().modifier(Frame(key: kind.rawValue + ".one", probe: probe))
+            item(kind, kind.rawValue + ".two").frame(width: Self.narrow, alignment: .leading)
+        }
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Kind.allCases, id: \.self) { kind in
-                HStack(alignment: .top, spacing: 12) {
-                    item(kind, kind.rawValue + ".one").fixedSize().modifier(Frame(key: kind.rawValue + ".one", probe: probe))
-                    item(kind, kind.rawValue + ".two").frame(width: Self.narrow, alignment: .leading)
-                }
+            ForEach(Self.ownStyle, id: \.self) { kind in row(kind) }
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Kind.allCases.filter { !Self.ownStyle.contains($0) }, id: \.self) { kind in row(kind) }
             }
+            .cosControlTheme()
             Spacer(minLength: 0)
         }
         .padding(12)
         .frame(width: 360, height: Self.height, alignment: .top)
         .background(COSPalette.card)
-        .cosControlTheme()
     }
     static let height: CGFloat = 640
 }
