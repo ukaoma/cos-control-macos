@@ -2651,8 +2651,12 @@ need(activity.count('backgroundWorkEnabled: model.activityLoadsEnabled)') == 3,
 workspace = (root / "Sources/WorkWorkspaceView.swift").read_text()
 need('receiptFallback(id)' in workspace and 'no item has been recreated' in workspace,
      "missing canonical items must preserve read-only receipt history")
+# 0.5.254 resize pass: the rows are built in WorkWorkspaceState.board (cached until their data changes), and the view
+# reads every row through it.
+board_fn = workspace[workspace.index('func board(model: ControllerModel'):workspace.index('/// Explicit transition after admission')]
 need('guard !handoffStore.isolated else { return }' in workspace and
-     'WorkWorkspaceProjection.previewRows(handoffStore.previewTasks, stages: state.previewStages)' in workspace,
+     'handoffStore.isolated ? WorkWorkspaceProjection.previewRows(handoffStore.previewTasks, stages: previewStages) : model.workTasks' in board_fn and
+     'private var board: WorkBoardMemo { state.board(model: model, handoffStore: handoffStore, reviewStore: reviewStore) }' in workspace,
      "the shared preview workspace must structurally use fixture rows and block production loading")
 need('taskEditorOverlay' in activity and 'ActivityEscapeHandler(onEscape: handleActivityEscape)' in activity and
      '.cosConfirm("Save task changes?"' in activity, "secondary editing must retain fixed close, window-scoped Escape and dirty confirmation")
