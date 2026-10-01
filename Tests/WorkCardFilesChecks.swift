@@ -971,6 +971,14 @@ extension WorkCardFilesChecks {
         let outsideFile = base.appendingPathComponent("outside.txt"); try Data("x".utf8).write(to: outsideFile)
         try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("12-link.txt"), withDestinationURL: outsideFile)
         check((try? WorkCardFiles.guardTarget(root: root, folder: folder, name: "12-link.txt")) == nil, "symlink refusal", "a linked copy was accepted")
+        // A link to another copy in the same folder: containment passes, only the link check refuses it.
+        try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("13-link.txt"), withDestinationURL: folder.appendingPathComponent(real.stored))
+        check((try? WorkCardFiles.guardTarget(root: root, folder: folder, name: "13-link.txt")) == nil, "symlink refusal", "an in-folder link was accepted")
+        // guardTarget's own name check, called directly.
+        for bad in ["../x", "manifest.json", ".lock", "notes", "01-a.txt/../../x", ""] {
+            check((try? WorkCardFiles.guardTarget(root: root, folder: folder, name: bad)) == nil, "name grammar", "guardTarget accepted \(bad.debugDescription)")
+        }
+        check((try? WorkCardFiles.guardTarget(root: root, folder: folder, name: real.stored)) != nil, "name grammar", "a real copy was refused")
         // Containment on its own.
         check(!WorkCardFiles.contained("/s/f/../x", in: "/s/f") && !WorkCardFiles.contained("/s/f/..", in: "/s/f") && !WorkCardFiles.contained("/s/x", in: "/s/f")
               && WorkCardFiles.contained("/s/f/01-a.txt", in: "/s/f"), "containment", "contained() accepted a path outside its folder")
