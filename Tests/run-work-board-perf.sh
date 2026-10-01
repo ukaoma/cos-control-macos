@@ -4,7 +4,7 @@
 # scratch home and a stand-in helper beside the binary that replays the fixture JSON the harness writes. No server, no
 # provider, nothing clicked, typed or dragged.
 #   Tests/run-work-board-perf.sh <label>                  the timings
-#   Tests/run-work-board-perf.sh <label> <folder>         PNGs of the board at 1280 and 1800 pt, light and dark
+#   Tests/run-work-board-perf.sh <label> <folder>         PNGs of the board at 1280, 1800 and 820 pt, light and dark
 set -euo pipefail
 ROOT="${0:A:h:h}"
 LABEL="${1:?usage: run-work-board-perf.sh <label> [folder for PNGs]}"

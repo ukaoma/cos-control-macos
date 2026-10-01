@@ -7,7 +7,7 @@ import SwiftUI
 /// replays fixture JSON. The width steps from 1200 to 1900 pt in 10 pt steps; each step is timed from the resize to the
 /// end of the follow-up pass that state written during layout schedules. Prints median, p95 and max ms per step, how
 /// often the projection and the Work body ran, and the same counts over 3 s at idle. With a folder it also draws the
-/// board at 1280 and 1800 pt, light and dark, to PNGs. Nothing is clicked, typed or dragged, and the process can never
+/// board at 1280, 1800 and 820 pt (the compact layout), light and dark, to PNGs. Nothing is clicked, typed or dragged, and the process can never
 /// become active.
 @main @MainActor struct WorkBoardResizePerf {
     static let stages: [(String, Int)] = [("mentioned", 40), ("planned", 80), ("draft", 50), ("built", 30), ("qa", 28), ("complete", 40)]
@@ -68,7 +68,8 @@ import SwiftUI
 
         if let renderFolder {
             try FileManager.default.createDirectory(at: renderFolder, withIntermediateDirectories: true)
-            for width in [1280, 1800] { try render(board(), width: CGFloat(width), name: "board-\(width)", out: renderFolder) }
+            // 820 pt is under the 900 pt wide layout: the compact navigation from the first frame.
+            for width in [1280, 1800, 820] { try render(board(), width: CGFloat(width), name: "board-\(width)", out: renderFolder) }
             print("wrote PNGs to \(renderFolder.path)")
             return
         }
