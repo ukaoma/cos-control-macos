@@ -1047,6 +1047,16 @@ extension WorkCardFilesChecks {
             check(flashText(store, card.id).contains("looks like a secrets file"), "secret content", "\(url.lastPathComponent): \(flashText(store, card.id))")
         }
         check(store.files(for: card.id).filter { !$0.isLink }.isEmpty, "secret content", "a secret was added")
+        // A secret is refused by its name, through an alias, before COS reads it: this one cannot be read at all.
+        let locked = fx.dir.appendingPathComponent("locked", isDirectory: true)
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try Data("API_KEY=1".utf8).write(to: locked.appendingPathComponent(".env"))
+        chmod(locked.appendingPathComponent(".env").path, 0)
+        let lockedAlias = fx.dir.appendingPathComponent("locked-alias.txt")
+        try FileManager.default.createSymbolicLink(at: lockedAlias, withDestinationURL: locked.appendingPathComponent(".env"))
+        await store.intake(urls: [lockedAlias], source: card)
+        check(flashText(store, card.id) == "Not added: locked-alias.txt looks like a secrets file. Files like this never go to a provider.", "secret content",
+              "an alias to a secret must be refused by the real name before it is read: \(flashText(store, card.id))")
         let keynote = fx.dir.appendingPathComponent("Q3 deck.key")
         try Data([0x50, 0x4B, 0x03, 0x04] + Array("....Index/Document.iwa....".utf8)).write(to: keynote)
         await store.intake(urls: [keynote], source: card)

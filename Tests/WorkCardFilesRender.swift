@@ -51,6 +51,18 @@ import SwiftUI
         try render(WorkCardFilesSection(files: files, store: store, source: source, mode: .continueSession, sessionID: session.id,
                                         sessionTitle: session.title, provider: "claude", resendAll: .constant(false)).padding(18),
                    width: 440, name: "workspace-continue-delta", out: out)
+        // Fix pass 1: a removed file shows Undo, and a companion that failed leaves the copy Ready with its own note.
+        if let pdf = files.files(for: source.id).first(where: { $0.kind == "pdf" }), let folder = files.folder(for: source.id) {
+            try WorkCardFiles.update(root: folder.deletingLastPathComponent(), workID: source.id) { manifest, _ in
+                guard let index = manifest.files.firstIndex(where: { $0.id == pdf.id }) else { return }
+                manifest.files[index].companions[0].state = "failed"; manifest.files[index].companions[0].failure = "this PDF has no text layer (a scan)"
+            }
+            files.reload(source.id)
+        }
+        if let shot = files.files(for: source.id).first(where: { $0.display.hasPrefix("Screenshot") }) { files.remove(shot.id, workID: source.id) }
+        try render(WorkCardFilesSection(files: files, store: store, source: source, mode: .newSession, sessionID: nil,
+                                        sessionTitle: nil, provider: "claude", resendAll: .constant(false)).padding(18),
+                   width: 440, name: "workspace-undo-and-note", out: out)
         // The Start sheet's files row, and the lines that stop its countdown.
         let plan = WorkSendPlan(mode: .newSession, session: nil, model: store.models.first { $0.provider == "ollama" }, crossPlatform: false, prompt: "x")
         try render(VStack(alignment: .leading, spacing: 12) {
