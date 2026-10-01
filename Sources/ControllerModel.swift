@@ -2661,7 +2661,10 @@ final class ControllerModel: ObservableObject {
         }
     }
 
-    @Published var workTasks: [TaskRow] = []
+    /// 0.5.254 resize pass: every change to the board's tasks bumps `workTasksEpoch`, the Work view's cue to rebuild its
+    /// rows (WorkBoardMemo). A resize changes no epoch, so it never rebuilds them.
+    @Published var workTasks: [TaskRow] = [] { didSet { workTasksEpoch &+= 1 } }
+    private(set) var workTasksEpoch = 0
     @Published var workTasksLoading = false
     @Published var workTasksError: String?
     @Published var workTasksComplete = false

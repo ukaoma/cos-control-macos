@@ -80,6 +80,15 @@ struct WorkBoardSessionCard: Identifiable {
         guard cards > 0, width > 0 else { return false }
         return CGFloat(cards) * cardWidth + CGFloat(cards - 1) * cardGap > width - pinnedColumnWidth
     }
+    /// The most cards a row `width` wide holds beside the pinned column: `rowOverflows(cards:width:)` is
+    /// `cards > rowCapacity(width:)`. Unmeasured (0) holds any number, so nothing casts an edge before the first layout.
+    nonisolated static func rowCapacity(width: CGFloat) -> Int {
+        guard width > 0 else { return .max }
+        var capacity = max(0, Int(((width - pinnedColumnWidth + cardGap) / (cardWidth + cardGap)).rounded(.down)))
+        while capacity > 0 && rowOverflows(cards: capacity, width: width) { capacity -= 1 }   // floating point at the edge
+        while !rowOverflows(cards: capacity + 1, width: width) { capacity += 1 }
+        return capacity
+    }
     /// "sent 42 min ago" while running or waiting on delivery, "active 3 h ago" once the session has gone quiet.
     func ageText(now: Date = Date()) -> String {
         let sent = Date(timeIntervalSince1970: activity.receipt.createdAt)
@@ -118,10 +127,11 @@ enum WorkBoardSessionsProjection {
     /// The header counts differ on purpose: they also count task flags with no session (failed, missed, agent done).
     static func cards(_ items: [WorkWorkspaceItem], receipts: [WorkHandoffReceipt] = [], sessions: [WorkSession] = [],
                       domain: String?) -> [WorkBoardSessionCard] {
-        items.compactMap { item -> WorkBoardSessionCard? in
+        let receiptsByWork = Dictionary(grouping: receipts, by: \.workID)
+        return items.compactMap { item -> WorkBoardSessionCard? in
             guard domain == nil || item.domain == domain else { return nil }
             var activity = item.activity, earlier = false
-            if activity == nil, let receipt = receipts.filter({ $0.workID == item.sourceID }).max(by: { $0.createdAt < $1.createdAt }) {
+            if activity == nil, let receipt = receiptsByWork[item.sourceID]?.max(by: { $0.createdAt < $1.createdAt }) {
                 activity = WorkActivity(receipt: receipt, session: WorkHandoffStore.listedSession(for: receipt, in: sessions))
                 earlier = true
             }
@@ -207,7 +217,10 @@ enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
     @Published var mutationError: String?
     @Published var mutationBusy = false
     @Published var linkTarget: TaskRow?
-    @Published var previewStages: [String: String] = [:]
+    @Published var previewStages: [String: String] = [:] { didSet { previewStagesEpoch &+= 1 } }
+    private(set) var previewStagesEpoch = 0
+    /// 0.5.254 resize pass: the board's rows, kept until their data changes. Not published: filling it never redraws.
+    let boardMemo = WorkBoardMemo()
     /// Work → Intake (server 6.57.0). Its own route flag: the Intake row or toggle opens it, and choosing a view
     /// or a domain closes it (the observers above), so no opener can leave Intake covering the board.
     @Published var intakeOpen = false
@@ -223,6 +236,20 @@ enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
     /// Meeting reviews whose full text is open, and whose notes are open, by review id.
     @Published var expandedReviews: Set<String> = []
     @Published var expandedNotes: Set<String> = []
+
+    /// 0.5.254 resize pass: the board's rows for these stores, rebuilt only when one of their sources changed
+    /// (WorkBoardDataKey). The Work view reads every row through here.
+    func board(model: ControllerModel, handoffStore: WorkHandoffStore, reviewStore: WorkReviewStore, now: Date = Date()) -> WorkBoardMemo {
+        let key = WorkBoardDataKey(stores: [ObjectIdentifier(model), ObjectIdentifier(handoffStore), ObjectIdentifier(reviewStore)],
+                                   isolated: handoffStore.isolated, tasks: model.workTasksEpoch, previewTasks: handoffStore.previewTasksEpoch,
+                                   previewStages: previewStagesEpoch, reviews: reviewStore.reviewsEpoch, receipts: handoffStore.receiptsEpoch,
+                                   sessions: handoffStore.isolated ? handoffStore.sessionsEpoch : handoffStore.activitySessionsEpoch,
+                                   fresh: handoffStore.isolated || handoffStore.activityFresh(now: now))
+        return boardMemo.refreshed(key) {
+            WorkWorkspaceProjection.items(tasks: handoffStore.isolated ? WorkWorkspaceProjection.previewRows(handoffStore.previewTasks, stages: previewStages) : model.workTasks,
+                                          reviews: reviewStore.reviews, receipts: handoffStore.receipts, sessions: handoffStore.observedSessions(now: now))
+        }
+    }
 
     /// Explicit transition after admission also handles a reused review ID, where
     /// SwiftUI onChange would not fire. Failure leaves the chosen intake visible.
@@ -262,6 +289,64 @@ enum WorkBoardMetrics {
     static func countBody() { bodies += 1 }
 }
 
+/// 0.5.254 resize pass: what the board's rows are built from. Each count is an epoch its source bumps on every change
+/// (ControllerModel.workTasksEpoch; WorkHandoffStore's receipts, sessions, activity sessions and preview tasks;
+/// WorkReviewStore.reviewsEpoch; WorkWorkspaceState.previewStagesEpoch). A window resize changes none of them.
+struct WorkBoardDataKey: Equatable {
+    var stores: [ObjectIdentifier] = []
+    var isolated = false
+    var tasks = 0, previewTasks = 0, previewStages = 0, reviews = 0, receipts = 0, sessions = 0
+    /// observedSessions() drops the live sessions once the last check is 45 seconds old.
+    var fresh = false
+}
+
+/// 0.5.254 resize pass: the board's rows and what the board derives from them, built once per data change and once
+/// per filter, never once per column, per lookup or per resize step. Every reader goes through `refreshed(_:build:)`,
+/// so a changed key always rebuilds before anything is read.
+@MainActor final class WorkBoardMemo {
+    private struct Filter: Equatable { var scope: WorkWorkspaceScope; var domain: String?; var query: String }
+    private var key: WorkBoardDataKey?
+    private(set) var items: [WorkWorkspaceItem] = []
+    private var bySourceID: [String: WorkWorkspaceItem] = [:]
+    private var byID: [String: WorkWorkspaceItem] = [:]
+    private var filter: Filter?
+    private var filtered: [WorkWorkspaceItem] = []
+    private var columns: [WorkBoardStage: [WorkWorkspaceItem]] = [:]
+    private var cardsDomain: String??
+    private var cards: [WorkBoardSessionCard] = []
+
+    @discardableResult func refreshed(_ key: WorkBoardDataKey, build: () -> [WorkWorkspaceItem]) -> WorkBoardMemo {
+        guard key != self.key else { return self }
+        items = build()
+        self.key = key
+        bySourceID = [:]; byID = [:]
+        for item in items {
+            if bySourceID[item.sourceID] == nil { bySourceID[item.sourceID] = item }
+            if byID[item.id] == nil { byID[item.id] = item }
+        }
+        filter = nil; cardsDomain = nil
+        return self
+    }
+    /// The first row for a work id, as `items.first { $0.sourceID == id }` would find it.
+    func item(sourceID: String) -> WorkWorkspaceItem? { bySourceID[sourceID] }
+    func item(id: String?) -> WorkWorkspaceItem? { id.flatMap { byID[$0] } }
+    func visible(scope: WorkWorkspaceScope, domain: String?, query: String) -> [WorkWorkspaceItem] {
+        let next = Filter(scope: scope, domain: domain, query: query)
+        if next != filter {
+            filtered = WorkWorkspaceProjection.filter(items, scope: scope, domain: domain, query: query)
+            columns = Dictionary(grouping: filtered.filter { $0.task != nil }) { WorkBoardStage.stage(for: $0.task!) }
+            filter = next
+        }
+        return filtered
+    }
+    /// A column's cards, from the last `visible` (the board reads `visible` first).
+    func column(_ stage: WorkBoardStage) -> [WorkWorkspaceItem] { columns[stage] ?? [] }
+    func sessionCards(domain: String?, build: ([WorkWorkspaceItem]) -> [WorkBoardSessionCard]) -> [WorkBoardSessionCard] {
+        if cardsDomain != .some(domain) { cards = build(items); cardsDomain = .some(domain) }
+        return cards
+    }
+}
+
 enum WorkWorkspaceProjection {
     static func previewRows(_ samples: [Control2PreviewTask], stages: [String: String] = [:]) -> [TaskRow] {
         samples.compactMap { row in TaskRow(.object([
@@ -288,12 +373,15 @@ enum WorkWorkspaceProjection {
 
     static func items(tasks: [TaskRow], reviews: [WorkReviewRecord], receipts: [WorkHandoffReceipt], sessions: [WorkSession] = []) -> [WorkWorkspaceItem] {
         WorkBoardMetrics.projections += 1
+        // One pass over the journal: matching every task against every receipt was most of a rebuild's cost.
+        let receiptsByWork = Dictionary(grouping: receipts, by: \.workID)
         let taskItems = tasks.map { task in
             let source = WorkSource.taskSnapshot(task)
-            let activity = WorkActivityProjection.latest(workID: source.id, revision: source.revision, receipts: receipts, sessions: sessions)
+            let mine = receiptsByWork[source.id] ?? []
+            let activity = WorkActivityProjection.latest(workID: source.id, revision: source.revision, receipts: mine, sessions: sessions)
             let running = activity?.inProgress == true
             let attention = activity?.needsAttention == true && activity?.sessionRunning != true
-            let tracking = WorkTracking.latest(workID: source.id, receipts: receipts)
+            let tracking = WorkTracking.latest(workID: source.id, receipts: mine)
             let label = task.checked ? "Completed task" : task.agentState == "done" ? "Agent finished · task still open" : WorkBoardStage.stage(for: task).title
             return WorkWorkspaceItem(id: source.id, title: task.text.isEmpty ? task.title : task.text, domain: task.domain,
                 searchText: source.context, subtitle: label, task: task, review: nil,
@@ -302,8 +390,9 @@ enum WorkWorkspaceProjection {
                 inProgress: task.agentState == "running" || running, completed: task.checked, activity: activity, tracking: tracking)
         }
         let meetingItems = reviews.map { review in
-            let activity = WorkActivityProjection.latest(workID: review.source.id, revision: review.source.revision, receipts: receipts, sessions: sessions)
-            let tracking = WorkTracking.latest(workID: review.source.id, receipts: receipts)
+            let mine = receiptsByWork[review.source.id] ?? []
+            let activity = WorkActivityProjection.latest(workID: review.source.id, revision: review.source.revision, receipts: mine, sessions: sessions)
+            let tracking = WorkTracking.latest(workID: review.source.id, receipts: mine)
             return WorkWorkspaceItem(id: "meeting-review:" + review.id, title: review.title, domain: review.domain,
                 searchText: review.title + " " + review.markdown + " " + review.source.context,
                 subtitle: "Meeting review · " + review.status.replacingOccurrences(of: "_", with: " "),
@@ -381,11 +470,11 @@ struct WorkWorkspaceView: View {
     var onReviewMeeting: (LibraryMeeting) -> Void
     var onOpenMeeting: (WorkMeetingReference) -> Void = { _ in }
 
-    private var items: [WorkWorkspaceItem] {
-        WorkWorkspaceProjection.items(tasks: handoffStore.isolated ? WorkWorkspaceProjection.previewRows(handoffStore.previewTasks, stages: state.previewStages) : model.workTasks, reviews: reviewStore.reviews, receipts: handoffStore.receipts, sessions: handoffStore.observedSessions())
-    }
-    private var visible: [WorkWorkspaceItem] { WorkWorkspaceProjection.filter(items, scope: state.scope, domain: state.domain, query: state.query) }
-    private var selected: WorkWorkspaceItem? { items.first { $0.id == state.selectedID } }
+    /// 0.5.254 resize pass: the rows, rebuilt only when their data changes (WorkWorkspaceState.board), never on a resize.
+    private var board: WorkBoardMemo { state.board(model: model, handoffStore: handoffStore, reviewStore: reviewStore) }
+    private var items: [WorkWorkspaceItem] { board.items }
+    private var visible: [WorkWorkspaceItem] { board.visible(scope: state.scope, domain: state.domain, query: state.query) }
+    private var selected: WorkWorkspaceItem? { board.item(id: state.selectedID) }
     private var domains: [String] { Array(Set(model.domainOptions.map(\.name) + items.map(\.domain))).filter { !$0.isEmpty }.sorted() }
     private var hasDetail: Bool { state.selectedID != nil || state.meetingPicker || reviewStore.selectedMeeting != nil }
     @AppStorage("cos.workLayout") private var layoutRaw = WorkLayout.board.rawValue
@@ -396,8 +485,12 @@ struct WorkWorkspaceView: View {
     /// The files on each card (WorkCardFiles.swift).
     private var cardFiles: WorkCardFileStore { handoffStore.cardFiles }
     @State private var columnTarget: WorkBoardStage?
-    /// Width of the session row, measured, so the pinned Start work column casts its edge only when cards run under it.
-    @State private var sessionsRowWidth: CGFloat = 0
+    /// How many session cards fit beside the pinned Start work column, so it casts its edge only when cards run under
+    /// it. 0.5.254 resize pass: the count, not the width, is kept: it changes about every 330 pt, where the width
+    /// changed on every step of a resize and redrew the whole board each time.
+    @State private var sessionsRowCapacity = Int.max
+    /// The wide layout (the sidebar beside the board) from 900 pt. Flips only when the window crosses it.
+    @State private var wideLayout = true
     /// The remembered layout (Board by default; an unknown stored value reads as Board). The isolated preview keeps
     /// its own, so trying Focus there never changes the real preference.
     private var storedLayout: WorkLayout { handoffStore.isolated ? state.previewLayout : (WorkLayout(rawValue: layoutRaw) ?? .board) }
@@ -413,54 +506,55 @@ struct WorkWorkspaceView: View {
 
     var body: some View {
         let _ = WorkBoardMetrics.countBody()
-        GeometryReader { geometry in
-            VStack(spacing: 0) {
-                header
-                activitySummary
-                if state.captureOpen { captureForm }
-                if let error = state.mutationError {
-                    HStack { Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger); Spacer()
-                        Button("Dismiss") { state.mutationError = nil }.buttonStyle(COSQuietButtonStyle())
-                    }.padding(.horizontal, 18).padding(.bottom, 10)
+        VStack(spacing: 0) {
+            header
+            activitySummary
+            if state.captureOpen { captureForm }
+            if let error = state.mutationError {
+                HStack { Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger); Spacer()
+                    Button("Dismiss") { state.mutationError = nil }.buttonStyle(COSQuietButtonStyle())
+                }.padding(.horizontal, 18).padding(.bottom, 10)
+            }
+            Divider().overlay(COSPalette.line)
+            if state.meetingPicker {
+                HStack {
+                    Button { closePickerOrDetail() } label: { Label(state.linkTarget == nil ? "Back to work" : "Cancel linking", systemImage: "chevron.left") }
+                        .buttonStyle(COSQuietButtonStyle())
+                    Spacer()
+                }.padding(.horizontal, 18).padding(.vertical, 8)
+                detailPane
+            } else if wideLayout {
+                HStack(spacing: 0) {
+                    sidebar.frame(width: 148)
+                    Divider()
+                    if state.intakeOpen {
+                        WorkIntakeView(model: model, onOpenMeeting: onOpenMeeting)
+                    } else if layout == .board {
+                        boardSurface
+                    } else {
+                        focusSurface
+                    }
                 }
-                Divider().overlay(COSPalette.line)
-                if state.meetingPicker {
+            } else {
+                compactNavigation
+                Divider()
+                if state.intakeOpen { WorkIntakeView(model: model, onOpenMeeting: onOpenMeeting) }
+                else if layout == .board { boardSurface }
+                else if hasDetail {
                     HStack {
-                        Button { closePickerOrDetail() } label: { Label(state.linkTarget == nil ? "Back to work" : "Cancel linking", systemImage: "chevron.left") }
+                        Button { returnToList() } label: { Label("Back to work list", systemImage: "chevron.left") }
                             .buttonStyle(COSQuietButtonStyle())
                         Spacer()
                     }.padding(.horizontal, 18).padding(.vertical, 8)
                     detailPane
-                } else if geometry.size.width >= 900 {
-                    HStack(spacing: 0) {
-                        sidebar.frame(width: 148)
-                        Divider()
-                        if state.intakeOpen {
-                            WorkIntakeView(model: model, onOpenMeeting: onOpenMeeting)
-                        } else if layout == .board {
-                            boardSurface
-                        } else {
-                            focusSurface
-                        }
-                    }
-                } else {
-                    compactNavigation
-                    Divider()
-                    if state.intakeOpen { WorkIntakeView(model: model, onOpenMeeting: onOpenMeeting) }
-                    else if layout == .board { boardSurface }
-                    else if hasDetail {
-                        HStack {
-                            Button { returnToList() } label: { Label("Back to work list", systemImage: "chevron.left") }
-                                .buttonStyle(COSQuietButtonStyle())
-                            Spacer()
-                        }.padding(.horizontal, 18).padding(.vertical, 8)
-                        detailPane
-                    } else { workList }
-                }
-            }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .background(COSPalette.panel).clipped()
-                .overlay { startOverlay }
-        }
+                } else { workList }
+            }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(COSPalette.panel).clipped()
+            .overlay { startOverlay }
+        // 0.5.254 resize pass: no GeometryReader around the body (it re-ran the whole view on every step of a resize).
+        // Only the layout choice is kept, and the action runs only when it flips (and once with the first size).
+        .onGeometryChange(for: Bool.self) { $0.size.width >= 900 } action: { wideLayout = $0 }
         .task {
             if let id = handoffStore.selectedWorkID { state.selectedID = WorkWorkspaceProjection.rowID(forSourceID: id, currentID: state.selectedID, items: items) ?? id }
             cardFiles.loadIfNeeded()
@@ -769,7 +863,9 @@ struct WorkWorkspaceView: View {
     }
 
     private var sessionsRow: some View {
-        let allCards = WorkBoardSessionsProjection.cards(items, receipts: handoffStore.receipts, sessions: handoffStore.observedSessions(), domain: state.domain)
+        let allCards = board.sessionCards(domain: state.domain) {
+            WorkBoardSessionsProjection.cards($0, receipts: handoffStore.receipts, sessions: handoffStore.observedSessions(), domain: state.domain)
+        }
         let cards = WorkBoardSessionsProjection.onePerSession(allCards)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -784,7 +880,7 @@ struct WorkWorkspaceView: View {
             // 0.5.245: Start work is a pinned column the session cards slide under, instead of a hard cut beside it.
             // Its leading shadow and hairline appear only when cards actually run under it, so a short row stays flat.
             let showCards = !sessionsCollapsed && !cards.isEmpty
-            let overflowing = showCards && WorkBoardSessionCard.rowOverflows(cards: cards.count, width: sessionsRowWidth)
+            let overflowing = showCards && cards.count > sessionsRowCapacity
             // The column hangs off the row as an overlay, so it always takes the row's height: a ZStack let it
             // stretch to the window when the row was empty (0.5.245).
             Group {
@@ -842,10 +938,7 @@ struct WorkWorkspaceView: View {
                 }
                 openStart(item)
             }, onTargeted: { startDropTargeted = $0 }, onFileHover: { startFileHover = $0 }, onRefusedFiles: { cardFiles.flashBoard() }))
-            .background(GeometryReader { box in
-                Color.clear.onAppear { sessionsRowWidth = box.size.width }
-                    .onChange(of: box.size.width) { _, width in sessionsRowWidth = width }
-            })
+            .onGeometryChange(for: Int.self) { WorkBoardSessionCard.rowCapacity(width: $0.size.width) } action: { sessionsRowCapacity = $0 }
         }.padding(.horizontal, 18).padding(.bottom, 14)
     }
 
@@ -853,7 +946,7 @@ struct WorkWorkspaceView: View {
         let receipt = card.activity.receipt, state = card.state
         let held = receipt.progress == nil ? [] : WorkProgress.workingSession(receipt).map { sessionID in
             WorkTracking.forSession(sessionID, receipts: handoffStore.receipts)
-                .filter { tracking in items.first { $0.sourceID == tracking.receipt.workID }?.completed != true }
+                .filter { tracking in board.item(sourceID: tracking.receipt.workID)?.completed != true }
         } ?? []
         // A task waiting on you is the most urgent thing on the card, whatever the top handoff's own state.
         let asking = held.first(where: \.asksForYou)
@@ -920,7 +1013,7 @@ struct WorkWorkspaceView: View {
 
     /// One task on a session card: its title, and its tracked state and stage.
     private func heldTaskRow(_ tracking: WorkTracking) -> some View {
-        let item = items.first { $0.sourceID == tracking.receipt.workID }
+        let item = board.item(sourceID: tracking.receipt.workID)
         let stage = item?.task.map { WorkBoardStage.stage(for: $0).title } ?? (item?.review != nil ? "Review" : "")
         return Button { if let item { select(item) } } label: {
             HStack(spacing: 8) {
@@ -937,7 +1030,7 @@ struct WorkWorkspaceView: View {
     @ViewBuilder private var latestMoveStrip: some View {
         if let tracker = model.workTracker {
             WorkLatestMoveStrip(tracker: tracker, store: handoffStore, lookup: { workID in
-                items.first { $0.sourceID == workID }.map { ($0.title, $0.task.map { WorkBoardStage.stage(for: $0).rawValue }) }
+                board.item(sourceID: workID).map { ($0.title, $0.task.map { WorkBoardStage.stage(for: $0).rawValue }) }
             }, onUndo: { receiptID, eventID in undoMove(receiptID, eventID) })
         }
     }
@@ -967,7 +1060,9 @@ struct WorkWorkspaceView: View {
     }
 
     private func boardColumn(_ stage: WorkBoardStage) -> some View {
-        let cards = visible.filter { $0.task.map { WorkBoardStage.stage(for: $0) == stage } ?? false }
+        let board = self.board
+        _ = board.visible(scope: state.scope, domain: state.domain, query: state.query)
+        let cards = board.column(stage)
         let targeted = columnTarget == stage
         return VStack(alignment: .leading, spacing: 0) {
             HStack {
@@ -1109,7 +1204,7 @@ struct WorkWorkspaceView: View {
 
     @ViewBuilder private var startOverlay: some View {
         if let id = state.startItemID {
-            if let item = items.first(where: { $0.id == id }), let task = item.task, !item.completed || state.startSending {
+            if let item = board.item(id: id), let task = item.task, !item.completed || state.startSending {
                 GeometryReader { box in
                     ZStack {
                         // A tap outside closes it, except while a send is being handed over.

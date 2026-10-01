@@ -56,7 +56,9 @@ struct WorkReviewRecord: Identifiable, Sendable {
 /// Projection of server-owned review jobs. Navigation never admits a provider run.
 @MainActor final class WorkReviewStore: ObservableObject {
     typealias Transport = @Sendable ([String], Data?) async throws -> HelperResponse
-    @Published var reviews: [WorkReviewRecord] = []
+    /// 0.5.254 resize pass: bumps on every change, the Work board's cue to rebuild its rows (WorkBoardMemo).
+    @Published var reviews: [WorkReviewRecord] = [] { didSet { reviewsEpoch &+= 1 } }
+    private(set) var reviewsEpoch = 0
     @Published var models: [WorkModelChoice] = []
     @Published var available = false
     @Published var busy = false

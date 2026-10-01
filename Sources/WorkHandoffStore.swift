@@ -247,22 +247,29 @@ struct WorkGlassesRequest: Equatable, Sendable {
 /// provider execution. The journal records intent BEFORE any delivery call.
 @MainActor final class WorkHandoffStore: ObservableObject {
     typealias Transport = @Sendable ([String], Data?) async throws -> HelperResponse
-    @Published var sessions: [WorkSession] = []
+    /// 0.5.254 resize pass: each source of the Work board's rows bumps its epoch on every change (WorkBoardMemo).
+    @Published var sessions: [WorkSession] = [] { didSet { sessionsEpoch &+= 1 } }
+    private(set) var sessionsEpoch = 0
     /// Jev's Continue / Fork / New advice per task revision (server 6.57.0), or why there is none.
     @Published private(set) var advice: [String: SessionAdvice] = [:]
     @Published private(set) var adviceUnavailable: [String: String] = [:]
     @Published var models: [WorkModelChoice] = []
-    @Published var receipts: [WorkHandoffReceipt] = []
+    @Published var receipts: [WorkHandoffReceipt] = [] { didSet { receiptsEpoch &+= 1 } }
+    private(set) var receiptsEpoch = 0
     @Published private(set) var drafts: [WorkHandoffDraft] = []
     @Published var error: String?
     @Published var busy = false
     /// Read-only session observation is separate from the delivery journal and
     /// editor lock. A session becoming idle never completes a Work receipt.
-    @Published private(set) var activitySessions: [WorkSession] = []
+    /// Bumps only when the list changes: the 15-second check usually finds the same sessions, and an unchanged list
+    /// must not rebuild the board.
+    @Published private(set) var activitySessions: [WorkSession] = [] { didSet { if activitySessions != oldValue { activitySessionsEpoch &+= 1 } } }
+    private(set) var activitySessionsEpoch = 0
     @Published private(set) var activityCheckedAt: Date?
     @Published private(set) var activityError: String?
     @Published private(set) var activityRefreshing = false
-    @Published var previewTasks = Control2PreviewTask.samples
+    @Published var previewTasks = Control2PreviewTask.samples { didSet { previewTasksEpoch &+= 1 } }
+    private(set) var previewTasksEpoch = 0
     @Published var selectedWorkID: String?
     @Published var selectedSessionID: String?
     let isolated: Bool
@@ -845,9 +852,14 @@ struct WorkGlassesRequest: Equatable, Sendable {
         await request.value
         activityRefreshTask = nil
     }
+    /// A session check younger than 45 seconds, with no error. The Work board's cached rows key on it too.
+    func activityFresh(now: Date = Date()) -> Bool {
+        guard activityError == nil, let checked = activityCheckedAt else { return false }
+        return now.timeIntervalSince(checked) < 45
+    }
     func observedSessions(now: Date = Date()) -> [WorkSession] {
         if isolated { return sessions }
-        guard activityError == nil, let checked = activityCheckedAt, now.timeIntervalSince(checked) < 45 else { return [] }
+        guard activityFresh(now: now) else { return [] }
         return activitySessions
     }
     /// `journalPrompt` is what the receipt keeps when it differs from what is sent (a cross-platform fork sends ~32K
