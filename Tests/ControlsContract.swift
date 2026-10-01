@@ -1,41 +1,21 @@
 import AppKit
 import SwiftUI
 
-// 0.5.251 and 0.5.252 GOTCOS controls, executed. The shipped components (Sources/COSBrand.swift, with the real palette
-// from Views.swift) run in windows ordered in far off screen and take clicks and keys sent in-process. Clicks, and the
-// keys an open dropdown takes, go through NSApp.sendEvent, the path a person's click takes once it reaches the app,
-// so the dropdown's local event monitor runs. Keys for a focused control go to the window, as they would if it were
-// key (a test window off screen never is). Pure rules are checked directly; pixels are read from AppKit's own drawing.
-// Nothing here contacts the server or a provider, takes the keyboard focus, or shows on screen: the process can never
-// become the active app (activation policy .prohibited, the same as the other UI suites), its windows sit 8,000 points
-// off every screen, it adds no status item, and no event leaves the process (nothing is posted to the system, the
-// pointer is never moved). A shared desktop is left alone; the contract fails if the app ever becomes active.
-//
-// What this cannot do, and what covers it instead:
-//   - Turn on the Mac's Keyboard navigation setting. The keyboard board sets `cosFocusInteractions` to `.automatic`,
-//     which is the state that setting puts the controls in. The first board keeps the default and proves that without
-//     the setting nothing takes a window's first focus.
-//   - Hover with a real pointer. A pressed button runs the same ink and hairline as a hovered one, and is read here.
-//   - A real MenuBarExtra(.window), a key window, a stock control's own click handling: Tests/dropdown-canary.
+// 0.5.251 to 0.5.253 GOTCOS controls, checked without driving any UI. Miles, 2026-09-30 19:06: "We don't want the
+// testing 'computer use' where we jump and click. It doesn't work and it now causes random missed clicked error sound."
+// From 0.5.253 this contract sends no click, key, scroll or pointer event (not even into its own process), orders no
+// window in (not even off screen), activates nothing and plays nothing:
+//   - behaviour is checked by calling the rules the controls run on (COSDropdownRules: keys, highlight, choice, widths,
+//     placement, reopening, and an open list that follows its options; COSViewSwitch.step; COSStepper.stepped);
+//   - looks are checked on static bitmaps of views that are never put on screen (an NSHostingView drawn with
+//     cacheDisplay, in a window that is never ordered in): the switch, checkbox, spinner, theme, the open list's card,
+//     icon labels and the menu-bar panel itself (Tests/PanelLabelsRender.swift).
+// What it cannot check, and is pinned in Tests/run.sh by source instead: the open list's child panel, its event monitor
+// and its dismissals; focus with Keyboard navigation on; where a tap lands on a switch.
 //
 // Run: Tests/run-controls.sh (called by Tests/run.sh).
 
 @MainActor private final class Probe: ObservableObject {
-    @Published var inline = "claude"
-    @Published var panel = "claude"
-    @Published var long = "n00"
-    @Published var disabledChoice = "claude"
-    @Published var view = "board"
-    @Published var on = false
-    @Published var disabledOn = false
-    @Published var checked = false
-    @Published var chip = false
-    @Published var count = 3
-    @Published var disclosed = false
-    @Published var pressed = 0
-    /// 0.5.253: options that change while a list is open.
-    @Published var changing = "claude"
-    @Published var changingOptions = providers
     var frames: [String: CGRect] = [:]
 }
 
@@ -59,97 +39,6 @@ private let providers: [COSDropdownOption<String>] = [
     COSDropdownOption("cursor", "Cursor", note: "unavailable", enabled: false),
     COSDropdownOption("ollama", "Ollama"),
 ]
-
-/// Twenty rows: past ten, the list scrolls inside its card.
-private let twenty: [COSDropdownOption<String>] = (0..<20).map { COSDropdownOption(String(format: "n%02d", $0), String(format: "Row %02d", $0)) }
-
-private struct Board: View {
-    @ObservedObject var probe: Probe
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            COSDropdown("Inline", selection: $probe.inline, options: providers, labelWidth: 60)
-                .environment(\.cosDropdownInline, true)
-                .modifier(Frame(key: "inline", probe: probe))
-            COSDropdown("Panel", selection: $probe.panel, options: providers, labelWidth: 60)
-                .modifier(Frame(key: "panel", probe: probe))
-            COSDropdown("Long", selection: $probe.long, options: twenty, labelWidth: 60)
-                .modifier(Frame(key: "long", probe: probe))
-            COSDropdown("Off", selection: $probe.disabledChoice, options: providers, labelWidth: 60)
-                .disabled(true)
-                .modifier(Frame(key: "disabled", probe: probe))
-            COSViewSwitch("Layout", selection: $probe.view,
-                          options: [COSViewOption("board", "Board"), COSViewOption("focus", "Focus")])
-                .fixedSize()
-                .modifier(Frame(key: "switcher", probe: probe))
-            Toggle("Background jobs", isOn: $probe.on).toggleStyle(COSSwitchStyle())
-                .modifier(Frame(key: "switch", probe: probe))
-            Toggle("Paused", isOn: $probe.disabledOn).toggleStyle(COSSwitchStyle()).disabled(true)
-                .modifier(Frame(key: "switchOff", probe: probe))
-            Toggle("Only mine", isOn: $probe.checked).toggleStyle(COSCheckStyle())
-                .fixedSize()
-                .modifier(Frame(key: "check", probe: probe))
-            Toggle("Mon", isOn: $probe.chip).toggleStyle(COSChipToggleStyle())
-                .fixedSize()
-                .modifier(Frame(key: "chip", probe: probe))
-            COSStepper("Items", value: $probe.count, in: 1...4, valueText: "\(probe.count)")
-                .modifier(Frame(key: "stepper", probe: probe))
-            // The two below name no style of their own: the window root's theme gives them theirs.
-            DisclosureGroup("More", isExpanded: $probe.disclosed) {
-                Text("Inside").modifier(Frame(key: "inside", probe: probe))
-            }
-            .modifier(Frame(key: "disclosure", probe: probe))
-            Button("Plain") { probe.pressed += 1 }
-                .modifier(Frame(key: "button", probe: probe))
-            Spacer(minLength: 0)
-        }
-        .padding(12)
-        .frame(width: 360, height: Self.height, alignment: .top)
-        .background(COSPalette.card)
-        .cosControlTheme()
-    }
-    static let height: CGFloat = 640
-}
-
-/// The controls as they are on a Mac with Keyboard navigation on: Tab reaches each one.
-private struct KeyboardBoard: View {
-    @ObservedObject var probe: Probe
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            COSDropdown("Panel", selection: $probe.panel, options: providers, labelWidth: 60)
-                .modifier(Frame(key: "panel", probe: probe))
-            COSViewSwitch("Layout", selection: $probe.view,
-                          options: [COSViewOption("board", "Board"), COSViewOption("focus", "Focus"), COSViewOption("list", "List")])
-                .fixedSize()
-            Toggle("Background jobs", isOn: $probe.on).toggleStyle(COSSwitchStyle())
-            Toggle("Only mine", isOn: $probe.checked).toggleStyle(COSCheckStyle()).fixedSize()
-            Toggle("Mon", isOn: $probe.chip).toggleStyle(COSChipToggleStyle()).fixedSize()
-            Spacer(minLength: 0)
-        }
-        .padding(12)
-        .frame(width: 360, height: Self.height, alignment: .top)
-        .cosControlTheme()
-        .environment(\.cosFocusInteractions, .automatic)
-    }
-    static let height: CGFloat = 300
-}
-
-
-/// 0.5.253 (QA, deferred from 0.5.252): a dropdown whose options change while its list is open.
-private struct ChangingBoard: View {
-    @ObservedObject var probe: Probe
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            COSDropdown("Changing", selection: $probe.changing, options: probe.changingOptions, labelWidth: 60)
-                .modifier(Frame(key: "changing", probe: probe))
-            Spacer(minLength: 0)
-        }
-        .padding(12)
-        .frame(width: 360, height: Self.height, alignment: .top)
-        .background(COSPalette.card)
-        .cosControlTheme()
-    }
-    static let height: CGFloat = 240
-}
 
 /// 0.5.253: labels with an icon, under every COS style and the window root's theme, on one line and wrapped to two.
 /// Each title and icon reports its own frame, so the check reads where the style put them.
@@ -216,15 +105,15 @@ private struct LabelBoard: View {
         }
         defer { NotificationCenter.default.removeObserver(watch) }
         rules()
-        try await interaction()
-        try await keyboard()
+        optionsChange()
         theme()
         renders()
+        lists()
         await labels()
-        await changingOptions()
         panel()
         check(!activated && !app.isActive, "the contract never became the active app (a shared desktop is left alone)")
-        print("PASS: GOTCOS controls (dropdown rules and keys; the open list as a child panel: opens, chooses, keys, face click closes, outside click, Escape, Tab, card pixels, scrolls the highlight into view; inline list; disabled dropdown and row; no first focus by default; keyboard: face keys, view switch arrows, Space on switch, checkbox and chip; switch label does not flip; checkbox, chip, stepper bounds; disclosure expands; root theme: button, progress, disclosure, tint; light-mode contrast; switch and checkbox pixels; spinner sizes; an open list whose options change shows and chooses the new ones; labels: icon in the middle of one and two lines under every style, the system's gap and wrapping; the menu-bar panel's Check for updates and Create Folders, rendered)")
+        check(NSApp.windows.allSatisfy { !$0.isVisible }, "no window was ever put on screen")
+        print("PASS: GOTCOS controls, no UI driven (dropdown rules: keys, highlight, choice, list width and placement, reopening; an open list follows changed options; view switch and stepper rules; root theme: button, progress, disclosure, tint; light-mode contrast; switch, checkbox and spinner pixels; the open list's card; labels: icon in the middle of one and two lines under every style, the system's gap and wrapping; the menu-bar panel's Check for updates and Create Folders, rendered)")
     }
 
     private static func check(_ condition: Bool, _ message: @autoclosure () -> String = "", line: UInt = #line) {
@@ -301,323 +190,48 @@ private struct LabelBoard: View {
     }
 
 
-    // MARK: - Clicks and keys through the real views
-
-    @MainActor private static func open<V: View>(_ view: V, height: CGFloat, appearance: NSAppearance.Name = .aqua) -> NSWindow {
-        let host = NSHostingView(rootView: view)
-        host.frame = NSRect(x: 0, y: 0, width: 360, height: height)
-        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.appearance = NSAppearance(named: appearance)
-        window.contentView = host
-        window.setFrameOrigin(NSPoint(x: -8000, y: -8000))
-        window.orderFrontRegardless()
-        return window
-    }
-
-    /// The dropdown's open list: a visible borderless child panel of `window`.
-    @MainActor private static func openList(_ window: NSWindow) -> NSWindow? {
-        window.childWindows?.first { $0.isVisible && $0 is NSPanel && $0.styleMask.contains(.nonactivatingPanel) }
-    }
-    @MainActor private static func popovers() -> Int {
-        NSApp.windows.filter { $0.isVisible && String(describing: type(of: $0)).contains("Popover") }.count
-    }
-    /// The height of one row of the five-row list (the card less its 4 pt insets, over five).
-    @MainActor private static func rowHeight(_ list: NSWindow) -> CGFloat {
-        let room = COSDropdownPresenter.shadowRoom
-        return (list.frame.height - room.top - room.bottom - 8) / 5
-    }
-    /// The middle of row `index` of the five-row list, in the list panel's coordinates.
-    @MainActor private static func row(_ list: NSWindow, _ index: Int) -> NSPoint {
-        let height = rowHeight(list)
-        return NSPoint(x: list.frame.width / 2, y: list.frame.height - (COSDropdownPresenter.shadowRoom.top + 4 + height * CGFloat(index) + height / 2))
-    }
-
-    @MainActor static func interaction() async throws {
-        let probe = Probe()
-        let window = open(Board(probe: probe), height: Board.height)
-        defer { window.orderOut(nil) }
-        await settle(400)
-        func frame(_ key: String) -> CGRect {
-            guard let frame = probe.frames[key] else { fatalError("ControlsContract: no frame for \(key)") }
-            return frame
+    /// 0.5.253 (QA, deferred from 0.5.252): an open list whose options change shows the new ones, and its keys choose
+    /// from them. The dropdown re-opens its list on the options it has now when their signature changes; these are the
+    /// rules it runs on (the wiring is pinned in Tests/run.sh).
+    @MainActor static func optionsChange() {
+        typealias R = COSDropdownRules
+        let two = [COSDropdownOption("claude", "Claude"), COSDropdownOption("gemini", "Gemini")]
+        check(R.signature(providers) == R.signature(providers), "the same options read the same")
+        check(R.signature(providers) != R.signature(two), "new options read as a change")
+        var renamed = providers; renamed[2] = COSDropdownOption("codex", "Codex CLI")
+        var disabled = providers; disabled[2] = COSDropdownOption("codex", "Codex", enabled: false)
+        var noted = providers; noted[2] = COSDropdownOption("codex", "Codex", note: "not pulled")
+        var muted = providers; muted[2] = COSDropdownOption("codex", "Codex", muted: true)
+        for (name, changed) in [("a title", renamed), ("enabled", disabled), ("a note", noted), ("muted", muted)] {
+            check(R.signature(providers) != R.signature(changed), "\(name) changing reads as a change")
         }
-        /// A point `dx` from the frame's left and `dy` from its top, in window coordinates.
-        func point(_ key: String, dx: CGFloat, dy: CGFloat) -> NSPoint {
-            let f = frame(key)
-            return NSPoint(x: f.minX + dx, y: Board.height - (f.minY + dy))
-        }
-        let room = COSDropdownPresenter.shadowRoom
-
-        // Without Keyboard navigation, nothing takes the window's first focus: Space, Return and Down on a window just
-        // opened do nothing at all. (0.5.251's first build had the first dropdown light up and open on Space.)
-        let closed = frame("inline").height
-        for key in [Key.space, .return, .down] { windowKey(window, key); await settle(120) }
-        check(frame("inline").height == closed && openList(window) == nil && !probe.on && !probe.checked && !probe.chip,
-              "nothing takes the keyboard by default")
-
-        // Inline dropdown: a click opens the list under the face; a click on a row chooses it and closes.
-        click(window, point("inline", dx: 200, dy: closed / 2)); await settle()
-        check(frame("inline").height > closed + 100, "a click on the face opens the list (\(frame("inline").height))")
-        check(openList(window) == nil, "an inline list opens no panel")
-        // Rows sit under the face: gap 4, inset 4, 28 pt each. Row 2 is Codex.
-        click(window, point("inline", dx: 200, dy: closed + 4 + 4 + 28 * 2 + 14)); await settle()
-        check(probe.inline == "codex", "a row click chooses it: \(probe.inline)")
-        check(frame("inline").height == closed, "choosing closes the list")
-        // The disabled row (Cursor) is never chosen by a click.
-        click(window, point("inline", dx: 200, dy: closed / 2)); await settle()
-        click(window, point("inline", dx: 200, dy: closed + 4 + 4 + 28 * 3 + 14)); await settle()
-        check(probe.inline == "codex", "a disabled row is not chosen: \(probe.inline)")
-        // Keys: the inline list has focus while it is open. Down, then Return, chooses the next row.
-        windowKey(window, .down); await settle()
-        windowKey(window, .return); await settle()
-        check(probe.inline == "ollama", "Down skips the disabled row and Return chooses Ollama: \(probe.inline)")
-        check(frame("inline").height == closed, "Return closes the list")
-        // Escape closes without choosing.
-        click(window, point("inline", dx: 200, dy: closed / 2)); await settle()
-        windowKey(window, .up); await settle()
-        windowKey(window, .escape); await settle()
-        check(probe.inline == "ollama" && frame("inline").height == closed, "Escape closes without choosing: \(probe.inline)")
-
-        // A disabled dropdown neither opens nor changes.
-        let disabledFace = point("disabled", dx: 200, dy: frame("disabled").height / 2)
-        click(window, disabledFace); await settle()
-        check(openList(window) == nil && frame("disabled").height == closed, "a disabled dropdown does not open")
-        check(probe.disabledChoice == "claude", "a disabled dropdown keeps its value: \(probe.disabledChoice)")
-
-        // The open list is a borderless child panel under the face: the approved card, no popover.
-        let face = point("panel", dx: 200, dy: frame("panel").height / 2)
-        let faceWidth = frame("panel").width - 70
-        click(window, face); await settle(350)
-        guard let list = openList(window) else { fatalError("ControlsContract: a click on the face opens no child panel") }
-        check(popovers() == 0, "no popover: no arrow, no system chrome")
-        check(list.styleMask.contains(.borderless) && !list.styleMask.contains(.titled) && !list.hasShadow && !list.isOpaque,
-              "the panel is borderless and draws its own card")
-        // A drawing of the content view cannot show the window's own background (the mutation gate found that on
-        // 2026-09-30: a panel with the system window background passed the corner pixel), so it is read directly.
-        check(list.backgroundColor.alphaComponent == 0, "the panel has no window background of its own: \(list.backgroundColor)")
-        check(!list.canBecomeKey, "the list never takes the keyboard from its parent")
-        let cardWidth = list.frame.width - room.left - room.right
-        let cardHeight = list.frame.height - room.top - room.bottom
-        check(abs(cardWidth - faceWidth) < 1.5, "the card is as wide as the face: \(cardWidth) and \(faceWidth)")
-        let rh = rowHeight(list)
-        check(rh > 24 && rh < 34, "five rows and the card's inset: \(cardHeight)")
-        let faceOnScreen = window.convertPoint(toScreen: NSPoint(x: frame("panel").minX + 70, y: Board.height - frame("panel").maxY))
-        check(abs(list.frame.minX + room.left - faceOnScreen.x) < 1.5, "the card's leading edge is the face's")
-        check(abs(list.frame.maxY - room.top - (faceOnScreen.y - COSDropdownRules.listGap)) < 1.5, "the card sits 4 pt under the face")
-        // Its pixels (light): nothing drawn at the panel's corner; the card's corner is rounded; a gold hairline; the
-        // chosen row's gold rule; a soft shadow under it.
-        let card = pixels(list.contentView!)
-        check(card(1, 1).alphaComponent < 0.02, "no window background behind the card")
-        check(card(Int(room.left) + 1, Int(room.top) + 1).alphaComponent < 0.6, "the card's corner is rounded")
-        // The 1 pt hairline is centered on the card's edge: its inner half covers the pixel just inside the edge.
-        let hairline = exact(list.contentView!)(room.left + 0.25, room.top + cardHeight / 2)
-        check(hairline.alphaComponent > 0.9 && hairline.redComponent - hairline.blueComponent > 0.1 && hairline.redComponent < 0.9,
-              "a gold hairline frames the card: \(hairline)")
-        let middle = card(Int(room.left + cardWidth / 2), Int(room.top + 4 + rh * 4 + 3))
-        check(middle.alphaComponent > 0.98 && middle.redComponent > 0.97 && middle.blueComponent > 0.97, "the card is the warm card fill (white in light): \(middle)")
-        let precise = exact(list.contentView!)
-        let rule = (0..<8).map { precise(room.left + CGFloat($0) * 0.5, room.top + 4 + rh * 1.5) }.first(where: isGoldish) ?? .clear
-        check(isGoldish(rule), "the chosen row (Claude) carries the gold rule: \((0..<8).map { precise(room.left + CGFloat($0) * 0.5, room.top + 4 + rh * 1.5) }.map { String(format: "%.2f %.2f %.2f", $0.redComponent, $0.greenComponent, $0.blueComponent) })")
-        check(!(0..<8).contains { isGoldish(precise(room.left + CGFloat($0) * 0.5, room.top + 4 + rh * 2.5)) }, "only the chosen row carries it")
-        let under = (1...10).map { card(Int(room.left + cardWidth / 2), Int(room.top + cardHeight) + $0) }
-        let deepest = under.map(\.alphaComponent).max() ?? 0
-        check(deepest > 0.03 && deepest < 0.5 && under.allSatisfy { $0.redComponent < 0.2 }, "a soft shadow under the card: \(under.map(\.alphaComponent))")
-        // A click on a row chooses it and closes the list.
-        click(list, row(list, 2)); await settle(350)
-        check(probe.panel == "codex", "a click on a panel row chooses it: \(probe.panel)")
-        check(openList(window) == nil, "choosing closes the panel")
-        // A disabled row is never chosen; keys reach the open list through the app: Down skips it, Return chooses.
-        click(window, face); await settle(350)
-        if let list = openList(window) { click(list, row(list, 3)); await settle(250) }
-        check(probe.panel == "codex" && openList(window) != nil, "a disabled row is not chosen and the list stays: \(probe.panel)")
-        appKey(.down); await settle(150)
-        appKey(.return); await settle(350)
-        check(probe.panel == "ollama" && openList(window) == nil, "Down skips the disabled row and Return chooses Ollama: \(probe.panel)")
-        // A letter jumps; Space chooses.
-        click(window, face); await settle(350)
-        appKey(.letter("c")); await settle(150)
-        appKey(.space); await settle(350)
-        check(probe.panel == "" && openList(window) == nil, "c jumps to Choose provider and Space chooses it: \(probe.panel)")
-        // A click on the face of an open list closes it, and that same click does not open it again.
-        click(window, face); await settle(350)
-        check(openList(window) != nil, "open before the face click")
-        click(window, face); await settle(500)
-        check(openList(window) == nil, "a click on the open face closes the list, and it stays closed")
-        check(probe.panel == "", "the closing click chose nothing")
-        // A slow click on the open face (held past the reopen delay) leaves it closed too: the delay runs from the
-        // release, which is when the face's tap arrives.
-        click(window, face); await settle(350)
-        mouse(window, .leftMouseDown, face); await settle(600)
-        mouse(window, .leftMouseUp, face); await settle(450)
-        check(openList(window) == nil, "a slow click on the open face closes it, and it stays closed")
-        // The next click opens it again.
-        click(window, face); await settle(350)
-        check(openList(window) != nil, "the next click on the face opens it")
-        appKey(.escape); await settle(250)
-        // Escape closes it. So does a click anywhere else, a scroll outside it, and a key that is not the list's (Tab).
-        // Each is checked open first: a list that never opened would pass every one of these.
-        click(window, face); await settle(350)
-        check(openList(window) != nil, "open before Escape")
-        appKey(.escape); await settle(250)
-        check(openList(window) == nil && probe.panel == "", "Escape closes the panel without choosing")
-        click(window, face); await settle(350)
-        check(openList(window) != nil, "open before the outside click")
-        click(window, point("switcher", dx: 300, dy: 8)); await settle(450)
-        check(openList(window) == nil && probe.panel == "" && probe.view == "board", "a click outside closes the panel and chooses nothing")
-        click(window, face); await settle(350)
-        check(openList(window) != nil, "open before Tab")
-        appKey(.tab); await settle(250)
-        check(openList(window) == nil, "Tab closes the panel")
-        // A key or a scroll closes it with no click to swallow: the face opens again at once.
-        click(window, face); await settle(350)
-        check(openList(window) != nil, "a click right after Tab opens it again")
-        scrollElsewhere(); await settle(250)
-        check(openList(window) == nil, "a scroll outside the list closes it")
-        click(window, face); await settle(350)
-        check(openList(window) != nil, "a click right after the scroll opens it again")
-        if let list = openList(window) {
-            // The pointer over a row takes the highlight (the panel tracks it itself: it is never key).
-            pointer(list, row(list, 2)); await settle(150)
-            appKey(.return); await settle(350)
-            check(probe.panel == "codex", "the row under the pointer takes the highlight: \(probe.panel)")
-        }
-
-        // Past ten rows the list scrolls inside its card, and a key that moves the highlight brings that row into view.
-        let longFace = point("long", dx: 200, dy: frame("long").height / 2)
-        click(window, longFace); await settle(350)
-        guard let longList = openList(window) else { fatalError("ControlsContract: the long list opened no panel") }
-        let longHeight = longList.frame.height - room.top - room.bottom
-        check(abs(longHeight - COSDropdownList<String>.scrollHeight) < 1.5, "twenty rows scroll inside a 300 pt card: \(longHeight)")
-        check(washRows(longList) > 0, "the opening highlight (the selection) shows")
-        for _ in 0..<16 { appKey(.down); await settle(60) }
-        await settle(400)
-        check(washRows(longList) > 0, "sixteen rows down, the highlight was scrolled into view")
-        appKey(.return); await settle(350)
-        check(probe.long == "n16" && openList(window) == nil, "Return chooses the row the keys reached: \(probe.long)")
-        // Opened again, it opens scrolled to the selection.
-        click(window, longFace); await settle(450)
-        if let again = openList(window) { check(washRows(again) > 0, "it opens scrolled to its selection") }
-        appKey(.escape); await settle(250)
-
-        // View switch: a click on Focus makes it current.
-        click(window, point("switcher", dx: frame("switcher").width - 20, dy: frame("switcher").height / 2)); await settle()
-        check(probe.view == "focus", "a click on a word switches to it: \(probe.view)")
-
-        // Switch: a click on the track flips it, twice; a click on its words does not, as with a stock macOS switch
-        // (measured against the stock control in Tests/dropdown-canary); a disabled switch does not.
-        let track = point("switch", dx: frame("switch").width - 15, dy: frame("switch").height / 2)
-        click(window, track); await settle()
-        check(probe.on, "a click turns the switch on")
-        click(window, track); await settle()
-        check(!probe.on, "a second click turns it off")
-        click(window, point("switch", dx: 20, dy: frame("switch").height / 2)); await settle()
-        check(!probe.on, "a click on a switch's words leaves it as it was")
-        click(window, point("switchOff", dx: frame("switchOff").width - 15, dy: frame("switchOff").height / 2)); await settle()
-        check(!probe.disabledOn, "a disabled switch does not flip")
-
-        // Checkbox: a click on the square or its words flips it.
-        click(window, point("check", dx: 7, dy: frame("check").height / 2)); await settle()
-        check(probe.checked, "a click checks the box")
-        click(window, point("check", dx: frame("check").width - 8, dy: frame("check").height / 2)); await settle()
-        check(!probe.checked, "a click on its words unchecks it")
-
-        // Chip: a click flips it, and again.
-        let chip = point("chip", dx: frame("chip").width / 2, dy: frame("chip").height / 2)
-        click(window, chip); await settle()
-        check(probe.chip, "a click turns the chip on")
-        let chipOn = pixels(window.contentView!)(Int(frame("chip").minX) + 3, Int(frame("chip").midY))
-        check(isGoldish(chipOn), "a chip that is on fills gold: \(chipOn)")
-        click(window, chip); await settle()
-        check(!probe.chip, "a second click turns it off")
-
-        // Stepper: plus stops at the upper bound; minus steps down and stops at the lower one.
-        let stepper = frame("stepper")
-        let plus = point("stepper", dx: stepper.width - 10, dy: stepper.height / 2)
-        let minus = point("stepper", dx: stepper.width - 10 - 20 - 8 - 34 - 8, dy: stepper.height / 2)
-        click(window, plus); await settle()
-        check(probe.count == 4, "plus steps up: \(probe.count)")
-        click(window, plus); await settle()
-        check(probe.count == 4, "plus stops at the upper bound: \(probe.count)")
-        for _ in 0..<5 { click(window, minus); await settle(120) }
-        check(probe.count == 1, "minus stops at the lower bound: \(probe.count)")
-
-        // The root's theme reaches a DisclosureGroup that names no style: a click on its words expands it, and again
-        // collapses it.
-        check(probe.frames["inside"] == nil, "collapsed, its content is not there")
-        click(window, point("disclosure", dx: 12, dy: 8)); await settle(400)
-        check(probe.disclosed && probe.frames["inside"] != nil, "a click on the disclosure's words expands it")
-        click(window, point("disclosure", dx: 12, dy: 8)); await settle(400)
-        check(!probe.disclosed && probe.frames["inside"] == nil, "and again collapses it")
-
-        // A Button that names no style is the quiet button: it acts on a click, and while it is pressed its hairline
-        // is the accent ink, which in light mode is dark enough on a white card (3:1) where raw gold is not.
-        let button = point("button", dx: frame("button").width / 2, dy: frame("button").height / 2)
-        click(window, button); await settle()
-        check(probe.pressed == 1, "the default button acts: \(probe.pressed)")
-        mouse(window, .leftMouseDown, button); await settle(200)
-        let pressedLine = exact(window.contentView!)(frame("button").midX, frame("button").minY + 0.25)
-        mouse(window, .leftMouseUp, point("button", dx: -40, dy: 200)); await settle(150)
-        check(probe.pressed == 1, "a press released elsewhere does not act")
-        check(contrast(pressedLine, .white) >= 3, "a pressed (or hovered) quiet button's hairline is 3:1 on a white card: \(contrast(pressedLine, .white)) \(pressedLine)")
+        // Re-opened on the new options, the list highlights the selection there, and the keys move through those rows.
+        check(R.openingHighlight(two, selection: "claude") == 0, "the selection's row in the new options")
+        check(R.handle(.down, isOpen: true, highlight: 0, options: two, selection: "claude", enabled: true) == .highlight(1), "Down moves within the new rows")
+        check(R.handle(.confirm, isOpen: true, highlight: 1, options: two, selection: "claude", enabled: true) == .choose("gemini"), "Return chooses from them")
+        check(R.handle(.down, isOpen: true, highlight: 1, options: two, selection: "claude", enabled: true) == .highlight(1), "and stops at their end")
     }
 
-    // MARK: - The keyboard, as with Keyboard navigation on
-
-    @MainActor static func keyboard() async throws {
-        let probe = Probe()
-        let window = open(KeyboardBoard(probe: probe), height: KeyboardBoard.height)
-        defer { window.orderOut(nil) }
-        await settle(400)
-        // The dropdown's face has the focus (the first control). A letter and Escape are not a closed face's keys.
-        windowKey(window, .letter("c")); await settle(120)
-        windowKey(window, .escape); await settle(120)
-        check(openList(window) == nil, "a letter or Escape on a closed face opens nothing")
-        // Space opens the list; keys then reach it through the app; Return chooses.
-        windowKey(window, .space); await settle(350)
-        check(openList(window) != nil, "Space on the focused face opens the list")
-        appKey(.down); await settle(120)
-        appKey(.return); await settle(350)
-        check(probe.panel == "codex" && openList(window) == nil, "Down then Return: \(probe.panel)")
-        // Return, and Down, open it too.
-        windowKey(window, .return); await settle(350)
-        check(openList(window) != nil, "Return on the focused face opens the list")
-        appKey(.escape); await settle(250)
-        windowKey(window, .down); await settle(350)
-        check(openList(window) != nil, "Down on the focused face opens the list")
-        appKey(.escape); await settle(250)
-        check(openList(window) == nil && probe.panel == "codex", "Escape closes it and chooses nothing")
-
-        // Tab reaches the view switch: Right and Left step one word and stop at the ends.
-        windowKey(window, .tab); await settle(200)
-        windowKey(window, .right); await settle(120)
-        check(probe.view == "focus", "Right steps to the next word: \(probe.view)")
-        windowKey(window, .right); await settle(120)
-        windowKey(window, .right); await settle(120)
-        check(probe.view == "list", "Right stops at the last word: \(probe.view)")
-        windowKey(window, .left); await settle(120)
-        check(probe.view == "focus", "Left steps back: \(probe.view)")
-        check(probe.panel == "codex" && openList(window) == nil, "the arrows went to the view switch, not the dropdown")
-
-        // Tab reaches the switch, the checkbox and the chip: Space flips each.
-        windowKey(window, .tab); await settle(200)
-        windowKey(window, .space); await settle(150)
-        check(probe.on && !probe.checked && !probe.chip, "Space flips the focused switch")
-        windowKey(window, .space); await settle(150)
-        check(!probe.on, "and flips it back")
-        windowKey(window, .tab); await settle(200)
-        windowKey(window, .space); await settle(150)
-        check(probe.checked && !probe.on && !probe.chip, "Space flips the focused checkbox")
-        windowKey(window, .tab); await settle(200)
-        windowKey(window, .space); await settle(150)
-        check(probe.chip && probe.checked && !probe.on, "Space flips the focused chip")
+    /// The open list's card, drawn on its own (never on screen): the chosen row carries the gold rule on its leading
+    /// edge, the highlighted row the gold wash, and no other row either.
+    @MainActor static func lists() {
+        let rows = providers.count
+        let size = CGSize(width: 240, height: CGFloat(rows) * 40 + 40)
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            let word = appearance == .darkAqua ? "dark" : "light"
+            let draw = sample(COSDropdownList(options: providers, selection: "codex", highlight: .constant(4), framed: false) { _ in }.frame(width: 240),
+                              size: size, appearance: appearance)
+            // Rows start 4 pt down; find each row's band by the rule's gold at x = 1.
+            var goldRows = Set<Int>()
+            for y in 0..<Int(size.height) where isGold(draw(0, y)) || isGold(draw(1, y)) { goldRows.insert(y) }
+            check(!goldRows.isEmpty, "the chosen row has its gold rule (\(word))")
+            let band = (goldRows.min()!, goldRows.max()!)
+            check(band.1 - band.0 <= 18, "one row's rule, not more (\(word)): \(band)")
+            // The rule sits on the third row (Codex): below the first two rows' height.
+            check(band.0 > 50 && band.0 < 110, "on the chosen row (\(word)): \(band)")
+        }
     }
 
-    // MARK: - The root theme
-
-    /// `cosControlTheme()` on a window root gives every control that names no style the gotcos one. Each is drawn three
-    /// ways: under the theme, with the style named outright, and stock. The first two must be the same picture, and
-    /// not the third.
     @MainActor static func theme() {
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             let word = appearance == .darkAqua ? "dark" : "light"
@@ -657,30 +271,6 @@ private struct LabelBoard: View {
         }
     }
 
-
-
-    /// 0.5.253 (QA, deferred from 0.5.252): an open list whose options change shows the new rows at once, and its keys
-    /// choose from them. The list used to keep the rows and the key handler it opened with, so Down and Return could
-    /// choose a value no longer offered.
-    @MainActor static func changingOptions() async {
-        let probe = Probe()
-        let window = open(ChangingBoard(probe: probe), height: ChangingBoard.height)
-        defer { window.orderOut(nil) }
-        await settle(400)
-        guard let face = probe.frames["changing"] else { fatalError("ControlsContract: no frame for the changing dropdown") }
-        click(window, NSPoint(x: face.minX + 200, y: ChangingBoard.height - face.midY)); await settle(350)
-        guard let before = openList(window) else { fatalError("ControlsContract: the changing dropdown opened no list") }
-        let fiveRows = before.frame.height
-        probe.changingOptions = [COSDropdownOption("claude", "Claude"), COSDropdownOption("gemini", "Gemini")]
-        await settle(350)
-        guard let after = openList(window) else { fatalError("ControlsContract: the list closed instead of showing the new options") }
-        check(after.frame.height < fiveRows - 50, "the open list shows the two new rows, not the five it opened with: \(after.frame.height) vs \(fiveRows)")
-        appKey(.down); await settle(150)
-        appKey(.return); await settle(250)
-        check(probe.changing == "gemini", "Down and Return choose from the new options: \(probe.changing)")
-        check(openList(window) == nil, "choosing closes the list")
-    }
-
     // MARK: - Labels (0.5.253)
 
     /// Miles, 2026-09-30 16:51: a wrapped label showed its icon by its first line. Under every COS button style, the
@@ -689,8 +279,8 @@ private struct LabelBoard: View {
     /// own style would have it.
     @MainActor static func labels() async {
         let probe = Probe()
-        let window = open(LabelBoard(probe: probe), height: LabelBoard.height)
-        defer { window.orderOut(nil) }
+        let window = unordered(LabelBoard(probe: probe), height: LabelBoard.height)
+        defer { window.close() }
         await settle(400)
         func frame(_ key: String) -> CGRect {
             guard let frame = probe.frames[key] else { fatalError("ControlsContract: no frame for \(key)") }
@@ -782,106 +372,25 @@ private struct LabelBoard: View {
         check(contrast(ink, .white) >= 3, "a featured button's ink is 3:1 on a white card in light: \(contrast(ink, .white))")
     }
 
+    /// A window holding `view` that is never ordered in: SwiftUI lays it out and draws it, and nothing reaches the
+    /// screen. (0.5.253: no test orders a window in, even far off screen.)
+    @MainActor private static func unordered<V: View>(_ view: V, height: CGFloat, appearance: NSAppearance.Name = .aqua) -> NSWindow {
+        let host = NSHostingView(rootView: view)
+        host.frame = NSRect(x: 0, y: 0, width: 360, height: height)
+        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 360, height: height), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: appearance)
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        host.displayIfNeeded()
+        return window
+    }
+
     // MARK: - Helpers
-
-    private enum Key: Equatable { case up, down, left, right, `return`, escape, space, tab, letter(Character) }
-
-    @MainActor private static func event(_ key: Key, _ type: NSEvent.EventType, window: NSWindow?) -> NSEvent? {
-        let (code, characters): (UInt16, String) = switch key {
-        case .up: (126, "\u{F700}")
-        case .down: (125, "\u{F701}")
-        case .left: (123, "\u{F702}")
-        case .right: (124, "\u{F703}")
-        case .return: (36, "\r")
-        case .escape: (53, "\u{1B}")
-        case .space: (49, " ")
-        case .tab: (48, "\t")
-        case .letter(let letter): (8, String(letter))
-        }
-        let arrows: [Key] = [.up, .down, .left, .right]
-        return NSEvent.keyEvent(with: type, location: .zero, modifierFlags: arrows.contains(key) ? [.numericPad, .function] : [],
-                                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window?.windowNumber ?? 0, context: nil,
-                                characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)
-    }
-
-    /// A key through the app, as every key arrives: local event monitors see it first (an open dropdown's list takes
-    /// its keys this way). With no key window the app delivers it nowhere else, so a swallowed key is all it can be.
-    @MainActor private static func appKey(_ key: Key) {
-        for type in [NSEvent.EventType.keyDown, .keyUp] {
-            if let event = event(key, type, window: nil) { NSApp.sendEvent(event) }
-        }
-    }
-
-    /// A key to the window's focused control, where the app would deliver it if this window were key.
-    @MainActor private static func windowKey(_ window: NSWindow, _ key: Key) {
-        for type in [NSEvent.EventType.keyDown, .keyUp] {
-            if let event = event(key, type, window: window) { window.sendEvent(event) }
-        }
-    }
-
-    @MainActor private static func mouse(_ window: NSWindow, _ type: NSEvent.EventType, _ point: NSPoint) {
-        guard let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                                             windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
-                                             pressure: type == .leftMouseDown ? 1 : 0) else { return }
-        NSApp.sendEvent(event)
-    }
-
-    /// A click through the app: local event monitors see it, then its window takes it.
-    @MainActor private static func click(_ window: NSWindow, _ point: NSPoint) {
-        mouse(window, .leftMouseDown, point)
-        mouse(window, .leftMouseUp, point)
-    }
-
-    /// The pointer moving over a window (the panel's own tracking area hears it as mouse-moved).
-    @MainActor private static func pointer(_ window: NSWindow, _ point: NSPoint) {
-        guard let event = NSEvent.mouseEvent(with: .mouseMoved, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                                             windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0) else { return }
-        window.contentView?.mouseMoved(with: event)
-    }
-
-    /// A scroll-wheel event that belongs to no window of the list's: what the dropdown sees for a scroll anywhere
-    /// that is not its own list. The CGEvent only carries the shape AppKit needs; it is never posted to the system.
-    @MainActor private static func scrollElsewhere() {
-        guard let wheel = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: -10, wheel2: 0, wheel3: 0),
-              let event = NSEvent(cgEvent: wheel) else { fatalError("no scroll event") }
-        NSApp.sendEvent(event)
-    }
 
     @MainActor private static func settle(_ milliseconds: Int = 250) async {
         try? await Task.sleep(for: .milliseconds(milliseconds))
-    }
-
-    /// AppKit's own drawing of `view`, read by point from the top left.
-    @MainActor private static func pixels(_ view: NSView) -> (Int, Int) -> NSColor {
-        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { fatalError("no bitmap") }
-        view.cacheDisplay(in: view.bounds, to: rep)
-        let scale = CGFloat(rep.pixelsWide) / view.bounds.width
-        return { x, y in
-            rep.colorAt(x: Int(CGFloat(x) * scale + scale / 2), y: Int(CGFloat(y) * scale + scale / 2))?.usingColorSpace(.sRGB) ?? .clear
-        }
-    }
-
-    /// The same drawing, read at a point given to a quarter point (a hairline is half a point wide on each side).
-    @MainActor private static func exact(_ view: NSView) -> (CGFloat, CGFloat) -> NSColor {
-        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { fatalError("no bitmap") }
-        view.cacheDisplay(in: view.bounds, to: rep)
-        let scale = CGFloat(rep.pixelsWide) / view.bounds.width
-        return { x, y in rep.colorAt(x: Int(x * scale), y: Int(y * scale))?.usingColorSpace(.sRGB) ?? .clear }
-    }
-
-    /// How many points down the middle-right of an open list's card carry the highlight's gold wash (light mode: the
-    /// card is white, the wash a warm near-white). Zero when the highlighted row is scrolled out of sight.
-    @MainActor private static func washRows(_ list: NSWindow) -> Int {
-        guard let view = list.contentView else { return 0 }
-        let room = COSDropdownPresenter.shadowRoom
-        let read = pixels(view)
-        let x = Int(list.frame.width - room.right) - 24
-        var count = 0
-        for y in (Int(room.top) + 2)..<(Int(list.frame.height - room.bottom) - 2) {
-            let c = read(x, y)
-            if c.alphaComponent > 0.98, c.redComponent > 0.95, c.blueComponent < 0.975, c.blueComponent > 0.9 { count += 1 }
-        }
-        return count
     }
 
     @MainActor private static func host<V: View>(_ view: V, size: CGSize, appearance: NSAppearance.Name) -> (NSView, NSBitmapImageRep) {

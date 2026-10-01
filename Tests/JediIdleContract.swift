@@ -93,37 +93,8 @@ struct JediIdleContract {
         precondition(PetSpriteStore.restPoses(for: .working, stateMap: shared).isEmpty)
         print("Jedi idle contracts PASS: 12 real resolver paths, all 8 playback frames at four speeds, reduced motion, seams and rest deduplication")
 
-        // Optional on-device canary uses the shipping SwiftUI TimelineView.
-        // It never constructs ControllerModel, polls live work or writes preferences.
-        // 0.5.252: it opens a window on screen and takes the focus, so it runs only when a person sets
-        // COS_JEDI_CANARY_OUTPUT (Tests/run.sh passes the folder only then); no gate sets it.
-        if CommandLine.arguments.count > 2, ProcessInfo.processInfo.environment["COS_JEDI_CANARY_OUTPUT"] != nil {
-            let output = URL(fileURLWithPath: CommandLine.arguments[2])
-            try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
-            let app = NSApplication.shared
-            app.setActivationPolicy(.accessory)
-            let view = IdleCanaryView(cells: cells)
-            let hosting = NSHostingView(rootView: view)
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1240, height: 950),
-                styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            window.title = "Jedi walking + meditation canary • source renderer • 80% speed"
-            window.contentView = hosting
-            window.center()
-            if ProcessInfo.processInfo.environment["COS_JEDI_CANARY_OUTPUT"] != nil { window.makeKeyAndOrderFront(nil) }
-            if ProcessInfo.processInfo.environment["COS_JEDI_CANARY_OUTPUT"] != nil { app.activate(ignoringOtherApps: true) }
-            for sample in 0..<32 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1 + Double(sample) * 0.2) {
-                    hosting.layoutSubtreeIfNeeded()
-                    if let bitmap = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
-                        hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
-                        try! bitmap.representation(using: .png, properties: [:])!.write(
-                            to: output.appendingPathComponent(String(format: "native-%02d.png", sample)))
-                    }
-                    if sample == 31 { app.terminate(nil) }
-                }
-            }
-            app.run()
-        }
+        // 0.5.253: the on-screen canary that opened a window and took the focus is gone (Miles, 2026-09-30 19:06). Its
+        // frames are the ones checked above, read without putting anything on screen.
     }
 }
 

@@ -14,8 +14,8 @@ import Vision
 /// are its tallest part). The icon is the ink left of the gap, between those hairlines; its middle is its ink's middle.
 ///
 /// Nothing here contacts the server or a provider: Tests/run-controls.sh runs it with a scratch home
-/// (CFFIXED_USER_HOME), so the panel's own loads find no helper. The window sits 20,000 points off every screen, the
-/// process can never become active (.prohibited), and no event is posted.
+/// (CFFIXED_USER_HOME), so the panel's own loads find no helper. Its window is never ordered in (0.5.253), the process can
+/// never become active (.prohibited), and no event is sent or posted.
 @MainActor enum PanelLabels {
     struct Measure: CustomStringConvertible {
         let name: String
@@ -63,10 +63,9 @@ import Vision
         host.appearance = NSAppearance(named: appearance)
         window.contentView = host
         host.frame = NSRect(x: 0, y: 0, width: 390, height: 640)
-        window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
-        window.orderFrontRegardless()
-        defer { window.orderOut(nil) }
-        pump(); host.layoutSubtreeIfNeeded(); pump()
+        // 0.5.253: never ordered in, even off screen. SwiftUI lays out and draws a window that is not on screen.
+        defer { window.close() }
+        pump(); host.layoutSubtreeIfNeeded(); host.displayIfNeeded(); pump()
         guard let scroll = scrollView(in: host), let document = scroll.documentView else { fatalError("the panel has no scroll view") }
         scroll.scrollerStyle = .legacy
         scroll.hasVerticalScroller = true

@@ -17,6 +17,11 @@ STAGED_ZIP="$BUILD_DIR/COS-Control-macOS-arm64-$VERSION.zip"
 
 trap 'rm -rf "$BUILD_DIR"' EXIT
 
+# 0.5.253 (Miles, 2026-09-30: "I really just want to remove the test click effect that was creating the noise."): no test
+# drives the UI or touches the desktop (Tests/desktop-safety-check.py, with its self-test), checked before anything is built.
+/usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT"
+/usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT" --selftest
+
 rm -rf "$ZIP" "$ZIP.sha256"
 mkdir -p "$BUILD_DIR" "$APP/Contents/MacOS" "$APP/Contents/Resources" "$DIST_DIR"
 

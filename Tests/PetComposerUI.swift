@@ -33,7 +33,7 @@ struct PetComposerUIContract {
                                       : NSColor(calibratedRed: 0.92, green: 0.78, blue: 0.36, alpha: 1)
         window.contentView = host
         host.frame = NSRect(origin: .zero, size: size)
-        window.orderFrontRegardless()
+        // 0.5.253: never ordered in, even off screen; the window is laid out and drawn where nobody sees it.
         pump(); host.layoutSubtreeIfNeeded(); host.displayIfNeeded(); pump(); pump()
         guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else {
             fatalError("No native bitmap for \(name)")

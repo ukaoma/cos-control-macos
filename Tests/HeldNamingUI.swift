@@ -13,7 +13,7 @@ struct HeldNamingUIContract {
         let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: -20000, y: -20000), size: size), styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = host
         host.frame = NSRect(origin: .zero, size: size)
-        window.orderFrontRegardless()
+        // 0.5.253: never ordered in, even off screen; the window is laid out and drawn where nobody sees it.
         pump(); host.layoutSubtreeIfNeeded(); host.displayIfNeeded(); pump()
         guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { fatalError("No native bitmap for \(name)") }
         host.cacheDisplay(in: host.bounds, to: bitmap)

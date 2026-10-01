@@ -1,30 +1,44 @@
 #!/usr/bin/env python3
-"""0.5.252: no test a gate runs may touch the desktop of whoever is using the Mac.
+"""No test may touch the desktop of whoever is using the Mac, and no test drives the UI.
 
-Miles, 2026-09-30: focus jumped and his clicks landed in the wrong window while test gates ran. A test binary that
-activates itself, puts a window on screen, adds a status item or posts events to the system takes his Mac from him.
-This fails when any file under Tests/:
-  - activates an app (NSApp.activate, app.activate, activate(ignoringOtherApps:)) on a line that does not itself check an
-    opt-in variable a person sets by hand (COS_DESKTOP_CANARY=1 or COS_JEDI_CANARY_OUTPUT);
-  - moves the pointer or posts an event to the system (CGWarpMouseCursorPosition, CGDisplayMoveCursorToPoint,
-    CGEvent post, CGEventPost), or asks for a regular, Dock-visible activation policy;
-  - orders a window in (orderFrontRegardless, orderFront or makeKeyAndOrderFront) on a line with no opt-in check,
-    without making its process unable to activate (.prohibited), or without placing THAT window far off every screen
-    (-8000 or -20000) earlier in the same function: set in its contentRect when it is made, or by setFrameOrigin,
-    setFrame or setFrameTopLeftPoint. Each window is checked on its own (QA round 2: a window off screen no longer
-    covers another in the same file, or one of the same name in another function);
-  - adds a MenuBarExtra, a status item or a WindowGroup outside the two canaries and the lab app a person runs by hand;
-and when a gate script sets an opt-in variable or runs either canary.
+0.5.252 (Miles, 2026-09-30: focus jumped and his clicks landed in the wrong window while test gates ran). 0.5.253 (Miles,
+2026-09-30 19:06: "We don't want the testing 'computer use' where we jump and click. It doesn't work and it now causes
+random missed clicked error sound."): no opt-in and no off-screen placement makes any of these allowed any more. This
+fails when any Swift file under Tests/:
+  - activates an app (NSApp.activate, app.activate, activate(ignoringOtherApps:)), or asks for a regular or accessory
+    activation policy (an app that can show windows and take the focus);
+  - orders a window in (orderFrontRegardless, orderFront, makeKeyAndOrderFront, orderWindow, addChildWindow, makeKey,
+    makeMain), even far off screen: a check draws a window that is never ordered in;
+  - makes or sends a synthetic event: sendEvent or postEvent, NSEvent.mouseEvent, keyEvent, otherEvent or NSEvent(cgEvent:),
+    any CGEvent, posting one (post(tap:), postToPid, CGEventPost), moving the pointer, or calling a view's own mouse, key or
+    scroll handler with an event;
+  - plays a sound (NSSound, NSBeep, AudioServicesPlay...);
+  - adds a MenuBarExtra or a status item outside the hand-run fence canary, or a WindowGroup outside the lab app a person
+    runs by hand;
+and when a gate script sets a desktop opt-in variable or runs a hand-run canary.
 
     python3 Tests/desktop-safety-check.py [root]              the check
     python3 Tests/desktop-safety-check.py [root] --selftest   proves each rule fails on a scratch copy
 """
-import pathlib, re, shutil, subprocess, sys, tempfile
+import pathlib, re, shutil, sys, tempfile
 
-OPT_IN = ('environment["COS_DESKTOP_CANARY"] == "1"', 'environment["COS_JEDI_CANARY_OUTPUT"] != nil')
-CANARIES = ("dropdown-canary", "fence-canary")
+CANARIES = ("fence-canary",)
 # Apps a person builds and opens by hand (scripts/build-foundation-lab.sh); no gate launches them.
 HAND_RUN_APPS = ("Control2FoundationLabApp.swift",)
+
+RULES = (
+    (r"(?<![A-Za-z0-9_])activate\s*\(", "activates an app"),
+    (r"setActivationPolicy\s*\(\s*\.(regular|accessory)\s*\)", "asks for an activation policy that can show windows and take the focus"),
+    (r"\.\s*(orderFrontRegardless|makeKeyAndOrderFront|orderFront|orderWindow|addChildWindow|makeKey|makeMain)\s*\(",
+     "orders a window in (no test does, even off screen)"),
+    (r"(?<![A-Za-z0-9_])(sendEvent|postEvent)\s*\(", "sends an event into an app"),
+    (r"NSEvent\s*\.\s*(mouseEvent|keyEvent|otherEvent|enterExitEvent)\s*\(|NSEvent\s*\(\s*cgEvent\s*:", "makes a synthetic event"),
+    (r"(?<![A-Za-z0-9_])CGEvent\s*\(|CGEventCreate|CGEventPost|\.\s*postToPid\s*\(|\.\s*post\s*\(\s*tap\s*:", "makes or posts a system event"),
+    (r"CGWarpMouseCursorPosition|CGDisplayMoveCursorToPoint|CGAssociateMouseAndMouseCursorPosition", "moves the pointer"),
+    (r"\.\s*(mouseDown|mouseUp|mouseMoved|mouseDragged|rightMouseDown|keyDown|keyUp|scrollWheel|flagsChanged)\s*\(\s*with\s*:",
+     "calls a view's own event handler with an event"),
+    (r"(?<![A-Za-z0-9_])(NSSound|NSBeep|AudioServicesPlaySystemSound|AudioServicesPlayAlertSound)(?![A-Za-z0-9_])", "plays a sound"),
+)
 
 def code_lines(text):
     """(line number, code) with line comments and block comments blanked."""
@@ -32,50 +46,9 @@ def code_lines(text):
     for number, line in enumerate(text.split("\n"), 1):
         yield number, re.sub(r"(^|\s)//.*$", r"\1", line)
 
-ORDERS = re.compile(r"([A-Za-z_][A-Za-z0-9_]*(?:\s*[?!]?\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*[?!]?\s*\.\s*"
-                    r"(orderFrontRegardless|makeKeyAndOrderFront|orderFront)\s*\(")
-OFF_SCREEN = re.compile(r"-\s*(8000|20000)\b")
-
-def call_args(code, open_index):
-    """The text inside the parentheses that open at `open_index`, across lines."""
-    depth = 0
-    for index in range(open_index, len(code)):
-        if code[index] == "(":
-            depth += 1
-        elif code[index] == ")":
-            depth -= 1
-            if depth == 0:
-                return code[open_index + 1:index]
-    return code[open_index + 1:]
-
-def off_screen(args, code):
-    """True when a placement's arguments put the window far off every screen, directly or through one named constant."""
-    if OFF_SCREEN.search(args):
-        return True
-    name = args.strip()
-    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-        found = re.search(r"\b(?:let|var)\s+" + name + r"\b[^=\n]*=([^\n]*)", code)
-        return bool(found and OFF_SCREEN.search(found.group(1)))
-    return False
-
-def placed_off_screen(receiver, code, before):
-    """Whether this window (by its receiver) is placed far off every screen in the function that shows it, before
-    offset `before`."""
-    starts = [found.start() for found in re.finditer(r"\bfunc\s+[A-Za-z_][A-Za-z0-9_]*|(?<![A-Za-z0-9_.])init\s*[(<]", code) if found.start() < before]
-    start = starts[-1] if starts else 0
-    name = re.escape(receiver)
-    for found in re.finditer(r"(?<![A-Za-z0-9_.])" + name + r"\s*[?!]?\s*\.\s*setFrame(?:Origin|TopLeftPoint)?\s*\(", code):
-        if start <= found.start() < before and off_screen(call_args(code, found.end() - 1), code):
-            return True
-    for found in re.finditer(r"\b(?:let|var)\s+" + name + r"\b[^=\n]*=\s*[A-Za-z_][A-Za-z0-9_.]*\s*\(", code):
-        if start <= found.start() < before and "contentRect" in (args := call_args(code, found.end() - 1)) and off_screen(args, code):
-            return True
-    return False
-
 def shell_lines(text):
     for number, line in enumerate(text.split("\n"), 1):
-        stripped = line.lstrip()
-        if not stripped.startswith("#"):
+        if not line.lstrip().startswith("#"):
             yield number, line
 
 def check(root):
@@ -83,34 +56,15 @@ def check(root):
     hits = []
     for path in sorted(tests.rglob("*.swift")):
         rel = path.relative_to(root)
-        text = path.read_text(encoding="utf-8")
-        lines = list(code_lines(text))
-        code = "\n".join(line for _, line in lines)
         canary = any(part in CANARIES for part in rel.parts)
-        for number, line in lines:
-            if re.search(r"(?<![A-Za-z0-9_])activate\s*\(", line) and not any(flag in line for flag in OPT_IN):
-                hits.append(f"  {rel}:{number}: activates an app without an opt-in check on the same line")
-            if re.search(r"CGWarpMouseCursorPosition|CGDisplayMoveCursorToPoint|CGEventPost\b|\.post\s*\(\s*tap\s*:", line):
-                hits.append(f"  {rel}:{number}: moves the pointer or posts an event to the system")
-            if re.search(r"setActivationPolicy\s*\(\s*\.regular\s*\)", line):
-                hits.append(f"  {rel}:{number}: asks for a regular (Dock) activation policy")
+        for number, line in code_lines(path.read_text(encoding="utf-8")):
+            for pattern, why in RULES:
+                if re.search(pattern, line):
+                    hits.append(f"  {rel}:{number}: {why}")
             if not canary and re.search(r"(?<![A-Za-z0-9_])MenuBarExtra\s*\(|NSStatusBar\s*\.\s*system\s*\.\s*statusItem", line):
-                hits.append(f"  {rel}:{number}: adds a status item outside the hand-run canaries")
+                hits.append(f"  {rel}:{number}: adds a status item outside the hand-run canary")
             if not canary and path.name not in HAND_RUN_APPS and re.search(r"(?<![A-Za-z0-9_])WindowGroup\s*[({]", line):
-                hits.append(f"  {rel}:{number}: opens an app window outside the hand-run canaries and lab")
-        offsets = [0]
-        for _, line in lines:
-            offsets.append(offsets[-1] + len(line) + 1)
-        for number, line in lines:
-            if any(flag in line for flag in OPT_IN):
-                continue
-            for order in ORDERS.finditer(line):
-                receiver = re.sub(r"[\s?!]", "", order.group(1))
-                where = f"  {rel}:{number}: {receiver}.{order.group(2)}"
-                if "setActivationPolicy(.prohibited)" not in code:
-                    hits.append(f"{where} orders a window in, but its process is not .prohibited (it could become active)")
-                if not placed_off_screen(receiver, code, offsets[number - 1] + order.start()):
-                    hits.append(f"{where} orders a window in that was not placed far off every screen first")
+                hits.append(f"  {rel}:{number}: opens an app window outside the hand-run canary and lab")
     for path in sorted(list(tests.glob("*.sh")) + list(tests.glob("*.py"))):
         rel = path.relative_to(root)
         if path.name == "desktop-safety-check.py":
@@ -123,51 +77,52 @@ def check(root):
     return hits
 
 def selftest(root):
+    S = "Tests/ZZDesk.swift"
     cases = {
-        "an unguarded activate": ("Tests/ZZDesk.swift", "import AppKit\n@MainActor func z() { NSApp.activate(ignoringOtherApps: true) }\n"),
-        "an unguarded app.activate": ("Tests/ZZDesk.swift", "import AppKit\n@MainActor func z(app: NSApplication) { app.activate() }\n"),
-        "a pointer warp": ("Tests/ZZDesk.swift", "import AppKit\nfunc z() { CGWarpMouseCursorPosition(.zero) }\n"),
-        "a posted system event": ("Tests/ZZDesk.swift", "import AppKit\nfunc z(e: CGEvent) { e.post(tap: .cghidEventTap) }\n"),
-        "a regular policy": ("Tests/ZZDesk.swift", "import AppKit\n@MainActor func z() { NSApp.setActivationPolicy(.regular) }\n"),
-        "a window of an app that can activate": ("Tests/ZZDesk.swift",
-            "import AppKit\n@MainActor func z(w: NSWindow) { w.setFrameOrigin(NSPoint(x: -8000, y: -8000)); w.orderFrontRegardless() }\n"),
-        "a window on screen": ("Tests/ZZDesk.swift",
-            "import AppKit\n@MainActor func z(w: NSWindow) { NSApp.setActivationPolicy(.prohibited); w.orderFrontRegardless() }\n"),
-        "a status item": ("Tests/ZZDesk.swift", "import AppKit\n@MainActor func z() { _ = NSStatusBar.system.statusItem(withLength: 20) }\n"),
-        "a makeKeyAndOrderFront on screen": ("Tests/ZZDesk.swift",
-            "import AppKit\n@MainActor func z(w: NSWindow) { NSApp.setActivationPolicy(.prohibited); w.makeKeyAndOrderFront(nil) }\n"),
-        "an orderFront on screen": ("Tests/ZZDesk.swift",
-            "import AppKit\n@MainActor func z(w: NSWindow) { NSApp.setActivationPolicy(.prohibited); w.orderFront(nil) }\n"),
-        "a second window on screen beside one off screen": ("Tests/ZZDesk.swift",
-            "import AppKit\n@MainActor func z(a: NSWindow, b: NSWindow) {\n    NSApp.setActivationPolicy(.prohibited)\n"
-            "    a.setFrameOrigin(NSPoint(x: -8000, y: -8000)); a.orderFrontRegardless()\n    b.makeKeyAndOrderFront(nil)\n}\n"),
-        "a window placed off screen only after it is shown": ("Tests/ZZDesk.swift",
-            "import AppKit\n@MainActor func z(w: NSWindow) {\n    NSApp.setActivationPolicy(.prohibited)\n    w.orderFront(nil)\n"
-            "    w.setFrameOrigin(NSPoint(x: -8000, y: -8000))\n}\n"),
-        "a window placed off screen in another function": ("Tests/ZZDesk.swift",
-            "import AppKit\n@MainActor func a(window: NSWindow) {\n    NSApp.setActivationPolicy(.prohibited)\n"
-            "    window.setFrameOrigin(NSPoint(x: -8000, y: -8000)); window.orderFrontRegardless()\n}\n"
-            "@MainActor func b(window: NSWindow) {\n    window.makeKeyAndOrderFront(nil)\n}\n"),
-        "a window made on screen": ("Tests/ZZDesk.swift",
-            "import AppKit\n@MainActor func z() {\n    NSApp.setActivationPolicy(.prohibited)\n"
-            "    let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [], backing: .buffered, defer: false)\n"
-            "    w.makeKeyAndOrderFront(nil)\n    _ = NSPoint(x: -8000, y: -8000)\n}\n"),
-        "an app window": ("Tests/ZZDesk.swift", "import SwiftUI\nstruct Z: App { var body: some Scene { WindowGroup { Text(\"x\") } } }\n"),
+        "an activate": (S, "import AppKit\n@MainActor func z() { NSApp.activate(ignoringOtherApps: true) }\n"),
+        "an app.activate": (S, "import AppKit\n@MainActor func z(app: NSApplication) { app.activate() }\n"),
+        "an opt-in activate (no longer allowed)": (S,
+            'import AppKit\n@MainActor func z() { if ProcessInfo.processInfo.environment["COS_DESKTOP_CANARY"] == "1" { NSApp.activate(ignoringOtherApps: true) } }\n'),
+        "a regular policy": (S, "import AppKit\n@MainActor func z() { NSApp.setActivationPolicy(.regular) }\n"),
+        "an accessory policy": (S, "import AppKit\n@MainActor func z() { NSApp.setActivationPolicy(.accessory) }\n"),
+        "a window ordered in far off screen (no longer allowed)": (S,
+            "import AppKit\n@MainActor func z(w: NSWindow) { NSApp.setActivationPolicy(.prohibited); w.setFrameOrigin(NSPoint(x: -8000, y: -8000)); w.orderFrontRegardless() }\n"),
+        "a makeKeyAndOrderFront": (S, "import AppKit\n@MainActor func z(w: NSWindow) { w.makeKeyAndOrderFront(nil) }\n"),
+        "an orderFront": (S, "import AppKit\n@MainActor func z(w: NSWindow) { w.orderFront(nil) }\n"),
+        "an orderWindow": (S, "import AppKit\n@MainActor func z(w: NSWindow) { w.orderWindow(.above, relativeTo: 0) }\n"),
+        "a child window": (S, "import AppKit\n@MainActor func z(a: NSWindow, b: NSWindow) { a.addChildWindow(b, ordered: .above) }\n"),
+        "an opt-in makeKeyAndOrderFront (no longer allowed)": (S,
+            'import AppKit\n@MainActor func z(w: NSWindow) { if ProcessInfo.processInfo.environment["COS_DESKTOP_CANARY"] == "1" { w.makeKeyAndOrderFront(nil) } }\n'),
+        "a mouse event sent through the app": (S,
+            "import AppKit\n@MainActor func z(w: NSWindow) {\n    let e = NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0,\n"
+            "        windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!\n    NSApp.sendEvent(e)\n}\n"),
+        "a key event sent to a window": (S, "import AppKit\n@MainActor func z(w: NSWindow, e: NSEvent) { w.sendEvent(e) }\n"),
+        "a key event made": (S,
+            "import AppKit\nfunc z() { _ = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,\n"
+            "    context: nil, characters: \"a\", charactersIgnoringModifiers: \"a\", isARepeat: false, keyCode: 0) }\n"),
+        "a scroll made from a CGEvent": (S,
+            "import AppKit\nfunc z() { let w = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: 1, wheel2: 0, wheel3: 0)!\n"
+            "    _ = NSEvent(cgEvent: w) }\n"),
+        "a posted system event": (S, "import AppKit\nfunc z(e: CGEvent) { e.post(tap: .cghidEventTap) }\n"),
+        "an event posted to a process": (S, "import AppKit\nfunc z(e: CGEvent) { e.postToPid(1) }\n"),
+        "a pointer warp": (S, "import AppKit\nfunc z() { CGWarpMouseCursorPosition(.zero) }\n"),
+        "a view's handler called with an event": (S, "import AppKit\n@MainActor func z(v: NSView, e: NSEvent) { v.mouseMoved(with: e) }\n"),
+        "a sound": (S, "import AppKit\nfunc z() { NSSound.beep() }\n"),
+        "a status item": (S, "import AppKit\n@MainActor func z() { _ = NSStatusBar.system.statusItem(withLength: 20) }\n"),
+        "an app window": (S, "import SwiftUI\nstruct Z: App { var body: some Scene { WindowGroup { Text(\"x\") } } }\n"),
         "a gate that sets the opt-in": ("Tests/zz-gate.sh", "#!/bin/zsh\nCOS_DESKTOP_CANARY=1 ./x\n"),
-        "a gate that runs the canary": ("Tests/zz-gate.sh", "#!/bin/zsh\n\"$ROOT/Tests/dropdown-canary/run.sh\"\n"),
+        "a gate that runs the canary": ("Tests/zz-gate.sh", "#!/bin/zsh\n\"$ROOT/Tests/fence-canary/run.sh\"\n"),
     }
     allowed = {
-        "an opt-in activate": ("Tests/ZZDesk.swift",
-            'import AppKit\n@MainActor func z() { if ProcessInfo.processInfo.environment["COS_DESKTOP_CANARY"] == "1" { NSApp.activate(ignoringOtherApps: true) } }\n'),
-        "prose about activate": ("Tests/ZZDesk.swift", "// NSApp.activate(ignoringOtherApps: true) steals the focus\n/* app.activate() */\nlet z = 1\n"),
-        "an off-screen window of a prohibited app": ("Tests/ZZDesk.swift",
-            "import AppKit\n@MainActor func z(w: NSWindow) { NSApp.setActivationPolicy(.prohibited); w.setFrameOrigin(NSPoint(x: -8000, y: -8000)); w.orderFrontRegardless() }\n"),
-        "a window made off screen, then made key, in a prohibited app": ("Tests/ZZDesk.swift",
-            "import AppKit\n@MainActor func z() {\n    NSApp.setActivationPolicy(.prohibited)\n    let window = NSWindow(\n"
+        "prose about activate and events": (S, "// NSApp.activate(ignoringOtherApps: true) and NSApp.sendEvent(e) took the focus\n/* w.orderFrontRegardless() */\nlet z = 1\n"),
+        "a window made and never ordered in": (S,
+            "import AppKit\n@MainActor func z() -> NSWindow {\n    NSApp.setActivationPolicy(.prohibited)\n    let window = NSWindow(\n"
             "        contentRect: NSRect(origin: NSPoint(x: -20000, y: -20000), size: .zero),\n"
-            "        styleMask: [.borderless], backing: .buffered, defer: false)\n    window.makeKeyAndOrderFront(nil)\n}\n"),
-        "an opt-in makeKeyAndOrderFront": ("Tests/ZZDesk.swift",
-            'import AppKit\n@MainActor func z(w: NSWindow) { if ProcessInfo.processInfo.environment["COS_DESKTOP_CANARY"] == "1" { w.makeKeyAndOrderFront(nil) } }\n'),
+            "        styleMask: [.borderless], backing: .buffered, defer: false)\n    window.contentView?.layoutSubtreeIfNeeded()\n    return window\n}\n"),
+        "a window taken off screen": (S, "import AppKit\n@MainActor func z(w: NSWindow) { w.orderOut(nil); w.close() }\n"),
+        "a view drawn to a bitmap": (S,
+            "import AppKit\n@MainActor func z(v: NSView) { let r = v.bitmapImageRepForCachingDisplay(in: v.bounds)!; v.cacheDisplay(in: v.bounds, to: r) }\n"),
+        "a deactivate and a sendEvents name": (S, "import AppKit\n@MainActor func z(x: NSObject) { _ = x.responds(to: Selector((\"deactivate\"))); let sendEvents = 1; _ = sendEvents }\n"),
     }
     failures = []
     for group, expect_hits in ((cases, True), (allowed, False)):
@@ -183,7 +138,7 @@ def selftest(root):
                     failures.append(f"the desktop check failed on {name}: {hits}")
     if failures:
         sys.exit("\n".join(failures))
-    print(f"PASS: the desktop-safety check fails on {len(cases)} desktop-touching forms and passes {len(allowed)} allowed ones (0.5.252)")
+    print(f"PASS: the desktop-safety check fails on {len(cases)} desktop-touching or UI-driving forms and passes {len(allowed)} allowed ones (0.5.253)")
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -193,5 +148,5 @@ if __name__ == "__main__":
     else:
         hits = check(root)
         if hits:
-            sys.exit("a test can touch the desktop of whoever is using the Mac:\n" + "\n".join(hits))
-        print("COS Control: no gate test activates an app, shows a window on screen, adds a status item or posts a system event (0.5.252)")
+            sys.exit("a test can touch the desktop of whoever is using the Mac, or drive its UI:\n" + "\n".join(hits))
+        print("COS Control: no test activates an app, puts a window on screen, sends or posts an event, plays a sound or adds a status item (0.5.253)")

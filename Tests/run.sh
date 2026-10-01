@@ -136,9 +136,6 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Tests/JediIdleContract.swift" -framework AppKit -framework SwiftUI -o "$TMP/jedi-idle-contract"
 "$TMP/jedi-idle-contract" "$ROOT/Resources"
-if [[ -n "${COS_JEDI_CANARY_OUTPUT:-}" ]]; then
-  "$TMP/jedi-idle-contract" "$ROOT/Resources" "$COS_JEDI_CANARY_OUTPUT"
-fi
 # The executable pixel test must cover the same loader the gallery calls.
 /usr/bin/python3 - "$ROOT" <<'GALLERY'
 import pathlib, sys
@@ -1250,6 +1247,9 @@ assert "readFresh: { [weak self] in await self?.reloadWorkTasksFresh() ?? false 
 load = body(model, "    private func performLoadWorkTasks(generation: Int) async {", "    @Published var workIntake:")
 assert load.count("guard workBoardReads.current(generation) else { return }") == 2 and "workBoardReads.record(generation, ok: true)" in load and "workBoardReads.record(generation, ok: false)" in load
 assert ".onChange(of: COSDropdownRules.signature(options)) { _, _ in refreshOpenList() }" in brand, "an open list follows its options"
+refresh = body(brand, "    private func refreshOpenList() {", "    private var face: some View {")
+assert "guard presenter.isOpen else { return }" in refresh and "open(row)" in refresh and "presenter.onKey = { key in apply(key) }" in refresh, \
+    "an open panel list is presented again on the new options, and an inline one takes its keys from them"
 reopen = body(store, "    func reopenInApp(receiptID: String) async {", "    /// 0.5.253 (QA, deferred from 0.5.252): an Open in Claude")
 assert "recordOpened(row.id, at: Date().timeIntervalSince1970)" in reopen, "an opened note is recorded, or kept until the journal is free"
 assert "if quiet { quietSend = false; writeDraftsEditedMeanwhile(); writeOpenedMeanwhile() }" in submit
