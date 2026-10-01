@@ -1076,6 +1076,11 @@ extension WorkCardFilesChecks {
         }
         check(!WorkCardFiles.looksSecret(name: ".env.example") && !WorkCardFiles.looksSecret(name: ".env.sample") && !WorkCardFiles.looksSecret(name: ".env.template")
               && WorkCardFiles.looksSecret(name: ".env.local"), "secret names", "the .env templates")
+        // UTF-16 text is text, read for secrets (not audio).
+        func utf16(_ text: String, bom: [UInt8], encoding: String.Encoding) -> Data { Data(bom) + text.data(using: encoding)! }
+        let le = WorkCardFiles.sniff(head: utf16("API_TOKEN=a1b2c3d4e5\n", bom: [0xFF, 0xFE], encoding: .utf16LittleEndian), name: "x.env")
+        let be = WorkCardFiles.sniff(head: utf16("hello there\n", bom: [0xFE, 0xFF], encoding: .utf16BigEndian), name: "notes.txt")
+        check(le.kind == "secretText" && be.kind == "text" && be.ext == "txt", "utf16 sniff", "UTF-16 read as \(le.kind) and \(be.kind)")
         // The files QA listed, through the intake.
         let refusedFiles: [(String, Data)] = [
             ("db-url.txt", Data("DATABASE_URL=postgres://admin:hunter2@db.internal/app\n".utf8)),
@@ -1084,6 +1089,7 @@ extension WorkCardFilesChecks {
             ("config.yaml", Data("db:\n  password: hunter2\n".utf8)),
             ("bare-aws.txt", Data("AKIAQWERTYUIOPASDFGH\n".utf8)),
             ("gh-hosts.yml", Data("github.com:\n    oauth_token: gho_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6\n".utf8)),
+            ("utf16-env.txt", utf16("API_TOKEN=a1b2c3d4e5\n", bom: [0xFF, 0xFE], encoding: .utf16LittleEndian)),
             ("innocent.txt", Data("STRIPE=sk_live_a1b2c3d4e5f6g7h8\n".utf8)),
         ]
         let allowedFiles: [(String, Data)] = [

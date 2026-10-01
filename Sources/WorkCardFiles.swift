@@ -509,6 +509,15 @@ enum WorkCardFiles {
         let t = [UInt8](tail.suffix(512))
         if t.count == 512, Array(t[0..<4]) == Array("koly".utf8) { return WorkSniff(mime: "application/x-apple-diskimage", ext: "dmg", kind: "diskImage", label: "Disk image") }
         if ascii(32_769, "CD001") { return WorkSniff(mime: "application/x-iso9660-image", ext: "iso", kind: "diskImage", label: "Disk image") }
+        // QA round 2: UTF-16 text (a BOM) is text, read as such, before the MP3 frame-sync test it would otherwise match.
+        if b.count >= 2, (b[0] == 0xFF && b[1] == 0xFE) || (b[0] == 0xFE && b[1] == 0xFF) {
+            let body = Data(b.dropFirst(2).prefix((b.count - 2) / 2 * 2))
+            if let text = String(data: body, encoding: b[0] == 0xFF ? .utf16LittleEndian : .utf16BigEndian) {
+                if text.contains("-----BEGIN") && text.contains("PRIVATE KEY-----") { return WorkSniff(mime: "application/x-pem-file", ext: "pem", kind: "privateKey", label: "Private key") }
+                if secretContent(text) { return WorkSniff(mime: "text/plain", ext: "txt", kind: "secretText", label: "Secrets") }
+                return WorkSniff(mime: "text/plain", ext: safeExtension((name as NSString).pathExtension) ?? "txt", kind: "text", label: "Text")
+            }
+        }
         if ascii(0, "ID3") || ascii(0, "fLaC") || ascii(0, "OggS") || (b.count > 1 && b[0] == 0xFF && b[1] & 0xE0 == 0xE0) {
             return WorkSniff(mime: "audio/mpeg", ext: "mp3", kind: "audio", label: "Audio")
         }
