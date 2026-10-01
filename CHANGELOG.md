@@ -1,6 +1,6 @@
-## 0.5.254 (build 294)
+## 0.5.254 (build 296)
 
-Drop files on a Work card, and their paths go out with the work. COS Control only: no server release. Works with server 6.59.0. Build 294 is QA rounds 1 and 2 and a faster Work resize on build 293, which was installed for review only.
+Drop files on a Work card, and their paths go out with the work. COS Control only: no server release. Works with server 6.59.0. Build 296 is QA rounds 1 and 2 and a faster Work resize on build 293, which was installed for review only. Build 295, a local trial of the resize, is replaced and its number is not reused.
 
 - **Files on a card** (Miles, 2026-09-30 21:13: "build out a card ... drag-and-drop ... PDFs, JPEGs, HEICs, PNGs, MP4s ... Really, all it's doing is passing the path of the card."). Drop files on a card on the board, or use Add files… in the card's Agent workspace. COS Control keeps a copy of each in `~/cos-data/work-context`, one folder per card, so moving or deleting the original changes nothing. A copy is a clone on the same disk (no extra space) or a plain copy, readable only by you. The card's footer shows a paperclip and the count, plus "1 preparing" while a copy is still being made. A card with no files looks as it did.
   - Finder files, files from Photos, Mail, Messages and the screenshot thumbnail, and images dragged from a browser are kept. A link dragged from a browser is kept as a link, not downloaded. A link with a username or password in it is refused ("Not added: this link has a username or password in it. Copy the link without them."). A folder is never copied: it goes as a link marked "may change", with its file count.
