@@ -1071,7 +1071,9 @@ extension WorkCardFilesChecks {
                      "password: ${DB_PASSWORD}", "- POSTGRES_PASSWORD=${POSTGRES_PASSWORD}", "const key = process.env.OPENAI_API_KEY;",
                      "password = input(\"Password: \")", "max_tokens: 4096\ntoken_limit: 1000\nsecretName: tls-secret",
                      "Token: the one from the dashboard", "OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx", "aws_access_key_id = AKIAIOSFODNN7EXAMPLE",
-                     "https://user:password@example.com/path", "DATABASE_URL=postgres://u:${PW}@db/app", "//registry.npmjs.org/:_authToken=${NPM_TOKEN}"] {
+                     "https://user:password@example.com/path", "DATABASE_URL=postgres://u:${PW}@db/app", "//registry.npmjs.org/:_authToken=${NPM_TOKEN}",
+                     // Only the angle brackets mark these: no "your", no space, no stock word.
+                     "STRIPE_SECRET_KEY=<STRIPE_SECRET_KEY>", "{\"token\": \"<TOKEN>\"}"] {
             check(!WorkCardFiles.secretContent(text), "secret placeholders", "a false secret: \(text)")
         }
         check(!WorkCardFiles.looksSecret(name: ".env.example") && !WorkCardFiles.looksSecret(name: ".env.sample") && !WorkCardFiles.looksSecret(name: ".env.template")
