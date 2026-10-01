@@ -134,11 +134,18 @@ need("removeItem" not in rm and "deleteCopies" not in rm and "setHidden(fileID, 
 # B2: links with a user or password.
 web = body(files, "    nonisolated static func commitWebLink(", "    nonisolated static func commitLinkEntry(")
 need("if linkHasCredentials(text) { return .failure(.linkCredentials) }" in web, "a link with a user or password is refused")
-# W1: the identity stamp, before anything is saved.
+# W1 and QA round 2: the identity stamp starts with the drop and the copies start beside it; a file is written after both.
 for intake in ("    func intake(urls: [URL], source: WorkSource) async {", "    func intake(providers: [NSItemProvider], source: WorkSource) async {"):
     section_text = body(files, intake, "\n    }\n")
-    need(section_text.index("guard await ensureIdentity(workID) else { flash([.identity], on: workID); return }") < section_text.index("begin(workID,"),
-         "the identity is stamped before a card's first file is taken")
+    need("let identity = identityGate(workID)" in section_text and "identity: identity)" in section_text, "every intake writes after the identity gate")
+    first_await = section_text.index("await ")
+    need(section_text.index("let identity = identityGate(workID)") < first_await and ("Task.detached { await WorkCardFiles.ingest(" in section_text[:section_text.index("for copy in copies")]
+         if "for copy in copies" in section_text else "loads.append(Task" in section_text[:section_text.index("for load in loads")]),
+         "the copies start before anything waits on the stamp")
+gate = body(files, "    private func identityGate(", "    private func begin(")
+need("let stamp = Task { await stampIdentity(workID) }" in gate and "return { await stamp.value }" in gate, "the stamp runs beside the copies")
+need("unstampedNote" in body(files, "    nonisolated static func commit(staged:", "    /// A folder is never copied") and "refresh" not in files.split('nonisolated static let unstampedNote = "')[1].split('"')[0].lower(),
+     "a failed stamp adds the file with a note that never says refresh")
 need("store.cardFiles.stampIdentity = { [weak self] workID in await self?.stampWorkIdentity(workID) ?? false }" in code("Sources/ControllerModel.swift"),
      "the app stamps through its Work stage write")
 # W6: the board line comes on the drop, never on hover.

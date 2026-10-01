@@ -81,6 +81,8 @@ struct WorkContextFile: Codable, Equatable, Sendable, Identifiable {
     /// Removed while a session still working on it had been sent it: hidden from the card, kept on disk until it finishes.
     var hiddenAt: Double? = nil
     var seq: Int
+    /// QA round 2: a quiet note for the row (the card's identity was not saved when this file came).
+    var note: String? = nil
     var isLink: Bool { kind == "folder" || kind == "link" }
     var ref: WorkContextRef { WorkContextRef(id: id, sha256: sha256) }
 }
@@ -130,8 +132,6 @@ enum WorkCardRefusal: Error, Equatable, Sendable {
     case tooBroad(String)
     /// QA W5: a folder holding a secret file within its top levels.
     case folderSecrets(String)
-    /// QA W1: the card's identity could not be saved before its first file.
-    case identity
     /// QA round 2: a folder with more entries than the scan reads is refused, never taken unread.
     case folderTooBig
 
@@ -151,7 +151,6 @@ enum WorkCardRefusal: Error, Equatable, Sendable {
         case .linkCredentials: return "Not added: this link has a username or password in it. Copy the link without them."
         case .tooBroad(let name): return "Not added: \(name) is too wide a folder to hand an agent. Add the folder or the files you need."
         case .folderSecrets(let name): return "Not added: this folder holds secrets (\(name)). Add the files you need one by one."
-        case .identity: return "Not added: COS couldn't save this card's identity first, so its files could be lost if the card is renamed. Refresh Work, then try again."
         case .folderTooBig: return "Not added: this folder is too big to check for secrets. Add the files you need one by one."
         }
     }
@@ -346,6 +345,10 @@ enum WorkCardFiles {
     }
     nonisolated static let secretFolders: Set<String> = [".ssh", ".gnupg", ".aws", "keychains"]
     nonisolated static let envTemplates: Set<String> = [".env.example", ".env.sample", ".env.template"]
+    /// The row's note when the card's identity could not be saved (a read-only board, or the write failed). Never
+    /// "refresh": a refresh does not make a read-only board writable.
+    nonisolated static let unstampedNote = "This card's identity isn't saved, so rename it only in COS."
+    typealias IdentityGate = @Sendable () async -> Bool
     /// A path whose name, or (for a Docker login) whose folder and name, look like a secret: `.docker/config.json`.
     nonisolated static func looksSecret(path: String) -> Bool {
         let url = URL(fileURLWithPath: path)
@@ -1112,7 +1115,8 @@ extension WorkCardFiles {
 
     /// A Finder file or folder. A file is copied (waiting up to `timeout` for iCloud), checked and committed; a folder
     /// becomes a link; an app is refused.
-    nonisolated static func ingest(url raw: URL, root: URL, workID: String, timeout: TimeInterval, reader: Reader) async -> Result<WorkContextFile, WorkCardRefusal> {
+    nonisolated static func ingest(url raw: URL, root: URL, workID: String, timeout: TimeInterval, reader: Reader,
+                                   identity: @escaping IdentityGate = { true }) async -> Result<WorkContextFile, WorkCardRefusal> {
         // Fix pass 1 (QA W4, W5): symlinks are resolved first, and the alias and the real file are both checked.
         let url = URL(fileURLWithPath: resolved(raw))
         let display = cleanDisplay(raw.lastPathComponent)
@@ -1120,7 +1124,10 @@ extension WorkCardFiles {
         let keynote = [raw, url].contains { $0.lastPathComponent.lowercased().hasSuffix(".key") }
         if values?.isDirectory != true, looksSecret(path: raw.path) || looksSecret(path: url.path), !keynote { return .failure(.secret(display)) }
         if values?.isApplication == true { return .failure(.app) }
-        if values?.isDirectory == true { return commitFolder(alias: raw, real: url, display: display, root: root, workID: workID) }
+        if values?.isDirectory == true {
+            let stamped = await identity()
+            return commitFolder(alias: raw, real: url, display: display, root: root, workID: workID, note: stamped ? nil : unstampedNote)
+        }
         // Checked before anything is copied, and again under the lock when it is committed.
         let current = readManifest(Self.folder(root: root, workID: workID)) ?? WorkContextManifest(workSourceID: workID)
         if admission(current, bytes: Int64(values?.fileSize ?? 0), sha256: "") != nil { return .failure(.cap) }
@@ -1137,12 +1144,14 @@ extension WorkCardFiles {
             try? FileManager.default.removeItem(at: staging)
             return .failure(.copyFailed(display, error.localizedDescription))
         }
-        return await commit(staged: staging, display: display, realName: url.lastPathComponent, source: "finder", original: raw.path, root: root, workID: workID)
+        return await commit(staged: staging, display: display, realName: url.lastPathComponent, source: "finder", original: raw.path, root: root, workID: workID,
+                            identity: identity)
     }
 
     /// A copy already in the card's folder (a Finder file, a promise, image data): checked, hashed and committed under
     /// the lock, or removed. A refusal leaves no entry and no file.
-    nonisolated static func commit(staged: URL, display: String, realName: String? = nil, source: String, original: String?, root: URL, workID: String) async -> Result<WorkContextFile, WorkCardRefusal> {
+    nonisolated static func commit(staged: URL, display: String, realName: String? = nil, source: String, original: String?, root: URL, workID: String,
+                                   identity: @escaping IdentityGate = { true }) async -> Result<WorkContextFile, WorkCardRefusal> {
         var movedTo: URL?
         var staged = staged
         defer { if movedTo == nil { try? FileManager.default.removeItem(at: staged) } }
@@ -1155,6 +1164,8 @@ extension WorkCardFiles {
         if (try? FileManager.default.moveItem(at: staged, to: typed)) != nil { staged = typed }
         guard let sha = try? sha256(of: staged) else { return .failure(.copyFailed(display, "It could not be read.")) }
         let meta = await metadata(staged, kind: sniffed.kind)
+        // QA round 2: the copy above ran beside the card's identity stamp; the entry is written once that is done.
+        let stamped = await identity()
         do {
             let file = try update(root: root, workID: workID) { manifest, folder -> WorkContextFile in
                 if let refusal = admission(manifest, bytes: size, sha256: sha) { throw refusal }
@@ -1170,7 +1181,7 @@ extension WorkCardFiles {
                     source: source, original: original, addedAt: Date().timeIntervalSince1970,
                     companions: companionPlan(kind: sniffed.kind, width: meta.width, height: meta.height)
                         .map { WorkContextCompanion(kind: $0, stored: companionName($0, base: base, mime: sniffed.mime), state: "preparing") },
-                    state: "ready", seq: seq)
+                    state: "ready", seq: seq, note: stamped ? nil : unstampedNote)
                 manifest.files.append(file)
                 return file
             }
@@ -1185,7 +1196,7 @@ extension WorkCardFiles {
     /// the alias resolved. The disk, /Users, the home folder, ~/Library and system folders are refused; so is a folder
     /// that is, or sits in, .ssh, .gnupg, .aws or Keychains, and one holding a secret within its top two levels.
     nonisolated static func commitFolder(alias: URL, real url: URL, display: String, root: URL, workID: String,
-                                         home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Result<WorkContextFile, WorkCardRefusal> {
+                                         home: URL = FileManager.default.homeDirectoryForCurrentUser, note: String? = nil) -> Result<WorkContextFile, WorkCardRefusal> {
         let path = url.path
         if unsafePath(path) { return .failure(.unsafePath) }
         if (try? url.resourceValues(forKeys: [.isApplicationKey]))?.isApplication == true { return .failure(.app) }
@@ -1205,7 +1216,7 @@ extension WorkCardFiles {
                 if count >= folderCountCap { break }
             }
         }
-        return commitLinkEntry(kind: "folder", display: display, original: path, fileCount: count, root: root, workID: workID)
+        return commitLinkEntry(kind: "folder", display: display, original: path, fileCount: count, root: root, workID: workID, note: note)
     }
 
     /// Fix pass 1 (QA B2): a link with a user or a password in it. Unreadable counts as yes.
@@ -1260,16 +1271,16 @@ extension WorkCardFiles {
     }
 
     /// A web link dragged from a browser: kept as a link, never downloaded. One with a user or password is refused.
-    nonisolated static func commitWebLink(_ url: URL, root: URL, workID: String) -> Result<WorkContextFile, WorkCardRefusal> {
+    nonisolated static func commitWebLink(_ url: URL, root: URL, workID: String, note: String? = nil) -> Result<WorkContextFile, WorkCardRefusal> {
         let text = url.absoluteString
         if linkHasCredentials(text) { return .failure(.linkCredentials) }
         guard ["http", "https"].contains(url.scheme?.lowercased() ?? ""), text.count <= 2_000, !unsafePath(text),
               !text.unicodeScalars.contains(where: { CharacterSet.whitespaces.contains($0) }) else { return .failure(.noFile) }
         let display = cleanDisplay((url.host ?? "") + url.path)
-        return commitLinkEntry(kind: "link", display: display, original: text, fileCount: nil, root: root, workID: workID)
+        return commitLinkEntry(kind: "link", display: display, original: text, fileCount: nil, root: root, workID: workID, note: note)
     }
 
-    nonisolated static func commitLinkEntry(kind: String, display: String, original: String, fileCount: Int?, root: URL, workID: String) -> Result<WorkContextFile, WorkCardRefusal> {
+    nonisolated static func commitLinkEntry(kind: String, display: String, original: String, fileCount: Int?, root: URL, workID: String, note: String? = nil) -> Result<WorkContextFile, WorkCardRefusal> {
         let sha = SHA256.hash(data: Data((kind + ":" + original).utf8)).map { String(format: "%02x", $0) }.joined()
         do {
             return .success(try update(root: root, workID: workID) { manifest, _ -> WorkContextFile in
@@ -1277,7 +1288,7 @@ extension WorkCardFiles {
                 let seq = (manifest.files.map(\.seq).max() ?? 0) + 1
                 let file = WorkContextFile(id: newID(), display: display, stored: "", sha256: sha, bytes: 0,
                     sniffed: kind == "folder" ? "inode/directory" : "text/uri-list", kind: kind, fileCount: fileCount,
-                    source: kind, original: original, addedAt: Date().timeIntervalSince1970, state: "ready", seq: seq)
+                    source: kind, original: original, addedAt: Date().timeIntervalSince1970, state: "ready", seq: seq, note: note)
                 manifest.files.append(file)
                 return file
             })
@@ -1471,12 +1482,16 @@ extension WorkCardFiles {
     func intake(urls: [URL], source: WorkSource) async {
         guard let root, Self.accepts(source), !urls.isEmpty else { return }
         let workID = source.id, timeout = iCloudTimeout, reader = reader
-        guard await ensureIdentity(workID) else { flash([.identity], on: workID); return }
+        // QA round 2: the identity stamp starts here and the copies start at once beside it; each file is written once
+        // both are done.
+        let identity = identityGate(workID)
         begin(workID, urls.count)
+        let copies = urls.map { url in
+            Task.detached { await WorkCardFiles.ingest(url: url, root: root, workID: workID, timeout: timeout, reader: reader, identity: identity) }
+        }
         var notes: [WorkCardRefusal] = []
-        for url in urls {
-            let result = await Task.detached { await WorkCardFiles.ingest(url: url, root: root, workID: workID, timeout: timeout, reader: reader) }.value
-            notes += settle(result, workID: workID)
+        for copy in copies {
+            notes += settle(await copy.value, workID: workID)
             end(workID)
         }
         if !notes.isEmpty { flash(notes, on: workID) }
@@ -1484,29 +1499,49 @@ extension WorkCardFiles {
 
     /// A drop on a card: Finder files, file promises (Photos, Mail, Messages, the screenshot thumbnail), image data and
     /// web links. A promise's temporary file is deleted when its callback returns, so it is copied inside the callback.
+    /// QA round 2: every load starts at once, beside the identity stamp, and each file is written once both are done.
     func intake(providers: [NSItemProvider], source: WorkSource) async {
         guard let root, Self.accepts(source), !providers.isEmpty else { return }
-        let workID = source.id
-        guard await ensureIdentity(workID) else { flash([.identity], on: workID); return }
+        let workID = source.id, timeout = iCloudTimeout, reader = reader
+        let identity = identityGate(workID)
         begin(workID, providers.count)
-        var notes: [WorkCardRefusal] = []
+        var loads: [Task<Staged, Never>] = []
         for provider in providers {
-            let result = await take(provider, root: root, workID: workID)
+            let box = WorkUncheckedBox(provider)
+            loads.append(Task { @MainActor in await self.stage(box.value, root: root, workID: workID) })
+        }
+        var notes: [WorkCardRefusal] = []
+        for load in loads {
+            let result: Result<WorkContextFile, WorkCardRefusal>
+            switch await load.value {
+            case .finder(let url):
+                result = await Task.detached { await WorkCardFiles.ingest(url: url, root: root, workID: workID, timeout: timeout, reader: reader, identity: identity) }.value
+            case .copy(let staged, let display, let source):
+                result = await Task.detached { await WorkCardFiles.commit(staged: staged, display: display, source: source, original: nil, root: root, workID: workID, identity: identity) }.value
+            case .web(let url):
+                let stamped = await identity()
+                result = WorkCardFiles.commitWebLink(url, root: root, workID: workID, note: stamped ? nil : WorkCardFiles.unstampedNote)
+            case .refused(let refusal):
+                result = .failure(refusal)
+            }
             notes += settle(result, workID: workID)
             end(workID)
         }
         if !notes.isEmpty { flash(notes, on: workID) }
     }
 
-    private func take(_ provider: NSItemProvider, root: URL, workID: String) async -> Result<WorkContextFile, WorkCardRefusal>? {
-        let timeout = iCloudTimeout, reader = reader
+    /// What a provider handed over, before it is checked and written: a Finder file (copied by the coordinated read), a
+    /// copy already in the card's folder, a web link, or why there is nothing to take.
+    enum Staged { case finder(URL), copy(URL, String, String), web(URL), refused(WorkCardRefusal) }
+
+    private func stage(_ provider: NSItemProvider, root: URL, workID: String) async -> Staged {
         if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-            guard let url = await Self.loadURL(provider), url.isFileURL else { return .failure(.noFile) }
-            return await Task.detached { await WorkCardFiles.ingest(url: url, root: root, workID: workID, timeout: timeout, reader: reader) }.value
+            guard let url = await Self.loadURL(provider), url.isFileURL else { return .refused(.noFile) }
+            return .finder(url)
         }
         let folder: URL
         do { folder = try WorkCardFiles.locked(root: root) { try WorkCardFiles.preparedFolder(root: root, workID: workID) } }
-        catch { return .failure(error as? WorkCardRefusal ?? .store(error.localizedDescription)) }
+        catch { return .refused(error as? WorkCardRefusal ?? .store(error.localizedDescription)) }
         let named = provider.suggestedName.map(WorkCardFiles.cleanDisplay)
         // A promise or a typed file: the first registered type an agent can use, copied into the card's folder.
         let promised = provider.registeredTypeIdentifiers.first { id in
@@ -1524,8 +1559,8 @@ extension WorkCardFiles {
             }
             let ext = UTType(promised)?.preferredFilenameExtension ?? ""
             let display = named.map { name in (name as NSString).pathExtension.isEmpty && !ext.isEmpty ? name + "." + ext : name } ?? ("Dropped file" + (ext.isEmpty ? "" : "." + ext))
-            guard copied else { try? FileManager.default.removeItem(at: staging); return .failure(.copyFailed(display, "The app didn't hand it over.")) }
-            return await Task.detached { await WorkCardFiles.commit(staged: staging, display: display, source: "promise", original: nil, root: root, workID: workID) }.value
+            guard copied else { try? FileManager.default.removeItem(at: staging); return .refused(.copyFailed(display, "The app didn't hand it over.")) }
+            return .copy(staging, display, "promise")
         }
         // Raw image data (an image dragged as data): saved as PNG.
         if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
@@ -1534,16 +1569,15 @@ extension WorkCardFiles {
             }
             let staging = WorkCardFiles.stagingURL(folder)
             let display = ((named.map { ($0 as NSString).deletingPathExtension }) ?? "Dropped image") + ".png"
-            guard let data, let png = Self.pngData(data), (try? png.write(to: staging)) != nil else { return .failure(.copyFailed(display, "The image could not be read.")) }
+            guard let data, let png = Self.pngData(data), (try? png.write(to: staging)) != nil else { return .refused(.copyFailed(display, "The image could not be read.")) }
             _ = chmod(staging.path, 0o600)
-            return await Task.detached { await WorkCardFiles.commit(staged: staging, display: display, source: "data", original: nil, root: root, workID: workID) }.value
+            return .copy(staging, display, "data")
         }
         if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-            guard let url = await Self.loadURL(provider) else { return .failure(.noFile) }
-            if url.isFileURL { return await Task.detached { await WorkCardFiles.ingest(url: url, root: root, workID: workID, timeout: timeout, reader: reader) }.value }
-            return WorkCardFiles.commitWebLink(url, root: root, workID: workID)
+            guard let url = await Self.loadURL(provider) else { return .refused(.noFile) }
+            return url.isFileURL ? .finder(url) : .web(url)
         }
-        return .failure(.noFile)
+        return .refused(.noFile)
     }
     /// Image formats an agent reads as they are; any other image data is saved as PNG.
     nonisolated static let fileImageTypes: [UTType] = [.png, .jpeg, .heic, .heif, .gif, .webP]
@@ -1565,11 +1599,15 @@ extension WorkCardFiles {
     /// `metadata.setdefault("workIdentity", ...)`), so a later rename outside COS keeps the card's id. Nothing is saved
     /// when the stamp fails. Set by the app; off in the preview and in checks that do not set it.
     var stampIdentity: ((String) async -> Bool)?
-    private func ensureIdentity(_ workID: String) async -> Bool {
-        guard let stampIdentity, !isolated else { return true }
+    /// Starts the stamp for a card's first file and returns what each commit waits on (true when no stamp is needed).
+    /// QA round 2: nothing waits for it before copying, and a stamp that fails (a read-only board, a write that did not
+    /// land) still lets the file in, with a quiet note on its row: the orphan clock never deletes now.
+    private func identityGate(_ workID: String) -> WorkCardFiles.IdentityGate {
+        guard let stampIdentity, !isolated else { return { true } }
         reload(workID)
-        guard manifests[workID]?.files.isEmpty ?? true else { return true }
-        return await stampIdentity(workID)
+        guard manifests[workID]?.files.isEmpty ?? true else { return { true } }
+        let stamp = Task { await stampIdentity(workID) }
+        return { await stamp.value }
     }
 
     private func begin(_ workID: String, _ count: Int) { intaking[workID, default: 0] += count }
@@ -2122,7 +2160,7 @@ struct WorkCardFilesSection: View {
             let (word, tint) = Self.stateWord(file)
             let parts = Self.metaParts(file)
             // A companion that failed has its own muted note; the copy stays Ready (QA W7).
-            let notes = file.companions.compactMap(WorkCardFiles.companionNote).joined(separator: " ")
+            let notes = (file.companions.compactMap(WorkCardFiles.companionNote) + [file.note].compactMap { $0 }).joined(separator: " ")
             (Text(word).bold().foregroundColor(tint) + Text(parts.isEmpty ? "" : " \u{00B7} " + parts.joined(separator: " \u{00B7} ")).foregroundColor(COSPalette.muted)
              + Text(notes.isEmpty ? "" : " \u{00B7} " + notes).foregroundColor(COSPalette.muted.opacity(0.75))
              + Text(file.kind == "video" ? " \u{00B7} Transcript: 0.5.255" : "").foregroundColor(COSPalette.muted.opacity(0.6)))

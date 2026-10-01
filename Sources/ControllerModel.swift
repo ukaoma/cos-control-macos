@@ -2861,10 +2861,18 @@ final class ControllerModel: ObservableObject {
     /// board already makes, with the stage the card has: task_write runs `metadata.setdefault("workIdentity", ...)` on
     /// every Work write. No server change. A task already carrying an identity other than its row id was stamped by an
     /// earlier rename through COS, and is left alone. False when the card is not on the board or the write failed.
+    /// QA round 2: on a read-only board nothing is written (the file comes in with a note instead), and the board is read
+    /// once afterwards, in the background (the task's revision changed), never twice and never before the file is in.
     func stampWorkIdentity(_ workID: String) async -> Bool {
-        guard let task = workTasks.first(where: { $0.workSourceID == workID }) else { return false }
+        guard workBoardWritable, let task = workTasks.first(where: { $0.workSourceID == workID }),
+              task.workMetadataError == nil, !task.workRevision.isEmpty else { return false }
         if task.workIdentity != task.id { return true }
-        do { try await setWorkStage(task, stage: task.checked ? "complete" : task.workStage); return true } catch { return false }
+        let payload: [String: Any] = ["domain": task.domain, "id": task.id, "expectedText": task.text, "expectedRevision": task.workRevision,
+                                      "workStage": task.checked ? "complete" : task.workStage]
+        guard let body = try? JSONSerialization.data(withJSONObject: payload),
+              let response = try? await helper.run(["work-set-stage"], timeout: 30, stdinData: body), response.ok else { return false }
+        Task { [weak self] in await self?.loadWorkTasks(force: true) }
+        return true
     }
 
     func setWorkStage(_ task: TaskRow, stage: String) async throws {

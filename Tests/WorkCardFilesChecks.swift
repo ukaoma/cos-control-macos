@@ -865,7 +865,7 @@ extension WorkCardFilesChecks {
     }
 }
 
-@MainActor final class WorkFlagBox { var urls: [URL] = []; var clipboard: String? }
+@MainActor final class WorkFlagBox { var urls: [URL] = []; var clipboard: String?; var at: Date? }
 
 /// Holds a coordinated read back, as iCloud does while it downloads: the reader waits until this presenter lets go.
 final class SlowPresenter: NSObject, NSFilePresenter, @unchecked Sendable {
@@ -1152,15 +1152,42 @@ extension WorkCardFilesChecks {
         var stamps: [String] = []
         var answer = false
         store.stampIdentity = { id in stamps.append(id); return answer }
+        // QA round 2: a stamp that fails (a read-only board, a write that did not land) still lets the file in, with a
+        // quiet note on its row, and no refusal.
         await store.intake(urls: [fx.notes], source: card)
-        check(stamps == [card.id] && store.files(for: card.id).isEmpty, "identity stamp", "a failed stamp must add nothing: \(stamps) \(store.files(for: card.id).count)")
-        check(flashText(store, card.id).hasPrefix("Not added: COS couldn't save this card's identity first"), "identity stamp", flashText(store, card.id))
-        check(WorkCardFiles.readManifest(WorkCardFiles.folder(root: root, workID: card.id)) == nil, "identity stamp", "a manifest was written before the stamp")
-        answer = true
-        await store.intake(urls: [fx.notes], source: card)
-        check(stamps == [card.id, card.id] && store.files(for: card.id).count == 1, "identity stamp", "the stamp comes before the first file: \(stamps)")
+        check(stamps == [card.id] && store.files(for: card.id).count == 1 && store.flashes[card.id] == nil, "identity stamp", "a failed stamp must still add the file: \(stamps) \(flashText(store, card.id))")
+        check(store.files(for: card.id).first?.note == WorkCardFiles.unstampedNote && !WorkCardFiles.unstampedNote.lowercased().contains("refresh"), "identity stamp", "the row's note")
         await store.intake(urls: [fx.png], source: card)
-        check(stamps.count == 2 && store.files(for: card.id).count == 2, "identity stamp", "a card with files is not stamped again: \(stamps)")
+        check(stamps.count == 1 && store.files(for: card.id).count == 2 && store.files(for: card.id)[1].note == nil, "identity stamp", "a card with files is not stamped again: \(stamps)")
+        // The copies run beside the stamp: a promise starts loading, and a Finder file starts copying, before it ends.
+        answer = true
+        let slow = WorkCardFileStore(root: root)
+        let ended = WorkFlagBox()
+        slow.stampIdentity = { _ in try? await Task.sleep(for: .milliseconds(800)); ended.at = Date(); return true }
+        let promised = NSItemProvider()
+        promised.suggestedName = "Photo from Photos"
+        let loadStarted = WorkFlagBox()
+        let pngURL = fx.png
+        promised.registerFileRepresentation(forTypeIdentifier: UTType.png.identifier, fileOptions: [], visibility: .all) { completion in
+            Task { @MainActor in loadStarted.at = Date() }
+            completion(pngURL, false, nil); return nil
+        }
+        let promiseCard = WorkSource(id: "task:quilt:888888888888", title: "P", revision: "r", project: "quilt", context: "c")
+        await slow.intake(providers: [promised], source: promiseCard)
+        let photo = slow.files(for: promiseCard.id).first
+        check(photo != nil && loadStarted.at != nil && ended.at != nil && loadStarted.at! < ended.at!, "identity in parallel",
+              "the promise must load while the stamp runs: load \(String(describing: loadStarted.at)) stamp \(String(describing: ended.at))")
+        check((photo?.addedAt ?? 0) >= (ended.at?.timeIntervalSince1970 ?? .infinity) - 0.01 && photo?.note == nil, "identity in parallel", "the file is written once the stamp is done")
+        let readStarted = WorkFlagBox()
+        ended.at = nil
+        slow.reader = { url, timeout, body in
+            await MainActor.run { readStarted.at = Date() }
+            try await WorkCardFiles.coordinatedRead(url, timeout, body)
+        }
+        let finderCard = WorkSource(id: "task:quilt:999999999999", title: "F", revision: "r", project: "quilt", context: "c")
+        await slow.intake(urls: [fx.notes], source: finderCard)
+        check(readStarted.at != nil && ended.at != nil && readStarted.at! < ended.at! && slow.files(for: finderCard.id).count == 1, "identity in parallel",
+              "a Finder file must start copying while the stamp runs")
         let preview = WorkCardFileStore.preview()
         preview.stampIdentity = { id in stamps.append("preview " + id); return false }
         await preview.intake(urls: [fx.notes], source: card)
