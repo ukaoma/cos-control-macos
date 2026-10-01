@@ -82,6 +82,7 @@ import SwiftUI
         }
 
         let host = CountingHost(rootView: board())
+        host.sizingOptions = ActivityWindowPresenter.hostingSizing   // hosted as the Activity window hosts Work
         let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 1200, height: 900), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = host
@@ -220,6 +221,7 @@ import SwiftUI
     static func render<V: View>(_ view: V, width: CGFloat, name: String, out: URL) throws {
         for appearance in [NSAppearance.Name.darkAqua, .aqua] {
             let host = NSHostingView(rootView: view)
+            host.sizingOptions = ActivityWindowPresenter.hostingSizing
             let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: 900), styleMask: [.borderless], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             window.appearance = NSAppearance(named: appearance); host.appearance = NSAppearance(named: appearance)

@@ -13,6 +13,31 @@ final class ActivityWindowPresenter: NSObject, ObservableObject, NSWindowDelegat
     private var windowController: NSWindowController?
     private weak var model: ControllerModel?
 
+    /// 0.5.254 (Miles, 2026-10-01: resizing Work lagged): the window's content limits are set here, and the hosting
+    /// controller no longer works them out. Its default sizing (.standardBounds) measured the whole Activity tree for its
+    /// minimum and maximum on every layout pass, about half of each resize step. Measured with that sizing for home and
+    /// every tab (Tests/run-activity-sizing.sh measure): minimum 760 x 560, the root frame's own, and no maximum. The
+    /// window holds that minimum itself (ActivityHostWindow); Tests/run-activity-sizing.sh check holds it to what every
+    /// tab needs.
+    static let contentMinSize = NSSize(width: 760, height: 560)
+    static let hostingSizing: NSHostingSizingOptions = []
+
+    /// The Activity window, built and not shown: show() puts it on screen, and the sizing check measures it.
+    static func makeWindow(model: ControllerModel) -> NSWindow {
+        let hostingController = NSHostingController(rootView: ActivityWindow.live(model: model))
+        hostingController.sizingOptions = hostingSizing
+        let window = ActivityHostWindow(contentViewController: hostingController)
+        window.contentFloor = contentMinSize
+        window.title = "COS Activity"
+        window.setContentSize(NSSize(width: 920, height: 680))
+        // 0.5.222 — a CONTENT minimum. `minSize` counts the title bar, so the content could
+        // shrink to about 532 pt while the root view asks for 560, and the root overflowed.
+        window.contentMinSize = contentMinSize
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.isReleasedWhenClosed = false
+        return window
+    }
+
     func show(model: ControllerModel, section: ActivitySection? = nil) {
         self.model = model
         if let section {
@@ -24,15 +49,7 @@ final class ActivityWindowPresenter: NSObject, ObservableObject, NSWindowDelegat
             return
         }
 
-        let hostingController = NSHostingController(rootView: ActivityWindow.live(model: model))
-        let window = NSWindow(contentViewController: hostingController)
-        window.title = "COS Activity"
-        window.setContentSize(NSSize(width: 920, height: 680))
-        // 0.5.222 — a CONTENT minimum. `minSize` counts the title bar, so the content could
-        // shrink to about 532 pt while the root view asks for 560, and the root overflowed.
-        window.contentMinSize = NSSize(width: 760, height: 560)
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.isReleasedWhenClosed = false
+        let window = Self.makeWindow(model: model)
         window.delegate = self
         window.setFrameAutosaveName("COSActivityWindow")
         window.center()
@@ -54,6 +71,18 @@ final class ActivityWindowPresenter: NSObject, ObservableObject, NSWindowDelegat
         // window close must not leave either running against a stale row.
         model?.closeClaudeSession()
         windowController = nil
+    }
+}
+
+/// 0.5.254: the Activity window never takes a content minimum below its floor. With the hosting controller's size
+/// tracking off, the hosting view writes a zero minimum to its window as it lays out (measured: three times while the
+/// window opens and resizes), which let the window shrink to 100 x 100 when asked; before, its own tracking wrote
+/// SwiftUI's 760 x 560 over the explicit minimum each time instead.
+final class ActivityHostWindow: NSWindow {
+    var contentFloor = NSSize.zero { didSet { contentMinSize = super.contentMinSize } }
+    override var contentMinSize: NSSize {
+        get { super.contentMinSize }
+        set { super.contentMinSize = NSSize(width: max(newValue.width, contentFloor.width), height: max(newValue.height, contentFloor.height)) }
     }
 }
 

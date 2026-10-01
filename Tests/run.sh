@@ -22,6 +22,10 @@ mkdir -p "$TMP/home"
 # times and the Work body runs at most 3 times, and each data change during a sweep rebuilds them exactly once. Off
 # screen, in a window that is never ordered in. It runs again in scripts/build-release.sh.
 "$ROOT/Tests/run-work-board-perf.sh" --gate
+# The Activity window sets its own size limits (0.5.254: the hosting controller no longer measures the whole tree for
+# them on every layout pass). For home and every tab it must still hold what the tab needs, at least the 760 x 560
+# measured before, and grow without a limit.
+"$ROOT/Tests/run-activity-sizing.sh" check
 
 node "$ROOT/Tests/MemoryWorkspaceStartup.cjs"
 node "$ROOT/Tests/MemoryOwnerRaces.cjs"
@@ -5565,8 +5569,11 @@ if "    var body: some View {\n        activityFrame\n        .frame(minWidth: 7
     fail("Activity body must mount the extracted frame with its content minimum")
 if not re.search(r"activityHome\n\s*\}\n\s*\}\n(?:\s*//.*\n)*\s*\.frame\(minWidth: 0, maxWidth: \.infinity, minHeight: 0, maxHeight: \.infinity, alignment: \.top\)\n\s*\.clipped\(\)\n\s*\}\n\s*\}\n\s*$", root_body):
     fail("the content under the toolbar must be .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top).clipped()")
-if "window.contentMinSize = NSSize(width: 760, height: 560)" not in activity or "window.minSize =" in activity:
-    fail("the Activity window minimum must be a content size; minSize counts the title bar")
+# 0.5.254: the window holds its pinned content minimum itself (ActivityHostWindow), because the hosting view, no longer
+# tracking sizes, writes a zero minimum as it lays out. Behaviour: Tests/run-activity-sizing.sh check.
+if ("static let contentMinSize = NSSize(width: 760, height: 560)" not in activity or "window.contentMinSize = contentMinSize" not in activity
+        or "window.contentFloor = contentMinSize" not in activity or "window.minSize =" in activity):
+    fail("the Activity window minimum must be a content size held by its floor; minSize counts the title bar")
 held = body(activity, "private var heldGroupsBody: some View {", "private var heldGroupRows: some View {")
 if held.index("uses up the audio") > held.index("if rows > Self.heldGroupInlineRowLimit {"):
     fail("the uses-up-the-audio line must come before the grouped list")

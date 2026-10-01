@@ -1,8 +1,9 @@
 #!/bin/zsh
-# 0.5.254 resize pass, by hand: Tests/ActivitySizing.swift, the Activity window's size limits for every tab and its
+# 0.5.254 resize pass: Tests/ActivitySizing.swift, the Activity window's size limits for every tab and its
 # drawings, built like the app and never ordered in. A scratch home whose path has a space, a dot and a non-ASCII letter:
 # Activity's Work store opens its journal and card folder there, never in the real home.
-#   Tests/run-activity-sizing.sh measure
+#   Tests/run-activity-sizing.sh check      the gate in Tests/run.sh
+#   Tests/run-activity-sizing.sh measure    by hand
 #   Tests/run-activity-sizing.sh render <folder> 760x560 1280x900 1800x900
 set -euo pipefail
 ROOT="${0:A:h:h}"
