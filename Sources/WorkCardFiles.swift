@@ -866,11 +866,15 @@ extension WorkCardFiles {
     /// the lock, or removed. A refusal leaves no entry and no file.
     nonisolated static func commit(staged: URL, display: String, source: String, original: String?, root: URL, workID: String) async -> Result<WorkContextFile, WorkCardRefusal> {
         var movedTo: URL?
+        var staged = staged
         defer { if movedTo == nil { try? FileManager.default.removeItem(at: staged) } }
         let (head, tail, size) = headAndTail(staged)
         let sniffed = sniff(head: head, tail: tail, name: display)
         if refusedAsSecret(name: display, sniff: sniffed) { return .failure(.secret(display)) }
         if refusedAsApp(sniffed) { return .failure(.app) }
+        // The staging copy takes its type's extension: AVFoundation will not read a video from a name without one.
+        let typed = staged.appendingPathExtension(sniffed.ext)
+        if (try? FileManager.default.moveItem(at: staged, to: typed)) != nil { staged = typed }
         guard let sha = try? sha256(of: staged) else { return .failure(.copyFailed(display, "It could not be read.")) }
         let meta = await metadata(staged, kind: sniffed.kind)
         do {
