@@ -31,6 +31,7 @@ import UniformTypeIdentifiers
         try manifestChecks(home)
         try await accessChecks()
         let fixtures = try await Fixtures(home.appendingPathComponent("Fixtures.d", isDirectory: true))
+        try await coordinatedTimeoutChecks(home, fixtures)
         try await intakeChecks(home, fixtures)
         try await providerChecks(home, fixtures)
         try await sendChecks(home, fixtures)
@@ -818,3 +819,38 @@ extension WorkCardFilesChecks {
 }
 
 @MainActor final class WorkFlagBox { var urls: [URL] = []; var clipboard: String? }
+
+/// Holds a coordinated read back, as iCloud does while it downloads: the reader waits until this presenter lets go.
+final class SlowPresenter: NSObject, NSFilePresenter, @unchecked Sendable {
+    let presentedItemURL: URL?
+    let presentedItemOperationQueue = OperationQueue()
+    init(_ url: URL) { presentedItemURL = url }
+    func relinquishPresentedItem(toReader reader: @escaping @Sendable ((@Sendable () -> Void)?) -> Void) {
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) { reader(nil) }
+    }
+}
+
+extension WorkCardFilesChecks {
+    /// The real coordinated reader: a file whose read is held past the deadline is refused in the mock's words, and the
+    /// late read never copies it (no entry, no stray file).
+    static func coordinatedTimeoutChecks(_ home: URL, _ fx: Fixtures) async throws {
+        let id = "task:quilt:222222222222"
+        let card = WorkSource(id: id, title: "Slow", revision: "r1", project: "quilt", context: "c")
+        let store = WorkCardFileStore(root: home.appendingPathComponent("cos-data/work-context", isDirectory: true))
+        let held = fx.dir.appendingPathComponent("Q3 deck held.pdf")
+        try Data("%PDF-1.4 held\n".utf8).write(to: held)
+        let presenter = SlowPresenter(held)
+        NSFileCoordinator.addFilePresenter(presenter)
+        defer { NSFileCoordinator.removeFilePresenter(presenter) }
+        store.iCloudTimeout = 0.3
+        await store.intake(urls: [held], source: card)
+        check(flashText(store, id) == "Not added: iCloud didn't download \u{201C}Q3 deck held.pdf\u{201D} within a minute. Try again once it's downloaded.",
+              "iCloud timeout", "a held read: \(flashText(store, id))")
+        try await Task.sleep(for: .seconds(2))
+        check(store.files(for: id).isEmpty, "iCloud timeout", "a held read was added")
+        noStrays(store, id)
+        let folder = store.folder(for: id)!
+        let leftovers = ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).filter { $0 != "manifest.json" }
+        check(leftovers.isEmpty, "iCloud timeout", "the late read copied: \(leftovers)")
+    }
+}
