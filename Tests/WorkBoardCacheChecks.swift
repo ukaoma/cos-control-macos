@@ -121,6 +121,8 @@ import Foundation
     preview.previewTasks[preview.previewTasks.firstIndex { $0.id == sample.id }!].completed = true
     check(previewItem()?.completed == true, "stale after a preview task change")
     preview.previewTasks[preview.previewTasks.firstIndex { $0.id == sample.id }!].completed = false
+    // Read between the two changes: otherwise the task change's rebuild would also carry the stage (a mutant hid there).
+    check(previewItem()?.completed == false && previewItem()?.task?.workStage != "built", "stale after a preview task change")
     previewState.previewStages[sample.id] = "built"
     check(previewItem()?.task?.workStage == "built", "stale after a preview stage move", "\(String(describing: previewItem()?.task?.workStage))")
     let previewSource = WorkSource.taskSnapshot(previewItem()!.task!)
