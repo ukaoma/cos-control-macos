@@ -14,8 +14,7 @@ import pathlib, shutil, subprocess, sys, time
 F = "Sources/WorkCardFiles.swift"
 MUTANTS = [
     # Refusals (0.5.254).
-    ("secret refusal: .env by name", F, 'if n.hasPrefix(".env") || n.hasSuffix(".env") || n.hasPrefix(".cos-profile.json") { return true }',
-     'if n.hasSuffix(".env") || n.hasPrefix(".cos-profile.json") { return true }', "[secret refusal]"),
+    ("secret refusal: .env by name", F, 'if n.hasPrefix(".env"), !envTemplates.contains(n) { return true }', 'if n.isEmpty { return true }', "[secret refusal]"),
     ("secret refusal: a private key by its bytes", F, 'if ["privateKey", "keychain", "secretText"].contains(sniff.kind) { return true }',
      'if ["keychain", "secretText"].contains(sniff.kind) { return true }', "[secret refusal]"),
     ("cap: the 21st file", F, "if shown.count >= maxFiles { return .cap }", "if shown.count > maxFiles { return .cap }", "[cap]"),
@@ -70,20 +69,19 @@ MUTANTS = [
     ("B2 userinfo: a user alone is not credentials", F, "        return parts.user != nil || parts.password != nil", "        return parts.password != nil", "[link credentials]"),
     ("B2 userinfo: a planted link reaches the block", F, ', !(file.kind == "link" && linkHasCredentials(file.original ?? ""))', "", "[link credentials]"),
     # Fix pass 1, W4: secrets.
-    ("W4 name: *.env is not a secret", F, 'if n.hasPrefix(".env") || n.hasSuffix(".env") || n.hasPrefix(".cos-profile.json") { return true }',
-     'if n.hasPrefix(".env") || n.hasPrefix(".cos-profile.json") { return true }', "[secret names]"),
+    ("W4 name: *.env is not a secret", F, 'if n.hasSuffix(".env") || n.hasPrefix(".cos-profile.json") { return true }', 'if n.hasPrefix(".cos-profile.json") { return true }', "[secret names]"),
     ("W4 name: credentials files", F, 'if ["credentials", ".npmrc", ".netrc", ".pypirc", ".pgpass", ".git-credentials"].contains(n) { return true }', "", "[secret names]"),
-    ("W4 content: dotenv keys pass", F, "            if keyWords.contains(where: { upper.contains($0) }) { return true }\n", "", "[secret content]"),
+    ("W4 content: credential keys pass", F, "        return words.contains { upper == $0 || upper.hasSuffix(\"_\" + $0) }", "        return false", "[secret content]"),
     ("W4 content: an alias's real name is not checked", F, "looksSecret(path: raw.path) || looksSecret(path: url.path), !keynote", "looksSecret(path: raw.path), !keynote", "[secret content]"),
     # Fix pass 1, W5: folders.
     ("W5 roots: the home folder and system folders pass", F, "        if exact.contains(path) { return true }\n", "", "[folder roots]"),
     ("W5 roots: a link to .ssh passes", F, "url.pathComponents.contains(where: { secretFolders.contains($0.lowercased()) })", "url.pathComponents.isEmpty", "[folder roots]"),
-    ("W5 scan: only the top level is read", F, "                    if depth < 2 { queue.append((item, depth + 1, shown + \"/\")) }", "                    if depth < 1 { queue.append((item, depth + 1, shown + \"/\")) }", "[folder scan]"),
+    ("W5 scan: only the top level is read", F, "                    if depth < folderScanDepth { queue.append((item, depth + 1, shown + \"/\")) }", "                    if depth < 1 { queue.append((item, depth + 1, shown + \"/\")) }", "[folder scan]"),
     # Fix pass 1, W1/W2/W3/N1: cleanup and Remove.
     ("W1 orphan: leaving the board deletes", F, "        let due = plan.completedSeenAt.map { now - cleanupClock(manifest, completedSeenAt: $0, newestReceipt: newestReceipt) >= cleanupDays * 86_400 } ?? false",
      "        let due = (plan.completedSeenAt.map { now - cleanupClock(manifest, completedSeenAt: $0, newestReceipt: newestReceipt) >= cleanupDays * 86_400 } ?? false) || (plan.orphanedSeenAt.map { now - $0 >= cleanupDays * 86_400 } ?? false)",
      "[orphan keep]"),
-    ("W1 stamp: the first file is saved without the identity", F, "        guard let stampIdentity, !isolated else { return true }", "        guard let stampIdentity, !isolated, workID.isEmpty else { return true }", "[identity stamp]"),
+    ("W1 stamp: the first file is saved without the identity", F, "        guard let stampIdentity, !isolated else { return { true } }", "        guard let stampIdentity, !isolated, workID.isEmpty else { return { true } }", "[identity stamp]"),
     ("W3 clock: the newest file does not count", F, "        max(completedSeenAt, manifest.files.map(\\.addedAt).max() ?? 0, newestReceipt ?? 0)", "        max(completedSeenAt, newestReceipt ?? 0)", "[cleanup clock]"),
     ("W3 clock: the newest handoff does not count", F, "        max(completedSeenAt, manifest.files.map(\\.addedAt).max() ?? 0, newestReceipt ?? 0)", "        max(completedSeenAt, manifest.files.map(\\.addedAt).max() ?? 0)", "[cleanup clock]"),
     ("W2 in use: a card in flight is deleted", F, "        if due && !inUse { plan.deleteFolder = true; return plan }", "        if due { plan.deleteFolder = true; return plan }", "[cleanup refcount]"),
@@ -99,6 +97,28 @@ MUTANTS = [
     ("W7 companion: a failed companion stops the start", F, "        if file.companions.contains(where: { $0.state == \"preparing\" }) { return (\"preparing\", nil) }\n        return (\"ready\", nil)",
      "        if file.companions.contains(where: { $0.state == \"preparing\" }) { return (\"preparing\", nil) }\n        if file.companions.contains(where: { $0.state == \"failed\" }) { return (\"failed\", \"x\") }\n        return (\"ready\", nil)", "[companion failure]"),
     ("N3 collision: the second folder is lost", F, "        if readManifest(second)?.workSourceID == workID { return second }\n", "", "[folder collision]"),
+    # QA round 2: false refusals.
+    ("R2 placeholder: env references count", F, "        for reference in [\"os.environ\", \"os.getenv\", \"getenv(\", \"process.env\", \"env[\", \"env.fetch\", \"import.meta.env\", \"secrets.\"] where lowerRaw.contains(reference) { return true }\n", "", "[secret placeholders]"),
+    ("R2 placeholder: $1 and ${X} count", F, "        if value.hasPrefix(\"$\") || value.hasPrefix(\"{{\") || (value.hasPrefix(\"%\") && value.hasSuffix(\"%\")) { return true }", "        if value.hasPrefix(\"{{\") || (value.hasPrefix(\"%\") && value.hasSuffix(\"%\")) { return true }", "[secret placeholders]"),
+    ("R2 placeholder: <your key> counts", F, "        if value.hasPrefix(\"<\") && value.hasSuffix(\">\") { return true }", "        if value.isEmpty { return true }", "[secret placeholders]"),
+    ("R2 placeholder: YOUR_API_KEY and xxx count", F, "        for word in [\"your\", \"changeme\",", "        for word in [\"changeme\",", "[secret placeholders]"),
+    ("R2 name: .env.example is a secret", F, 'if n.hasPrefix(".env"), !envTemplates.contains(n) { return true }', 'if n.hasPrefix(".env") { return true }', "secret"),
+    # QA round 2: real values caught.
+    ("R2 shape: sk- keys pass", F, '        #"\\b(sk-(?:proj-|live-|test-)?[A-Za-z0-9_-]{20,})"#,\n', "", "[secret content]"),
+    ("R2 shape: AKIA ids pass", F, '        #"\\b(AKIA[0-9A-Z]{16})\\b"#,\n', "", "[secret content]"),
+    ("R2 shape: user:pass@ in a URL passes", F, '        #"[A-Za-z][A-Za-z0-9+.-]*://[^/\\s:@\'"]+:([^/\\s@\'"]+)@"#,\n', "", "[secret content]"),
+    ("R2 JSON: credential pairs pass", F, "                if credentialKey(String(text[key])), !placeholderValue(\"\\\"\" + text[value] + \"\\\"\") { return true }", "                _ = (key, value)", "[secret content]"),
+    ("R2 YAML: key: value lines pass", F, '(?:=|:(?=\\s))', '(?:=)', "[secret content]"),
+    ("R2 UTF-16: read as audio again", F, "        if b.count >= 2, (b[0] == 0xFF && b[1] == 0xFE) || (b[0] == 0xFE && b[1] == 0xFF) {", "        if b.count >= 2, b.isEmpty {", "[utf16 sniff]"),
+    # QA round 2: the folder scan.
+    ("R2 scan: fails open past the cap", F, "                if seen > folderScanLimit { return .tooBig }", "                if seen > folderScanLimit { return .clean }", "[folder fail closed]"),
+    ("R2 scan: three levels", F, "    nonisolated static let folderScanDepth = 4", "    nonisolated static let folderScanDepth = 3", "[folder scan]"),
+    ("R2 roots: Documents is not too wide", F, '                                  homePath + "/Documents", homePath + "/Desktop", homePath + "/Downloads"]', '                                  homePath + "/Desktop", homePath + "/Downloads"]', "[folder roots]"),
+    # QA round 2: the stamp and Undo.
+    ("R2 stamp: copies wait for the stamp", F, "        let identity = identityGate(workID)\n        begin(workID, urls.count)", "        let identity = identityGate(workID)\n        _ = await identity()\n        begin(workID, urls.count)", "[identity in parallel]"),
+    ("R2 stamp: a failed stamp refuses the file", F, "        let stamped = await identity()\n        do {", "        let stamped = await identity()\n        if !stamped { return .failure(.noFile) }\n        do {", "[identity stamp]"),
+    ("R2 undo: a duplicate is restored", F, "                    manifest.files[index].hiddenAt = Date().timeIntervalSince1970 - WorkCardFiles.removeGrace\n                    refusal = .duplicate(name)", "                    manifest.files[index].hiddenAt = nil; _ = name", "[undo duplicate]"),
+    ("R2 undo: past the cap", F, "                case let other?: refusal = other", "                case .some: manifest.files[index].hiddenAt = nil", "[undo cap]"),
 ]
 
 
