@@ -33,14 +33,15 @@ extension WorkSource {
 }
 
 /// Sends a resolved plan exactly as the Agent workspace does. Shared with the board's Start work overlay (0.5.244).
-@MainActor func sendWorkHandoff(store: WorkHandoffStore, source sendingSource: WorkSource, plan: WorkSendPlan) async {
+/// `resendAllFiles` (0.5.254): a Continue or Fork carries every file on the card again ("Send all N again").
+@MainActor func sendWorkHandoff(store: WorkHandoffStore, source sendingSource: WorkSource, plan: WorkSendPlan, resendAllFiles: Bool = false) async {
     let sendingSession = plan.session, sendingModel = plan.model, sendingPrompt = plan.prompt
     if plan.crossPlatform, let sendingSession, let sendingModel {
         await store.forkToPlatform(source: sendingSource, session: sendingSession, model: sendingModel, prompt: sendingPrompt)
     } else {
         // A plain New session has no source session (a stale selection must not read as a fork).
         await store.submit(source: sendingSource, mode: plan.mode, session: plan.mode == .newSession ? nil : sendingSession,
-                           model: sendingModel, prompt: sendingPrompt)
+                           model: sendingModel, prompt: sendingPrompt, resendAllFiles: resendAllFiles)
     }
 }
 
@@ -193,6 +194,8 @@ struct WorkHandoffView: View {
     @State private var sendBackOpen = false
     @State private var sendBackText = ""
     @State private var sendingBack = false
+    /// 0.5.254: "Send all N again" for this send (a Continue or Fork otherwise carries only files the session lacks).
+    @State private var resendAllFiles = false
     private var draft: WorkHandoffDraft { store.draft(for: source) }
     private var mode: WorkHandoffMode { draft.mode }
     private var sessionID: String { draft.sessionID }
@@ -473,9 +476,8 @@ struct WorkHandoffView: View {
                 HStack {
                     Text("Context to send").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
                     Spacer()
-                    Text(forkToPlatform ? "\(prompt.utf16.count.formatted()) / \(WorkHandoffStore.draftLimit.formatted()) · the conversation fills the rest"
-                                        : "\(prompt.utf16.count.formatted()) / \(WorkHandoffStore.draftLimit.formatted())")
-                        .font(COSType.body(10.5)).foregroundStyle(prompt.utf16.count > WorkHandoffStore.draftLimit ? COSPalette.danger : COSPalette.muted)
+                    WorkContextCounter(files: store.cardFiles, store: store, source: source, prompt: prompt,
+                                       mode: forkToPlatform ? .newSession : mode, sessionID: sessionID, forkToPlatform: forkToPlatform)
                     if prompt != source.suggestedPrompt {
                         Button("Reset") {
                             var next = draft; next.prompt = source.suggestedPrompt
@@ -496,14 +498,22 @@ struct WorkHandoffView: View {
                         .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
                 }
             }
+            // 0.5.254: the card's files, under the context they go with (mock section 2).
+            if WorkCardFileStore.accepts(source) && store.cardFiles.enabled {
+                WorkCardFilesSection(files: store.cardFiles, store: store, source: source, mode: forkToPlatform ? .newSession : mode,
+                                     sessionID: sessionID.isEmpty ? nil : sessionID, sessionTitle: selectedSession?.title,
+                                     provider: mode == .newSession || forkToPlatform ? provider : (selectedSession?.provider ?? ""),
+                                     resendAll: $resendAllFiles, disabled: store.busy || validating)
+            }
             Button {
                 guard let sendingPlan = plan else { return }
-                let sendingSource = source
+                let sendingSource = source, resendAll = resendAllFiles
                 validating = true; onSendingChange?(true)
                 Task {
                     defer { validating = false; onSendingChange?(false) }
                     if let validateBeforeSend, !(await validateBeforeSend()) { return }
-                    await sendWorkHandoff(store: store, source: sendingSource, plan: sendingPlan)
+                    await sendWorkHandoff(store: store, source: sendingSource, plan: sendingPlan, resendAllFiles: resendAll)
+                    resendAllFiles = false
                 }
             } label: {
                 Text(plan?.label ?? "Choose where it goes").lineLimit(1).frame(maxWidth: .infinity)
@@ -775,6 +785,8 @@ enum WorkStartOutcome: Equatable {
 struct WorkStartSheet: View {
     enum Phase: Equatable { case checking, starting(WorkSendPlan, fromAdvice: Bool), confirm(WorkSendPlan, fromAdvice: Bool), chooser }
     @ObservedObject var store: WorkHandoffStore
+    /// 0.5.254: the card's files (store.cardFiles), observed so the row and the countdown follow their copies.
+    @ObservedObject var files: WorkCardFileStore
     let title: String
     let subtitle: String
     let source: WorkSource
@@ -789,6 +801,17 @@ struct WorkStartSheet: View {
     @State private var secondsLeft = WorkHandoffStore.autoStartDelay
 
     private var blocking: WorkHandoffReceipt? { store.receipts(for: source.id).first(where: \.blocksNewHandoff) }
+
+    /// 0.5.254: whether the files let the countdown run, wait, or stop for Miles's call.
+    private func fileCheck(_ plan: WorkSendPlan) -> WorkStartFiles {
+        let handoff = files.handoff(for: source.id, mode: plan.filesMode, sessionID: plan.session?.id, receipts: store.receipts, resendAll: false)
+        return WorkCardFiles.startCheck(handoff, provider: plan.destinationProvider, intaking: files.intaking[source.id] ?? 0,
+                                        folderExists: { FileManager.default.fileExists(atPath: $0) })
+    }
+    private func callLines(_ plan: WorkSendPlan) -> [String] {
+        if case .needsCall(let lines) = fileCheck(plan) { return lines }
+        return []
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -821,10 +844,15 @@ struct WorkStartSheet: View {
                             .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                     }
                 }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 7))
+                WorkStartFilesRow(files: files, store: store, source: source, plan: plan)
                 HStack(spacing: 8) {
                     if sending || store.busy {
                         ProgressView().controlSize(.small)
                         Text("Sending…").font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+                    } else if case .wait(let what) = fileCheck(plan) {
+                        // The countdown waits while a copy is still being made (mock section 2).
+                        Image(systemName: "clock").font(.system(size: 11)).foregroundStyle(COSPalette.muted)
+                        Text("Waits for \(what), then starts and opens the session.").font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
                     } else {
                         Text("Starting in \(secondsLeft) s, then opening the session.").font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
                     }
@@ -857,6 +885,9 @@ struct WorkStartSheet: View {
                         }
                     }
                 }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 7))
+                WorkStartFilesRow(files: files, store: store, source: source, plan: plan)
+                let calls = callLines(plan)
+                if !calls.isEmpty { WorkStartFileAlerts(lines: calls) }
                 Text("Sends the card's context. Nothing is published, and the card stays in its column.")
                     .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                 if let error = store.error { Label(error, systemImage: "exclamationmark.triangle").font(COSType.body(11.5)).foregroundStyle(COSPalette.danger) }
@@ -865,7 +896,7 @@ struct WorkStartSheet: View {
                     Spacer()
                     Button("Change where it goes") { phase = .chooser }.buttonStyle(COSQuietButtonStyle()).disabled(sending || store.busy)
                     Button("Cancel") { onClose() }.buttonStyle(COSQuietButtonStyle()).disabled(sending)
-                    Button { startNow(plan) } label: { Text(plan.verb).lineLimit(1) }
+                    Button { startNow(plan) } label: { Text(calls.isEmpty ? plan.verb : "Send anyway").lineLimit(1) }
                     .buttonStyle(COSPrimaryButtonStyle()).disabled(sending || store.busy)
                 }
             }
@@ -888,10 +919,17 @@ struct WorkStartSheet: View {
         .task(id: phase) {
             guard case let .starting(plan, _) = phase else { return }
             secondsLeft = WorkHandoffStore.autoStartDelay
-            while secondsLeft > 0 {
+            // 0.5.254: the countdown waits while a file's copy is being made, and anything that needs Miles's call (a
+            // local model, a failed file, a folder that is gone) stops it and falls to the confirm.
+            countdown: while true {
                 try? await Task.sleep(for: .seconds(1))
-                guard !Task.isCancelled, case .starting = phase else { return }
-                secondsLeft -= 1
+                guard !Task.isCancelled, case let .starting(_, fromAdvice) = phase else { return }
+                switch WorkCardFiles.countdown(fileCheck(plan), secondsLeft: secondsLeft) {
+                case .stop: phase = .confirm(plan, fromAdvice: fromAdvice); return
+                case .wait: continue
+                case .tick(let left): secondsLeft = left
+                case .send: secondsLeft = 0; break countdown
+                }
             }
             if !sending { startNow(plan) }
         }
@@ -907,7 +945,9 @@ struct WorkStartSheet: View {
             let draft = store.draft(for: source), advice = store.advice(for: source)
             if let start = WorkHandoffStore.startPlan(draft: draft, advice: advice, sessions: store.sessions, models: store.models, hasHistory: hasHistory) {
                 let auto = WorkHandoffStore.autoStartPlan(draft: draft, advice: advice, sessions: store.sessions, models: store.models, hasHistory: hasHistory)
-                phase = auto != nil ? .starting(start.plan, fromAdvice: start.fromAdvice) : .confirm(start.plan, fromAdvice: start.fromAdvice)
+                // 0.5.254: files that need Miles's call never start by themselves.
+                let stops = callLines(start.plan).isEmpty == false
+                phase = auto != nil && !stops ? .starting(start.plan, fromAdvice: start.fromAdvice) : .confirm(start.plan, fromAdvice: start.fromAdvice)
             } else {
                 phase = .chooser
             }

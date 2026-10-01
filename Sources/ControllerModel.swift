@@ -469,6 +469,8 @@ final class ControllerModel: ObservableObject {
             readFresh: { [weak self] in await self?.reloadWorkTasksFresh() ?? false }),
             notify: { [weak self] notice in self?.postWorkNotice(notice) })
         store.opensInApp = workOpensTabs
+        // 0.5.254: card files load, and copies a relaunch interrupted start again (with background work only).
+        store.cardFiles.start()
         // 0.5.252: the glasses request inbox is asked about again whenever the server's version changes.
         tracker.requests.serverVersion = { [weak self] in
             guard let status = self?.status else { return nil }

@@ -125,6 +125,9 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     /// projects both, and an older journal reads them as absent.
     var requestedFrom: String?
     var requestId: String?
+    /// 0.5.254: the card's files this handoff carried (WorkCardFiles.swift), so a Continue or Fork sends only what is new
+    /// and a file stays on disk while a session working on it may read it. Optional, never a new status.
+    var context: [WorkContextRef]?
     /// Server-terminal states never block another handoff: completed, failed, refused, canceled (server job states:
     /// completed | failed | canceled | interrupted; interrupted is recorded as failed).
     nonisolated static let terminalStatuses: Set<String> = ["completed", "failed", "refused", "canceled", "reviewed"]
@@ -263,6 +266,8 @@ struct WorkGlassesRequest: Equatable, Sendable {
     @Published var selectedWorkID: String?
     @Published var selectedSessionID: String?
     let isolated: Bool
+    /// 0.5.254: the files on each card, sent as paths with the handoff. Off (no folder) for a journal a check names.
+    let cardFiles: WorkCardFileStore
     private let storageURL: URL
     private let transport: Transport
     private var storageReady = true
@@ -284,8 +289,10 @@ struct WorkGlassesRequest: Equatable, Sendable {
     private struct DraftIdentity: Hashable { let sourceID: String; let revision: String }
     private static let queueable: Set<String> = ["native_thread_working", "native_target_busy"]
 
-    init(isolated: Bool = false, storageURL: URL? = nil, transport: Transport? = nil) {
+    init(isolated: Bool = false, storageURL: URL? = nil, transport: Transport? = nil, cardFiles: WorkCardFileStore? = nil) {
         self.isolated = isolated
+        // The real store only for the real journal: a preview gets a throwaway folder, a check's journal none.
+        self.cardFiles = cardFiles ?? (isolated ? .preview() : storageURL == nil ? WorkCardFileStore(root: WorkCardFiles.defaultRoot()) : WorkCardFileStore(root: nil))
         let helper = HelperClient()
         self.transport = transport ?? { args, data in
             try await helper.run(args, timeout: args.first == "session-chat-fork" ? 310 : (args.first == "work-new" ? 85 : 45), stdinData: data)
@@ -720,7 +727,9 @@ struct WorkGlassesRequest: Equatable, Sendable {
         guard Self.crossPlatformTargets.contains(model.provider) else {
             error = "Fork to Claude or Codex. A \(Self.providerName(model.provider)) run started from Work has no session to continue yet."; return
         }
-        guard Self.crossPlatformRoom(context: prompt, sessionTitle: session.title, provider: session.provider) >= 500 else {
+        // 0.5.254: the card's files (all of them: this is a New session) take their room first.
+        let fileRoom = WorkCardFiles.blockUnits(cardFiles.handoff(for: source.id, mode: .newSession, sessionID: nil, receipts: receipts, resendAll: true).block)
+        guard Self.crossPlatformRoom(context: prompt, sessionTitle: session.title, provider: session.provider, limit: Self.crossPlatformLimit - fileRoom) >= 500 else {
             error = "The context leaves no room for the conversation. Shorten it, then fork again."; return
         }
         var export = "Sample conversation from \(session.title). No agent was contacted."
@@ -741,7 +750,8 @@ struct WorkGlassesRequest: Equatable, Sendable {
         guard !export.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             error = "That session has no stored conversation to carry over."; return
         }
-        guard let text = Self.crossPlatformPrompt(context: prompt, export: export, sessionTitle: session.title, provider: session.provider) else {
+        guard let text = Self.crossPlatformPrompt(context: prompt, export: export, sessionTitle: session.title, provider: session.provider,
+                                                  limit: Self.crossPlatformLimit - fileRoom) else {
             error = "The context leaves no room for the conversation. Shorten it, then fork again."; return
         }
         await submit(source: source, mode: .newSession, session: session, model: model, prompt: text,
@@ -845,8 +855,9 @@ struct WorkGlassesRequest: Equatable, Sendable {
     /// `row.prompt`, and a fork to another platform is always a New session.
     /// `replacing` names the delivered reply this send answers (Not done yet, Reply by voice): the fence ignores it, and
     /// it is marked reviewed only once the new handoff is on its way (never when the send was refused or failed).
+    /// `resendAllFiles` (0.5.254, "Send all N again"): a Continue or Fork carries every file on the card, not only new ones.
     func submit(source: WorkSource, mode: WorkHandoffMode, session: WorkSession?, model: WorkModelChoice?, prompt: String,
-                journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil, replacing: String? = nil) async {
+                journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil, replacing: String? = nil, resendAllFiles: Bool = false) async {
         guard !busy else { return }
         // 0.5.252: one send at a time. A send for the glasses does not take `busy` (the Agent workspace stays usable).
         guard !quietSend else { if origin == nil { _ = refusedForGlassesSend() }; return }
@@ -869,7 +880,15 @@ struct WorkGlassesRequest: Equatable, Sendable {
             // 0.5.247: the status line the session reports back with, added here so no draft can leave it out.
             let tag = WorkProgress.tag(forWorkID: source.id)
             let instruction = WorkProgress.instruction(tag: tag)
-            let sent = text + instruction
+            // 0.5.254: the card's files go between the text and the instruction, never first and never after the status
+            // line, from the one composer the Agent workspace shows. A Continue or Fork carries only what this session lacks.
+            cardFiles.reload(source.id)
+            let files = cardFiles.handoff(for: source.id, mode: mode, sessionID: mode == .newSession ? nil : session?.id,
+                                          receipts: receipts, resendAll: resendAllFiles)
+            let sent = WorkCardFiles.compose(text: text, block: files.block, instruction: instruction)
+            guard sent.utf16.count - instruction.utf16.count <= Self.draftLimit else {
+                throw failure("The context and the card's file list together are over \(Self.draftLimit.formatted()) characters. Shorten the context, or remove a file from the card.")
+            }
             if mode == .newSession {
                 guard let model, model.available, models.contains(model) else { throw failure("Select an available model from the current catalog.") }
             } else {
@@ -890,16 +909,23 @@ struct WorkGlassesRequest: Equatable, Sendable {
             let destination = mode == .newSession ? model!.provider : session!.provider
             let prefill = Self.prefillProviders.contains(destination) && mode != .fork
             if origin != nil, prefill { throw failure(WorkRequestOrigin.cursorNeedsMac) }
+            // 0.5.254: a Cursor link keeps every path; a file list too long for it is refused before anything is recorded.
+            if prefill, !Self.cursorPrefillFits(sent, tag: tag, instruction: instruction) { throw failure(Self.cursorFilesTooLong) }
             let id = UUID().uuidString.lowercased()
             var row = WorkHandoffReceipt(id: id, workID: source.id, workTitle: source.title, sourceRevision: source.revision,
                 mode: mode, provider: mode == .newSession ? model!.provider : session!.provider,
                 modelID: mode == .newSession ? model!.id : "existing-session", sessionID: mode == .newSession ? nil : session?.id,
                 sessionTitle: mode == .newSession ? source.title : session!.title, status: "sending", detail: "Saving handoff intent",
-                prompt: mode == .newSession ? (journalPrompt ?? text) + instruction : sent, createdAt: Date().timeIntervalSince1970,
+                prompt: mode == .newSession ? WorkCardFiles.compose(text: journalPrompt ?? text, block: files.block, instruction: instruction) : sent,
+                createdAt: Date().timeIntervalSince1970,
                 sourceSessionID: session?.id, serverInstanceID: serverInstanceID)
             if let origin { row.requestedFrom = "glasses"; row.requestId = origin.requestID }
             var progress = WorkProgress(tag: tag)
             progress.record(.sent, Self.sentText(mode: mode, session: session, model: model, prefill: prefill), at: row.createdAt)
+            if !files.sending.isEmpty { row.context = files.refs }
+            // Start now while copies are still being made sends what is ready; the timeline says what was not.
+            let left = files.notReady + files.missing.map { "\u{201C}\($0.display)\u{201D} (its copy is gone)" }
+            if !left.isEmpty { progress.record(.note, "Sent before these were ready: " + left.joined(separator: "; ") + ".", at: row.createdAt) }
             row.progress = progress
             receipts.insert(row, at: 0)
             do { try persist() } catch { receipts.removeAll { $0.id == id }; throw error }
@@ -1269,14 +1295,24 @@ struct WorkGlassesRequest: Equatable, Sendable {
     /// every other once it is sent (the helper keeps only a message's first 400 characters).
     nonisolated static func cursorPrefillHeader(tag: String) -> String { "COS Work handoff \(tag)" }
     nonisolated static let cursorCutMarker = "[COS Control cut this handoff to fit Cursor's link. The whole handoff is on the clipboard.]"
+    nonisolated static let cursorFilesTooLong = "The card's file list is too long for Cursor's link. Remove some files from the card, or send to Claude or Codex."
+    /// Whether the header, the file block, the cut marker and the instruction fit Cursor's link (the body can always be cut).
+    nonisolated static func cursorPrefillFits(_ sent: String, tag: String, instruction: String) -> Bool {
+        let header = cursorPrefillHeader(tag: tag) + "\n\n"
+        if (header + sent).utf16.count <= cursorPrefillLimit { return true }
+        let block = WorkCardFiles.splitBlock(sent.hasSuffix(instruction) ? String(sent.dropLast(instruction.count)) : sent).block
+        return (header + "\n\n" + cursorCutMarker + block + instruction).utf16.count <= cursorPrefillLimit
+    }
     /// What Cursor's box is filled with, and the whole handoff when that had to be cut (nil when it fits). A cut keeps the
     /// first line and the status line, and says it was cut.
+    /// 0.5.254: the card's file block is protected too. The cut keeps the header, the block, the cut marker and the
+    /// instruction, and trims only the body, so every path reaches Cursor.
     nonisolated static func cursorPrefill(_ sent: String, tag: String, instruction: String) -> (text: String, whole: String?) {
         let header = cursorPrefillHeader(tag: tag) + "\n\n"
         let whole = header + sent
         guard whole.utf16.count > cursorPrefillLimit else { return (whole, nil) }
-        let body = sent.hasSuffix(instruction) ? String(sent.dropLast(instruction.count)) : sent
-        let tail = "\n\n" + cursorCutMarker + instruction
+        let (body, block) = WorkCardFiles.splitBlock(sent.hasSuffix(instruction) ? String(sent.dropLast(instruction.count)) : sent)
+        let tail = "\n\n" + cursorCutMarker + block + instruction
         let room = cursorPrefillLimit - header.utf16.count - tail.utf16.count
         var kept = "", used = 0
         for character in body {

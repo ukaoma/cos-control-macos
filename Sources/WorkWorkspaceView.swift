@@ -382,6 +382,10 @@ struct WorkWorkspaceView: View {
     @AppStorage("cos.workLayout") private var layoutRaw = WorkLayout.board.rawValue
     @AppStorage("cos.workSessionsRowCollapsed") private var sessionsCollapsed = false
     @State private var startDropTargeted = false
+    /// 0.5.254: a file is over the session row: Start work says where files go.
+    @State private var startFileHover = false
+    /// The files on each card (WorkCardFiles.swift).
+    private var cardFiles: WorkCardFileStore { handoffStore.cardFiles }
     @State private var columnTarget: WorkBoardStage?
     /// Width of the session row, measured, so the pinned Start work column casts its edge only when cards run under it.
     @State private var sessionsRowWidth: CGFloat = 0
@@ -449,11 +453,14 @@ struct WorkWorkspaceView: View {
         }
         .task {
             if let id = handoffStore.selectedWorkID { state.selectedID = WorkWorkspaceProjection.rowID(forSourceID: id, currentID: state.selectedID, items: items) ?? id }
+            cardFiles.loadIfNeeded()
             guard !handoffStore.isolated else { return }
             await model.loadDomains()
             await model.loadWorkTasks()
             await reviewStore.refresh()
             await model.loadWorkIntake()
+            // 0.5.254: card folders 14 days after the card completes or leaves the board (never in the preview).
+            cardFiles.cleanup(tasks: model.workTasks, inventoryComplete: model.workTasksComplete, receipts: handoffStore.receipts)
             if let id = handoffStore.selectedWorkID { state.selectedID = WorkWorkspaceProjection.rowID(forSourceID: id, currentID: state.selectedID, items: items) ?? id }
         }
         .task(id: scenePhase) {
@@ -724,6 +731,9 @@ struct WorkWorkspaceView: View {
                 }.padding(.horizontal, 18).padding(.bottom, 10)
             }
             sessionsRow
+            // 0.5.254: a file dropped on a column or the session row says where files go, then fades.
+            WorkCardFlashView(files: cardFiles, workID: nil).clipShape(RoundedRectangle(cornerRadius: 7))
+                .padding(.horizontal, 18).padding(.bottom, 10)
             let reviews = visible.filter { $0.review != nil }
             if !reviews.isEmpty {
                 HStack {
@@ -810,16 +820,15 @@ struct WorkWorkspaceView: View {
             // 0.5.246: the whole row is the drop zone ("drag it into the working area"), and Start work lights up while
             // a card is over it. A drop destination inside `.overlay` never receives drops (measured with real mouse
             // drags on this board), which is why the pinned tile alone could not take one.
+            // 0.5.254: it takes the private card type only. A file here is refused with a line and never starts anything.
             .contentShape(Rectangle())
-            .dropDestination(for: String.self) { ids, _ in
-                guard let id = ids.first else { return false }
+            .onDrop(of: WorkCardFiles.boardDropTypes, delegate: WorkBoardDropDelegate(target: .sessionRow, onCard: { id in
                 guard let item = WorkWorkspaceProjection.startable(id: id, items: items) else {
                     if items.contains(where: { $0.id == id }) { state.mutationError = "Only open board cards can be started. A completed card or a meeting review is started from its own page." }
-                    return false
+                    return
                 }
                 openStart(item)
-                return true
-            } isTargeted: { startDropTargeted = $0 }
+            }, onTargeted: { startDropTargeted = $0 }, onFileHover: { startFileHover = $0 }, onRefusedFiles: { cardFiles.flashBoard() }))
             .background(GeometryReader { box in
                 Color.clear.onAppear { sessionsRowWidth = box.size.width }
                     .onChange(of: box.size.width) { _, width in sessionsRowWidth = width }
@@ -929,7 +938,10 @@ struct WorkWorkspaceView: View {
     private func startWorkTarget(empty: Bool, compact: Bool) -> some View {
         VStack(spacing: 6) {
             Text("Start work").font(COSType.body(12.5, weight: .semibold))
-            if !compact {
+            if startFileHover {
+                Text(WorkCardFiles.startTileRefusal)
+                    .font(COSType.body(11)).foregroundStyle(COSPalette.amber).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            } else if !compact {
                 Text(empty ? "Drop a card here to put a session on it. Only sessions Work sent are shown in this row."
                            : "Drop a card here to put a session on it")
                     .font(COSType.body(11)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
@@ -961,20 +973,20 @@ struct WorkWorkspaceView: View {
         }.frame(width: 234).frame(maxHeight: .infinity, alignment: .top)
             .background(targeted ? COSPalette.gold.opacity(0.08) : COSPalette.raised.opacity(0.7), in: RoundedRectangle(cornerRadius: 9))
             .overlay(RoundedRectangle(cornerRadius: 9).stroke(targeted ? COSPalette.gold.opacity(0.8) : COSPalette.line))
-            .dropDestination(for: String.self) { ids, _ in
-                guard let id = ids.first, let task = WorkWorkspaceProjection.stageDrop(id: id, items: items, to: stage) else { return false }
+            // 0.5.254: cards only (the private type). A file here is refused with a line; it never moves or starts anything.
+            .onDrop(of: WorkCardFiles.boardDropTypes, delegate: WorkBoardDropDelegate(target: .column, onCard: { id in
+                guard let task = WorkWorkspaceProjection.stageDrop(id: id, items: items, to: stage) else { return }
                 guard canChangeStage(task) else {
                     state.mutationError = model.workBoardWritable || handoffStore.isolated
                         ? "That card can't move right now. Wait for the current change to finish, or refresh."
                         : "Board is read-only. Stage changes need the connected Work service."
-                    return false
+                    return
                 }
                 // Completing is the one stage change that asks first: a drag is easy to mistake.
                 if stage == .complete { state.pendingComplete = task } else { move(task, to: stage) }
-                return true
-            } isTargeted: { over in
+            }, onTargeted: { over in
                 if over { columnTarget = stage } else if columnTarget == stage { columnTarget = nil }
-            }
+            }, onRefusedFiles: { cardFiles.flashBoard() }))
     }
 
     private func boardCard(_ item: WorkWorkspaceItem) -> some View {
@@ -995,12 +1007,19 @@ struct WorkWorkspaceView: View {
                     }.buttonStyle(.plain).foregroundStyle(COSPalette.accent).padding(.horizontal, 12).padding(.bottom, 10)
                 }
                 Divider().overlay(COSPalette.line)
-                HStack { stageMenu(task); Spacer(minLength: 0) }.padding(.horizontal, 10).padding(.vertical, 6)
+                // 0.5.254 (card face A): the file count sits in the footer that holds the stage menu.
+                HStack { stageMenu(task); Spacer(minLength: 0); WorkCardFilesBadge(files: cardFiles, workID: item.sourceID) }
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                WorkCardFlashView(files: cardFiles, workID: item.sourceID)
             }
         }.background(COSPalette.panel, in: RoundedRectangle(cornerRadius: 7))
+            .clipShape(RoundedRectangle(cornerRadius: 7))
             .overlay(RoundedRectangle(cornerRadius: 7).stroke(Self.cardStroke(asking: asking, running: running, moved: autoMove != nil)))
             .overlay(alignment: .leading) { cardRule(asking: asking, running: running) }
-            .draggable(item.id) {
+            // 0.5.254: the whole card takes files (on the card itself; "Add to card" is drawn over it, never the target).
+            .modifier(WorkCardFileDrop(files: cardFiles, source: item.task.map(WorkSource.taskSnapshot)))
+            // The private card type only: a column or the session row takes it, a card or another app never does.
+            .draggable(WorkCardDrag(id: item.id)) {
                 Text(inlineTitle(item.title)).font(COSType.body(12, weight: .medium)).lineLimit(3).padding(10).frame(width: 210, alignment: .leading)
                     .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 7))
             }
@@ -1082,7 +1101,7 @@ struct WorkWorkspaceView: View {
                     ZStack {
                         // A tap outside closes it, except while a send is being handed over.
                         Color.black.opacity(0.28).contentShape(Rectangle()).onTapGesture { if !state.startSending { state.startItemID = nil } }
-                        WorkStartSheet(store: handoffStore, title: (task.text.isEmpty ? task.title : task.text).replacingOccurrences(of: "**", with: ""),
+                        WorkStartSheet(store: handoffStore, files: handoffStore.cardFiles, title: (task.text.isEmpty ? task.title : task.text).replacingOccurrences(of: "**", with: ""),
                                        subtitle: domainLabel(task.domain) + " · " + WorkBoardStage.stage(for: task).title,
                                        source: .taskSnapshot(task), isPreview: handoffStore.isolated, maxHeight: max(260, box.size.height - 48),
                                        sending: $state.startSending, onOpenSession: { sessionID in state.startItemID = nil; onOpenSession(sessionID) },

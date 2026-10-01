@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 TMP="$(mktemp -d /tmp/cos-work-contracts.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
-SOURCES=(Models HelperClient ControllerModel COSBrand COSMotion COSConfirm Views Control2Foundation WorkHandoffStore WorkProgress WorkProgressTracker WorkTrackingViews WorkHandoffView WorkReviewStore WorkWorkspaceView ActivityWindow ActivityMeetings COSMarkdownParser COSMarkdown SessionLiveFeed SessionPet)
+SOURCES=(Models HelperClient ControllerModel COSBrand COSMotion COSConfirm Views Control2Foundation WorkHandoffStore WorkProgress WorkCardFiles WorkProgressTracker WorkTrackingViews WorkHandoffView WorkReviewStore WorkWorkspaceView ActivityWindow ActivityMeetings COSMarkdownParser COSMarkdown SessionLiveFeed SessionPet)
 FILES=()
 for source in $SOURCES; do FILES+=("$ROOT/Sources/$source.swift"); done
 swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \

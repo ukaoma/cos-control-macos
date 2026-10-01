@@ -88,7 +88,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/COSMotion.swift" \
   "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" \
-  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/ActivityWindow.swift" \
+  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" \
@@ -130,7 +130,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
-  "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
+  "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" \
   "$ROOT/Sources/SessionPet.swift" \
@@ -1007,9 +1007,11 @@ assert "if stage == .complete { state.pendingComplete = task }" in col, "a drop 
 row = body(wwv, "private var sessionsRow: some View {", "private func sessionCard(")
 assert "WorkWorkspaceProjection.startable(id: id, items: items)" in row and "openStart(item)" in row, "the session row must validate a dropped card, then open the overlay"
 assert "sendWorkHandoff" not in row and "submit(" not in row, "a drop must never send"
-drop_at = row.index(".dropDestination(for: String.self)"); overlay_at = row.index(".overlay(alignment: .topTrailing)")
-assert drop_at > overlay_at and ".dropDestination(" not in row[overlay_at:drop_at], "the drop zone must sit on the row itself: a drop destination inside .overlay never receives drops (0.5.246)"
-assert ".dropDestination(" not in body(wwv, "private func startWorkTarget(", "private func boardColumn("), "the Start work tile must not carry its own drop destination"
+# 0.5.254: the row takes the private card type through a drop delegate (a file there is refused with a line).
+drop_at = row.index(".onDrop(of: WorkCardFiles.boardDropTypes, delegate: WorkBoardDropDelegate(target: .sessionRow"); overlay_at = row.index(".overlay(alignment: .topTrailing)")
+assert drop_at > overlay_at and ".dropDestination(" not in row[overlay_at:drop_at] and ".onDrop(" not in row[overlay_at:drop_at], "the drop zone must sit on the row itself: a drop destination inside .overlay never receives drops (0.5.246)"
+tile = body(wwv, "private func startWorkTarget(", "private func boardColumn(")
+assert ".dropDestination(" not in tile and ".onDrop(" not in tile, "the Start work tile must not carry its own drop destination"
 assert "state.startItemID = item.id" in body(wwv, "private func openStart(", "@ViewBuilder private var startOverlay")
 assert "if let id = state.startItemID" in wwv and ".overlay { startOverlay }" in wwv, "the overlay must render from its route flag"
 esc = body(wwv, ".onExitCommand {", ".onChange(of: reviewStore.selectedReviewID)")
@@ -1033,7 +1035,7 @@ for fn in ["private func goHome() {", "private func goBack() {", "private func c
     assert "if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }" in aw[aw.index(fn):aw.index(fn) + 320].split("\n")[2], fn + " must close the Start work overlay unless a send is being handed over"
 assert ".sheet(" not in wwv and ".sheet(" not in whv, "Work overlays are inline, never sheets"
 board_card = body(wwv, "private func boardCard(", "private func canChangeStage(")
-assert "Button { select(item) }" not in board_card and ".onTapGesture { select(item) }" in board_card and ".draggable(item.id)" in board_card, "a board card must be a tap gesture, not a Button: a Button swallows the drag (0.5.246)"
+assert "Button { select(item) }" not in board_card and ".onTapGesture { select(item) }" in board_card and ".draggable(WorkCardDrag(id: item.id))" in board_card, "a board card must be a tap gesture, not a Button: a Button swallows the drag (0.5.246)"
 assert "WorkHandoffStore.autoStartPlan(" in sheet and "? .starting(start.plan" in sheet, "a drop that meets every criterion must start by itself"
 assert "if let sessionID = store.receipts(for: source.id).first?.sessionID { onOpenSession(sessionID) }" in sheet, "a started drop opens its session"
 PY
@@ -1046,8 +1048,9 @@ store, progress, tracker, model, aw, views, wwv = (open(p).read() for p in sys.a
 def body(src, start, end):
     i = src.index(start); return src[i:src.index(end, i)]
 submit = body(store, "    func submit(source: WorkSource", "    /// The first line of a handoff's Progress timeline.")
-assert "let sent = text + instruction" in submit and '"query": sent' in submit and "Data(sent.utf8)" in submit, "every send must carry the status-line instruction"
-assert "(journalPrompt ?? text) + instruction : sent" in submit, "the receipt must keep what was sent (Continue resends it)"
+# 0.5.254: the card's file block goes between the text and the instruction (WorkCardFiles.compose), so the instruction stays last.
+assert "let sent = WorkCardFiles.compose(text: text, block: files.block, instruction: instruction)" in submit and '"query": sent' in submit and "Data(sent.utf8)" in submit, "every send must carry the status-line instruction"
+assert "WorkCardFiles.compose(text: journalPrompt ?? text, block: files.block, instruction: instruction) : sent" in submit, "the receipt must keep what was sent (Continue resends it)"
 assert "text.utf16.count <= Self.draftLimit" in submit, "the draft limit leaves room for the instruction"
 target = body(progress, "nonisolated static func target(for kind:", "/// Forward only")
 assert 'case .received: return "draft"; case .done: return "qa"' in target and '"complete"' not in target, "automatic moves go as far as QA, never Complete"
@@ -2467,7 +2470,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/COSMotion.swift" \
   "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" \
-  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/ActivityWindow.swift" \
+  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" \
