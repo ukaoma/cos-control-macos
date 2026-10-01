@@ -254,6 +254,14 @@ struct WorkWorkspaceItem: Identifiable {
     var sourceID: String { review?.source.id ?? id }
 }
 
+/// 0.5.254 resize pass: counts read by Tests/WorkBoardResizePerf.swift (how often the board's projection is built and
+/// the Work view's body runs). Plain counters; nothing in the app reads them.
+enum WorkBoardMetrics {
+    nonisolated(unsafe) static var projections = 0
+    nonisolated(unsafe) static var bodies = 0
+    static func countBody() { bodies += 1 }
+}
+
 enum WorkWorkspaceProjection {
     static func previewRows(_ samples: [Control2PreviewTask], stages: [String: String] = [:]) -> [TaskRow] {
         samples.compactMap { row in TaskRow(.object([
@@ -279,6 +287,7 @@ enum WorkWorkspaceProjection {
     }
 
     static func items(tasks: [TaskRow], reviews: [WorkReviewRecord], receipts: [WorkHandoffReceipt], sessions: [WorkSession] = []) -> [WorkWorkspaceItem] {
+        WorkBoardMetrics.projections += 1
         let taskItems = tasks.map { task in
             let source = WorkSource.taskSnapshot(task)
             let activity = WorkActivityProjection.latest(workID: source.id, revision: source.revision, receipts: receipts, sessions: sessions)
@@ -403,6 +412,7 @@ struct WorkWorkspaceView: View {
     }
 
     var body: some View {
+        let _ = WorkBoardMetrics.countBody()
         GeometryReader { geometry in
             VStack(spacing: 0) {
                 header
