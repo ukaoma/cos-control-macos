@@ -826,6 +826,27 @@ extension WorkCardFilesChecks {
         files.undoRemove(image.id, workID: workID)
         check(files.files(for: workID).map(\.id) == [image.id], "remove hides", "Undo puts it back")
         files.remove(image.id, workID: workID)
+        // QA round 2: Undo after the same file came back drops the hidden one instead of making a second copy.
+        let dupCard = WorkSource(id: "task:quilt:abcabcabcabc", title: "D", revision: "r", project: "quilt", context: "c")
+        await files.intake(urls: [fx.png], source: dupCard)
+        let first = files.files(for: dupCard.id)[0]
+        files.remove(first.id, workID: dupCard.id)
+        await files.intake(urls: [fx.png], source: dupCard)
+        files.undoRemove(first.id, workID: dupCard.id)
+        check(files.files(for: dupCard.id).count == 1 && flashText(files, dupCard.id).hasPrefix("Already on this card as"), "undo duplicate",
+              "Undo made a second copy: \(files.files(for: dupCard.id).count) \(flashText(files, dupCard.id))")
+        check(files.recentlyRemoved(for: dupCard.id).isEmpty, "undo duplicate", "the dropped entry still offers Undo")
+        // Undo keeps to the cap.
+        let capCard = WorkSource(id: "task:quilt:cdecdecdecde", title: "C", revision: "r", project: "quilt", context: "c")
+        var many: [URL] = []
+        for index in 0...WorkCardFiles.maxFiles { let url = fx.dir.appendingPathComponent("cap \(index).txt"); try Data("cap \(index)".utf8).write(to: url); many.append(url) }
+        await files.intake(urls: Array(many.prefix(WorkCardFiles.maxFiles)), source: capCard)
+        let gone = files.files(for: capCard.id)[0]
+        files.remove(gone.id, workID: capCard.id)
+        await files.intake(urls: [many[WorkCardFiles.maxFiles]], source: capCard)
+        files.undoRemove(gone.id, workID: capCard.id)
+        check(files.files(for: capCard.id).count == WorkCardFiles.maxFiles && flashText(files, capCard.id) == WorkCardRefusal.cap.message, "undo cap",
+              "Undo went past the cap: \(files.files(for: capCard.id).count) \(flashText(files, capCard.id))")
         // The next cleanup within the grace keeps both; after it, only the file no handoff carried goes.
         await files.cleanup(tasks: [task], inventoryComplete: true, receipts: [sent])
         check(exists(note) && exists(image), "remove hides", "a cleanup inside the Undo grace deleted a file")

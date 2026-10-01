@@ -1685,8 +1685,29 @@ extension WorkCardFiles {
     func remove(_ fileID: String, workID: String) {
         setHidden(fileID, workID: workID, at: Date().timeIntervalSince1970)
     }
-    /// Undo: the file is back on the card, as it was.
-    func undoRemove(_ fileID: String, workID: String) { setHidden(fileID, workID: workID, at: nil) }
+    /// Undo: the file is back on the card, as it was. QA round 2: when the same file (same contents) is on the card again,
+    /// the hidden one is dropped from the card instead (its Undo goes, and cleanup's rules then apply to it); Undo also
+    /// keeps to the 20 files and 2 GB, with the cap's own words.
+    func undoRemove(_ fileID: String, workID: String) {
+        guard let root else { return }
+        var refusal: WorkCardRefusal?
+        do {
+            try WorkCardFiles.update(root: root, workID: workID) { manifest, _ in
+                guard let index = manifest.files.firstIndex(where: { $0.id == fileID }), manifest.files[index].hiddenAt != nil else { return }
+                let file = manifest.files[index]
+                switch WorkCardFiles.admission(manifest, bytes: file.isLink ? 0 : file.bytes, sha256: file.sha256) {
+                case nil: manifest.files[index].hiddenAt = nil
+                case .duplicate(let name)?:
+                    manifest.files[index].hiddenAt = Date().timeIntervalSince1970 - WorkCardFiles.removeGrace
+                    refusal = .duplicate(name)
+                case let other?: refusal = other
+                }
+            }
+            error = nil
+        } catch { self.error = (error as? WorkCardRefusal)?.message ?? error.localizedDescription }
+        reload(workID)
+        if let refusal { flash([refusal], on: workID) }
+    }
     private func setHidden(_ fileID: String, workID: String, at: Double?) {
         guard let root else { return }
         do {
