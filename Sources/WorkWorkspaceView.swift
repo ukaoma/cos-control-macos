@@ -281,12 +281,15 @@ struct WorkWorkspaceItem: Identifiable {
     var sourceID: String { review?.source.id ?? id }
 }
 
-/// 0.5.254 resize pass: counts read by Tests/WorkBoardResizePerf.swift (how often the board's projection is built and
-/// the Work view's body runs). Plain counters; nothing in the app reads them.
+/// 0.5.254 resize pass: counts read by Tests/WorkBoardResizePerf.swift (how often the board's projection is built, the
+/// Work view's body runs, and the board itself is evaluated, which a GeometryReader around the body would redo on every
+/// step without running the body). Plain counters; nothing in the app reads them.
 enum WorkBoardMetrics {
     nonisolated(unsafe) static var projections = 0
     nonisolated(unsafe) static var bodies = 0
+    nonisolated(unsafe) static var boards = 0
     static func countBody() { bodies += 1 }
+    static func countBoard() { boards += 1 }
 }
 
 /// 0.5.254 resize pass: what the board's rows are built from. Each count is an epoch its source bumps on every change
@@ -802,7 +805,8 @@ struct WorkWorkspaceView: View {
     /// 0.5.244 Board: the sessions doing the work, then the Kanban. Cards drag between columns (stage) and onto
     /// Start work (confirm, then send). Nothing runs on a drop.
     private var dashboard: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        WorkBoardMetrics.countBoard()
+        return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(boardName).font(COSType.display(23, weight: .medium))

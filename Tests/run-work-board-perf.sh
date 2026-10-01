@@ -1,9 +1,10 @@
 #!/bin/zsh
-# 0.5.254 resize pass, by hand only (never a gate): Tests/WorkBoardResizePerf.swift, the Work board with 268 tasks resized
+# 0.5.254 resize pass: Tests/WorkBoardResizePerf.swift, the Work board with 268 tasks resized
 # 1200 to 1900 pt in a window that is never ordered in. Built like the release (scripts/build-release.sh: no -O), with a
 # scratch home and a stand-in helper beside the binary that replays the fixture JSON the harness writes. No server, no
 # provider, nothing clicked, typed or dragged.
-#   Tests/run-work-board-perf.sh <label>                  the timings
+#   Tests/run-work-board-perf.sh --gate                   the gate (Tests/run.sh, scripts/build-release.sh): counts, not ms
+#   Tests/run-work-board-perf.sh <label>                  the timings, by hand
 #   Tests/run-work-board-perf.sh <label> <folder>         PNGs of the board at 1280, 1800 and 820 pt, light and dark
 set -euo pipefail
 ROOT="${0:A:h:h}"

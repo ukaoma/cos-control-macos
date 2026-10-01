@@ -21,6 +21,9 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 # drives the UI or touches the desktop (Tests/desktop-safety-check.py, with its self-test), checked before anything is built.
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT"
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT" --selftest
+# 0.5.254: a build whose Work board rebuilds itself on a resize is not released (Tests/run-work-board-perf.sh; counts,
+# never milliseconds).
+"$ROOT/Tests/run-work-board-perf.sh" --gate
 
 rm -rf "$ZIP" "$ZIP.sha256"
 mkdir -p "$BUILD_DIR" "$APP/Contents/MacOS" "$APP/Contents/Resources" "$DIST_DIR"

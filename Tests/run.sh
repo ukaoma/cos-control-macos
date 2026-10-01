@@ -17,6 +17,12 @@ mkdir -p "$TMP/home"
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT"
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT" --selftest
 
+# 0.5.254 (Miles, 2026-10-01 08:44: resizing Work with 268 tasks lagged; the board was rebuilt 27 times on each step).
+# A hard gate on counts, never milliseconds: over a 1200 to 1900 pt sweep of a 268-task board the rows are rebuilt 0
+# times and the Work body runs at most 3 times, and each data change during a sweep rebuilds them exactly once. Off
+# screen, in a window that is never ordered in. It runs again in scripts/build-release.sh.
+"$ROOT/Tests/run-work-board-perf.sh" --gate
+
 node "$ROOT/Tests/MemoryWorkspaceStartup.cjs"
 node "$ROOT/Tests/MemoryOwnerRaces.cjs"
 node "$ROOT/Tests/MemoriesAppliedCanary.cjs"
