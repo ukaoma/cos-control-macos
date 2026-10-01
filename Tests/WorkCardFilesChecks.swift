@@ -852,5 +852,17 @@ extension WorkCardFilesChecks {
         let folder = store.folder(for: id)!
         let leftovers = ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).filter { $0 != "manifest.json" }
         check(leftovers.isEmpty, "iCloud timeout", "the late read copied: \(leftovers)")
+        // The race: the read is granted after the deadline (the grant and the cancel crossed). It must not copy.
+        let raced = fx.dir.appendingPathComponent("Q3 deck raced.pdf")
+        try Data("%PDF-1.4 raced\n".utf8).write(to: raced)
+        let racer = SlowPresenter(raced)
+        NSFileCoordinator.addFilePresenter(racer)
+        defer { NSFileCoordinator.removeFilePresenter(racer) }
+        store.reader = { url, timeout, body in try await WorkCardFiles.coordinated(url, timeout: timeout, cancelOnTimeout: false, body: body) }
+        await store.intake(urls: [raced], source: card)
+        check(flashText(store, id).contains("Q3 deck raced.pdf") && flashText(store, id).contains("within a minute"), "iCloud timeout", "a raced read: \(flashText(store, id))")
+        try await Task.sleep(for: .seconds(2.5))
+        let raceLeftovers = ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).filter { $0 != "manifest.json" }
+        check(store.files(for: id).isEmpty && raceLeftovers.isEmpty, "iCloud timeout", "a read granted after the deadline copied: \(raceLeftovers)")
     }
 }

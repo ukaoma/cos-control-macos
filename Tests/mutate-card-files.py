@@ -97,8 +97,8 @@ def main():
         shutil.copytree(src / part, copy / part)
     shutil.copy(src / "CHANGELOG.md", copy / "CHANGELOG.md")
     code, out, seconds = suite(copy)
-    tail = out.strip().splitlines()[-1:] if out.strip() else ["(no output)"]
-    print(f"BASELINE (unmutated): exit {code} in {seconds:.0f}s: {tail[0][:200]}", flush=True)
+    passed = [l for l in out.splitlines() if l.startswith("PASS:") or "wiring pinned" in l]
+    print(f"BASELINE (unmutated): exit {code} in {seconds:.0f}s: {' / '.join(p[:120] for p in passed) or '(no PASS line)'}", flush=True)
     if code != 0:
         sys.exit("baseline is not green; no mutant may be judged against a red suite")
     killed, survived, rows = 0, 0, []

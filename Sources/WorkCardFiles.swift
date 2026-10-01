@@ -694,6 +694,11 @@ extension WorkCardFiles {
     }
     /// A coordinated read, so an iCloud placeholder is downloaded first; `body` runs while the read is held.
     nonisolated static let coordinatedRead: Reader = { url, timeout, body in
+        try await coordinated(url, timeout: timeout, cancelOnTimeout: true, body: body)
+    }
+    /// At the deadline the pending read is cancelled, and a read granted anyway (the grant and the cancel can cross)
+    /// never runs `body`: the gate refuses a start after the deadline. `cancelOnTimeout: false` is that race, for checks.
+    nonisolated static func coordinated(_ url: URL, timeout: TimeInterval, cancelOnTimeout: Bool, body: @escaping @Sendable (URL) throws -> Void) async throws {
         if (try? url.resourceValues(forKeys: [.isUbiquitousItemKey]))?.isUbiquitousItem == true {
             try? FileManager.default.startDownloadingUbiquitousItem(at: url)
         }
@@ -706,7 +711,7 @@ extension WorkCardFiles {
                 guard gate.begin() else { return }
                 gate.finish(Result { try body(intent.value.url) })
             }
-        }, onTimeout: { coordinator.value.cancel() })
+        }, onTimeout: { if cancelOnTimeout { coordinator.value.cancel() } })
     }
 
     // MARK: The store on disk
