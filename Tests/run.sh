@@ -1137,6 +1137,11 @@ PY
 # The tracker's behaviour: status lines, delivery, stages, Jev gating, retries, a busy journal (synthetic transport and board).
 "$ROOT/Tests/run-work-progress.sh"
 
+# ── 0.5.254: files on a Work card ─────────────────────────────────────────────
+# Behaviour, executed against real fixtures (Tests/run-work-card-files.sh), then the wiring the compiled-only views hide.
+"$ROOT/Tests/run-work-card-files.sh"
+/usr/bin/python3 "$ROOT/Tests/work-card-files-pins.py" "$ROOT"
+
 # ── 0.5.252: glasses requests (server 6.59.0 inbox) ─────────────────────────────
 # Behaviour: Tests/run-work-progress.sh test 22 (claim race, expiry, a late claim, a changed task, a missing destination,
 # submit's refusal passed back, an app-owned Continue refused with no clipboard, Not done yet, an older server, result

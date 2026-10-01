@@ -13,6 +13,7 @@ fails when any Swift file under Tests/:
     any CGEvent, posting one (post(tap:), postToPid, CGEventPost), moving the pointer, or calling a view's own mouse, key or
     scroll handler with an event;
   - plays a sound (NSSound, NSBeep, AudioServicesPlay...);
+  - opens a file panel or Quick Look (NSOpenPanel, NSSavePanel, QLPreviewPanel, .quickLookPreview), 0.5.254;
   - adds a MenuBarExtra or a status item outside the hand-run fence canary, or a WindowGroup outside the lab app a person
     runs by hand;
 and when a gate script sets a desktop opt-in variable or runs a hand-run canary.
@@ -38,6 +39,8 @@ RULES = (
     (r"\.\s*(mouseDown|mouseUp|mouseMoved|mouseDragged|rightMouseDown|keyDown|keyUp|scrollWheel|flagsChanged)\s*\(\s*with\s*:",
      "calls a view's own event handler with an event"),
     (r"(?<![A-Za-z0-9_])(NSSound|NSBeep|AudioServicesPlaySystemSound|AudioServicesPlayAlertSound)(?![A-Za-z0-9_])", "plays a sound"),
+    # 0.5.254: the Files section's Add files… and Quick Look are never opened by a test: intake is called with URLs.
+    (r"(?<![A-Za-z0-9_])(NSOpenPanel|NSSavePanel|QLPreviewPanel)(?![A-Za-z0-9_])|\.\s*quickLookPreview\s*\(", "opens a file panel or Quick Look"),
 )
 
 def code_lines(text):
@@ -108,6 +111,9 @@ def selftest(root):
         "a pointer warp": (S, "import AppKit\nfunc z() { CGWarpMouseCursorPosition(.zero) }\n"),
         "a view's handler called with an event": (S, "import AppKit\n@MainActor func z(v: NSView, e: NSEvent) { v.mouseMoved(with: e) }\n"),
         "a sound": (S, "import AppKit\nfunc z() { NSSound.beep() }\n"),
+        "an open panel": (S, "import AppKit\n@MainActor func z() { _ = NSOpenPanel().runModal() }\n"),
+        "a Quick Look panel": (S, "import Quartz\n@MainActor func z() { QLPreviewPanel.shared()?.reloadData() }\n"),
+        "a Quick Look preview": (S, "import SwiftUI\nimport QuickLook\nstruct Z: View { @State var u: URL?; var body: some View { Text(\"x\").quickLookPreview($u) } }\n"),
         "a status item": (S, "import AppKit\n@MainActor func z() { _ = NSStatusBar.system.statusItem(withLength: 20) }\n"),
         "an app window": (S, "import SwiftUI\nstruct Z: App { var body: some Scene { WindowGroup { Text(\"x\") } } }\n"),
         "a gate that sets the opt-in": ("Tests/zz-gate.sh", "#!/bin/zsh\nCOS_DESKTOP_CANARY=1 ./x\n"),
