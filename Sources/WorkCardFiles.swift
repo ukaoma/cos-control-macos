@@ -331,40 +331,112 @@ enum WorkCardFiles {
     /// .pypirc, .pgpass, .git-credentials, and the folders .ssh, .gnupg, .aws and Keychains.
     nonisolated static func looksSecret(name: String) -> Bool {
         let n = name.lowercased()
-        if n.hasPrefix(".env") || n.hasSuffix(".env") || n.hasPrefix(".cos-profile.json") { return true }
+        // QA round 2: the example files projects check in are not secrets (their contents are still read).
+        if n.hasPrefix(".env"), !envTemplates.contains(n) { return true }
+        if n.hasSuffix(".env") || n.hasPrefix(".cos-profile.json") { return true }
         if ["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"].contains(where: { n.hasPrefix($0) }) { return true }
         if [".pem", ".key", ".p12", ".pfx", ".ppk", ".kdbx", ".keychain", ".keychain-db"].contains(where: { n.hasSuffix($0) }) { return true }
         if ["credentials", ".npmrc", ".netrc", ".pypirc", ".pgpass", ".git-credentials"].contains(n) { return true }
         return secretFolders.contains(n)
     }
     nonisolated static let secretFolders: Set<String> = [".ssh", ".gnupg", ".aws", "keychains"]
+    nonisolated static let envTemplates: Set<String> = [".env.example", ".env.sample", ".env.template"]
     /// A path whose name, or (for a Docker login) whose folder and name, look like a secret: `.docker/config.json`.
     nonisolated static func looksSecret(path: String) -> Bool {
         let url = URL(fileURLWithPath: path)
         if looksSecret(name: url.lastPathComponent) { return true }
         return url.lastPathComponent.lowercased() == "config.json" && url.deletingLastPathComponent().lastPathComponent.lowercased() == ".docker"
     }
-    /// Text that holds a secret: a dotenv line whose key names a token, secret, password, API key, private key or access
-    /// key; an AWS credentials block; an npm auth token; a netrc entry with a password.
+    /// Text that holds a secret value (QA round 2). A credential key (`API_TOKEN=`, `apiKey:`, `"password":`) counts only
+    /// with a real value: a reference (`os.environ[...]`, `process.env.X`, `"$1"`, `${X}`), a placeholder (`<your key>`,
+    /// `YOUR_API_KEY`, `xxx`, `changeme`), code, a number or nothing is not one. Real values are also caught anywhere by
+    /// their shape: `sk-` and `sk_live_` keys, `AKIA` ids, GitHub, Slack and HubSpot tokens, a URL with `user:pass@`, an
+    /// npm `_authToken`, a netrc password.
     nonisolated static func secretContent(_ text: String) -> Bool {
-        let keyWords = ["TOKEN", "SECRET", "PASSWORD", "PASSWD", "API_KEY", "APIKEY", "PRIVATE_KEY", "ACCESS_KEY"]
-        for raw in text.split(whereSeparator: \.isNewline).prefix(4_000) {
-            var line = raw.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("export ") { line = String(line.dropFirst(7)).trimmingCharacters(in: .whitespaces) }
-            guard let eq = line.firstIndex(of: "="), eq != line.startIndex else { continue }
-            let key = line[..<eq].trimmingCharacters(in: .whitespaces)
-            let value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
-            guard !value.isEmpty, key.range(of: "^[A-Za-z_][A-Za-z0-9_.-]*$", options: .regularExpression) != nil else { continue }
-            let upper = key.uppercased()
-            if keyWords.contains(where: { upper.contains($0) }) { return true }
+        let lines = text.split(whereSeparator: \.isNewline).prefix(4_000)
+        for raw in lines {
+            if let (key, value) = assignment(String(raw)), credentialKey(key), !placeholderValue(value) { return true }
         }
-        let lower = text.lowercased()
-        if lower.contains("aws_access_key_id") || lower.contains("_authtoken") { return true }
+        // JSON pairs, several to a line.
+        if let json = try? NSRegularExpression(pattern: #""([A-Za-z0-9_.-]+)"\s*:\s*"([^"\\]*)""#) {
+            for match in json.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+                guard let key = Range(match.range(at: 1), in: text), let value = Range(match.range(at: 2), in: text) else { continue }
+                if credentialKey(String(text[key])), !placeholderValue("\"" + text[value] + "\"") { return true }
+            }
+        }
+        for pattern in secretShapes {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+                let group = match.numberOfRanges > 1 && match.range(at: 1).location != NSNotFound ? match.range(at: 1) : match.range
+                guard let range = Range(group, in: text) else { continue }
+                if !placeholderValue("\"" + text[range] + "\"") { return true }
+            }
+        }
         // netrc: an entry line ("machine host ...") and a password on that line or on its own line. Prose that says
         // "machine learning" and "password reset" mid-sentence does not start its lines that way.
-        let lines = lower.split(whereSeparator: \.isNewline).prefix(4_000).map { $0.trimmingCharacters(in: .whitespaces) }
-        let entry = lines.contains { $0.hasPrefix("machine ") || $0 == "default" || $0.hasPrefix("default ") }
-        return entry && lines.contains { $0.hasPrefix("password ") || (($0.hasPrefix("machine ") || $0.hasPrefix("default ")) && $0.contains(" password ")) }
+        let lower = lines.map { $0.lowercased().trimmingCharacters(in: .whitespaces) }
+        let entry = lower.contains { $0.hasPrefix("machine ") || $0 == "default" || $0.hasPrefix("default ") }
+        return entry && lower.contains { $0.hasPrefix("password ") || (($0.hasPrefix("machine ") || $0.hasPrefix("default ")) && $0.contains(" password ")) }
+    }
+    /// Secret values by their shape; group 1 (when there is one) is the part read for a placeholder.
+    nonisolated static let secretShapes: [String] = [
+        #"\b(sk-(?:proj-|live-|test-)?[A-Za-z0-9_-]{20,})"#,
+        #"\b(sk_(?:live|test)_[A-Za-z0-9]{16,})"#,
+        #"\b(AKIA[0-9A-Z]{16})\b"#,
+        #"\b(gh[pousr]_[A-Za-z0-9]{30,})"#,
+        #"\b(xox[abprs]-[A-Za-z0-9-]{10,})"#,
+        #"\b(pat-(?:na1|eu1)-[0-9a-f-]{30,})"#,
+        #"[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@'"]+:([^/\s@'"]+)@"#,
+        #"_authToken\s*=\s*(\S+)"#,
+    ]
+    /// A `KEY=value`, `KEY = value` or `key: value` line (with `export`, `const`, `let`, `var` or a YAML `- ` before it).
+    nonisolated static func assignment(_ line: String) -> (key: String, value: String)? {
+        var text = line.trimmingCharacters(in: .whitespaces)
+        if text.hasPrefix("- ") { text = String(text.dropFirst(2)) }
+        for word in ["export ", "const ", "let ", "var ", "set "] where text.hasPrefix(word) { text = String(text.dropFirst(word.count)) }
+        let pattern = #"^["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*(?:=|:(?=\s))\s*(.*)$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let key = Range(match.range(at: 1), in: text), let value = Range(match.range(at: 2), in: text) else { return nil }
+        return (String(text[key]), String(text[value]))
+    }
+    /// A key that names a credential: it holds PASSWORD or PASSWD, or ends in a credential word (API_TOKEN, apiKey,
+    /// oauth_token, STRIPE_SECRET_KEY). TOKEN_COUNT, MAX_TOKENS and secretName do not.
+    nonisolated static func credentialKey(_ key: String) -> Bool {
+        var snake = ""
+        var previous: Character?
+        for ch in key {
+            if ch.isUppercase, let prev = previous, prev.isLowercase || prev.isNumber { snake.append("_") }
+            snake.append(ch); previous = ch
+        }
+        let upper = snake.uppercased().replacingOccurrences(of: "-", with: "_").replacingOccurrences(of: ".", with: "_")
+        if upper.contains("PASSWORD") || upper.contains("PASSWD") { return true }
+        let words = ["PASS", "SECRET", "TOKEN", "APIKEY", "API_KEY", "PRIVATE_KEY", "ACCESS_KEY", "ACCESS_KEY_ID", "SECRET_KEY", "AUTH_KEY", "CREDENTIALS"]
+        return words.contains { upper == $0 || upper.hasSuffix("_" + $0) }
+    }
+    /// A value that is not a secret: empty or very short, a reference to the environment, a shell or template variable,
+    /// a placeholder, code (an unquoted call), a number or a yes/no.
+    nonisolated static func placeholderValue(_ raw: String) -> Bool {
+        var value = raw.trimmingCharacters(in: .whitespaces)
+        while let last = value.last, ";,".contains(last) { value.removeLast() }
+        if let hash = value.range(of: " #") { value = String(value[..<hash.lowerBound]).trimmingCharacters(in: .whitespaces) }
+        let lowerRaw = value.lowercased()
+        for reference in ["os.environ", "os.getenv", "getenv(", "process.env", "env[", "env.fetch", "import.meta.env", "secrets."] where lowerRaw.contains(reference) { return true }
+        var quoted = false
+        if value.count >= 2, let first = value.first, let last = value.last, first == last, "\"'`".contains(first) {
+            value = String(value.dropFirst().dropLast()); quoted = true
+        }
+        value = value.trimmingCharacters(in: .whitespaces)
+        if value.count < 4 { return true }
+        if value.hasPrefix("$") || value.hasPrefix("{{") || (value.hasPrefix("%") && value.hasSuffix("%")) { return true }
+        if value.hasPrefix("<") && value.hasSuffix(">") { return true }
+        if !quoted && (value.contains("(") || value.contains(" ")) { return true }   // code, or prose ("Token: the one from the dashboard")
+        let lower = value.lowercased()
+        for word in ["your", "changeme", "change-me", "change_me", "replace", "example", "placeholder", "dummy", "sample", "redacted", "xxx", "***", "...", "todo"]
+        where lower.contains(word) { return true }
+        if ["password", "secret", "token", "pass", "null", "none", "nil", "undefined", "true", "false", "yes", "no"].contains(lower) { return true }
+        if Set(lower).count == 1 || Double(value) != nil { return true }
+        return false
     }
     /// A file is refused as a secret by its name or its bytes (a private key, a keychain). A Keynote deck is a `.key`
     /// that is a ZIP archive, not a key.

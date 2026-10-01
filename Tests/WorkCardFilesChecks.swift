@@ -1032,12 +1032,54 @@ extension WorkCardFilesChecks {
         check(WorkCardFiles.looksSecret(path: "/x/.docker/config.json") && !WorkCardFiles.looksSecret(path: "/x/app/config.json"), "secret names", "the Docker login")
         check(!WorkCardFiles.looksSecret(name: "credentials.md") && !WorkCardFiles.looksSecret(name: "envelope.png"), "secret names", "ordinary names")
         // W4 by content.
-        for text in ["API_TOKEN=abc", "export DB_PASSWORD=x", "OPENAI_API_KEY=sk-1", "github_access_key = z", "[default]\naws_access_key_id = AKIAABCDEFGHIJKLMNOP",
-                     "//registry.npmjs.org/:_authToken=xyz", "machine github.com\n  login me\n  password hunter2"] {
+        for text in ["API_TOKEN=a1b2c3d4e5", "export DB_PASSWORD=s3cr3t-value", "OPENAI_API_KEY=sk-1a2b3c4d5e", "github_access_key = z9y8x7w6",
+                     "[default]\naws_access_key_id = AKIAQWERTYUIOPASDFGH", "//registry.npmjs.org/:_authToken=npm_a1b2c3d4e5f6",
+                     "machine github.com\n  login me\n  password hunter2",
+                     // QA round 2: real values that slipped through.
+                     "DATABASE_URL=postgres://admin:hunter2@db.internal:5432/app", "OPENAI_KEY=sk-proj-a1b2c3d4e5f6g7h8i9j0k1l2",
+                     "{\n  \"apiKey\": \"live_a1b2c3d4e5f6\"\n}", "{\"password\": \"hunter2\"}", "{\"token\": \"tkn_9f8e7d6c5b\"}",
+                     "db:\n  password: hunter2", "github.com:\n    oauth_token: gho_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
+                     "AKIAQWERTYUIOPASDFGH", "STRIPE=sk_live_a1b2c3d4e5f6g7h8", "const password = \"hunter2\";",
+                     "SECRET_KEY = 'django-insecure-a1b2c3d4e5'"] {
             check(WorkCardFiles.secretContent(text), "secret content", "not caught: \(text)")
         }
-        for text in ["We use machine learning.\nSend a password reset email.", "KEY_COUNT=4\nMONKEY=1", "TOKEN_COUNT is how many we read", "PASSWORD="] {
-            check(!WorkCardFiles.secretContent(text), "secret content", "a false secret: \(text)")
+        for text in ["We use machine learning.\nSend a password reset email.", "KEY_COUNT=4\nMONKEY=1", "TOKEN_COUNT is how many we read", "PASSWORD=",
+                     // QA round 2: references and placeholders are not secrets.
+                     "SECRET_KEY = os.environ[\"SECRET_KEY\"]\nDEBUG = os.getenv(\"DEBUG\", \"0\")", "export API_TOKEN=\"$1\"", "export API_KEY=<your key>",
+                     "API_KEY=YOUR_API_KEY", "PASSWORD=xxx", "DB_PASSWORD=changeme", "TOKEN=\"\"", "{\"apiKey\": \"<your api key>\"}",
+                     "password: ${DB_PASSWORD}", "- POSTGRES_PASSWORD=${POSTGRES_PASSWORD}", "const key = process.env.OPENAI_API_KEY;",
+                     "password = input(\"Password: \")", "max_tokens: 4096\ntoken_limit: 1000\nsecretName: tls-secret",
+                     "Token: the one from the dashboard", "OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx", "aws_access_key_id = AKIAIOSFODNN7EXAMPLE",
+                     "https://user:password@example.com/path", "DATABASE_URL=postgres://u:${PW}@db/app", "//registry.npmjs.org/:_authToken=${NPM_TOKEN}"] {
+            check(!WorkCardFiles.secretContent(text), "secret placeholders", "a false secret: \(text)")
+        }
+        check(!WorkCardFiles.looksSecret(name: ".env.example") && !WorkCardFiles.looksSecret(name: ".env.sample") && !WorkCardFiles.looksSecret(name: ".env.template")
+              && WorkCardFiles.looksSecret(name: ".env.local"), "secret names", "the .env templates")
+        // The files QA listed, through the intake.
+        let refusedFiles: [(String, Data)] = [
+            ("db-url.txt", Data("DATABASE_URL=postgres://admin:hunter2@db.internal/app\n".utf8)),
+            ("openai-key.txt", Data("OPENAI_KEY=sk-proj-a1b2c3d4e5f6g7h8i9j0k1l2\n".utf8)),
+            ("settings.json", Data("{\"apiKey\": \"sk-a1b2c3d4e5f6g7h8i9j0k1\"}".utf8)),
+            ("config.yaml", Data("db:\n  password: hunter2\n".utf8)),
+            ("bare-aws.txt", Data("AKIAQWERTYUIOPASDFGH\n".utf8)),
+            ("gh-hosts.yml", Data("github.com:\n    oauth_token: gho_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6\n".utf8)),
+            ("innocent.txt", Data("STRIPE=sk_live_a1b2c3d4e5f6g7h8\n".utf8)),
+        ]
+        let allowedFiles: [(String, Data)] = [
+            ("settings.py", Data("import os\nSECRET_KEY = os.environ[\"SECRET_KEY\"]\nDEBUG = False\n".utf8)),
+            ("deploy.sh", Data("#!/bin/sh\nexport API_TOKEN=\"$1\"\ncurl -H \"Authorization: Bearer $API_TOKEN\" https://api.example.com\n".utf8)),
+            ("README.md", Data("# Setup\n\n    export API_KEY=<your key>\n\nThen run it.\n".utf8)),
+            (".env.example", Data("API_KEY=\nDATABASE_URL=postgres://user:password@localhost/app\nSECRET=changeme\n".utf8)),
+        ]
+        for (name, data) in refusedFiles {
+            let url = fx.dir.appendingPathComponent(name); try data.write(to: url)
+            await store.intake(urls: [url], source: card)
+            check(flashText(store, card.id) == "Not added: \(name) looks like a secrets file. Files like this never go to a provider.", "secret content", "\(name): \(flashText(store, card.id))")
+        }
+        for (name, data) in allowedFiles {
+            let url = fx.dir.appendingPathComponent(name); try data.write(to: url)
+            await store.intake(urls: [url], source: card)
+            check(store.files(for: card.id).contains { $0.display == name }, "secret placeholders", "\(name) was refused: \(flashText(store, card.id))")
         }
         let dotenv = fx.dir.appendingPathComponent("renamed-env.txt"); try Data("STRIPE_SECRET_KEY=sk_live_123\n".utf8).write(to: dotenv)
         let aws = fx.dir.appendingPathComponent("aws-creds.txt"); try Data("[default]\naws_access_key_id = AKIAABCDEFGHIJKLMNOP\naws_secret_access_key = x\n".utf8).write(to: aws)
@@ -1046,7 +1088,7 @@ extension WorkCardFilesChecks {
             await store.intake(urls: [url], source: card)
             check(flashText(store, card.id).contains("looks like a secrets file"), "secret content", "\(url.lastPathComponent): \(flashText(store, card.id))")
         }
-        check(store.files(for: card.id).filter { !$0.isLink }.isEmpty, "secret content", "a secret was added")
+        check(!store.files(for: card.id).contains { ["renamed-env.txt", "aws-creds.txt", "notes-alias.txt"].contains($0.display) }, "secret content", "a secret was added")
         // A secret is refused by its name, through an alias, before COS reads it: this one cannot be read at all.
         let locked = fx.dir.appendingPathComponent("locked", isDirectory: true)
         try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
