@@ -1113,12 +1113,29 @@ extension WorkCardFilesChecks {
         let sshLink = fx.dir.appendingPathComponent("innocent"); try FileManager.default.createSymbolicLink(at: sshLink, withDestinationURL: ssh)
         await store.intake(urls: [sshLink], source: card)
         check(flashText(store, card.id).contains("looks like a secrets file"), "folder roots", "a link to .ssh: \(flashText(store, card.id))")
+        // QA round 2: four levels are read. A secret four levels down is found; five levels down is past the scan.
+        let deep4 = fx.dir.appendingPathComponent("deep4", isDirectory: true)
+        try FileManager.default.createDirectory(at: deep4.appendingPathComponent("a/b/c", isDirectory: true), withIntermediateDirectories: true)
+        try Data("API_KEY=a1b2c3d4e5".utf8).write(to: deep4.appendingPathComponent("a/b/c/.env"))
+        await store.intake(urls: [deep4], source: card)
+        check(flashText(store, card.id) == "Not added: this folder holds secrets (a/b/c/.env). Add the files you need one by one.", "folder scan", flashText(store, card.id))
         let project = fx.dir.appendingPathComponent("project", isDirectory: true)
-        try FileManager.default.createDirectory(at: project.appendingPathComponent("sub/deeper", isDirectory: true), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: project.appendingPathComponent("a/b/c/d", isDirectory: true), withIntermediateDirectories: true)
         try Data("readme".utf8).write(to: project.appendingPathComponent("README.md"))
-        try Data("API_KEY=1".utf8).write(to: project.appendingPathComponent("sub/deeper/.env"))
+        try Data("API_KEY=a1b2c3d4e5".utf8).write(to: project.appendingPathComponent("a/b/c/d/.env"))
         await store.intake(urls: [project], source: card)
-        check(store.files(for: card.id).contains { $0.kind == "folder" && $0.display == "project" }, "folder scan", "a secret three levels down is past the scan: \(flashText(store, card.id))")
+        check(store.files(for: card.id).contains { $0.kind == "folder" && $0.display == "project" }, "folder scan", "a secret five levels down is past the scan: \(flashText(store, card.id))")
+        // More entries than the scan reads: refused, never taken unread (it failed open before).
+        let big = fx.dir.appendingPathComponent("big folder", isDirectory: true)
+        try FileManager.default.createDirectory(at: big, withIntermediateDirectories: true)
+        for index in 0..<(WorkCardFiles.folderScanLimit + 5) { FileManager.default.createFile(atPath: big.appendingPathComponent(String(format: "f%05d.txt", index)).path, contents: Data("x".utf8)) }
+        try Data("API_KEY=a1b2c3d4e5".utf8).write(to: big.appendingPathComponent("zz.env"))
+        await store.intake(urls: [big], source: card)
+        check(flashText(store, card.id) == "Not added: this folder is too big to check for secrets. Add the files you need one by one.", "folder fail closed", flashText(store, card.id))
+        for name in ["Documents", "Desktop", "Downloads"] {
+            check(WorkCardFiles.broadFolder(WorkCardFiles.resolved(user.appendingPathComponent(name)), home: user), "folder roots", "~/\(name) is too wide")
+            check(!WorkCardFiles.broadFolder(WorkCardFiles.resolved(user.appendingPathComponent(name)) + "/Project", home: user), "folder roots", "a folder in ~/\(name) is fine")
+        }
         let project2 = fx.dir.appendingPathComponent("project2", isDirectory: true)
         try FileManager.default.createDirectory(at: project2.appendingPathComponent("sub", isDirectory: true), withIntermediateDirectories: true)
         try Data("PROD_PASSWORD=hunter2".utf8).write(to: project2.appendingPathComponent("sub/settings.txt"))
