@@ -66,10 +66,44 @@ struct WorkReviewRecord: Identifiable, Sendable {
     @Published var selectedMeeting: LibraryMeeting?
     @Published var selectedReviewID: String?
     @Published var automaticAfterSync = false
+    @Published private(set) var titleOverrides: [String: String] = [:]
     private let transport: Transport
+    /// Nil in tests and the resize harness, so they never write Miles's review names.
+    private let titlesURL: URL?
     init(transport: Transport? = nil) {
         let helper = HelperClient()
         self.transport = transport ?? { args, data in try await helper.run(args, timeout: 90, stdinData: data) }
+        let testing = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] != nil
+            || ProcessInfo.processInfo.environment["COS_PERF_FIXTURES"] != nil
+        titlesURL = testing ? nil : FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("COS Control/review-titles.json")
+        if let titlesURL, let data = try? Data(contentsOf: titlesURL),
+           let saved = try? JSONDecoder().decode([String: String].self, from: data) {
+            titleOverrides = saved
+        }
+    }
+
+    func displayTitle(for review: WorkReviewRecord) -> String {
+        let saved = titleOverrides[review.id]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return saved.isEmpty ? review.title : saved
+    }
+
+    func source(for review: WorkReviewRecord) -> WorkSource {
+        let title = displayTitle(for: review)
+        return WorkSource(id: review.source.id, title: title, revision: review.revision, project: review.domain,
+            context: "Meeting: \(title)\nDomain: \(review.domain)\nMeeting record: \(review.canonicalMeetingId)\n\nReviewed follow-up:\n\(review.markdown)",
+            reviewID: review.id, fullTitle: title)
+    }
+
+    func setTitle(_ title: String, for reviewID: String) {
+        let clean = title.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard !clean.isEmpty, clean.utf16.count <= 180 else { return }
+        titleOverrides[reviewID] = clean
+        guard let titlesURL else { return }
+        try? FileManager.default.createDirectory(at: titlesURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(titleOverrides) {
+            try? data.write(to: titlesURL, options: .atomic)
+        }
     }
     func refresh() async {
         guard !busy else { return }

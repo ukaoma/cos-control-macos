@@ -37,6 +37,24 @@ enum COSMarkdownInline {
 
 // MARK: - View
 
+/// One parsed document for the life of this process. A resize must not parse the review again.
+@MainActor
+enum COSMarkdownCache {
+    private static var stored: (key: Int, blocks: [COSMarkdownBlock])?
+    static func blocks(_ text: String, dropLeadingTitle: Bool = false) -> [COSMarkdownBlock] {
+        var hasher = Hasher()
+        hasher.combine(dropLeadingTitle)
+        hasher.combine(text.utf16.count)
+        hasher.combine(text.prefix(64))
+        hasher.combine(text.suffix(64))
+        let key = hasher.finalize()
+        if stored?.key == key, let blocks = stored?.blocks { return blocks }
+        let blocks = COSMarkdownParser.parse(text, dropLeadingTitle: dropLeadingTitle)
+        stored = (key, blocks)
+        return blocks
+    }
+}
+
 /// The pane body. `dropLeadingTitle` when the pane header already shows the H1.
 struct COSMarkdownView: View {
     let text: String
@@ -44,8 +62,7 @@ struct COSMarkdownView: View {
     var bodySize: CGFloat = 12.5
 
     var body: some View {
-        let blocks = COSMarkdownParser.parse(text, dropLeadingTitle: dropLeadingTitle)
-        COSMarkdownBlocks(blocks: blocks, bodySize: bodySize)
+        COSMarkdownBlocks(blocks: COSMarkdownCache.blocks(text, dropLeadingTitle: dropLeadingTitle), bodySize: bodySize)
     }
 }
 

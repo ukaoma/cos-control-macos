@@ -8,6 +8,7 @@ import PDFKit
 import QuickLook
 import SwiftUI
 import UniformTypeIdentifiers
+import Vision
 
 // MARK: - Files on a Work card (0.5.254, route A)
 //
@@ -23,8 +24,8 @@ import UniformTypeIdentifiers
 // server: the agent opens the paths itself. A folder is never copied; it goes as a link marked "may change".
 
 extension UTType {
-    /// A Work card being dragged on the board. Private to COS Control (exported in Info.plist): only the columns and the
-    /// session row take it, and a card never does.
+    /// A Work card being dragged on the board. Private to COS Control (exported in Info.plist). A column takes it on its
+    /// header, its list, and a card face in that column. The Files box never takes it. A card face does not keep it as a file.
     nonisolated static let workCard = UTType(exportedAs: "com.gotcos.work-card", conformingTo: .data)
 }
 
@@ -87,15 +88,206 @@ struct WorkContextFile: Codable, Equatable, Sendable, Identifiable {
     var ref: WorkContextRef { WorkContextRef(id: id, sha256: sha256) }
 }
 
+/// One reading of a file already on the card. It is not a file, and it is not sent.
+struct WorkFileSuggestion: Codable, Equatable, Sendable, Identifiable {
+    var fileID: String
+    var sha256: String
+    var status: String
+    var display: String?
+    var due: String?
+    var doneWhen: String?
+    var note: String?
+    var readAt: Double
+    /// Missing on a row written before this field. Nil reads as zero attempts.
+    var attempts: Int? = nil
+    var id: String { fileID }
+
+    var offers: Bool { status == "proposed" && (display != nil || due != nil || doneWhen != nil || note != nil) }
+
+    enum Write: Equatable { case doneWhen(String, id: String), text(String, id: String) }
+
+    /// Done when first. A text edit changes the row id, so the finish line has to land before it.
+    nonisolated static func writes(canonicalID: String, currentText: String, suggestion: WorkFileSuggestion) -> [Write] {
+        var out: [Write] = []
+        if let done = suggestion.doneWhen, !done.isEmpty { out.append(.doneWhen(done, id: canonicalID)) }
+        let note = suggestion.due == nil && suggestion.doneWhen == nil ? suggestion.note : nil
+        if suggestion.due != nil || note != nil, let text = mergedText(current: currentText, due: suggestion.due, note: note) {
+            out.append(.text(text, id: canonicalID))
+        }
+        return out
+    }
+
+    nonisolated static func unnamedDrop(_ display: String) -> Bool {
+        let stem = (display as NSString).deletingPathExtension
+        return stem == "Dropped file" || stem == "Dropped image"
+    }
+
+    nonisolated static func chicagoCalendar() -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Chicago") ?? .current
+        calendar.firstWeekday = 1
+        return calendar
+    }
+
+    /// What the words support. A missing date or finish line stays missing.
+    nonisolated static func interpreted(fileID: String, sha256: String, displayName: String, text: String?, addedAt: Date, now: Date = Date()) -> WorkFileSuggestion {
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return WorkFileSuggestion(fileID: fileID, sha256: sha256, status: "unread", readAt: now.timeIntervalSince1970, attempts: 1)
+        }
+        let calendar = chicagoCalendar()
+        let due = dueDate(in: text, addedAt: addedAt, calendar: calendar)
+        let done = finishLine(in: text)
+        let name = unnamedDrop(displayName) ? suggestedName(in: text, addedAt: addedAt, calendar: calendar) : nil
+        let note = due == nil && done == nil ? oneNote(in: text) : nil
+        let status = (name == nil && due == nil && done == nil && note == nil) ? "empty" : "proposed"
+        return WorkFileSuggestion(fileID: fileID, sha256: sha256, status: status, display: name, due: due, doneWhen: done, note: note, readAt: now.timeIntervalSince1970, attempts: 1)
+    }
+
+    nonisolated static func mergedText(current: String, due: String?, note: String?) -> String? {
+        var text = current
+        if let due {
+            if let range = text.range(of: duePattern, options: .regularExpression) {
+                let clause = String(text[range])
+                guard let dateRange = clause.range(of: #"\d{4}-\d{2}-\d{2}"#, options: .regularExpression) else { return nil }
+                var next = clause
+                next.replaceSubrange(dateRange, with: due)
+                text.replaceSubrange(range, with: next)
+            } else {
+                text += " — Due: " + due
+            }
+        }
+        if let note, !text.localizedCaseInsensitiveContains(note) { text += " " + note }
+        text = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard text.utf16.count <= 2000, allowed(text, finishLine: false) else { return nil }
+        return text
+    }
+
+    nonisolated static func blockReason(currentText: String, suggestion: WorkFileSuggestion) -> String? {
+        if let done = suggestion.doneWhen, !done.isEmpty {
+            if done.utf16.count > 500 { return "The finish line is over 500 characters." }
+            if !allowed(done, finishLine: true) { return "The finish line contains a marker." }
+        }
+        let note = suggestion.due == nil && suggestion.doneWhen == nil ? suggestion.note : nil
+        if (suggestion.due != nil || note != nil) && mergedText(current: currentText, due: suggestion.due, note: note) == nil {
+            return "The task text would pass 2,000 characters or pick up a marker."
+        }
+        return nil
+    }
+
+    private nonisolated static let duePattern = #"\s*[—–-]+\s*Due:\s*\d{4}-\d{2}-\d{2}"#
+    private nonisolated static let markerPattern = #"\[(?:run \d{4}-\d{2}-\d{2} \d{2}:\d{2}|agent running|agent #\d+ (?:done|failed)|agent failed|stage (?:planning|active|review))\]"#
+
+    private nonisolated static func allowed(_ text: String, finishLine: Bool) -> Bool {
+        if text.range(of: markerPattern, options: .regularExpression) != nil { return false }
+        if text.range(of: #"\*\*Source:\*\*"#, options: [.regularExpression, .caseInsensitive]) != nil { return false }
+        if text.range(of: #"cos-work\s*:"#, options: [.regularExpression, .caseInsensitive]) != nil { return false }
+        if text.range(of: #"\*\*done when:\*\*"#, options: .caseInsensitive) != nil { return false }
+        if finishLine, text.contains("**") { return false }
+        return true
+    }
+
+    private nonisolated static func dueDate(in text: String, addedAt: Date, calendar: Calendar) -> String? {
+        let folded = text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US"))
+        if folded.contains("end of next week") { return friday(of: addedAt, weeksAhead: 1, calendar: calendar) }
+        if folded.contains("end of this week") { return friday(of: addedAt, weeksAhead: 0, calendar: calendar) }
+        if folded.contains("next couple of months") && !folded.contains("end of next week") && !folded.contains("end of this week") {
+            if text.range(of: #"\b20\d{2}-\d{2}-\d{2}\b"#, options: .regularExpression) == nil { return nil }
+        }
+        return text.range(of: #"\b(20\d{2}-\d{2}-\d{2})\b"#, options: .regularExpression).map { String(text[$0]) }
+    }
+
+    private nonisolated static func friday(of date: Date, weeksAhead: Int, calendar: Calendar) -> String? {
+        guard let start = calendar.dateInterval(of: .weekOfYear, for: date)?.start,
+              let week = calendar.date(byAdding: .weekOfYear, value: weeksAhead, to: start) else { return nil }
+        var parts = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: week)
+        parts.weekday = 6
+        guard let friday = calendar.date(from: parts) else { return nil }
+        let format = DateFormatter()
+        format.calendar = calendar
+        format.timeZone = calendar.timeZone
+        format.locale = Locale(identifier: "en_US_POSIX")
+        format.dateFormat = "yyyy-MM-dd"
+        return format.string(from: friday)
+    }
+
+    private nonisolated static func finishLine(in text: String) -> String? {
+        guard let range = text.range(of: #"(?i)Done\s*(?:=|when:?)\s*"#, options: .regularExpression) else { return nil }
+        var lines: [String] = []
+        for raw in text[range.upperBound...].split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if lines.isEmpty && line.isEmpty { continue }
+            let nextSpeaker = line.range(of: #"^[A-Z][A-Za-z]+(?: [A-Z][A-Za-z]+)+\s+\d+\s+minute"#, options: .regularExpression) != nil
+            if !lines.isEmpty && (line.isEmpty || line.count < 3 || nextSpeaker || line.lowercased().hasPrefix("reply")) { break }
+            lines.append(line)
+        }
+        let done = lines.joined(separator: " ").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard !done.isEmpty, done.utf16.count <= 500, allowed(done, finishLine: true) else { return nil }
+        return done
+    }
+
+    private nonisolated static func suggestedName(in text: String, addedAt: Date, calendar: Calendar) -> String? {
+        guard let match = text.range(of: #"([A-Z][A-Za-z]+(?: [A-Z][A-Za-z]+)+)\s+\d+\s+minute"#, options: .regularExpression) else { return nil }
+        let line = String(text[match])
+        guard let nameEnd = line.range(of: #"\s+\d+\s+minute"#, options: .regularExpression) else { return nil }
+        let name = String(line[..<nameEnd.lowerBound])
+        let format = DateFormatter()
+        format.calendar = calendar
+        format.timeZone = calendar.timeZone
+        format.locale = Locale(identifier: "en_US_POSIX")
+        format.dateFormat = "yyyy-MM-dd"
+        return name + " Slack " + format.string(from: addedAt)
+    }
+
+    private nonisolated static func oneNote(in text: String) -> String? {
+        let skip: Set<String> = ["thread", "saved for later", "reply...", "got it."]
+        for raw in text.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.count < 12 || skip.contains(line.lowercased()) { continue }
+            let note = line.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            guard note.utf16.count <= 240, allowed(note, finishLine: false) else { return nil }
+            return note
+        }
+        return nil
+    }
+}
+
 /// `<card folder>/manifest.json`.
 struct WorkContextManifest: Codable, Equatable, Sendable {
     var version = 1
     var workSourceID: String
     var files: [WorkContextFile] = []
+    /// Readings of files. Absent on a manifest written before this field existed.
+    var suggestions: [WorkFileSuggestion] = []
     /// When COS Control first saw the card complete, and first saw it gone from the board (cleanup counts from these).
     var completedSeenAt: Double? = nil
     var orphanedSeenAt: Double? = nil
     var visible: [WorkContextFile] { files.filter { $0.hiddenAt == nil }.sorted { $0.seq < $1.seq } }
+
+    enum CodingKeys: String, CodingKey {
+        case version, workSourceID, files, suggestions, completedSeenAt, orphanedSeenAt
+    }
+
+    init(workSourceID: String) { self.workSourceID = workSourceID }
+
+    init(from decoder: Decoder) throws {
+        let keys = try decoder.container(keyedBy: CodingKeys.self)
+        version = try keys.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        workSourceID = try keys.decode(String.self, forKey: .workSourceID)
+        files = try keys.decodeIfPresent([WorkContextFile].self, forKey: .files) ?? []
+        suggestions = try keys.decodeIfPresent([WorkFileSuggestion].self, forKey: .suggestions) ?? []
+        completedSeenAt = try keys.decodeIfPresent(Double.self, forKey: .completedSeenAt)
+        orphanedSeenAt = try keys.decodeIfPresent(Double.self, forKey: .orphanedSeenAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var keys = encoder.container(keyedBy: CodingKeys.self)
+        try keys.encode(version, forKey: .version)
+        try keys.encode(workSourceID, forKey: .workSourceID)
+        try keys.encode(files, forKey: .files)
+        if !suggestions.isEmpty { try keys.encode(suggestions, forKey: .suggestions) }
+        try keys.encodeIfPresent(completedSeenAt, forKey: .completedSeenAt)
+        try keys.encodeIfPresent(orphanedSeenAt, forKey: .orphanedSeenAt)
+    }
 }
 
 /// What a handoff carried: one per file sent (the receipt's optional `context`, never a new status).
@@ -208,6 +400,51 @@ enum WorkCountdownStep: Equatable { case wait, tick(Int), send, stop }
 /// Where a drag over the board can land.
 enum WorkDropTarget: Equatable { case card, column, sessionRow, filesBox }
 enum WorkDropRoute: Equatable { case moveCard, startCard, addFiles, refuseFiles, ignore }
+
+/// One column drag. The header, the list, and a card face each enter and leave. The gold highlight stays while any of
+/// them is still under the pointer. The first destination to take the drop is the only one that runs.
+struct ColumnDragTrack: Equatable {
+    var stage: String?
+    var count = 0
+    var claimed = false
+
+    mutating func enter(_ stage: String) {
+        if self.stage != stage {
+            self.stage = stage
+            count = 0
+            claimed = false
+        }
+        count += 1
+    }
+
+    mutating func exit(_ stage: String) {
+        guard self.stage == stage, count > 0 else { return }
+        count -= 1
+        if count == 0 { self.stage = nil }
+    }
+
+    /// The drop landed. The highlight ends. The claim stays until the next drag enters, so a second performer cannot run.
+    mutating func finish(_ stage: String) {
+        guard self.stage == stage else { return }
+        count = 0
+        self.stage = nil
+    }
+
+    mutating func take(_ stage: String) -> Bool {
+        if claimed { return false }
+        if let current = self.stage, current != stage { return false }
+        claimed = true
+        return true
+    }
+
+    /// Only a card move claims the drag. Adding a file, or refusing one, must not, or the next file drop is thrown away.
+    static func claimsDrop(_ route: WorkDropRoute) -> Bool {
+        switch route {
+        case .moveCard, .startCard: return true
+        default: return false
+        }
+    }
+}
 
 /// What cleanup does with one card's folder.
 struct WorkCardCleanupPlan: Equatable {
@@ -765,7 +1002,10 @@ extension WorkCardFiles {
 
     /// What a drag may do where it is: a card takes only files, the columns and the session row take only cards (a file
     /// there is refused with a line), and nothing takes text.
-    nonisolated static func dropRoute(_ target: WorkDropTarget, offersCard: Bool, offersFiles: Bool) -> WorkDropRoute {
+    /// `cardForwardsMove` is the card face sitting in a column. A work-card drag there is the column's move. The card
+    /// still does not take a card as a file. The Files box never forwards.
+    nonisolated static func dropRoute(_ target: WorkDropTarget, offersCard: Bool, offersFiles: Bool, cardForwardsMove: Bool = false) -> WorkDropRoute {
+        if cardForwardsMove, target == .card, offersCard { return .moveCard }
         switch target {
         case .card, .filesBox: return offersCard ? .ignore : (offersFiles ? .addFiles : .ignore)
         case .column: return offersCard ? .moveCard : (offersFiles ? .refuseFiles : .ignore)
@@ -1322,6 +1562,17 @@ extension WorkCardFiles {
         if kind == "pdf" { return PDFDocument(url: url)?.string }
         return try? NSAttributedString(url: url, options: [.documentType: NSAttributedString.DocumentType.officeOpenXML], documentAttributes: nil).string
     }
+    /// The words in a screenshot or photo. HEIC orientation is the file's own. Empty when nothing was read.
+    nonisolated static func recognizeText(at url: URL) -> String? {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        guard (try? VNImageRequestHandler(url: url, options: [:]).perform([request])) != nil else { return nil }
+        let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+        let joined = lines.joined(separator: "\n")
+        guard !joined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return String(joined.prefix(8_000))
+    }
 
     /// Makes one companion beside its file, through a staging name, and returns it ready or failed (with why).
     nonisolated static func makeCompanion(_ companion: WorkContextCompanion, file: WorkContextFile, root: URL, folder: URL,
@@ -1460,7 +1711,90 @@ extension WorkCardFiles {
                 try? FileManager.default.removeItem(at: target)
             }
         }
-        for (workID, manifest) in manifests { for file in manifest.files { startCompanions(workID: workID, file: file) } }
+        for (workID, manifest) in manifests {
+            for file in manifest.files { startCompanions(workID: workID, file: file) }
+            for suggestion in manifest.suggestions where suggestion.status == "unread" && (suggestion.attempts ?? 0) < 2 {
+                if let file = manifest.files.first(where: { $0.sha256 == suggestion.sha256 }) { proposeReading(file, workID: workID) }
+            }
+        }
+    }
+
+    func proposal(for fileID: String, workID: String) -> WorkFileSuggestion? {
+        manifests[workID]?.suggestions.first { $0.fileID == fileID && $0.offers }
+    }
+
+    /// Reads a new file off the main actor, then stores one suggestion. A sha that was already read is left alone.
+    func proposeReading(_ file: WorkContextFile, workID: String) {
+        guard let root, file.kind == "image" || file.kind == "heic" || file.kind == "pdf" || file.kind == "docx" else { return }
+        if manifests[workID]?.suggestions.contains(where: { $0.sha256 == file.sha256 && $0.status != "unread" }) == true { return }
+        let folder = WorkCardFiles.folder(root: root, workID: workID)
+        guard WorkCardFiles.validEntry(file), let url = try? WorkCardFiles.guardTarget(root: root, folder: folder, name: file.stored) else { return }
+        let kind = file.kind, added = Date(timeIntervalSince1970: file.addedAt), name = file.display, fileID = file.id, sha = file.sha256
+        let prior = manifests[workID]?.suggestions.first { $0.sha256 == sha }?.attempts ?? 0
+        Task { [weak self] in
+            let text = await Task.detached { () -> String? in
+                if kind == "image" || kind == "heic" { return WorkCardFiles.recognizeText(at: url) }
+                return WorkCardFiles.extractText(url, kind: kind)
+            }.value
+            var suggestion = WorkFileSuggestion.interpreted(fileID: fileID, sha256: sha, displayName: name, text: text, addedAt: added)
+            suggestion.attempts = prior + 1
+            self?.saveSuggestion(suggestion, workID: workID)
+        }
+    }
+
+    func saveSuggestion(_ suggestion: WorkFileSuggestion, workID: String) {
+        guard let root else { return }
+        try? WorkCardFiles.update(root: root, workID: workID) { manifest, _ in
+            if let index = manifest.suggestions.firstIndex(where: { $0.sha256 == suggestion.sha256 }) {
+                guard manifest.suggestions[index].status == "unread" else { return }
+                manifest.suggestions[index] = suggestion
+            } else {
+                manifest.suggestions.append(suggestion)
+            }
+        }
+        reload(workID)
+    }
+
+    func dismissSuggestion(_ fileID: String, workID: String) {
+        guard let root else { return }
+        try? WorkCardFiles.update(root: root, workID: workID) { manifest, _ in
+            guard let index = manifest.suggestions.firstIndex(where: { $0.fileID == fileID }) else { return }
+            manifest.suggestions[index].status = "dismissed"
+        }
+        reload(workID)
+    }
+
+    /// Task writes first. The display name changes only after they succeed. A failure leaves the suggestion proposed.
+    func acceptSuggestion(_ suggestion: WorkFileSuggestion, workID: String) async {
+        let current = taskSnapshot?(workID)?.text ?? ""
+        if let reason = WorkFileSuggestion.blockReason(currentText: current, suggestion: suggestion) {
+            error = reason
+            return
+        }
+        let needsTask = suggestion.due != nil || suggestion.doneWhen != nil || (suggestion.due == nil && suggestion.doneWhen == nil && suggestion.note != nil)
+        do {
+            if needsTask {
+                guard let applySuggestion else {
+                    self.error = "This card's task is still loading."
+                    reload(workID)
+                    return
+                }
+                try await applySuggestion(workID, suggestion)
+            }
+            guard let root else { return }
+            try WorkCardFiles.update(root: root, workID: workID) { manifest, _ in
+                guard let index = manifest.suggestions.firstIndex(where: { $0.fileID == suggestion.fileID }) else { return }
+                manifest.suggestions[index].status = "accepted"
+                if let name = suggestion.display, let file = manifest.files.firstIndex(where: { $0.id == suggestion.fileID }),
+                   WorkFileSuggestion.unnamedDrop(manifest.files[file].display) {
+                    manifest.files[file].display = WorkCardFiles.cleanDisplay(name)
+                }
+            }
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
+        reload(workID)
     }
 
     func files(for workID: String) -> [WorkContextFile] { manifests[workID]?.visible ?? [] }
@@ -1608,6 +1942,10 @@ extension WorkCardFiles {
     /// `metadata.setdefault("workIdentity", ...)`), so a later rename outside COS keeps the card's id. Nothing is saved
     /// when the stamp fails. Set by the app; off in the preview and in checks that do not set it.
     var stampIdentity: ((String) async -> Bool)?
+    /// The board task behind this card, for the suggestion row. Nil in the preview.
+    var taskSnapshot: ((String) -> (text: String, doneWhen: String)?)?
+    /// Writes an accepted suggestion. Done when first, then the task text, using the canonical row id.
+    var applySuggestion: ((String, WorkFileSuggestion) async throws -> Void)?
     /// Starts the stamp for a card's first file and returns what each commit waits on (true when no stamp is needed).
     /// QA round 2: nothing waits for it before copying, and a stamp that fails (a read-only board, a write that did not
     /// land) still lets the file in, with a quiet note on its row: the orphan clock never deletes now.
@@ -1630,6 +1968,7 @@ extension WorkCardFiles {
         case .success(let file):
             reload(workID)
             startCompanions(workID: workID, file: file)
+            proposeReading(file, workID: workID)
             return file.kind == "link" ? [.linkAdded] : []
         case .failure(let refusal): return [refusal]
         case nil: return [.noFile]
@@ -1854,14 +2193,31 @@ struct WorkCardFlashView: View {
 
 /// A card's whole face takes files: the drop destination is on the card itself, and "Add to card" is drawn over it
 /// only while a file is over it (a drop destination inside `.overlay` never receives drops, 0.5.246).
+/// A work-card drag on that same face is the column's move. The file drop used to claim the face and refuse the card,
+/// so a card could land only on the column header.
 struct WorkCardFileDrop: ViewModifier {
     @ObservedObject var files: WorkCardFileStore
     let source: WorkSource?
+    var onColumnCard: ((String) -> Void)? = nil
+    var onColumnHover: ((Bool) -> Void)? = nil
+    var onTake: () -> Bool = { true }
+    var onFinish: () -> Void = {}
     @State private var targeted = false
     func body(content: Content) -> some View {
-        if let source, files.enabled, WorkCardFileStore.accepts(source) {
+        let filesOn = source.map { files.enabled && WorkCardFileStore.accepts($0) } ?? false
+        let forwards = onColumnCard != nil
+        if !filesOn && !forwards {
             content
-                .onDrop(of: WorkCardFiles.fileDropTypes, delegate: WorkCardFileDropDelegate(target: .card, targeted: $targeted) { providers in
+        } else {
+            content
+                .onDrop(of: filesOn ? WorkCardFiles.boardDropTypes : [.workCard], delegate: WorkCardFileDropDelegate(
+                    target: .card, forwardsColumnMove: forwards,
+                    onMoveCard: { id in onColumnCard?(id) },
+                    onColumnHover: { over in onColumnHover?(over) },
+                    onTake: onTake, onFinish: onFinish,
+                    targeted: $targeted
+                ) { providers in
+                    guard let source, filesOn else { return }
                     Task { await files.intake(providers: providers, source: source) }
                 })
                 .overlay {
@@ -1876,29 +2232,62 @@ struct WorkCardFileDrop: ViewModifier {
                         }.allowsHitTesting(false).accessibilityHidden(true)
                     }
                 }
-        } else {
-            content
         }
     }
 }
 
-/// A card or the Agent workspace's Files box: files only, never a card.
+/// A card face or the Agent workspace's Files box. The Files box takes files only. A column card face also forwards a
+/// work-card drag to that column, and it does not keep the card as a file.
 @MainActor struct WorkCardFileDropDelegate: DropDelegate {
     let target: WorkDropTarget
+    var forwardsColumnMove = false
+    var onMoveCard: (String) -> Void = { _ in }
+    var onColumnHover: (Bool) -> Void = { _ in }
+    var onTake: () -> Bool = { true }
+    var onFinish: () -> Void = {}
     @Binding var targeted: Bool
     let onFiles: ([NSItemProvider]) -> Void
     private func route(_ info: DropInfo) -> WorkDropRoute {
-        WorkCardFiles.dropRoute(target, offersCard: info.hasItemsConforming(to: [.workCard]), offersFiles: info.hasItemsConforming(to: WorkCardFiles.fileDropTypes))
+        WorkCardFiles.dropRoute(target, offersCard: info.hasItemsConforming(to: [.workCard]), offersFiles: info.hasItemsConforming(to: WorkCardFiles.fileDropTypes), cardForwardsMove: forwardsColumnMove)
     }
-    func validateDrop(info: DropInfo) -> Bool { route(info) == .addFiles }
-    func dropEntered(info: DropInfo) { targeted = route(info) == .addFiles }
-    func dropExited(info: DropInfo) { targeted = false }
-    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: route(info) == .addFiles ? .copy : .forbidden) }
+    func validateDrop(info: DropInfo) -> Bool {
+        switch route(info) {
+        case .addFiles, .moveCard: return true
+        default: return false
+        }
+    }
+    func dropEntered(info: DropInfo) {
+        switch route(info) {
+        case .addFiles: targeted = true
+        case .moveCard: onColumnHover(true)
+        default: break
+        }
+    }
+    func dropExited(info: DropInfo) { targeted = false; onColumnHover(false) }
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        switch route(info) {
+        case .addFiles: return DropProposal(operation: .copy)
+        case .moveCard: return DropProposal(operation: .move)
+        default: return DropProposal(operation: .forbidden)
+        }
+    }
     func performDrop(info: DropInfo) -> Bool {
+        let decision = route(info)
         targeted = false
-        guard route(info) == .addFiles else { return false }
-        onFiles(info.itemProviders(for: WorkCardFiles.fileDropTypes))
-        return true
+        switch decision {
+        case .addFiles:
+            onFiles(info.itemProviders(for: WorkCardFiles.fileDropTypes))
+            return true
+        case .moveCard:
+            guard ColumnDragTrack.claimsDrop(decision), onTake() else { return true }
+            onFinish()
+            let providers = info.itemProviders(for: [.workCard])
+            let deliver = onMoveCard
+            Task { @MainActor in if let id = await WorkCardFileStore.cardID(from: providers) { deliver(id) } }
+            return true
+        default:
+            return false
+        }
     }
 }
 
@@ -1910,6 +2299,8 @@ struct WorkCardFileDrop: ViewModifier {
     let onTargeted: (Bool) -> Void
     var onFileHover: (Bool) -> Void = { _ in }
     let onRefusedFiles: () -> Void
+    var onTake: () -> Bool = { true }
+    var onFinish: () -> Void = {}
     private func route(_ info: DropInfo) -> WorkDropRoute {
         WorkCardFiles.dropRoute(target, offersCard: info.hasItemsConforming(to: [.workCard]), offersFiles: info.hasItemsConforming(to: WorkCardFiles.fileDropTypes))
     }
@@ -1926,9 +2317,13 @@ struct WorkCardFileDrop: ViewModifier {
     /// A file is let through (no plus badge) so its drop reaches performDrop, which refuses it with the line.
     func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
     func performDrop(info: DropInfo) -> Bool {
-        onTargeted(false); onFileHover(false)
-        switch route(info) {
+        onFileHover(false)
+        let decision = route(info)
+        switch decision {
         case .moveCard, .startCard:
+            guard ColumnDragTrack.claimsDrop(decision), onTake() else { return true }
+            onFinish()
+            onTargeted(false)
             let providers = info.itemProviders(for: [.workCard])
             let deliver = onCard
             Task { @MainActor in if let id = await WorkCardFileStore.cardID(from: providers) { deliver(id) } }
@@ -2090,7 +2485,8 @@ struct WorkCardFilesSection: View {
         let isNew = delta && !carried && plan.sending.contains { $0.id == file.id }
         let sentShown = carried && !resendAll
         let hover = hovered == file.id
-        return HStack(spacing: 10) {
+        return VStack(alignment: .leading, spacing: 4) {
+        HStack(spacing: 10) {
             Image(systemName: Self.icon(file)).font(.system(size: 13))
                 .foregroundStyle(file.kind == "video" ? Self.videoTint : file.isLink ? COSPalette.muted : COSPalette.accent)
                 .frame(width: 28, height: 28).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 6))
@@ -2113,11 +2509,47 @@ struct WorkCardFilesSection: View {
                 actions(file)
             }
         }
+        if let proposal = files.proposal(for: file.id, workID: source.id) {
+            suggestionRow(file, proposal)
+        }
+        }
         .padding(.horizontal, 10).padding(.vertical, 8)
         .background(hover ? COSPalette.gold.opacity(0.06) : .clear)
         .opacity(sentShown && !hover ? 0.55 : 1)
         .contentShape(Rectangle())
         .onHover { inside in hovered = inside ? file.id : (hovered == file.id ? nil : hovered) }
+    }
+
+    private func suggestionRow(_ file: WorkContextFile, _ proposal: WorkFileSuggestion) -> some View {
+        let current = files.taskSnapshot?(source.id)
+        let reason = WorkFileSuggestion.blockReason(currentText: current?.text ?? "", suggestion: proposal)
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("From this file").font(COSType.body(10.5, weight: .semibold)).foregroundStyle(COSPalette.muted)
+            if let name = proposal.display, WorkFileSuggestion.unnamedDrop(file.display) {
+                Text("Show as \(name)").font(COSType.body(11)).lineLimit(2)
+            }
+            if let due = proposal.due {
+                Text("Due \(due)").font(COSType.body(11))
+            }
+            if let done = proposal.doneWhen {
+                Text("Done when: \(done)").font(COSType.body(11)).lineLimit(3)
+            }
+            if let note = proposal.note {
+                Text(note).font(COSType.body(11)).lineLimit(3)
+            }
+            if let current, !current.doneWhen.isEmpty, proposal.doneWhen != nil {
+                Text("Current finish line: \(current.doneWhen)").font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).lineLimit(2)
+            }
+            if let reason {
+                Text(reason).font(COSType.body(10.5)).foregroundStyle(COSPalette.amber)
+            }
+            HStack(spacing: 8) {
+                Button("Apply") { let card = source.id; Task { await files.acceptSuggestion(proposal, workID: card) } }
+                    .buttonStyle(COSPrimaryButtonStyle()).disabled(disabled || reason != nil)
+                Button("Dismiss") { files.dismissSuggestion(file.id, workID: source.id) }
+                    .buttonStyle(COSQuietButtonStyle()).disabled(disabled)
+            }
+        }.padding(.horizontal, 10).padding(.bottom, 8)
     }
 
     private func tag(_ text: String, filled: Bool) -> some View {
@@ -2285,6 +2717,10 @@ struct WorkStartFilesRow: View {
                             HStack(spacing: 8) {
                                 Image(systemName: WorkCardFilesSection.icon(file)).font(.system(size: 11)).foregroundStyle(COSPalette.accent).frame(width: 16)
                                 Text(file.display).font(COSType.body(11.5)).lineLimit(1).truncationMode(.middle)
+                                if let proposal = files.proposal(for: file.id, workID: source.id) {
+                                    Text(proposal.due.map { "Due \($0)" } ?? proposal.doneWhen.map { "Done when: \($0)" } ?? "From this file")
+                                        .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).lineLimit(1)
+                                }
                                 Spacer(minLength: 6)
                                 Text(WorkCardFilesSection.stateWord(file).0).font(COSType.body(10.5)).foregroundStyle(WorkCardFilesSection.stateWord(file).1)
                             }

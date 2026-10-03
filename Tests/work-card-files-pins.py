@@ -40,23 +40,34 @@ types = {t.get("UTTypeIdentifier"): t for t in plist.get("UTExportedTypeDeclarat
 need("com.gotcos.work-card" in types and types["com.gotcos.work-card"].get("UTTypeConformsTo") == ["public.data"],
      "Info.plist exports com.gotcos.work-card conforming to public.data only (never public.content, which cards take)")
 
-# 2. Card drop destinations never take a card, and sit on the card itself.
+# 2. A column card face forwards a work-card drag. The Files box still takes files only. The destination sits on the card.
 decl = re.search(r"static let fileDropTypes: \[UTType\] = \[([^\]]*)\]", files)
 need(decl is not None and ".workCard" not in decl.group(1) and ".text" not in decl.group(1) and ".plainText" not in decl.group(1),
-     "a card's drop types are files only")
+     "a card's file types are files only")
 need("static let boardDropTypes: [UTType] = [.workCard] + fileDropTypes" in files, "columns and the session row list the card type")
-drop = body(files, "struct WorkCardFileDrop: ViewModifier {", "/// A card or the Agent workspace's Files box")
-need(".onDrop(of: WorkCardFiles.fileDropTypes, delegate: WorkCardFileDropDelegate(target: .card" in drop, "the card's drop takes files through its delegate")
+drop = body(files, "struct WorkCardFileDrop: ViewModifier {", "/// A card face or the Agent workspace's Files box")
+need(".onDrop(of: filesOn ? WorkCardFiles.boardDropTypes : [.workCard], delegate: WorkCardFileDropDelegate(" in drop,
+     "a column card face registers a work-card drag, and a file drag when the card takes files")
+need("target: .card, forwardsColumnMove: forwards" in drop, "the card face forwards a work-card drag only when the column gave it a move")
+need("forwardsColumnMove: true" not in files, "nothing forces a card face to forward; the Files box never sets the flag")
+need(".onDrop(of: WorkCardFiles.fileDropTypes, delegate: WorkCardFileDropDelegate(target: .filesBox" in files,
+     "the Files box still takes files only")
 need(drop.index(".onDrop(") < drop.index(".overlay {") and ".allowsHitTesting(false)" in drop,
      "the drop destination is on the card; Add to card is drawn over it and takes no hits (a destination inside .overlay never receives drops)")
-mod_at = card.index(".modifier(WorkCardFileDrop(files: cardFiles, source: item.task.map(WorkSource.taskSnapshot)))")
+mod = ".modifier(WorkCardFileDrop(files: cardFiles, source: item.task.map(WorkSource.taskSnapshot), onColumnCard: acceptColumn, onColumnHover: markColumn, onTake: takeColumn, onFinish: finishColumn))"
+mod_at = card.index(mod)
 for overlay in re.finditer(r"\.overlay[^\n]*\{", card):
     close = card.find("}", overlay.end())
     need(not (overlay.start() < mod_at < close), "the card's file drop must not sit inside an .overlay closure")
 route = body(files, "nonisolated static func dropRoute(", "// MARK: Cleanup")
-need("case .card, .filesBox: return offersCard ? .ignore : (offersFiles ? .addFiles : .ignore)" in route, "a card or the Files box never takes a card")
+need("if cardForwardsMove, target == .card, offersCard { return .moveCard }" in route, "a column card face moves a work-card drag")
+need("case .card, .filesBox: return offersCard ? .ignore : (offersFiles ? .addFiles : .ignore)" in route, "without that flag, a card or the Files box never takes a card")
 delegate = body(files, "@MainActor struct WorkCardFileDropDelegate: DropDelegate {", "/// A column or the session row")
-need("guard route(info) == .addFiles else { return false }" in delegate, "a card's drop takes files only")
+need("guard ColumnDragTrack.claimsDrop(decision), onTake() else { return true }" in delegate and "case .moveCard:" in delegate and "forwardsColumnMove" in delegate,
+     "the first destination takes a card move")
+card_drop = delegate.split("func performDrop", 1)[1]
+added = card_drop.split("case .addFiles:", 1)[1].split("case .moveCard:", 1)[0]
+need("onTake()" not in added and "onFiles(" in added, "adding a file does not claim the column drag")
 
 # 3. A file drop never starts, sends or moves anything.
 for banned in ("openStart(", ".submit(", "sendWorkHandoff(", "forkToPlatform(", "setWorkStage(", "move(task"):
@@ -65,11 +76,17 @@ board_delegate = body(files, "@MainActor struct WorkBoardDropDelegate: DropDeleg
 refuse = board_delegate[board_delegate.index("case .refuseFiles:\n            onRefusedFiles()"):]
 refuse = refuse[:refuse.index("default:")]
 need(refuse.strip() == "case .refuseFiles:\n            onRefusedFiles()\n            return false", "a file on a column or the session row is refused and returns false")
+perform = board_delegate.split("func performDrop", 1)[1]
+need("onTake()" not in perform.split("switch", 1)[0], "a column drop looks at the route before it claims, so a file refusal does not spend the claim")
 need(board_code.count("onRefusedFiles: { cardFiles.flashBoard() }") == 2, "both board drops refuse files with the line, and do nothing else")
 row = body(board, "private var sessionsRow: some View {", "private func sessionCard(")
 need(".onDrop(of: WorkCardFiles.boardDropTypes, delegate: WorkBoardDropDelegate(target: .sessionRow" in row, "the session row takes the card type")
 col = body(board, "private func boardColumn(", "private func boardCard(")
-need(".onDrop(of: WorkCardFiles.boardDropTypes, delegate: WorkBoardDropDelegate(target: .column" in col, "a column takes the card type")
+need("WorkBoardDropDelegate(target: .column, onCard: accept, onTargeted: mark, onRefusedFiles: { cardFiles.flashBoard() }, onTake: takeColumn, onFinish: finishColumn)" in col,
+     "a column takes the card type through one delegate")
+need(col.count(".onDrop(of: WorkCardFiles.boardDropTypes, delegate: columnDrop)") == 2, "the header and the list each take that drop")
+need(col.index(".contentShape(Rectangle())") < col.index("ScrollView {") < col.rindex(".onDrop(of: WorkCardFiles.boardDropTypes, delegate: columnDrop)"),
+     "the header drop is outside the list, and the list drop is on the scroll view")
 need('Text(WorkCardFiles.startTileRefusal)' in board and "if startFileHover {" in body(board, "private func startWorkTarget(", "private func boardColumn("),
      "Start work says where files go while one is over it")
 
@@ -148,9 +165,11 @@ need("unstampedNote" in body(files, "    nonisolated static func commit(staged:"
      "a failed stamp adds the file with a note that never says refresh")
 need("store.cardFiles.stampIdentity = { [weak self] workID in await self?.stampWorkIdentity(workID) ?? false }" in code("Sources/ControllerModel.swift"),
      "the app stamps through its Work stage write")
-# W6: the board line comes on the drop, never on hover.
-entered = body(files, "    func dropEntered(info: DropInfo) {\n        switch route(info) {", "    func dropExited(")
-need("onRefusedFiles" not in entered, "the Files go on a card line shows on drop only")
+# W6: the board line comes on the drop, never on hover. Anchored on the column delegate, not the card face's dropEntered.
+board_entered = board_delegate[board_delegate.index("func dropEntered"):board_delegate.index("func dropExited")]
+need("onRefusedFiles" not in board_entered and "onFileHover(true)" in board_entered, "the Files go on a card line shows on drop only")
+card_entered = delegate[delegate.index("func dropEntered"):delegate.index("func dropExited")]
+need("onRefusedFiles" not in card_entered, "a card face does not flash the board line on hover")
 
 # 7. Every compile list builds the new file.
 for rel in ("Tests/run.sh", "scripts/build-release.sh", "scripts/build-foundation-lab.sh", "Tests/run-held-ui.sh", "Tests/run-merge-ui.sh",
@@ -165,4 +184,4 @@ need("WorkProgress WorkCardFiles WorkProgressTracker" in code("Tests/run-work.sh
 
 # 8. Tests never open a panel or Quick Look (the desktop check enforces it; this keeps the rule there).
 need("NSOpenPanel|NSSavePanel|QLPreviewPanel" in code("Tests/desktop-safety-check.py"), "the desktop check refuses file panels and Quick Look in tests")
-print("COS Control: card files wiring pinned (0.5.254): private card type, file-only cards, refused board drops, one block composer, countdown, cleanup, compile lists")
+print("COS Control: card files wiring pinned (0.5.254): private card type, a column card face forwards a work-card drag, the Files box stays file-only, refused board drops, one block composer, countdown, cleanup, compile lists")

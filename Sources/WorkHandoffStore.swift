@@ -408,6 +408,13 @@ struct WorkGlassesRequest: Equatable, Sendable {
     /// The listed session a receipt names: the exact id, else the same session by a short id (ClaudeSession.sameSession).
     /// 0.5.250: with server 6.58.2 a New session is linked from the start of its run, while the live list may still give
     /// it by its first 8 characters; the card showed "session live status unavailable" when only the exact id counted.
+    /// The session a receipt already recorded, used when the live check has gone stale. Nil without a provider and a
+    /// `provider:native` id.
+    nonisolated static func rememberedSession(for receipt: WorkHandoffReceipt) -> WorkSession? {
+        guard let id = receipt.sessionID, let native = nativeID(id), !receipt.provider.isEmpty else { return nil }
+        return WorkSession(id: id, nativeID: native, provider: receipt.provider, title: receipt.sessionTitle,
+                           summary: "", project: "", status: receipt.status)
+    }
     nonisolated static func listedSession(for receipt: WorkHandoffReceipt, in sessions: [WorkSession]) -> WorkSession? {
         guard let id = receipt.sessionID else { return nil }
         return sessions.first { $0.id == id && $0.provider == receipt.provider }

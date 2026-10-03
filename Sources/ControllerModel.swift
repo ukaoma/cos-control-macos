@@ -472,6 +472,43 @@ final class ControllerModel: ObservableObject {
         // 0.5.254: card files load, and copies a relaunch interrupted start again (with background work only). A card's
         // identity is stamped on its task before its first file is saved (fix pass 1, QA W1).
         store.cardFiles.stampIdentity = { [weak self] workID in await self?.stampWorkIdentity(workID) ?? false }
+        store.cardFiles.taskSnapshot = { [weak self] workID in
+            guard let task = self?.workTasks.first(where: { $0.workSourceID == workID }) else { return nil }
+            return (text: task.text, doneWhen: task.doneWhen)
+        }
+        store.cardFiles.applySuggestion = { [weak self] workID, suggestion in
+            guard let self else { throw HelperClientError.commandFailed("COS Control is closing.") }
+            guard let task = self.workTasks.first(where: { $0.workSourceID == workID }) else {
+                throw HelperClientError.invalidResponse("This card is not on the board. Refresh before applying.")
+            }
+            guard task.agentState != "running" else {
+                throw HelperClientError.invalidResponse("This task is running. Apply after it finishes.")
+            }
+            // Done when uses the id from before any text edit. A text edit mints a new row id.
+            for step in WorkFileSuggestion.writes(canonicalID: task.id, currentText: task.text, suggestion: suggestion) {
+                switch step {
+                case .doneWhen(let line, let id): try await self.setTaskDoneWhen(id: id, domain: task.domain, doneWhen: line)
+                case .text(let text, let id): try await self.setTaskText(id: id, domain: task.domain, text: text)
+                }
+            }
+            await self.loadWorkTasks(force: true)
+            guard let fresh = self.workTasks.first(where: { $0.workSourceID == workID }) else {
+                throw HelperClientError.invalidResponse("This card left the board. Refresh before applying.")
+            }
+            if let done = suggestion.doneWhen, !done.isEmpty, fresh.doneWhen != done {
+                try await self.setTaskDoneWhen(id: fresh.id, domain: fresh.domain, doneWhen: done)
+            }
+            await self.loadWorkTasks(force: true)
+            guard let landed = self.workTasks.first(where: { $0.workSourceID == workID }) else {
+                throw HelperClientError.invalidResponse("This card left the board. Refresh before applying.")
+            }
+            if let done = suggestion.doneWhen, !done.isEmpty, landed.doneWhen != done {
+                throw HelperClientError.invalidResponse("The finish line did not land. The suggestion is still here.")
+            }
+            if let due = suggestion.due, !landed.text.contains(due) {
+                throw HelperClientError.invalidResponse("The due date did not land. The suggestion is still here.")
+            }
+        }
         store.cardFiles.start()
         // 0.5.252: the glasses request inbox is asked about again whenever the server's version changes.
         tracker.requests.serverVersion = { [weak self] in

@@ -18,6 +18,7 @@ import UniformTypeIdentifiers
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
         nameChecks()
+        suggestionChecks()
         sniffChecks()
         secretChecks()
         admissionChecks()
@@ -74,6 +75,82 @@ import UniformTypeIdentifiers
         check(WorkCardFiles.storedName(seq: 2, display: "IMG_4821.HEIC", ext: "heic") == "02-img-4821.heic", "stored name", "the mock's HEIC")
         check(WorkCardFiles.storedName(seq: 4, display: "\u{6587}\u{4EF6}.png", ext: "png").hasPrefix("04-"), "stored name", "a name with no ASCII still gets a slug")
         check(WorkCardFiles.storedName(seq: 5, display: "a.b", ext: "p d f") == "05-a.bin", "stored name", "an unsafe extension")
+    }
+
+    static func suggestionChecks() {
+        let calendar = WorkFileSuggestion.chicagoCalendar()
+        func at(_ day: Int, _ hour: Int, _ minute: Int, month: Int = 10) -> Date {
+            var parts = DateComponents()
+            parts.year = 2026; parts.month = month; parts.day = day; parts.hour = hour; parts.minute = minute
+            parts.timeZone = calendar.timeZone
+            return calendar.date(from: parts)!
+        }
+        let transcript = """
+        Aaron Black 13 minutes ago
+        ETP
+        If we're talking within the next couple months, priority order listed above doesn't matter.
+        Miles Ukaoma 1 minute ago
+        I've set this up to be done by end of next week.
+        Done = repo updated with Bottle POS, Markt POS,
+        Quilt Software light/dark tokens as well as the
+        brands you mentioned above.
+        """
+        let friday = at(2, 14, 7)
+        let read = WorkFileSuggestion.interpreted(fileID: "f_test", sha256: "abc", displayName: "Dropped file.png", text: transcript, addedAt: friday, now: friday)
+        check(read.due == "2026-10-09", "suggestion date", "end of next week from Friday is \(read.due ?? "nil")")
+        check(read.doneWhen?.hasPrefix("repo updated with Bottle POS") == true, "suggestion finish", read.doneWhen ?? "nil")
+        let continued = transcript + "\nGina Alvarez 2 minutes ago\nWe should also add a second finish line that must not be stored."
+        let stopped = WorkFileSuggestion.interpreted(fileID: "f_next", sha256: "next", displayName: "Dropped file.png", text: continued, addedAt: friday, now: friday)
+        check(stopped.doneWhen?.contains("second finish") != true && stopped.doneWhen?.hasPrefix("repo updated with Bottle POS") == true,
+              "suggestion finish", stopped.doneWhen ?? "nil")
+        check(read.display == "Aaron Black Slack 2026-10-02", "suggestion name", read.display ?? "nil")
+        check(read.note == nil, "suggestion note", "a date and a finish line also stored a note")
+        check(WorkFileSuggestion.unnamedDrop("Dropped file.png") && WorkFileSuggestion.unnamedDrop("Dropped image.png"), "suggestion name", "a nameless drop was treated as named")
+        check(!WorkFileSuggestion.unnamedDrop("Aaron Black.png"), "suggestion name", "a real name would be replaced")
+        let months = WorkFileSuggestion.interpreted(fileID: "f", sha256: "m", displayName: "Notes.pdf", text: "If it's within the next couple of months the order does not matter.", addedAt: friday, now: friday)
+        check(months.due == nil && months.status == "proposed" && months.note != nil, "suggestion date", "a couple of months became \(months.due ?? "a note")")
+        check(WorkFileSuggestion.interpreted(fileID: "f", sha256: "s", displayName: "x.png", text: "end of this week", addedAt: at(3, 12, 0), now: friday).due == "2026-10-02",
+              "suggestion date", "Saturday's end of this week")
+        check(WorkFileSuggestion.interpreted(fileID: "f", sha256: "u", displayName: "x.png", text: "end of next week", addedAt: at(4, 9, 0), now: friday).due == "2026-10-16",
+              "suggestion date", "Sunday's end of next week")
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        var utcParts = DateComponents(year: 2026, month: 10, day: 3, hour: 4, minute: 30)
+        utcParts.timeZone = utc.timeZone
+        let late = utc.date(from: utcParts)!
+        check(WorkFileSuggestion.interpreted(fileID: "f", sha256: "z", displayName: "x.png", text: "end of next week", addedAt: late, now: late).due == "2026-10-09",
+              "suggestion date", "04:30 UTC is still Friday evening in Chicago")
+        let current = "Send the replies. - Due: 2026-10-01"
+        let merged = WorkFileSuggestion.mergedText(current: current, due: "2026-10-09", note: nil)
+        check(merged == "Send the replies. - Due: 2026-10-09", "suggestion apply", merged ?? "nil")
+        check(WorkFileSuggestion.mergedText(current: merged!, due: "2026-10-09", note: nil) == merged, "suggestion apply", "a second apply appended another due date")
+        check(WorkFileSuggestion.mergedText(current: String(repeating: "a", count: 1990), due: "2026-10-09", note: nil) == nil, "suggestion apply", "a 2,000-character cap was ignored")
+        check(WorkFileSuggestion.interpreted(fileID: "f", sha256: "k", displayName: "x.png", text: "Done = ship it [stage planning]", addedAt: friday, now: friday).doneWhen == nil,
+              "suggestion finish", "a marker became a finish line")
+        let both = WorkFileSuggestion(fileID: "f", sha256: "abc", status: "proposed", display: nil, due: "2026-10-09", doneWhen: "repo updated with Bottle POS", note: nil, readAt: 0)
+        let steps = WorkFileSuggestion.writes(canonicalID: "e1261632376c", currentText: current, suggestion: both)
+        guard steps.count == 2 else { fatalError("check failed [suggestion apply] writes \(steps)") }
+        if case .doneWhen(let line, let id) = steps[0] {
+            check(id == "e1261632376c" && line.hasPrefix("repo updated"), "suggestion apply", "finish line id \(id)")
+        } else { fatalError("check failed [suggestion apply] finish line was not first") }
+        if case .text(let text, let id) = steps[1] {
+            check(id == "e1261632376c" && text.contains("2026-10-09") && !text.contains("2026-10-01"), "suggestion apply", text)
+        } else { fatalError("check failed [suggestion apply] text was not second") }
+        let folder = URL(fileURLWithPath: "/tmp/card-suggestion")
+        var image = file("img", kind: "image", seq: 1, stored: "01-dropped-file.png")
+        image.display = "Dropped file.png"; image.pixelWidth = 558; image.pixelHeight = 1024
+        let plain = WorkCardFiles.handoff(files: [image], folder: folder, mode: .newSession, sessionID: nil, workID: workID, receipts: [], resendAll: false, copyExists: { _ in true }).block
+        var manifest = WorkContextManifest(workSourceID: workID)
+        manifest.files = [image]
+        manifest.suggestions = [both]
+        let withSuggestion = WorkCardFiles.handoff(files: manifest.files, folder: folder, mode: .newSession, sessionID: nil, workID: workID, receipts: [], resendAll: false, copyExists: { _ in true }).block
+        check(plain == withSuggestion && !plain.contains("repo updated"), "suggestion handoff", "the suggestion entered the handoff block")
+        var heic = file("heic", kind: "heic", seq: 2, stored: "02-img-4821.heic")
+        heic.display = "IMG_4821.HEIC"
+        let before = WorkCardFiles.blockEntry(heic, folder: folder)
+        heic.companions = [WorkContextCompanion(kind: "jpeg", stored: "02-img-4821.jpg", state: "ready", pixelWidth: 2048, pixelHeight: 1536)]
+        let after = WorkCardFiles.blockEntry(heic, folder: folder)
+        check(before.path.hasSuffix("02-img-4821.heic") && after.path.hasSuffix("02-img-4821.jpg") && !after.meta.contains("repo"), "suggestion handoff", "HEIC block changed for a suggestion")
     }
 
     static func sniffChecks() {
@@ -355,6 +432,28 @@ extension WorkCardFilesChecks {
         }
         check(WorkCardFiles.dropRoute(.column, offersCard: true, offersFiles: false) == .moveCard, "private type", "a column moves a card")
         check(WorkCardFiles.dropRoute(.sessionRow, offersCard: true, offersFiles: false) == .startCard, "private type", "the row starts a card")
+        check(WorkCardFiles.dropRoute(.card, offersCard: true, offersFiles: false, cardForwardsMove: true) == .moveCard, "private type", "a card face in a column moves a card")
+        check(WorkCardFiles.dropRoute(.card, offersCard: true, offersFiles: true, cardForwardsMove: true) == .moveCard, "private type", "a card drag with files still moves, on a column face")
+        check(WorkCardFiles.dropRoute(.card, offersCard: false, offersFiles: true, cardForwardsMove: true) == .addFiles, "private type", "a file on a column face still goes on the card")
+        check(WorkCardFiles.dropRoute(.filesBox, offersCard: true, offersFiles: false, cardForwardsMove: true) == .ignore, "private type", "the Files box never takes a card, even if a column would")
+        var drag = ColumnDragTrack()
+        drag.enter("planned"); drag.enter("planned"); drag.exit("planned")
+        check(drag.stage == "planned" && drag.count == 1, "column drag", "the list leaving does not clear a card face that is still hovered")
+        drag.exit("planned")
+        check(drag.stage == nil && drag.count == 0, "column drag", "the last exit clears the column")
+        drag.enter("planned")
+        check(drag.take("planned") && !drag.take("planned"), "column drag", "the first destination takes the drop, and the second does not")
+        drag.finish("planned")
+        check(drag.stage == nil && !drag.take("planned"), "column drag", "a finished drop stays claimed until the next drag enters")
+        drag.enter("qa")
+        check(drag.stage == "qa" && drag.count == 1 && drag.take("qa"), "column drag", "the next drag can take again")
+        drag.enter("built")
+        check(drag.stage == "built" && drag.count == 1 && !drag.claimed, "column drag", "entering another column starts a new drag")
+        drag.exit("planned")
+        check(drag.stage == "built" && drag.count == 1, "column drag", "an exit from another column changes nothing")
+        check(ColumnDragTrack.claimsDrop(.moveCard) && ColumnDragTrack.claimsDrop(.startCard)
+              && !ColumnDragTrack.claimsDrop(.addFiles) && !ColumnDragTrack.claimsDrop(.refuseFiles) && !ColumnDragTrack.claimsDrop(.ignore),
+              "column drag", "only a card move claims the drag; a file add and a file refusal do not")
         for target in [WorkDropTarget.column, .sessionRow] {
             check(WorkCardFiles.dropRoute(target, offersCard: false, offersFiles: true) == .refuseFiles, "private type", "a file on \(target) is refused")
             check(WorkCardFiles.dropRoute(target, offersCard: false, offersFiles: false) == .ignore, "private type", "text is ignored")
@@ -475,6 +574,9 @@ extension WorkCardFilesChecks {
         let read = WorkCardFiles.readManifest(folder)
         check(read?.workSourceID == workID && read?.completedSeenAt == 5 && read?.files.map(\.id) == ["a"], "manifest round-trip", "\(String(describing: read))")
         check(read?.files.first?.state == "failed", "manifest round-trip", "a file whose copy is missing reads failed")
+        let raw = try String(contentsOf: folder.appendingPathComponent("manifest.json"), encoding: .utf8)
+        check(!raw.contains("suggestions"), "manifest round-trip", "an empty suggestion list was written into an old manifest")
+        check(read?.suggestions.isEmpty == true, "manifest round-trip", "a manifest with no suggestions key did not load")
         let mode = { (path: String) in ((try? FileManager.default.attributesOfItem(atPath: path)[.posixPermissions]) as? NSNumber)?.intValue ?? -1 }
         check(mode(folder.path) == 0o700 && mode(folder.appendingPathComponent("manifest.json").path) == 0o600, "manifest round-trip",
               "folder \(String(mode(folder.path), radix: 8)), manifest \(String(mode(folder.appendingPathComponent("manifest.json").path), radix: 8))")

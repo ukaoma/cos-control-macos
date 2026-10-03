@@ -1221,7 +1221,7 @@ struct ActivityWindow: View {
 
     @ViewBuilder private var workSurface: some View {
         WorkWorkspaceView(model: model, handoffStore: handoffStore, reviewStore: reviewStore,
-            state: workWorkspaceState, onOpenSession: openHandoffSession,
+            state: workWorkspaceState, onOpenSession: openHandoffSession, onOpenPlatform: openWorkInPlatform,
             onEditTask: openTaskDetail, onReviewMeeting: openMeetingWorkReview, onOpenMeeting: openWorkMeeting)
     }
 
@@ -1341,10 +1341,42 @@ struct ActivityWindow: View {
         } else { openHandoffWork(id) }
     }
 
+    /// The work card stays where it is. Claude, Codex, or Cursor comes forward with this session.
+    private func openWorkInPlatform(_ session: WorkSession) {
+        guard !isolatedWorkPreview else { return }
+        let value: JSONValue = .object([
+            "id": .string(session.nativeID), "provider": .string(session.provider),
+            "name": .string(session.title), "workspace": .string(session.project),
+            "state": .string(session.status), "discussionSummary": .string(session.summary)
+        ])
+        guard let row = ClaudeSession(value) else { return }
+        if WorkHandoffStore.serverHold(onSession: session.id, in: handoffStore.receipts) != nil {
+            model.petNotice = "Still running on the COS server. It opens in the app when the first reply is done."
+            return
+        }
+        model.openSessionInPlatform(row)
+    }
+
+    /// The receipt already names the Claude, Codex, or Cursor session. Bring that tab forward.
+    /// Control's Sessions page is not that tab.
     private func openHandoffSession(_ id: String) {
         handoffStore.selectedSessionID = id
-        showingLinkedSession = true
-        section = .sessions
+        guard !isolatedWorkPreview else {
+            showingLinkedSession = true
+            section = .sessions
+            return
+        }
+        let session = handoffStore.sessions.first { $0.id == id }
+            ?? handoffStore.receipts.lazy.compactMap { receipt -> WorkSession? in
+                guard receipt.sessionID == id else { return nil }
+                return WorkHandoffStore.rememberedSession(for: receipt)
+            }.first
+        guard let session else {
+            showingLinkedSession = true
+            section = .sessions
+            return
+        }
+        openWorkInPlatform(session)
     }
 
     private func openHandoffWork(_ id: String) {
@@ -1362,15 +1394,7 @@ struct ActivityWindow: View {
 
     private func openFullHandoffSession(_ session: WorkSession) {
         guard !isolatedWorkPreview else { return }
-        let value: JSONValue = .object([
-            "id": .string(session.nativeID), "provider": .string(session.provider),
-            "name": .string(session.title), "workspace": .string(session.project),
-            "state": .string(session.status), "discussionSummary": .string(session.summary)
-        ])
-        guard let row = ClaudeSession(value) else { return }
-        showingLinkedSession = false
-        selectedSessionID = row.id
-        model.openClaudeSession(row)
+        openWorkInPlatform(session)
     }
 
     private func previewOnlySection(_ item: ActivitySection) -> some View {

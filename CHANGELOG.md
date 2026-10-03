@@ -1,3 +1,31 @@
+## 0.5.254 (build 304)
+
+An unconfirmed handoff can start a new session. That clears the block and does not send the old instruction. Open full session brings forward the Claude, Codex, or Cursor tab.
+
+## 0.5.254 (build 303)
+
+Open session on a Work handoff brings forward the Claude, Codex, or Cursor tab that receipt names. The Work card stays put.
+
+## 0.5.254 (build 302)
+
+A finished meeting review lays out the paragraphs on screen, not the whole writeup, and the page is not rebuilt while the window is still being dragged. Click the review title to rename it. That name is the subject of the work you send.
+
+## 0.5.254 (build 301)
+
+A file dropped on a card can offer a due date, a finish line, and a clearer name. Nothing is written until Apply. Dismiss keeps the file. The handoff still sends the file path only, and a card is not moved.
+
+## 0.5.254 (build 300)
+
+Open card and Claude stays available after the live session check goes stale, because the handoff receipt still names the provider and the session. A session the COS server is still writing is not opened in the app. The card stays on Work.
+
+## 0.5.254 (build 299)
+
+A session in Sessions working now opens its card and the Claude, Codex, or Cursor session together. The task on that session is a board card: its menu moves it, and a drag lands on a column. Complete still asks first when the drag is onto Complete.
+
+## 0.5.254 (build 298)
+
+Drop a Work card anywhere in a column. The header, the empty list, and another card in that column all take the move. A file dropped on a card still goes on that card, and the next one does too: a file drop does not use the one-drop claim. Dropping on Complete still asks first. The first place that takes a card move is the only one that runs, and the column stays lit while any of those places is still under the pointer. Typing in Context to send waits a third of a second before it writes the journal, and search waits before it filters the board. Resizing a task page rebuilds the text field only when the width crosses 760 or 1,100. Installed over build 296 for a morning test. Build 296 is the rollback in Application Support.
+
 ## 0.5.254 (build 296)
 
 Drop files on a Work card, and their paths go out with the work. COS Control only: no server release. Works with server 6.59.0. Build 296 is QA rounds 1 and 2 and a faster Work resize on build 293, which was installed for review only. Build 295, a local trial of the resize, is replaced and its number is not reused.

@@ -461,6 +461,55 @@ enum WorkWorkspaceProjection {
     }
 }
 
+/// Task page width, kept only at the two breaks that change the layout. The raw width is not stored, so a resize
+/// between them does not rebuild the text field.
+private struct DetailSpan: Equatable {
+    var sideBySide = true
+    var roomy = false
+}
+
+/// A task named on a session card. It drags with the same card type a column accepts.
+private struct SessionTaskDrag: ViewModifier {
+    let id: String?
+    func body(content: Content) -> some View {
+        if let id {
+            content.draggable(WorkCardDrag(id: id)) {
+                Text("Move card").font(COSType.body(12, weight: .medium)).lineLimit(1).padding(8)
+                    .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 7))
+            }
+        } else {
+            content
+        }
+    }
+}
+
+/// The board search box. Characters stay in this view. The board filters after a short pause, not on every key.
+private struct WorkSearchField: View {
+    var prompt: String
+    @Binding var query: String
+    @State private var text = ""
+    @State private var primed = false
+    @State private var wait: Task<Void, Never>?
+
+    var body: some View {
+        TextField(prompt, text: $text)
+            .onAppear {
+                if !primed { text = query; primed = true }
+            }
+            .onChange(of: text) { _, value in
+                wait?.cancel()
+                wait = Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(180))
+                    guard !Task.isCancelled else { return }
+                    if query != value { query = value }
+                }
+            }
+            .onChange(of: query) { _, value in
+                if text != value { text = value }
+            }
+    }
+}
+
 struct WorkWorkspaceView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var colorScheme
@@ -469,6 +518,8 @@ struct WorkWorkspaceView: View {
     @ObservedObject var reviewStore: WorkReviewStore
     @ObservedObject var state: WorkWorkspaceState
     var onOpenSession: (String) -> Void
+    /// Opens the running Claude, Codex, or Cursor session. The card stays on Work.
+    var onOpenPlatform: (WorkSession) -> Void = { _ in }
     var onEditTask: (TaskRow) -> Void
     var onReviewMeeting: (LibraryMeeting) -> Void
     var onOpenMeeting: (WorkMeetingReference) -> Void = { _ in }
@@ -488,12 +539,23 @@ struct WorkWorkspaceView: View {
     /// The files on each card (WorkCardFiles.swift).
     private var cardFiles: WorkCardFileStore { handoffStore.cardFiles }
     @State private var columnTarget: WorkBoardStage?
+    /// Header, list, and card face share one drag. The count keeps the highlight up while any of them is still hovered.
+    @State private var columnDrag = ColumnDragTrack()
     /// How many session cards fit beside the pinned Start work column, so it casts its edge only when cards run under
     /// it. 0.5.254 resize pass: the count, not the width, is kept: it changes about every 330 pt, where the width
     /// changed on every step of a resize and redrew the whole board each time.
     @State private var sessionsRowCapacity = Int.max
     /// The wide layout (the sidebar beside the board) from 900 pt. Flips only when the window crosses it.
     @State private var wideLayout = true
+    /// Task page: workspace beside the writeup from 760 pt, and the wider 452 pt column from 1,100. Not the raw width.
+    @State private var detailSpan = DetailSpan()
+    /// The first measurement applies at once. A later flip waits until the drag pauses, so crossing 760 does not
+    /// rebuild the review while the window is still moving.
+    @State private var detailSpanSeen = false
+    @State private var detailSpanTask: Task<Void, Never>?
+    @State private var editingReviewID: String?
+    @State private var reviewTitleDraft = ""
+    @FocusState private var reviewTitleFocused: Bool
     /// The remembered layout (Board by default; an unknown stored value reads as Board). The isolated preview keeps
     /// its own, so trying Focus there never changes the real preference.
     private var storedLayout: WorkLayout { handoffStore.isolated ? state.previewLayout : (WorkLayout(rawValue: layoutRaw) ?? .board) }
@@ -526,6 +588,23 @@ struct WorkWorkspaceView: View {
                     Spacer()
                 }.padding(.horizontal, 18).padding(.vertical, 8)
                 detailPane
+            } else if hasDetail && layout == .board {
+                // The open review stays in this branch across the 900 pt break. Moving it between the wide and
+                // compact trees rebuilt the writeup and the context field on the way in and the way back out.
+                HStack(spacing: 0) {
+                    if wideLayout {
+                        sidebar.frame(width: 148)
+                        Divider()
+                    }
+                    VStack(spacing: 0) {
+                        if !wideLayout {
+                            compactNavigation
+                            Divider()
+                        }
+                        backBar(state.domain == nil ? "Back to the board" : "Back to " + boardName + " board")
+                        detailPane
+                    }
+                }
             } else if wideLayout {
                 HStack(spacing: 0) {
                     sidebar.frame(width: 148)
@@ -814,7 +893,7 @@ struct WorkWorkspaceView: View {
                         .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                 }
                 Spacer(minLength: 8)
-                TextField(state.domain == nil ? "Search work" : "Search this domain", text: $state.query).textFieldStyle(.plain)
+                WorkSearchField(prompt: state.domain == nil ? "Search work" : "Search this domain", query: $state.query).textFieldStyle(.plain)
                     .font(COSType.body(12)).padding(10).frame(maxWidth: 240)
                     .background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 6))
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(COSPalette.line))
@@ -972,10 +1051,14 @@ struct WorkWorkspaceView: View {
                 Text(card.activity.session?.title ?? receipt.sessionTitle).font(COSType.body(13.5, weight: .semibold)).lineLimit(1)
             }
             if held.isEmpty {
-                (Text("On ") + Text(inlineTitle(card.item.title)).foregroundColor(.primary)
-                    + Text(" · " + (card.item.task.map { WorkBoardStage.stage(for: $0).title } ?? "Meeting review")
-                           + (card.earlierRevision ? " · an earlier version of the card" : "")))
-                    .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted).lineLimit(2)
+                HStack(spacing: 8) {
+                    (Text("On ") + Text(inlineTitle(card.item.title)).foregroundColor(.primary)
+                        + Text(" · " + (card.item.task.map { WorkBoardStage.stage(for: $0).title } ?? "Meeting review")
+                               + (card.earlierRevision ? " · an earlier version of the card" : "")))
+                        .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted).lineLimit(2)
+                    if let task = card.item.task { stageMenu(task) }
+                }
+                .modifier(SessionTaskDrag(id: card.item.task == nil ? nil : card.item.id))
             } else {
                 // 0.5.247: every task this session holds, and where each one stands.
                 VStack(alignment: .leading, spacing: 5) {
@@ -999,27 +1082,54 @@ struct WorkWorkspaceView: View {
                 Text(receipt.detail).font(COSType.body(11.5)).foregroundStyle(state == .attention ? COSPalette.danger : COSPalette.muted).lineLimit(2)
             }
             HStack(spacing: 6) {
-                if let sessionID = receipt.sessionID {
-                    Button("Open session") { handoffStore.selectedWorkID = card.item.sourceID; onOpenSession(sessionID) }
-                        .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
-                }
+                Button(openWithPlatformTitle(card)) { openCardAndPlatform(card, held: held) }
+                    .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
                 if receipt.acknowledgeable && state.offersAcknowledge {
                     Button(WorkHandoffView.acknowledgeTitle(receipt)) { handoffStore.markReviewed(receiptID: receipt.id) }
                         .buttonStyle(COSQuietButtonStyle()).controlSize(.small).disabled(handoffStore.busy)
                 }
-                Button(card.item.review != nil ? "Open review" : "Open card") { select(card.item) }
-                    .buttonStyle(COSTextButtonStyle()).controlSize(.small)
             }
         }.padding(12).frame(width: WorkBoardSessionCard.cardWidth, alignment: .leading)
             .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 9))
             .overlay(RoundedRectangle(cornerRadius: 9).stroke(state.tint.opacity(0.4)))
     }
 
-    /// One task on a session card: its title, and its tracked state and stage.
+    /// The task Open selects: the one asking, otherwise the first one this session holds, otherwise the card itself.
+    private func sessionTask(_ card: WorkBoardSessionCard, held: [WorkTracking]) -> WorkWorkspaceItem {
+        let asking = held.first(where: \.asksForYou) ?? held.first
+        if let asking, let item = board.item(sourceID: asking.receipt.workID) { return item }
+        return card.item
+    }
+
+    /// The live check drops after 45 seconds. The receipt still names the provider and the session, so the button keeps both.
+    private func platformSession(_ card: WorkBoardSessionCard) -> WorkSession? {
+        card.activity.session ?? WorkHandoffStore.rememberedSession(for: card.activity.receipt)
+    }
+
+    private func openWithPlatformTitle(_ card: WorkBoardSessionCard) -> String {
+        let base = card.item.review != nil ? "Open review" : "Open card"
+        guard let provider = platformSession(card)?.provider, !provider.isEmpty else { return base }
+        let name: String
+        switch provider {
+        case "claude": name = "Claude"
+        case "codex": name = "Codex"
+        case "cursor": name = "Cursor"
+        default: name = WorkHandoffStore.providerName(provider)
+        }
+        return base + " and " + name
+    }
+
+    /// The card stays on Work. The provider app comes forward with the session the receipt names.
+    private func openCardAndPlatform(_ card: WorkBoardSessionCard, held: [WorkTracking]) {
+        select(sessionTask(card, held: held))
+        if let session = platformSession(card) { onOpenPlatform(session) }
+    }
+
+    /// One task on a session card. It is a board card: tap opens it, the menu moves it, and a drag lands on a column.
     private func heldTaskRow(_ tracking: WorkTracking) -> some View {
         let item = board.item(sourceID: tracking.receipt.workID)
         let stage = item?.task.map { WorkBoardStage.stage(for: $0).title } ?? (item?.review != nil ? "Review" : "")
-        return Button { if let item { select(item) } } label: {
+        return HStack(spacing: 8) {
             HStack(spacing: 8) {
                 WorkTrackingDot(phase: tracking.phase, tint: tracking.tint)
                 Text(inlineTitle(item?.title ?? tracking.receipt.workTitle)).font(COSType.body(12)).foregroundStyle(.primary).lineLimit(1)
@@ -1027,7 +1137,11 @@ struct WorkWorkspaceView: View {
                 Text(tracking.shortLabel + (stage.isEmpty ? "" : " · " + stage)).font(COSType.mono(10.5)).foregroundStyle(tracking.tint)
                     .lineLimit(1).fixedSize()
             }.contentShape(Rectangle())
-        }.buttonStyle(.plain).disabled(item == nil).help(item == nil ? "This task is not on this board" : "Open this task")
+                .onTapGesture { if let item { select(item) } }
+                .help(item == nil ? "This task is not on this board" : "Open this task. Drag it to a column to move it.")
+            if let task = item?.task { stageMenu(task) }
+        }
+        .modifier(SessionTaskDrag(id: item?.task == nil ? nil : item?.id))
     }
 
     /// 0.5.247 (3A): the newest automatic move, over the columns (WorkLatestMoveStrip observes the tracker).
@@ -1068,40 +1182,68 @@ struct WorkWorkspaceView: View {
         _ = board.visible(scope: state.scope, domain: state.domain, query: state.query)
         let cards = board.column(stage)
         let targeted = columnTarget == stage
+        // One decision for the header, the list, and a card face. The list is a scroll view, so a drop on the
+        // column behind it never arrived. No size is measured here.
+        let apply: (ColumnDragTrack) -> Void = { next in
+            columnDrag = next
+            columnTarget = next.stage.flatMap { WorkBoardStage(rawValue: $0) }
+        }
+        let mark: (Bool) -> Void = { over in
+            var next = columnDrag
+            if over { next.enter(stage.rawValue) } else { next.exit(stage.rawValue) }
+            apply(next)
+        }
+        let takeColumn: () -> Bool = {
+            var next = columnDrag
+            let won = next.take(stage.rawValue)
+            columnDrag = next
+            return won
+        }
+        let finishColumn: () -> Void = {
+            var next = columnDrag
+            next.finish(stage.rawValue)
+            apply(next)
+        }
+        let accept: (String) -> Void = { id in
+            guard let task = WorkWorkspaceProjection.stageDrop(id: id, items: items, to: stage) else { return }
+            guard canChangeStage(task) else {
+                state.mutationError = model.workBoardWritable || handoffStore.isolated
+                    ? "That card can't move right now. Wait for the current change to finish, or refresh."
+                    : "Board is read-only. Stage changes need the connected Work service."
+                return
+            }
+            // Completing is the one stage change that asks first: a drag is easy to mistake.
+            if stage == .complete { state.pendingComplete = task } else { move(task, to: stage) }
+        }
+        let columnDrop = WorkBoardDropDelegate(target: .column, onCard: accept, onTargeted: mark, onRefusedFiles: { cardFiles.flashBoard() }, onTake: takeColumn, onFinish: finishColumn)
         return VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text(stage.title).font(COSType.body(13, weight: .semibold))
-                Spacer()
-                Text("\(cards.count)").font(COSType.mono(11)).foregroundStyle(COSPalette.muted)
-            }.padding(.horizontal, 12).padding(.top, 13)
-            Text(stage.subtitle).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).padding(.horizontal, 12).padding(.top, 5).padding(.bottom, 13)
-            Divider().overlay(COSPalette.line)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text(stage.title).font(COSType.body(13, weight: .semibold))
+                    Spacer()
+                    Text("\(cards.count)").font(COSType.mono(11)).foregroundStyle(COSPalette.muted)
+                }.padding(.horizontal, 12).padding(.top, 13)
+                Text(stage.subtitle).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).padding(.horizontal, 12).padding(.top, 5).padding(.bottom, 13)
+                Divider().overlay(COSPalette.line)
+            }
+            .contentShape(Rectangle())
+            .onDrop(of: WorkCardFiles.boardDropTypes, delegate: columnDrop)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     if cards.isEmpty { Text(targeted ? "Drop to move here" : "No tasks here").font(COSType.body(12)).foregroundStyle(COSPalette.muted).padding(12) }
-                    ForEach(cards) { item in boardCard(item) }
+                    ForEach(cards) { item in boardCard(item, acceptColumn: accept, markColumn: mark, takeColumn: takeColumn, finishColumn: finishColumn) }
                 }.padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .onDrop(of: WorkCardFiles.boardDropTypes, delegate: columnDrop)
         }.frame(width: 234).frame(maxHeight: .infinity, alignment: .top)
             .background(targeted ? COSPalette.gold.opacity(0.08) : COSPalette.raised.opacity(0.7), in: RoundedRectangle(cornerRadius: 9))
             .overlay(RoundedRectangle(cornerRadius: 9).stroke(targeted ? COSPalette.gold.opacity(0.8) : COSPalette.line))
-            // 0.5.254: cards only (the private type). A file here is refused with a line; it never moves or starts anything.
-            .onDrop(of: WorkCardFiles.boardDropTypes, delegate: WorkBoardDropDelegate(target: .column, onCard: { id in
-                guard let task = WorkWorkspaceProjection.stageDrop(id: id, items: items, to: stage) else { return }
-                guard canChangeStage(task) else {
-                    state.mutationError = model.workBoardWritable || handoffStore.isolated
-                        ? "That card can't move right now. Wait for the current change to finish, or refresh."
-                        : "Board is read-only. Stage changes need the connected Work service."
-                    return
-                }
-                // Completing is the one stage change that asks first: a drag is easy to mistake.
-                if stage == .complete { state.pendingComplete = task } else { move(task, to: stage) }
-            }, onTargeted: { over in
-                if over { columnTarget = stage } else if columnTarget == stage { columnTarget = nil }
-            }, onRefusedFiles: { cardFiles.flashBoard() }))
     }
 
-    private func boardCard(_ item: WorkWorkspaceItem) -> some View {
+    private func boardCard(_ item: WorkWorkspaceItem, acceptColumn: @escaping (String) -> Void, markColumn: @escaping (Bool) -> Void, takeColumn: @escaping () -> Bool, finishColumn: @escaping () -> Void) -> some View {
         let handoff = item.activity.map { WorkHandoffState($0) }
         let running = handoff == .running
         let tracking = item.tracking
@@ -1129,8 +1271,8 @@ struct WorkWorkspaceView: View {
             .overlay(RoundedRectangle(cornerRadius: 7).stroke(Self.cardStroke(asking: asking, running: running, moved: autoMove != nil)))
             .overlay(alignment: .leading) { cardRule(asking: asking, running: running) }
             // 0.5.254: the whole card takes files (on the card itself; "Add to card" is drawn over it, never the target).
-            .modifier(WorkCardFileDrop(files: cardFiles, source: item.task.map(WorkSource.taskSnapshot)))
-            // The private card type only: a column or the session row takes it, a card or another app never does.
+            // A work-card drag on this face is the column's move. The Files box never gets that callback.
+            .modifier(WorkCardFileDrop(files: cardFiles, source: item.task.map(WorkSource.taskSnapshot), onColumnCard: acceptColumn, onColumnHover: markColumn, onTake: takeColumn, onFinish: finishColumn))
             .draggable(WorkCardDrag(id: item.id)) {
                 Text(inlineTitle(item.title)).font(COSType.body(12, weight: .medium)).lineLimit(3).padding(10).frame(width: 210, alignment: .leading)
                     .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 7))
@@ -1392,7 +1534,7 @@ struct WorkWorkspaceView: View {
 
     private var workList: some View {
         VStack(alignment: .leading, spacing: 0) {
-            TextField("Search work", text: $state.query).textFieldStyle(.plain)
+            WorkSearchField(prompt: "Search work", query: $state.query).textFieldStyle(.plain)
                 .help("Search full task text, finish lines, source evidence, and review context")
                 .font(COSType.body(12)).padding(10).background(COSPalette.panel, in: RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(COSPalette.line)).padding(12)
@@ -1448,30 +1590,36 @@ struct WorkWorkspaceView: View {
             ScrollView { meetingIntake(meeting).padding(22) }
         } else if let item = selected {
             // 0.5.244 (2A): the Agent workspace is pinned beside the item when there is room, else right under its title.
-            GeometryReader { box in
-                // 400 pt of workspace plus about 360 pt to read in (the default 920 pt window leaves 771); 452 from 1,100.
-                if box.size.width >= 760 {
+            // The width is read only when it crosses 760 or 1,100. A GeometryReader here rebuilt the text field on
+            // every pixel of a resize.
+            Group {
+                if detailSpan.sideBySide {
                     HStack(alignment: .top, spacing: 0) {
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 20) { itemHeader(item); itemBody(item) }
-                                .frame(maxWidth: .infinity, alignment: .leading).padding(22)
-                        }.frame(maxWidth: .infinity)
+                        detailScroll(item, workspace: false).frame(maxWidth: .infinity)
                         Divider().overlay(COSPalette.line)
                         ScrollView { itemWorkspace(item).padding(18) }
-                            .frame(width: box.size.width >= 1100 ? 452 : 400).frame(maxHeight: .infinity).background(COSPalette.card.opacity(0.55))
+                            .frame(width: detailSpan.roomy ? 452 : 400).frame(maxHeight: .infinity).background(COSPalette.card.opacity(0.55))
                     }
                 } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 20) {
-                            itemHeader(item)
-                            itemWorkspace(item).padding(16)
-                                .background(COSPalette.card.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
-                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line))
-                            itemBody(item)
-                        }.frame(maxWidth: .infinity, alignment: .leading).padding(22)
-                    }
+                    detailScroll(item, workspace: true)
                 }
             }.id(item.id)
+            .onGeometryChange(for: DetailSpan.self) { proxy in
+                DetailSpan(sideBySide: proxy.size.width >= 760, roomy: proxy.size.width >= 1100)
+            } action: { next in
+                guard next != detailSpan else { return }
+                detailSpanTask?.cancel()
+                if !detailSpanSeen {
+                    detailSpanSeen = true
+                    detailSpan = next
+                    return
+                }
+                detailSpanTask = Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(220))
+                    guard !Task.isCancelled else { return }
+                    detailSpan = next
+                }
+            }
         } else if let id = state.selectedID, !handoffStore.receipts(for: id).isEmpty {
             ScrollView { receiptFallback(id).padding(22) }
         } else {
@@ -1482,11 +1630,35 @@ struct WorkWorkspaceView: View {
         }
     }
 
+    private func detailScroll(_ item: WorkWorkspaceItem, workspace: Bool) -> some View {
+        let blocks = item.review.map(reviewBlocks) ?? []
+        return ScrollView {
+            LazyVStack(alignment: .leading, spacing: 16) {
+                itemHeader(item)
+                if workspace {
+                    itemWorkspace(item).padding(16)
+                        .background(COSPalette.card.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line))
+                }
+                if let review = item.review { reviewNotes(review) }
+                ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                    COSMarkdownBlockView(block: block)
+                }
+                if let review = item.review { reviewTail(review) }
+                if let task = item.task { taskBody(task) }
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(22)
+        }
+    }
+
+    private func reviewBlocks(_ review: WorkReviewRecord) -> [COSMarkdownBlock] {
+        let blocks = COSMarkdownCache.blocks(review.markdown)
+        let long = review.markdown.count > Self.foldedReviewCharacters
+        let open = !long || state.expandedReviews.contains(review.id)
+        return open ? blocks : Array(blocks.prefix(8))
+    }
+
     @ViewBuilder private func itemHeader(_ item: WorkWorkspaceItem) -> some View {
         if let task = item.task { taskHeader(task) } else if let review = item.review { reviewHeader(review) }
-    }
-    @ViewBuilder private func itemBody(_ item: WorkWorkspaceItem) -> some View {
-        if let task = item.task { taskBody(task) } else if let review = item.review { reviewBody(review) }
     }
     @ViewBuilder private func itemWorkspace(_ item: WorkWorkspaceItem) -> some View {
         if let task = item.task {
@@ -1495,6 +1667,7 @@ struct WorkWorkspaceView: View {
                             onUndoMove: model.workTracker == nil ? nil : { receiptID, eventID in undoMove(receiptID, eventID) },
                             onMarkComplete: task.checked || !canChangeStage(task) ? nil : { move(task, to: .complete) },
                             onSentBack: { if [.built, .qa].contains(WorkBoardStage.stage(for: task)) { move(task, to: .draft) } })
+                .id(task.workSourceID)
         } else if let review = item.review {
             reviewWorkspace(review)
         }
@@ -1570,8 +1743,29 @@ struct WorkWorkspaceView: View {
     }
 
     private func reviewHeader(_ review: WorkReviewRecord) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(inlineTitle(review.title)).font(COSType.display(25, weight: .medium)).textSelection(.enabled)
+        let title = reviewStore.displayTitle(for: review)
+        return VStack(alignment: .leading, spacing: 10) {
+            if editingReviewID == review.id {
+                TextField("Review title", text: $reviewTitleDraft)
+                    .font(COSType.display(25, weight: .medium))
+                    .textFieldStyle(.plain)
+                    .focused($reviewTitleFocused)
+                    .onSubmit { commitReviewTitle(review) }
+                    .onExitCommand { editingReviewID = nil; reviewTitleFocused = false }
+                    .onChange(of: reviewTitleFocused) { _, focused in
+                        if !focused, editingReviewID == review.id { commitReviewTitle(review) }
+                    }
+            } else {
+                Button {
+                    reviewTitleDraft = title
+                    editingReviewID = review.id
+                    reviewTitleFocused = true
+                } label: {
+                    Text(inlineTitle(title)).font(COSType.display(25, weight: .medium)).multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }.buttonStyle(.plain)
+                    .help("Rename this review. The name is the subject of the work you send.")
+            }
             Text("Meeting review · " + review.status.replacingOccurrences(of: "_", with: " ") + " · " + domainLabel(review.domain))
                 .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
             if let reference = WorkMeetingReference(.object(review.descriptor.merging(["recordId": review.canonicalMeetingId, "title": review.title]) { _, new in new }.mapValues { .string($0) })) {
@@ -1583,11 +1777,9 @@ struct WorkWorkspaceView: View {
     /// Reviews longer than this open folded, with Show the full review.
     private static let foldedReviewCharacters = 1_400
 
-    private func reviewBody(_ review: WorkReviewRecord) -> some View {
+    private func reviewNotes(_ review: WorkReviewRecord) -> some View {
         let notes = (review.inputTruncated ? ["The source was too long to include in full. Review may omit details."] : []) + review.contextWarnings
         let notesOpen = state.expandedNotes.contains(review.id)
-        let long = review.markdown.count > Self.foldedReviewCharacters
-        let open = !long || state.expandedReviews.contains(review.id)
         return VStack(alignment: .leading, spacing: 16) {
             if let error = review.error { Text(error).foregroundStyle(COSPalette.danger) }
             if !notes.isEmpty {
@@ -1609,19 +1801,17 @@ struct WorkWorkspaceView: View {
             if !handoffStore.isolated {
                 Text("This review also appears in COS conversation history.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
             }
-            if !review.markdown.isEmpty {
-                if open {
-                    COSMarkdownView(text: review.markdown)
-                } else {
-                    COSMarkdownView(text: review.markdown).frame(maxHeight: 300, alignment: .top).clipped()
-                        .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.62), .init(color: .clear, location: 1)],
-                                             startPoint: .top, endPoint: .bottom))
-                }
-                if long {
-                    Button(open ? "Show less" : "Show the full review") {
-                        if open { state.expandedReviews.remove(review.id) } else { state.expandedReviews.insert(review.id) }
-                    }.buttonStyle(COSQuietButtonStyle())
-                }
+        }
+    }
+
+    private func reviewTail(_ review: WorkReviewRecord) -> some View {
+        let long = review.markdown.count > Self.foldedReviewCharacters
+        let open = !long || state.expandedReviews.contains(review.id)
+        return VStack(alignment: .leading, spacing: 16) {
+            if long {
+                Button(open ? "Show less" : "Show the full review") {
+                    if open { state.expandedReviews.remove(review.id) } else { state.expandedReviews.insert(review.id) }
+                }.buttonStyle(COSQuietButtonStyle())
             }
             if !review.taskLinks.isEmpty {
                 Text("Possible existing task links").font(COSType.display(18, weight: .medium))
@@ -1638,7 +1828,7 @@ struct WorkWorkspaceView: View {
 
     @ViewBuilder private func reviewWorkspace(_ review: WorkReviewRecord) -> some View {
         if review.canPrepare && (handoffStore.isolated || (reviewStore.available && reviewStore.error == nil)) {
-            WorkHandoffView(store: handoffStore, source: review.source, isPreview: handoffStore.isolated, onOpenSession: onOpenSession,
+            WorkHandoffView(store: handoffStore, source: reviewStore.source(for: review), isPreview: handoffStore.isolated, onOpenSession: onOpenSession,
                 validateBeforeSend: {
                     if handoffStore.isolated { return true }
                     return await reviewStore.validateForHandoff(review)
@@ -1665,6 +1855,24 @@ struct WorkWorkspaceView: View {
                 Divider()
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func commitReviewTitle(_ review: WorkReviewRecord) {
+        let previous = reviewStore.displayTitle(for: review)
+        let next = reviewTitleDraft.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        editingReviewID = nil
+        reviewTitleFocused = false
+        guard !next.isEmpty, next != previous else { return }
+        reviewStore.setTitle(next, for: review.id)
+        let source = reviewStore.source(for: review)
+        var draft = handoffStore.draft(for: source)
+        let updated = draft.prompt
+            .replacingOccurrences(of: "Prepare the next reviewable result for: \(previous)", with: "Prepare the next reviewable result for: \(next)")
+            .replacingOccurrences(of: "Meeting: \(previous)", with: "Meeting: \(next)")
+        if updated != draft.prompt {
+            draft.prompt = updated
+            handoffStore.updateDraft(draft, for: source)
+        }
     }
 
     private func inlineTitle(_ value: String) -> AttributedString {

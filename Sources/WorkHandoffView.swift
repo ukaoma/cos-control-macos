@@ -196,7 +196,13 @@ struct WorkHandoffView: View {
     @State private var sendingBack = false
     /// 0.5.254: "Send all N again" for this send (a Continue or Fork otherwise carries only files the session lacks).
     @State private var resendAllFiles = false
+    /// The context box. Keystrokes stay here. The journal is written after a short pause, and again before a send
+    /// or when this workspace goes away. Writing it on every character locked the journal and redrew Work.
+    @State private var livePrompt = ""
+    @State private var promptBound = false
+    @State private var promptSave: Task<Void, Never>?
     private var draft: WorkHandoffDraft { store.draft(for: source) }
+    private var editingPrompt: String { promptBound ? livePrompt : prompt }
     private var mode: WorkHandoffMode { draft.mode }
     private var sessionID: String { draft.sessionID }
     private var modelID: String { draft.modelID }
@@ -253,7 +259,7 @@ struct WorkHandoffView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let blocking {
-                Text(blocking.status == "unknown" ? "Check the delivery status before sending this work anywhere else. Nothing is resent automatically."
+                Text(blocking.status == "unknown" ? "This send never confirmed. Start a new session, or continue the one named above after you have looked at it. Nothing is resent automatically."
                      : blocking.status == "delivered" ? "Once the session has replied and you mark it reviewed, you can send this work somewhere else."
                      : "This work has a handoff in flight. You can send it elsewhere once that finishes.")
                     .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
@@ -364,7 +370,16 @@ struct WorkHandoffView: View {
             if receipt.status == "unknown" {
                 // 0.5.246: COS sent it but never saw it land, so it may already be in the session. Continuing again is
                 // allowed after one explicit confirm; the composer comes back set to the same session.
+                // A lost fork still blocks the composer. Start a new session clears that block and does not send.
                 let canContinue = receipt.sessionID != nil && WorkHandoffStore.continueProviders.contains(receipt.provider)
+                Button("Start a new session") {
+                    confirmClear = false
+                    store.clearUnresolved(receiptID: receipt.id)
+                    var next = draft
+                    next.mode = .newSession
+                    next.sessionID = ""
+                    store.updateDraft(next, for: source)
+                }.buttonStyle(COSPrimaryButtonStyle()).disabled(store.busy || validating)
                 if confirmClear {
                     Text(canContinue
                          ? "COS can\u{2019}t tell whether your last instruction arrived. If it did, sending again gives the session the same instruction twice. Open the session first if you want to check."
@@ -476,21 +491,28 @@ struct WorkHandoffView: View {
                 HStack {
                     Text("Context to send").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
                     Spacer()
-                    WorkContextCounter(files: store.cardFiles, store: store, source: source, prompt: prompt,
+                    WorkContextCounter(files: store.cardFiles, store: store, source: source, prompt: editingPrompt,
                                        mode: forkToPlatform ? .newSession : mode, sessionID: sessionID, forkToPlatform: forkToPlatform,
                                        resendAll: resendAllFiles)
-                    if prompt != source.suggestedPrompt {
+                    if editingPrompt != source.suggestedPrompt {
                         Button("Reset") {
-                            var next = draft; next.prompt = source.suggestedPrompt
-                            store.updateDraft(next, for: source)
+                            livePrompt = source.suggestedPrompt
+                            promptBound = true
+                            flushPrompt()
                         }.buttonStyle(COSTextButtonStyle()).disabled(store.busy || validating).help("Go back to the suggested context")
                     }
                 }
-                TextEditor(text: draftBinding(\.prompt)).font(COSType.body(12)).frame(minHeight: 120, maxHeight: 220)
+                TextEditor(text: Binding(get: { editingPrompt }, set: { value in
+                    livePrompt = value
+                    promptBound = true
+                    schedulePromptSave()
+                })).font(COSType.body(12)).frame(minHeight: 120, maxHeight: 220)
                     .cosEditor()
                     .accessibilityLabel("Context to send")
                     .disabled(store.busy || validating)
-                if prompt.utf16.count > WorkHandoffStore.draftLimit {
+                    .onAppear { if !promptBound { livePrompt = prompt; promptBound = true } }
+                    .onDisappear { flushPrompt() }
+                if editingPrompt.utf16.count > WorkHandoffStore.draftLimit {
                     Text("Context exceeds \(WorkHandoffStore.draftLimit.formatted()) characters, the most a handoff carries with its tracking line. Shorten it before sending; nothing has been removed.")
                         .font(COSType.body(11)).foregroundStyle(COSPalette.danger)
                 }
@@ -507,6 +529,7 @@ struct WorkHandoffView: View {
                                      resendAll: $resendAllFiles, disabled: store.busy || validating)
             }
             Button {
+                flushPrompt()
                 guard let sendingPlan = plan else { return }
                 let sendingSource = source, resendAll = resendAllFiles
                 validating = true; onSendingChange?(true)
@@ -523,6 +546,29 @@ struct WorkHandoffView: View {
                 .frame(maxWidth: .infinity, alignment: .center)
             if store.busy || validating { ProgressView("Checking destination…").controlSize(.small) }
         }
+    }
+
+    private func schedulePromptSave() {
+        promptSave?.cancel()
+        let bound = source
+        promptSave = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            commitPrompt(livePrompt, source: bound)
+        }
+    }
+
+    private func flushPrompt() {
+        promptSave?.cancel()
+        guard promptBound else { return }
+        commitPrompt(livePrompt, source: source)
+    }
+
+    private func commitPrompt(_ text: String, source: WorkSource) {
+        var next = store.draft(for: source)
+        guard next.prompt != text else { return }
+        next.prompt = text
+        store.updateDraft(next, for: source)
     }
 
     private func setMode(_ value: WorkHandoffMode) {
