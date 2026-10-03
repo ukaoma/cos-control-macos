@@ -16426,7 +16426,7 @@ final class COSControlHelper {
         let state: String
         if pending {
             switch body["reason"] as? String {
-            case "correction_pending", nil: state = "pending_correction"
+            case "correction_pending": state = "pending_correction"
             case "meeting_finalizing": state = "meeting_finalizing"
             case "record_source_mismatch": state = "record_source_mismatch"
             case "direct_library_read_only": state = "direct_library_read_only"

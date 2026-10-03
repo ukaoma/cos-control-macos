@@ -18,7 +18,7 @@ def run(*args):
     out=subprocess.run([sys.argv[1],*args],env=env,capture_output=True,timeout=20)
     return json.loads(out.stdout)
 try:
-    for reason,expected in [('meeting_finalizing','meeting_finalizing'),('record_source_mismatch','record_source_mismatch'),('direct_library_read_only','direct_library_read_only'),('correction_pending','pending_correction'),('unknown_conflict','declined')]:
+    for reason,expected in [('meeting_finalizing','meeting_finalizing'),('record_source_mismatch','record_source_mismatch'),('direct_library_read_only','direct_library_read_only'),('correction_pending','pending_correction'),('unknown_conflict','declined'),(None,'declined')]:
         res=run('meeting-relabel','--session','meeting_fixture','--from','Speaker 1','--to','Miles','--record-id','ops:personal:2026-10:merged.md','--expected-revision','b'*64)
         assert res['details']['state']==expected,res
         assert calls[-1][1]['expectedRevision']=='b'*64
@@ -27,6 +27,6 @@ try:
     for command,route in [('meeting-speakers','speakers'),('meeting-content','content')]:
         assert run(command,'--session','meeting_fixture','--record-id','ops:personal:2026-10:merged.md')['ok']
         assert calls[-1][0]=='/api/meeting/meeting_fixture/'+route+'?recordId=ops%3Apersonal%3A2026%2D10%3Amerged%2Emd',calls[-1]
-    print('PASS: selected record and source revision cross compiled helper; five distinct 409 recovery states')
+    print('PASS: selected record and source revision cross compiled helper; six 409 recovery cases, including a missing reason')
 finally:
     server.shutdown();shutil.rmtree(root)
