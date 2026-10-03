@@ -1818,7 +1818,7 @@ done
 # Source-shape greps cannot see behaviour, so pin the two exact call expressions.
 # ANCHORED to line start: an unanchored grep matched the string inside a
 # commented-out line, so a mutation that disabled the whole feature stayed green.
-/usr/bin/grep -qE '^[[:space:]]*await loadMeetingContent\(sessionId: sessionId\)' "$ROOT/Sources/ControllerModel.swift"
+/usr/bin/grep -qF 'await loadMeetingContent(sessionId: sessionId, generation: generation, selectedRecord: selectedRecord, revision: review.sourceRevision)' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'full ? c.clipboardFull : c.clipboardSummary' "$ROOT/Sources/ControllerModel.swift"
 # A 404 is "server too old", not a silent failure. The MESSAGE logic is covered by
 # execution in ModelsContract; this pins that the reason is actually assigned.
