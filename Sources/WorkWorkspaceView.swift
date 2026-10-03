@@ -494,6 +494,7 @@ private struct WorkSearchField: View {
 
     var body: some View {
         TextField(prompt, text: $text)
+            .textFieldStyle(.plain)
             .onAppear {
                 if !primed { text = query; primed = true }
             }

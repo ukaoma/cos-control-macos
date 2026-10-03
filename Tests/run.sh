@@ -1198,7 +1198,7 @@ def fn(src, head):
     start = src.index(head)
     ends = [i for i in (src.find("\n    func ", start + 1), src.find("\n    private func ", start + 1), src.find("\n    ///", start + 1)) if i > 0]
     return src[start:min(ends)]
-for action in ("    func markReviewed(", "    func clearUnresolved(", "    func cancelAppNote(", "    func refreshReceipts("):
+for action in ("    func markReviewed(", "func clearUnresolved(", "    func cancelAppNote(", "    func refreshReceipts("):
     assert "refusedForGlassesSend()" in fn(store, action), action.strip() + " says why it waits while a glasses send holds the journal"
 assert "let restored = told ? WorkRequestOrigin.macBusyReason : shownError" in inbox, "outcome() keeps a Mac action's line"
 PY

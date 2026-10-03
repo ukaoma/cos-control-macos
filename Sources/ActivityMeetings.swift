@@ -608,7 +608,7 @@ struct MeetingLibraryDetailPane: View {
                                 ForEach(row.g2SessionIds.filter { $0 != row.sessionId }, id: \.self) { capture in
                                     Button(capture) { onReviewVoices(capture, row.recordId) }
                                 }
-                            }
+                            }.cosMenu()
                         }
                         MeetingStatusPills(
                             isNew: false,
