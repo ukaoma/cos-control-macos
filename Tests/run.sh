@@ -2644,7 +2644,7 @@ need('section == .sessions && (isolatedWorkPreview || showingLinkedSession)' in 
      "isolated Sessions must use the shared handoff fixture view, not the live Sessions loader")
 full_handoff_open = activity[activity.index('private func openFullHandoffSession'):activity.index('private func previewOnlySection')]
 need('guard !isolatedWorkPreview else { return }' in full_handoff_open and
-     full_handoff_open.index('guard !isolatedWorkPreview') < full_handoff_open.index('model.openClaudeSession(row)'),
+     full_handoff_open.index('guard !isolatedWorkPreview') < full_handoff_open.index('openWorkInPlatform(session)'),
      "opening a full provider session must remain impossible from the isolated preview")
 go_back = activity[activity.index('private func goBack()'):activity.index('private func goBack()') + 1800]
 need('if section == .sessions, showingLinkedSession' in go_back and 'openConnectedWork(workID)' in go_back
