@@ -1644,7 +1644,7 @@ need("task.text.isEmpty ? task.title : task.text" in activity,
 detail = activity[activity.index("private func taskDetailSheet"):]
 detail = detail[:detail.index("\n    private func detailLine")]
 save_edits = activity[activity.index("private func saveTaskEdits"):activity.index("private func closeTaskDetail")]
-need("model.setTaskText(" in save_edits and "saveTaskEdits()" in detail, "task editing must save through the guarded combined editor")
+need("model.saveWorkTaskEdits(task, text: text, doneWhen: finish)" in save_edits and "model.setTaskText(" not in save_edits and "saveTaskEdits()" in detail, "task editing must save both fields through one revision-guarded transaction")
 for action in ("setTaskChecked", "moveTask", "scheduleTask", "runTask"):
     need(f"model.{action}(" in detail, f"the detail view cannot {action}")
 need('Text(task.checked ? "Reopen" : "Done")' in detail or 'task.checked ? "Reopen" : "Done"' in detail,
