@@ -4659,6 +4659,8 @@ struct SpeakerReview: Sendable {
     let voices: [ReviewVoice]
     let timeline: [SpeakerTimelineSpan]
     let recordId: String
+    let sourceRevision: String?
+    let identityVersion: Int?
     let mutable: Bool
     let librarySource: String
     /// 6.47.0. The merged record that holds this capture, when the panel asked
@@ -4685,6 +4687,8 @@ struct SpeakerReview: Sendable {
         voices = (o["voices"]?.array ?? []).compactMap(ReviewVoice.init)
         timeline = (o["timeline"]?.array ?? []).enumerated().compactMap { SpeakerTimelineSpan($1, index: $0) }
         recordId = o["recordId"]?.string ?? ""
+        sourceRevision = o["sourceRevision"]?.string
+        identityVersion = o["reviewIdentityVersion"]?.int
         mutable = o["mutable"]?.bool ?? true
         librarySource = o["source"]?.string ?? "standalone_recordings"
         blendedRecordId = o["blendedRecordId"]?.string

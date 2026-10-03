@@ -1688,7 +1688,7 @@ struct ActivityWindow: View {
 
     private func openTaskDetail(_ task: TaskRow) {
         guard !isolatedWorkPreview else { return }
-        taskDetail = task
+        taskDetail = model.workTasks.first { $0.domain == task.domain && ($0.id == task.id || (!$0.workIdentity.isEmpty && $0.workIdentity == task.workIdentity)) } ?? task
         taskDetailDraft = task.text.isEmpty ? task.title : task.text
         taskDoneWhenDraft = task.doneWhen
         taskSavedText = taskDetailDraft
@@ -1713,15 +1713,8 @@ struct ActivityWindow: View {
         let finish = taskDoneWhenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { taskDetailError = "Task text cannot be empty."; return }
         runDetailAction {
-            // Rename can change a legacy ID. Write the finish line before text.
-            if finish != taskSavedDoneWhen {
-                try await model.setTaskDoneWhen(id: task.id, domain: task.domain, doneWhen: finish)
-                taskSavedDoneWhen = finish; taskDoneWhenDraft = finish
-            }
-            if text != taskSavedText {
-                try await model.setTaskText(id: task.id, domain: task.domain, text: text)
-                taskSavedText = text
-            }
+            try await model.saveWorkTaskEdits(task, text: text, doneWhen: finish)
+            taskSavedDoneWhen = finish; taskDoneWhenDraft = finish; taskSavedText = text
         }
     }
 
@@ -1778,7 +1771,9 @@ struct ActivityWindow: View {
     @ViewBuilder
     private func taskDetailSheet(_ task: TaskRow) -> some View {
         VStack(alignment: .leading, spacing: 14) {
+            Text("Task name").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
             TextEditor(text: $taskDetailDraft)
+                .accessibilityLabel("Task name")
                 .font(COSType.body(13.5))
                 .cosEditor()
                 .disabled(taskDetailBusy)
@@ -1796,9 +1791,7 @@ struct ActivityWindow: View {
                         // Sheet stays open: setting the finish line is what UNBLOCKS
                         // Run now, so closing here would hide the button it enables.
                         runDetailAction({
-                            try await model.setTaskDoneWhen(
-                                id: task.id, domain: task.domain,
-                                doneWhen: taskDoneWhenDraft.trimmingCharacters(in: .whitespacesAndNewlines))
+                            try await model.saveWorkTaskEdits(task, text: task.text, doneWhen: taskDoneWhenDraft.trimmingCharacters(in: .whitespacesAndNewlines))
                             taskSavedDoneWhen = taskDoneWhenDraft
                         }, closeOnSuccess: false)
                     }
@@ -1825,14 +1818,18 @@ struct ActivityWindow: View {
                 Text(taskDetailError).font(COSType.body(11.5)).foregroundStyle(.red)
             }
             HStack(spacing: 8) {
+                Button("Cancel") { requestCloseTaskDetail() }.disabled(taskDetailBusy)
                 Button("Save changes") { saveTaskEdits() }
-                    .disabled(taskDetailBusy || taskDetailDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(taskDetailBusy || !model.workTaskEditAvailable || taskDetailDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                 Button(task.checked ? "Reopen" : "Done") {
                     runDetailAction { try await model.setTaskChecked(id: task.id, domain: task.domain, checked: !task.checked) }
                 }
                 .disabled(taskDetailBusy || taskEditsDirty)
                 Spacer()
+            }
+            if !model.workTaskEditAvailable {
+                Text("Update the server and refresh Work to save task names safely.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
             }
             HStack(spacing: 8) {
                 Button("To inbox") {
@@ -2326,11 +2323,11 @@ struct ActivityWindow: View {
         }
     }
 
-    private func openVoiceReviewFromLibrary(_ sessionId: String) {
+    private func openVoiceReviewFromLibrary(_ sessionId: String, _ recordId: String? = nil) {
         speakerSubview = .meetings
         selectedSpeakerSessionID = sessionId
         withOptionalAnimation { section = .speakers }
-        model.openSpeakerReview(sessionId: sessionId)
+        model.openSpeakerReview(sessionId: sessionId, recordId: recordId)
     }
 
     private var nextUnnamedReview: ReviewableMeeting? {

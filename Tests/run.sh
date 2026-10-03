@@ -77,6 +77,7 @@ if not value.get("ok") or value.get("details", {}).get("checks", 0) < 62:
 python3 "$ROOT/Tests/HeldNamingTransport.py" "$TMP/cos-control-helper"
 # Work helper transports against loopback fixtures (never the live service): reviews and Intake.
 python3 "$ROOT/Tests/work-review-helper-checks.py" "$TMP/cos-control-helper"
+python3 "$ROOT/Tests/hardening-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-intake-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-jev-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-progress-helper-checks.py" "$TMP/cos-control-helper"

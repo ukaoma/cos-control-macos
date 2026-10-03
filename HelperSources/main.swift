@@ -420,6 +420,14 @@ final class COSControlHelper {
             let build = option("--current-build", in: args).flatMap(Int.init)
             appIdentity = build.map { "\(version) (build \($0))" } ?? version
         }
+        if ProcessInfo.processInfo.environment["COS_WORK_FIXTURE_TEST"] == "1" {
+            guard let home = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"], home.hasPrefix("/tmp/"),
+                  let port = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_API_PORT"], let number = Int(port), number > 1024, number != 3141 else {
+                throw HelperError.message("Fixture mode requires a disposable /tmp home and a non-production loopback port.")
+            }
+            let allowed: Set<String> = ["work-tasks", "tasks", "domains", "work-set-stage", "work-edit-task", "work-link-meeting", "work-reviews", "work-models", "meeting-speakers", "meeting-content"]
+            guard allowed.contains(command) else { throw HelperError.message("This candidate uses disposable tasks. Provider dispatch and other commands are disabled.") }
+        }
         switch command {
         case "foundation-status": try emitControl2Foundation(action: "status", args: args)
         case "foundation-replay": try emitControl2Foundation(action: "replay", args: args)
@@ -498,6 +506,7 @@ final class COSControlHelper {
         case "domains": try emitDomains()
         case "set-domains": try withMutationLock { try emitSetDomains(args: args) }
         case "task-set-text": try withMutationLock { try emitTaskSetText(args: args) }
+        case "work-edit-task": try emitWorkUpdate(action: "edit")
         case "task-set-stage": try withMutationLock { try emitTaskSetStage(args: args) }
         case "task-set-done-when": try withMutationLock { try emitTaskSetDoneWhen(args: args) }
         case "task-check": try withMutationLock { try emitTaskCheck(args: args) }
@@ -4591,7 +4600,7 @@ final class COSControlHelper {
     }
 
     static func validateWorkUpdate(_ body: [String: Any], action: String) throws {
-        let allowed = Set(["domain", "id", "expectedText", "expectedRevision", action == "stage" ? "workStage" : "meeting"])
+        let allowed = Set(["domain", "id", "expectedText", "expectedRevision"] + (action == "edit" ? ["text", "doneWhen"] : [action == "stage" ? "workStage" : "meeting"]))
         guard Set(body.keys).isSubset(of: allowed),
               let domain = body["domain"] as? String, !domain.isEmpty, domain.utf16.count <= 64,
               domain == domain.trimmingCharacters(in: .whitespacesAndNewlines), !domain.hasPrefix("."),
@@ -4601,7 +4610,12 @@ final class COSControlHelper {
               let revision = body["expectedRevision"] as? String, revision.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else {
             throw HelperError.message("Refresh and select an exact task before changing Work.")
         }
-        if action == "stage" {
+        if action == "edit" {
+            guard let text = body["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.utf16.count <= 2000,
+                  let finish = body["doneWhen"] as? String, finish.utf16.count <= 500 else {
+                throw HelperError.message("Task name must contain 1 to 2,000 characters; finish line at most 500.")
+            }
+        } else if action == "stage" {
             guard let stage = body["workStage"] as? String, ["mentioned", "planned", "draft", "built", "qa", "complete"].contains(stage) else {
                 throw HelperError.message("Choose a valid Work stage.")
             }
@@ -14499,12 +14513,18 @@ final class COSControlHelper {
         emit(ok: true, message: "Meeting ready", details: body)
     }
 
+    private func reviewSelectionQuery(_ args: [String]) -> String {
+        guard let record = option("--record-id", in: args), !record.isEmpty else { return "" }
+        let encoded = record.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? record
+        return "?recordId=" + encoded
+    }
+
     private func emitMeetingSpeakers(args: [String]) throws {
         guard let session = option("--session", in: args), !session.isEmpty else {
             throw HelperError.message("--session is required")
         }
         let escaped = session.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-_:"))) ?? session
-        let body = try speakerReviewBody("/api/meeting/\(escaped)/speakers", timeout: 25)
+        let body = try speakerReviewBody("/api/meeting/\(escaped)/speakers" + reviewSelectionQuery(args), timeout: 25)
         emit(ok: true, message: "Speaker review ready", details: [
             "state": (body["attributed"] as? Bool) == true ? "attributed" : "unattributed",
             "review": body,
@@ -14531,7 +14551,7 @@ final class COSControlHelper {
         // field instead of sniffing an error string. Anything unrecognised falls
         // through as a generic failure, which is still better than silence.
         do {
-            let body = try speakerReviewBody("/api/meeting/\(escaped)/content", timeout: 30)
+            let body = try speakerReviewBody("/api/meeting/\(escaped)/content" + reviewSelectionQuery(args), timeout: 30)
             emit(ok: true, message: "Meeting content ready", details: [
                 "content": body,
             ])
@@ -16300,6 +16320,7 @@ final class COSControlHelper {
         }
         var payload: [String: Any] = ["from": from, "to": to]
         if let recordId = option("--record-id", in: args), !recordId.isEmpty { payload["recordId"] = recordId }
+        if let revision = option("--expected-revision", in: args), !revision.isEmpty { payload["expectedRevision"] = revision }
         if args.contains("--confirm") { payload["confirm"] = true } else { payload["dryRun"] = true }
         if args.contains("--force") { payload["force"] = true }
         try emitMeetingCorrection(
@@ -16321,6 +16342,7 @@ final class COSControlHelper {
         }
         var payload: [String: Any] = ["from": from]
         if let recordId = option("--record-id", in: args), !recordId.isEmpty { payload["recordId"] = recordId }
+        if let revision = option("--expected-revision", in: args), !revision.isEmpty { payload["expectedRevision"] = revision }
         if args.contains("--keep-training") { payload["retractTraining"] = false }
         if args.contains("--confirm") { payload["confirm"] = true } else { payload["dryRun"] = true }
         if args.contains("--force") { payload["force"] = true }
@@ -16347,6 +16369,7 @@ final class COSControlHelper {
         }
         var payload: [String: Any] = ["label": label]
         if let recordId = option("--record-id", in: args), !recordId.isEmpty { payload["recordId"] = recordId }
+        if let revision = option("--expected-revision", in: args), !revision.isEmpty { payload["expectedRevision"] = revision }
         let json = String(
             data: try JSONSerialization.data(withJSONObject: payload),
             encoding: .utf8
@@ -16390,7 +16413,7 @@ final class COSControlHelper {
         guard let body = response.body else { throw HelperError.message("Server stopped") }
 
         // 400 = confirmation gate (carries the full preview).
-        // 409 = an earlier correction on this meeting never completed.
+        // 409 carries a reason: finalization, stale source, read-only, or an unfinished correction.
         // 422 = the server declined, e.g. the label is not in this meeting.
         let gated = response.status == 400
         let pending = response.status == 409
@@ -16401,15 +16424,25 @@ final class COSControlHelper {
             throw HelperError.message(reason)
         }
         let state: String
-        if pending { state = "pending_correction" }
+        if pending {
+            switch body["reason"] as? String {
+            case "correction_pending", nil: state = "pending_correction"
+            case "meeting_finalizing": state = "meeting_finalizing"
+            case "record_source_mismatch": state = "record_source_mismatch"
+            case "direct_library_read_only": state = "direct_library_read_only"
+            default: state = "declined"
+            }
+        }
         else if declined { state = "declined" }
         else if confirmed && response.status == 200 { state = "applied" }
         else { state = "preview" }
-        emit(ok: true, message: state == "applied" ? appliedMessage : (body["message"] as? String ?? "Preview ready"),
+        emit(ok: true, message: state == "applied" ? appliedMessage : (body["message"] as? String ?? body["error"] as? String ?? "Preview ready"),
             details: [
                 "state": state,
                 "httpStatus": response.status,
                 "result": body,
+                "reason": body["reason"] ?? NSNull(),
+                "retryable": body["retryable"] ?? false,
             ])
     }
 

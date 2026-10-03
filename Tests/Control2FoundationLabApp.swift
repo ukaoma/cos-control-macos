@@ -4,7 +4,9 @@ import SwiftUI
 @main struct Control2FoundationLabApp: App {
     private static let connected = ProcessInfo.processInfo.environment["COS_WORK_CONNECTED_TEST"] == "1"
         && ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] == nil
-    @StateObject private var model = ControllerModel(startBackgroundWork: false, allowActivityLoads: connected)
+    private static let fixture = ProcessInfo.processInfo.environment["COS_WORK_FIXTURE_TEST"] == "1"
+        && (ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] ?? "").hasPrefix("/tmp/")
+    @StateObject private var model = ControllerModel(startBackgroundWork: false, allowActivityLoads: connected || fixture)
     /// The build script's label (0.1.9 by default; a candidate build names itself).
     private static let labVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.9"
     private var previewColorScheme: ColorScheme? {
@@ -23,9 +25,9 @@ import SwiftUI
         return CGFloat(min(1400, max(560, value)))
     }
     var body: some Scene {
-        WindowGroup((Self.connected ? "COS Control · Connected Work " : "COS Control · Work Preview ") + Self.labVersion) {
+        WindowGroup((Self.fixture ? "COS Control · Disposable Work QA " : Self.connected ? "COS Control · Connected Work " : "COS Control · Work Preview ") + Self.labVersion) {
             Group {
-                if Self.connected { ActivityWindow.workConnectedTest(model: model) }
+                if Self.connected || Self.fixture { ActivityWindow.workConnectedTest(model: model) }
                 else { ActivityWindow.workPreview(model: model) }
             }.preferredColorScheme(previewColorScheme)
         }.defaultSize(width: previewWidth, height: previewHeight)

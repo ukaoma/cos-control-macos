@@ -40,17 +40,11 @@ enum COSMarkdownInline {
 /// One parsed document for the life of this process. A resize must not parse the review again.
 @MainActor
 enum COSMarkdownCache {
-    private static var stored: (key: Int, blocks: [COSMarkdownBlock])?
+    private static var stored: (text: String, dropLeadingTitle: Bool, blocks: [COSMarkdownBlock])?
     static func blocks(_ text: String, dropLeadingTitle: Bool = false) -> [COSMarkdownBlock] {
-        var hasher = Hasher()
-        hasher.combine(dropLeadingTitle)
-        hasher.combine(text.utf16.count)
-        hasher.combine(text.prefix(64))
-        hasher.combine(text.suffix(64))
-        let key = hasher.finalize()
-        if stored?.key == key, let blocks = stored?.blocks { return blocks }
+        if stored?.text == text, stored?.dropLeadingTitle == dropLeadingTitle, let blocks = stored?.blocks { return blocks }
         let blocks = COSMarkdownParser.parse(text, dropLeadingTitle: dropLeadingTitle)
-        stored = (key, blocks)
+        stored = (text, dropLeadingTitle, blocks)
         return blocks
     }
 }

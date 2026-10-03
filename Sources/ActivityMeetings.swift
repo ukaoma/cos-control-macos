@@ -483,7 +483,7 @@ struct MeetingWorkConnections {
 
 struct MeetingLibraryDetailPane: View {
     @ObservedObject var model: ControllerModel
-    var onReviewVoices: (String) -> Void
+    var onReviewVoices: (String, String?) -> Void
     var onOpenSource: (LibraryMeetingSource) -> Void = { _ in }
     var onReviewFollowUp: ((LibraryMeeting) -> Void)? = nil
     var workConnections: MeetingWorkConnections? = nil
@@ -596,13 +596,20 @@ struct MeetingLibraryDetailPane: View {
                     // capture with real audio.
                     if let row = model.openLibraryRow, row.canReviewVoices {
                         let isNew = model.isInboxNew(row.sessionId)
-                        Button { onReviewVoices(row.sessionId) } label: {
+                        Button { onReviewVoices(row.sessionId, row.recordId) } label: {
                             HStack(spacing: 8) {
                                 Text("Review voices")
                                 if isNew { COSNewPill() }
                             }
                         }
                         .buttonStyle(COSQuietButtonStyle(tone: isNew ? .featured : .standard))
+                        if row.g2SessionIds.count > 1 {
+                            Menu("Other recordings") {
+                                ForEach(row.g2SessionIds.filter { $0 != row.sessionId }, id: \.self) { capture in
+                                    Button(capture) { onReviewVoices(capture, row.recordId) }
+                                }
+                            }
+                        }
                         MeetingStatusPills(
                             isNew: false,
                             tag: model.voiceTag(sessionId: row.sessionId)

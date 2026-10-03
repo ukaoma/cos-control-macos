@@ -96,6 +96,35 @@ private actor HandoffTransport {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("work-handoff-tests-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: root) }
+        // Regression: equal-length documents with identical ends must never share parsed middle text.
+        let firstDocument = String(repeating: "a", count: 80) + " first " + String(repeating: "z", count: 80)
+        let secondText = String(repeating: "a", count: 80) + " other " + String(repeating: "z", count: 80)
+        let parsedFirst = COSMarkdownCache.blocks(firstDocument)
+        let parsedSecond = COSMarkdownCache.blocks(secondText)
+        precondition(parsedFirst != parsedSecond)
+        precondition(parsedSecond == COSMarkdownParser.parse(secondText))
+        // A reversal before the delay expires cancels the narrower commit.
+        let layout = WorkLayoutCommit<Bool>()
+        var wide = true
+        layout.schedule(current: wide, next: false) { wide = $0 }
+        layout.schedule(current: wide, next: true) { wide = $0 }
+        try await Task.sleep(for: .milliseconds(280))
+        precondition(wide)
+        layout.schedule(current: wide, next: false) { wide = $0 }
+        try await Task.sleep(for: .milliseconds(280))
+        precondition(!wide)
+        // Title persistence, projection/search invalidation and disk failure use the shipping store.
+        let titleFile = root.appendingPathComponent("titles.json")
+        let titleStore = WorkReviewStore(titlesURL: titleFile)
+        let epoch = titleStore.reviewsEpoch
+        precondition(titleStore.setTitle("  New meeting name  ", for: "review-fixture"))
+        precondition(titleStore.reviewsEpoch > epoch)
+        precondition(WorkReviewStore(titlesURL: titleFile).titleOverrides["review-fixture"] == "New meeting name")
+        let blocked = root.appendingPathComponent("not-a-directory")
+        try Data("file".utf8).write(to: blocked)
+        let badStore = WorkReviewStore(titlesURL: blocked.appendingPathComponent("titles.json"))
+        precondition(!badStore.setTitle("Unsaved", for:"review-fixture"))
+        precondition(badStore.titleOverrides.isEmpty && badStore.error != nil)
         let source = WorkSource(id: "work-a", title: "Homepage", revision: "1", project: "Website", context: "Synthetic context")
         let second = WorkSource(id: "work-b", title: "Homepage", revision: "2", project: "Website", context: "Different work")
         let target = WorkSession(id: "codex:target-a", nativeID: "target-a", provider: "codex", title: "Same display title", summary: "Homepage", project: "Website", status: "working")
@@ -355,6 +384,18 @@ private actor HandoffTransport {
         precondition(make("drafts", draftTransport).draft(for: source).prompt == "Newer window edit")
         let draftCalls = await draftTransport.recorded()
         precondition(draftCalls.isEmpty, "Draft persistence cannot deliver a message")
+        let failedDraftStore = WorkHandoffStore(storageURL: blocked.appendingPathComponent("drafts.json"))
+        var failedDraft = failedDraftStore.draft(for: source); failedDraft.prompt = "Keep this typed draft"
+        precondition(!failedDraftStore.updateDraft(failedDraft, for: source))
+        precondition(failedDraftStore.error != nil)
+        let freshTransport = HandoffTransport(.dropped)
+        let freshStore = make("started-fresh", freshTransport)
+        await freshStore.submit(source:source,mode:.continueSession,session:target,model:nil,prompt:"Lost response")
+        let unknown = try require(freshStore.receipts.first)
+        precondition(unknown.status == "unknown")
+        precondition(freshStore.clearUnresolved(receiptID:unknown.id,startedFresh:true))
+        let recorded = try require(make("started-fresh",freshTransport).receipts.first)
+        precondition(recorded.detail.contains("outcome remains unconfirmed") && !recorded.detail.contains("You checked"))
         print("PASS: source/revision drafts retain prompt and destination across reload; stale revision/window edits cannot overwrite")
 
         var legacy = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("lost.json"))) as! [String: Any]

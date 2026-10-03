@@ -1,3 +1,15 @@
+## 0.5.255 (build 305)
+
+Local hardening candidate. Stable promotion still requires native UI and G2 acceptance.
+
+Task names and finish lines save together through the exact task revision guard. File-derived name/finish proposals use the same transaction. The task editor retains its draft on refusal.
+
+Merged meeting review keeps the selected record and recording through loading, rejects mismatched content, and sends the viewed source revision with corrections. Saving, stale-source and read-only conflicts have separate recovery states.
+
+Review rendering uses exact document content for its cache. Pending layout changes cancel when a resize reverses. Review-name writes report persistence failures and refresh the board/search projection. Handoff prompt saves bind to the original source revision, flush before sending, and preserve stale drafts for explicit recovery. Starting fresh records the earlier delivery as unconfirmed.
+
+The integrated Work QA candidate uses disposable tasks and a separate journal; provider dispatch is disabled.
+
 ## 0.5.254 (build 304)
 
 An unconfirmed handoff can start a new session. That clears the block and does not send the old instruction. Open full session brings forward the Claude, Codex, or Cursor tab.

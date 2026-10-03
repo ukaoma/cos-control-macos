@@ -373,6 +373,8 @@ final class ControllerModel: ObservableObject {
     /// private var SwiftUI could not observe it, so the route could read a stale
     /// value and never re-render — a real defect independent of the sheet issue.
     @Published private var lastReviewSession: String?
+    private var selectedReviewRecordID: String?
+    private var reviewSelectionGeneration = 0
 
     /// Whether the panel should show the review instead of the main content.
     /// Includes the error case so a failed load is visible in place rather than
@@ -484,21 +486,15 @@ final class ControllerModel: ObservableObject {
             guard task.agentState != "running" else {
                 throw HelperClientError.invalidResponse("This task is running. Apply after it finishes.")
             }
-            // Done when uses the id from before any text edit. A text edit mints a new row id.
+            var nextText = task.text
+            var nextFinish = task.doneWhen
             for step in WorkFileSuggestion.writes(canonicalID: task.id, currentText: task.text, suggestion: suggestion) {
                 switch step {
-                case .doneWhen(let line, let id): try await self.setTaskDoneWhen(id: id, domain: task.domain, doneWhen: line)
-                case .text(let text, let id): try await self.setTaskText(id: id, domain: task.domain, text: text)
+                case .doneWhen(let line, _): nextFinish = line
+                case .text(let text, _): nextText = text
                 }
             }
-            await self.loadWorkTasks(force: true)
-            guard let fresh = self.workTasks.first(where: { $0.workSourceID == workID }) else {
-                throw HelperClientError.invalidResponse("This card left the board. Refresh before applying.")
-            }
-            if let done = suggestion.doneWhen, !done.isEmpty, fresh.doneWhen != done {
-                try await self.setTaskDoneWhen(id: fresh.id, domain: fresh.domain, doneWhen: done)
-            }
-            await self.loadWorkTasks(force: true)
+            try await self.saveWorkTaskEdits(task, text: nextText, doneWhen: nextFinish)
             guard let landed = self.workTasks.first(where: { $0.workSourceID == workID }) else {
                 throw HelperClientError.invalidResponse("This card left the board. Refresh before applying.")
             }
@@ -2706,6 +2702,7 @@ final class ControllerModel: ObservableObject {
     @Published var workTasksError: String?
     @Published var workTasksComplete = false
     @Published var workBoardWritable = false
+    @Published var workTaskEditAvailable = false
     private var workTasksRequested = false
     private var workTasksLoadInFlight: Task<Void, Never>?
     /// 0.5.253: which load the rows and the error on record come from (WorkBoardReads).
@@ -2750,11 +2747,12 @@ final class ControllerModel: ObservableObject {
             workTasksComplete = response.details["complete"]?.bool == true
             let capabilities = response.details["capabilities"]?.object ?? [:]
             workBoardWritable = capabilities["version"]?.int == 1 && capabilities["writable"]?.bool == true
+            workTaskEditAvailable = workBoardWritable && capabilities["editTasks"]?.int == 1
             workTasksError = nil
             workBoardReads.record(generation, ok: true)
         } catch {
             guard workBoardReads.current(generation) else { return }
-            workTasksError = error.localizedDescription; workTasksComplete = false; workBoardWritable = false
+            workTasksError = error.localizedDescription; workTasksComplete = false; workBoardWritable = false; workTaskEditAvailable = false
             workBoardReads.record(generation, ok: false)
         }
     }
@@ -2997,6 +2995,22 @@ final class ControllerModel: ObservableObject {
             tasksError = error.localizedDescription
             throw error
         }
+    }
+
+    func saveWorkTaskEdits(_ task: TaskRow, text: String, doneWhen: String) async throws {
+        guard workTaskEditAvailable, task.workMetadataError == nil, !task.workRevision.isEmpty else {
+            throw HelperClientError.commandFailed("Refresh Work or update the server before editing this task name.")
+        }
+        let body = try JSONSerialization.data(withJSONObject: ["domain": task.domain, "id": task.id,
+            "expectedText": task.text, "expectedRevision": task.workRevision, "text": text, "doneWhen": doneWhen])
+        let response = try await helper.run(["work-edit-task"], timeout: 30, stdinData: body)
+        guard response.ok, response.details["workIdentity"]?.string == task.workIdentity,
+              response.details["id"]?.string?.count == 12, response.details["workRevision"]?.string?.count == 64 else {
+            throw HelperClientError.commandFailed("Task save could not be verified. Refresh before trying again.")
+        }
+        await loadWorkTasks(force: true)
+        if let error = workTasksError { throw HelperClientError.commandFailed("Task changes were saved, but refreshing Work failed: " + error) }
+        await loadTasks(force: true)
     }
 
     func setTaskText(id: String, domain: String, text: String) async throws {
@@ -7408,7 +7422,10 @@ final class ControllerModel: ObservableObject {
         openSpeakerReview(sessionId: meeting.sessionId)
     }
 
-    func openSpeakerReview(sessionId: String) {
+    func openSpeakerReview(sessionId: String, recordId: String? = nil) {
+        reviewSelectionGeneration &+= 1
+        selectedReviewRecordID = recordId
+        openContent = nil
         persistSpeakerList { $0.markOpened(sessionId) }
         speakerReviewTask?.cancel()
         stopPlayback()
@@ -7417,15 +7434,18 @@ final class ControllerModel: ObservableObject {
         namingVoice = nil
         pendingCorrection = nil
         openReview = nil
+        mergeInFlight = false
         lastReviewSession = sessionId
         speakerReviewTask = Task { [weak self] in
             await self?.fetchReview(sessionId: sessionId)
         }
     }
 
-    /// Load (or reload) one meeting's review. Keyed on the session id alone so a
-    /// post-merge refresh does not need to reconstruct a list row it never had.
+    /// Keep each asynchronous read bound to the selected record and generation.
     private func fetchReview(sessionId: String) async {
+        let generation = reviewSelectionGeneration
+        let selectedRecord = selectedReviewRecordID
+        guard lastReviewSession == sessionId && reviewSelectionGeneration == generation else { return }
         reviewLoading = true
         reviewError = nil
         // A relabel refetches; the old confirmation would otherwise keep asserting
@@ -7433,43 +7453,56 @@ final class ControllerModel: ObservableObject {
         copyNote = nil
         contentUnavailable = nil
         defer {
-            if lastReviewSession == sessionId { reviewLoading = false }
+            if lastReviewSession == sessionId && reviewSelectionGeneration == generation { reviewLoading = false }
         }
         do {
-            let response = try await helper.run(["meeting-speakers", "--session", sessionId])
-            guard !Task.isCancelled, lastReviewSession == sessionId else { return }
+            var args = ["meeting-speakers", "--session", sessionId]
+            if let selectedRecord { args += ["--record-id", selectedRecord] }
+            let response = try await helper.run(args)
+            guard !Task.isCancelled, lastReviewSession == sessionId && reviewSelectionGeneration == generation else { return }
             guard let review = SpeakerReview(response.details["review"]) else {
                 reviewError = "The server returned a review this build cannot read."
                 return
             }
+            guard review.sessionId == sessionId,
+                  selectedRecord == nil || review.recordId == selectedRecord || review.blendedRecordId == selectedRecord else {
+                reviewError = "This review does not match the selected meeting. Reopen the saved meeting."; return
+            }
             openReview = review
             if voiceProfiles.isEmpty { await loadVoiceProfiles() }
-            guard !Task.isCancelled, lastReviewSession == sessionId else { return }
+            guard !Task.isCancelled, lastReviewSession == sessionId && reviewSelectionGeneration == generation else { return }
             await loadRetainedAudio(sessionId: sessionId)
-            guard !Task.isCancelled, lastReviewSession == sessionId else { return }
+            guard !Task.isCancelled, lastReviewSession == sessionId && reviewSelectionGeneration == generation else { return }
             // Non-fatal on purpose: the review is the primary answer, and an
             // older server has no /content route. A failure here must not blank
             // the speaker rows that already loaded.
-            await loadMeetingContent(sessionId: sessionId)
+            await loadMeetingContent(sessionId: sessionId, generation: generation, selectedRecord: selectedRecord, revision: review.sourceRevision)
         } catch {
-            guard !Task.isCancelled, lastReviewSession == sessionId else { return }
+            guard !Task.isCancelled, lastReviewSession == sessionId && reviewSelectionGeneration == generation else { return }
             reviewError = error.localizedDescription
         }
     }
 
-    private func loadMeetingContent(sessionId: String) async {
+    private func loadMeetingContent(sessionId: String, generation: Int, selectedRecord: String?, revision: String?) async {
         do {
-            let response = try await helper.run(["meeting-content", "--session", sessionId])
-            guard !Task.isCancelled, lastReviewSession == sessionId else { return }
+            var args = ["meeting-content", "--session", sessionId]
+            if let selectedRecord { args += ["--record-id", selectedRecord] }
+            let response = try await helper.run(args)
+            guard !Task.isCancelled, lastReviewSession == sessionId && reviewSelectionGeneration == generation else { return }
             if let reason = response.details["unavailable"]?.string {
                 openContent = nil
                 contentUnavailable = reason
                 return
             }
+            let content = response.details["content"]?.object
+            guard selectedRecord == nil || content?["recordId"]?.string == selectedRecord || content?["blendedRecordId"]?.string == selectedRecord,
+                  revision == nil || content?["sourceRevision"]?.string == revision else {
+                openContent = nil; contentUnavailable = "Meeting changed while opening. Reopen review."; return
+            }
             openContent = MeetingContent(response.details["content"])
             contentUnavailable = openContent == nil ? "error" : nil
         } catch {
-            guard !Task.isCancelled, lastReviewSession == sessionId else { return }
+            guard !Task.isCancelled, lastReviewSession == sessionId && reviewSelectionGeneration == generation else { return }
             openContent = nil
             contentUnavailable = "error"
         }
@@ -7519,6 +7552,8 @@ final class ControllerModel: ObservableObject {
         pendingCorrection = nil
         reviewError = nil
         lastReviewSession = nil
+        selectedReviewRecordID = nil
+        reviewSelectionGeneration &+= 1
         openContent = nil
         copyNote = nil
         contentUnavailable = nil
@@ -8077,23 +8112,29 @@ final class ControllerModel: ObservableObject {
     /// `isNameAssignment` marks the case where the row was never attributed to
     /// anyone. It changes no behaviour — only what the confirm card is allowed
     /// to say, so a click that labels an unverified cluster says so first.
+    private func reviewRevisionArgs(_ review: SpeakerReview) -> [String] {
+        review.sourceRevision.map { ["--expected-revision", $0] } ?? []
+    }
+
     func previewRename(from: String, to: String, scope: CorrectionScope, isNameAssignment: Bool = false) {
         guard from != to else { return }
-        guard let review = openReview, review.mutable else {
-            reviewError = "This meeting comes from a read-only library. New COS meetings remain editable."
+        guard let review = openReview, review.mutable, selectedReviewRecordID == nil || (review.identityVersion == 1 && review.sourceRevision?.count == 64) else {
+            reviewError = "This review is read-only or needs a newer server to verify the selected meeting. Reopen it after updating."
             return
         }
         let session = review.sessionId
+        let generation = reviewSelectionGeneration
         let createsProfile = !voiceProfiles.contains { $0.name.caseInsensitiveCompare(to) == .orderedSame }
         mergeInFlight = true
         Task { [weak self] in
             guard let self else { return }
-            defer { mergeInFlight = false }
+            defer { if reviewSelectionGeneration == generation { mergeInFlight = false } }
             do {
                 let args: [String] = scope == .thisMeeting
-                    ? ["meeting-relabel", "--session", session, "--record-id", review.recordId, "--from", from, "--to", to]
+                    ? ["meeting-relabel", "--session", session, "--record-id", review.recordId, "--from", from, "--to", to] + reviewRevisionArgs(review)
                     : ["voice-merge", "--into", to, "--from", from]
                 let response = try await helper.run(args)
+                guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
                 pendingCorrection = Self.correction(
                     from: from, to: to, scope: scope, response: response,
                     isNameAssignment: isNameAssignment, createsProfile: createsProfile
@@ -8101,6 +8142,7 @@ final class ControllerModel: ObservableObject {
                 namingVoice = nil
                 reviewError = nil
             } catch {
+                guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
                 // Never fail silently: a click that does nothing is worse than an
                 // error, because the user cannot tell it was received.
                 reviewError = "Could not check that name: \(error.localizedDescription)"
@@ -8117,23 +8159,26 @@ final class ControllerModel: ObservableObject {
     /// dialog for a no-op edit trains people to click through the ones that
     /// matter.
     func confirmVoice(_ label: String) {
-        guard let review = openReview, review.mutable else {
-            reviewError = "This meeting comes from a read-only library. New COS meetings remain editable."
+        guard let review = openReview, review.mutable, selectedReviewRecordID == nil || (review.identityVersion == 1 && review.sourceRevision?.count == 64) else {
+            reviewError = "This review is read-only or needs a newer server to verify the selected meeting. Reopen it after updating."
             return
         }
         let session = review.sessionId
+        let generation = reviewSelectionGeneration
         mergeInFlight = true
         Task { [weak self] in
             guard let self else { return }
-            defer { mergeInFlight = false }
+            defer { if reviewSelectionGeneration == generation { mergeInFlight = false } }
             do {
-                _ = try await helper.run(["meeting-confirm", "--session", session, "--record-id", review.recordId, "--label", label])
+                _ = try await helper.run(["meeting-confirm", "--session", session, "--record-id", review.recordId, "--label", label] + reviewRevisionArgs(review))
+                guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
                 reviewError = nil
                 // Re-fetch so the row re-renders as asserted from the SERVER's
                 // view rather than a local guess about what the confirmation did.
                 await fetchReview(sessionId: session)
                 await loadVoiceDirectory(refresh: true)
             } catch {
+                guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
                 reviewError = "Could not confirm that name: \(error.localizedDescription)"
             }
         }
@@ -8144,25 +8189,28 @@ final class ControllerModel: ObservableObject {
     /// Always per-meeting: "this person was not in THIS room" says nothing about
     /// any other meeting, so there is deliberately no global variant.
     func previewDeattribution(from: String) {
-        guard let review = openReview, review.mutable else {
-            reviewError = "This meeting comes from a read-only library. New COS meetings remain editable."
+        guard let review = openReview, review.mutable, selectedReviewRecordID == nil || (review.identityVersion == 1 && review.sourceRevision?.count == 64) else {
+            reviewError = "This review is read-only or needs a newer server to verify the selected meeting. Reopen it after updating."
             return
         }
         let session = review.sessionId
+        let generation = reviewSelectionGeneration
         mergeInFlight = true
         Task { [weak self] in
             guard let self else { return }
-            defer { mergeInFlight = false }
+            defer { if reviewSelectionGeneration == generation { mergeInFlight = false } }
             do {
                 let response = try await helper.run([
                     "meeting-deattribute", "--session", session, "--record-id", review.recordId, "--from", from,
-                ])
+                ] + reviewRevisionArgs(review))
+                guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
                 pendingCorrection = Self.correction(
                     from: from, to: nil, scope: .thisMeeting, response: response
                 )
                 namingVoice = nil
                 reviewError = nil
             } catch {
+                guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
                 reviewError = "Could not check that: \(error.localizedDescription)"
                 pendingCorrection = nil
             }
@@ -8184,15 +8232,22 @@ final class ControllerModel: ObservableObject {
     ) -> PendingCorrection {
         let state = response.details["state"]?.string ?? ""
         let result = response.details["result"]?.object
-        let refused = state == "refused" || state == "declined"
+        let refused = ["refused", "declined", "meeting_finalizing", "record_source_mismatch", "direct_library_read_only"].contains(state)
         let pendingEarlier = state == "pending_correction"
         let training = result?["training"]?.object
 
         let serverMessage = result?["message"]?.string
+            ?? result?["error"]?.string
             ?? response.details["message"]?.string
             ?? ""
         let message: String
-        if pendingEarlier {
+        if state == "meeting_finalizing" {
+            message = "This meeting is still being saved. Try again in a minute."
+        } else if state == "record_source_mismatch" {
+            message = "This meeting changed since you opened it. Reopen it, then try again."
+        } else if state == "direct_library_read_only" {
+            message = "This meeting comes from a read-only library, so its speakers cannot be corrected here."
+        } else if pendingEarlier {
             message = "An earlier correction on this meeting never finished, so its files may be part-written. Re-open it before trying again."
         } else if refused {
             message = serverMessage.isEmpty
@@ -8240,15 +8295,16 @@ final class ControllerModel: ObservableObject {
         // A refusal that is only a stalled predecessor CAN be forced; a genuine
         // decline cannot.
         guard !correction.refused || force else { pendingCorrection = nil; return }
-        guard let review = openReview, review.mutable else {
-            reviewError = "This meeting comes from a read-only library. New COS meetings remain editable."
+        guard let review = openReview, review.mutable, selectedReviewRecordID == nil || (review.identityVersion == 1 && review.sourceRevision?.count == 64) else {
+            reviewError = "This review is read-only or needs a newer server to verify the selected meeting. Reopen it after updating."
             return
         }
         let session = review.sessionId
+        let generation = reviewSelectionGeneration
         mergeInFlight = true
         Task { [weak self] in
             guard let self else { return }
-            defer { mergeInFlight = false }
+            defer { if reviewSelectionGeneration == generation { mergeInFlight = false } }
             do {
                 var args: [String]
                 if correction.isDeattribution {
@@ -8259,8 +8315,10 @@ final class ControllerModel: ObservableObject {
                 } else {
                     args = ["voice-merge", "--into", correction.to ?? "", "--from", correction.from, "--confirm"]
                 }
+                if correction.scope == .thisMeeting { args += reviewRevisionArgs(review) }
                 if force { args.append("--force") }
                 let response = try await helper.run(args)
+                guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
                 // READ the outcome. The helper deliberately does not throw on
                 // 400/409/422 — it reports them as a state — so discarding the
                 // response reported "Removed X from this meeting" for a server
@@ -8268,13 +8326,16 @@ final class ControllerModel: ObservableObject {
                 // layer down, reintroduced here.
                 let state = response.details["state"]?.string ?? ""
                 guard state == "applied" else {
-                    let detail = response.details["result"]?.object?["message"]?.string
+                let detail = response.details["result"]?.object?["message"]?.string
+                        ?? response.details["result"]?.object?["error"]?.string
                         ?? response.details["message"]?.string
                     switch state {
                     case "route_missing":
                         reviewError = "This needs glasses-server 6.21.18 or newer — use Update Server."
                     case "pending_correction":
                         reviewError = detail ?? "An earlier correction on this meeting never finished."
+                    case "meeting_finalizing":
+                        reviewError = "This meeting is still being saved. Try again in a minute."
                     default:
                         reviewError = detail ?? "The server did not apply that (\(state))."
                     }
@@ -8309,6 +8370,7 @@ final class ControllerModel: ObservableObject {
                 await fetchReview(sessionId: session)
                 await loadVoiceDirectory(refresh: true)
             } catch {
+                guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
                 reviewError = error.localizedDescription
                 pendingCorrection = nil
             }

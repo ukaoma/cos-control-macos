@@ -247,7 +247,7 @@ enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
                                    fresh: handoffStore.isolated || handoffStore.activityFresh(now: now))
         return boardMemo.refreshed(key) {
             WorkWorkspaceProjection.items(tasks: handoffStore.isolated ? WorkWorkspaceProjection.previewRows(handoffStore.previewTasks, stages: previewStages) : model.workTasks,
-                                          reviews: reviewStore.reviews, receipts: handoffStore.receipts, sessions: handoffStore.observedSessions(now: now))
+                                          reviews: reviewStore.reviews, receipts: handoffStore.receipts, sessions: handoffStore.observedSessions(now: now), titleOverrides: reviewStore.titleOverrides)
         }
     }
 
@@ -374,7 +374,7 @@ enum WorkWorkspaceProjection {
         return store
     }
 
-    static func items(tasks: [TaskRow], reviews: [WorkReviewRecord], receipts: [WorkHandoffReceipt], sessions: [WorkSession] = []) -> [WorkWorkspaceItem] {
+    static func items(tasks: [TaskRow], reviews: [WorkReviewRecord], receipts: [WorkHandoffReceipt], sessions: [WorkSession] = [], titleOverrides: [String: String] = [:]) -> [WorkWorkspaceItem] {
         WorkBoardMetrics.projections += 1
         // One pass over the journal: matching every task against every receipt was most of a rebuild's cost.
         let receiptsByWork = Dictionary(grouping: receipts, by: \.workID)
@@ -393,11 +393,12 @@ enum WorkWorkspaceProjection {
                 inProgress: task.agentState == "running" || running, completed: task.checked, activity: activity, tracking: tracking)
         }
         let meetingItems = reviews.map { review in
+            let title = titleOverrides[review.id] ?? review.title
             let mine = receiptsByWork[review.source.id] ?? []
             let activity = WorkActivityProjection.latest(workID: review.source.id, revision: review.source.revision, receipts: mine, sessions: sessions)
             let tracking = WorkTracking.latest(workID: review.source.id, receipts: mine)
-            return WorkWorkspaceItem(id: "meeting-review:" + review.id, title: review.title, domain: review.domain,
-                searchText: review.title + " " + review.markdown + " " + review.source.context,
+            return WorkWorkspaceItem(id: "meeting-review:" + review.id, title: title, domain: review.domain,
+                searchText: title + " " + review.markdown + " " + review.source.context,
                 subtitle: "Meeting review · " + review.status.replacingOccurrences(of: "_", with: " "),
                 task: nil, review: review,
                 needsAttention: (activity.map { $0.needsAttention && !$0.sessionRunning } ?? ["completed", "ready", "failed", "unknown", "needs_review"].contains(review.status))
@@ -463,7 +464,7 @@ enum WorkWorkspaceProjection {
 
 /// Task page width, kept only at the two breaks that change the layout. The raw width is not stored, so a resize
 /// between them does not rebuild the text field.
-private struct DetailSpan: Equatable {
+private struct DetailSpan: Equatable, Sendable {
     var sideBySide = true
     var roomy = false
 }
@@ -510,6 +511,21 @@ private struct WorkSearchField: View {
     }
 }
 
+/// Debounce threshold changes while always cancelling an older pending layout.
+@MainActor final class WorkLayoutCommit<Value: Equatable & Sendable> {
+    private var pending: Task<Void, Never>?
+    func schedule(current: Value, next: Value, apply: @escaping @MainActor (Value) -> Void) {
+        pending?.cancel()
+        guard next != current else { return }
+        pending = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(220))
+            guard !Task.isCancelled else { return }
+            apply(next)
+        }
+    }
+    func cancel() { pending?.cancel() }
+}
+
 struct WorkWorkspaceView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var colorScheme
@@ -552,7 +568,7 @@ struct WorkWorkspaceView: View {
     /// The first measurement applies at once. A later flip waits until the drag pauses, so crossing 760 does not
     /// rebuild the review while the window is still moving.
     @State private var detailSpanSeen = false
-    @State private var detailSpanTask: Task<Void, Never>?
+    @State private var detailSpanCommit = WorkLayoutCommit<DetailSpan>()
     @State private var editingReviewID: String?
     @State private var reviewTitleDraft = ""
     @FocusState private var reviewTitleFocused: Bool
@@ -1607,19 +1623,14 @@ struct WorkWorkspaceView: View {
             .onGeometryChange(for: DetailSpan.self) { proxy in
                 DetailSpan(sideBySide: proxy.size.width >= 760, roomy: proxy.size.width >= 1100)
             } action: { next in
-                guard next != detailSpan else { return }
-                detailSpanTask?.cancel()
                 if !detailSpanSeen {
                     detailSpanSeen = true
                     detailSpan = next
                     return
                 }
-                detailSpanTask = Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(220))
-                    guard !Task.isCancelled else { return }
-                    detailSpan = next
-                }
+                detailSpanCommit.schedule(current: detailSpan, next: next) { detailSpan = $0 }
             }
+            .onDisappear { detailSpanCommit.cancel() }
         } else if let id = state.selectedID, !handoffStore.receipts(for: id).isEmpty {
             ScrollView { receiptFallback(id).padding(22) }
         } else {
@@ -1863,16 +1874,8 @@ struct WorkWorkspaceView: View {
         editingReviewID = nil
         reviewTitleFocused = false
         guard !next.isEmpty, next != previous else { return }
-        reviewStore.setTitle(next, for: review.id)
-        let source = reviewStore.source(for: review)
-        var draft = handoffStore.draft(for: source)
-        let updated = draft.prompt
-            .replacingOccurrences(of: "Prepare the next reviewable result for: \(previous)", with: "Prepare the next reviewable result for: \(next)")
-            .replacingOccurrences(of: "Meeting: \(previous)", with: "Meeting: \(next)")
-        if updated != draft.prompt {
-            draft.prompt = updated
-            handoffStore.updateDraft(draft, for: source)
-        }
+        guard reviewStore.setTitle(next, for: review.id) else { editingReviewID = review.id; return }
+        // The visible handoff is an explicit draft. Renaming a card never rewrites its approved text.
     }
 
     private func inlineTitle(_ value: String) -> AttributedString {

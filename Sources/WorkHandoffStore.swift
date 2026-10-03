@@ -299,7 +299,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
     init(isolated: Bool = false, storageURL: URL? = nil, transport: Transport? = nil, cardFiles: WorkCardFileStore? = nil) {
         self.isolated = isolated
         // The real store only for the real journal: a preview gets a throwaway folder, a check's journal none.
-        self.cardFiles = cardFiles ?? (isolated ? .preview() : storageURL == nil ? WorkCardFileStore(root: WorkCardFiles.defaultRoot()) : WorkCardFileStore(root: nil))
+        self.cardFiles = cardFiles ?? (isolated ? .preview() : storageURL == nil ? WorkCardFileStore(root: ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("work-context") } ?? WorkCardFiles.defaultRoot()) : WorkCardFileStore(root: nil))
         let helper = HelperClient()
         self.transport = transport ?? { args, data in
             try await helper.run(args, timeout: args.first == "session-chat-fork" ? 310 : (args.first == "work-new" ? 85 : 45), stdinData: data)
@@ -310,7 +310,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
             let home = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"]
             base = home.map { URL(fileURLWithPath: $0) } ?? FileManager.default.temporaryDirectory.appendingPathComponent("cos-work-preview-\(UUID().uuidString)")
         } else {
-            base = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/COS Control/work-handoffs")
+            base = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("work-handoffs") } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/COS Control/work-handoffs")
         }
         self.storageURL = storageURL ?? base.appendingPathComponent(isolated ? "preview-handoffs.json" : "handoffs.json")
         do { try loadJournal() } catch { storageReady = false; self.error = "Handoff history could not be read. Sending is disabled: \(error.localizedDescription)" }
@@ -1996,17 +1996,18 @@ struct WorkGlassesRequest: Equatable, Sendable {
     }
     /// An unknown delivery blocks another handoff so nothing is resent blindly. After checking the session yourself,
     /// this clears it (a confirm in the UI comes first). The earlier detail is kept.
-    func clearUnresolved(receiptID: String) {
-        guard !busy, receipts.first(where: { $0.id == receiptID })?.status == "unknown" else { return }
-        if refusedForGlassesSend() { return }
+    @discardableResult func clearUnresolved(receiptID: String, startedFresh: Bool = false) -> Bool {
+        guard !busy, receipts.first(where: { $0.id == receiptID })?.status == "unknown" else { return false }
+        if refusedForGlassesSend() { return false }
         do {
             let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }
             try loadJournal()
-            guard var row = receipts.first(where: { $0.id == receiptID }), row.status == "unknown" else { return }
+            guard var row = receipts.first(where: { $0.id == receiptID }), row.status == "unknown" else { return false }
             row.status = "reviewed"; row.acknowledgedAt = Date().timeIntervalSince1970
-            row.detail = "You checked the session and cleared this unresolved handoff. Earlier: " + row.detail
+            row.detail = (startedFresh ? "Started fresh; the earlier delivery outcome remains unconfirmed. Earlier: " : "You checked the session and cleared this unresolved handoff. Earlier: ") + row.detail
             try save(row)
-        } catch { self.error = error.localizedDescription }
+            return true
+        } catch { self.error = error.localizedDescription; return false }
     }
     /// Test events are explicit; time passing is never evidence of completion.
     func simulate(receiptID: String, outcome: String) {

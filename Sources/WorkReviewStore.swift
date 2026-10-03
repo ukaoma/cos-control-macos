@@ -70,14 +70,15 @@ struct WorkReviewRecord: Identifiable, Sendable {
     private let transport: Transport
     /// Nil in tests and the resize harness, so they never write Miles's review names.
     private let titlesURL: URL?
-    init(transport: Transport? = nil) {
+    init(transport: Transport? = nil, titlesURL: URL? = nil) {
         let helper = HelperClient()
         self.transport = transport ?? { args, data in try await helper.run(args, timeout: 90, stdinData: data) }
         let testing = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] != nil
             || ProcessInfo.processInfo.environment["COS_PERF_FIXTURES"] != nil
-        titlesURL = testing ? nil : FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("COS Control/review-titles.json")
-        if let titlesURL, let data = try? Data(contentsOf: titlesURL),
+        let fixtureTitles = ProcessInfo.processInfo.environment["COS_WORK_FIXTURE_TEST"] == "1" ? ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("review-titles.json") } : nil
+        self.titlesURL = titlesURL ?? fixtureTitles ?? (testing ? nil : FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("COS Control/review-titles.json"))
+        if let titlesURL = self.titlesURL, let data = try? Data(contentsOf: titlesURL),
            let saved = try? JSONDecoder().decode([String: String].self, from: data) {
             titleOverrides = saved
         }
@@ -95,15 +96,18 @@ struct WorkReviewRecord: Identifiable, Sendable {
             reviewID: review.id, fullTitle: title)
     }
 
-    func setTitle(_ title: String, for reviewID: String) {
+    @discardableResult func setTitle(_ title: String, for reviewID: String) -> Bool {
         let clean = title.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        guard !clean.isEmpty, clean.utf16.count <= 180 else { return }
-        titleOverrides[reviewID] = clean
-        guard let titlesURL else { return }
-        try? FileManager.default.createDirectory(at: titlesURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(titleOverrides) {
-            try? data.write(to: titlesURL, options: .atomic)
-        }
+        guard !clean.isEmpty, clean.utf16.count <= 180 else { error = "Review name must contain 1 to 180 characters."; return false }
+        var next = titleOverrides; next[reviewID] = clean
+        do {
+            if let titlesURL {
+                try FileManager.default.createDirectory(at: titlesURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try JSONEncoder().encode(next).write(to: titlesURL, options: .atomic)
+            }
+            titleOverrides = next; reviewsEpoch &+= 1; error = nil
+            return true
+        } catch { self.error = "Name was not saved: " + error.localizedDescription; return false }
     }
     func refresh() async {
         guard !busy else { return }

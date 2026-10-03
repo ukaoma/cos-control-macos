@@ -3165,6 +3165,7 @@ struct SpeakerReviewPane: View {
                     Image(systemName: "exclamationmark.triangle").font(.system(size: 11))
                     Text(error).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
                     Spacer()
+                    Button("Try again") { model.retryOpenReview() }.font(.system(size: 10))
                     Button("Dismiss") { model.reviewError = nil }.font(.system(size: 10))
                 }
                 .padding(10)
@@ -3241,6 +3242,9 @@ struct SpeakerReviewPane: View {
                                 .disabled(model.mergeInFlight)
                         }
                         Button(correction.refused ? "OK" : "Cancel") { model.cancelCorrection() }
+                        if correction.refused && !correction.forceable {
+                            Button("Reopen review") { model.cancelCorrection(); model.retryOpenReview() }
+                        }
                         if model.mergeInFlight { ProgressView().controlSize(.mini) }
                         Spacer()
                     }
