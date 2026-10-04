@@ -161,6 +161,7 @@ struct WorkBoardReads: Equatable, Sendable {
             && start - row.createdAt < WorkProgress.trackedDays * 86_400 {
             await attemptMove(row.id)
         }
+        postFailures()
         let open = candidates(now: start)
         if !open.isEmpty { await trackPass(open, start: start) }
         // 0.5.249: a New session whose first reply is done opens in its app, tracked or not (a done first reply ends
@@ -529,6 +530,34 @@ struct WorkBoardReads: Equatable, Sendable {
     private func movedSuffix(_ id: String, to stage: String) -> String {
         movedTo[id] == stage ? " Moved to \(WorkProgress.stageTitle(stage))." : ""
     }
+    /// Failure receipts often have no progress block. They must not use post(), which requires one.
+    private func postFailures() {
+        let date = now(), calendar = Calendar.current
+        let hour = calendar.component(.hour, from: date), weekday = calendar.component(.weekday, from: date)
+        guard hour >= 7 && hour < 18 && weekday != 1 && weekday != 7 else { return }
+        let url = store.notificationLedgerURL
+        var ledger: [String: WorkFailureStamp] = [:]
+        if FileManager.default.fileExists(atPath: url.path) {
+            guard let data = try? Data(contentsOf: url), data.count < 2_000_000,
+                  let read = try? JSONDecoder().decode([String: WorkFailureStamp].self, from: data) else {
+                trackingLog.error("Failure notification ledger unreadable; preserving it")
+                return
+            }
+            ledger = read
+        }
+        for row in store.receipts.sorted(by: { $0.createdAt > $1.createdAt }) where ["failed", "refused"].contains(row.status)
+            && date.timeIntervalSince1970 - row.createdAt < 14 * 86400 {
+            if let prior = ledger[row.workID], prior.receiptID == row.id || row.createdAt <= prior.receiptAt || date.timeIntervalSince1970 - prior.notifiedAt < 1800 { continue }
+            ledger[row.workID] = WorkFailureStamp(receiptID: row.id, receiptAt: row.createdAt, notifiedAt: date.timeIntervalSince1970)
+            do {
+                let data = try JSONEncoder().encode(ledger)
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: url, options: .atomic)
+            } catch { trackingLog.error("Failure notification save failed"); return }
+            notify(WorkProgressNotice(key: "failed", receiptID: row.id, workID: row.workID, title: "Work needs a look", body: row.workTitle + ": " + String(row.detail.prefix(240))))
+        }
+    }
+
     private func post(_ id: String, key: String, title: String, body: String) {
         guard let row = store.receipts.first(where: { $0.id == id }), row.progress?.notified.contains(key) == false else { return }
         notify(WorkProgressNotice(key: key, receiptID: id, workID: row.workID, title: title, body: body))
@@ -537,4 +566,10 @@ struct WorkBoardReads: Equatable, Sendable {
             next.markNotified(key); current.progress = next; return true
         }
     }
+}
+
+private struct WorkFailureStamp: Codable {
+    let receiptID: String
+    let receiptAt: Double
+    let notifiedAt: Double
 }

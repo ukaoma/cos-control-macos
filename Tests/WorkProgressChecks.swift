@@ -487,7 +487,7 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         precondition(WorkTracking.latest(workID: base.workID, receipts: [asking])?.asksForYou == true)
         var reviewed = asking; reviewed.status = "reviewed"
         let answered = WorkTracking.latest(workID: base.workID, receipts: [reviewed])
-        precondition(answered?.asksForYou == false && answered?.reported == false && answered?.label == "Answered", "Reviewing clears the question")
+        precondition(answered?.asksForYou == true && answered?.reported == true && answered?.label == "Reviewed, not answered", "Reviewing does not answer the question")
         var acknowledged = asking; acknowledged.acknowledgedAt = 1
         precondition(WorkTracking.latest(workID: base.workID, receipts: [acknowledged])?.asksForYou == false)
         var jevDone = base; jevDone.progress?.reported = .done; jevDone.progress?.reportedBy = "jev"

@@ -17,7 +17,16 @@ struct WorkTracking {
     /// The newest handoff for this work, when it asked for a status line and did not fail. A failed, refused or
     /// canceled newest handoff shows nothing here: the existing handoff state already explains it.
     static func latest(workID: String, receipts: [WorkHandoffReceipt]) -> WorkTracking? {
-        guard let receipt = receipts.filter({ $0.workID == workID }).max(by: { $0.createdAt < $1.createdAt }),
+        let mine = receipts.filter { $0.workID == workID }
+        if let question = mine.filter({ row in
+            guard !row.handledByYou, !["failed", "refused", "canceled"].contains(row.status),
+                  row.progress?.reported == .needsInput || row.progress?.reported == .blocked else { return false }
+            let at = row.progress?.receivedAt ?? row.createdAt
+            return !mine.contains { next in next.id != row.id && next.createdAt > at && (["delivered", "running", "completed"].contains(next.status) || (next.status == "reviewed" && next.progress?.receivedAt != nil)) }
+        }).max(by: { $0.createdAt < $1.createdAt }), let progress = question.progress {
+            return WorkTracking(receipt: question, progress: progress, phase: phase(question, progress))
+        }
+        guard let receipt = mine.max(by: { $0.createdAt < $1.createdAt }),
               let progress = receipt.progress, !["refused", "failed", "canceled"].contains(receipt.status), !receipt.clearedUnconfirmed
         else { return nil }
         return WorkTracking(receipt: receipt, progress: progress, phase: phase(receipt, progress))
@@ -51,8 +60,8 @@ struct WorkTracking {
         case .received: "Received"
         case .working: "Working"
         case .done: "Done"
-        case .needsInput: receipt.handledByYou ? "Answered" : "Needs your input"
-        case .blocked: receipt.handledByYou ? "Answered" : "Blocked"
+        case .needsInput: receipt.handledByYou ? "Handled" : receipt.status == "reviewed" ? "Reviewed, not answered" : "Needs your input"
+        case .blocked: receipt.handledByYou ? "Handled" : "Blocked"
         }
     }
     /// For a session card's task rows.

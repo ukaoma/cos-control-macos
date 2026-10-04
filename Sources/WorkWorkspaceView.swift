@@ -201,8 +201,8 @@ enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
 }
 
 @MainActor final class WorkWorkspaceState: ObservableObject {
-    @Published var scope: WorkWorkspaceScope = .all { didSet { intakeOpen = false; startItemID = nil } }
-    @Published var domain: String? { didSet { if domain != nil { intakeOpen = false }; startItemID = nil } }
+    @Published var scope: WorkWorkspaceScope = .all { didSet { intakeOpen = false; waitingOpen = false; startItemID = nil } }
+    @Published var domain: String? { didSet { startItemID = nil } }
     @Published var query = ""
     @Published var selectedID: String? { didSet { if oldValue != selectedID { personFocus = nil } } }
     /// The person card open under a source meeting: "<recordId>|<name>". Closes when another task is selected.
@@ -223,6 +223,7 @@ enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
     let boardMemo = WorkBoardMemo()
     /// Work → Intake (server 6.57.0). Its own route flag: the Intake row or toggle opens it, and choosing a view
     /// or a domain closes it (the observers above), so no opener can leave Intake covering the board.
+    @Published var waitingOpen = false
     @Published var intakeOpen = false
     /// 0.5.244: the item whose Start work overlay is open (a drop on Start work, or Start work… on a card).
     @Published var startItemID: String?
@@ -414,7 +415,21 @@ enum WorkWorkspaceProjection {
                 return 2
             }
             let l = rank(left.element), r = rank(right.element)
-            return l == r ? left.offset < right.offset : l < r
+            if l != r { return l < r }
+            func priority(_ item: WorkWorkspaceItem) -> Int {
+                if item.task?.workStage == "qa" { return 0 }
+                if item.task?.priority == "urgent" { return 1 }
+                if let due = item.task?.dueDate, !due.isEmpty {
+                    let format = DateFormatter(); format.dateFormat = "yyyy-MM-dd"
+                    if let day = format.date(from: due), day.timeIntervalSinceNow < 14 * 86400 { return 1 }
+                }
+                return 2
+            }
+            let lp = priority(left.element), rp = priority(right.element)
+            if lp != rp { return lp < rp }
+            let ld = left.element.task?.createdAt ?? "", rd = right.element.task?.createdAt ?? ""
+            if ld != rd && !ld.isEmpty && !rd.isEmpty { return ld > rd }
+            return left.offset < right.offset
         }.map(\.element)
     }
 
@@ -528,6 +543,9 @@ private struct WorkSearchField: View {
 }
 
 struct WorkWorkspaceView: View {
+    @State private var yourMoveAnswerID: String?
+    @State private var yourMoveAnswer = ""
+
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var model: ControllerModel
@@ -591,6 +609,7 @@ struct WorkWorkspaceView: View {
         VStack(spacing: 0) {
             header
             activitySummary
+            yourMoveCard
             if state.captureOpen { captureForm }
             if let error = state.mutationError {
                 HStack { Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger); Spacer()
@@ -626,8 +645,10 @@ struct WorkWorkspaceView: View {
                 HStack(spacing: 0) {
                     sidebar.frame(width: 148)
                     Divider()
-                    if state.intakeOpen {
-                        WorkIntakeView(model: model, onOpenMeeting: onOpenMeeting)
+                    if state.waitingOpen {
+                        WorkWaitingView(model: model)
+                    } else if state.intakeOpen {
+                        WorkIntakeView(model: model, domain: state.domain, onOpenMeeting: onOpenMeeting)
                     } else if layout == .board {
                         boardSurface
                     } else {
@@ -637,7 +658,8 @@ struct WorkWorkspaceView: View {
             } else {
                 compactNavigation
                 Divider()
-                if state.intakeOpen { WorkIntakeView(model: model, onOpenMeeting: onOpenMeeting) }
+                if state.waitingOpen { WorkWaitingView(model: model) }
+                else if state.intakeOpen { WorkIntakeView(model: model, domain: state.domain, onOpenMeeting: onOpenMeeting) }
                 else if layout == .board { boardSurface }
                 else if hasDetail {
                     HStack {
@@ -780,7 +802,10 @@ struct WorkWorkspaceView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 TextField("What needs to be done?", text: $state.captureText).textFieldStyle(.plain).cosField().disabled(state.captureBusy)
-                COSDropdown("Domain", selection: $state.captureDomain,
+                if !handoffStore.isolated && model.workBatchAvailable {
+                Button("Waiting on / Dropped") { state.waitingOpen = true; state.intakeOpen = false; returnToList() }.buttonStyle(COSTextButtonStyle())
+            }
+            COSDropdown("Domain", selection: $state.captureDomain,
                             options: [COSDropdownOption("", "Choose domain", placeholder: true)]
                                 + model.domainOptions.map { COSDropdownOption($0.name, $0.label) })
                     .frame(maxWidth: 200).disabled(state.captureBusy)
@@ -812,16 +837,22 @@ struct WorkWorkspaceView: View {
                         state.scope = scope; state.domain = nil; state.intakeOpen = false; state.focusOverride = false; returnToList()
                     }
                 }
+                if model.workBatchAvailable {
+                    navigationRow("Waiting on", selected: state.waitingOpen) {
+                        state.waitingOpen = true; state.intakeOpen = false; returnToList()
+                    }
+                }
                 if !handoffStore.isolated && model.workIntakeVisible {
                     navigationRow(intakeTitle, selected: state.intakeOpen) {
-                        state.intakeOpen = true; state.domain = nil; returnToList()
+                        state.waitingOpen = false; state.intakeOpen = true; state.domain = nil; returnToList()
                     }
                 }
                 Divider().padding(.vertical, 12)
                 Text("Domains").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted).padding(.horizontal, 10)
                 ForEach(domains, id: \.self) { domain in
                     navigationRow(domainLabel(domain), selected: state.domain == domain && !state.intakeOpen) {
-                        state.domain = domain; state.scope = .all; state.intakeOpen = false; state.focusOverride = false; returnToList()
+                        let sorting = state.intakeOpen
+                        state.domain = domain; state.scope = .all; state.intakeOpen = sorting; state.focusOverride = false; returnToList()
                     }
                 }
             }.padding(10)
@@ -829,9 +860,9 @@ struct WorkWorkspaceView: View {
     }
 
     private var intakeTitle: String {
-        let count = model.workIntake.openCount
+        let count = model.workIntake.newCount + WorkSortGroup.mentioned(model.workTasks, catchUp: false, domain: nil).count
         if !model.workIntake.available || model.workIntakeError != nil { return "Intake · !" }
-        return count > 0 ? "Intake · \(count)" : "Intake"
+        return count > 0 ? "Sort · \(count) new" : "Sort"
     }
 
     private func navigationRow(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
@@ -859,6 +890,76 @@ struct WorkWorkspaceView: View {
                 .fixedSize()
             Spacer(minLength: 0)
         }.font(COSType.body(12)).padding(.horizontal, 18).padding(.vertical, 10)
+    }
+
+    @ViewBuilder private var yourMoveCard: some View {
+        if model.workYourMoveAvailable && !model.workYourMove.isEmpty && !hasDetail {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Your move").font(COSType.body(13, weight: .semibold))
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(model.workYourMove) { row in yourMoveRow(row) }
+                    }
+                }.frame(maxHeight: 154)
+            }.padding(12).background(COSPalette.card).padding(.horizontal, 18).padding(.bottom, 10)
+        }
+    }
+
+    private func yourMoveSource(_ row: WorkYourMove) -> WorkSource? {
+        guard let item = board.item(sourceID: row.workID) else { return nil }
+        if let task = item.task { return .taskSnapshot(task) }
+        return item.review?.source
+    }
+
+    private func openYourMove(_ row: WorkYourMove) {
+        if row.action == "answer" { yourMoveAnswerID = row.id; yourMoveAnswer = ""; return }
+        if row.action == "checkSession", let session = row.sessionID { onOpenSession(session); return }
+        guard let item = board.item(sourceID: row.workID) else { return }
+        if row.action == "startFresh", let source = yourMoveSource(row) {
+            var draft = handoffStore.draft(for: source)
+            draft.mode = .newSession; draft.sessionID = ""
+            _ = handoffStore.updateDraft(draft, for: source)
+        }
+        select(item)
+    }
+
+    private func yourMoveRow(_ row: WorkYourMove) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(row.title).font(COSType.body(12)).lineLimit(2)
+                Spacer(minLength: 8)
+                Button(row.actionTitle) { openYourMove(row) }.buttonStyle(COSQuietButtonStyle())
+                    .disabled(row.action != "checkSession" && yourMoveSource(row) == nil)
+                yourMoveSecondary(row)
+            }
+            if yourMoveAnswerID == row.id { yourMoveComposer(row) }
+        }
+    }
+
+    @ViewBuilder private func yourMoveSecondary(_ row: WorkYourMove) -> some View {
+        if row.kind == "qa", let task = board.item(sourceID: row.workID)?.task {
+            Button("Mark done") { move(task, to: .complete) }.buttonStyle(COSQuietButtonStyle()).disabled(!canChangeStage(task))
+        } else {
+            Button("No reply needed") {
+                handoffStore.noReplyNeeded(receiptID: row.id)
+                Task { await model.loadYourMove() }
+            }.buttonStyle(COSQuietButtonStyle()).disabled(handoffStore.busy)
+        }
+    }
+
+    private func yourMoveComposer(_ row: WorkYourMove) -> some View {
+        HStack {
+            TextField("Your answer", text: $yourMoveAnswer)
+            Button("Send") {
+                guard let source = yourMoveSource(row) else { return }
+                let answer = yourMoveAnswer
+                Task {
+                    if await handoffStore.reply(receiptID: row.id, source: source, answer: answer) { yourMoveAnswerID = nil; yourMoveAnswer = "" }
+                    await model.loadYourMove()
+                }
+            }.buttonStyle(COSQuietButtonStyle()).disabled(handoffStore.busy || yourMoveAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Cancel") { yourMoveAnswerID = nil }.buttonStyle(COSQuietButtonStyle())
+        }
     }
 
     private var boardName: String { state.domain.map { domainLabel($0) } ?? state.scope.title }
@@ -1279,7 +1380,7 @@ struct WorkWorkspaceView: View {
                 }
                 Divider().overlay(COSPalette.line)
                 // 0.5.254 (card face A): the file count sits in the footer that holds the stage menu.
-                HStack { stageMenu(task); Spacer(minLength: 0); WorkCardFilesBadge(files: cardFiles, workID: item.sourceID) }
+                HStack { stageMenu(task); if !item.completed { Button("Start work") { openStart(item) }.buttonStyle(COSTextButtonStyle()) }; Spacer(minLength: 0); WorkCardFilesBadge(files: cardFiles, workID: item.sourceID) }
                     .padding(.horizontal, 10).padding(.vertical, 6)
                 WorkCardFlashView(files: cardFiles, workID: item.sourceID)
             }
@@ -1696,6 +1797,9 @@ struct WorkWorkspaceView: View {
                     }.buttonStyle(COSQuietButtonStyle())
                 } else {
                     Button("Edit task") { onEditTask(task) }.buttonStyle(COSQuietButtonStyle())
+                    if !task.checked, let item = items.first(where: { $0.task?.id == task.id && $0.domain == task.domain }) {
+                        Button("Start work") { openStart(item) }.buttonStyle(COSQuietButtonStyle())
+                    }
                 }
             }
             Text(domainLabel(task.domain) + " · " + (task.checked ? "Completed task" : WorkBoardStage.stage(for: task).title))
@@ -1704,6 +1808,13 @@ struct WorkWorkspaceView: View {
                 stageMenu(task)
                 if state.mutationBusy { ProgressView().controlSize(.small) }
                 Spacer()
+            }
+            if model.workBatchAvailable && !task.checked { WorkDelegateControl(model: model, task: task) }
+            Text([task.createdAt.isEmpty ? "Created date unknown" : "Created " + task.createdAt,
+                  "Owner: " + (task.owner.isEmpty ? "Unknown" : task.owner), task.dueDate.isEmpty ? "" : "Due " + task.dueDate].filter { !$0.isEmpty }.joined(separator: " · "))
+                .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+            ForEach(handoffStore.confirmedSessionCards.keys.filter { handoffStore.confirmedSessionCards[$0]?.workID == task.workSourceID }.sorted(), id: \.self) { sessionID in
+                Button("Open linked session") { onOpenSession(sessionID) }.buttonStyle(COSTextButtonStyle())
             }
             if let error = task.workMetadataError { Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger) }
         }
@@ -1948,53 +2059,119 @@ fileprivate func intakeInlineText(_ value: String) -> AttributedString {
 /// Accepting writes on the server through the same task writer and locks as every other Work change.
 struct WorkIntakeView: View {
     @ObservedObject var model: ControllerModel
+    var domain: String? = nil
     var onOpenMeeting: (WorkMeetingReference) -> Void
     @State private var confirmSkipOlder = false
+    @State private var catchUp = false
+    @State private var expiredOpen = false
+    @State private var groupIndex = 0
+    @State private var keepingGroup = false
+    @State private var sortStarted = Date()
+    @FocusState private var keyboardFocus: Bool
 
     var body: some View {
-        let snapshot = model.workIntake
+        let snapshot = model.workIntake.daily(catchUp: catchUp, domain: domain)
+        let cards = WorkSortGroup.mentioned(model.workTasks, catchUp: catchUp, domain: domain)
+        let groups = WorkSortGroup.groups(snapshot: snapshot, cards: cards)
+        let selected = groups.isEmpty ? nil : groups[min(groupIndex, groups.count - 1)]
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Intake").font(COSType.display(19, weight: .medium))
-                Text("From your meetings, not on the board yet").font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+                Text(catchUp ? "Catch up" : "Sort today").font(COSType.display(19, weight: .medium))
+                Text(catchUp ? "Older items, at your pace" : "New since yesterday").font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
                 Spacer()
                 if model.workIntakeLoading { ProgressView().controlSize(.small) }
                 Button { Task { await model.loadWorkIntake() } } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(COSIconButtonStyle()).help("Refresh Intake")
             }.padding(.horizontal, 18).padding(.vertical, 12)
+            HStack {
+                Button("Today · \(model.workIntake.daily(catchUp: false, domain: domain).openCount + WorkSortGroup.mentioned(model.workTasks, catchUp: false, domain: domain).count) new") { catchUp = false; expiredOpen = false; groupIndex = 0 }.buttonStyle(COSQuietButtonStyle())
+                Button("Catch up · \(model.workIntake.daily(catchUp: true, domain: domain).openCount + WorkSortGroup.mentioned(model.workTasks, catchUp: true, domain: domain).count)") { catchUp = true; expiredOpen = false; groupIndex = 0 }.buttonStyle(COSTextButtonStyle())
+                Spacer()
+                if model.workUndoBatch != nil { Button("Undo last decision") { Task { await model.undoWorkIntake() } }.buttonStyle(COSTextButtonStyle()) }
+            }.padding(.horizontal, 18).padding(.bottom, 10)
+            HStack {
+                Button("Expired this week: \(model.workExpiredWeekly), \(model.workExpiredYours) yours") { expiredOpen.toggle(); Task { await model.loadWorkExpiry() } }.buttonStyle(COSTextButtonStyle())
+                Text("Restore within 30 days").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+            }.padding(.horizontal, 18).padding(.bottom, 8)
+            if let error = model.workLoopError { Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger).padding(.horizontal, 18) }
             if let error = model.workIntakeError {
                 Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger).padding(.horizontal, 18).padding(.bottom, 8)
             }
             Divider().overlay(COSPalette.line)
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
-                    if !snapshot.available {
+                    if expiredOpen {
+                        if model.workExpired.isEmpty { Text("No expired items to restore.") }
+                        ForEach(model.workExpired) { item in
+                            HStack { Text(item.text).font(COSType.body(12)); Spacer(); Button("Restore") { Task { await model.restoreExpiredWork(item) } } }
+                        }
+                    } else if !snapshot.available {
                         Text(snapshot.message ?? "Intake is unavailable on this server.")
                             .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
-                    } else if snapshot.openCount == 0 {
-                        Text("Nothing waiting. When a saved meeting has Work that is not on the board yet, it appears here.")
+                    } else if groups.isEmpty {
+                        Text(catchUp ? "Catch up is clear." : "Today is clear. Older items stay in Catch up.")
                             .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
                     } else {
-                        group("Review", snapshot.reviews, note: "Yours to check: from an older meeting, or not clear enough to add on its own.",
-                              accessory: skipOlder(snapshot)) { review($0, snapshot) }
-                        group("Suggested links", snapshot.suggestedLinks, note: "Existing tasks these meetings probably worked on.") { suggestion($0, snapshot) }
-                        group("Asks from others", snapshot.asks, note: "Other people's action items. Take one on when you are positioned to do it.") { ask($0, snapshot) }
+                        if let selected {
+                            HStack {
+                                Text(selected.title).font(COSType.body(14, weight: .semibold))
+                                Spacer()
+                                Text("\(min(groupIndex + 1, groups.count)) of \(groups.count)").foregroundStyle(COSPalette.muted)
+                            }
+                            Text("j / k: next / previous meeting · s: decide later · e: keep first item").font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+                            ForEach(selected.cards) { card in
+                                VStack(alignment: .leading, spacing: 7) {
+                                    Text(card.text).font(COSType.body(12.5, weight: .medium))
+                                    Text([card.createdAt, card.owner, card.dueDate.isEmpty ? "" : "Due " + card.dueDate].filter { !$0.isEmpty }.joined(separator: " · ")).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                                    HStack {
+                                        Button("Keep") { Task { _ = await model.changeWorkCard(card, action: "stage", fields: ["workStage": "planned"]) } }
+                                        Button("Drop") { Task { _ = await model.changeWorkCard(card, action: "drop") } }
+                                        WorkDelegateControl(model: model, task: card)
+                                    }.disabled(!model.workBatchAvailable || model.workBatchBusy)
+                                }.padding(12).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 9))
+                            }
+                            group("Items to decide", selected.items, note: "Keep what you own. Other people's asks can become cards when you take them on.") { item in
+                                if item.isSuggestedLink { suggestion(item, snapshot) }
+                                else if item.isAsk { ask(item, snapshot) }
+                                else { review(item, snapshot) }
+                            }
+                            HStack {
+                                Button("Previous") { groupIndex = max(0, groupIndex - 1) }.disabled(groupIndex == 0)
+                                Button("Decide later") { groupIndex = groups.isEmpty ? 0 : (groupIndex + 1) % groups.count }
+                                Spacer()
+                                if !selected.items.isEmpty {
+                                    Button("Dismiss remaining items") { Task { await model.dismissWorkIntake(selected.items) } }.disabled(keepingGroup || !model.workIntakeBusyIDs.isEmpty)
+                                }
+                            }.buttonStyle(COSTextButtonStyle())
+                        }
                     }
                 }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
             }.frame(minWidth: 0, minHeight: 88, maxHeight: .infinity, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .task { await model.loadWorkIntake() }
+        .task { sortStarted = Date(); await model.loadWorkIntake(); await model.loadWorkExpiry(); keyboardFocus = true }
+        .onDisappear { model.recordWorkObservation("sort", values: ["seconds": Date().timeIntervalSince(sortStarted), "catchUp": catchUp]) }
+        .onChange(of: domain) { _, _ in groupIndex = 0 }
+        .focusable().focused($keyboardFocus)
+        .onKeyPress("j") { groupIndex = min(max(0, groups.count - 1), groupIndex + 1); return .handled }
+        .onKeyPress("k") { groupIndex = max(0, groupIndex - 1); return .handled }
+        .onKeyPress("s") { groupIndex = groups.isEmpty ? 0 : (groupIndex + 1) % groups.count; return .handled }
+        .onKeyPress("e") {
+            guard let selected else { return .ignored }
+            if let card = selected.cards.first { Task { _ = await model.changeWorkCard(card, action: "stage", fields: ["workStage": "planned"]) } }
+            else if let item = selected.items.first { Task { await model.resolveWorkIntake(item, accept: true) } }
+            return .handled
+        }
     }
 
-    /// Skip every Review item from an older meeting at once, after one confirm. There is no undo.
+    /// Skip older Review items after confirmation; the decision can be undone for seven days.
     @ViewBuilder
     private func skipOlder(_ snapshot: WorkIntakeSnapshot) -> some View {
         let older = snapshot.reviews.filter { $0.reason == "outside_window" }
         if older.count > 1 {
             HStack(spacing: 8) {
                 if confirmSkipOlder {
-                    Text("Skip \(older.count) from older meetings? This can't be undone.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    Text("Drop \(older.count) from older meetings? Undo is available for 7 days.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                     Button("Skip \(older.count)") { confirmSkipOlder = false; Task { await model.dismissWorkIntake(older) } }
                         .buttonStyle(COSQuietButtonStyle())
                     Button("Cancel") { confirmSkipOlder = false }.buttonStyle(COSTextButtonStyle())
@@ -2018,9 +2195,9 @@ struct WorkIntakeView: View {
                     accessory
                 }
                 Text(note).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
-                VStack(spacing: 0) {
+                LazyVStack(spacing: 0) {
                     ForEach(items) { item in
-                        row(item).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)  // short rows stay flush left when stacked
+                        row(item).onAppear { Task { _ = await model.workLoop("seen", body: ["ids": [item.id]]) } }.padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)  // short rows stay flush left when stacked
                         if item.id != items.last?.id { Divider().overlay(COSPalette.line) }
                     }
                 }.padding(.horizontal, 12)
@@ -2066,7 +2243,7 @@ struct WorkIntakeView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(intakeInlineText(item.text)).font(COSType.body(12.5, weight: .medium)).fixedSize(horizontal: false, vertical: true)
             footer(item, detail: item.reasonLabel ?? (item.ownerIsMiles ? "probably yours" : item.owner),
-                   actions: actions(item, snapshot, accept: "Keep as card", enabled: snapshot.cardCreation, dismiss: "Skip"))
+                   actions: actions(item, snapshot, accept: "Keep as card", enabled: snapshot.cardCreation, dismiss: "Drop"))
         }
     }
 
@@ -2087,5 +2264,82 @@ struct WorkIntakeView: View {
             }
             footer(item, detail: item.owner, actions: actions(item, snapshot, accept: "Make it mine", enabled: snapshot.cardCreation, dismiss: "Dismiss"))
         }
+    }
+}
+
+
+struct WorkDelegateControl: View {
+    @ObservedObject var model: ControllerModel
+    let task: TaskRow
+    @State private var owner = ""
+    @State private var checkIn = Date().addingTimeInterval(7 * 86400)
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                TextField("Waiting on whom?", text: $owner).textFieldStyle(.roundedBorder).frame(maxWidth: 220)
+                DatePicker("Check in", selection: $checkIn, displayedComponents: .date)
+                Button("Waiting on") {
+                    let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"
+                    Task { _ = await model.changeWorkCard(task, action: "delegate", fields: ["owner": owner, "checkIn": formatter.string(from: checkIn)]) }
+                }.disabled(owner.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.workBatchBusy)
+            }
+            if let error = model.workLoopError { Text(error).foregroundStyle(COSPalette.danger) }
+        }.font(COSType.body(12)).onAppear { if owner.isEmpty { owner = task.owner == "Miles" ? "" : task.owner } }
+    }
+}
+
+struct WorkWaitingView: View {
+    @ObservedObject var model: ControllerModel
+    @State private var dates: [String: Date] = [:]
+    @State private var dropped = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack { Text("Waiting on").font(COSType.display(20)); Spacer(); Button("Refresh") { Task { await model.loadWaitingWork() } } }
+            HStack {
+                Button("Waiting on") { dropped = false }.buttonStyle(COSQuietButtonStyle())
+                Button("Dropped cards") { dropped = true; Task { await model.loadDroppedWork() } }.buttonStyle(COSTextButtonStyle())
+            }
+            Text(dropped ? "Restore a dropped card with its identity and links intact." : "Follow up by person. These cards also appear in 1:1 prep.").font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+            if let error = model.workLoopError { Text(error).foregroundStyle(COSPalette.danger) }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if model.waitingLoaded && model.waitingWork.isEmpty { Text("No open follow-ups.") }
+                    ForEach((dropped ? model.droppedWork : model.waitingWork).compactMap(WorkWaitingRow.init).sorted { ($0.task.owner.lowercased(), $0.checkIn, $0.id) < ($1.task.owner.lowercased(), $1.checkIn, $1.id) }) { row in
+                        if dropped {
+                            HStack { Text(row.task.text); Spacer(); Button("Restore") { Task { _ = await model.changeWorkCard(row.task, action: "restore") } } }.padding(12)
+                        } else { waitingRow(row) }
+                    }
+                }
+            }
+        }.padding(18).task { await model.loadWaitingWork() }
+    }
+    private func waitingRow(_ row: WorkWaitingRow) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(row.task.owner.isEmpty ? "Owner unknown" : row.task.owner).font(COSType.body(13, weight: .semibold))
+            Text(row.task.text).font(COSType.body(12))
+            Text(row.needsCheckIn ? "Still waiting?" : row.checkIn.isEmpty ? "Choose a check-in date" : "Check in " + row.checkIn).foregroundStyle(COSPalette.muted)
+            HStack {
+                Button("Done") { Task { _ = await model.changeWorkCard(row.task, action: "stage", fields: ["workStage": "complete"]) } }
+                DatePicker("Next check-in", selection: Binding(get: { dates[row.id] ?? Date().addingTimeInterval(7 * 86400) }, set: { dates[row.id] = $0 }), displayedComponents: .date)
+                Button("Still waiting") {
+                    let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"
+                    let next = formatter.string(from: dates[row.id] ?? Date().addingTimeInterval(7 * 86400))
+                    Task { _ = await model.changeWorkCard(row.task, action: "checkIn", fields: ["checkIn": next]) }
+                }
+                Button("Drop") { Task { _ = await model.changeWorkCard(row.task, action: "drop") } }
+            }.disabled(model.workBatchBusy)
+        }.font(COSType.body(11)).padding(12).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+struct WorkWaitingRow: Identifiable {
+    let task: TaskRow
+    let checkIn: String
+    let needsCheckIn: Bool
+    var id: String { task.workSourceID }
+    init?(_ raw: JSONValue) {
+        guard let task = TaskRow(raw) else { return nil }
+        self.task = task
+        checkIn = raw.object?["checkIn"]?.string ?? ""
+        needsCheckIn = raw.object?["needsCheckIn"]?.bool == true
     }
 }

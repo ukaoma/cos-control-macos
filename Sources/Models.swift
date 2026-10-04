@@ -2029,6 +2029,7 @@ struct WorkIntakeItem: Identifiable, Hashable, Sendable {
     let id: String
     let kind: Kind
     let status: String
+    let producedAt: String
     let meeting: WorkMeetingReference
     let confidence: Double
     let text: String
@@ -2070,6 +2071,7 @@ struct WorkIntakeItem: Identifiable, Hashable, Sendable {
         let task = row["task"]?.object
         let text = kind == .link ? task?["text"]?.string : row["text"]?.string
         guard let text, !text.isEmpty else { return nil }
+        producedAt = row["producedAt"]?.string ?? ""
         self.id = id; self.kind = kind; self.status = status; self.meeting = meeting; self.confidence = confidence; self.text = text
         owner = row["owner"]?.string
         ownerIsMiles = row["ownerIsMiles"]?.bool == true
@@ -2092,6 +2094,23 @@ struct WorkIntakeSnapshot: Sendable {
     var storeUnavailable = false
 
     static let unavailable = WorkIntakeSnapshot(available: false, message: nil, items: [], cardCreation: false, linkWrites: false)
+    func newItems(now: Date = Date()) -> [WorkIntakeItem] {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -1, to: Calendar.current.startOfDay(for: now))!
+        let iso = ISO8601DateFormatter(), fraction = ISO8601DateFormatter()
+        fraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return items.filter { row in
+            guard let stamp = fraction.date(from: row.producedAt) ?? iso.date(from: row.producedAt) else { return false }
+            return stamp >= cutoff
+        }
+    }
+    var newCount: Int { newItems().count }
+    var catchUpCount: Int { max(0, openCount - newCount) }
+    func daily(catchUp: Bool, domain: String? = nil, now: Date = Date()) -> WorkIntakeSnapshot {
+        let fresh = Set(newItems(now: now).map(\.id))
+        var result = self
+        result.items = items.filter { fresh.contains($0.id) != catchUp && (domain == nil || $0.meeting.domain == domain) }
+        return result
+    }
     var asks: [WorkIntakeItem] {
         items.filter(\.isAsk).sorted { left, right in
             // Pulled forward first, likeliest session match first (one of Miles's sessions may already be on it),
@@ -2335,6 +2354,10 @@ struct TaskRow: Identifiable, Sendable {
     /// window has no business rendering that cap. Server 6.44.3 and newer.
     let text: String
     let source: String
+    let createdAt: String
+    let dueDate: String
+    let owner: String
+    let priority: String
     let checked: Bool
     let agentState: String
     /// Board stage. Absent or unknown means planning, the unmarked default every
@@ -2387,6 +2410,10 @@ struct TaskRow: Identifiable, Sendable {
         // shows something real rather than an empty body.
         text = o["text"]?.string ?? o["title"]?.string ?? ""
         source = o["source"]?.string ?? ""
+        createdAt = o["createdAt"]?.string ?? ""
+        dueDate = o["dueDate"]?.string ?? ""
+        owner = o["owner"]?.string ?? ""
+        priority = o["priority"]?.string ?? ""
         let rawStage = o["stage"]?.string ?? ""
         stage = (rawStage == "active" || rawStage == "review") ? rawStage : "planning"
         doneWhen = o["doneWhen"]?.string ?? ""
@@ -9106,6 +9133,60 @@ struct MeetingEngineStatus: Sendable, Equatable {
             lastRunAt = last["at"]?.string ?? ""
             lastRunTrigger = last["trigger"]?.string ?? ""
             lastRunSkippedReason = last["skippedReason"]?.string ?? ""
+        }
+    }
+}
+
+
+struct WorkYourMove: Identifiable, Sendable {
+    let id: String
+    let workID: String
+    let title: String
+    let kind: String
+    let action: String
+    let sessionID: String?
+    init?(_ value: JSONValue) {
+        guard let row = value.object, let id = row["id"]?.string, let work = row["workId"]?.string,
+              let kind = row["kind"]?.string, ["question", "qa", "unknown"].contains(kind),
+              let action = row["action"]?.string else { return nil }
+        self.id = id; workID = work; title = row["title"]?.string ?? "Work item"; self.kind = kind; self.action = action
+        sessionID = row["activity"]?.object?["sessionId"]?.string
+    }
+    var actionTitle: String { action == "answer" ? "Answer" : action == "review" ? "Review" : action == "startFresh" ? "Start fresh" : "Check session" }
+}
+
+/// One small decision group. Self-captures lead; dates come from each card.
+struct WorkSortGroup: Identifiable {
+    let id: String
+    let title: String
+    var items: [WorkIntakeItem] = []
+    var cards: [TaskRow] = []
+    var date: String = ""
+    static func mentioned(_ tasks: [TaskRow], catchUp: Bool, domain: String?, now: Date = Date()) -> [TaskRow] {
+        let format = DateFormatter(); format.dateFormat = "yyyy-MM-dd"
+        let cutoff = Calendar.current.date(byAdding: .day, value: -1, to: Calendar.current.startOfDay(for: now))!
+        return tasks.filter { row in
+            guard row.workStage == "mentioned", !row.checked, domain == nil || row.domain == domain else { return false }
+            let fresh = (format.date(from: row.createdAt).map { $0 >= cutoff } ?? false) || row.priority == "urgent"
+            return fresh != catchUp
+        }
+    }
+    static func groups(snapshot: WorkIntakeSnapshot, cards: [TaskRow]) -> [WorkSortGroup] {
+        var groups: [String: WorkSortGroup] = [:]
+        for item in snapshot.items {
+            let key = item.meeting.recordId
+            var group = groups[key] ?? WorkSortGroup(id: key, title: item.meeting.title, date: String(item.meeting.filename.prefix(10)))
+            group.items.append(item); groups[key] = group
+        }
+        for card in cards {
+            let ref = card.meetingRefs.first
+            let key = ref?.recordId ?? "self-captured"
+            var group = groups[key] ?? WorkSortGroup(id: key, title: ref?.title ?? "Your captures", date: card.createdAt)
+            group.cards.append(card); groups[key] = group
+        }
+        return groups.values.sorted { a, b in
+            if (a.id == "self-captured") != (b.id == "self-captured") { return a.id == "self-captured" }
+            return a.date == b.date ? a.id < b.id : a.date > b.date
         }
     }
 }

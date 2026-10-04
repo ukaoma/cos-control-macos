@@ -294,8 +294,8 @@ extension WorkHandoffReceipt {
     var lastAutomaticMove: WorkProgressEvent? {
         progress?.events.last { $0.kind == .moved && $0.undoneAt == nil }
     }
-    /// You reviewed or acknowledged it: a question the session asked is no longer waiting on you.
-    var handledByYou: Bool { acknowledgedAt != nil || status == "reviewed" }
+    /// Only an explicit acknowledgment settles a question; opening its review does not answer it.
+    var handledByYou: Bool { acknowledgedAt != nil }
 }
 
 /// Jev's answer to "does this reply show the task finished?" (server 6.58.0, POST /work-board/completion-check).

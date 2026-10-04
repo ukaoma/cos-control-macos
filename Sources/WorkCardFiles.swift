@@ -778,7 +778,7 @@ enum WorkCardFiles {
         return nil
     }
 
-    /// The companions a file gets (the video transcript comes with 0.5.255).
+    /// The companions a file gets (video transcription is not yet available).
     nonisolated static func companionPlan(kind: String, width: Int?, height: Int?) -> [String] {
         switch kind {
         case "heic": return ["jpeg"]
@@ -2625,9 +2625,9 @@ struct WorkCardFilesSection: View {
             let notes = (file.companions.compactMap(WorkCardFiles.companionNote) + [file.note].compactMap { $0 }).joined(separator: " ")
             (Text(word).bold().foregroundColor(tint) + Text(parts.isEmpty ? "" : " \u{00B7} " + parts.joined(separator: " \u{00B7} ")).foregroundColor(COSPalette.muted)
              + Text(notes.isEmpty ? "" : " \u{00B7} " + notes).foregroundColor(COSPalette.muted.opacity(0.75))
-             + Text(file.kind == "video" ? " \u{00B7} Transcript: 0.5.255" : "").foregroundColor(COSPalette.muted.opacity(0.6)))
+             + Text(file.kind == "video" ? " \u{00B7} Transcript unavailable" : "").foregroundColor(COSPalette.muted.opacity(0.6)))
                 .font(COSType.body(10.5)).lineLimit(3).fixedSize(horizontal: false, vertical: true)
-                .help(file.kind == "video" ? "The video's transcript comes with COS Control 0.5.255. This release sends its frames." : (file.failure ?? ""))
+                .help(file.kind == "video" ? "Video transcripts are not yet available. This release sends frames." : (file.failure ?? ""))
         }
     }
     private func sentLine(_ file: WorkContextFile) -> String {

@@ -181,7 +181,7 @@ final class ControllerModel: ObservableObject {
     /// running while the window is closed. Nil in previews and checks (no background work).
     private(set) var workHandoffStore: WorkHandoffStore?
     /// The sessions Work handoffs name, so Sessions shows them as work rather than as COS server jobs (0.5.247).
-    var workSessionIDs: Set<String> { Set(workHandoffStore?.receipts.compactMap(\.sessionID) ?? []) }
+    var workSessionIDs: Set<String> { Set(workHandoffStore?.receipts.compactMap(\.sessionID) ?? []).union(workHandoffStore.map { Array($0.confirmedSessionCards.keys) } ?? []) }
     /// 0.5.250: sessions of Work New sessions the COS server is still running; nothing else writes to them until they finish.
     var runningWorkSessionIDs: Set<String> {
         Set(workHandoffStore?.receipts.filter(WorkHandoffStore.serverHolds).compactMap(\.sessionID) ?? [])
@@ -695,6 +695,7 @@ final class ControllerModel: ObservableObject {
             await loadOrphans(quiet: true)
             await loadMeetingAudioWatch()
             await loadActivitySignals(force: !quiet)
+            await loadYourMove()
         } catch {
             status.running = false
             meetingAudioGeneration += 1
@@ -2673,6 +2674,7 @@ final class ControllerModel: ObservableObject {
                 claudeSessionsEnabled = response.details["enabled"]?.bool ?? claudeSessionsEnabled
                 claudeSessionsReason = response.details["reason"]?.string ?? claudeSessionsReason
                 claudeSessions = ClaudeSession.markingWork(next, workSessionIDs: workSessionIDs, runningWorkSessionIDs: runningWorkSessionIDs)
+                recordWorkObservation("sessions", values: ["ids": Array(next.map(\.id).prefix(2000))])
                 sessionListDropped = SessionListDropped(response.details["dropped"])
                 if !quick, !partial {
                     claudeSessionsCacheSavedAt = Date()
@@ -2698,11 +2700,37 @@ final class ControllerModel: ObservableObject {
     /// rows (WorkBoardMemo). A resize changes no epoch, so it never rebuilds them.
     @Published var workTasks: [TaskRow] = [] { didSet { workTasksEpoch &+= 1 } }
     private(set) var workTasksEpoch = 0
+    /// Local counters only; no task text, prompt, or model invocation.
+    func recordWorkObservation(_ kind: String, values: [String: Any]) {
+        let base = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("work-handoffs") }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/COS Control/work-handoffs")
+        WorkLoopMetrics.record(kind, values: values, root: base)
+    }
+    @Published var workYourMove: [WorkYourMove] = []
+    @Published var workYourMoveAvailable = false
+    @Published var workYourMoveTotal = 0
+    private var yourMoveGeneration = 0
+    func loadYourMove() async {
+        yourMoveGeneration += 1
+        let generation = yourMoveGeneration
+        do {
+            let response = try await helper.run(["work-your-move"], timeout: 6)
+            guard generation == yourMoveGeneration else { return }
+            workYourMoveAvailable = response.ok && response.details["available"]?.bool == true
+            workYourMoveTotal = workYourMoveAvailable ? max(0, response.details["total"]?.int ?? 0) : 0
+            if workYourMoveAvailable { recordWorkObservation("yourMove", values: ["count": workYourMoveTotal, "heldForWeekday": response.details["heldForWeekday"]?.int ?? 0]) }
+            workYourMove = workYourMoveAvailable ? (response.details["items"]?.array ?? []).compactMap(WorkYourMove.init) : []
+        } catch {
+            guard generation == yourMoveGeneration else { return }
+            workYourMoveAvailable = false; workYourMove = []; workYourMoveTotal = 0
+        }
+    }
     @Published var workTasksLoading = false
     @Published var workTasksError: String?
     @Published var workTasksComplete = false
     @Published var workBoardWritable = false
     @Published var workTaskEditAvailable = false
+    @Published var workBatchAvailable = false
     private var workTasksRequested = false
     private var workTasksLoadInFlight: Task<Void, Never>?
     /// 0.5.253: which load the rows and the error on record come from (WorkBoardReads).
@@ -2719,6 +2747,7 @@ final class ControllerModel: ObservableObject {
         workTasksLoadInFlight = pending
         await pending.value
         if workBoardReads.current(generation) { workTasksLoadInFlight = nil }
+        await loadYourMove()
     }
 
     /// 0.5.253 (QA, deferred from 0.5.252): reloads the board for a glasses request and says whether the rows now come
@@ -2748,6 +2777,7 @@ final class ControllerModel: ObservableObject {
             let capabilities = response.details["capabilities"]?.object ?? [:]
             workBoardWritable = capabilities["version"]?.int == 1 && capabilities["writable"]?.bool == true
             workTaskEditAvailable = workBoardWritable && capabilities["editTasks"]?.int == 1
+            workBatchAvailable = workBoardWritable && capabilities["workBatch"]?.int == 1
             workTasksError = nil
             workBoardReads.record(generation, ok: true)
         } catch {
@@ -2780,6 +2810,83 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    @Published var workExpiryEnabled = false
+    @Published var workExpiryAvailable = false
+    @Published var workExpired: [WorkIntakeItem] = []
+    @Published var workExpiredWeekly = 0
+    @Published var workExpiredYours = 0
+    func loadWorkExpiry() async {
+        if let settings = await workLoop("settings"), let enabled = settings["expiryEnabled"]?.bool {
+            workExpiryEnabled = enabled; workExpiryAvailable = true
+        }
+        if let details = await workLoop("expired") {
+            workExpired = (details["items"]?.array ?? []).compactMap(WorkIntakeItem.init)
+            workExpiredWeekly = details["weekly"]?.object?["total"]?.int ?? 0
+            workExpiredYours = details["weekly"]?.object?["yours"]?.int ?? 0
+        }
+    }
+    func setWorkExpiry(_ enabled: Bool) async {
+        if await workLoop("set-settings", body: ["expiryEnabled": enabled]) != nil { workExpiryEnabled = enabled }
+    }
+    func restoreExpiredWork(_ item: WorkIntakeItem) async {
+        if await workLoop("restore", body: ["ids": [item.id]]) != nil { await loadWorkExpiry(); await loadWorkIntake() }
+    }
+
+    @Published var waitingWork: [JSONValue] = []
+    @Published var waitingLoaded = false
+    @Published var droppedWork: [JSONValue] = []
+    func loadDroppedWork() async {
+        if let details = await workLoop("dropped"), let items = details["items"]?.array { droppedWork = items }
+    }
+    @Published var workBatchBusy = false
+    func loadWaitingWork() async {
+        if let details = await workLoop("waiting"), let items = details["items"]?.array {
+            waitingWork = items; waitingLoaded = true
+        } else { waitingLoaded = false }
+    }
+    func changeWorkCard(_ task: TaskRow, action: String, fields: [String: String] = [:]) async -> Bool {
+        guard workBatchAvailable, !workBatchBusy else { return false }
+        workBatchBusy = true
+        defer { workBatchBusy = false }
+        var current = task
+        for attempt in 0...1 {
+            var op: [String: String] = ["id": current.id, "action": action, "expectedText": current.text, "expectedRevision": current.workRevision]
+            op.merge(fields) { _, new in new }
+            if await workLoop("batch", body: ["domain": current.domain, "ops": [op]]) != nil {
+                if fields["workStage"] == "complete" { workHandoffStore?.settleCompleted(workID: current.workSourceID) }
+                await loadWorkTasks(force: true); await loadWaitingWork(); await loadDroppedWork()
+                return true
+            }
+            guard attempt == 0, workLoopError?.contains("task_revision_changed") == true || workLoopError?.contains("Task file changed") == true else { return false }
+            await loadWorkTasks(force: true); await loadWaitingWork(); await loadDroppedWork()
+            let all = workTasks + (waitingWork + droppedWork).compactMap(TaskRow.init)
+            guard let fresh = all.first(where: { $0.workSourceID == task.workSourceID }), fresh.text == task.text, fresh.workStage == task.workStage else {
+                workLoopError = "This card changed. Review it before applying the decision."; return false
+            }
+            current = fresh
+        }
+        return false
+    }
+
+    @Published var workUndoBatch: String?
+    @Published var workLoopError: String?
+    func workLoop(_ action: String, body: [String: Any]? = nil) async -> [String: JSONValue]? {
+        do {
+            let payload = try body.map { try JSONSerialization.data(withJSONObject: $0) }
+            let response = try await helper.run(["work-loop", "--action", action], timeout: 40, stdinData: payload)
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            workLoopError = nil
+            return response.details
+        } catch { workLoopError = error.localizedDescription; return nil }
+    }
+    func undoWorkIntake() async {
+        guard let batch = workUndoBatch else { return }
+        if await workLoop("undo", body: ["batchId": batch]) != nil {
+            workUndoBatch = nil
+            await loadWorkIntake(); await loadWorkTasks(force: true)
+        }
+    }
+
     /// Accept makes the link or the card on the server (one locked write); dismiss is remembered there.
     func resolveWorkIntake(_ item: WorkIntakeItem, accept: Bool) async {
         guard !workIntakeBusyIDs.contains(item.id) else { return }
@@ -2791,6 +2898,9 @@ final class ControllerModel: ObservableObject {
             // Longer than the helper's own 60-second request, so the helper can report a timeout itself.
             let response = try await helper.run(["work-intake-resolve"], timeout: 75, stdinData: payload)
             guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            if let at = response.details["item"]?.object?["resolution"]?.object?["at"]?.string {
+                workUndoBatch = item.id + ":" + at
+            }
         } catch {
             failure = error.localizedDescription
         }
@@ -2875,23 +2985,26 @@ final class ControllerModel: ObservableObject {
 
     /// Dismiss several items (Review → "Skip all from older meetings"), then refresh once. Stops at the first refusal.
     func dismissWorkIntake(_ items: [WorkIntakeItem]) async {
-        let ids = Set(items.map(\.id)).subtracting(workIntakeBusyIDs)
+        let ids = Array(Set(items.map(\.id)).subtracting(workIntakeBusyIDs)).sorted()
         guard !ids.isEmpty else { return }
         workIntakeBusyIDs.formUnion(ids)
         defer { workIntakeBusyIDs.subtract(ids) }
-        var failure: String?
-        for item in items where ids.contains(item.id) {
-            do {
-                let payload = try JSONSerialization.data(withJSONObject: ["id": item.id, "action": "dismiss"])
-                let response = try await helper.run(["work-intake-resolve"], timeout: 75, stdinData: payload)
-                guard response.ok else { throw HelperClientError.commandFailed(response.message) }
-            } catch {
-                failure = error.localizedDescription
-                break
-            }
+        for offset in stride(from: 0, to: ids.count, by: 200) {
+            let batch = UUID().uuidString
+            let chunk = Array(ids[offset..<min(offset + 200, ids.count)])
+            guard let result = await workLoop("dismiss", body: ["ids": chunk, "action": "dismiss", "batchId": batch]) else { break }
+            if result["unsupported"]?.bool == true {
+                // Only the helper's actual HTTP 404 enables the old single-item route.
+                for id in chunk {
+                    do {
+                        let payload = try JSONSerialization.data(withJSONObject: ["id": id, "action": "dismiss"])
+                        let response = try await helper.run(["work-intake-resolve"], timeout: 75, stdinData: payload)
+                        guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+                    } catch { workIntakeError = error.localizedDescription; await loadWorkIntake(); return }
+                }
+            } else { workUndoBatch = batch }
         }
         await loadWorkIntake()
-        if let failure { workIntakeError = failure }
     }
 
     /// 0.5.254 fix pass 1 (QA W1, Miles approved Q1): stamps a card's work identity on its task before the card's first
@@ -2916,6 +3029,7 @@ final class ControllerModel: ObservableObject {
     func setWorkStage(_ task: TaskRow, stage: String) async throws {
         guard TaskRow.workStages.contains(stage) else { throw HelperClientError.invalidResponse("Unsupported Work stage.") }
         try await mutateWorkTask(task, command: "work-set-stage", extra: ["workStage": stage])
+        if stage == "complete" { workHandoffStore?.settleCompleted(workID: task.workSourceID) }
     }
 
     func linkWorkMeeting(_ task: TaskRow, meeting: WorkMeetingReference) async throws {
@@ -7106,7 +7220,8 @@ final class ControllerModel: ObservableObject {
 
     /// The chip's number, or nil: absent source, absent count, or zero.
     func activityNumber(_ section: ActivitySection) -> Int? {
-        // Work inherits the existing Tasks marks during the navigation overlay.
+        if section == .work && workYourMoveAvailable { return workYourMoveTotal == 0 ? nil : workYourMoveTotal }
+        // An older server falls back to Tasks marks.
         let source: ActivitySection = section == .work ? .tasks : section
         guard let signals = activitySignals else { return nil }
         let seen = Set(UserDefaults.standard.stringArray(forKey: Self.seenInboxKey) ?? [])
