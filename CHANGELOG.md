@@ -1,6 +1,8 @@
-## 0.5.257 (build 309)
+## 0.5.257 (build 310)
 
 Forks run in the background with server 6.63.0. Fork sends the card's receipt id with the request; the server answers at once, and the card shows the fork as running, naming no session until the copy exists. Check status and the background tracker read the outcome by that id and land it exactly where a direct answer would have: the copy linked, a failed first turn opening its copy, or a refusal with its reason. A fork the server has no record of stays unconfirmed, and an answer this build does not recognise changes nothing. Check status is offered on fork receipts again. With an older server the fork answers when it is done, as in 0.5.256.
+
+Memories now remembers a prune after a reload: a quarantined memory is labelled Quarantined and offers Restore to recall, and To review lists Prune ready memories with the reason, Accept or Prune, and a confirmed Quarantine all.
 
 ## 0.5.256 (build 308) — Work loop candidate
 
