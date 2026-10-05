@@ -1012,40 +1012,12 @@ struct WorkGlassesRequest: Equatable, Sendable {
             } else if mode == .fork {
                 row.channel = "fork"; try save(row)
                 if pastWireDeadline(&row) { try save(row); onHandoffRecorded?(); return }
-                let result = try await call(["session-chat-fork", "--provider", session!.provider, "--thread-id", session!.nativeID], Data(sent.utf8))
-                if result["state"]?.string == "forked" {
-                    if let value = result["forkSession"], let child = WorkSession.parse(value), child.provider == row.provider, child.id != row.sourceSessionID {
-                        sessions.append(child); row.sessionID = child.id; row.sessionTitle = child.title
-                        row.status = "delivered"; row.detail = "Fork created and instruction submitted. Open the child session to inspect its result."
-                    } else {
-                        row.sessionID = nil; row.status = "unknown"; row.detail = "Fork reported success, but its exact child is not discoverable yet. Do not fork again."
-                    }
-                } else {
-                    let http = result["httpStatus"]?.int ?? 200
-                    // Server 6.62.1 names a copy whose first turn failed (2026-10-05: "Prompt is too long" on
-                    // a complete copy). Link the copy so Open session opens IT. Otherwise never leave the
-                    // ORIGINAL as this receipt's session: the instruction did not go there, and Open session /
-                    // Continue in this session would act on the wrong thread.
-                    if result["turnFailed"]?.bool == true, let value = result["forkSession"], let copy = WorkSession.parse(value),
-                       copy.provider == row.provider, copy.id != row.sourceSessionID {
-                        if !sessions.contains(where: { $0.id == copy.id }) { sessions.append(copy) }
-                        row.sessionID = copy.id; row.sessionTitle = copy.title
-                        row.status = "failed"
-                    } else {
-                        row.sessionID = nil
-                        row.status = result["orphanPossible"]?.bool == true || http == 0 || http >= 500 ? "unknown" : "refused"
-                    }
-                    row.detail = result["reasonCopy"]?.string ?? "Fork could not be confirmed."
-                    // A failed turn still made a copy, and the receipt now opens it. Say so, unless the server's
-                    // own copy already does (6.62.1 fork_turn_failed: "COS made the copy, but ...").
-                    if row.status == "failed", !row.detail.localizedCaseInsensitiveContains("made the copy") {
-                        row.detail = "Copy made, but it could not answer. " + row.detail
-                    }
-                    if var progress = row.progress {
-                        progress.record(.note, "The fork did not complete: " + row.detail, at: Date().timeIntervalSince1970)
-                        row.progress = progress
-                    }
-                }
+                // 0.5.257: the receipt id is the fork's client id, so server 6.63.0 answers at once and runs the
+                // fork in the background (its first turn may take 21 minutes); Check status and the tracker read
+                // the outcome. An older server ignores the id and answers when the fork is done, as before.
+                let result = try await call(["session-chat-fork", "--provider", session!.provider, "--thread-id", session!.nativeID,
+                                             "--client-fork-id", row.id], Data(sent.utf8))
+                applyFork(result, to: &row)
             } else if let owner = Self.appOwner(of: session!.id, in: receipts) {
                 // 0.5.249: the app owns this session. A server turn would write its transcript while the app does, so
                 // Continue takes your note to the app instead, and you send it there.
@@ -1697,6 +1669,66 @@ struct WorkGlassesRequest: Equatable, Sendable {
         default: row.status = "unknown"; row.detail = data["reasonCopy"]?.string ?? "Delivery is unresolved. No automatic resend."
         }
     }
+    /// What a fork answer means for its receipt: the synchronous answer, the background job's running state, or the
+    /// job's recorded outcome (`session-chat-fork-status`). One function for all three, so a fork read back later
+    /// lands exactly where the same answer would have landed at send time.
+    func applyFork(_ result: [String: JSONValue], to row: inout WorkHandoffReceipt, statusRead: Bool = false) {
+        switch result["state"]?.string {
+        case "running":
+            // The copy has no name yet, and the instruction did not go to the original: name no session, so Open
+            // session and Continue cannot act on the wrong thread while it runs.
+            row.sessionID = nil
+            row.status = "running"
+            row.detail = result["reasonCopy"]?.string ?? "COS is making the copy and sending your instruction. This can take several minutes."
+            return
+        case "job_unknown":
+            // The server has no record of this fork (an older server, or one that never admitted it). A copy may still
+            // exist, so a receipt that was waiting becomes unconfirmed; any other stays as it was.
+            if row.status == "running" {
+                row.status = "unknown"
+                row.detail = result["message"]?.string ?? "The server has no record of this fork. Look for the copy in Sessions before forking again."
+            }
+            return
+        case "forked":
+            if let value = result["forkSession"], let child = WorkSession.parse(value), child.provider == row.provider, child.id != row.sourceSessionID {
+                if !sessions.contains(where: { $0.id == child.id }) { sessions.append(child) }
+                row.sessionID = child.id; row.sessionTitle = child.title
+                row.status = "delivered"; row.detail = "Fork created and instruction submitted. Open the child session to inspect its result."
+            } else {
+                row.sessionID = nil; row.status = "unknown"; row.detail = "Fork reported success, but its exact child is not discoverable yet. Do not fork again."
+            }
+            return
+        case "refused", "route_absent": break
+        default:
+            // A status read whose answer this build does not recognise changes nothing: falling through would turn an
+            // unconfirmed fork into a refusal and release its fence while a copy may exist.
+            if statusRead { return }
+        }
+        let http = result["httpStatus"]?.int ?? 200
+        // Server 6.62.1 names a copy whose first turn failed (2026-10-05: "Prompt is too long" on
+        // a complete copy). Link the copy so Open session opens IT. Otherwise never leave the
+        // ORIGINAL as this receipt's session: the instruction did not go there, and Open session /
+        // Continue in this session would act on the wrong thread.
+        if result["turnFailed"]?.bool == true, let value = result["forkSession"], let copy = WorkSession.parse(value),
+           copy.provider == row.provider, copy.id != row.sourceSessionID {
+            if !sessions.contains(where: { $0.id == copy.id }) { sessions.append(copy) }
+            row.sessionID = copy.id; row.sessionTitle = copy.title
+            row.status = "failed"
+        } else {
+            row.sessionID = nil
+            row.status = result["orphanPossible"]?.bool == true || http == 0 || http >= 500 ? "unknown" : "refused"
+        }
+        row.detail = result["reasonCopy"]?.string ?? "Fork could not be confirmed."
+        // A failed turn still made a copy, and the receipt now opens it. Say so, unless the server's
+        // own copy already does (6.62.1 fork_turn_failed: "COS made the copy, but ...").
+        if row.status == "failed", !row.detail.localizedCaseInsensitiveContains("made the copy") {
+            row.detail = "Copy made, but it could not answer. " + row.detail
+        }
+        if var progress = row.progress {
+            progress.record(.note, "The fork did not complete: " + row.detail, at: Date().timeIntervalSince1970)
+            row.progress = progress
+        }
+    }
     private func applyJob(_ data: [String: JSONValue], to row: inout WorkHandoffReceipt) {
         guard let job = data["job"]?.object, job["clientJobId"]?.string == row.id, job["generation"]?.int == 1 else {
             // A read failure/404 cannot establish that an earlier POST never landed.
@@ -1756,6 +1788,11 @@ struct WorkGlassesRequest: Equatable, Sendable {
             let result = try await call(["work-job", "--client-job-id", row.id]); applyJob(result, to: &row)
         } else if row.channel == "turn", let binding = row.bindingID {
             let result = try await call(["session-chat-turn", "--binding-id", binding, "--client-turn-id", row.id]); applyTurn(result, to: &row)
+        } else if row.channel == "fork", ["running", "unknown"].contains(row.status) {
+            // 0.5.257: a background fork's outcome (server 6.63.0). Also reads an unconfirmed one: a fork Control lost
+            // track of (a crash, a restart mid-send) may have a recorded outcome under this receipt's id.
+            let result = try await call(["session-chat-fork-status", "--provider", row.provider, "--client-fork-id", row.id])
+            applyFork(result, to: &row, statusRead: true)
         } else if row.channel == "queue", let sourceID = row.sourceSessionID, let target = sessions.first(where: { $0.id == sourceID }) {
             let result = try await call(["session-chat-queued", "--provider", target.provider, "--thread-id", target.nativeID])
             if let turn = result["turns"]?.array?.compactMap(\.object).first(where: { $0["clientTurnId"]?.string == row.id }) {

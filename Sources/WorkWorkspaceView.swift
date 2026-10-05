@@ -2276,7 +2276,7 @@ struct WorkDelegateControl: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                TextField("Waiting on whom?", text: $owner).textFieldStyle(.roundedBorder).frame(maxWidth: 220)
+                TextField("Waiting on whom?", text: $owner).textFieldStyle(.plain).cosField().frame(maxWidth: 220)
                 DatePicker("Check in", selection: $checkIn, displayedComponents: .date)
                 Button("Waiting on") {
                     let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"

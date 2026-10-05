@@ -2,7 +2,8 @@ import Foundation
 
 private actor HandoffTransport {
     struct Call: Sendable { let args: [String]; let data: Data? }
-    enum Scenario: Sendable { case continueTurn, queue, dropped, fork, wrongFork, failedFork, createdTurnFailed, newJob, refusedNew, staleEra, genericConflict, missingTurn, heldTurn }
+    enum Scenario: Sendable { case continueTurn, queue, dropped, fork, wrongFork, failedFork, createdTurnFailed, backgroundFork, backgroundForkLost, newJob, refusedNew, staleEra, genericConflict, missingTurn, heldTurn }
+    var forkStatusReads = 0
     var scenario: Scenario
     var calls: [Call] = []
     var jobIdentity = ""
@@ -56,6 +57,19 @@ private actor HandoffTransport {
         case "session-chat-turn": details = scenario == .missingTurn
             ? ["httpStatus": .number(404), "state": .string("refused")]
             : ["state": .string("completed")]
+        case "session-chat-fork-status":
+            // 0.5.257: a background fork reads running once, then its outcome; a lost one has no record; any other
+            // scenario answers something this build does not recognise, which must change nothing.
+            forkStatusReads += 1
+            if scenario == .backgroundFork {
+                details = forkStatusReads == 1 ? ["state": .string("running")] : ["state": .string("forked"), "forkSession": .object([
+                    "id": .string("child-fixture"), "provider": .string("codex"), "name": .string("Same display title"),
+                    "workspace": .string("Website"), "state": .string("recent")])]
+            } else if scenario == .backgroundForkLost {
+                details = ["state": .string("job_unknown"), "message": .string("The server has no record of this fork.")]
+            } else { details = ["state": .string("unrecognised-fixture")] }
+        case "session-chat-fork" where [.backgroundFork, .backgroundForkLost].contains(scenario):
+            details = ["state": .string("running"), "reasonCopy": .string("COS is making the copy.")]
         case "session-chat-fork":
             details = scenario == .failedFork
                 ? ["httpStatus": .number(500), "state": .string("refused"), "orphanPossible": .bool(false)]
@@ -252,6 +266,33 @@ private actor HandoffTransport {
         precondition(createdFailedReceipt.detail.contains("Copy made"))
         print("PASS: fork retains source and exact child; wrong-provider child is not bound")
 
+        // 0.5.257: a background fork (server 6.63.0) answers running at once, names no session while it runs, and its
+        // outcome is read later under the receipt's own id.
+        let background = HandoffTransport(.backgroundFork)
+        let backgroundStore = make("background-fork", background)
+        await backgroundStore.submit(source: source, mode: .fork, session: target, model: nil, prompt: "Copy in the background")
+        let running = try require(backgroundStore.receipts.first)
+        precondition(running.status == "running" && running.sessionID == nil && running.blocksNewHandoff,
+                     "a running fork names no session and still blocks another handoff")
+        let forkCall = try require(await background.recorded().first { $0.args.first == "session-chat-fork" })
+        precondition(value(forkCall.args, "--client-fork-id") == running.id, "the receipt id is the fork's client id")
+        await backgroundStore.refreshReceipts()
+        precondition(backgroundStore.receipts.first?.status == "running", "a read that still says running changes nothing")
+        await backgroundStore.refreshReceipts()
+        let landed = try require(backgroundStore.receipts.first)
+        precondition(landed.status == "delivered" && landed.sessionID == "codex:child-fixture", "the read-back outcome links the copy")
+        let statusCalls = await background.recorded().filter { $0.args.first == "session-chat-fork-status" }
+        precondition(statusCalls.count == 2 && statusCalls.allSatisfy { value($0.args, "--client-fork-id") == running.id })
+
+        let bgLostFork = HandoffTransport(.backgroundForkLost)
+        let bgLostStore = make("lost-fork", bgLostFork)
+        await bgLostStore.submit(source: source, mode: .fork, session: target, model: nil, prompt: "Copy, then lose it")
+        await bgLostStore.refreshReceipts()
+        let bgLostReceipt = try require(bgLostStore.receipts.first)
+        precondition(bgLostReceipt.status == "unknown" && bgLostReceipt.sessionID == nil && bgLostReceipt.blocksNewHandoff,
+                     "a fork the server has no record of is unconfirmed, never refused")
+        print("PASS: background fork answers running, names no session, reads its outcome by receipt id; a lost one stays unconfirmed")
+
         let job = HandoffTransport(.newJob)
         let jobStore = make("new", job)
         await jobStore.refresh(); jobStore.sessions = [target, other]
@@ -314,6 +355,9 @@ private actor HandoffTransport {
         await failedForkStore.submit(source: source, mode: .fork, session: target, model: nil, prompt: "Do not duplicate")
         let failedForkCalls = await failedFork.recorded()
         precondition(failedForkCalls.count == 1, "HTTP 500 must not release duplicate protection")
+        await failedForkStore.refreshReceipts()
+        precondition(failedForkStore.receipts.first?.status == "unknown",
+                     "an unconfirmed fork read back with an unrecognised answer stays unconfirmed (its fence holds)")
         let refusedNew = HandoffTransport(.refusedNew)
         let refusedNewStore = make("refused-new", refusedNew)
         await refusedNewStore.refresh()

@@ -566,6 +566,7 @@ final class COSControlHelper {
         case "session-chat-turn": try emitSessionChatTurn(args: args)
         case "session-context": try emitSessionContext(args: args)
         case "session-chat-fork": try emitSessionChatFork(args: args)
+        case "session-chat-fork-status": try emitSessionChatForkStatus(args: args)
         case "session-chat-reply": try emitSessionChatReply(args: args)
         case "session-recent-replies": try emitSessionRecentReplies(args: args)
         case "meeting-stranded-save": try emitMeetingStrandedSave(args: args)
@@ -15307,11 +15308,17 @@ final class COSControlHelper {
         guard prompt.count <= 32_000 else {
             throw HelperError.message("That message is too long for one turn (32,000 characters max)")
         }
-        let payload: [String: Any] = ["prompt": prompt, "cosSessionId": Self.sessionChatCosSessionId]
+        var payload: [String: Any] = ["prompt": prompt, "cosSessionId": Self.sessionChatCosSessionId]
+        // 0.5.257: with a client id, server 6.63.0 answers 202 once its gates pass and runs the fork in the
+        // background; `session-chat-fork-status` reads the outcome. An older server ignores the key.
+        if let clientForkId = option("--client-fork-id", in: args) {
+            guard Self.isClientForkId(clientForkId) else { throw HelperError.message("--client-fork-id is not a valid id") }
+            payload["clientForkId"] = clientForkId
+        }
         let json = String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8) ?? "{}"
         let token = try speakerReviewToken()
-        // The route spawns a provider CLI and runs a real model turn in the
-        // fork before answering, so the timeout is minutes, not seconds.
+        // An older server runs a real model turn in the fork before answering,
+        // so the timeout is minutes, not seconds. 6.63.0 answers in seconds.
         guard let response = request("/api/agent-sessions/\(provider)/\(threadId)/fork", method: "POST", token: token, body: json, timeout: 300) else {
             // No answer in 5 minutes is not a stopped server: the server lets a fork's first turn run up to
             // 21 minutes (DEFAULT_ATTACHED_TIMEOUT_MS), and on 2026-10-05 a 6.5-minute fork finished after this
@@ -15326,6 +15333,53 @@ final class COSControlHelper {
             return
         }
         guard let body = response.body else { throw HelperError.message("Server stopped") }
+        emitForkAnswer(provider: provider, status: response.status, body: body)
+    }
+
+    /// Server 6.63.0's client fork id: what the app mints (its receipt id) and the server validates the same way.
+    static func isClientForkId(_ value: String) -> Bool {
+        value.range(of: "^[A-Za-z0-9][A-Za-z0-9-]{7,63}$", options: .regularExpression) != nil
+    }
+
+    /// 0.5.257: the outcome of a background fork (`GET /api/agent-session-forks/<id>`, server 6.63.0). `running`
+    /// while it works, `job_unknown` when the server has no record (an older server, or never admitted), otherwise
+    /// the recorded answer emitted exactly as `session-chat-fork` would have emitted it at send time.
+    private func emitSessionChatForkStatus(args: [String]) throws {
+        guard let provider = option("--provider", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              provider.range(of: "^[a-z]{3,12}$", options: .regularExpression) != nil,
+              let clientForkId = option("--client-fork-id", in: args), Self.isClientForkId(clientForkId) else {
+            throw HelperError.message("--provider and --client-fork-id are required")
+        }
+        let token = try speakerReviewToken()
+        guard let response = request("/api/agent-session-forks/\(clientForkId)", token: token, timeout: 15) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        guard response.status != 404, let body = response.body, let state = body["state"] as? String else {
+            emit(ok: true, message: "No record of this fork", details: [
+                "state": "job_unknown", "httpStatus": response.status,
+                "message": (response.body?["reasonCopy"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                    ?? "The server has no record of this fork. Look for the copy in Sessions before forking again.",
+            ])
+            return
+        }
+        if state == "running" {
+            emit(ok: true, message: "Fork running", details: ["state": "running", "httpStatus": response.status,
+                "reasonCopy": body["reasonCopy"] as? String ?? ""])
+            return
+        }
+        // `recordedStatus` is the fork's own answer code; this read's 200 says only that the read worked.
+        emitForkAnswer(provider: provider, status: body["recordedStatus"] as? Int ?? response.status, body: body)
+    }
+
+    /// One mapping from a fork answer to the helper's output, for the send and for a later status read.
+    private func emitForkAnswer(provider: String, status: Int, body: [String: Any]) {
+        if status == 202 || body["state"] as? String == "running" {
+            emit(ok: true, message: "Fork running", details: ["state": "running", "httpStatus": status,
+                "reasonCopy": body["reasonCopy"] as? String ?? ""])
+            return
+        }
+        let response = (status: status, body: body)
         // Branch on the BODY, not a status allowlist: refusals carry copy at
         // 400, 409 AND 503, and a 5xx with `forked:false` is still a verdict.
         if body["forked"] as? Bool == true {

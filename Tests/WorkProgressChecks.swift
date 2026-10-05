@@ -2416,7 +2416,8 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
             let forked = try require(s18.receipts.first { $0.requestId == r1 })
             last = await lastPost(t18)
             started = await t18.count("work-new")
-            check(forkArgs == [["session-chat-fork", "--provider", "claude", "--thread-id", "s-one"]] && started == 0, "\(forkArgs) \(started)")
+            // 0.5.257: the receipt id goes with the fork as its client id (server 6.63.0 background forks).
+            check(forkArgs == [["session-chat-fork", "--provider", "claude", "--thread-id", "s-one", "--client-fork-id", forked.id]] && started == 0, "\(forkArgs) \(started)")
             check(forked.mode == .fork && forked.sessionID == "claude:s-child" && forked.sourceSessionID == one.id && forked.requestedFrom == "glasses"
                   && forked.prompt.contains("Note from the glasses: Try the shorter headline."), "\(String(describing: forked.sessionID)) \(forked.mode)")
             check(last == ["state": "sent", "receiptId": forked.id, "claimToken": token], "\(String(describing: last))")

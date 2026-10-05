@@ -86,7 +86,7 @@ enum WorkHandoffState: Equatable {
         else if observed == "waiting" { self = .waiting }
         else if ["error", "failed"].contains(observed) { self = .attention }
         else if activity.sessionRunning || ["preparing", "sending"].contains(status)
-                    || (status == "running" && receipt.mode == .newSession) { self = .running }
+                    || (status == "running" && [.newSession, .fork].contains(receipt.mode)) { self = .running }
         else if status == "running" { self = .awaiting }
         else if status == "queued" { self = .queued }
         else if status == "completed" { self = .replyReady }
@@ -359,9 +359,9 @@ struct WorkHandoffView: View {
                         Button("Not sending it") { store.cancelAppNote(receiptID: receipt.id) }
                             .buttonStyle(COSTextButtonStyle()).disabled(isPreview)
                     }
-                } else if receipt.blocksNewHandoff && receipt.status != "delivered" && receipt.channel != "fork" {
-                    // A fork has no server record to read again (reconciled() covers job, turn and queue),
-                    // so Check status there did nothing; Clear is its way out.
+                } else if receipt.blocksNewHandoff && receipt.status != "delivered" {
+                    // 0.5.257: a fork is readable too (server 6.63.0 records it under the receipt id); on an older
+                    // server the read reports that it has no record, and Clear remains the way out.
                     Button("Check status") { Task { await store.refreshReceipts(asked: true) } }
                         .buttonStyle(COSTextButtonStyle()).disabled(store.busy || validating)
                 }
