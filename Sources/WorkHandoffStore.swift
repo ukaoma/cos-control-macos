@@ -1001,8 +1001,23 @@ struct WorkGlassesRequest: Equatable, Sendable {
                     }
                 } else {
                     let http = result["httpStatus"]?.int ?? 200
-                    row.status = result["orphanPossible"]?.bool == true || http == 0 || http >= 500 ? "unknown" : "refused"
+                    // Server 6.62.1 names a copy whose first turn failed (2026-10-05: "Prompt is too long" on
+                    // a complete copy). Link the copy so Open session opens IT. Otherwise never leave the
+                    // ORIGINAL as this receipt's session: the instruction did not go there, and Open session /
+                    // Continue in this session would act on the wrong thread.
+                    if result["turnFailed"]?.bool == true, let value = result["forkSession"], let copy = WorkSession.parse(value),
+                       copy.provider == row.provider, copy.id != row.sourceSessionID {
+                        sessions.append(copy); row.sessionID = copy.id; row.sessionTitle = copy.title
+                        row.status = "failed"
+                    } else {
+                        row.sessionID = nil
+                        row.status = result["orphanPossible"]?.bool == true || http == 0 || http >= 500 ? "unknown" : "refused"
+                    }
                     row.detail = result["reasonCopy"]?.string ?? "Fork could not be confirmed."
+                    if var progress = row.progress {
+                        progress.record(.note, "The fork did not complete: " + (row.detail ?? ""), at: Date().timeIntervalSince1970)
+                        row.progress = progress
+                    }
                 }
             } else if let owner = Self.appOwner(of: session!.id, in: receipts) {
                 // 0.5.249: the app owns this session. A server turn would write its transcript while the app does, so
@@ -1554,7 +1569,8 @@ struct WorkGlassesRequest: Equatable, Sendable {
         }
         switch mode {
         case .continueSession: return "Sent to \u{201C}\(title)\u{201D} (Continue)"
-        case .fork: return "Forked \u{201C}\(title)\u{201D} and sent"
+        // Recorded before the server answers, so it says what was asked, not what happened.
+        case .fork: return "Asked COS to fork \u{201C}\(title)\u{201D} and send"
         case .newSession:
             let provider = providerName(model?.provider ?? "")
             return session == nil ? "Started a new \(provider) session" : "Forked \u{201C}\(title)\u{201D} to \(provider)"
@@ -1658,7 +1674,14 @@ struct WorkGlassesRequest: Equatable, Sendable {
         row.status = WorkHandoffReceipt.receiptStatus(forJobState: state)
         row.result = job["response"]?.string ?? job["partialText"]?.string
         row.detail = job["error"]?.object?["message"]?.string ?? (row.status == "completed" ? "Response ready for review. Task completion and publication remain separate."
-            : WorkHandoffReceipt.terminalStatuses.contains(row.status) ? "The server reports this run \(state)." : "\(state). Refresh to reconcile the durable job.")
+            : WorkHandoffReceipt.terminalStatuses.contains(row.status) ? "The server reports this run \(state)." : "Still \(state). Check status to read it again.")
+        // Server 6.62.1 types a provider's own refusal. A usage limit is not fixed by trying the same assistant again.
+        switch job["error"]?.object?["code"]?.string {
+        case "provider_limit": row.detail = (row.detail ?? "") + " This assistant hit its usage limit: start this with another assistant, or try again after it resets."
+        case "provider_context_too_long": row.detail = (row.detail ?? "") + " The request was too long for this model. Send less context or pick a larger model."
+        case "provider_auth": row.detail = (row.detail ?? "") + " Sign in to this assistant again on this Mac, then retry."
+        default: break
+        }
         // 0.5.249: when the run ended, so its session opens in the app a few seconds later, never before.
         if row.status == "completed", row.appOpen != nil, row.appOpen?.runEndedAt == nil {
             row.appOpen?.runEndedAt = job["completedAt"]?.string.flatMap(WorkProgress.parseStamp) ?? Date().timeIntervalSince1970

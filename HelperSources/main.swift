@@ -15300,6 +15300,15 @@ final class COSControlHelper {
             // failure.
             "orphanPossible": body["orphanPossible"] as? Bool ?? false,
             "retryable": body["retryable"] as? Bool ?? true,
+            // Server 6.62.1: the copy was made and named, but its first turn failed. The
+            // digest resolves to the local transcript exactly as on success, so the card
+            // can open the copy instead of the original.
+            "turnFailed": body["turnFailed"] as? Bool ?? false,
+            "failureClass": body["failureClass"] as? String ?? "",
+            "forkRef": body["forkRef"] as? String ?? "",
+            "forkSession": Self.localForkSession(provider: provider,
+                reference: body["forkRef"] as? String ?? "",
+                home: FileManager.default.homeDirectoryForCurrentUser) as Any? ?? NSNull(),
         ])
     }
 

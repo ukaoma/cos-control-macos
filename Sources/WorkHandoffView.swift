@@ -359,7 +359,9 @@ struct WorkHandoffView: View {
                         Button("Not sending it") { store.cancelAppNote(receiptID: receipt.id) }
                             .buttonStyle(COSTextButtonStyle()).disabled(isPreview)
                     }
-                } else if receipt.blocksNewHandoff && receipt.status != "delivered" {
+                } else if receipt.blocksNewHandoff && receipt.status != "delivered" && receipt.channel != "fork" {
+                    // A fork has no server record to read again (reconciled() covers job, turn and queue),
+                    // so Check status there did nothing; Clear is its way out.
                     Button("Check status") { Task { await store.refreshReceipts(asked: true) } }
                         .buttonStyle(COSTextButtonStyle()).disabled(store.busy || validating)
                 }
