@@ -425,7 +425,7 @@ final class COSControlHelper {
                   let port = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_API_PORT"], let number = Int(port), number > 1024, number != 3141 else {
                 throw HelperError.message("Fixture mode requires a disposable /tmp home and a non-production loopback port.")
             }
-            let allowed: Set<String> = ["work-tasks", "tasks", "domains", "work-set-stage", "work-edit-task", "work-link-meeting", "work-reviews", "work-models", "meeting-speakers", "meeting-content"]
+            let allowed: Set<String> = ["work-your-move", "work-intake", "work-intake-resolve", "work-loop", "work-tasks", "tasks", "domains", "work-set-stage", "work-edit-task", "work-link-meeting", "work-reviews", "work-models", "meeting-speakers", "meeting-content"]
             guard allowed.contains(command) else { throw HelperError.message("This candidate uses disposable tasks. Provider dispatch and other commands are disabled.") }
         }
         switch command {
@@ -492,8 +492,10 @@ final class COSControlHelper {
         case "run-morning-brief": try runMorningBrief()
         case "tasks": try emitTasks(args: args)
         case "work-tasks": try emitWorkTasks()
+        case "work-your-move": try emitWorkYourMove()
         case "work-set-stage": try emitWorkUpdate(action: "stage")
         case "work-link-meeting": try emitWorkUpdate(action: "meeting")
+        case "work-loop": try emitWorkLoop(args: args)
         case "work-intake": try emitWorkIntake()
         case "work-intake-resolve": try emitWorkIntakeResolve()
         case "work-session-recommend": try emitWorkSessionRecommend()
@@ -562,6 +564,7 @@ final class COSControlHelper {
         case "work-request-result": try emitWorkRequestResult(args: args)
         case "self-test-work": try selfTestWork()
         case "session-chat-turn": try emitSessionChatTurn(args: args)
+        case "session-context": try emitSessionContext(args: args)
         case "session-chat-fork": try emitSessionChatFork(args: args)
         case "session-chat-reply": try emitSessionChatReply(args: args)
         case "session-recent-replies": try emitSessionRecentReplies(args: args)
@@ -4570,7 +4573,7 @@ final class COSControlHelper {
     static func workTaskProjection(_ raw: [[String: Any]]) -> [[String: Any]] {
         raw.compactMap { row in
             guard var projected = taskRowProjection(row) else { return nil }
-            for key in ["text", "source", "agentState", "stage", "doneWhen", "workStage", "workIdentity", "workRevision"] {
+            for key in ["text", "source", "agentState", "stage", "doneWhen", "workStage", "workIdentity", "workRevision", "createdAt", "dueDate", "owner", "priority"] {
                 projected[key] = row[key] as? String ?? ""
             }
             if let error = row["workMetadataError"] as? String, !error.isEmpty { projected["workMetadataError"] = error }
@@ -4578,6 +4581,15 @@ final class COSControlHelper {
             projected["checked"] = taskFlag(row, "checked")
             return projected
         }
+    }
+
+    private func emitWorkYourMove() throws {
+        let candidate = try reviewCandidateTransport()
+        let token = try candidate?.token ?? readToken()
+        guard let response = request("/api/work-board/your-move", token: token, timeout: 4, reviewCandidatePort: candidate?.port) else { throw HelperError.message("Server stopped") }
+        if response.status == 404 { emit(ok: true, message: "Not available on this server", details: ["available": false, "items": []]); return }
+        guard response.status == 200, let body = response.body else { throw HelperError.message("Your move could not be read") }
+        emit(ok: true, message: "Your move", details: body)
     }
 
     private func emitWorkTasks() throws {
@@ -4831,6 +4843,32 @@ final class COSControlHelper {
         emit(ok: true, message: "Result recorded", details: ["accepted": true, "request": row])
     }
 
+    /// Fixed route allowlist; stdin is bounded and the server owns schema/CAS validation.
+    private func emitWorkLoop(args: [String]) throws {
+        let routes: [String: (String, String)] = [
+            "dismiss": ("POST", "/api/work-intake/resolve-batch"), "undo": ("POST", "/api/work-intake/undo"),
+            "seen": ("POST", "/api/work-intake/seen"), "decisions": ("GET", "/api/work-intake/decisions"),
+            "expired": ("GET", "/api/work-intake/expired"), "restore": ("POST", "/api/work-intake/restore"),
+            "settings": ("GET", "/api/work-intake/settings"), "set-settings": ("POST", "/api/work-intake/settings"),
+            "dropped": ("GET", "/api/work-board/dropped"), "waiting": ("GET", "/api/work-board/waiting"), "batch": ("POST", "/api/work-board/batch")]
+        guard let action = option("--action", in: args), let route = routes[action] else { throw HelperError.message("Choose a Work action") }
+        var body: String? = nil
+        if route.0 == "POST" {
+            let limit = action == "batch" ? 1_048_576 : 64_000
+            let data = try readBoundedStdin(limit)
+            guard data.count <= limit, (try? JSONSerialization.jsonObject(with: data)) is [String: Any] else { throw HelperError.message("Invalid Work request") }
+            body = String(decoding: data, as: UTF8.self)
+        }
+        let candidate = try reviewCandidateTransport(), token = try candidate?.token ?? readToken()
+        guard let response = request(route.1, method: route.0, token: token, body: body, timeout: 30, reviewCandidatePort: candidate?.port) else { throw HelperError.message("Work is unavailable. Refresh before trying again.") }
+        if response.status == 404, action == "dismiss" { emit(ok: true, message: "Update the server to use this Work action", details: ["unsupported": true]); return }
+        guard response.status == 200, let result = response.body else {
+            let error = response.body?["error"] as? [String: Any]
+            throw HelperError.message((error?["message"] as? String) ?? (error?["code"] as? String) ?? "Work action unavailable")
+        }
+        emit(ok: true, message: "Work updated", details: result)
+    }
+
     private func emitWorkIntakeResolve() throws {
         var data = Data()
         while data.count <= 4_096 {
@@ -4851,6 +4889,7 @@ final class COSControlHelper {
                                       reviewCandidatePort: candidate?.port) else {
             throw HelperError.message("The Intake change could not be confirmed. Refresh before trying again.")
         }
+        if response.status == 404, action == "dismiss" { emit(ok: true, message: "Update the server to use this Work action", details: ["unsupported": true]); return }
         guard response.status == 200, let result = response.body else {
             let error = response.body?["error"] as? [String: Any]
             let code = error?["code"] as? String ?? ""
@@ -15250,6 +15289,15 @@ final class COSControlHelper {
                 "updatedAt": isoString(from: values?.contentModificationDate ?? .distantPast)]
     }
 
+    private func emitSessionContext(args: [String]) throws {
+        let (provider, threadId) = try sessionChatIds(args: args)
+        guard let response = request("/api/agent-sessions/\(provider)/\(threadId)/context", token: try speakerReviewToken(), timeout: 3) else {
+            emit(ok: true, message: "Context unknown", details: ["fit": "unknown"]); return
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        emit(ok: true, message: "Session context", details: response.status == 200 ? (response.body ?? ["fit": "unknown"]) : ["fit": "unknown"])
+    }
+
     private func emitSessionChatFork(args: [String]) throws {
         let (provider, threadId) = try sessionChatIds(args: args)
         // The fork PROMPT is a prompt: stdin, never argv, same rule as send.
@@ -15265,7 +15313,10 @@ final class COSControlHelper {
         // The route spawns a provider CLI and runs a real model turn in the
         // fork before answering, so the timeout is minutes, not seconds.
         guard let response = request("/api/agent-sessions/\(provider)/\(threadId)/fork", method: "POST", token: token, body: json, timeout: 300) else {
-            throw HelperError.message("Server stopped")
+            // No answer in 5 minutes is not a stopped server: the server lets a fork's first turn run up to
+            // 21 minutes (DEFAULT_ATTACHED_TIMEOUT_MS), and on 2026-10-05 a 6.5-minute fork finished after this
+            // wait gave up. Say what is true so nobody forks again on top of a copy that is still being made.
+            throw HelperError.message("COS is still making the copy, or the server did not answer within 5 minutes. It may still finish: look for the copy in Sessions before forking again.")
         }
         if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
         if response.status == 404, response.body?["reason"] == nil {
@@ -15295,6 +15346,7 @@ final class COSControlHelper {
             "httpStatus": response.status, "receipt": body,
             "reason": body["reason"] as? String ?? "",
             "reasonCopy": body["reasonCopy"] as? String ?? "",
+            "context": body["context"] as Any? ?? NSNull(),
             // True when the server cannot prove no child ran. The app renders
             // it — a possible orphan session must not be reported as a clean
             // failure.

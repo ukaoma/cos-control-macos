@@ -537,8 +537,20 @@ struct ActivityWindow: View {
                                 Button("Back to linked work") { model.closeClaudeSession(); openHandoffWork(workID) }
                                     .buttonStyle(COSQuietButtonStyle()).padding(10)
                             }
+                            if workConnectionsEnabled, workReceipt == nil, let sessionID = selectedSessionID {
+                                if let link = handoffStore.confirmedSessionCards[sessionID] {
+                                    Button("Linked to \(link.title)") { model.closeClaudeSession(); openHandoffWork(link.workID) }.buttonStyle(COSQuietButtonStyle()).padding(10)
+                                } else if let row = model.openClaudeRow,
+                                          let task = WorkSessionCardSuggestion.best(title: row.title, summary: row.discussionSummary, tasks: model.workTasks) {
+                                    HStack {
+                                        Text("This looks like: " + task.text).font(COSType.body(12)).lineLimit(2)
+                                        Button("Link to card") { _ = handoffStore.confirmSessionCard(sessionID: sessionID, source: WorkSource.taskSnapshot(task)) }
+                                    }.padding(10)
+                                }
+                            }
                             ClaudeSessionDetailPane(model: model, workReceipt: workReceipt,
                                                     onOpenWork: { id in model.closeClaudeSession(); openHandoffWork(id) })
+                                .task { if workConnectionsEnabled { await model.loadWorkTasks() } }
                         }
                     } else {
                         centeredProgress("Loading session…")
@@ -1162,7 +1174,7 @@ struct ActivityWindow: View {
         case .tasks:
             return model.tasks.isEmpty ? ("—", "REFRESH") : (n(model.tasks.count), "OPEN")
         case .work:
-            return ("—", "PREVIEW")
+            return model.workYourMoveAvailable ? (n(model.workYourMoveTotal), "YOUR MOVE") : ("—", "REFRESH")
         }
     }
 

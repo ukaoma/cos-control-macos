@@ -609,6 +609,21 @@ struct ControlPanel: View {
 
     /// Jev (TypeSafe) powers Work's session suggestions and meeting intake. The key is validated by the server
     /// and stored there (0600); Control never keeps or shows it. Without a key, Work falls back to word matching.
+    /// Work intake expiry (server Work loop). Shown only once the server answers its settings read: an older server or
+    /// a failed read shows nothing here, and a shared Work error is never rendered in Settings.
+    private var workExpirySettings: some View {
+        Group {
+            if model.workExpiryAvailable {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Work intake").font(COSType.body(13, weight: .semibold))
+                    Toggle("Expire old asks from other people", isOn: Binding(get: { model.workExpiryEnabled }, set: { enabled in Task { await model.setWorkExpiry(enabled) } }))
+                        .toggleStyle(COSSwitchStyle())
+                    Text("Your own items and uncertain owners stay for Keep or Drop. Restore expired asks from Sort for 30 days.").font(COSType.body(11)).foregroundStyle(.secondary)
+                }
+            }
+        }.task { await model.loadWorkExpiry() }
+    }
+
     private var jevSettings: some View {
         DisclosureGroup(isExpanded: $jevExpanded) {
             VStack(alignment: .leading, spacing: 8) {
@@ -1312,6 +1327,15 @@ struct ControlPanel: View {
                 updateRow
                 noticeBanner
                 activityLauncher
+                if model.workYourMoveAvailable && !model.workYourMove.isEmpty {
+                    Button { openActivity(.work) } label: {
+                        HStack {
+                            Label("Your move · \(model.workYourMove.count)", systemImage: "hand.point.up.left")
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                        }.font(COSType.body(12, weight: .medium))
+                    }.buttonStyle(.plain)
+                }
                 statusCard
                 controls
                 if model.status.morningBriefSupported { morningBriefCard }
@@ -2166,6 +2190,7 @@ struct ControlPanel: View {
             HotKeyRecorderRow(model: model)
             sessionPetSettings
             jevSettings
+            workExpirySettings
             // 0.5.247: Work tracking notifications (a session received a task, finished it, or needs you).
             Toggle("Work notifications", isOn: Binding(get: { model.workNotificationsEnabled }, set: { model.workNotificationsEnabled = $0 }))
                 .toggleStyle(COSSwitchStyle())

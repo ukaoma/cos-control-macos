@@ -79,9 +79,11 @@ import Foundation
     model.workIntake = old; model.workIntakeError = "Work intake was refused (HTTP 500)."; precondition(model.workIntakeVisible)
     model.workIntakeError = nil; model.workIntake = snapshot; precondition(model.workIntakeVisible)
 
-    // Intake is its own route: choosing a view or a domain, from any opener, closes it.
+    // Intake (0.5.256: Sort) is its own route. Choosing a view closes it. A domain is a filter on Sort
+    // (WorkIntakeView takes state.domain), so setting one leaves Sort open; the sidebar's domain row closes or
+    // keeps Sort itself.
     let state = WorkWorkspaceState()
-    state.intakeOpen = true; state.domain = "quilt"; precondition(!state.intakeOpen, "Picking a domain must show that domain")
+    state.intakeOpen = true; state.domain = "quilt"; precondition(state.intakeOpen, "A domain filters Sort; it does not close it")
     state.intakeOpen = true; state.domain = nil; precondition(state.intakeOpen, "Clearing the domain alone keeps Intake open")
     state.intakeOpen = true; state.scope = .all; precondition(!state.intakeOpen, "Picking a view closes Intake")
 }

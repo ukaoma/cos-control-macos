@@ -372,6 +372,22 @@ struct WorkHandoffView: View {
             if receipt.acknowledgeable && state.offersAcknowledge {
                 Text(WorkHandoffView.acknowledgeHint(receipt)).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
             }
+            if ["refused", "failed"].contains(receipt.status) {
+                HStack {
+                    Button("New session") { setMode(.newSession) }.buttonStyle(COSQuietButtonStyle())
+                    if receipt.sourceSessionID != nil || receipt.sessionID != nil {
+                        Button("Fork a summary") {
+                            guard flushPrompt() else { return }
+                            Task {
+                                guard let seed = await store.summaryDraft(source: source, receipt: receipt) else { return }
+                                var next = draft; next.mode = .newSession; next.sessionID = ""; next.prompt = seed
+                                if store.updateDraft(next, for: source) { bindPrompt() }
+                            }
+                        }.buttonStyle(COSQuietButtonStyle())
+                    }
+                }.disabled(store.busy || validating)
+                Text("Review the new draft and choose a model before sending.").font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+            }
             if receipt.status == "unknown" {
                 // 0.5.246: COS sent it but never saw it land, so it may already be in the session. Continuing again is
                 // allowed after one explicit confirm; the composer comes back set to the same session.

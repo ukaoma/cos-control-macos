@@ -2,7 +2,7 @@ import Foundation
 
 private actor HandoffTransport {
     struct Call: Sendable { let args: [String]; let data: Data? }
-    enum Scenario: Sendable { case continueTurn, queue, dropped, fork, wrongFork, failedFork, newJob, refusedNew, staleEra, genericConflict, missingTurn, heldTurn }
+    enum Scenario: Sendable { case continueTurn, queue, dropped, fork, wrongFork, failedFork, createdTurnFailed, newJob, refusedNew, staleEra, genericConflict, missingTurn, heldTurn }
     var scenario: Scenario
     var calls: [Call] = []
     var jobIdentity = ""
@@ -47,6 +47,7 @@ private actor HandoffTransport {
                 }
             }
             details = ["state": .string("queued")]
+        case "session-context": details = ["fit": .string("unknown")]
         case "session-chat-queue": details = ["state": .string("parked")]
         case "session-chat-queued":
             let sent = calls.first { $0.args.first == "session-chat-queue" }!.args
@@ -62,6 +63,10 @@ private actor HandoffTransport {
                 "id": .string("child-fixture"), "provider": .string(scenario == .wrongFork ? "claude" : "codex"),
                 "name": .string("Same display title"), "workspace": .string("Website"), "state": .string("recent")
             ])]
+            if scenario == .createdTurnFailed {
+                details["state"] = .string("refused"); details["httpStatus"] = .number(409)
+                details["turnFailed"] = .bool(true); details["reasonCopy"] = .string("The session is too full.")
+            }
         case "work-new":
             let payload = try JSONSerialization.jsonObject(with: data!) as! [String: Any]
             jobIdentity = payload["clientJobId"] as! String
@@ -96,6 +101,32 @@ private actor HandoffTransport {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("work-handoff-tests-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: root) }
+        // Work loop: canonical dates, no guessed legacy owner, conservative session association.
+        func loopCard(_ id: String, _ text: String, date: String = "", priority: String = "inbox") -> TaskRow {
+            TaskRow(.object(["id": .string(id), "domain": .string("personal"), "text": .string(text), "title": .string(text),
+                "workIdentity": .string(id), "workRevision": .string(String(repeating: "a", count: 64)), "workStage": .string("mentioned"),
+                "createdAt": .string(date), "priority": .string(priority)]))!
+        }
+        let unique = loopCard("abcdefabcdef", "Publish Amira education savings plan", date: "2026-10-03")
+        let oldUrgent = loopCard("123456123456", "Urgent client proposal", priority: "urgent")
+        let old = loopCard("987654987654", "January passport renewal", date: "2026-01-01")
+        precondition(old.owner.isEmpty)
+        let testNow = ISO8601DateFormatter().date(from: "2026-10-04T15:00:00Z")!
+        precondition(Set(WorkSortGroup.mentioned([unique, oldUrgent, old], catchUp: false, domain: nil, now: testNow).map(\.id)) == [unique.id, oldUrgent.id])
+        precondition(WorkSortGroup.mentioned([unique, oldUrgent, old], catchUp: true, domain: nil, now: testNow).map(\.id) == [old.id])
+        precondition(WorkSessionCardSuggestion.best(title: "Amira education savings plan", summary: "", tasks: [unique, old])?.id == unique.id)
+        precondition(WorkSessionCardSuggestion.best(title: "Work project review", summary: "", tasks: [unique, old]) == nil)
+        precondition(WorkSessionCardSuggestion.best(title: "Amira education savings plan", summary: "", tasks: [unique, loopCard("aaaaaabbbbbb", unique.text)]) == nil)
+        let linkedURL = root.appendingPathComponent("links.json")
+        let linker = WorkHandoffStore(storageURL: linkedURL, transport: { _, _ in fatalError("Link confirmation must not dispatch") })
+        let linkedID = "codex:11111111-1111-4111-8111-111111111111"
+        precondition(linker.confirmSessionCard(sessionID: linkedID, source: WorkSource.taskSnapshot(unique)))
+        precondition(WorkHandoffStore(storageURL: linkedURL).confirmedSessionCards[linkedID]?.workID == unique.workSourceID)
+        precondition(linker.receipts.isEmpty)
+        WorkLoopMetrics.record("sort", values: ["seconds": 75, "catchUp": false], root: root)
+        let metricText = try String(contentsOf: root.appendingPathComponent("work-loop-observations.jsonl"), encoding: .utf8)
+        precondition(metricText.contains("sort"))
+        print("PASS: daily/catch-up dates, urgent undated card, owner honesty, session suggestion ambiguity and persistent one-tap association")
         // Regression: equal-length documents with identical ends must never share parsed middle text.
         let firstDocument = String(repeating: "a", count: 80) + " first " + String(repeating: "z", count: 80)
         let secondText = String(repeating: "a", count: 80) + " other " + String(repeating: "z", count: 80)
@@ -213,6 +244,12 @@ private actor HandoffTransport {
         let badForkStore = make("bad-fork", badFork)
         await badForkStore.submit(source: source, mode: .fork, session: target, model: nil, prompt: "Copy")
         precondition(badForkStore.receipts.first?.status == "unknown" && badForkStore.receipts.first?.sessionID == nil)
+        let createdFailed = HandoffTransport(.createdTurnFailed)
+        let createdFailedStore = make("created-failed", createdFailed)
+        await createdFailedStore.submit(source: source, mode: .fork, session: target, model: nil, prompt: "Copy")
+        let createdFailedReceipt = try require(createdFailedStore.receipts.first)
+        precondition(createdFailedReceipt.status == "failed" && createdFailedReceipt.sessionID == "codex:child-fixture")
+        precondition(createdFailedReceipt.detail.contains("Copy made"))
         print("PASS: fork retains source and exact child; wrong-provider child is not bound")
 
         let job = HandoffTransport(.newJob)
@@ -263,7 +300,7 @@ private actor HandoffTransport {
         await ownedStore.submit(source: second, mode: .continueSession, session: target, model: nil, prompt: "Next step")
         let ownedCalls = await owned.recorded()
         let note = ownedStore.receipts(for: second.id).first!
-        precondition(ownedCalls.isEmpty && note.channel == "app" && note.status == "refused" && note.detail.hasSuffix("Nothing was sent.")
+        precondition(ownedCalls.allSatisfy { $0.args.first == "session-context" } && note.channel == "app" && note.status == "refused" && note.detail.hasSuffix("Nothing was sent.")
                      && opened.urls.isEmpty, "\(ownedCalls.map(\.args)) \(note.detail)")
         await ownedStore.submit(source: source, mode: .continueSession, session: other, model: nil, prompt: "Next step")
         let otherCalls = await owned.recorded()
@@ -273,7 +310,7 @@ private actor HandoffTransport {
         let failedFork = HandoffTransport(.failedFork)
         let failedForkStore = make("failed-fork", failedFork)
         await failedForkStore.submit(source: source, mode: .fork, session: target, model: nil, prompt: "Ambiguous fork")
-        precondition(failedForkStore.receipts.first?.status == "unknown")
+        precondition(failedForkStore.receipts.first?.status == "unknown" && failedForkStore.receipts.first?.sessionID == nil, "a refused fork never names the original as its session")
         await failedForkStore.submit(source: source, mode: .fork, session: target, model: nil, prompt: "Do not duplicate")
         let failedForkCalls = await failedFork.recorded()
         precondition(failedForkCalls.count == 1, "HTTP 500 must not release duplicate protection")

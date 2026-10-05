@@ -109,7 +109,8 @@ need("WorkCardFilesSection(files: store.cardFiles, store: store, source: source,
 need(view.index("WorkCardFilesSection(") > view.index('Text("Context to send")'), "Files to send comes after Context to send")
 need("await sendWorkHandoff(store: store, source: sendingSource, plan: sendingPlan, resendAllFiles: resendAll)" in view, "Send all again reaches the send")
 need(files.count("func compose(") == 1 and files.count("static func block(") == 1, "one composer")
-need("Transcript: 0.5.255" in files and "transcript.txt" not in files_code, "the video transcript is shown as 0.5.255 and never faked")
+need("Transcript unavailable" in files and "Transcript: 0.5.255" not in files and "transcript.txt" not in files_code,
+     "the video transcript is shown as unavailable (0.5.255 shipped without it) and never faked")
 
 # 5. The Start sheet asks the files: the countdown waits, and a call stops it.
 sheet = body(view, "struct WorkStartSheet: View {", "struct WorkSessionsView: View {")

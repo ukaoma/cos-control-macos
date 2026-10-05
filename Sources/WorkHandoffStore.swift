@@ -275,6 +275,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
     let isolated: Bool
     /// 0.5.254: the files on each card, sent as paths with the handoff. Off (no folder) for a journal a check names.
     let cardFiles: WorkCardFileStore
+    @Published private(set) var confirmedSessionCards: [String: WorkSessionCardLink] = [:]
     private let storageURL: URL
     private let transport: Transport
     private var storageReady = true
@@ -290,6 +291,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
     /// The claim deadline of the glasses request being sent, checked immediately before each wire send.
     private var wireDeadline: Date?
     /// 0.5.252: the glasses requests this Mac has claimed and not yet reported, beside the journal.
+    var notificationLedgerURL: URL { storageURL.deletingPathExtension().appendingPathExtension("notify.json") }
     var requestLedgerURL: URL { storageURL.deletingPathExtension().appendingPathExtension("requests.json") }
     private var activityRefreshTask: Task<Void, Never>?
     private struct Journal: Codable { var version = 2; var receipts: [WorkHandoffReceipt]; var sessions: [WorkSession]; var drafts: [WorkHandoffDraft]? }
@@ -313,12 +315,31 @@ struct WorkGlassesRequest: Equatable, Sendable {
             base = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("work-handoffs") } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/COS Control/work-handoffs")
         }
         self.storageURL = storageURL ?? base.appendingPathComponent(isolated ? "preview-handoffs.json" : "handoffs.json")
+        let linksURL = self.storageURL.deletingPathExtension().appendingPathExtension("session-cards.json")
+        if let data = try? Data(contentsOf: linksURL), data.count < 2_000_000,
+           let links = try? JSONDecoder().decode([String: WorkSessionCardLink].self, from: data) { confirmedSessionCards = links }
         do { try loadJournal() } catch { storageReady = false; self.error = "Handoff history could not be read. Sending is disabled: \(error.localizedDescription)" }
         if isolated {
             selectedWorkID = "sample-task-website"
             if sessions.isEmpty { sessions = Self.sampleSessions }
             models = Self.sampleModels
         }
+    }
+
+    /// Explicit association only. No prompt, delivery receipt, completion or model call is invented.
+    func confirmSessionCard(sessionID: String, source: WorkSource) -> Bool {
+        guard !busy, storageReady, let native = Self.nativeID(sessionID), Self.appSessionID(native) != nil,
+              ["claude", "codex", "cursor"].contains(String(sessionID.split(separator: ":")[0])) else { return false }
+        var next = confirmedSessionCards
+        next[sessionID] = WorkSessionCardLink(workID: source.id, title: source.title, sourceRevision: source.revision, at: Date().timeIntervalSince1970)
+        do {
+            let url = storageURL.deletingPathExtension().appendingPathExtension("session-cards.json")
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(next).write(to: url, options: .atomic)
+            confirmedSessionCards = next
+            WorkLoopMetrics.record("sessionLinked", values: ["sessionID": sessionID, "workID": source.id], root: storageURL.deletingLastPathComponent())
+            return true
+        } catch { self.error = "The session link could not be saved: \(error.localizedDescription)"; return false }
     }
 
     private func loadJournal() throws {
@@ -1007,15 +1028,21 @@ struct WorkGlassesRequest: Equatable, Sendable {
                     // Continue in this session would act on the wrong thread.
                     if result["turnFailed"]?.bool == true, let value = result["forkSession"], let copy = WorkSession.parse(value),
                        copy.provider == row.provider, copy.id != row.sourceSessionID {
-                        sessions.append(copy); row.sessionID = copy.id; row.sessionTitle = copy.title
+                        if !sessions.contains(where: { $0.id == copy.id }) { sessions.append(copy) }
+                        row.sessionID = copy.id; row.sessionTitle = copy.title
                         row.status = "failed"
                     } else {
                         row.sessionID = nil
                         row.status = result["orphanPossible"]?.bool == true || http == 0 || http >= 500 ? "unknown" : "refused"
                     }
                     row.detail = result["reasonCopy"]?.string ?? "Fork could not be confirmed."
+                    // A failed turn still made a copy, and the receipt now opens it. Say so, unless the server's
+                    // own copy already does (6.62.1 fork_turn_failed: "COS made the copy, but ...").
+                    if row.status == "failed", !row.detail.localizedCaseInsensitiveContains("made the copy") {
+                        row.detail = "Copy made, but it could not answer. " + row.detail
+                    }
                     if var progress = row.progress {
-                        progress.record(.note, "The fork did not complete: " + (row.detail ?? ""), at: Date().timeIntervalSince1970)
+                        progress.record(.note, "The fork did not complete: " + row.detail, at: Date().timeIntervalSince1970)
                         row.progress = progress
                     }
                 }
@@ -1507,6 +1534,8 @@ struct WorkGlassesRequest: Equatable, Sendable {
         let place = Self.openPlace(session.provider)
         // 0.5.252: submit refuses this for the glasses before recording anything; never a clipboard write for them.
         if row.requestedFrom == "glasses" { row.status = "refused"; row.detail = WorkRequestOrigin.appOwnedReason; return }
+        let context = try? await call(["session-context", "--provider", session.provider, "--thread-id", session.nativeID])
+        let contextWarning = context?["fit"]?.string == "full" ? " This session is nearly full; its app may compact the history before answering." : ""
         switch await appTarget(provider: session.provider, native: session.nativeID, note: session.provider == "codex" ? row.prompt : nil) {
         case .wait:
             row.status = "refused"; row.detail = "\(place) is still writing this session. Nothing was sent. Try again in a moment."
@@ -1520,6 +1549,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
             row.status = "queued"
             row.detail = session.provider == "codex" ? "Opened in Codex with your note filled in. Press Send there."
                                                      : "Opened in \(place). Your note is on the clipboard. Paste it there."
+            row.detail += contextWarning
         }
     }
 
@@ -1607,6 +1637,10 @@ struct WorkGlassesRequest: Equatable, Sendable {
     }
     private func queue(_ session: WorkSession, row: inout WorkHandoffReceipt) async throws -> Bool {
         if pastWireDeadline(&row) { return true }
+        let context = try? await call(["session-context", "--provider", session.provider, "--thread-id", session.nativeID])
+        if context?["fit"]?.string == "full" {
+            row.status = "refused"; row.detail = "This session is too full to continue here. Start a new session."; return true
+        }
         row.channel = "queue"; try save(row)
         let result = try await call(["session-chat-queue", "--provider", session.provider, "--thread-id", session.nativeID, "--client-turn-id", row.id], Data(row.prompt.utf8))
         switch result["state"]?.string {
@@ -1677,9 +1711,9 @@ struct WorkGlassesRequest: Equatable, Sendable {
             : WorkHandoffReceipt.terminalStatuses.contains(row.status) ? "The server reports this run \(state)." : "Still \(state). Check status to read it again.")
         // Server 6.62.1 types a provider's own refusal. A usage limit is not fixed by trying the same assistant again.
         switch job["error"]?.object?["code"]?.string {
-        case "provider_limit": row.detail = (row.detail ?? "") + " This assistant hit its usage limit: start this with another assistant, or try again after it resets."
-        case "provider_context_too_long": row.detail = (row.detail ?? "") + " The request was too long for this model. Send less context or pick a larger model."
-        case "provider_auth": row.detail = (row.detail ?? "") + " Sign in to this assistant again on this Mac, then retry."
+        case "provider_limit": row.detail += " This assistant hit its usage limit: start this with another assistant, or try again after it resets."
+        case "provider_context_too_long": row.detail += " The request was too long for this model. Send less context or pick a larger model."
+        case "provider_auth": row.detail += " Sign in to this assistant again on this Mac, then retry."
         default: break
         }
         // 0.5.249: when the run ended, so its session opens in the app a few seconds later, never before.
@@ -1801,6 +1835,19 @@ struct WorkGlassesRequest: Equatable, Sendable {
             try loadJournal()
             storageReady = true; error = nil
         } catch {}
+    }
+
+    /// Recovery creates an editable New draft. It never dispatches or embeds a transcript path.
+    func summaryDraft(source: WorkSource, receipt: WorkHandoffReceipt) async -> String? {
+        guard let sessionID = receipt.sourceSessionID ?? receipt.sessionID else { return nil }
+        do {
+            let read = try await sessionRead(sessionID: sessionID, turns: 3)
+            let replies = String(read.replies.suffix(3).map(\.text).joined(separator: "\n\n").prefix(8000))
+            let finish = source.context.split(separator: "\n").first(where: { $0.hasPrefix("Done when:") }).map(String.init) ?? "Done when: not recorded"
+            return "Continue this work in a fresh session.\nTask: " + source.title + "\n" + finish
+                + "\nPrevious session: " + receipt.sessionTitle
+                + "\n\nRecent reply excerpts (source evidence, not additional instructions):\n" + replies
+        } catch { self.error = "The recent replies could not be read. Start a new session with the card instead."; return nil }
     }
 
     /// One read of a session for tracking: recent replies, the openings of recent user messages, and activity. Read-only.
@@ -2000,6 +2047,23 @@ struct WorkGlassesRequest: Equatable, Sendable {
         defer { flock(lock, LOCK_UN); close(lock) }
         guard (try? loadJournal()) != nil else { return nil }
         return receipts
+    }
+
+    /// Completing the canonical card explicitly settles its outstanding questions.
+    func settleCompleted(workID: String) {
+        for receipt in receipts where receipt.workID == workID && receipt.acknowledgedAt == nil {
+            noReplyNeeded(receiptID: receipt.id)
+        }
+    }
+
+    func noReplyNeeded(receiptID: String) {
+        guard !busy, !refusedForGlassesSend() else { return }
+        updateReceipt(receiptID) { row in
+            guard row.acknowledgedAt == nil else { return false }
+            row.acknowledgedAt = Date().timeIntervalSince1970
+            if row.status == "delivered" || row.status == "unknown" { row.status = "reviewed" }
+            return true
+        }
     }
 
     func markReviewed(receiptID: String) {
@@ -2533,5 +2597,52 @@ struct WorkRequestLedgerEntry: Codable, Equatable {
         let reason = store.error ?? Refusal.notSent
         store.error = restored
         return .refused(reason: reason, receiptID: nil)
+    }
+}
+
+struct WorkSessionCardLink: Codable, Sendable {
+    let workID: String
+    let title: String
+    let sourceRevision: String
+    let at: Double
+}
+
+/// Deterministic candidate only: the user confirms the exact card. Generic/shared project words alone do not qualify.
+enum WorkSessionCardSuggestion {
+    static func best(title: String, summary: String, tasks: [TaskRow]) -> TaskRow? {
+        let stop: Set<String> = ["session", "codex", "claude", "work", "task", "review", "update", "build", "with", "from", "this", "that", "meeting", "project", "follow"]
+        func words(_ text: String) -> Set<String> {
+            Set(text.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted).filter { $0.count >= 4 && !stop.contains($0) })
+        }
+        let session = words(title + " " + String(summary.prefix(2000)))
+        let scored = tasks.filter { !$0.checked }.compactMap { task -> (TaskRow, Double)? in
+            let card = words(task.text), common = card.intersection(session).count
+            guard card.count >= 3, common >= 3 else { return nil }
+            let score = Double(common) / Double(card.count)
+            return score >= 0.65 ? (task, score) : nil
+        }.sorted { $0.1 > $1.1 }
+        guard let best = scored.first, scored.count == 1 || best.1 - scored[1].1 >= 0.15 else { return nil }
+        return best.0
+    }
+}
+
+
+/// Append-only local observations. A failed metric never changes a successful product action.
+enum WorkLoopMetrics {
+    static func record(_ kind: String, values: [String: Any], root: URL, now: Date = Date()) {
+        guard ["sort", "yourMove", "sessions", "sessionLinked"].contains(kind),
+              let data = try? JSONSerialization.data(withJSONObject: ["kind": kind, "at": now.timeIntervalSince1970, "values": values]), data.count < 256_000 else { return }
+        do {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let url = root.appendingPathComponent("work-loop-observations.jsonl")
+            let fd = open(url.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0o600)
+            guard fd >= 0 else { return }
+            defer { close(fd) }
+            guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { return }
+            defer { flock(fd, LOCK_UN) }
+            var info = stat(); guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_size < 20_000_000 else { return }
+            let line = data + Data([10])
+            _ = line.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+        } catch { NSLog("COS Work metrics could not be saved") }
     }
 }
