@@ -1,3 +1,9 @@
+## 0.5.258 (build 310): Memories quarantine review candidate
+
+Unreleased candidate, built on 0.5.256 (build 308). It touches only the Memories page and must be merged with 0.5.257 (background forks) before a stable release.
+
+Memories now remembers a prune after a reload. Before, it forgot every decision when the page reloaded, so a memory already out of recall offered Accept and Prune again. The review ledger's pruned and accepted events seed each card's state, and the newest decision wins. A quarantined memory is labelled Quarantined and offers Restore to recall, which sends Accept, so the helper and the server need no change; the bridge (COS `ca495844`) returns the memory to recall. To review lists Prune ready memories (what `bot_memory.py prune` would quarantine, cached nightly) under their own header with the reason, Accept to keep (prune never proposes it again) or Prune, and one Quarantine all that asks for a second click and stops at the first failure.
+
 ## 0.5.256 (build 308) — Work loop candidate
 
 Unreleased candidate. Native usability and physical G2 acceptance are outstanding.

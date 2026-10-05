@@ -30,6 +30,7 @@ mkdir -p "$TMP/home"
 node "$ROOT/Tests/MemoryWorkspaceStartup.cjs"
 node "$ROOT/Tests/MemoryOwnerRaces.cjs"
 node "$ROOT/Tests/MemoriesAppliedCanary.cjs"
+node "$ROOT/Tests/MemoriesQuarantineCanary.cjs"
 
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/HelperSources/main.swift" \

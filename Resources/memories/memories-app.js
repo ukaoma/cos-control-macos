@@ -154,7 +154,7 @@
     return call('workspace.request',{action:'learning_page',days:90,limit:50,cursor:more?state.recentCursor:null}).then(function(d){
       if(serial!==learningRequestSerial)return;
       if(d.protocol!==1||!Array.isArray(d.items))throw new Error('Snapshot browsing unavailable in this version.');
-      state.learningPageCapable=true;state.recent=more?state.recent.concat(d.items):d.items;
+      state.learningPageCapable=true;state.recent=more?state.recent.concat(d.items):d.items;seedDecisions(d.items);
       state.recentTotal=d.matched_total;state.recentCursor=d.next_cursor;state.coverage=d.coverage||{};
       state.learningStatus=d;render();
     }).catch(function(error){
@@ -164,7 +164,7 @@
       var args={days:90,limit:50};if(more){args.sinceTs=state.recentCursor.since_ts;args.sinceEventId=state.recentCursor.since_event_id;}
       return call('learning.list',args).then(function(d){
         if(serial!==learningRequestSerial)return;
-        state.recent=more?state.recent.concat(d.events||[]):d.events||[];state.recentTotal=d.total;
+        state.recent=more?state.recent.concat(d.events||[]):d.events||[];seedDecisions(d.events);state.recentTotal=d.total;
         state.recentCursor=d.nextCursor;state.coverage=d.coverage||{};
         state.learningStatus={counts_by_type:{},stores:{},complete:false,notice:'Activity totals unavailable in this server version. The list uses a 90-day window.'};render();
       },function(e){if(serial!==learningRequestSerial)return;state.errors.recent=e.message;render();});
@@ -201,7 +201,7 @@
     if(more&&state.reviewLoading)return;var serial=++reviewRequestSerial;state.reviewLoading=true;
     return call('workspace.request',{action:'review_page',limit:25,cursor:more?state.reviewCursor:null}).then(function(d){
       if(serial!==reviewRequestSerial)return;
-      state.review=more?state.review.concat(d.items):d.items;state.reviewCount=d.matched_total;state.reviewCursor=d.next_cursor;render();
+      state.review=more?state.review.concat(d.items):d.items;seedDecisions(d.items);state.reviewCount=d.matched_total;state.reviewCursor=d.next_cursor;render();
     }).catch(function(e){
       if(serial!==reviewRequestSerial)return;if(more){toast(e.message+' Refresh review to start a new snapshot.');return;}
       return call('learning.review',{limit:200}).then(function(d){if(serial!==reviewRequestSerial)return;state.review=d.events||[];state.reviewCount=d.reviewCount!=null?d.reviewCount:d.total;render();},function(error){state.errors.review=error.message;render();});
@@ -240,7 +240,24 @@
   var STORE = { self_improvement_queue: 'Self-improvement queue', correction_journal: 'Correction journal', bot_memory: 'Bot memory', review_ledger: 'Review ledger', git_versions: 'Skill versions', eval_scores: 'Eval scores', reflect_log: 'Reflect log', capture_ledger: 'Capture ledger' };
   function isProposal(e) { return e && e.target && e.target.kind === 'task-proposal'; }
   function isPattern(e) { return e && (e.event_type === 'promotable' || (e.target && e.target.kind === 'pattern')); }
-  function kindLabel(e) { if (isProposal(e)) return 'Task proposal'; if (isPattern(e)) return 'Promotable pattern'; return KIND[e.event_type] || e.event_type || 'Event'; }
+  // A review decision survives a reload (0.5.257): the ledger's pruned/accepted events seed the map memoryActions
+  // reads. Before, a reload forgot every prune and offered Accept and Prune on a memory already out of recall.
+  // The newest decision per memory wins; one made in this session is stamped now, so a stale seed never undoes it.
+  function seedDecisions(rows) {
+    state.decisions = state.decisions || {}; state.decisionTs = state.decisionTs || {};
+    (rows || []).forEach(function (e) {
+      if (!e || e.store !== 'review_ledger' || !e.lesson_id || (e.event_type !== 'pruned' && e.event_type !== 'accepted')) return;
+      var ts = String(e.ts || '');
+      if (state.decisionTs[e.lesson_id] && state.decisionTs[e.lesson_id] >= ts) return;
+      state.decisionTs[e.lesson_id] = ts; state.decisions[e.lesson_id] = e.event_type;
+    });
+  }
+  // Prune ready (0.5.257): memories `bot_memory.py prune` would quarantine now, listed in To review by the bridge
+  // as captured memories whose category starts with this label and carries the reason.
+  var PRUNE_READY = 'Prune ready';
+  function isPruneReady(e) { return !!e && e.store === 'bot_memory' && typeof e.category === 'string' && e.category.indexOf(PRUNE_READY) === 0; }
+  function pruneReadyReason(e) { var c = String(e.category || ''); return c.indexOf(' · ') > 0 ? c.slice(c.indexOf(' · ') + 3) : ''; }
+  function kindLabel(e) { if (e && e.store === 'bot_memory' && e.event_type === 'captured' && latestDecisionFor(e) === 'pruned') return 'Quarantined'; if (isPruneReady(e) && !latestDecisionFor(e)) return PRUNE_READY; if (isProposal(e)) return 'Task proposal'; if (isPattern(e)) return 'Promotable pattern'; return KIND[e.event_type] || e.event_type || 'Event'; }
   function outcomeText(e) { var o = e && e.outcome; if (!o) return null; if (typeof o === 'string') return o; return o.result ? (o.result + (o.name ? ' · ' + o.name : '')) : null; }
   function rowStatus(e) {
     var o = outcomeText(e);
@@ -329,7 +346,7 @@
     inbox.innerHTML = '<div class="date">' + (state.filter === 'recent' ? 'RECENT LEARNING · 90 DAYS' : 'PROPOSED CHANGES') + '</div>' +
       (err ? '<div class="host-state"><div><h3>Not available</h3><p>' + esc(err) + '</p><button onclick="cosApp.refresh()">Retry</button></div></div>' : '') +
       (loading ? '<div class="host-state">Loading…</div>' : '') +
-      rows.map(function (e) { return lessonRow(e, e.event_id === state.selected); }).join('') +
+      (state.filter === 'review' ? reviewRows(rows) : rows.map(function (e) { return lessonRow(e, e.event_id === state.selected); }).join('')) +
       (state.filter === 'recent' && state.recentCursor ? '<div class="actions"><button class="quiet" onclick="cosApp.loadMore()">Load more</button></div>' : '') +
       (state.filter==='review'&&state.reviewCursor?'<button onclick="cosApp.loadMoreReview()">Load more review items</button>':'')+coverageNote();
     if (!rows.length) {
@@ -340,6 +357,16 @@
     ensureDetail(event.event_id);
     var full = state.detail[event.event_id];
     detail.innerHTML = detailActions(event) + lessonDetail(Object.assign({}, event, full && !full._error ? full : {}), full);
+  }
+  function reviewRows(rows) {
+    var other = rows.filter(function (e) { return !isPruneReady(e); }), ready = rows.filter(isPruneReady);
+    var open = ready.filter(function (e) { return !latestDecisionFor(e); }).length, b = state.bulkPrune;
+    var head = !ready.length ? '' : '<div class="date">' + esc(PRUNE_READY.toUpperCase()) + ' · ' + (open ? fmt(open) : 'ALL DECIDED') + '</div>' +
+      (b ? '<p class="muted" style="padding:0 9px">Quarantining ' + fmt(b.done) + ' of ' + fmt(b.total) + '…</p>' :
+        open ? '<div class="actions" style="padding:0 9px 8px"><button class="quiet" onclick="cosApp.pruneAllReady()">' +
+          (state.armed === 'prune-ready' ? 'Click again to quarantine ' + fmt(open) : 'Quarantine all ' + fmt(open)) + '</button></div>' : '');
+    var line = function (e) { return lessonRow(e, e.event_id === state.selected); };
+    return other.map(line).join('') + head + ready.map(line).join('');
   }
   function coverageNote() {
     var gaps = Object.keys(state.coverage || {}).filter(function (k) { return state.coverage[k] && state.coverage[k].state !== 'ok'; });
@@ -372,10 +399,12 @@
     }
     if (e.store !== 'bot_memory' || !e.lesson_id || e.event_type !== 'captured') return '';
     var decision = latestDecisionFor(e);
-    if (decision === 'pruned') return '<p class="muted">Quarantined from active recall. Content is retained for review.</p>';
     var busy = state.memoryReviewBusy === e.lesson_id;
+    if (decision === 'pruned') return '<p class="muted">Quarantined from active recall. Content is retained for review.</p>' +
+      '<div class="actions"><button ' + (busy ? 'disabled' : '') + ' onclick="cosApp.reviewMemory(' + attr(e.lesson_id) + ', \'restore\')">' + (busy ? 'Working…' : 'Restore to recall') + '</button></div>';
     var armed = state.armed === 'prune:' + e.lesson_id;
-    return '<div class="actions">' +
+    return (isPruneReady(e) && !decision ? '<p class="muted">' + esc(PRUNE_READY) + (pruneReadyReason(e) ? ': ' + esc(pruneReadyReason(e)) : '') + '. Accept keeps it in recall and stops it being proposed again; Prune takes it out of recall, and Restore brings it back.</p>' : '') +
+      '<div class="actions">' +
       (decision === 'accepted' ? '<span class="pill ok">Accepted</span>' : '<button ' + (busy ? 'disabled' : '') + ' onclick="cosApp.reviewMemory(' + attr(e.lesson_id) + ', \'accept\')">' + (busy ? 'Working…' : 'Accept') + '</button>') +
       '<button class="quiet" ' + (busy ? 'disabled' : '') + ' onclick="cosApp.reviewMemory(' + attr(e.lesson_id) + ', \'prune\')">' + (armed ? 'Click again to prune' : 'Prune') + '</button>' +
       '</div>';
@@ -1355,13 +1384,39 @@
     reviewMemory: function (id, decision) {
       if (decision === 'prune' && state.armed !== 'prune:' + id) { state.armed = 'prune:' + id; render(); setTimeout(function () { if (state.armed === 'prune:' + id) { state.armed = null; render(); } }, 6000); return; }
       state.armed = null; state.memoryReviewBusy = id; render();
-      call('memory.review', { id: id, decision: decision }).then(function (d) {
+      // Restore is Accept on the wire: the bridge returns a quarantined memory to recall before marking it accepted.
+      call('memory.review', { id: id, decision: decision === 'restore' ? 'accept' : decision }).then(function (d) {
         state.memoryReviewBusy = null;
         var row = d.decision || {};
         state.decisions = state.decisions || {}; state.decisions[id] = row.decision || (decision === 'prune' ? 'pruned' : 'accepted');
+        state.decisionTs = state.decisionTs || {}; state.decisionTs[id] = new Date().toISOString();
         if (decision === 'prune') { state.memories = (state.memories || []).filter(function (m) { return m.id !== id; }); if (state.selectedMemory === id) state.selectedMemory = null; }
-        toast(decision === 'prune' ? 'Memory quarantined.' : 'Memory accepted.'); render();
+        toast(decision === 'prune' ? 'Memory quarantined.' : decision === 'restore' ? 'Memory restored to recall.' : 'Memory accepted.'); render();
       }, function (e) { state.memoryReviewBusy = null; toast(e.message); render(); });
+    },
+    pruneAllReady: function () {
+      if (state.bulkPrune) return;
+      var ids = (state.review || []).filter(function (e) { return isPruneReady(e) && !latestDecisionFor(e); }).map(function (e) { return e.lesson_id; });
+      if (!ids.length) return;
+      if (state.armed !== 'prune-ready') { state.armed = 'prune-ready'; render(); setTimeout(function () { if (state.armed === 'prune-ready') { state.armed = null; render(); } }, 6000); return; }
+      state.armed = null; state.bulkPrune = { done: 0, total: ids.length }; render();
+      // One memory at a time through the same review call as the card's Prune; the first failure stops the run.
+      ids.reduce(function (chain, id) {
+        return chain.then(function () {
+          return call('memory.review', { id: id, decision: 'prune', note: 'prune ready' }).then(function (d) {
+            var row = d.decision || {};
+            state.decisions = state.decisions || {}; state.decisions[id] = row.decision || 'pruned';
+            state.decisionTs = state.decisionTs || {}; state.decisionTs[id] = new Date().toISOString();
+            state.bulkPrune.done += 1; render();
+          });
+        });
+      }, Promise.resolve()).then(function () {
+        var n = state.bulkPrune.done; state.bulkPrune = null;
+        toast('Quarantined ' + fmt(n) + '. Restore any of them from its card.'); render();
+      }, function (e) {
+        var b = state.bulkPrune; state.bulkPrune = null;
+        toast('Stopped after ' + fmt(b.done) + ' of ' + fmt(b.total) + ': ' + e.message); render();
+      });
     },
     guardrailsLoad: function () { loadGuardrails(); },
     guardrailsSave: function () {
