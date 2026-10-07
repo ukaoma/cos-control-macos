@@ -1559,6 +1559,22 @@ if '"COS_THREAD_ATTACH_ENABLED": "0"' not in body:
 if '["COS_THREAD_ATTACH_ENABLED"]' in body:
     sys.exit("Continue off must not use the removingKeys delete path any more")
 PY
+# Activity now has its own persistent NSWindow. Its sole meeting-link sheet is safe there;
+# keep sheets forbidden in the transient MenuBarExtra and reject unrelated new Activity sheets.
+python3 - "$ROOT" <<'ACTIVITY_SHEET'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+activity = (root / "Sources/ActivityWindow.swift").read_text()
+views = (root / "Sources/Views.swift").read_text()
+assert 'NSHostingController(rootView: ActivityWindow.live(model: model))' in activity
+assert 'let window = ActivityHostWindow(contentViewController: hostingController)' in activity
+assert 'final class ActivityHostWindow: NSWindow' in activity
+assert 'ActivityWindow(' not in views and 'ActivityWindow.live(' not in views
+assert activity.count('.sheet(') == 1
+assert '.sheet(item: $meetingTaskLink) { meeting in\n            MeetingTaskLinkSheet(model: model, meeting: meeting, onOpenWork: openConnectedWork)' in activity
+print('PASS: the meeting-link sheet belongs to the persistent Activity window; the menu-bar panel remains sheet-free')
+ACTIVITY_SHEET
 /usr/bin/grep -q 'struct SpeakerReviewPane' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'activityLauncher' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'ActivitySection.allCases' "$ROOT/Sources/Views.swift"
@@ -1951,10 +1967,26 @@ fi
 # MenuBarExtra(.window) is a transient panel that closes when it loses key status,
 # so ANY sheet presented from it dismisses the panel mid-interaction. This is the
 # regression guard: zero sheet presentations in the panel's view tree.
-if /usr/bin/grep -q '\.sheet(' "$ROOT/Sources/Views.swift" "$ROOT/Sources/ActivityWindow.swift"; then
+if /usr/bin/grep -q '\.sheet(' "$ROOT/Sources/Views.swift"; then
   echo 'COS Control: FAIL — a .sheet reappeared in Views.swift; MenuBarExtra panels must route overlays inline' >&2
   exit 1
 fi
+# Activity now has its own persistent NSWindow. Its sole meeting-link sheet is safe there;
+# keep sheets forbidden in the transient MenuBarExtra and reject unrelated new Activity sheets.
+python3 - "$ROOT" <<'ACTIVITY_SHEET'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+activity = (root / "Sources/ActivityWindow.swift").read_text()
+views = (root / "Sources/Views.swift").read_text()
+assert 'NSHostingController(rootView: ActivityWindow.live(model: model))' in activity
+assert 'let window = ActivityHostWindow(contentViewController: hostingController)' in activity
+assert 'final class ActivityHostWindow: NSWindow' in activity
+assert 'ActivityWindow(' not in views and 'ActivityWindow.live(' not in views
+assert activity.count('.sheet(') == 1
+assert '.sheet(item: $meetingTaskLink) { meeting in\n            MeetingTaskLinkSheet(model: model, meeting: meeting, onOpenWork: openConnectedWork)' in activity
+print('PASS: the meeting-link sheet belongs to the persistent Activity window; the menu-bar panel remains sheet-free')
+ACTIVITY_SHEET
 /usr/bin/grep -q 'struct SpeakerReviewPane' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'struct MediaPreviewPane' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'reviewRouteActive' "$ROOT/Sources/ActivityWindow.swift"
