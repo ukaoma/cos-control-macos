@@ -489,6 +489,7 @@ struct MeetingLibraryDetailPane: View {
     var onReviewVoices: (String, String?) -> Void
     var onOpenSource: (LibraryMeetingSource) -> Void = { _ in }
     var onReviewFollowUp: ((LibraryMeeting) -> Void)? = nil
+    var onLinkTask: ((LibraryMeeting) -> Void)? = nil
     var workConnections: MeetingWorkConnections? = nil
     var onOpenWork: ((String) -> Void)? = nil
     var onOpenSession: ((String, String) -> Void)? = nil
@@ -503,10 +504,14 @@ struct MeetingLibraryDetailPane: View {
                     Text(row.subtitle(clock: model.clockStyle))
                         .font(COSType.body(12))
                         .foregroundStyle(.secondary)
-                    if let onReviewFollowUp {
-                        Button("Review follow-up in Work") { onReviewFollowUp(row) }
-                            .buttonStyle(COSPrimaryButtonStyle()).padding(.top, 4)
-                    }
+                    HStack(spacing: 8) {
+                        if let onLinkTask {
+                            Button("Link to existing task") { onLinkTask(row) }.buttonStyle(COSPrimaryButtonStyle())
+                        }
+                        if let onReviewFollowUp {
+                            Button("Review follow-up in Work") { onReviewFollowUp(row) }.buttonStyle(COSQuietButtonStyle())
+                        }
+                    }.padding(.top, 4)
                     // 6.47.0 — a record COS derived says so, and offers the way
                     // back out. A row COS did not derive gets nothing here.
                     if row.isDerived || row.isImported {
@@ -647,7 +652,13 @@ struct MeetingLibraryDetailPane: View {
 
     private func relatedWork(_ links: MeetingWorkConnections) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Connected work").font(COSType.display(19, weight: .medium))
+            HStack {
+                Text("Connected work").font(COSType.display(19, weight: .medium))
+                Spacer()
+                if let onLinkTask, let row = model.openLibraryRow {
+                    Button("Link to existing task") { onLinkTask(row) }.buttonStyle(COSQuietButtonStyle())
+                }
+            }
             if links.loading { ProgressView("Loading linked work…").controlSize(.small) }
             ForEach(links.errors, id: \.self) { Text($0).font(COSType.body(11)).foregroundStyle(COSPalette.danger) }
             if !links.complete { Text("The task inventory is not confirmed complete.").font(COSType.body(11)).foregroundStyle(COSPalette.muted) }
@@ -680,7 +691,7 @@ struct MeetingLibraryDetailPane: View {
                 }
             }
             if !links.loading && links.complete && links.errors.isEmpty && links.tasks.isEmpty && links.reviews.isEmpty && links.receipts.isEmpty {
-                Text("No confirmed work links yet. Use Link a meeting from a task to connect it, or review this meeting’s follow-up.")
+                Text("No connected tasks yet. Link this meeting to an existing task to keep its context with the work already underway.")
                     .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
             }
         }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
@@ -1782,4 +1793,124 @@ private struct MergeCard: ViewModifier {
 
 extension View {
     func mergeCard() -> some View { modifier(MergeCard()) }
+}
+
+
+/// Both directions use the same canonical meeting descriptor and revision-guarded task writer.
+enum MeetingTaskLinkOptions {
+    static func rows(_ tasks: [TaskRow], query: String, includeCompleted: Bool) -> [TaskRow] {
+        let words = query.split(whereSeparator: \.isWhitespace).map(String.init)
+        return tasks.filter { task in
+            (includeCompleted || !task.checked) && words.allSatisfy {
+                (task.text + " " + task.title + " " + task.domain).localizedStandardContains($0)
+            }
+        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+
+    static func refusal(_ task: TaskRow, meeting: WorkMeetingReference) -> String? {
+        if task.meetingRefs.contains(where: { $0.recordId == meeting.recordId }) { return "Already linked" }
+        if let error = task.workMetadataError { return error }
+        if task.workRevision.isEmpty { return "Refresh Work before linking this task." }
+        if task.meetingRefs.count >= 8 { return "This task already has eight meeting links." }
+        return nil
+    }
+}
+
+struct MeetingTaskLinkSheet: View {
+    @ObservedObject var model: ControllerModel
+    let meeting: LibraryMeeting
+    var onOpenWork: ((String) -> Void)? = nil
+    @Environment(\.dismiss) private var dismiss
+    // Keystrokes stay local to the picker; they do not republish the Activity model.
+    @State private var query = ""
+    @State private var includeCompleted = false
+    @State private var selected: TaskRow?
+    @State private var saving = false
+    @State private var error: String?
+    @State private var saved: TaskRow?
+
+    private var reference: WorkMeetingReference? { WorkMeetingReference(meeting: meeting) }
+    private var candidates: [TaskRow] { MeetingTaskLinkOptions.rows(model.workTasks, query: query, includeCompleted: includeCompleted) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Link to existing task").font(COSType.display(23, weight: .medium))
+                Spacer()
+                Button("Close") { dismiss() }.disabled(saving)
+            }
+            Text(meeting.title).font(COSType.body(13, weight: .semibold)).lineLimit(3)
+            Text("Keep this meeting with an existing workstream. Its source reference and attached files become available from that task; its name, status and other meeting links stay intact.")
+                .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+            if let saved {
+                Label("Linked to “\(saved.title)”.", systemImage: "checkmark.circle")
+                    .font(COSType.body(13, weight: .semibold))
+                Text("The meeting is now in Source meetings. The next task handoff includes its reference and attached files. Linking does not send a message to a running session.")
+                    .font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+                if let onOpenWork {
+                    Button("Open task") { dismiss(); onOpenWork(saved.workSourceID) }.buttonStyle(COSPrimaryButtonStyle())
+                }
+            } else {
+                TextField("Search tasks across all domains", text: $query).textFieldStyle(.plain).cosField()
+                    .onChange(of: query) { _, _ in selected = nil; error = nil }
+                Toggle("Include completed tasks", isOn: $includeCompleted).font(COSType.body(12))
+                    .onChange(of: includeCompleted) { _, _ in selected = nil; error = nil }
+                if model.workTasksLoading { ProgressView("Loading tasks…").controlSize(.small) }
+                if let issue = model.workTasksError { Text(issue).foregroundStyle(COSPalette.danger) }
+                if !model.workTasksComplete && !model.workTasksLoading {
+                    Text("The task list may be incomplete. Refresh if the task you need is missing.").foregroundStyle(COSPalette.muted)
+                }
+                if !model.workBoardWritable && !model.workTasksLoading {
+                    Text("Linking needs a connected server with Work board support. Update the server and refresh.").foregroundStyle(COSPalette.danger)
+                }
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(candidates, id: \.workSourceID) { task in
+                            let reason = reference.flatMap { MeetingTaskLinkOptions.refusal(task, meeting: $0) }
+                            Button { selected = task; error = nil } label: {
+                                HStack(alignment: .top, spacing: 10) {
+                                    Image(systemName: selected?.workSourceID == task.workSourceID ? "largecircle.fill.circle" : "circle")
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(task.text.isEmpty ? task.title : task.text).font(COSType.body(12, weight: .medium))
+                                        Text(task.domain + " · " + (task.checked ? "Complete" : task.workStage.capitalized))
+                                            .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                                        if let reason { Text(reason).font(COSType.body(11)).foregroundStyle(COSPalette.muted) }
+                                    }
+                                    Spacer()
+                                }.frame(maxWidth: .infinity, alignment: .leading).padding(10).contentShape(Rectangle())
+                            }.buttonStyle(.plain).disabled(reason != nil || saving || !model.workBoardWritable)
+                        }
+                        if candidates.isEmpty && !model.workTasksLoading {
+                            Text(query.isEmpty ? "No tasks available." : "No matching tasks. Try another name or domain.")
+                                .foregroundStyle(COSPalette.muted).padding(.vertical, 16)
+                        }
+                    }
+                }.frame(minHeight: 160, maxHeight: 300)
+                if reference == nil { Text("This meeting is not saved with a complete reference yet. Save it and refresh before linking.").foregroundStyle(COSPalette.danger) }
+                if let error { Text(error).foregroundStyle(COSPalette.danger).textSelection(.enabled) }
+                HStack {
+                    Button("Refresh tasks") { selected = nil; Task { await model.loadWorkTasks(force: true) } }
+                        .disabled(saving || model.workTasksLoading)
+                    Spacer()
+                    Button(saving ? "Linking…" : "Link selected task") { link() }
+                        .buttonStyle(COSPrimaryButtonStyle())
+                        .disabled(saving || model.workTasksLoading || !model.workBoardWritable || reference == nil || selected == nil)
+                }
+            }
+        }.font(COSType.body(12)).padding(24).frame(width: 620)
+            .background(COSPalette.panel).buttonStyle(COSQuietButtonStyle()).cosControlTheme()
+            .interactiveDismissDisabled(saving)
+            .task { await model.loadWorkTasks(force: true) }
+    }
+
+    private func link() {
+        guard !saving, let selected, let reference else { return }
+        if let reason = MeetingTaskLinkOptions.refusal(selected, meeting: reference) { error = reason; return }
+        saving = true; error = nil
+        Task {
+            defer { saving = false }
+            do { try await model.linkWorkMeeting(selected, meeting: reference); saved = selected }
+            catch { self.error = error.localizedDescription }
+        }
+    }
 }

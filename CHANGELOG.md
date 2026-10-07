@@ -1,3 +1,11 @@
+# 0.5.265 (318)
+
+- Meetings and Speakers now offer **Link to existing task**. Search across domains, optionally include completed work, choose a task and explicitly link it without creating a duplicate.
+- Reuses canonical saved-meeting references and the revision-guarded Work writer. Existing task identity, text, status and prior meeting links are preserved. Linked references and meeting files participate in the next Work handoff; a running agent is not messaged automatically.
+- Already-linked, incomplete-reference, missing-revision, read-only and full-link cases explain why a link cannot be added. Refresh failures and stale-write refusals stay visible.
+- Speakers resolves the saved meeting using the existing exact-record resolver, stays in Speakers while the picker is open, and ignores a lookup if the review changes before it finishes.
+- Unpublished candidate. Includes 0.5.264 recovery and 0.5.263 Cloud Puff/onboarding work; keep prior notarized archives frozen.
+
 # 0.5.264 (317)
 
 - Open in platform shows progress and persistent recovery instructions in the Sessions pane, including missing Claude Desktop, archived sessions, unavailable transcripts and helper failures. Repeated clicks cannot launch overlapping opens.

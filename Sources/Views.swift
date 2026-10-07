@@ -2969,6 +2969,7 @@ struct SpeakerReviewPane: View {
     var nextUnnamedAvailable = false
     /// 0.5.259: the meeting this review belongs to, in Meetings.
     var onOpenMeeting: (() -> Void)? = nil
+    var onLinkTask: (() -> Void)? = nil
     /// Which span the pointer is over. Held here so the bar and the legend
     /// highlight the same thing.
     @State private var hoveredSpan: SpeakerTimelineSpan?
@@ -3085,6 +3086,12 @@ struct SpeakerReviewPane: View {
                 }
             }
             .padding(16)
+            if let onLinkTask, model.openReview?.recordId.isEmpty == false {
+                HStack {
+                    Button("Link to existing task", action: onLinkTask).buttonStyle(COSQuietButtonStyle())
+                    Spacer()
+                }.padding(.horizontal, 16).padding(.bottom, 12)
+            }
 
             Divider()
 

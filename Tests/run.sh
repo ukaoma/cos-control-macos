@@ -128,6 +128,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
 "$TMP/models-contract"
 zsh "$ROOT/Tests/run-simple-pet.sh" "$TMP/simple-pet-proof"
 zsh "$ROOT/Tests/run-session-open-recovery.sh"
+zsh "$ROOT/Tests/run-meeting-task-link.sh"
 # 0.5.232: the Markdown parser is pure Foundation and pinned by an EXECUTED contract
 # (the scribe's meeting, lists, tasks, tables, code, quotes, details, speaker lines).
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
@@ -2606,7 +2607,7 @@ need(re.search(r"openLibraryRow\s*=", library_opener.group(0)) is not None,
 speaker_mount = re.search(r"if model\.reviewRouteActive\s*\{\s*SpeakerReviewPane\((.*?)\)\s*\} else", activity, re.S)
 need(speaker_mount is not None and "onOpenMeeting: openMeetingFromSpeakers" in speaker_mount.group(1),
      "SpeakerReviewPane is not mounted with onOpenMeeting inside its route gate")
-open_meeting = re.search(r"private func openMeetingFromSpeakers\(\) \{.*?\n    \}", activity, re.S)
+open_meeting = re.search(r"private func openMeetingFromSpeakers\(linkTask: Bool\) \{.*?\n    \}", activity, re.S)
 need(open_meeting is not None, "openMeetingFromSpeakers not found")
 open_body = open_meeting.group(0)
 need(re.search(r"selectedLibraryRecordID\s*=\s*row\.id", open_body) is not None and "model.openLibraryMeeting(row)" in open_body

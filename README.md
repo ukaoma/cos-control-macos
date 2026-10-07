@@ -15,7 +15,7 @@ supported, but customers no longer need to install it. Setup downloads the COS
 server from npm and verifies it through the existing managed lifecycle. An
 internet connection and a signed-in supported AI provider are still required.
 
-## First run (0.5.264 candidate, not yet published)
+## First run (0.5.265 candidate, not yet published)
 
 The app opens a persistent welcome window only after proving there is no existing
 service, owner conflict, or unfinished transaction. Get started prepares Node if
@@ -67,7 +67,7 @@ may prompt existing users for permissions again.
 The onboarding QA ZIP is approximately 110 MiB with its bundled runtime. Publish
 the signed ZIP as a release asset (or equivalent HTTPS object download), and point
 the website and appcast at that asset. Do not commit it as a regular website Git
-file. The integrated candidate is 0.5.264 (build 317), including the 0.5.260 task-editor fixes, 0.5.261 onboarding the Cloud Puff default, and session-open recovery messages. Accepted notarized archives are frozen; do not rebuild changed code under their versions. The earlier onboarding-only preview used development baseline 0.5.259. Clean-Mac first launch and interactive permission migration remain publication gates.
+file. The integrated candidate is 0.5.265 (build 318), including the 0.5.260 task-editor fixes, 0.5.261 onboarding the Cloud Puff default, session-open recovery messages, and meeting-to-existing-task linking from Meetings and Speakers. Accepted notarized archives are frozen; do not rebuild changed code under their versions. The earlier onboarding-only preview used development baseline 0.5.259. Clean-Mac first launch and interactive permission migration remain publication gates.
 
 The controller stores immutable npm
 server generations under `~/Library/Application Support/COS Control` and uses

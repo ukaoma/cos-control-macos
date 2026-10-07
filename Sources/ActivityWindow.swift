@@ -515,6 +515,7 @@ struct ActivityWindow: View {
     @State private var meetingReturnToWork = false
     /// 0.5.259: the speaker review a meeting was opened from, so Back returns to it.
     @State private var meetingReturnSpeakerSessionID: String?
+    @State private var meetingTaskLink: LibraryMeeting?
     @State private var meetingWorkLoaded = false
     @State private var selectedSessionID: String?
     @State private var taskCapture = ""
@@ -701,7 +702,8 @@ struct ActivityWindow: View {
                             showsBackButton: false,
                             onNextUnnamed: openNextUnnamedReview,
                             nextUnnamedAvailable: nextUnnamedReview != nil,
-                            onOpenMeeting: openMeetingFromSpeakers
+                            onOpenMeeting: openMeetingFromSpeakers,
+                            onLinkTask: workConnectionsEnabled && !isolatedWorkPreview ? { openMeetingFromSpeakers(linkTask: true) } : nil
                         )
                     } else {
                         centeredProgress("Loading meeting…")
@@ -798,6 +800,9 @@ struct ActivityWindow: View {
         .background(COSPalette.panel)
         // 0.5.251: GOTCOS progress, disclosure and tint for every control in the window.
         .cosControlTheme()
+        .sheet(item: $meetingTaskLink) { meeting in
+            MeetingTaskLinkSheet(model: model, meeting: meeting, onOpenWork: openConnectedWork)
+        }
         .task {
             if connectedWorkTest {
                 await model.refresh(quiet: true)
@@ -1749,6 +1754,7 @@ struct ActivityWindow: View {
     private var connectedMeetingDetailSurface: some View {
         MeetingLibraryDetailPane(model: model, onReviewVoices: openVoiceReviewFromLibrary,
             onOpenSource: openLibrarySource, onReviewFollowUp: meetingWorkReviewAction,
+            onLinkTask: workConnectionsEnabled && !isolatedWorkPreview ? { meetingTaskLink = $0 } : nil,
             workConnections: meetingConnections, onOpenWork: meetingWorkOpenAction,
             onOpenSession: meetingSessionOpenAction)
             .task(id: selectedLibraryRecordID) { await loadMeetingConnections() }
@@ -2682,7 +2688,9 @@ struct ActivityWindow: View {
     /// in Meetings, with Back returning to the review. A meeting the loaded month does not list is read by its day, which
     /// leaves the Meetings list on its own month (QA G-W1, U-N1, U-N2). A miss says why, and says the meeting is absent
     /// only when every day it could be on answered in full.
-    private func openMeetingFromSpeakers() {
+    private func openMeetingFromSpeakers() { openMeetingFromSpeakers(linkTask: false) }
+
+    private func openMeetingFromSpeakers(linkTask: Bool) {
         guard let review = model.openReview else { return }
         let recordIds = [review.blendedRecordId ?? "", review.recordId]
         let sessionId = review.sessionId
@@ -2705,11 +2713,13 @@ struct ActivityWindow: View {
                 }
             }
             // The user may have moved on while the day loaded.
-            guard section == .speakers, selectedSpeakerSessionID == sessionId else { return }
+            guard section == .speakers, selectedSpeakerSessionID == sessionId,
+                  model.openReview?.recordId == review.recordId, model.openReview?.blendedRecordId == review.blendedRecordId else { return }
             guard let row else {
                 model.openMeetingNote = SpeakersMeetingLink.missNote(lookups)
                 return
             }
+            if linkTask { meetingTaskLink = row; return }
             meetingReturnWorkID = nil
             meetingReturnToWork = false
             meetingWorkLoaded = false
