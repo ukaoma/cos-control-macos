@@ -1,6 +1,6 @@
 ## 0.5.259 (build 312)
 
-- **Open meeting from Speakers.** A meeting's speaker review has an Open meeting button. It opens that meeting in Meetings, with its transcript, summary and files, and Back returns to the review. A merged meeting opens as the merged record, which is the row Meetings lists. A meeting from an earlier month loads that month first. When Meetings has no row for it, the review says so.
+- **Open meeting from Speakers.** A meeting's speaker review has an Open meeting button. It opens that meeting in Meetings, with its transcript, summary and files, and Back returns to the review. A merged meeting opens as the merged record, which is the row Meetings lists. A meeting the loaded month does not show is looked up by its own day, so a meeting from any day opens and the Meetings list stays on its month. When the lookup fails, the review says "Couldn't load this meeting" with the reason. It says the meeting isn't in the list only when every day it could be on was read in full.
 - **Nameless drops on a meeting get a time.** A screenshot or file dropped on a meeting without a name of its own is named for when it was dropped, like a paste: "Dropped screenshot 2026-10-06 at 22.56.12.png". Several in one drop are numbered (1), (2). Before, every one read "Dropped file.png". Drops on a Work card keep "Dropped file", because that is the name its suggestions replace.
 
 - **Needs you.** A line above the Activity cards lists what waits on you.
