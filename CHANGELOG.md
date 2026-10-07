@@ -1,6 +1,6 @@
 ## 0.5.266 (build 319)
 
-- Apply the GOTCOS checkbox style to Include completed tasks in the meeting-to-task picker. Includes the 0.5.265 meeting linking and prior onboarding improvements.
+- Apply the GOTCOS checkbox style to Include completed tasks and center task-row selection icons in the meeting-to-task picker. Includes the 0.5.265 meeting linking and prior onboarding improvements.
 - Replaces the unpublished 0.5.265 candidate after release QA found the unthemed toggle.
 
 ## 0.5.265 (build 318)

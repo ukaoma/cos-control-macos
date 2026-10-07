@@ -1869,7 +1869,7 @@ struct MeetingTaskLinkSheet: View {
                         ForEach(candidates, id: \.workSourceID) { task in
                             let reason = reference.flatMap { MeetingTaskLinkOptions.refusal(task, meeting: $0) }
                             Button { selected = task; error = nil } label: {
-                                HStack(alignment: .top, spacing: 10) {
+                                HStack(alignment: .center, spacing: 10) {
                                     Image(systemName: selected?.workSourceID == task.workSourceID ? "largecircle.fill.circle" : "circle")
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(task.text.isEmpty ? task.title : task.text).font(COSType.body(12, weight: .medium))
