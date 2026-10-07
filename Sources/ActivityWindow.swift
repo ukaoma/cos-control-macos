@@ -998,46 +998,209 @@ struct ActivityWindow: View {
 
     private var activityHome: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                HStack(alignment: .center, spacing: 12) {
-                    COSLockupView(height: 17)
-                        // NOT COSPalette.ink: that is a fixed dark, correct on the brand
-                        // tile and black-on-black on the espresso panel in dark mode.
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    COSGotcosCaption(size: 12)
+            // 0.5.259: one clock for the Needs you line, the cards and the desks, so a quiet session reads the same in all
+            // three. It ticks each minute for the ages ("12 min").
+            TimelineView(.periodic(from: .now, by: 60)) { timeline in
+                let now = timeline.date
+                let seats = homeSeats(now: now)
+                let desks = seats.map(ActivityHome.desks)
+                let sources = homeNeedSources(desks: desks)
+                VStack(alignment: .leading, spacing: 22) {
+                    HStack(alignment: .center, spacing: 12) {
+                        COSLockupView(height: 17)
+                            // NOT COSPalette.ink: that is a fixed dark, correct on the brand
+                            // tile and black-on-black on the espresso panel in dark mode.
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        COSGotcosCaption(size: 12)
+                    }
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Activity")
+                            .font(COSType.display(28, weight: .medium))
+                        Text("Views into the work your COS already holds.")
+                            .font(COSType.display(13, italic: true))
+                            .foregroundStyle(.secondary)
+                    }
+                    needsYouLine(ActivityHome.needs(sources), available: sources.anyAvailable, now: now)
+                    homeGrid(homeInputs(now: now, seats: seats), desks: desks ?? [], now: now)
                 }
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Activity")
-                        .font(COSType.display(28, weight: .medium))
-                    Text("Views into the work your COS already holds.")
-                        .font(COSType.display(13, italic: true))
-                        .foregroundStyle(.secondary)
-                }
+                .padding(28)
+                // 0.5.259: wider than the 900 pt of before, so a card's lead line has room (the mock's home fills the
+                // window); a very wide window still keeps the cards a readable width.
+                .frame(maxWidth: 1120, alignment: .leading)
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
 
-                // Four columns, two rows: seven tiles stay above the fold. Three
-                // columns would put Tasks on a third row at the minimum window height.
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 4), spacing: 14) {
-                    ForEach(Array(ActivitySection.allCases.enumerated()), id: \.element.id) { index, item in
-                        Button { select(item) } label: {
-                            activityHomeCard(item, index: index)
-                        }
-                        .buttonStyle(.plain)
-                        // Plain and explicit. The earlier one-liner also cleared state for
-                        // a tile that was no longer hovered, which races the enter event of
-                        // the tile you just moved onto.
-                        .onHover { inside in
-                            if inside { hoveredSection = item }
-                            else if hoveredSection == item { hoveredSection = nil }
-                        }
+    /// 0.5.259 board 1: what waits on Miles, oldest first, and Next ⌘] to the oldest. ⌘] is also Speakers' Next to name;
+    /// the two never both respond, because this line lives only on the home and the speaker review only on its own route
+    /// of the same if/else chain (activityFrame). Tests/activity-home-pins.py pins both.
+    @ViewBuilder
+    private func needsYouLine(_ needs: [ActivityHome.Need], available: Bool, now: Date) -> some View {
+        switch ActivityHome.line(needs, available: available) {
+        case .hidden:
+            EmptyView()
+        case .quiet:
+            Text(ActivityHome.quietLine)
+                .font(COSType.body(12.5))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 10)
+                .overlay(alignment: .top) { needsRule }
+                .overlay(alignment: .bottom) { needsRule }
+        case .items:
+            HStack(alignment: .center, spacing: 16) {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Text("Needs you")
+                    Text(needs.count.formatted()).foregroundStyle(COSPalette.amber).monospacedDigit()
+                }
+                .font(COSType.display(15.5, weight: .medium))
+                .fixedSize()
+                // Each item starts with its dot, which is what separates it from the one before, also where a row wraps.
+                ChipFlowLayout(spacing: 22, lineSpacing: 7) {
+                    ForEach(needs) { need in
+                        needRow(need, now: now)
                     }
                 }
-                .onAppear { painted = true }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Button {
+                    if let next = ActivityHome.nextTarget(needs) { openNeed(next) }
+                } label: {
+                    HStack(spacing: 7) {
+                        Text(ActivityHome.nextLabel(needs)).font(COSType.body(12, weight: .semibold))
+                        Text("⌘]")
+                            .font(COSType.mono(10))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).stroke(COSPalette.line, lineWidth: 1))
+                    }
+                    .foregroundStyle(COSPalette.accent)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 5)
+                    .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(COSPalette.gold.opacity(0.07)))
+                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(COSPalette.gold, lineWidth: 1))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut("]", modifiers: .command)
+                .help("Open the oldest thing waiting on you (⌘])")
+                .fixedSize()
             }
-            .padding(28)
-            .frame(maxWidth: 900, alignment: .leading)
-            .frame(maxWidth: .infinity)
+            .padding(.vertical, 11)
+            .overlay(alignment: .top) { needsRule }
+            .overlay(alignment: .bottom) { needsRule }
         }
+    }
+
+    private var needsRule: some View { Rectangle().fill(COSPalette.gold.opacity(0.28)).frame(height: 1) }
+
+    /// One item: a filled amber dot when a session asked (a fact), an open one when it is only quiet ("may need you",
+    /// never a fact), a grey one for a count. Click opens it in its own section.
+    private func needRow(_ need: ActivityHome.Need, now: Date) -> some View {
+        Button { openNeed(need) } label: {
+            HStack(spacing: 6) {
+                Group {
+                    if need.kind == .maybe {
+                        Circle().strokeBorder(COSPalette.amber, lineWidth: 1.4)
+                    } else if need.isSession {
+                        Circle().fill(COSPalette.amber)
+                    } else {
+                        Circle().fill(Color.secondary.opacity(0.55))
+                    }
+                }
+                .frame(width: 7, height: 7)
+                if let desk = need.desk {
+                    ActivityProviderMark(session: desk.session, size: 11).foregroundStyle(.secondary)
+                }
+                // What a session did ("asked you a question") is the fact; its title gives way first. For a count, the
+                // count stays whole and the meeting it names gives way.
+                Text(need.what)
+                    .font(COSType.body(12.5, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .layoutPriority(need.isSession ? 0 : 1)
+                if !need.why.isEmpty {
+                    Text(need.why).font(COSType.body(12.5)).foregroundStyle(.secondary).lineLimit(1)
+                        .layoutPriority(need.isSession ? 1 : 0)
+                }
+                if let age = need.age(now: now) {
+                    Text(age).font(COSType.mono(10.5)).foregroundStyle(.tertiary).fixedSize()
+                }
+            }
+            .frame(maxWidth: 360, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(need.desk.map { $0.help(now: now) } ?? [need.what, need.why].filter { !$0.isEmpty }.joined(separator: " · "))
+    }
+
+    /// Each item in its own section: a session as Sessions opens it, the newest meeting with voices to name in Speakers'
+    /// review, Memories, and Work on what needs attention.
+    private func openNeed(_ need: ActivityHome.Need) {
+        switch need.kind {
+        case .asked, .maybe:
+            if let desk = need.desk { openDesk(desk) }
+        case .voices:
+            select(.speakers)
+            guard let meeting = need.meeting else { return }
+            speakerSubview = .meetings
+            voiceParentName = nil
+            selectedSpeakerSessionID = meeting.sessionId
+            model.openSpeakerReview(meeting)
+        case .memories: select(.memories)
+        case .work:
+            select(.work)
+            workWorkspaceState.query = ""
+            workWorkspaceState.domain = nil
+            workWorkspaceState.scope = .attention
+            workWorkspaceState.focusOverride = true
+        }
+    }
+
+    /// A desk, or a session item, opens its session the way a Sessions row does.
+    private func openDesk(_ desk: ActivityHome.Desk) {
+        select(.sessions)
+        selectedSessionID = desk.openRow.id
+        model.openClaudeSession(desk.openRow)
+    }
+
+    /// Four columns, two rows: seven tiles stay above the fold. Three columns would put Work on a third row at the minimum
+    /// window height. 0.5.259: each row is as tall as its tallest card (a card's body now varies), and a tap on a card
+    /// opens its tab while its desks take their own clicks (a Button card would swallow them).
+    private func homeGrid(_ inputs: ActivityHome.CardInputs, desks: [ActivityHome.Desk], now: Date) -> some View {
+        let tiles = Array(ActivitySection.allCases.enumerated())
+        let rows = stride(from: 0, to: tiles.count, by: 4).map { Array(tiles[$0..<min($0 + 4, tiles.count)]) }
+        return VStack(alignment: .leading, spacing: 14) {
+            ForEach(rows.indices, id: \.self) { row in
+                HStack(alignment: .top, spacing: 14) {
+                    ForEach(rows[row], id: \.element.id) { index, item in
+                        activityHomeCard(item, index: index, body: homeCardBody(item, inputs),
+                                         desks: item == .sessions ? desks : [], now: now)
+                            .onTapGesture { select(item) }
+                            .accessibilityElement(children: .contain)
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityLabel("Open \(item.title)")
+                            .accessibilityAction { select(item) }
+                            // The description the card used to print, now its help text.
+                            .help(item.summary)
+                            // Plain and explicit. The earlier one-liner also cleared state for
+                            // a tile that was no longer hovered, which races the enter event of
+                            // the tile you just moved onto.
+                            .onHover { inside in
+                                if inside { hoveredSection = item }
+                                else if hoveredSection == item { hoveredSection = nil }
+                            }
+                    }
+                    ForEach(rows[row].count..<4, id: \.self) { _ in
+                        Color.clear.frame(maxWidth: .infinity, maxHeight: 0)
+                    }
+                }
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .onAppear { painted = true }
     }
 
     /// One gateway tile.
@@ -1047,7 +1210,12 @@ struct ActivityWindow: View {
     /// geometry, so the card curved away and the bar stayed straight. Nothing sits on the
     /// edge now. The stipple is the card's paper — gotcos `.chapcard` 9pt gold dots, a
     /// child clipped by the tile — not a corner glyph sitting on espresso.
-    private func activityHomeCard(_ item: ActivitySection, index: Int) -> some View {
+    ///
+    /// 0.5.259: the card says what is true now (ActivityHome.card): a lead line, amber when it waits on Miles, at most two
+    /// sub lines, and a quiet footer naming what the big number counts. The mono caps caption is gone (it read as an
+    /// eyebrow kicker) and the description moved to the card's help text.
+    private func activityHomeCard(_ item: ActivitySection, index: Int, body: ActivityHome.CardBody,
+                                  desks: [ActivityHome.Desk], now: Date) -> some View {
         let hot = hoveredSection == item
         // anime.stagger(45) is just an index-scaled delay.
         let step = Double(index) * 0.045
@@ -1075,7 +1243,7 @@ struct ActivityWindow: View {
             .wipeIn(painted, delay: step + 0.33, reduceMotion: reduceMotion)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.18).delay(hot ? 0.07 : 0),
                        value: hot)
-        let metric = Text(homeMetric(item).count)
+        let metric = Text(body.count)
             .font(COSType.display(22, weight: .medium))
             .monospacedDigit()
             .foregroundStyle(hot ? COSPalette.gold : Color.primary)
@@ -1101,21 +1269,36 @@ struct ActivityWindow: View {
                 }
             }
 
-            Text(item.summary)
-                .font(COSType.body(11.5))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 4) {
+                if !desks.isEmpty {
+                    deskStrip(desks, now: now).padding(.bottom, 3)
+                }
+                if !body.lead.isEmpty {
+                    leadLine(body.lead)
+                        .font(COSType.body(12.5, weight: .medium))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                ForEach(Array(body.subs.prefix(2).enumerated()), id: \.offset) { _, line in
+                    Text(line)
+                        .font(COSType.body(11.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.top, 2)
 
             Spacer(minLength: 0)
 
-            Text(homeMetric(item).unit)
-                .font(COSType.mono(9.5))
-                .tracking(hot ? 1.1 : 0.6)
-                .foregroundStyle(hot ? COSPalette.gold : Color.secondary.opacity(0.75))
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.24).delay(hot ? 0.13 : 0),
-                           value: hot)
+            if let footer = body.footer {
+                // What the big number counts, in sentence case and quiet.
+                Text(footer)
+                    .font(COSType.mono(10))
+                    .foregroundStyle(Color.secondary.opacity(0.8))
+                    .lineLimit(1)
+            }
         }
-        .frame(maxWidth: .infinity, minHeight: 126, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 138, maxHeight: .infinity, alignment: .topLeading)
         .padding(.horizontal, 16)
         .padding(.vertical, 15)
         .background(hot ? COSPalette.gold.opacity(0.07) : Color.clear)
@@ -1137,82 +1320,109 @@ struct ActivityWindow: View {
         .contentShape(RoundedRectangle(cornerRadius: 14))
     }
 
+    /// A lead line whose waiting part alone is amber ("2 working · 1 waiting on you").
+    private func leadLine(_ spans: [ActivityHome.Span]) -> Text {
+        spans.reduce(Text("")) { line, span in
+            line + Text(span.text).foregroundStyle(span.waits ? COSPalette.amber : Color.primary)
+        }
+    }
+
+    /// 0.5.259 board 3: a desk per running, waiting or finished-today session, at most 12, then "+N".
+    private func deskStrip(_ desks: [ActivityHome.Desk], now: Date) -> some View {
+        let strip = ActivityHome.strip(desks)
+        return ChipFlowLayout(spacing: 5) {
+            ForEach(strip.shown) { desk in
+                ActivityDeskMark(desk: desk, now: now, reduceMotion: reduceMotion) { openDesk(desk) }
+            }
+            if strip.more > 0 {
+                Text("+\(strip.more)")
+                    .font(COSType.mono(10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(height: 22)
+                    .padding(.horizontal, 3)
+                    .help("\(strip.more) more in Sessions")
+            }
+        }
+    }
+
     /// The count and what it counts, read from the model rather than scraped out of
-    /// `homeStat`'s prose.
+    /// prose.
     ///
     /// The first cut DID scrape it, taking leading digits and calling the remainder the
     /// unit. That turned "50 of 5528" into `50 / OF 5528` and "30 shown · 11 active" into
-    /// `30 / SHOWN · 11 ACTIVE` — the smaller number promoted and the label left a
+    /// `30 / SHOWN · 11 ACTIVE` — the smaller number promoted and the label a
     /// fragment. `status.memoryCount` and `status.threadCount` were there the whole time.
     private func formatted(_ value: Int) -> String {
         let f = NumberFormatter(); f.numberStyle = .decimal
         return f.string(from: NSNumber(value: value)) ?? "\(value)"
     }
 
-    private func homeMetric(_ item: ActivitySection) -> (count: String, unit: String) {
-        func n(_ value: Int) -> String { formatted(value) }
-        switch item {
-        case .messages:
-            return model.recentMessages.isEmpty ? ("—", "REFRESH") : (n(model.recentMessages.count), "RECENT")
-        case .speakers:
-            return model.voiceDirectory.isEmpty ? ("—", "REFRESH") : (n(model.voiceDirectory.count), "ENROLLED")
-        case .meetings:
-            if !model.libraryMeetings.isEmpty {
-                return (n(model.libraryMeetings.count), MeetingMonth.title(model.libraryMonth).uppercased())
-            }
-            if model.status.meetingLibraryCount > 0 { return (n(model.status.meetingLibraryCount), "STORED") }
-            return ("—", "BY DAY")
-        case .memories:
-            if let review = model.status.learningToReview, review > 0 { return (n(review), "TO REVIEW") }
-            guard model.status.memoryAvailable == true else { return ("—", "SETUP NEEDED") }
-            return (n(model.status.memoryCount), "STORED")
-        case .threads:
-            guard model.status.threadsAvailable == true else { return ("—", "SETUP NEEDED") }
-            return (n(model.status.threadCount), "TRACKED")
-        case .sessions:
-            return model.claudeSessions.isEmpty ? ("—", "REFRESH") : (n(model.claudeSessions.count), "ON DISK")
-        case .tasks:
-            return model.tasks.isEmpty ? ("—", "REFRESH") : (n(model.tasks.count), "OPEN")
-        case .work:
-            return model.workYourMoveAvailable ? (n(model.workYourMoveTotal), "YOUR MOVE") : ("—", "REFRESH")
-        }
+    private func homeCardBody(_ item: ActivitySection, _ inputs: ActivityHome.CardInputs) -> ActivityHome.CardBody {
+        ActivityHome.Card(rawValue: item.rawValue).map { ActivityHome.card($0, inputs) } ?? ActivityHome.CardBody()
     }
 
-    private func homeStat(_ item: ActivitySection) -> String {
-        switch item {
-        case .messages:
-            return model.recentMessages.isEmpty ? "Refresh to load" : "\(model.recentMessages.count) recent"
-        case .speakers:
-            return model.voiceDirectory.isEmpty ? "Refresh to load" : "\(model.voiceDirectory.count) enrolled voices"
-        case .meetings:
-            if !model.libraryMeetings.isEmpty {
-                return "\(model.libraryMeetings.count) in \(MeetingMonth.title(model.libraryMonth))"
-            }
-            if model.status.meetingLibraryCount > 0 {
-                return "\(model.status.meetingLibraryCount) stored"
-            }
-            return "Browse by day"
-        case .memories:
-            if let review = model.status.learningToReview, review > 0 {
-                return "\(review) to review" + (model.status.graphIndexState.map { " · index \($0)" } ?? "")
-            }
-            return model.status.memoryAvailable == true
-                ? (model.memoryHeadline.isEmpty ? "Ready" : model.memoryHeadline)
-                : "Setup needed"
-        case .threads:
-            return model.status.threadsAvailable == true
-                ? (model.threadHeadline.isEmpty ? "Ready" : model.threadHeadline)
-                : "Setup needed"
-        case .sessions:
-            if model.claudeSessions.isEmpty { return "Refresh to load" }
-            return "\(model.claudeSessions.count) session(s)"
-        case .tasks:
-            if model.tasks.isEmpty { return "Refresh to load" }
-            let flagged = model.tasks.filter { $0.missed == true || $0.failed == true }.count
-            return flagged > 0 ? "\(flagged) need attention" : "\(model.tasks.count) open"
-        case .work:
-            return "Meeting follow-through"
+    /// 0.5.259: the sessions the home reads, nil until a session list has loaded. With the pet on, its live list decides
+    /// what is running or waiting: the rows the pet draws, so the two never disagree.
+    private func homeSeats(now: Date) -> [ActivityHome.Seat]? {
+        let live: [ClaudeSession]? = model.petEnabled ? model.petSessions : nil
+        guard !model.claudeSessions.isEmpty || !(live ?? []).isEmpty else { return nil }
+        return ActivityHome.seats(list: model.claudeSessions, live: live, now: now)
+    }
+
+    /// Voices to name, from the Speakers meetings to review (nil until they load).
+    private var homeVoices: ActivityHome.VoicesToName? {
+        ActivityHome.voicesToName(model.reviewableMeetings) { model.voiceTag(for: $0) }
+    }
+
+    /// Work's rows, the ones its header counts; nil until the board has loaded.
+    private var homeWorkItems: [WorkWorkspaceItem]? {
+        guard workConnectionsEnabled, !isolatedWorkPreview, model.workTasksError == nil,
+              model.workTasksComplete || !model.workTasks.isEmpty else { return nil }
+        return workWorkspaceState.board(model: model, handoffStore: handoffStore, reviewStore: reviewStore).items
+    }
+
+    /// When the oldest item to review was written, once the review list has loaded.
+    private var homeOldestReview: Date? {
+        model.toReviewEvents.compactMap { ActivityHome.stamp($0.ts) }.min()
+    }
+
+    private func homeNeedSources(desks: [ActivityHome.Desk]?) -> ActivityHome.NeedSources {
+        ActivityHome.NeedSources(desks: desks, voices: homeVoices, memoriesToReview: model.status.learningToReview,
+                                 memoriesOldest: homeOldestReview, workAttention: homeWorkItems?.filter(\.needsAttention).count)
+    }
+
+    private func homeInputs(now: Date, seats: [ActivityHome.Seat]?) -> ActivityHome.CardInputs {
+        var input = ActivityHome.CardInputs()
+        input.now = now
+        input.clock = model.clockStyle
+        input.messages = model.recentMessages
+        input.messagesStatus = model.recentGlassesStatus
+        input.enrolled = model.voiceDirectory.isEmpty ? nil : model.voiceDirectory.count
+        input.voices = homeVoices
+        if !model.libraryMeetings.isEmpty {
+            input.monthCount = model.libraryMeetings.count
+            input.monthTitle = MeetingMonth.title(model.libraryMonth)
         }
+        input.storedMeetings = model.status.meetingLibraryCount > 0 ? model.status.meetingLibraryCount : nil
+        input.recentMeetings = model.reviewableMeetings
+        input.toReview = model.status.learningToReview
+        input.oldestReview = homeOldestReview
+        input.memories = model.status.memoryAvailable == true ? model.status.memoryCount : nil
+        input.memorySetupNeeded = model.status.memoryAvailable == false
+        input.threads = model.status.threadsAvailable == true ? model.status.threadCount : nil
+        input.threadSetupNeeded = model.status.threadsAvailable == false
+        input.activeThreads = model.status.activeThreadCount
+        input.latestThread = model.threadRecords.filter { !$0.isResolved }.max { $0.createdAt < $1.createdAt }?.title
+        input.sessions = seats.map(ActivityHome.tally)
+        if let items = homeWorkItems {
+            input.workAttention = items.filter(\.needsAttention).count
+            input.workInProgress = items.filter(\.inProgress).count
+            if model.workIntake.available, model.workIntakeError == nil {
+                input.newToSort = model.workIntake.newCount + WorkSortGroup.mentioned(model.workTasks, catchUp: false, domain: nil).count
+            }
+        }
+        input.tasks = model.tasks.isEmpty ? nil : model.tasks
+        return input
     }
 
     // MARK: - Lists
@@ -5330,6 +5540,14 @@ struct ActivityWindow: View {
         if model.tasks.isEmpty { await model.loadTasks(force: true) }
         await model.loadDomains()
         reconcileTaskDomain()
+        // 0.5.259: the home's Work card and Needs you line read Work's board, its meeting reviews and Intake, and the
+        // Memories card dates its oldest wait from the review list: the loaders Work and Memories already use.
+        if workConnectionsEnabled, model.workTasks.isEmpty {
+            await model.loadWorkTasks()
+            await reviewStore.refresh()
+            await model.loadWorkIntake()
+        }
+        if (model.status.learningToReview ?? 0) > 0, model.toReviewEvents.isEmpty { await model.loadToReviewEvents() }
     }
 
     private func load(_ item: ActivitySection) async {
@@ -6010,6 +6228,104 @@ struct MeetingStatusPills: View {
 
 
 // ── Memories web host ─────────────────────────────────────────────
+
+/// A session's provider mark (Resources/mark-claude.svg, mark-codex.svg, mark-cursor.svg), drawn the way Sessions draws
+/// it: a template image tinted by its caller.
+struct ActivityProviderMark: View {
+    let session: ClaudeSession
+    var size: CGFloat = 12
+
+    var body: some View {
+        switch session.petProviderMark {
+        case .asset(let name):
+            Image(nsImage: COSBrand.svg(name))
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .frame(width: size, height: size)
+        case .symbol(let name):
+            Image(systemName: name)
+                .font(.system(size: size - 1, weight: .semibold))
+        }
+    }
+}
+
+/// 0.5.259 board 3: one session's desk on the Sessions card. Its provider mark, colored by state: working (gold, with a
+/// slow glow that is still under Reduce Motion), asked you something (amber, with a dot), quiet and may need you (dashed
+/// amber), finished today (green, with a tick). Help text: "<title> · <state> · <age>". A click opens the session the way
+/// Sessions does. It plays no sound.
+private struct ActivityDeskMark: View {
+    let desk: ActivityHome.Desk
+    let now: Date
+    let reduceMotion: Bool
+    let open: () -> Void
+    @State private var glow = false
+
+    private var tint: Color {
+        switch desk.state {
+        case .working: COSPalette.gold
+        case .asked, .maybe: COSPalette.amber
+        case .finished: COSPalette.green
+        }
+    }
+
+    var body: some View {
+        Button(action: open) {
+            ActivityProviderMark(session: desk.session, size: 12)
+                .foregroundStyle(tint)
+                .frame(width: 26, height: 22)
+                .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(desk.state == .asked ? COSPalette.amber.opacity(0.14) : COSPalette.raised))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(tint.opacity(desk.state == .finished ? 0.7 : 1),
+                                      style: StrokeStyle(lineWidth: desk.state == .maybe ? 1.4 : 1, dash: desk.state == .maybe ? [3, 2] : []))
+                }
+                .background {
+                    // The glow: a soft gold ring that breathes while the session works.
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(COSPalette.gold.opacity(glow ? 0.30 : 0), lineWidth: 4)
+                        .padding(-2)
+                }
+                .overlay(alignment: .topTrailing) {
+                    if desk.state == .asked {
+                        Circle().fill(COSPalette.amber)
+                            .frame(width: 7, height: 7)
+                            .overlay(Circle().stroke(COSPalette.card, lineWidth: 1.5))
+                            .offset(x: 3, y: -3)
+                    }
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if desk.state == .finished {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 6.5, weight: .heavy))
+                            .foregroundStyle(COSPalette.green)
+                            .frame(width: 11, height: 11)
+                            .background(Circle().fill(COSPalette.card))
+                            .offset(x: 4, y: 4)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(desk.help(now: now))
+        .accessibilityLabel(desk.help(now: now))
+        .onAppear { breathe() }
+        .onChange(of: reduceMotion) { _, _ in breathe() }
+        .onChange(of: desk.state) { _, _ in breathe() }
+    }
+
+    /// The glow runs only where ActivityHome says it may: a working desk, and never under Reduce Motion.
+    private func breathe() {
+        guard desk.state.glows(reduceMotion: reduceMotion) else {
+            var still = Transaction()
+            still.disablesAnimations = true
+            withTransaction(still) { glow = false }
+            return
+        }
+        withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { glow = true }
+    }
+}
 
 /// Hosts Resources/memories/memories.html. The page never holds the API token:
 /// it posts `{id, op, args}` and this coordinator runs the helper (or a native

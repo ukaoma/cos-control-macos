@@ -9215,3 +9215,478 @@ struct WorkSortGroup: Identifiable {
         }
     }
 }
+
+// MARK: - Activity home: Needs you, live cards, desks (0.5.259)
+
+/// 0.5.259 (Miles, 2026-10-06; boards 1 to 3 of MOCK_activity_work_search_2026-10-06): the Activity home says what is true
+/// now. A Needs you line above the cards, a lead line on every card, and a desk per session on the Sessions card. Pure, and
+/// reads only what Control already holds, so Tests/ActivityHomeChecks.swift executes every rule. A source Control has not
+/// loaded is nil here, and its item or line is left out: never a made-up 0.
+enum ActivityHome {
+    /// A session mid-turn this long without a transcript write may be sitting on a permission prompt COS cannot see. It is
+    /// never stated as fact: "quiet, may need you", with an open dot.
+    static let quietAfter: TimeInterval = 15 * 60
+    /// Desks drawn before "+N".
+    static let deskCap = 12
+    static let quietLine = "Nothing is waiting on you."
+
+    // MARK: Desks
+
+    enum DeskState: String, Sendable {
+        case asked, maybe, working, finished
+
+        var label: String {
+            switch self {
+            case .asked: "asked you something"
+            case .maybe: "quiet, may need you"
+            case .working: "working"
+            case .finished: "finished today"
+            }
+        }
+        /// Strip order: what waits on Miles first, then work in flight, then today's finishes.
+        var rank: Int {
+            switch self {
+            case .asked: 0
+            case .maybe: 1
+            case .working: 2
+            case .finished: 3
+            }
+        }
+        /// Only a working desk glows, and never under Reduce Motion: there it is drawn still.
+        func glows(reduceMotion: Bool) -> Bool { self == .working && !reduceMotion }
+    }
+
+    /// One session as the home reads it: the row whose state it shows, the row Sessions opens (the list's, which carries
+    /// the full id), its state (nil: idle, not today), and whether the list holds it (the big number counts the list).
+    struct Seat {
+        let row: ClaudeSession
+        let open: ClaudeSession
+        let state: DeskState?
+        let inList: Bool
+    }
+
+    struct Desk: Identifiable {
+        let session: ClaudeSession
+        let openRow: ClaudeSession
+        let state: DeskState
+        /// When it started waiting (asked), or its last write (every other state).
+        let since: Date?
+        var id: String { session.id }
+
+        var stateLabel: String { state == .asked && session.state == "error" ? "stopped with an error" : state.label }
+        /// "<title> · <state> · <age>".
+        func help(now: Date) -> String {
+            ([session.title, stateLabel] + [since.map { ActivityHome.age($0, now: now) }].compactMap { $0 }).joined(separator: " · ")
+        }
+    }
+
+    /// A session's desk state. `live`: its state is current (it came from the live list, or there is no live list). A
+    /// row the live list does not carry is not running or waiting any more, whatever its last snapshot said.
+    static func deskState(_ session: ClaudeSession, live: Bool, now: Date, calendar: Calendar = .current) -> DeskState? {
+        guard !session.isKeepWarm else { return nil }
+        if live {
+            if ClaudeSession.needsAPerson(session) { return .asked }
+            if session.isPetWorking {
+                // A run the COS server holds (a scheduled job, a Work New session) cannot stop on a prompt.
+                if !session.heldByServer, let updated = session.updatedDate, now.timeIntervalSince(updated) >= quietAfter { return .maybe }
+                return .working
+            }
+        }
+        if let updated = session.updatedDate, calendar.isDate(updated, inSameDayAs: now) { return .finished }
+        return nil
+    }
+
+    /// The pet's live list (petSessions) when the pet is on, so the home and the pet never disagree; the Sessions list
+    /// otherwise. Live rows are matched to list rows by `ClaudeSession.sameSession` (the live list may carry a short id).
+    static func seats(list: [ClaudeSession], live: [ClaudeSession]?, now: Date, calendar: Calendar = .current) -> [Seat] {
+        let real = list.filter { !$0.isKeepWarm }
+        guard let live else {
+            return real.map { Seat(row: $0, open: $0, state: deskState($0, live: true, now: now, calendar: calendar), inList: true) }
+        }
+        var seats: [Seat] = []
+        var taken = Set<String>()
+        var liveSeen: [ClaudeSession] = []
+        for row in live where !row.isKeepWarm {
+            guard !liveSeen.contains(where: { ClaudeSession.sameSession($0.id, row.id) }) else { continue }
+            liveSeen.append(row)
+            let listed = real.first { !taken.contains($0.id) && ClaudeSession.sameSession($0.id, row.id) }
+            if let listed { taken.insert(listed.id) }
+            seats.append(Seat(row: row, open: listed ?? row, state: deskState(row, live: true, now: now, calendar: calendar), inList: listed != nil))
+        }
+        for row in real where !taken.contains(row.id) {
+            seats.append(Seat(row: row, open: row, state: deskState(row, live: false, now: now, calendar: calendar), inList: true))
+        }
+        return seats
+    }
+
+    /// Running, waiting and finished-today sessions, never a scheduled job (Sessions lists those apart). What waits on
+    /// Miles leads, oldest first; then working and finished, newest first.
+    static func desks(_ seats: [Seat]) -> [Desk] {
+        seats.compactMap { seat -> Desk? in
+            guard let state = seat.state, !seat.row.isScheduledJob else { return nil }
+            let since = state == .asked ? (stamp(seat.row.stateSince) ?? seat.row.updatedDate) : seat.row.updatedDate
+            return Desk(session: seat.row, openRow: seat.open, state: state, since: since)
+        }.sorted { a, b in
+            if a.state.rank != b.state.rank { return a.state.rank < b.state.rank }
+            let x = a.since ?? .distantPast, y = b.since ?? .distantPast
+            if x != y { return a.state.rank <= DeskState.maybe.rank ? x < y : x > y }
+            return a.id < b.id
+        }
+    }
+
+    /// At most `deskCap` desks, then "+N".
+    static func strip(_ desks: [Desk]) -> (shown: [Desk], more: Int) {
+        (Array(desks.prefix(deskCap)), max(0, desks.count - deskCap))
+    }
+
+    struct SessionTally: Equatable {
+        var onDisk = 0, working = 0, asked = 0, finished = 0, idle = 0
+    }
+
+    /// The Sessions card's numbers, as its desks show them: a quiet desk is neither working nor waiting (the Needs you
+    /// line says it may need Miles). Idle: listed sessions with nothing today.
+    static func tally(_ seats: [Seat]) -> SessionTally {
+        var tally = SessionTally()
+        tally.onDisk = seats.filter(\.inList).count
+        for desk in desks(seats) {
+            switch desk.state {
+            case .asked: tally.asked += 1
+            case .working: tally.working += 1
+            case .maybe: break
+            case .finished: tally.finished += 1
+            }
+        }
+        tally.idle = seats.filter { $0.inList && $0.state == nil }.count
+        return tally
+    }
+
+    // MARK: Needs you
+
+    /// Voices still to name across the recent saved meetings (the Speakers meetings to review).
+    struct VoicesToName {
+        let voices: Int
+        let meetings: Int
+        let newest: ReviewableMeeting?
+    }
+
+    /// nil until Speakers has loaded its meetings. Only a meeting the server reports with unnamed voices counts; a meeting
+    /// from an older server that does not say is never counted as zero or as waiting.
+    static func voicesToName(_ meetings: [ReviewableMeeting], tag: (ReviewableMeeting) -> MeetingVoiceTag?) -> VoicesToName? {
+        guard !meetings.isEmpty else { return nil }
+        var voices = 0
+        var waiting: [ReviewableMeeting] = []
+        for meeting in meetings {
+            if case .needsNames(let count) = tag(meeting), count > 0 { voices += count; waiting.append(meeting) }
+        }
+        let newest = waiting.max { ($0.date, $0.time, $1.title) < ($1.date, $1.time, $0.title) }
+        return VoicesToName(voices: voices, meetings: waiting.count, newest: newest)
+    }
+
+    struct Need: Identifiable {
+        enum Kind: String { case asked, maybe, voices, memories, work }
+        let kind: Kind
+        let what: String
+        let why: String
+        let since: Date?
+        var desk: Desk? = nil
+        var meeting: ReviewableMeeting? = nil
+        var id: String { kind.rawValue + ":" + (desk?.id ?? meeting?.sessionId ?? "") }
+        /// Filled dot: a fact. Open dot: "may need you", never a fact.
+        var isFact: Bool { kind != .maybe }
+        var isSession: Bool { kind == .asked || kind == .maybe }
+        func age(now: Date) -> String? { isSession ? since.map { ActivityHome.age($0, now: now) } : nil }
+    }
+
+    struct NeedSources {
+        /// nil: no session list yet.
+        var desks: [Desk]?
+        /// nil: Speakers has not loaded its meetings.
+        var voices: VoicesToName?
+        /// nil: a server that does not report the count.
+        var memoriesToReview: Int?
+        var memoriesOldest: Date?
+        /// nil: Work has not loaded, or is off.
+        var workAttention: Int?
+        var anyAvailable: Bool { desks != nil || voices != nil || memoriesToReview != nil || workAttention != nil }
+    }
+
+    static func needs(_ sources: NeedSources, calendar: Calendar = .current) -> [Need] {
+        var out: [Need] = []
+        for desk in sources.desks ?? [] {
+            switch desk.state {
+            case .asked:
+                out.append(Need(kind: .asked, what: desk.session.title,
+                                why: desk.session.state == "error" ? "stopped with an error" : "asked you a question",
+                                since: desk.since, desk: desk))
+            case .maybe:
+                out.append(Need(kind: .maybe, what: desk.session.title, why: "quiet, may need you", since: desk.since, desk: desk))
+            case .working, .finished:
+                break
+            }
+        }
+        if let voices = sources.voices, voices.voices > 0 {
+            out.append(Need(kind: .voices, what: voices.voices == 1 ? "1 voice to name" : "\(voices.voices) voices to name",
+                            why: voices.newest?.title ?? "", since: voices.newest.flatMap { meetingDate($0, calendar: calendar) },
+                            meeting: voices.newest))
+        }
+        if let count = sources.memoriesToReview, count > 0 {
+            out.append(Need(kind: .memories, what: count == 1 ? "1 memory" : "\(count) memories", why: "to review", since: sources.memoriesOldest))
+        }
+        if let count = sources.workAttention, count > 0 {
+            out.append(Need(kind: .work, what: count == 1 ? "1 work item" : "\(count) work items",
+                            why: count == 1 ? "needs attention" : "need attention", since: nil))
+        }
+        return ordered(out)
+    }
+
+    /// Oldest first. An item with no date (Work; memories before their list loads) follows the dated ones in the order
+    /// it was listed: it is never placed by a date it does not have.
+    static func ordered(_ items: [Need]) -> [Need] {
+        items.enumerated().sorted { a, b in
+            switch (a.element.since, b.element.since) {
+            case let (x?, y?) where x != y: return x < y
+            case (.some, .none): return true
+            case (.none, .some): return false
+            default: return a.offset < b.offset
+            }
+        }.map(\.element)
+    }
+
+    enum Line: Equatable { case hidden, quiet, items }
+    /// Items when anything waits; the one quiet line when a source answered and nothing waits; nothing while no source
+    /// has loaded, because "Nothing is waiting on you" is a claim.
+    static func line(_ items: [Need], available: Bool) -> Line {
+        if !items.isEmpty { return .items }
+        return available ? .quiet : .hidden
+    }
+
+    /// What Next ⌘] opens: the oldest item.
+    static func nextTarget(_ items: [Need]) -> Need? { items.first }
+    /// With one item the button reads "Open".
+    static func nextLabel(_ items: [Need]) -> String { items.count == 1 ? "Open" : "Next" }
+
+    // MARK: Card bodies
+
+    struct Span: Equatable {
+        let text: String
+        /// Amber: it waits on Miles.
+        var waits = false
+    }
+
+    struct CardBody: Equatable {
+        var count = "—"
+        var lead: [Span] = []
+        var subs: [String] = []
+        /// What the big number counts.
+        var footer: String?
+        var leadText: String { lead.map(\.text).joined() }
+    }
+
+    struct CardInputs {
+        var now = Date()
+        var calendar = Calendar.current
+        var clock = ClockStyle.twelveHour
+        var messages: [GlassesTurn] = []
+        var messagesStatus = RecentGlassesStatus.idle
+        var enrolled: Int?
+        var voices: VoicesToName?
+        var monthCount: Int?
+        var monthTitle = ""
+        var storedMeetings: Int?
+        var recentMeetings: [ReviewableMeeting] = []
+        var toReview: Int?
+        var oldestReview: Date?
+        /// nil: memory is not set up, or the status has not said.
+        var memories: Int?
+        /// The status said memory is not set up (false, never nil).
+        var memorySetupNeeded = false
+        /// nil: threads are not set up, or the status has not said.
+        var threads: Int?
+        var threadSetupNeeded = false
+        var activeThreads = 0
+        var latestThread: String?
+        /// nil: no session list yet.
+        var sessions: SessionTally?
+        /// nil: Work has not loaded.
+        var workAttention: Int?
+        var workInProgress = 0
+        /// nil: Intake has not loaded (or the server is older than 6.57.0).
+        var newToSort: Int?
+        var tasks: [TaskRow]?
+    }
+
+    /// The seven Activity cards, by the same raw values as ActivitySection (Tests/activity-home-pins.py pins the two
+    /// lists equal), so these rules compile with the models alone.
+    enum Card: String, CaseIterable { case messages, speakers, meetings, memories, threads, sessions, tasks, work }
+
+    static func card(_ section: Card, _ input: CardInputs) -> CardBody {
+        func n(_ value: Int) -> String { value.formatted(.number) }
+        var body = CardBody()
+        switch section {
+        case .messages:
+            let turns = input.messages.filter { ($0.timestamp ?? 0) > 0 }
+            if input.messagesStatus == .ready, !input.messages.isEmpty {
+                body.count = n(input.messages.count)
+                body.footer = "\(n(input.messages.count)) recent"
+                if let last = turns.max(by: { ($0.timestamp ?? 0) < ($1.timestamp ?? 0) }) {
+                    body.lead = [Span(text: "Last from the glasses, " + when(Date(timeIntervalSince1970: last.timestamp ?? 0), now: input.now, calendar: input.calendar))]
+                    let query = last.query.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !query.isEmpty { body.subs = ["\u{201C}" + clip(query, 90) + "\u{201D}"] }
+                }
+            } else if input.messagesStatus == .empty {
+                body.lead = [Span(text: "No messages today")]
+            }
+        case .speakers:
+            if let enrolled = input.enrolled {
+                body.count = n(enrolled)
+                body.footer = "\(n(enrolled)) enrolled"
+            }
+            if let voices = input.voices, voices.voices > 0 {
+                body.lead = [Span(text: voices.voices == 1 ? "1 voice to name" : "\(n(voices.voices)) voices to name", waits: true)]
+                if let newest = voices.newest { body.subs.append(newest.title) }
+                if voices.meetings > 1 { body.subs.append("In \(voices.meetings) meetings") }
+            }
+        case .meetings:
+            if let month = input.monthCount {
+                body.count = n(month)
+                body.footer = "\(n(month)) in \(input.monthTitle)"
+            } else if let stored = input.storedMeetings, stored > 0 {
+                body.count = n(stored)
+                body.footer = "\(n(stored)) stored"
+            }
+            let dated = input.recentMeetings.filter { !$0.date.isEmpty }
+            if let latest = dated.max(by: { ($0.date, $0.time) < ($1.date, $1.time) }) {
+                let today = dayKey(input.now, calendar: input.calendar)
+                let todays = dated.filter { $0.date == today }.count
+                let time = latest.time.isEmpty ? "" : input.clock.format(latest.time)
+                if todays > 0 {
+                    body.lead = [Span(text: "\(todays) today" + (time.isEmpty ? "" : " · latest \(time)"))]
+                } else if let day = meetingDate(latest, calendar: input.calendar) {
+                    body.lead = [Span(text: "Latest " + dayWord(day, now: input.now, calendar: input.calendar) + (time.isEmpty ? "" : " \(time)"))]
+                }
+                body.subs = [latest.title]
+            }
+        case .memories:
+            if let review = input.toReview {
+                body.count = n(review)
+                body.footer = "\(n(review)) to review"
+                if review > 0 {
+                    if let oldest = input.oldestReview {
+                        body.lead = [Span(text: "Oldest waiting since " + dayWord(oldest, now: input.now, calendar: input.calendar), waits: true)]
+                        body.subs = ["Open Memories to keep or let go"]
+                    } else {
+                        body.lead = [Span(text: "Waiting for you to keep or let go", waits: true)]
+                    }
+                } else if let memories = input.memories {
+                    body.lead = [Span(text: "\(n(memories)) stored")]
+                }
+            } else if let memories = input.memories {
+                body.count = n(memories)
+                body.footer = "\(n(memories)) stored"
+            } else if input.memorySetupNeeded {
+                body.lead = [Span(text: "Setup needed")]
+            }
+        case .threads:
+            if let threads = input.threads {
+                body.count = n(threads)
+                body.footer = "\(n(threads)) tracked"
+                if input.activeThreads > 0 { body.lead = [Span(text: "\(n(input.activeThreads)) active")] }
+                if let latest = input.latestThread { body.subs = ["Latest: " + latest] }
+            } else if input.threadSetupNeeded {
+                body.lead = [Span(text: "Setup needed")]
+            }
+        case .sessions:
+            if let tally = input.sessions {
+                body.count = n(tally.onDisk)
+                body.footer = "\(n(tally.onDisk)) on disk" + (tally.idle > 0 ? " · \(n(tally.idle)) idle" : "")
+                if tally.working == 0 && tally.asked == 0 {
+                    body.lead = [Span(text: "None running")]
+                } else {
+                    if tally.working > 0 { body.lead.append(Span(text: "\(n(tally.working)) working")) }
+                    if tally.asked > 0 {
+                        if !body.lead.isEmpty { body.lead.append(Span(text: " · ")) }
+                        body.lead.append(Span(text: "\(n(tally.asked)) waiting on you", waits: true))
+                    }
+                }
+                if tally.finished > 0 { body.subs = ["\(n(tally.finished)) finished today"] }
+            }
+        case .work:
+            if let attention = input.workAttention {
+                body.count = n(attention)
+                body.footer = attention == 1 ? "1 needs attention" : "\(n(attention)) need attention"
+                if let fresh = input.newToSort, fresh > 0 {
+                    body.lead = [Span(text: "\(n(fresh)) new to sort", waits: true)]
+                    body.subs = ["\(n(input.workInProgress)) in progress"]
+                } else if input.workInProgress > 0 {
+                    body.lead = [Span(text: "\(n(input.workInProgress)) in progress")]
+                }
+            }
+        case .tasks:
+            if let tasks = input.tasks, !tasks.isEmpty {
+                body.count = n(tasks.count)
+                body.footer = "\(n(tasks.count)) open"
+                let flagged = tasks.filter { $0.missed == true || $0.failed == true }.count
+                if flagged > 0 { body.lead = [Span(text: flagged == 1 ? "1 needs attention" : "\(n(flagged)) need attention", waits: true)] }
+            }
+        }
+        return body
+    }
+
+    // MARK: Words and dates
+
+    /// "now", "12 min", "3 h", "2 d".
+    static func age(_ since: Date, now: Date) -> String {
+        let seconds = max(0, now.timeIntervalSince(since))
+        if seconds < 60 { return "now" }
+        if seconds < 3600 { return "\(Int(seconds / 60)) min" }
+        if seconds < 86_400 { return "\(Int(seconds / 3600)) h" }
+        return "\(Int(seconds / 86_400)) d"
+    }
+
+    /// "today", "yesterday", a weekday within the week ("Sunday"), else "Oct 1".
+    static func dayWord(_ date: Date, now: Date, calendar: Calendar = .current) -> String {
+        if calendar.isDate(date, inSameDayAs: now) { return "today" }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) { return "yesterday" }
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: now)).day ?? 99
+        if (2...6).contains(days) { return date.formatted(.dateTime.weekday(.wide)) }
+        return date.formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    /// "today 9:00 AM", "Mon 9:00 AM", "Oct 1, 9:00 AM".
+    static func when(_ date: Date, now: Date, calendar: Calendar = .current) -> String {
+        let time = date.formatted(date: .omitted, time: .shortened)
+        let day = dayWord(date, now: now, calendar: calendar)
+        if day == "today" || day == "yesterday" { return day + " " + time }
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: now)).day ?? 99
+        if (2...6).contains(days) { return date.formatted(.dateTime.weekday(.abbreviated)) + " " + time }
+        return day + ", " + time
+    }
+
+    static func dayKey(_ date: Date, calendar: Calendar = .current) -> String {
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+    }
+
+    /// A saved meeting's start, from its `yyyy-MM-dd` day and `HH:mm` time (midnight when the time is missing).
+    static func meetingDate(_ meeting: ReviewableMeeting, calendar: Calendar = .current) -> Date? {
+        let day = meeting.date.split(separator: "-").compactMap { Int($0) }
+        guard day.count == 3 else { return nil }
+        let clock = meeting.time.split(separator: ":").compactMap { Int($0) }
+        return calendar.date(from: DateComponents(year: day[0], month: day[1], day: day[2],
+                                                  hour: clock.count == 2 ? clock[0] : 0, minute: clock.count == 2 ? clock[1] : 0))
+    }
+
+    static func stamp(_ raw: String) -> Date? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let fraction = ISO8601DateFormatter()
+        fraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fraction.date(from: trimmed) { return date }
+        return ISO8601DateFormatter().date(from: trimmed)
+    }
+
+    static func clip(_ text: String, _ limit: Int) -> String {
+        let flat = text.split(whereSeparator: \.isNewline).joined(separator: " ")
+        return flat.count <= limit ? flat : String(flat.prefix(limit - 1)) + "…"
+    }
+}

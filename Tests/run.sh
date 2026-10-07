@@ -1154,6 +1154,13 @@ PY
 "$ROOT/Tests/run-work-card-files.sh"
 /usr/bin/python3 "$ROOT/Tests/work-card-files-pins.py" "$ROOT"
 
+# ── 0.5.259: the Activity home (Needs you, live cards, desks) ─────────────────
+# Behaviour, executed against fixture rows (Tests/run-activity-home.sh), then the wiring the compiled-only views hide:
+# one ⌘] per route, items open their own sections, one set of seats, Reduce Motion. Hand-run: Tests/mutate-activity-home.py
+# (the mutation lane) and Tests/run-activity-home-render.sh (PNGs against the mock).
+"$ROOT/Tests/run-activity-home.sh"
+/usr/bin/python3 "$ROOT/Tests/activity-home-pins.py" "$ROOT"
+
 # ── 0.5.252: glasses requests (server 6.59.0 inbox) ─────────────────────────────
 # Behaviour: Tests/run-work-progress.sh test 22 (claim race, expiry, a late claim, a changed task, a missing destination,
 # submit's refusal passed back, an app-owned Continue refused with no clipboard, Not done yet, an older server, result
@@ -2034,10 +2041,11 @@ header_code = "\n".join(l for l in header.split("\n") if not l.strip().startswit
 assert "COSLockupView(height: 17)" in header_code, "header lockup missing"
 assert "COSPalette.ink" not in header_code, "the header lockup is fixed-dark again — invisible in dark mode"
 
-#    And the counts must come from the model, not from scraping homeStat's prose. Scraping
-#    turned "50 of 5528" into 50 / OF 5528: the smaller number promoted, the label a fragment.
-metric = win[win.index("private func homeMetric"):]
-metric = metric[:metric.index("\n    private func homeStat")]
+#    And the counts must come from the model, not from scraping prose. Scraping turned
+#    "50 of 5528" into 50 / OF 5528: the smaller number promoted, the label a fragment.
+#    0.5.259: the cards read ActivityHome.CardInputs, which homeInputs fills from the model.
+metric = win[win.index("private func homeInputs"):]
+metric = metric[:metric.index("\n    // MARK: - Lists")]
 assert "status.memoryCount" in metric and "status.threadCount" in metric, \
     "counts must read structured fields, not parse a sentence"
 assert "prefix(while:" not in metric and "drop(while:" not in metric, \
@@ -5116,7 +5124,7 @@ need('"No processor configured on this Mac"' in models and '"Processor installed
 # metric under the title when it does not; never a mid-word break, never a
 # truncated "Meeti…". A four-column tile row is ~168 pt at the default window
 # and ~133 pt at the 760 pt minimum; "Meetings" + "2,346" need ~160 (2026-09-06).
-home_card = between(activity, "private func activityHomeCard(_ item: ActivitySection, index: Int)", "private func homeMetric(")
+home_card = between(activity, "private func activityHomeCard(_ item: ActivitySection, index: Int, body: ActivityHome.CardBody,", "private func leadLine(")
 need("ViewThatFits(in: .horizontal)" in home_card, "the home tile header must use ViewThatFits, not a fixed HStack")
 title_chain = home_card[home_card.index("let title = Text(item.title)"):home_card.index("let metric = Text(")]
 need(".lineLimit(1)" in title_chain and ".fixedSize()" in title_chain, "the tile title must be one whole line (lineLimit(1) + fixedSize())")
