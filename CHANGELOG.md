@@ -1,3 +1,36 @@
+## 0.5.258 (build 311) — Files on a meeting
+
+Drop screenshots, slides, PDFs and other files onto a meeting, and every Work card linked to that meeting sends them to its agent after the card's own files. Needs server 6.64.0. With an older server the meeting says to update the server.
+
+- **Where.** A meeting's detail has a Files box: drop, Add files… or Paste screenshot. Click the box, then ⌘V also pastes there, and search fields keep their own paste. A meeting row shows a paperclip and a count. Copy as context adds the files' paths, with the same checks a send applies.
+- **Files stay on this Mac.** COS keeps copies in `~/cos-data/meeting-context` with the same rules as card files: snapshots, secret refusals, 20 files and 2 GB, and Remove hides with Undo. Nothing is written into the meeting itself. The key is the meeting's own G2 session or Fireflies id, from the server. A merged meeting whose file declares the captures it holds also shows those captures' files.
+- **Words read on this Mac (Phase 2).** Each image gets a text copy that macOS Vision reads on device, at no cost, and the handoff names it, so Codex and Cursor get a slide's words. Nothing is embedded or uploaded.
+  - The check fails closed. An image goes only once its words were read and none looks like a password or key, or once it had no words.
+  - An image still being read waits for a later send. So does one whose reading failed.
+  - A screenshot that reads like a credential stays on the meeting, marked "Not sent". The check covers:
+    - `KEY=value` lines, also behind an editor's gutter;
+    - settings labels such as "API Key: …";
+    - a label and its value read as two lines;
+    - PEM keys, JWTs and bearer tokens;
+    - Google, Stripe, Slack, GitHub and OpenAI-style keys.
+  - The whole of an image's text is checked.
+  - The text-file rules' own false alarms also apply here. A slide line like "Token: ERC-20" keeps that image out of sends.
+- **Into linked cards (one block).** The card's files come first, then each meeting's under "From meeting: <title> (<date>)", all in the same Context files block, so Cursor's cut keeps every path as before.
+  - When a send runs out of room (the 20-file cap, the draft limit or Cursor's link), meeting files are dropped first. The timeline names each file left out. They never stop a send or the Start countdown.
+  - A Continue does not resend meeting files this card already sent to that session.
+  - The Agent workspace lists them under "From linked meetings". Its preview does not apply the send's length limits, so a Cursor send can leave out a file the preview listed. The timeline says which.
+- **Whichever record id the card links.** A meeting's record id changes when sync files a capture, when the pipeline renames it, and when it moves domains. Control finds the meeting's files anyway:
+  - Before a send, it asks the server (new read-only route) about each of the card's meeting links.
+  - When Work loads, and after a drop, it asks about links it has no answer for yet.
+  - It asks only once some meeting holds a file. The answers are kept on disk.
+  - A card's task metadata is unchanged.
+- **Two meetings claiming one recording** (a duplicate in two domains): files can't be added or removed there. A send then gets no files through that meeting's links. The exception is files dropped before the duplicate appeared: they keep going with cards linked to the meeting they were dropped on.
+- **Retention.** Removed files leave in two ways. A removed file that no session was ever sent is deleted 14 days later, the next time Work cleans up. A removed file a session was sent stays. A meeting folder is never deleted.
+- **Not in this release:**
+  - the drop target on a meeting row (only the meeting's Files box takes drops);
+  - files on a meeting merged in Control's own merge (its record has no key yet);
+  - the `meeting_context.py` command and the meeting-cleanup report, which come with the COS scripts update.
+
 ## 0.5.257 (build 310)
 
 Forks run in the background with server 6.63.0. Fork sends the card's receipt id with the request; the server answers at once, and the card shows the fork as running, naming no session until the copy exists. Check status and the background tracker read the outcome by that id and land it exactly where a direct answer would have: the copy linked, a failed first turn opening its copy, or a refusal with its reason. A fork the server has no record of stays unconfirmed, and an answer this build does not recognise changes nothing. Check status is offered on fork receipts again. With an older server the fork answers when it is done, as in 0.5.256.

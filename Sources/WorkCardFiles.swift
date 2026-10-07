@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import Combine
 import CryptoKit
 import Darwin
 import Foundation
@@ -261,10 +262,15 @@ struct WorkContextManifest: Codable, Equatable, Sendable {
     /// When COS Control first saw the card complete, and first saw it gone from the board (cleanup counts from these).
     var completedSeenAt: Double? = nil
     var orphanedSeenAt: Double? = nil
+    /// 0.5.258, a meeting's folder only: every record id the meeting was seen under (a card links by record id, and a
+    /// meeting's record id changes when it moves), and its title and date for the send's sub-heading.
+    var aliases: [String] = []
+    var meetingTitle: String? = nil
+    var meetingDate: String? = nil
     var visible: [WorkContextFile] { files.filter { $0.hiddenAt == nil }.sorted { $0.seq < $1.seq } }
 
     enum CodingKeys: String, CodingKey {
-        case version, workSourceID, files, suggestions, completedSeenAt, orphanedSeenAt
+        case version, workSourceID, files, suggestions, completedSeenAt, orphanedSeenAt, aliases, meetingTitle, meetingDate
     }
 
     init(workSourceID: String) { self.workSourceID = workSourceID }
@@ -277,6 +283,9 @@ struct WorkContextManifest: Codable, Equatable, Sendable {
         suggestions = try keys.decodeIfPresent([WorkFileSuggestion].self, forKey: .suggestions) ?? []
         completedSeenAt = try keys.decodeIfPresent(Double.self, forKey: .completedSeenAt)
         orphanedSeenAt = try keys.decodeIfPresent(Double.self, forKey: .orphanedSeenAt)
+        aliases = try keys.decodeIfPresent([String].self, forKey: .aliases) ?? []
+        meetingTitle = try keys.decodeIfPresent(String.self, forKey: .meetingTitle)
+        meetingDate = try keys.decodeIfPresent(String.self, forKey: .meetingDate)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -287,6 +296,9 @@ struct WorkContextManifest: Codable, Equatable, Sendable {
         if !suggestions.isEmpty { try keys.encode(suggestions, forKey: .suggestions) }
         try keys.encodeIfPresent(completedSeenAt, forKey: .completedSeenAt)
         try keys.encodeIfPresent(orphanedSeenAt, forKey: .orphanedSeenAt)
+        if !aliases.isEmpty { try keys.encode(aliases, forKey: .aliases) }
+        try keys.encodeIfPresent(meetingTitle, forKey: .meetingTitle)
+        try keys.encodeIfPresent(meetingDate, forKey: .meetingDate)
     }
 }
 
@@ -326,6 +338,8 @@ enum WorkCardRefusal: Error, Equatable, Sendable {
     case folderSecrets(String)
     /// QA round 2: a folder with more entries than the scan reads is refused, never taken unread.
     case folderTooBig
+    /// 0.5.258: Paste screenshot with nothing on the clipboard COS can keep.
+    case nothingToPaste
 
     var message: String {
         switch self {
@@ -344,6 +358,7 @@ enum WorkCardRefusal: Error, Equatable, Sendable {
         case .tooBroad(let name): return "Not added: \(name) is too wide a folder to hand an agent. Add the folder or the files you need."
         case .folderSecrets(let name): return "Not added: this folder holds secrets (\(name)). Add the files you need one by one."
         case .folderTooBig: return "Not added: this folder is too big to check for secrets. Add the files you need one by one."
+        case .nothingToPaste: return "Nothing to paste. Copy a screenshot or a file first."
         }
     }
     /// The name shown in bold on the card, if any.
@@ -352,6 +367,16 @@ enum WorkCardRefusal: Error, Equatable, Sendable {
         return nil
     }
     var isRefusal: Bool { self != .linkAdded }
+    /// 0.5.258: the same line, about a meeting.
+    func message(meeting: Bool) -> String {
+        guard meeting else { return message }
+        switch self {
+        case .cap: return "Not added: a meeting holds 20 files and 2 GB. Remove one to add this."
+        case .duplicate(let name): return "Already on this meeting as \u{201C}\(name)\u{201D}."
+        case .store(let reason): return "Not added: COS couldn't open this meeting's file store. \(reason)"
+        default: return message
+        }
+    }
 }
 
 /// A line on a card after a drop: why something was not added (or that a link was), then it fades.
@@ -360,9 +385,9 @@ struct WorkCardFlash: Equatable, Identifiable, Sendable {
     let id: String
     let lines: [Line]
     let refusal: Bool
-    init(_ notes: [WorkCardRefusal]) {
+    init(_ notes: [WorkCardRefusal], meeting: Bool = false) {
         id = UUID().uuidString
-        lines = notes.prefix(3).map { Line(text: $0.message, emphasis: $0.emphasis) }
+        lines = notes.prefix(3).map { Line(text: $0.message(meeting: meeting), emphasis: $0.emphasis) }
             + (notes.count > 3 ? [Line(text: "\(notes.count - 3) more not added.", emphasis: nil)] : [])
         refusal = notes.contains { $0.isRefusal }
     }
@@ -377,10 +402,15 @@ struct WorkHandoffFiles: Equatable {
     /// Files whose copy is gone from the store: never listed.
     var missing: [WorkContextFile] = []
     var bytes: Int64 = 0
-    var refs: [WorkContextRef] { sending.map(\.ref) }
+    /// 0.5.258: files from the meetings this card links to (after the card's own, in the same block), the ones an earlier
+    /// handoff already put in the session, and a line for each one left out. They never stop a send.
+    var meetingSending: [WorkMeetingFileEntry] = []
+    var meetingAlready: [WorkContextFile] = []
+    var meetingOmitted: [String] = []
+    var refs: [WorkContextRef] { sending.map(\.ref) + meetingSending.map(\.file.ref) }
     /// Companions still being made when this was put together ("frames of “Demo walkthrough.mp4”").
     var notReady: [String] {
-        sending.flatMap { file in
+        (sending + meetingSending.map(\.file)).flatMap { file in
             file.companions.filter { $0.state == "preparing" }.map { WorkCardFiles.companionNoun($0.kind) + " of \u{201C}\(file.display)\u{201D}" }
         }
     }
@@ -779,10 +809,12 @@ enum WorkCardFiles {
     }
 
     /// The companions a file gets (video transcription is not yet available).
-    nonisolated static func companionPlan(kind: String, width: Int?, height: Int?) -> [String] {
+    nonisolated static func companionPlan(kind: String, width: Int?, height: Int?, ocr: Bool = false) -> [String] {
+        // 0.5.258 (Miles, Phase 2): a meeting's image also gets its words, read on this Mac by Vision. Never a card's.
+        let words = ocr ? ["text"] : []
         switch kind {
-        case "heic": return ["jpeg"]
-        case "image": return max(width ?? 0, height ?? 0) > viewEdge ? ["view"] : []
+        case "heic": return ["jpeg"] + words
+        case "image": return (max(width ?? 0, height ?? 0) > viewEdge ? ["view"] : []) + words
         case "pdf", "docx": return ["text"]
         case "video": return ["frames"]
         default: return []
@@ -838,14 +870,16 @@ extension WorkCardFiles {
         case "link":
             return (file.original ?? "", "Web link, not downloaded. Open it yourself if you need it.")
         case "heic":
+            let words = ready("text").map { " Text: \u{2026}/" + $0.stored } ?? ""
             if let jpeg = ready("jpeg") {
                 return (folder.appendingPathComponent(jpeg.stored).path,
-                        "Photo " + (pixels(jpeg.pixelWidth, jpeg.pixelHeight).map { $0 + ", " } ?? "") + "converted from HEIC.")
+                        "Photo " + (pixels(jpeg.pixelWidth, jpeg.pixelHeight).map { $0 + ", " } ?? "") + "converted from HEIC." + words)
             }
-            return (path, "Photo " + (pixels(file.pixelWidth, file.pixelHeight).map { $0 + ", " } ?? "") + "HEIC, \(size).")
+            return (path, "Photo " + (pixels(file.pixelWidth, file.pixelHeight).map { $0 + ", " } ?? "") + "HEIC, \(size)." + words)
         case "image":
             var meta = "Image " + (pixels(file.pixelWidth, file.pixelHeight).map { $0 + ", " } ?? "") + "\(size)."
             if let view = ready("view") { meta += " Smaller copy: \u{2026}/" + view.stored }
+            if let text = ready("text") { meta += " Text: \u{2026}/" + text.stored }
             return (path, meta)
         case "pdf":
             var meta = "PDF, " + (file.pages.map { "\($0) page\($0 == 1 ? "" : "s"), " } ?? "") + "\(size)."
@@ -883,14 +917,7 @@ extension WorkCardFiles {
 
     /// The block, in the mock's format. Empty when nothing goes.
     nonisolated static func block(_ entries: [(path: String, meta: String)]) -> String {
-        guard !entries.isEmpty else { return "" }
-        var lines = [blockHeaderPrefix + "\(entries.count)). Read-only copies COS Control made when they were added to this card:"]
-        for (index, entry) in entries.enumerated() {
-            lines.append("\(index + 1). " + entry.path)
-            lines.append("   " + entry.meta)
-        }
-        lines.append(blockFooter)
-        return lines.joined(separator: "\n")
+        block(card: entries, meetings: [])
     }
 
     /// What is sent: the task text, then the block, then the status-line instruction. The block is never first (the
@@ -1049,6 +1076,277 @@ extension WorkCardFiles {
             return [url.standardizedFileURL.path + "/", resolved(url) + "/"]
         }
         return !synced.contains { path.hasPrefix($0) }
+    }
+}
+
+// MARK: - Files on a meeting (0.5.258)
+//
+// Miles, 2026-10-06 14:12: "link" meetings with files dropped onto them, the way Work cards take files, so a screen or a
+// slide shared in a meeting becomes agent context. Plan v2 (operations/personal/wk41_2026/PLAN_meeting_files_2026-10-06.md)
+// after a NO-GO on v1, and the canaries in CANARIES_meeting_files_2026-10-06.md.
+//
+// ONE STORE CODE, TWO ROOTS. A meeting's files live in `~/cos-data/meeting-context`, one folder per meeting key, with the
+// same snapshot, containment, lock, cap and Remove-only-hides rules as a card's. The key comes from the server
+// (`contextKeys`, glasses-server 6.64.0): `g2:<sessionId>` or `ff:<firefliesId>`, ids the meeting already carries.
+// Nothing is written into the meeting itself.
+//
+// WHAT DIFFERS (`ContextFilePolicy.meeting`): ids are `meetingctx:<key>` (the `meeting:` prefix is taken by reviews and
+// receipts); no identity stamp, no readings that write task text, no board cleanup; images get an on-device text copy
+// (Vision, the `.txt` companion), and a text copy that reads like a password or key keeps the image out of every send.
+//
+// INTO EVERY LINKED CARD (Miles's decision 1). A card's send carries the files of every meeting it is linked to, after the
+// card's own and inside the SAME block (one "Context files (N)" block with sub-headings, so `splitBlock` and Cursor's cut
+// are unchanged). Meeting files are left out first, each one said, and never stop a send.
+//
+// RETENTION (decision 3). Files are kept until removed. Remove hides; a hidden file no session was ever sent is purged
+// 14 days later (when Work next cleans up); one a session was sent stays. A meeting folder is never deleted.
+
+/// Which store a WorkCardFileStore is.
+enum ContextFilePolicy: Sendable, Equatable { case work, meeting }
+
+/// What a meeting drop records about the meeting, so a card can find its files after the meeting moves.
+struct WorkMeetingInfo: Sendable, Equatable {
+    var recordId: String
+    var title: String
+    var date: String
+}
+
+/// One meeting's files as a card's send sees them.
+struct WorkMeetingFiles: Equatable, Sendable {
+    var title: String
+    var date: String
+    var folder: URL
+    var files: [WorkContextFile]
+}
+
+/// One meeting file a send carries, with the folder its paths are in.
+struct WorkMeetingFileEntry: Equatable, Sendable, Identifiable {
+    var file: WorkContextFile
+    var folder: URL
+    var meetingTitle: String
+    var meetingDate: String
+    var id: String { file.id }
+}
+
+extension WorkCardFiles {
+    nonisolated static let meetingStoreFolder = "cos-data/meeting-context"
+    nonisolated static func defaultMeetingRoot(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        home.appendingPathComponent(meetingStoreFolder, isDirectory: true)
+    }
+    nonisolated static let meetingIDPrefix = "meetingctx:"
+    /// A key as the server sends it: the server's own marker grammar behind `g2:` or `ff:`.
+    nonisolated static func validMeetingKey(_ key: String) -> Bool {
+        key.range(of: "^(g2|ff):[A-Za-z0-9:_-]{3,96}$", options: .regularExpression) != nil
+    }
+    nonisolated static func meetingID(forKey key: String) -> String? { validMeetingKey(key) ? meetingIDPrefix + key : nil }
+    nonisolated static func meetingKey(of id: String) -> String? {
+        guard id.hasPrefix(meetingIDPrefix) else { return nil }
+        let key = String(id.dropFirst(meetingIDPrefix.count))
+        return validMeetingKey(key) ? key : nil
+    }
+    /// A hidden meeting file no session was sent is purged this long after Remove.
+    nonisolated static let meetingPurgeDays = 14.0
+    /// Record ids a meeting folder remembers; the oldest goes first.
+    nonisolated static let maxAliases = 32
+    /// Record id to keys, kept beside the meeting folders so a card resolves after a relaunch (QA B1). Capped.
+    nonisolated static let recordKeysFile = "record-keys.json"
+    nonisolated static let maxRecordKeys = 5_000
+    /// The failure a text copy carries when it reads like a password or key. The image then goes in no send.
+    nonisolated static let ocrSecretFailure = "its text reads like a password or key, so it is not sent"
+    nonisolated static let meetingNote = "On this Mac only. COS keeps copies in ~/cos-data/meeting-context, and every card linked to this meeting sends them after its own files."
+
+    /// True when the words read off an image look like a credential (the same content rules a dropped text file gets).
+    nonisolated static func ocrLooksSecret(_ text: String) -> Bool {
+        if secretContent(text) { return true }
+        if ocrSecretShapes.contains(where: { text.range(of: $0, options: .regularExpression) != nil }) { return true }
+        // What a screen shows that a file does not (QA rounds 1 and 2): an editor's gutter ("12 ", "12 | ", "12: ") before
+        // a `KEY=value` line; a settings label with spaces ("API Key: …", "Client Secret: …"); and a label and its value
+        // that Vision reads as two lines (a table's columns). The value must look like one: 8 or more characters with a
+        // digit or a symbol, so "Secret: Sauce" or "Token: ERC-20" on a slide is not flagged.
+        let lines = text.split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: .whitespaces) }
+        let ungutter = lines.map { $0.replacingOccurrences(of: #"^\d{1,5}\s*[|:]?\s+"#, with: "", options: .regularExpression) }
+        if ungutter != lines, secretContent(ungutter.joined(separator: "\n")) { return true }
+        func label(_ raw: String) -> String? {
+            let words = raw.trimmingCharacters(in: .whitespaces)
+            guard words.range(of: #"^[A-Za-z][A-Za-z0-9 _.-]{1,40}$"#, options: .regularExpression) != nil else { return nil }
+            let key = words.uppercased().replacingOccurrences(of: #"[ .-]+"#, with: "_", options: .regularExpression)
+            return credentialKey(key) ? key : nil
+        }
+        func plausible(_ raw: String) -> Bool {
+            let value = raw.trimmingCharacters(in: .whitespaces)
+            return value.count >= 8 && !value.contains(" ") && !placeholderValue(value)
+                && value.rangeOfCharacter(from: CharacterSet.decimalDigits.union(CharacterSet(charactersIn: "!@#$%^&*_+=/~"))) != nil
+        }
+        for (index, line) in ungutter.enumerated() {
+            if let match = line.range(of: #"^([A-Za-z][A-Za-z0-9 _.-]{1,40}?)\s*[:=]\s*(\S+)$"#, options: .regularExpression) {
+                let parts = String(line[match]).split(separator: line.contains("=") && !line.contains(":") ? "=" : ":", maxSplits: 1).map(String.init)
+                if parts.count == 2, label(parts[0]) != nil, plausible(parts[1]) { return true }
+            }
+            if label(line.trimmingCharacters(in: CharacterSet(charactersIn: ":="))) != nil, index + 1 < ungutter.count,
+               !ungutter[index + 1].contains(" "), plausible(ungutter[index + 1]) { return true }
+        }
+        return false
+    }
+    /// Why a meeting image is held back from a send, or nil: its text copy must be ready, or have found no words.
+    nonisolated static func ocrHold(_ file: WorkContextFile) -> String? {
+        guard file.kind == "image" || file.kind == "heic", let text = file.companions.first(where: { $0.kind == "text" }) else { return nil }
+        switch text.state {
+        case "ready": return nil
+        case "preparing": return "its words are still being read, so it goes with a later send"
+        default: return text.failure == noWordsFailure ? nil : "its words could not be checked, so it is not sent"
+        }
+    }
+    nonisolated static let noWordsFailure = "no words were found in it"
+    /// Credential shapes a screenshot shows that a text file's rules miss (QA round 1, probed): a PEM key, a JWT, a bearer
+    /// token, Google, Stripe and Slack keys, and a `KEY=value` line behind an editor's line number.
+    nonisolated static let ocrSecretShapes = [
+        #"-----BEGIN [A-Z ]*PRIVATE KEY-----"#, #"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}"#, #"(?i)\bbearer[ \t]+(?=[A-Za-z0-9._~+/-]*[0-9])[A-Za-z0-9._~+/-]{20,}"#,
+        #"\bAIza[0-9A-Za-z_-]{30,}"#, #"\b(?:sk|rk|pk)_live_[0-9A-Za-z]{16,}"#, #"\bxox[abpr]-[0-9A-Za-z-]{10,}"#, #"\bgh[pousr]_[0-9A-Za-z]{30,}"#,
+        #"\bsk-(?:ant-|proj-)?\s?[A-Za-z0-9_-]{20,}"#,
+    ]
+
+    /// A file whose text copy read like a secret.
+    nonisolated static func secretFlagged(_ file: WorkContextFile) -> Bool {
+        file.companions.contains { $0.kind == "text" && $0.state == "failed" && $0.failure == ocrSecretFailure }
+    }
+
+    /// A meeting title as a sub-heading in a prompt: one line, capped, and never something that reads as a status line or
+    /// the Cursor header (a title is not a name COS chose).
+    nonisolated static func headingTitle(_ raw: String) -> String {
+        let clean = cleanDisplay(raw)
+        let folded = clean.lowercased()
+        if folded.contains("cos-work") || folded.contains("cos work handoff") || !WorkProgress.reports(in: clean).isEmpty
+            || clean.contains(blockHeaderPrefix) || clean.contains(blockFooter) { return "a linked meeting" }
+        return clean.count <= 80 ? clean : String(clean.prefix(79)) + "\u{2026}"
+    }
+
+    /// The block with sub-headings: the card's own files, then each meeting's. With no meeting files it is exactly
+    /// `block(_:)`, so a card without linked files sends what 0.5.257 sent.
+    nonisolated static func block(card: [(path: String, meta: String)], meetings: [(heading: String, entries: [(path: String, meta: String)])],
+                                  owner: String = "this card and its meetings") -> String {
+        let meetingEntries = meetings.filter { !$0.entries.isEmpty }
+        let total = card.count + meetingEntries.reduce(0) { $0 + $1.entries.count }
+        guard total > 0 else { return "" }
+        // A card alone reads exactly as 0.5.254 wrote it; with meeting files the header says so and each part is headed.
+        var lines = [blockHeaderPrefix + "\(total)). " + (meetingEntries.isEmpty ? "Read-only copies COS Control made when they were added to this card:"
+                                                                                    : "Read-only copies COS Control keeps for \(owner):")]
+        var number = 0
+        func add(_ entries: [(path: String, meta: String)]) {
+            for entry in entries {
+                number += 1
+                lines.append("\(number). " + entry.path)
+                lines.append("   " + entry.meta)
+            }
+        }
+        if !card.isEmpty { if !meetingEntries.isEmpty { lines.append("From this card:") }; add(card) }
+        for meeting in meetingEntries { lines.append(meeting.heading); add(meeting.entries) }
+        lines.append(blockFooter)
+        return lines.joined(separator: "\n")
+    }
+    nonisolated static func meetingHeading(title: String, date: String) -> String {
+        "From meeting: " + headingTitle(title) + (date.range(of: "^\\d{4}-\\d{2}-\\d{2}$", options: .regularExpression) != nil ? " (\(date))" : "") + ":"
+    }
+
+    /// A card's send with its meetings' files added (decision 1). Card files are never touched: they are decided first,
+    /// by `handoff(files:...)`. A meeting file the card already has (same contents) is not repeated; a Continue or Fork
+    /// leaves out what an earlier handoff of this card put in the session; the 20-file cap counts both; and while the
+    /// whole send does not `fit` (the draft limit, Cursor's link), meeting files are dropped from the end. Each one left
+    /// out is said. Nothing here can make the send refuse.
+    nonisolated static func withMeetings(_ card: WorkHandoffFiles, cardFolder: URL, meetings: [WorkMeetingFiles], mode: WorkHandoffMode,
+                                         sessionID: String?, workID: String, receipts: [WorkHandoffReceipt], resendAll: Bool,
+                                         copyExists: (URL) -> Bool, fits: (String) -> Bool) -> WorkHandoffFiles {
+        guard !meetings.isEmpty else { return card }
+        var out = card
+        // What earlier handoffs of this card already put in this session (the card files' rule, for meeting files).
+        let inSession: Set<String> = (mode == .newSession || resendAll) ? [] : sessionID.map { Self.carried(toSession: $0, workID: workID, receipts: receipts) } ?? []
+        var seen = Set((card.sending + card.already + card.missing).map(\.sha256))
+        var entries: [WorkMeetingFileEntry] = []
+        for meeting in meetings {
+            for file in meeting.files.filter({ $0.hiddenAt == nil }).sorted(by: { $0.seq < $1.seq }) {
+                guard !seen.contains(file.sha256) else { continue }
+                seen.insert(file.sha256)
+                if inSession.contains(file.id + "|" + file.sha256) { out.meetingAlready.append(file); continue }
+                let credentialed = file.kind == "link" && linkHasCredentials(file.original ?? "")
+                guard validEntry(file), !credentialed else {
+                    out.meetingOmitted.append("\u{201C}\(file.display)\u{201D} from \(headingTitle(meeting.title)): its name is not one COS writes.")
+                    continue
+                }
+                if !file.isLink && !copyExists(meeting.folder.appendingPathComponent(file.stored)) {
+                    out.meetingOmitted.append("\u{201C}\(file.display)\u{201D} from \(headingTitle(meeting.title)): its copy is gone.")
+                    continue
+                }
+                if secretFlagged(file) {
+                    out.meetingOmitted.append("\u{201C}\(file.display)\u{201D} from \(headingTitle(meeting.title)): " + ocrSecretFailure + ".")
+                    continue
+                }
+                // QA round 1: the check FAILS CLOSED. An image goes only once its words were read and none looked like a
+                // credential, or it had none to read. Still being read, or read failed: it waits for a later send.
+                if let reason = ocrHold(file) {
+                    out.meetingOmitted.append("\u{201C}\(file.display)\u{201D} from \(headingTitle(meeting.title)): " + reason + ".")
+                    continue
+                }
+                entries.append(WorkMeetingFileEntry(file: file, folder: meeting.folder, meetingTitle: meeting.title, meetingDate: meeting.date))
+            }
+        }
+        let room = max(0, maxFiles - card.sending.count)
+        if entries.count > room {
+            let over = entries.suffix(entries.count - room).map { "\u{201C}" + $0.file.display + "\u{201D}" }
+            entries.removeLast(over.count)
+            out.meetingOmitted.append("Left out, a send carries \(maxFiles) files: " + over.joined(separator: ", ") + ".")
+        }
+        func render(_ list: [WorkMeetingFileEntry]) -> String {
+            var groups: [(heading: String, entries: [(path: String, meta: String)])] = []
+            for entry in list {
+                let heading = meetingHeading(title: entry.meetingTitle, date: entry.meetingDate)
+                let line = blockEntry(entry.file, folder: entry.folder)
+                if let last = groups.indices.last, groups[last].heading == heading { groups[last].entries.append(line) }
+                else { groups.append((heading, [line])) }
+            }
+            return block(card: card.sending.map { blockEntry($0, folder: cardFolder) }, meetings: groups)
+        }
+        var trimmed: [String] = []
+        var composed = render(entries)
+        while !entries.isEmpty && !fits(composed) {
+            trimmed.insert("\u{201C}" + entries.removeLast().file.display + "\u{201D}", at: 0)
+            composed = render(entries)
+        }
+        if !trimmed.isEmpty { out.meetingOmitted.append("Left out to fit this send: " + trimmed.joined(separator: ", ") + ".") }
+        out.meetingSending = entries
+        out.block = entries.isEmpty ? card.block : composed
+        return out
+    }
+
+    /// A meeting's files, alone, for Copy as context: the guards a send applies (names COS writes, no link with a password,
+    /// the copy still there, nothing flagged or still being read), under one heading.
+    nonisolated static func meetingBlock(title: String, date: String, files: [(file: WorkContextFile, folder: URL)],
+                                         copyExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }) -> String {
+        let entries = files.filter { entry in
+            validEntry(entry.file) && !(entry.file.kind == "link" && linkHasCredentials(entry.file.original ?? "")) && !secretFlagged(entry.file)
+                && ocrHold(entry.file) == nil && (entry.file.isLink || copyExists(entry.folder.appendingPathComponent(entry.file.stored)))
+        }.map { blockEntry($0.file, folder: $0.folder) }
+        guard !entries.isEmpty else { return "" }
+        return block(card: [], meetings: [(meetingHeading(title: title, date: date), entries)], owner: "this meeting")
+    }
+
+    /// Which hidden files of a meeting go (retention): removed at least 14 days ago and never sent to any session.
+    nonisolated static func meetingPurge(_ manifest: WorkContextManifest, carried: Set<String>, now: Double) -> [String] {
+        manifest.files.filter { file in
+            guard let hidden = file.hiddenAt else { return false }
+            return !carried.contains(file.id) && now - hidden >= meetingPurgeDays * 86_400
+        }.map(\.id)
+    }
+    /// One meeting's purge under the store's lock, from its manifest as it is on disk now. Never deletes the folder.
+    nonisolated static func cleanMeeting(root: URL, id: String, carried: Set<String>, now: Double) {
+        _ = try? locked(root: root) {
+            let folder = Self.folder(root: root, workID: id)
+            try guardFolder(root: root, folder: folder)
+            guard var manifest = readManifest(folder), manifest.workSourceID == id else { return }
+            let purge = meetingPurge(manifest, carried: carried, now: now)
+            guard !purge.isEmpty else { return }
+            for file in manifest.files where purge.contains(file.id) { WorkCardFileStore.deleteCopies(file, root: root, folder: folder) }
+            manifest.files.removeAll { purge.contains($0.id) }
+            try writeManifest(manifest, folder: folder)
+        }
     }
 }
 
@@ -1365,7 +1663,7 @@ extension WorkCardFiles {
     /// A Finder file or folder. A file is copied (waiting up to `timeout` for iCloud), checked and committed; a folder
     /// becomes a link; an app is refused.
     nonisolated static func ingest(url raw: URL, root: URL, workID: String, timeout: TimeInterval, reader: Reader,
-                                   identity: @escaping IdentityGate = { true }) async -> Result<WorkContextFile, WorkCardRefusal> {
+                                   identity: @escaping IdentityGate = { true }, ocr: Bool = false) async -> Result<WorkContextFile, WorkCardRefusal> {
         // Fix pass 1 (QA W4, W5): symlinks are resolved first, and the alias and the real file are both checked.
         let url = URL(fileURLWithPath: resolved(raw))
         let display = cleanDisplay(raw.lastPathComponent)
@@ -1394,13 +1692,13 @@ extension WorkCardFiles {
             return .failure(.copyFailed(display, error.localizedDescription))
         }
         return await commit(staged: staging, display: display, realName: url.lastPathComponent, source: "finder", original: raw.path, root: root, workID: workID,
-                            identity: identity)
+                            identity: identity, ocr: ocr)
     }
 
     /// A copy already in the card's folder (a Finder file, a promise, image data): checked, hashed and committed under
     /// the lock, or removed. A refusal leaves no entry and no file.
     nonisolated static func commit(staged: URL, display: String, realName: String? = nil, source: String, original: String?, root: URL, workID: String,
-                                   identity: @escaping IdentityGate = { true }) async -> Result<WorkContextFile, WorkCardRefusal> {
+                                   identity: @escaping IdentityGate = { true }, ocr: Bool = false) async -> Result<WorkContextFile, WorkCardRefusal> {
         var movedTo: URL?
         var staged = staged
         defer { if movedTo == nil { try? FileManager.default.removeItem(at: staged) } }
@@ -1428,7 +1726,7 @@ extension WorkCardFiles {
                 let file = WorkContextFile(id: newID(), display: display, stored: stored, sha256: sha, bytes: size, sniffed: sniffed.mime,
                     kind: sniffed.kind, pages: meta.pages, pixelWidth: meta.width, pixelHeight: meta.height, duration: meta.duration,
                     source: source, original: original, addedAt: Date().timeIntervalSince1970,
-                    companions: companionPlan(kind: sniffed.kind, width: meta.width, height: meta.height)
+                    companions: companionPlan(kind: sniffed.kind, width: meta.width, height: meta.height, ocr: ocr)
                         .map { WorkContextCompanion(kind: $0, stored: companionName($0, base: base, mime: sniffed.mime), state: "preparing") },
                     state: "ready", seq: seq, note: stamped ? nil : unstampedNote)
                 manifest.files.append(file)
@@ -1563,7 +1861,7 @@ extension WorkCardFiles {
         return try? NSAttributedString(url: url, options: [.documentType: NSAttributedString.DocumentType.officeOpenXML], documentAttributes: nil).string
     }
     /// The words in a screenshot or photo. HEIC orientation is the file's own. Empty when nothing was read.
-    nonisolated static func recognizeText(at url: URL) -> String? {
+    nonisolated static func recognizeText(at url: URL, limit: Int = 8_000) -> String? {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
@@ -1571,7 +1869,7 @@ extension WorkCardFiles {
         let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
         let joined = lines.joined(separator: "\n")
         guard !joined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        return String(joined.prefix(8_000))
+        return String(joined.prefix(limit))
     }
 
     /// Makes one companion beside its file, through a staging name, and returns it ready or failed (with why).
@@ -1597,9 +1895,15 @@ extension WorkCardFiles {
         }
         switch companion.kind {
         case "text":
-            guard let text = extractText(original, kind: file.kind), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                return fail(file.kind == "pdf" ? "this PDF has no text layer (a scan)" : "its text could not be read")
+            let image = file.kind == "image" || file.kind == "heic"
+            // QA round 2 (N1): the whole of an image's words is read and checked, never a first slice of it.
+            guard let text = image ? recognizeText(at: original, limit: 400_000) : extractText(original, kind: file.kind),
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return fail(image ? noWordsFailure : file.kind == "pdf" ? "this PDF has no text layer (a scan)" : "its text could not be read")
             }
+            // 0.5.258: an image's name says nothing about what is in it, so its words are checked as a dropped text file's
+            // contents are. A hit keeps the image on the meeting, marked, and out of every send (QA: never silently).
+            if image && ocrLooksSecret(text) { return fail(ocrSecretFailure) }
             guard (try? Data(text.utf8).write(to: staging)) != nil, place() else { return fail("it could not be saved") }
         case "jpeg", "view":
             let type: UTType = companion.stored.hasSuffix(".png") ? .png : .jpeg
@@ -1659,13 +1963,28 @@ extension WorkCardFiles {
     var reader: WorkCardFiles.Reader = WorkCardFiles.coordinatedRead
     private var loaded = false
     private var running: [String: Task<Void, Never>] = [:]
+    /// 0.5.258: a card store (`.work`) or the meeting store (`.meeting`): see ContextFilePolicy.
+    let policy: ContextFilePolicy
+    /// 0.5.258, the card store: the files of the meetings a card links to (set by the app; nil in previews and checks
+    /// that do not set it). The send adds them after the card's own.
+    var meetingGroups: ((String) -> [WorkMeetingFiles])?
+    /// 0.5.258 (QA B1): asks the server for the keys of a card's meeting links it has not resolved, before a send.
+    var prepareMeetingGroups: ((String) async -> Void)?
+    /// 0.5.258, the meeting store: a file landed on a meeting (the app then resolves the cards' links, QA N6).
+    var onFilesAdded: (() -> Void)?
+    fileprivate var recordKeyMap: [String: [String]] = [:]
+    fileprivate var recordKeyOrder: [String] = []
+    fileprivate var recordKeysLoaded = false
+    fileprivate var followed: AnyCancellable?
 
-    init(root: URL?, isolated: Bool = false) {
+    init(root: URL?, isolated: Bool = false, policy: ContextFilePolicy = .work) {
         if let root, !WorkCardFiles.rootAllowed(root) {
             self.root = nil
-            error = "Card files are off: their folder may not sit in Documents, Desktop or iCloud Drive."
+            error = policy == .meeting ? "Meeting files are off: their folder may not sit in Documents, Desktop or iCloud Drive."
+                : "Card files are off: their folder may not sit in Documents, Desktop or iCloud Drive."
         } else { self.root = root }
         self.isolated = isolated
+        self.policy = policy
     }
     /// The store for a preview: a throwaway folder, never the real one.
     static func preview() -> WorkCardFileStore {
@@ -1813,17 +2132,23 @@ extension WorkCardFiles {
     // MARK: What a send carries
 
     /// The one composer the send and the Agent workspace's "What gets sent" both use (WorkCardFiles.handoff).
-    func handoff(for workID: String, mode: WorkHandoffMode, sessionID: String?, receipts: [WorkHandoffReceipt], resendAll: Bool) -> WorkHandoffFiles {
+    /// 0.5.258: the card's files, then its meetings' files (WorkCardFiles.withMeetings). `fits` is the whole send's limit
+    /// (the draft limit, Cursor's link); only meeting files are dropped to meet it.
+    func handoff(for workID: String, mode: WorkHandoffMode, sessionID: String?, receipts: [WorkHandoffReceipt], resendAll: Bool,
+                 fits: (String) -> Bool = { _ in true }) -> WorkHandoffFiles {
         guard let folder = folder(for: workID) else { return WorkHandoffFiles() }
-        return WorkCardFiles.handoff(files: files(for: workID), folder: folder, mode: mode, sessionID: sessionID, workID: workID,
+        let card = WorkCardFiles.handoff(files: files(for: workID), folder: folder, mode: mode, sessionID: sessionID, workID: workID,
                                      receipts: receipts, resendAll: resendAll, copyExists: { FileManager.default.fileExists(atPath: $0.path) })
+        guard policy == .work, let groups = meetingGroups?(workID), !groups.isEmpty else { return card }
+        return WorkCardFiles.withMeetings(card, cardFolder: folder, meetings: groups, mode: mode, sessionID: sessionID, workID: workID, receipts: receipts,
+                                          resendAll: resendAll, copyExists: { FileManager.default.fileExists(atPath: $0.path) }, fits: fits)
     }
 
     // MARK: Adding
 
     /// Files chosen with Add files…, and Finder URLs.
     func intake(urls: [URL], source: WorkSource) async {
-        guard let root, Self.accepts(source), !urls.isEmpty else { return }
+        guard let root, policy == .work, Self.accepts(source), !urls.isEmpty else { return }
         let workID = source.id, timeout = iCloudTimeout, reader = reader
         // QA round 2: the identity stamp starts here and the copies start at once beside it; each file is written once
         // both are done.
@@ -1844,7 +2169,7 @@ extension WorkCardFiles {
     /// web links. A promise's temporary file is deleted when its callback returns, so it is copied inside the callback.
     /// QA round 2: every load starts at once, beside the identity stamp, and each file is written once both are done.
     func intake(providers: [NSItemProvider], source: WorkSource) async {
-        guard let root, Self.accepts(source), !providers.isEmpty else { return }
+        guard let root, policy == .work, Self.accepts(source), !providers.isEmpty else { return }
         let workID = source.id, timeout = iCloudTimeout, reader = reader
         let identity = identityGate(workID)
         begin(workID, providers.count)
@@ -1968,7 +2293,8 @@ extension WorkCardFiles {
         case .success(let file):
             reload(workID)
             startCompanions(workID: workID, file: file)
-            proposeReading(file, workID: workID)
+            // Readings write task text: a card's only (0.5.258).
+            if policy == .work { proposeReading(file, workID: workID) }
             return file.kind == "link" ? [.linkAdded] : []
         case .failure(let refusal): return [refusal]
         case nil: return [.noFile]
@@ -2086,7 +2412,9 @@ extension WorkCardFiles {
     /// off the main actor. `inventoryComplete` false (the board was not read in full) never marks a card as gone. Never in
     /// a preview.
     func cleanup(tasks: [TaskRow], inventoryComplete: Bool, receipts: [WorkHandoffReceipt], now: Double = Date().timeIntervalSince1970) async {
+        // A meeting folder is never a board card: its retention is cleanupMeetings (0.5.258).
         guard let root, !isolated else { return }
+        guard policy == .work else { return }
         loadIfNeeded()
         let board = Dictionary(tasks.map { ($0.workSourceID, $0.checked) }, uniquingKeysWith: { first, _ in first })
         for workID in manifests.keys.sorted() {
@@ -2105,7 +2433,7 @@ extension WorkCardFiles {
 
     // MARK: Lines on the card
 
-    func flash(_ notes: [WorkCardRefusal], on workID: String) { flashes[workID] = WorkCardFlash(notes) }
+    func flash(_ notes: [WorkCardRefusal], on workID: String) { flashes[workID] = WorkCardFlash(notes, meeting: policy == .meeting) }
     func clearFlash(_ workID: String, id: String) { if flashes[workID]?.id == id { flashes[workID] = nil } }
     func flashBoard() { boardFlash = WorkCardFlash([.wrongTarget]) }
     func clearBoardFlash(id: String) { if boardFlash?.id == id { boardFlash = nil } }
@@ -2117,6 +2445,250 @@ extension WorkCardFiles {
             _ = provider.loadDataRepresentation(forTypeIdentifier: UTType.workCard.identifier) { data, _ in continuation.resume(returning: data) }
         }
         return data.flatMap { try? JSONDecoder().decode(WorkCardDrag.self, from: $0) }?.id
+    }
+}
+
+// MARK: - The meeting store (0.5.258)
+
+extension WorkCardFileStore {
+    /// The meeting store: `~/cos-data/meeting-context` (a check's home when one is set), or off for a check's journal.
+    static func meetingStore(isolated: Bool, journalNamed: Bool) -> WorkCardFileStore {
+        if isolated {
+            let home = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"].map { URL(fileURLWithPath: $0) }
+            let base = home ?? FileManager.default.temporaryDirectory.appendingPathComponent("cos-work-preview-context-\(UUID().uuidString)")
+            return WorkCardFileStore(root: base.appendingPathComponent("meeting-context", isDirectory: true), isolated: true, policy: .meeting)
+        }
+        if journalNamed { return WorkCardFileStore(root: nil, policy: .meeting) }
+        let root = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("meeting-context") }
+            ?? WorkCardFiles.defaultMeetingRoot()
+        return WorkCardFileStore(root: root, policy: .meeting)
+    }
+
+    /// Whether this store takes files for `id`: board tasks on the Work store, `meetingctx:<key>` on the meeting store.
+    func acceptsID(_ id: String) -> Bool {
+        switch policy {
+        case .work: return WorkProgress.boardTask(id) != nil || id.hasPrefix("task:")
+        case .meeting: return WorkCardFiles.meetingKey(of: id) != nil
+        }
+    }
+
+    /// Every visible file a meeting holds under any of its keys, oldest first, the same contents once (decision 1's union:
+    /// a merged meeting shows the files of the capture it absorbed). Each file with the folder its copy is in.
+    func meetingFiles(keys: [String]) -> [(file: WorkContextFile, folder: URL, id: String)] {
+        guard policy == .meeting, let root else { return [] }
+        loadIfNeeded()
+        var seen = Set<String>()
+        var out: [(file: WorkContextFile, folder: URL, id: String)] = []
+        for key in keys {
+            guard let id = WorkCardFiles.meetingID(forKey: key), let manifest = manifests[id] else { continue }
+            let folder = WorkCardFiles.folder(root: root, workID: id)
+            for file in manifest.visible where !seen.contains(file.sha256) {
+                seen.insert(file.sha256)
+                out.append((file, folder, id))
+            }
+        }
+        return out
+    }
+    func meetingFileCount(keys: [String]) -> Int { meetingFiles(keys: keys).count }
+    /// Whether any meeting holds a file (a card's links are worth resolving only then).
+    var hasAnyMeetingFiles: Bool { loadIfNeeded(); return manifests.values.contains { !$0.visible.isEmpty } }
+
+    /// The keys the server gave each record id (rows, details and card-link lookups), from disk on first use. Only keys
+    /// the server said files may be added under are kept: an ambiguous meeting's never are (QA B2).
+    func recordKeys(_ recordId: String) -> [String] {
+        loadRecordKeys()
+        return recordKeyMap[recordId] ?? []
+    }
+    func rememberRecordKeys(_ recordId: String, keys: [String], supported: Bool?) {
+        rememberRecordKeys([(recordId, keys, supported)])
+    }
+    /// One write for a whole list's answers (QA N4). An answer that files may NOT be added (ambiguous, read-only) drops
+    /// what was kept for that record, so a meeting that became ambiguous stops routing files to new sends (QA N3). An
+    /// older server's silence (nil) changes nothing.
+    func rememberRecordKeys(_ answers: [(recordId: String, keys: [String], supported: Bool?)]) {
+        guard policy == .meeting, let root else { return }
+        loadRecordKeys()
+        var changed = false
+        for answer in answers where !answer.recordId.isEmpty && answer.recordId.utf8.count <= 2048 {
+            if answer.supported == false, recordKeyMap.removeValue(forKey: answer.recordId) != nil { changed = true; continue }
+            let valid = answer.keys.filter(WorkCardFiles.validMeetingKey)
+            guard answer.supported == true, !valid.isEmpty, recordKeyMap[answer.recordId] != valid else { continue }
+            if recordKeyMap[answer.recordId] == nil { recordKeyOrder.append(answer.recordId) }
+            recordKeyMap[answer.recordId] = valid
+            changed = true
+        }
+        guard changed else { return }
+        recordKeyOrder.removeAll { recordKeyMap[$0] == nil }
+        if recordKeyOrder.count > WorkCardFiles.maxRecordKeys {
+            for id in recordKeyOrder.prefix(recordKeyOrder.count - WorkCardFiles.maxRecordKeys) { recordKeyMap[id] = nil }
+            recordKeyOrder.removeFirst(recordKeyOrder.count - WorkCardFiles.maxRecordKeys)
+        }
+        let rows = recordKeyOrder.compactMap { id in recordKeyMap[id].map { ["recordId": id, "keys": $0] as [String: Any] } }
+        _ = try? WorkCardFiles.locked(root: root) {
+            let url = root.appendingPathComponent(WorkCardFiles.recordKeysFile)
+            guard WorkCardFiles.fileType(url) != S_IFLNK else { return }
+            let data = try JSONSerialization.data(withJSONObject: ["version": 1, "records": rows], options: [.sortedKeys])
+            try data.write(to: url, options: .atomic)
+            _ = chmod(url.path, 0o600)
+        }
+    }
+    private func loadRecordKeys() {
+        guard !recordKeysLoaded, let root else { return }
+        recordKeysLoaded = true
+        let url = root.appendingPathComponent(WorkCardFiles.recordKeysFile)
+        guard WorkCardFiles.fileType(url) == S_IFREG, let data = try? Data(contentsOf: url), data.count < 4_000_000,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let rows = object["records"] as? [[String: Any]] else { return }
+        for row in rows.suffix(WorkCardFiles.maxRecordKeys) {
+            guard let id = row["recordId"] as? String, let keys = (row["keys"] as? [String])?.filter(WorkCardFiles.validMeetingKey), !keys.isEmpty else { continue }
+            if recordKeyMap[id] == nil { recordKeyOrder.append(id) }
+            recordKeyMap[id] = keys
+        }
+    }
+
+    /// The card store republishes when the meeting store changes, so "From linked meetings" follows a drop, a finished text
+    /// copy or a Remove while Work is open (QA G7).
+    func follow(_ meetings: WorkCardFileStore) {
+        followed = meetings.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+    }
+
+    /// The groups a card's send carries: every meeting the card links to, found by the keys the server gave for that
+    /// meeting's record (`knownKeys`) and by the record ids each meeting folder remembers (its aliases), so a card whose
+    /// link was made before the meeting moved still finds the files dropped then.
+    func meetingGroups(for refs: [WorkMeetingReference], knownKeys: ((String) -> [String])? = nil) -> [WorkMeetingFiles] {
+        guard policy == .meeting, let root, !refs.isEmpty else { return [] }
+        loadIfNeeded()
+        var groups: [WorkMeetingFiles] = []
+        var used = Set<String>()
+        for ref in refs {
+            var ids = (knownKeys?(ref.recordId) ?? recordKeys(ref.recordId)).compactMap(WorkCardFiles.meetingID(forKey:))
+            for (id, manifest) in manifests.sorted(by: { $0.key < $1.key }) where manifest.aliases.contains(ref.recordId) && !ids.contains(id) { ids.append(id) }
+            for id in ids where !used.contains(id) {
+                guard let manifest = manifests[id], !manifest.visible.isEmpty else { continue }
+                used.insert(id)
+                groups.append(WorkMeetingFiles(title: manifest.meetingTitle ?? ref.title, date: manifest.meetingDate ?? "",
+                                               folder: WorkCardFiles.folder(root: root, workID: id), files: manifest.files))
+            }
+        }
+        return groups
+    }
+
+    /// Records the meeting on the folders of the keys it holds files under: its record id as an alias (a card linked to
+    /// that record finds them), and its title and date. Only folders that already exist: viewing a meeting makes nothing.
+    func noteMeeting(keys: [String], info: WorkMeetingInfo) {
+        guard policy == .meeting, let root else { return }
+        loadIfNeeded()
+        for key in keys {
+            guard let id = WorkCardFiles.meetingID(forKey: key), let manifest = manifests[id] else { continue }
+            let title = info.title.isEmpty ? nil : WorkCardFiles.cleanDisplay(info.title)
+            let needsAlias = !info.recordId.isEmpty && manifest.aliases.last != info.recordId
+            // The latest title wins: a raw "G2 Recording" title is replaced once enrichment names the meeting (QA G4).
+            let needsTitle = title != nil && manifest.meetingTitle != title
+            let needsDate = !info.date.isEmpty && manifest.meetingDate != info.date
+            guard needsAlias || needsTitle || needsDate else { continue }
+            _ = try? WorkCardFiles.update(root: root, workID: id) { manifest, _ in
+                // The newest record id goes last; at 32 the oldest goes (QA G5: no silent drop, no write on every open).
+                if needsAlias {
+                    manifest.aliases.removeAll { $0 == info.recordId }
+                    manifest.aliases.append(info.recordId)
+                    if manifest.aliases.count > WorkCardFiles.maxAliases { manifest.aliases.removeFirst(manifest.aliases.count - WorkCardFiles.maxAliases) }
+                }
+                if let title { manifest.meetingTitle = title }
+                if !info.date.isEmpty { manifest.meetingDate = info.date }
+            }
+            reload(id)
+        }
+    }
+
+    /// Files chosen with Add files…, and Finder URLs, onto a meeting (its primary key). Images get a text copy.
+    func intakeMeeting(urls: [URL], key: String, info: WorkMeetingInfo) async {
+        guard let root, policy == .meeting, let id = WorkCardFiles.meetingID(forKey: key), !urls.isEmpty else { return }
+        let timeout = iCloudTimeout, reader = reader
+        begin(id, urls.count)
+        let copies = urls.map { url in
+            Task.detached { await WorkCardFiles.ingest(url: url, root: root, workID: id, timeout: timeout, reader: reader, ocr: true) }
+        }
+        var notes: [WorkCardRefusal] = []
+        var added = false
+        for copy in copies {
+            let result = await copy.value
+            if case .success = result { added = true }
+            notes += settle(result, workID: id)
+            end(id)
+        }
+        if added { noteMeeting(keys: [key], info: info); onFilesAdded?() }
+        if !notes.isEmpty { flash(notes, on: id) }
+    }
+
+    /// A drop on a meeting's Files box: Finder files, promises (the screenshot thumbnail, Photos, Mail), image data, links.
+    func intakeMeeting(providers: [NSItemProvider], key: String, info: WorkMeetingInfo) async {
+        guard let root, policy == .meeting, let id = WorkCardFiles.meetingID(forKey: key), !providers.isEmpty else { return }
+        let timeout = iCloudTimeout, reader = reader
+        begin(id, providers.count)
+        var loads: [Task<Staged, Never>] = []
+        for provider in providers {
+            let box = WorkUncheckedBox(provider)
+            loads.append(Task { @MainActor in await self.stage(box.value, root: root, workID: id) })
+        }
+        var notes: [WorkCardRefusal] = []
+        var added = false
+        for load in loads {
+            let result: Result<WorkContextFile, WorkCardRefusal>
+            switch await load.value {
+            case .finder(let url):
+                result = await Task.detached { await WorkCardFiles.ingest(url: url, root: root, workID: id, timeout: timeout, reader: reader, ocr: true) }.value
+            case .copy(let staged, let display, let source):
+                result = await Task.detached { await WorkCardFiles.commit(staged: staged, display: display, source: source, original: nil, root: root, workID: id, ocr: true) }.value
+            case .web(let url):
+                result = WorkCardFiles.commitWebLink(url, root: root, workID: id)
+            case .refused(let refusal):
+                result = .failure(refusal)
+            }
+            if case .success = result { added = true }
+            notes += settle(result, workID: id)
+            end(id)
+        }
+        if added { noteMeeting(keys: [key], info: info); onFilesAdded?() }
+        if !notes.isEmpty { flash(notes, on: id) }
+    }
+
+    /// Paste: files copied in Finder go as files; a copied screenshot or image goes as a PNG named for when it was pasted.
+    /// Reads the pasteboard it is given (the app passes the general one; checks pass their own).
+    func pasteMeeting(from pasteboard: NSPasteboard, key: String, info: WorkMeetingInfo, now: Date = Date()) async {
+        guard let root, policy == .meeting, let id = WorkCardFiles.meetingID(forKey: key) else { return }
+        let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        if !urls.isEmpty { await intakeMeeting(urls: urls, key: key, info: info); return }
+        let data = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff)
+        guard let data, let png = Self.pngData(data) else { flash([.nothingToPaste], on: id); return }
+        let format = DateFormatter()
+        format.locale = Locale(identifier: "en_US_POSIX"); format.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        let display = "Pasted screenshot " + format.string(from: now) + ".png"
+        begin(id, 1)
+        let result: Result<WorkContextFile, WorkCardRefusal>
+        do {
+            let folder = try WorkCardFiles.locked(root: root) { try WorkCardFiles.preparedFolder(root: root, workID: id) }
+            let staging = WorkCardFiles.stagingURL(folder)
+            try png.write(to: staging)
+            _ = chmod(staging.path, 0o600)
+            result = await Task.detached { await WorkCardFiles.commit(staged: staging, display: display, source: "data", original: nil, root: root, workID: id, ocr: true) }.value
+        } catch {
+            result = .failure(error as? WorkCardRefusal ?? .copyFailed(display, error.localizedDescription))
+        }
+        let notes = settle(result, workID: id)
+        end(id)
+        if case .success = result { noteMeeting(keys: [key], info: info); onFilesAdded?() }
+        if !notes.isEmpty { flash(notes, on: id) }
+    }
+
+    /// Retention over every meeting folder: a hidden file goes 14 days after Remove when no receipt ever carried it (any
+    /// card's: a meeting file is sent by the cards linked to it). Never a folder, never a visible file.
+    func cleanupMeetings(receipts: [WorkHandoffReceipt], now: Double = Date().timeIntervalSince1970) async {
+        guard let root, policy == .meeting, !isolated else { return }
+        loadIfNeeded()
+        let carried = Set(receipts.flatMap { ($0.context ?? []).map(\.id) })
+        for id in manifests.keys.sorted() where manifests[id]?.files.contains(where: { $0.hiddenAt != nil }) == true {
+            await Task.detached { WorkCardFiles.cleanMeeting(root: root, id: id, carried: carried, now: now) }.value
+            reload(id)
+        }
     }
 }
 
@@ -2414,8 +2986,10 @@ struct WorkCardFilesSection: View {
                 Task { await files.intake(providers: providers, source: card) }
             })
             WorkCardFlashView(files: files, workID: source.id)
-            if !all.isEmpty {
-                noteLine(plan: plan, carried: carried, total: all.count)
+            // 0.5.258: the files of the meetings this card links to go after its own, and say so here.
+            if !plan.meetingSending.isEmpty || !plan.meetingAlready.isEmpty || !plan.meetingOmitted.isEmpty { meetingLines(plan) }
+            if !all.isEmpty || !plan.meetingSending.isEmpty {
+                if !all.isEmpty { noteLine(plan: plan, carried: carried, total: all.count) }
                 Button { showBlock.toggle() } label: {
                     HStack(spacing: 6) {
                         Image(systemName: showBlock ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .semibold))
@@ -2430,7 +3004,7 @@ struct WorkCardFilesSection: View {
                         .overlay(RoundedRectangle(cornerRadius: 7).stroke(COSPalette.line))
                 }
             }
-            if !plan.sending.isEmpty && WorkCardFiles.localProviders.contains(provider) {
+            if (!plan.sending.isEmpty || !plan.meetingSending.isEmpty) && WorkCardFiles.localProviders.contains(provider) {
                 HStack(spacing: 7) {
                     Image(systemName: "exclamationmark.triangle").font(.system(size: 11))
                     Text(WorkCardFiles.localModelWarning).fixedSize(horizontal: false, vertical: true)
@@ -2445,6 +3019,29 @@ struct WorkCardFilesSection: View {
         .task { files.loadIfNeeded(); files.reload(source.id) }
     }
 
+    /// The linked meetings' files: name and meeting, then how many are already in the session, then what was left out.
+    private func meetingLines(_ plan: WorkHandoffFiles) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("From linked meetings").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
+            ForEach(plan.meetingSending) { entry in
+                HStack(spacing: 8) {
+                    Image(systemName: Self.icon(entry.file)).font(.system(size: 11)).foregroundStyle(COSPalette.accent).frame(width: 16)
+                    Text(entry.file.display).font(COSType.body(11.5)).lineLimit(1).truncationMode(.middle)
+                    Text(WorkCardFiles.headingTitle(entry.meetingTitle)).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+            }
+            if !plan.meetingAlready.isEmpty {
+                Text("\(plan.meetingAlready.count) more already in this session.").font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+            }
+            ForEach(plan.meetingOmitted, id: \.self) { line in
+                Text("Left out: " + line).font(COSType.body(10.5)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(COSPalette.line))
+    }
+
     private static func link(_ words: String, _ target: String) -> AttributedString {
         var link = AttributedString(words)
         link.link = URL(string: "cos-card-files://" + target)
@@ -2453,12 +3050,14 @@ struct WorkCardFilesSection: View {
     }
 
     private func rightLabel(all: [WorkContextFile], plan: WorkHandoffFiles, carried: [WorkContextFile]) -> String {
-        guard !all.isEmpty else { return "" }
+        guard !all.isEmpty || !plan.meetingSending.isEmpty else { return "" }
         if delta && !carried.isEmpty && !resendAll {
             return "\(plan.sending.count) new · \(carried.count) already in this session"
         }
         let n = plan.sending.count
-        return "\(n) file\(n == 1 ? "" : "s") · " + WorkCardFiles.sizeText(plan.bytes)
+        let m = plan.meetingSending.count
+        let meetingBytes = plan.meetingSending.filter { !$0.file.isLink }.reduce(Int64(0)) { $0 + $1.file.bytes }
+        return "\(n) file\(n == 1 ? "" : "s") · " + WorkCardFiles.sizeText(plan.bytes) + (m > 0 ? " + \(m) from meetings · " + WorkCardFiles.sizeText(meetingBytes) : "")
     }
 
     @ViewBuilder private func noteLine(plan: WorkHandoffFiles, carried: [WorkContextFile], total: Int) -> some View {
@@ -2694,13 +3293,14 @@ struct WorkStartFilesRow: View {
     @State private var open = false
     var body: some View {
         let handoff = files.handoff(for: source.id, mode: plan.filesMode, sessionID: plan.session?.id, receipts: store.receipts, resendAll: false)
-        if !handoff.sending.isEmpty {
-            let n = handoff.sending.count
+        // 0.5.258: the linked meetings' files count too, and are listed with the card's.
+        if !handoff.sending.isEmpty || !handoff.meetingSending.isEmpty {
+            let n = handoff.sending.count + handoff.meetingSending.count
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 10) {
                     Image(systemName: "paperclip").foregroundStyle(COSPalette.accent)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("With \(n) \(handoff.already.isEmpty ? "" : "new ")file\(n == 1 ? "" : "s"), " + WorkCardFiles.sizeText(handoff.bytes))
+                        Text("With \(n) \(handoff.already.isEmpty ? "" : "new ")file\(n == 1 ? "" : "s"), " + WorkCardFiles.sizeText(handoff.bytes + handoff.meetingSending.filter { !$0.file.isLink }.reduce(Int64(0)) { $0 + $1.file.bytes }))
                             .font(COSType.body(12, weight: .semibold))
                         if let line = WorkCardFiles.preparingLine(handoff) {
                             Text(line).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
@@ -2713,7 +3313,7 @@ struct WorkStartFilesRow: View {
                 }
                 if open {
                     VStack(alignment: .leading, spacing: 5) {
-                        ForEach(handoff.sending) { file in
+                        ForEach(handoff.sending + handoff.meetingSending.map(\.file)) { file in
                             HStack(spacing: 8) {
                                 Image(systemName: WorkCardFilesSection.icon(file)).font(.system(size: 11)).foregroundStyle(COSPalette.accent).frame(width: 16)
                                 Text(file.display).font(COSType.body(11.5)).lineLimit(1).truncationMode(.middle)

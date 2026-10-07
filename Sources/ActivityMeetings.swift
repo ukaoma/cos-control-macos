@@ -209,7 +209,8 @@ struct MeetingLibraryBody: View {
                 LazyVStack(spacing: 6) {
                     ForEach(model.visibleLibraryMeetings) { meeting in
                         Button { onOpen(meeting) } label: {
-                            meetingRow(meeting.title, subtitle: meeting.subtitle(clock: model.clockStyle), sessionId: meeting.sessionId)
+                            meetingRow(meeting.title, subtitle: meeting.subtitle(clock: model.clockStyle), sessionId: meeting.sessionId,
+                                       keys: meeting.contextKeys)
                         }
                         .buttonStyle(.plain)
                     }
@@ -296,7 +297,7 @@ struct MeetingLibraryBody: View {
         }
     }
 
-    private func meetingRow(_ title: String, subtitle: String, sessionId: String) -> some View {
+    private func meetingRow(_ title: String, subtitle: String, sessionId: String, keys: [String] = []) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
@@ -309,6 +310,8 @@ struct MeetingLibraryBody: View {
                     .lineLimit(1)
             }
             Spacer()
+            // 0.5.258: the meeting holds files (the Work card face's paperclip and count), following the store.
+            if !keys.isEmpty, let files = model.workHandoffStore?.meetingFiles { MeetingFileCount(files: files, keys: keys) }
             if !sessionId.isEmpty {
                 MeetingStatusPills(
                     isNew: model.isInboxNew(sessionId),
@@ -541,6 +544,14 @@ struct MeetingLibraryDetailPane: View {
                 let isDocument = COSMarkdownParser.looksLikeDocument(detail.transcript)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
+                        // 0.5.258: screenshots, slides and files dropped on the meeting, sent with every linked card.
+                        if let files = model.workHandoffStore?.meetingFiles, let row = model.openLibraryRow {
+                            let keys = detail.contextKeys.isEmpty ? row.contextKeys : detail.contextKeys
+                            MeetingFilesSection(files: files, keys: keys, supported: detail.contextSupported ?? row.contextSupported,
+                                                ambiguous: detail.contextAmbiguous || row.contextAmbiguous,
+                                                reason: detail.contextReason.isEmpty ? row.contextReason : detail.contextReason,
+                                                info: WorkMeetingInfo(recordId: row.recordId, title: row.title, date: row.date))
+                        }
                         if let workConnections { relatedWork(workConnections) }
                         if isDocument {
                             COSMarkdownView(text: detail.transcript, dropLeadingTitle: true)
@@ -684,6 +695,212 @@ struct MeetingLibraryDetailPane: View {
                 .tracking(0.8)
                 .foregroundStyle(.secondary)
             COSMarkdownView(text: body)
+        }
+    }
+}
+
+// MARK: - Files on a meeting (0.5.258)
+
+/// A meeting's Files: drop, Add files…, Paste screenshot (or ⌘V while the box is focused), and each file's row. The
+/// files are COS's copies on this Mac, and every Work card linked to the meeting sends them after its own.
+///
+/// THE DROP IS ON THE BOX ITSELF, never in an `.overlay` (an overlay drop destination never fires, 0.5.246). A server
+/// older than 6.64.0 sends no keys, so the box says to update rather than taking files it could not file.
+struct MeetingFilesSection: View {
+    @ObservedObject var files: WorkCardFileStore
+    let keys: [String]
+    /// nil: the server did not say (older than 6.64.0).
+    let supported: Bool?
+    /// Shown in its own line (unavailableLine); kept on the view for the states render.
+    let ambiguous: Bool
+    let reason: String
+    let info: WorkMeetingInfo
+    @State private var targeted = false
+    @State private var preview: URL?
+    @State private var hovered: String?
+    @FocusState private var focused: Bool
+
+    private var primaryID: String? { keys.first.flatMap(WorkCardFiles.meetingID(forKey:)) }
+    private var canAdd: Bool { supported == true && files.enabled && primaryID != nil }
+
+    var body: some View {
+        let shown = files.meetingFiles(keys: keys)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Files").font(COSType.display(19, weight: .medium))
+                Spacer()
+                if !shown.isEmpty {
+                    Text("\(shown.count) file\(shown.count == 1 ? "" : "s") · " + WorkCardFiles.sizeText(shown.filter { !$0.file.isLink }.reduce(0) { $0 + $1.file.bytes }))
+                        .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+                }
+            }
+            if let line = unavailableLine {
+                Text(line).font(COSType.body(11)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(spacing: 0) {
+                ForEach(shown, id: \.file.id) { entry in
+                    row(entry.file, folder: entry.folder, id: entry.id)
+                    Divider().overlay(COSPalette.line)
+                }
+                // Undo for a file removed from any of the meeting's folders (a merged meeting shows its captures' too).
+                ForEach(keys.compactMap(WorkCardFiles.meetingID(forKey:)), id: \.self) { id in
+                    ForEach(files.recentlyRemoved(for: id)) { file in
+                        HStack(spacing: 8) {
+                            Text("Removed \u{201C}\(file.display)\u{201D}.").lineLimit(1).truncationMode(.middle)
+                            Spacer(minLength: 6)
+                            if supported == true { Button("Undo") { files.undoRemove(file.id, workID: id) }.buttonStyle(COSTextButtonStyle()) }
+                        }.font(COSType.body(11)).foregroundStyle(COSPalette.muted).padding(.horizontal, 10).padding(.vertical, 6)
+                        Divider().overlay(COSPalette.line)
+                    }
+                }
+                if canAdd { dropRow }
+            }
+            .background(targeted ? COSPalette.gold.opacity(0.06) : .clear)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(targeted || focused ? COSPalette.gold : COSPalette.line, lineWidth: targeted ? 1.5 : 1))
+            .modifier(MeetingFilesDrop(enabled: canAdd, targeted: $targeted) { providers in
+                guard let key = keys.first else { return }
+                let meeting = info
+                Task { await files.intakeMeeting(providers: providers, key: key, info: meeting) }
+            })
+            // ⌘V pastes here only while the box has focus (a click on it), so the search field keeps its own paste. No
+            // focus ring, and the box never takes a window's first focus by itself (COSBrand's .focusable note).
+            .focusable(canAdd, interactions: .edit)
+            .focusEffectDisabled()
+            .focused($focused)
+            .onTapGesture { if canAdd { focused = true } }
+            .onPasteCommand(of: [.fileURL, .png, .tiff]) { _ in paste() }
+            if let id = primaryID { WorkCardFlashView(files: files, workID: id) }
+            if canAdd {
+                Text(WorkCardFiles.meetingNote).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+            }
+            if let error = files.error { Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.danger) }
+        }
+        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        .background(COSPalette.raised.opacity(0.5), in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(COSPalette.line))
+        .quickLookPreview($preview)
+        // Only a meeting files may be added under records its id on the folder: an ambiguous one never does (QA B2).
+        .task(id: keys) { files.loadIfNeeded(); if supported == true { files.noteMeeting(keys: keys, info: info) } }
+    }
+
+    /// Why files cannot be added here, or nil.
+    private var unavailableLine: String? {
+        guard supported != true else { return nil }
+        if supported == nil { return "Update the COS server to 6.64 or later to add files to meetings." }
+        switch reason {
+        case "ambiguous": return "Two meetings claim this recording, so files can't be added or removed here. Cards linked to this meeting get no new files from it until one of the two is removed."
+        case "conflict_copy": return "This is an iCloud copy of a meeting. Add files on the original."
+        case "read_only_record": return "Files can't be added to an imported or combined record. Add them on the meeting it came from."
+        default: return "Files can't be added to this meeting yet: it has no recording or Fireflies id COS can file them under."
+        }
+    }
+
+    private var dropRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "paperclip").font(.system(size: 11))
+            Text(targeted ? "Drop to add to this meeting" : "Drop screenshots, slides or files here")
+            Spacer(minLength: 6)
+            Button { paste() } label: { Label("Paste screenshot", systemImage: "doc.on.clipboard") }
+                .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+            Button { addFiles() } label: { Label("Add files\u{2026}", systemImage: "plus") }
+                .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+        }
+        .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .background(COSPalette.raised.opacity(0.35))
+    }
+
+    private func paste() {
+        guard canAdd, let key = keys.first else { return }
+        let meeting = info
+        Task { await files.pasteMeeting(from: NSPasteboard.general, key: key, info: meeting) }
+    }
+
+    /// Add files…: files and folders, several at once. Dragging is never required.
+    private func addFiles() {
+        guard canAdd, let key = keys.first else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true; panel.canChooseDirectories = true; panel.allowsMultipleSelection = true
+        panel.prompt = "Add to meeting"; panel.message = "Choose screenshots, slides or files to add to this meeting."
+        guard panel.runModal() == .OK else { return }
+        let urls = panel.urls, meeting = info
+        Task { await files.intakeMeeting(urls: urls, key: key, info: meeting) }
+    }
+
+    private func row(_ file: WorkContextFile, folder: URL, id: String) -> some View {
+        let hover = hovered == file.id
+        let (word, tint) = WorkCardFiles.secretFlagged(file) ? ("Not sent", COSPalette.amber) : WorkCardFilesSection.stateWord(file)
+        var parts = WorkCardFilesSection.metaParts(file)
+        if let text = file.companions.first(where: { $0.kind == "text" }), file.kind == "image" || file.kind == "heic" {
+            switch text.state {
+            case "ready": parts.append("text read on this Mac")
+            case "preparing": parts.append("reading its text")
+            default: parts.append(text.failure == WorkCardFiles.ocrSecretFailure ? "reads like a password or key, not sent" : "no text found")
+            }
+        }
+        let location: URL? = file.kind == "folder" ? file.original.map { URL(fileURLWithPath: $0) }
+            : file.kind == "link" ? file.original.flatMap(URL.init(string:)) : folder.appendingPathComponent(file.stored)
+        return HStack(spacing: 10) {
+            Image(systemName: WorkCardFilesSection.icon(file)).font(.system(size: 13))
+                .foregroundStyle(WorkCardFiles.secretFlagged(file) ? COSPalette.amber : file.isLink ? COSPalette.muted : COSPalette.accent)
+                .frame(width: 28, height: 28).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 6))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(file.display).font(COSType.body(12, weight: .medium)).lineLimit(1).truncationMode(.middle)
+                (Text(word).bold().foregroundColor(tint) + Text(parts.isEmpty ? "" : " \u{00B7} " + parts.joined(separator: " \u{00B7} ")).foregroundColor(COSPalette.muted))
+                    .font(COSType.body(10.5)).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 4)
+            Group {
+                HStack(spacing: 2) {
+                    if !file.isLink { icon("eye", "Quick Look") { preview = location } }
+                    icon(file.kind == "link" ? "arrow.up.right.square" : "magnifyingglass", file.kind == "link" ? "Open the link" : "Show in Finder") {
+                        guard let location else { return }
+                        if file.kind == "link" { NSWorkspace.shared.open(location) } else { NSWorkspace.shared.activateFileViewerSelecting([location]) }
+                    }
+                    if supported == true { icon("xmark", "Remove from this meeting (Undo is offered)") { files.remove(file.id, workID: id) } }
+                }.foregroundStyle(COSPalette.muted)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .background(hover ? COSPalette.gold.opacity(0.06) : .clear)
+        .contentShape(Rectangle())
+        .onHover { inside in hovered = inside ? file.id : (hovered == file.id ? nil : hovered) }
+    }
+    private func icon(_ symbol: String, _ help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 11)).frame(width: 24, height: 24).contentShape(Rectangle())
+        }.buttonStyle(.plain).help(help).accessibilityLabel(help)
+    }
+}
+
+/// A meeting row's paperclip and count. Observes the meeting store, so a drop or a Remove shows at once (QA G7).
+struct MeetingFileCount: View {
+    @ObservedObject var files: WorkCardFileStore
+    let keys: [String]
+    var body: some View {
+        let count = files.meetingFileCount(keys: keys)
+        if count > 0 {
+            HStack(spacing: 4) {
+                Image(systemName: "paperclip").font(.system(size: 10, weight: .semibold))
+                Text("\(count)")
+            }
+            .font(COSType.body(11)).foregroundStyle(.secondary)
+            .accessibilityElement(children: .combine).accessibilityLabel("\(count) file\(count == 1 ? "" : "s")")
+        }
+    }
+}
+
+/// The Files box's own drop: files only (a Work card dragged here is not a file), on the box, never in an overlay.
+struct MeetingFilesDrop: ViewModifier {
+    let enabled: Bool
+    @Binding var targeted: Bool
+    let onFiles: ([NSItemProvider]) -> Void
+    func body(content: Content) -> some View {
+        if enabled {
+            content.onDrop(of: WorkCardFiles.fileDropTypes, delegate: WorkCardFileDropDelegate(target: .filesBox, targeted: $targeted, onFiles: onFiles))
+        } else {
+            content
         }
     }
 }

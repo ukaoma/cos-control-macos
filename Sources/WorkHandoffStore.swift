@@ -275,6 +275,8 @@ struct WorkGlassesRequest: Equatable, Sendable {
     let isolated: Bool
     /// 0.5.254: the files on each card, sent as paths with the handoff. Off (no folder) for a journal a check names.
     let cardFiles: WorkCardFileStore
+    /// 0.5.258: the files on each meeting (`~/cos-data/meeting-context`). A card's send carries its linked meetings'.
+    let meetingFiles: WorkCardFileStore
     @Published private(set) var confirmedSessionCards: [String: WorkSessionCardLink] = [:]
     private let storageURL: URL
     private let transport: Transport
@@ -298,8 +300,9 @@ struct WorkGlassesRequest: Equatable, Sendable {
     private struct DraftIdentity: Hashable { let sourceID: String; let revision: String }
     private static let queueable: Set<String> = ["native_thread_working", "native_target_busy"]
 
-    init(isolated: Bool = false, storageURL: URL? = nil, transport: Transport? = nil, cardFiles: WorkCardFileStore? = nil) {
+    init(isolated: Bool = false, storageURL: URL? = nil, transport: Transport? = nil, cardFiles: WorkCardFileStore? = nil, meetingFiles: WorkCardFileStore? = nil) {
         self.isolated = isolated
+        self.meetingFiles = meetingFiles ?? WorkCardFileStore.meetingStore(isolated: isolated, journalNamed: storageURL != nil)
         // The real store only for the real journal: a preview gets a throwaway folder, a check's journal none.
         self.cardFiles = cardFiles ?? (isolated ? .preview() : storageURL == nil ? WorkCardFileStore(root: ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("work-context") } ?? WorkCardFiles.defaultRoot()) : WorkCardFileStore(root: nil))
         let helper = HelperClient()
@@ -910,6 +913,9 @@ struct WorkGlassesRequest: Equatable, Sendable {
             if quiet { quietSend = false; writeDraftsEditedMeanwhile(); writeOpenedMeanwhile() } else { busy = false }
         }
         var intentID: String?
+        // 0.5.258 (QA B1): the card's meeting links are resolved to their keys BEFORE the journal is locked (a bounded
+        // server read), so the files dropped on its meetings are found whichever record id the card links.
+        if let prepare = cardFiles.prepareMeetingGroups { await prepare(source.id) }
         do {
             guard storageReady else { throw failure("History is unavailable; sending is disabled.") }
             let lock = try lockJournal(); defer { flock(lock, LOCK_UN); close(lock) }
@@ -923,8 +929,15 @@ struct WorkGlassesRequest: Equatable, Sendable {
             // 0.5.254: the card's files go between the text and the instruction, never first and never after the status
             // line, from the one composer the Agent workspace shows. A Continue or Fork carries only what this session lacks.
             cardFiles.reload(source.id)
+            // 0.5.258: the card's linked meetings' files go too, and only they are dropped to fit the draft limit and, for
+            // Cursor, its link. The card's own files keep their 0.5.254 refusals below.
+            let cutsForCursor = Self.prefillProviders.contains(mode == .newSession ? model?.provider ?? "" : session?.provider ?? "") && mode != .fork
             let files = cardFiles.handoff(for: source.id, mode: mode, sessionID: mode == .newSession ? nil : session?.id,
-                                          receipts: receipts, resendAll: resendAllFiles)
+                                          receipts: receipts, resendAll: resendAllFiles, fits: { block in
+                                              let candidate = WorkCardFiles.compose(text: text, block: block, instruction: instruction)
+                                              return candidate.utf16.count - instruction.utf16.count <= Self.draftLimit
+                                                  && (!cutsForCursor || Self.cursorPrefillFits(candidate, tag: tag, instruction: instruction))
+                                          })
             let sent = WorkCardFiles.compose(text: text, block: files.block, instruction: instruction)
             guard sent.utf16.count - instruction.utf16.count <= Self.draftLimit else {
                 throw failure("The context and the card's file list together are over \(Self.draftLimit.formatted()) characters. Shorten the context, or remove a file from the card.")
@@ -963,6 +976,8 @@ struct WorkGlassesRequest: Equatable, Sendable {
             var progress = WorkProgress(tag: tag)
             progress.record(.sent, Self.sentText(mode: mode, session: session, model: model, prefill: prefill), at: row.createdAt)
             if !files.sending.isEmpty { row.context = files.refs }
+            if files.sending.isEmpty && !files.meetingSending.isEmpty { row.context = files.refs }
+            if !files.meetingOmitted.isEmpty { progress.record(.note, "Meeting files left out: " + files.meetingOmitted.joined(separator: " "), at: row.createdAt) }
             // Start now while copies are still being made sends what is ready; the timeline says what was not.
             let left = files.notReady + files.missing.map { "\u{201C}\($0.display)\u{201D} (its copy is gone)" }
             if !left.isEmpty { progress.record(.note, "Sent before these were ready: " + left.joined(separator: "; ") + ".", at: row.createdAt) }

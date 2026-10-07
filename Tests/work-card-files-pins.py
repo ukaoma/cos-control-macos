@@ -108,7 +108,9 @@ need("WorkCardFilesSection(files: store.cardFiles, store: store, source: source,
      "the Files section sits in the composer, under Context to send")
 need(view.index("WorkCardFilesSection(") > view.index('Text("Context to send")'), "Files to send comes after Context to send")
 need("await sendWorkHandoff(store: store, source: sendingSource, plan: sendingPlan, resendAllFiles: resendAll)" in view, "Send all again reaches the send")
-need(files.count("func compose(") == 1 and files.count("static func block(") == 1, "one composer")
+# 0.5.258: one composer still. The card-only block delegates to the one that also heads a card's meeting files.
+need(files.count("func compose(") == 1 and files.count("static func block(") == 2
+     and "        block(card: entries, meetings: [])\n" in body(files, "    nonisolated static func block(_ entries:", "    nonisolated static func block(card:"), "one composer")
 need("Transcript unavailable" in files and "Transcript: 0.5.255" not in files and "transcript.txt" not in files_code,
      "the video transcript is shown as unavailable (0.5.255 shipped without it) and never faked")
 
@@ -182,6 +184,22 @@ for rel in ("Tests/run.sh", "scripts/build-release.sh", "scripts/build-foundatio
     need(lists == 0, f"{rel} compiles WorkProgress.swift without WorkCardFiles.swift")
     need('"$ROOT/Sources/WorkCardFiles.swift"' in text, f"{rel} must compile WorkCardFiles.swift")
 need("WorkProgress WorkCardFiles WorkProgressTracker" in code("Tests/run-work.sh"), "run-work.sh compiles WorkCardFiles")
+
+# 0.5.258: the context-key rule lives twice (Models compiles without WorkCardFiles in some lists); the two must agree.
+key_rule = '"^(g2|ff):[A-Za-z0-9:_-]{3,96}$"'
+need(key_rule in body(files, "    nonisolated static func validMeetingKey(", "    nonisolated static func meetingID(")
+     and key_rule in body(code("Sources/Models.swift"), "    nonisolated static func validContextKey(", "    let recordId: String"), "the two context-key rules are the same")
+
+# 0.5.258 QA B2: only a meeting files may be added under records its id on the folder; an ambiguous one never does.
+meetings_view = code("Sources/ActivityMeetings.swift")
+need(".task(id: keys) { files.loadIfNeeded(); if supported == true { files.noteMeeting(keys: keys, info: info) } }" in meetings_view,
+     "an ambiguous or read-only meeting writes no alias")
+need("onPasteCommand(of:" in meetings_view and ".focusable(canAdd, interactions: .edit)" in meetings_view and ".focusEffectDisabled()" in meetings_view,
+     "paste is scoped to the Files box, which never takes a window's first focus")
+
+# 0.5.258 QA round 2 (N1): an image's whole text is read and checked, never the 8,000-character slice a reading uses.
+need("recognizeText(at: original, limit: 400_000)" in body(files, "    nonisolated static func makeCompanion(", "        case \"jpeg\", \"view\":"),
+     "the OCR secret check reads all of an image's words")
 
 # 8. Tests never open a panel or Quick Look (the desktop check enforces it; this keeps the rule there).
 need("NSOpenPanel|NSSavePanel|QLPreviewPanel" in code("Tests/desktop-safety-check.py"), "the desktop check refuses file panels and Quick Look in tests")

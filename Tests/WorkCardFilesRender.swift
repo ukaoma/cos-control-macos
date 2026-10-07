@@ -76,6 +76,35 @@ import SwiftUI
         try render(board, width: 1500, height: 900, name: "board", out: out)
         files.flash([.secret(".env")], on: source.id)
         try render(board, width: 1500, height: 900, name: "board-refusal", out: out)
+        // 0.5.258: files on a meeting. A slide with words (Vision reads them on this Mac), a PDF, and a screenshot whose
+        // words read like a credential (kept, marked, sent nowhere); then the same files in a linked card's send.
+        let meetings = store.meetingFiles
+        let key = "g2:meeting_1790800343639_lfbilg"
+        let info = WorkMeetingInfo(recordId: "ops:quilt:2026-09:2026-09-30_Marketing_Performance_and_Planning_Review.md",
+                                   title: "Marketing Performance and Planning Review", date: "2026-09-30")
+        let slide = fixtures.appendingPathComponent("Q3 pipeline slide.png")
+        try textPNG(slide, lines: ["Q3 pipeline review", "Grocery opportunities up 18 percent", "Liquor demos flat"])
+        let deck = fixtures.appendingPathComponent("Planning deck.pdf")
+        try pdf(deck, pages: 6)
+        let secret = fixtures.appendingPathComponent("Env screenshot.png")
+        try textPNG(secret, lines: ["OPENAI_API_KEY=sk-proj-Zq8vT41mWb2LxR9kHn3P", "deploy notes"])
+        await meetings.intakeMeeting(urls: [slide, deck, secret], key: key, info: info)
+        await meetings.waitForCompanions()
+        print("meeting files: \(meetings.meetingFiles(keys: [key]).map { "\($0.file.display) [\($0.file.companions.map { "\($0.kind):\($0.state)" })]" })")
+        try render(MeetingFilesSection(files: meetings, keys: [key], supported: true, ambiguous: false, reason: "", info: info).padding(18),
+                   width: 712, name: "meeting-files", out: out)
+        try render(VStack(alignment: .leading, spacing: 12) {
+            MeetingFilesSection(files: meetings, keys: [], supported: nil, ambiguous: false, reason: "", info: info)
+            MeetingFilesSection(files: meetings, keys: [key], supported: false, ambiguous: true, reason: "ambiguous", info: info)
+            MeetingFilesSection(files: meetings, keys: [], supported: false, ambiguous: false, reason: "read_only_record", info: info)
+        }.padding(18), width: 712, name: "meeting-files-states", out: out)
+        let ref = WorkMeetingReference(.object(["recordId": .string(info.recordId), "domain": .string("quilt"), "month": .string("2026-09"),
+                                                "filename": .string("2026-09-30_Marketing_Performance_and_Planning_Review.md"), "title": .string(info.title)]))!
+        files.meetingGroups = { _ in meetings.meetingGroups(for: [ref]) { _ in [key] } }
+        try render(WorkCardFilesSection(files: files, store: store, source: source, mode: .newSession, sessionID: nil,
+                                        sessionTitle: nil, provider: "claude", resendAll: .constant(false)).padding(18),
+                   width: 440, name: "workspace-with-meeting-files", out: out)
+        try render(WorkStartFilesRow(files: files, store: store, source: source, plan: plan).padding(18), width: 600, name: "start-sheet-with-meeting-files", out: out)
         print("wrote PNGs to \(out.path)")
     }
 
@@ -96,6 +125,22 @@ import SwiftUI
             try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("\(name)-\(word).png"))
             window.close()
         }
+    }
+
+    /// A PNG with real words on it, for Vision to read.
+    static func textPNG(_ url: URL, lines: [String]) throws {
+        let w = 1600, h = 140 + lines.count * 100
+        let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        let font = CTFontCreateWithName("Helvetica" as CFString, 60, nil)
+        for (index, line) in lines.enumerated() {
+            let text = NSAttributedString(string: line, attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font,
+                                                                     NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(red: 0, green: 0, blue: 0, alpha: 1)])
+            context.textPosition = CGPoint(x: 50, y: CGFloat(h - 110 - index * 100))
+            CTLineDraw(CTLineCreateWithAttributedString(text), context)
+        }
+        _ = WorkCardFiles.writeImage(context.makeImage()!, to: url, type: .png)
     }
 
     static func image(_ w: Int, _ h: Int, _ hue: CGFloat) -> CGImage {

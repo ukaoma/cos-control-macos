@@ -618,6 +618,7 @@ final class COSControlHelper {
         case "meetings-library": try emitMeetingsLibrary(args: args)
         case "meetings-library-search": try emitMeetingsLibrarySearch(args: args)
         case "meeting-library-detail": try emitMeetingLibraryDetail(args: args)
+        case "meeting-context-keys": try emitMeetingContextKeys(args: args)
         case "meeting-speakers": try emitMeetingSpeakers(args: args)
         case "meeting-content": try emitMeetingContent(args: args)
         case "fences": try emitFences()
@@ -12770,6 +12771,12 @@ final class COSControlHelper {
         if let sources = row["sources"] as? [[String: Any]], !sources.isEmpty {
             fields["sources"] = sources
         }
+        // 0.5.258 (server 6.64.0) meeting context keys. PASSED THROUGH, never defaulted: a row from an older server has no
+        // `contextSupported`, and Control says to update rather than taking files it could not file.
+        if let keys = row["contextKeys"] as? [String] { fields["contextKeys"] = keys }
+        if let supported = row["contextSupported"] as? Bool { fields["contextSupported"] = supported }
+        if let ambiguous = row["contextAmbiguous"] as? Bool { fields["contextAmbiguous"] = ambiguous }
+        if let reason = row["contextReason"] as? String, !reason.isEmpty { fields["contextReason"] = reason }
         if let review = row["voiceReview"] as? [String: Any] {
             fields["voiceReview"] = [
                 "voices": Self.meetingCount(review["voices"]),
@@ -14551,6 +14558,25 @@ final class COSControlHelper {
         let path = "/api/meetings/detail?domain=\(queryEscape(domain))&month=\(queryEscape(month))&filename=\(queryEscape(filename))"
         let body = try speakerReviewBody(path, timeout: 30)
         emit(ok: true, message: "Meeting ready", details: body)
+    }
+
+    /// 0.5.258 (server 6.64.0): the context keys behind a card's saved meeting links, by record id. A 404 is an older
+    /// server (`route_absent`), never an error: Control then only knows the keys it has seen on rows and details.
+    private func emitMeetingContextKeys(args: [String]) throws {
+        var ids: [String] = []
+        var index = 0
+        while index < args.count {
+            if args[index] == "--record-id", index + 1 < args.count { ids.append(args[index + 1]); index += 2 } else { index += 1 }
+        }
+        guard !ids.isEmpty, ids.count <= 50 else { throw HelperError.message("one to fifty --record-id values are required") }
+        let query = ids.map { "recordId=" + ($0.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? $0) }.joined(separator: "&")
+        do {
+            let body = try speakerReviewBody("/api/meetings/context-keys?" + query, timeout: 15)
+            emit(ok: true, message: "Meeting keys ready", details: ["keys": body["keys"] as? [String: Any] ?? [:]])
+        } catch let error {
+            let text = "\(error)"
+            emit(ok: true, message: "Meeting keys unavailable", details: ["unavailable": text.contains("(404)") ? "route_absent" : "error", "detail": text])
+        }
     }
 
     private func reviewSelectionQuery(_ args: [String]) -> String {
@@ -20141,6 +20167,15 @@ final class COSControlHelper {
             try expect(plainFields[key] == nil, "an ordinary capture claims nothing about \(key)")
         }
         try expect(plainFields["mutable"] as? Bool == true, "an ordinary capture stays correctable")
+        // 0.5.258: server 6.64.0 context keys pass through; an older server's row claims nothing, so Control says to update.
+        for key in ["contextKeys", "contextSupported", "contextAmbiguous", "contextReason"] {
+            try expect(plainFields[key] == nil, "a row from an older server claims nothing about \(key)")
+        }
+        let keyedFields = Self.meetingRowFields(["sessionId": "meeting_1", "title": "T", "contextKeys": ["g2:meeting_1", "ff:01ABC"],
+                                                 "contextSupported": false, "contextAmbiguous": true, "contextReason": "ambiguous"])
+        try expect(keyedFields["contextKeys"] as? [String] == ["g2:meeting_1", "ff:01ABC"] && keyedFields["contextSupported"] as? Bool == false
+                   && keyedFields["contextAmbiguous"] as? Bool == true && keyedFields["contextReason"] as? String == "ambiguous",
+                   "a meeting's context keys reach Control, in order, with why files cannot be added")
 
         // A SPLIT PIECE HAS NO SESSION, deliberately: it is a span, not a capture,
         // and two pieces of one recording would collapse onto each other.

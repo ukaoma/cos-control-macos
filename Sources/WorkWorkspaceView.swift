@@ -688,6 +688,8 @@ struct WorkWorkspaceView: View {
             // decided from the journal as it is on disk.
             if let receipts = handoffStore.receiptsOnDisk() {
                 await cardFiles.cleanup(tasks: model.workTasks, inventoryComplete: model.workTasksComplete, receipts: receipts)
+                // 0.5.258: a meeting file removed 14 days ago that no session was sent goes; nothing else does.
+                await handoffStore.meetingFiles.cleanupMeetings(receipts: receipts)
             }
             if let id = handoffStore.selectedWorkID { state.selectedID = WorkWorkspaceProjection.rowID(forSourceID: id, currentID: state.selectedID, items: items) ?? id }
         }

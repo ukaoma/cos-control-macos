@@ -180,6 +180,8 @@ final class ControllerModel: ObservableObject {
     /// 0.5.247: the one Work handoff journal and its tracker, shared with the Activity window so tracking keeps
     /// running while the window is closed. Nil in previews and checks (no background work).
     private(set) var workHandoffStore: WorkHandoffStore?
+    /// 0.5.258: an older server answered the card-link lookup with 404; it is not asked again this launch.
+    private var meetingKeysRouteAbsent = false
     /// The sessions Work handoffs name, so Sessions shows them as work rather than as COS server jobs (0.5.247).
     var workSessionIDs: Set<String> { Set(workHandoffStore?.receipts.compactMap(\.sessionID) ?? []).union(workHandoffStore.map { Array($0.confirmedSessionCards.keys) } ?? []) }
     /// 0.5.250: sessions of Work New sessions the COS server is still running; nothing else writes to them until they finish.
@@ -506,6 +508,24 @@ final class ControllerModel: ObservableObject {
             }
         }
         store.cardFiles.start()
+        // 0.5.258: a card's send carries the files of every meeting it links to (Miles, decision 1), found by the keys the
+        // server gave for each linked record and by the record ids each meeting folder remembers.
+        store.cardFiles.meetingGroups = { [weak self, weak store] workID in
+            guard let self, let store, let task = self.workTasks.first(where: { $0.workSourceID == workID }), !task.meetingRefs.isEmpty else { return [] }
+            return store.meetingFiles.meetingGroups(for: task.meetingRefs)
+        }
+        // QA B1: before a send, the keys of the card's links the server has not yet given are asked for by record id, so a
+        // card finds the files whichever record id it was linked under (a capture's, the synced file's, a renamed one's).
+        store.cardFiles.prepareMeetingGroups = { [weak self] workID in
+            guard let self, let task = self.workTasks.first(where: { $0.workSourceID == workID }) else { return }
+            await self.resolveMeetingKeys(for: [task], all: true)
+        }
+        store.meetingFiles.onFilesAdded = { [weak self] in
+            guard let self else { return }
+            Task { await self.resolveMeetingKeys(for: self.workTasks) }
+        }
+        store.cardFiles.follow(store.meetingFiles)
+        store.meetingFiles.start()
         // 0.5.252: the glasses request inbox is asked about again whenever the server's version changes.
         tracker.requests.serverVersion = { [weak self] in
             guard let status = self?.status else { return nil }
@@ -2773,6 +2793,8 @@ final class ControllerModel: ObservableObject {
                 throw HelperClientError.invalidResponse("Work task inventory contains invalid or duplicate identities. Refresh before changing work.")
             }
             workTasks = parsed
+            // 0.5.258: the linked meetings' keys, so "Files to send" shows their files before a send asks again.
+            if parsed.contains(where: { !$0.meetingRefs.isEmpty }) { Task { [weak self] in await self?.resolveMeetingKeys(for: parsed) } }
             workTasksComplete = response.details["complete"]?.bool == true
             let capabilities = response.details["capabilities"]?.object ?? [:]
             workBoardWritable = capabilities["version"]?.int == 1 && capabilities["writable"]?.bool == true
@@ -6551,6 +6573,10 @@ final class ControllerModel: ObservableObject {
             let response = try await helper.run(args)
             guard libraryLoadID == id else { return }
             libraryMeetings = (response.details["meetings"]?.array ?? []).compactMap(LibraryMeeting.init)
+            // Only keys files may be added under: an ambiguous meeting's are never kept (QA B2).
+            if let files = workHandoffStore?.meetingFiles, files.hasAnyMeetingFiles {
+                files.rememberRecordKeys(libraryMeetings.map { (recordId: $0.recordId, keys: $0.contextKeys, supported: $0.contextSupported) })
+            }
             let months = response.details["months"]?.array?.compactMap(\.string) ?? []
             libraryMonths = months.isEmpty
                 ? Array(Set(libraryMeetings.map(\.month))).sorted().reversed()
@@ -6634,6 +6660,7 @@ final class ControllerModel: ObservableObject {
                 return
             }
             libraryDetail = detail
+            workHandoffStore?.meetingFiles.rememberRecordKeys(detail.recordId, keys: detail.contextKeys, supported: detail.contextSupported)
         } catch {
             guard !Task.isCancelled, openLibraryRow?.id == meeting.id else { return }
             libraryDetailError = error.localizedDescription
@@ -6669,13 +6696,15 @@ final class ControllerModel: ObservableObject {
         case .context:
             let source = detail?.sourceContent.isEmpty == false ? detail!.sourceContent
                 : (detail?.transcript.isEmpty == false ? detail!.transcript : detail?.summary ?? row.title)
+            // 0.5.258: the meeting's files go with it, as the paths a card's send would carry.
+            let filesBlock = meetingFilesBlock(row: row, detail: detail)
             body = """
             Meeting \(row.title)\(row.date.isEmpty ? "" : " (\(row.date)\(row.domain.isEmpty ? "" : ", \(row.domain)"))")
 
             \"\"\"
             \(source)
             \"\"\"
-            """
+            """ + (filesBlock.isEmpty ? "" : "\n\n" + filesBlock)
         }
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { copyNote = "Nothing to copy"; return }
@@ -6685,6 +6714,31 @@ final class ControllerModel: ObservableObject {
         case .summary: copyNote = "Copied summary"
         case .transcript: copyNote = "Copied transcript"
         case .context: copyNote = "Copied as grounded context"
+        }
+    }
+
+    /// The open meeting's files as one block, with the guards a send applies (WorkCardFiles.meetingBlock), or "".
+    func meetingFilesBlock(row: LibraryMeeting, detail: LibraryMeetingDetail?) -> String {
+        guard let store = workHandoffStore?.meetingFiles else { return "" }
+        let keys = detail?.contextKeys.isEmpty == false ? detail!.contextKeys : row.contextKeys
+        return WorkCardFiles.meetingBlock(title: row.title, date: row.date, files: store.meetingFiles(keys: keys).map { ($0.file, $0.folder) })
+    }
+
+    /// Asks the server for the context keys of these cards' meeting links it has not given yet (6.64.0, at most 50 per call).
+    /// Only when some meeting holds a file. An older server's 404 stops the asking for this launch.
+    /// `all`: ask about every link (before a send), so a meeting that became ambiguous since is seen (QA N3); otherwise
+    /// only links with no keys yet (when Work loads).
+    func resolveMeetingKeys(for tasks: [TaskRow], all: Bool = false) async {
+        guard !meetingKeysRouteAbsent, let store = workHandoffStore?.meetingFiles, store.hasAnyMeetingFiles else { return }
+        let missing = Array(Set(tasks.flatMap(\.meetingRefs).map(\.recordId).filter { all || store.recordKeys($0).isEmpty })).sorted()
+        for start in stride(from: 0, to: min(missing.count, 500), by: 50) {
+            var args = ["meeting-context-keys"]
+            for id in missing[start..<min(start + 50, missing.count)] { args += ["--record-id", id] }
+            guard let response = try? await helper.run(args, timeout: 20), response.ok else { return }
+            if response.details["unavailable"]?.string == "route_absent" { meetingKeysRouteAbsent = true; return }
+            store.rememberRecordKeys((response.details["keys"]?.object ?? [:]).map { id, value in
+                (recordId: id, keys: value.object?["contextKeys"]?.array?.compactMap(\.string) ?? [], supported: value.object?["contextSupported"]?.bool)
+            })
         }
     }
 

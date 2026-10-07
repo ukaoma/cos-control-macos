@@ -4192,6 +4192,12 @@ enum ClockStyle: String, CaseIterable, Sendable {
 /// A saved meeting in the Activity library. sessionId is optional — Granola and
 /// Fireflies rows still open transcript and summary.
 struct LibraryMeeting: Identifiable, Sendable, Hashable {
+    /// 0.5.258: a server context key (`g2:` or `ff:` and the server's marker grammar). The same rule as
+    /// `WorkCardFiles.validMeetingKey`, kept here because some compile lists build the models without the card files
+    /// (Tests/work-card-files-pins.py pins the two patterns equal).
+    nonisolated static func validContextKey(_ key: String) -> Bool {
+        key.range(of: "^(g2|ff):[A-Za-z0-9:_-]{3,96}$", options: .regularExpression) != nil
+    }
     let recordId: String
     let sessionId: String
     let title: String
@@ -4225,6 +4231,12 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
     /// False on an imported or derived record: nothing here may be corrected in
     /// place, because the capture that could be corrected is a different file.
     let mutable: Bool
+    /// 0.5.258 (server 6.64.0): the keys this meeting's dropped files are filed under, first = primary; whether files can
+    /// be added (nil: an older server said nothing); and why not.
+    let contextKeys: [String]
+    let contextSupported: Bool?
+    let contextAmbiguous: Bool
+    let contextReason: String
 
     /// IDENTITY IS `recordId`, and that is load-bearing for split pieces. Two
     /// pieces of one recording share a source session and differ only by their
@@ -4298,6 +4310,10 @@ struct LibraryMeeting: Identifiable, Sendable, Hashable {
         derivedKind = o["derivedKind"]?.string
         actionId = o["actionId"]?.string
         g2SessionIds = o["g2SessionIds"]?.array?.compactMap(\.string) ?? []
+        contextKeys = (o["contextKeys"]?.array?.compactMap(\.string) ?? []).filter(LibraryMeeting.validContextKey)
+        contextSupported = o["contextSupported"]?.bool
+        contextAmbiguous = o["contextAmbiguous"]?.bool ?? false
+        contextReason = o["contextReason"]?.string ?? ""
         sourceSessionId = o["sourceSessionId"]?.string
         pieceIndex = o["pieceIndex"]?.int ?? Int(o["pieceIndex"]?.string ?? "")
         originDomain = o["originDomain"]?.string
@@ -4429,6 +4445,11 @@ struct LibraryMeetingDetail: Sendable {
     let mutable: Bool
     /// One row per input a merged record holds, so its sources stay reachable.
     let sources: [LibraryMeetingSource]
+    /// 0.5.258 (server 6.64.0): as on the row.
+    let contextKeys: [String]
+    let contextSupported: Bool?
+    let contextAmbiguous: Bool
+    let contextReason: String
 
     var isDerived: Bool { !(derivedKind ?? "").isEmpty }
 
@@ -4459,6 +4480,10 @@ struct LibraryMeetingDetail: Sendable {
         recordId = o["recordId"]?.string ?? ""
         mutable = o["mutable"]?.bool ?? true
         sources = o["sources"]?.array?.compactMap(LibraryMeetingSource.init) ?? []
+        contextKeys = (o["contextKeys"]?.array?.compactMap(\.string) ?? []).filter(LibraryMeeting.validContextKey)
+        contextSupported = o["contextSupported"]?.bool
+        contextAmbiguous = o["contextAmbiguous"]?.bool ?? false
+        contextReason = o["contextReason"]?.string ?? ""
     }
 }
 
