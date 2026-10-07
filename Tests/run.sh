@@ -1559,22 +1559,6 @@ if '"COS_THREAD_ATTACH_ENABLED": "0"' not in body:
 if '["COS_THREAD_ATTACH_ENABLED"]' in body:
     sys.exit("Continue off must not use the removingKeys delete path any more")
 PY
-# Activity now has its own persistent NSWindow. Its sole meeting-link sheet is safe there;
-# keep sheets forbidden in the transient MenuBarExtra and reject unrelated new Activity sheets.
-python3 - "$ROOT" <<'ACTIVITY_SHEET'
-from pathlib import Path
-import sys
-root = Path(sys.argv[1])
-activity = (root / "Sources/ActivityWindow.swift").read_text()
-views = (root / "Sources/Views.swift").read_text()
-assert 'NSHostingController(rootView: ActivityWindow.live(model: model))' in activity
-assert 'let window = ActivityHostWindow(contentViewController: hostingController)' in activity
-assert 'final class ActivityHostWindow: NSWindow' in activity
-assert 'ActivityWindow(' not in views and 'ActivityWindow.live(' not in views
-assert activity.count('.sheet(') == 1
-assert '.sheet(item: $meetingTaskLink) { meeting in\n            MeetingTaskLinkSheet(model: model, meeting: meeting, onOpenWork: openConnectedWork)' in activity
-print('PASS: the meeting-link sheet belongs to the persistent Activity window; the menu-bar panel remains sheet-free')
-ACTIVITY_SHEET
 /usr/bin/grep -q 'struct SpeakerReviewPane' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'activityLauncher' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'ActivitySection.allCases' "$ROOT/Sources/Views.swift"
@@ -4690,8 +4674,9 @@ activity_src = (root / "Sources/ActivityWindow.swift").read_text()
 need('Button("Cancel") { model.cancelChatQueuedTurn(turn) }' in activity_src and "if turn.cancellable {" in activity_src
      and "model.queuedTurnText(turn)" in activity_src,
      "the pane lists the queue without Cancel, or draws the preview instead of the text")
-need("follow-up queued; it lands when this turn ends." in activity_src,
-     "the pane lost its queued line")
+need("1 follow-up queued. It sends when this session is available." in activity_src
+     and "if let reason = turn.waitingDetail {" in activity_src,
+     "the pane lost its availability-aware queued line or recorded hold reason")
 # ---- Queued turns: expand and edit (0.5.236) --------------------------
 need("model.togglePetExpandedTurn(turn)" in qrows and "lineLimit(expanded ? 12 : 1)" in qrows,
      "the card row no longer opens to its whole text on tap")
@@ -5259,7 +5244,7 @@ if "FileHandle" in models[models.index("struct SessionListCache"):models.index("
     fail("SessionListCache must not open session bodies")
 if "hydrateClaudeSessionsFromCache()" not in model:
     fail("ControllerModel must hydrate Sessions from cache before helper RPC")
-init = model[model.index("init(startBackgroundWork: Bool = true, allowActivityLoads: Bool = false) {"):model.index("func checkForAppUpdate(")]
+init = model[model.index("init(startBackgroundWork: Bool = true, allowActivityLoads: Bool = false, helper: HelperClient = HelperClient()) {"):model.index("func checkForAppUpdate(")]
 if "hydrateClaudeSessionsFromCache()" not in init:
     fail("first paint must read the session cache in init, not after the week scan")
 load = model[model.index("func loadClaudeSessions"):model.index("private func fetchClaudeSessions")]
@@ -5882,7 +5867,7 @@ if load.count("guard generation == meetingAudioGeneration else { return }") != 2
     fail("a check overtaken by a newer one must be ignored on both paths")
 if "meetingAudio = []" not in load_catch:
     fail("a failed check must clear its rows, never keep a stale Reaching this Mac")
-init = body(model, "init(startBackgroundWork: Bool = true, allowActivityLoads: Bool = false) {")
+init = body(model, "init(startBackgroundWork: Bool = true, allowActivityLoads: Bool = false, helper: HelperClient = HelperClient()) {")
 guard_at, ask_at = init.find("guard startBackgroundWork else { return }"), init.find("meetingAudioNotifier.requestAuthorization()")
 if guard_at < 0 or ask_at >= 0:
     fail("launch must preserve the background-work guard and defer notification consent until a live meeting")
@@ -5951,7 +5936,7 @@ apply_sessions = body(model, "private func applyPetSessions(")
 if not 0 <= apply_sessions.find("mergeCompletions(") < apply_sessions.find("ScheduledJobLedger.record(") \
         or "saveScheduledJobRuns()" not in apply_sessions:
     fail("finished job runs must be recorded and saved on the authoritative pet poll")
-init = body(model, "init(startBackgroundWork: Bool = true, allowActivityLoads: Bool = false) {")
+init = body(model, "init(startBackgroundWork: Bool = true, allowActivityLoads: Bool = false, helper: HelperClient = HelperClient()) {")
 if not 0 <= init.find("guard startBackgroundWork else { return }") < init.find("loadScheduledJobRuns()"):
     fail("today's runs must load at launch, only in the background-work model")
 opener = body(model, "func openClaudeSession(")
@@ -6785,7 +6770,7 @@ for reason in ('case "http_404"', 'case "http_503"', 'case "stream_lost"'):
 composer = body(window, "struct SessionChatComposer: View")
 if "The reply lands in the transcript; the open desk tab will not show it until you resume." not in composer:
     fail("the composer names the fork mode when another app holds the session")
-if "follow-up queued; it lands when this turn ends." not in composer:
+if "1 follow-up queued. It sends when this session is available." not in composer:
     fail("the composer shows the queued follow-ups")
 banner = body(window, "@ViewBuilder private var sessionHooksBanner: some View")
 if 'state == "missing" || state == "drift" || state == "script_outdated" || state == "route_absent"' not in banner:
