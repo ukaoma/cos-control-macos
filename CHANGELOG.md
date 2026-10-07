@@ -1,3 +1,10 @@
+# 0.5.261 (314)
+
+- Bundle a verified private Node runtime so first-run server setup needs no Homebrew, Node, npm, or npx installation.
+- Add a persistent welcome window with provider guidance, automatic server setup, retry, and deferred notification consent.
+- Sign public builds with Developer ID, notarize and staple them, then verify the extracted download with Gatekeeper.
+- Retain the 0.5.260 task-editor performance, branding, draft protection, and atomic save fixes.
+
 ## 0.5.260 (build 313) · Task editing
 
 - Task-name and finish-line drafts live in the editor, so typing no longer invalidates the full Activity window and Work board.

@@ -1326,6 +1326,10 @@ struct ControlPanel: View {
                 header
                 updateRow
                 noticeBanner
+                if model.status.needsFirstRun {
+                    Button("Get started with COS") { model.openSetup?() }
+                        .buttonStyle(COSPrimaryButtonStyle())
+                }
                 activityLauncher
                 if model.workYourMoveAvailable && !model.workYourMove.isEmpty {
                     Button { openActivity(.work) } label: {

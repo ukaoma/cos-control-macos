@@ -47,6 +47,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/SessionLiveFeed.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" \
+  "$ROOT/Sources/ControlSetup.swift" \
   "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   -o "$APP/Contents/MacOS/COS Control"
@@ -73,6 +74,7 @@ if [ -d "$ROOT/Resources/BundledCharacters" ]; then
   mkdir -p "$APP/Contents/Resources/BundledCharacters"
   cp -R "$ROOT/Resources/BundledCharacters/." "$APP/Contents/Resources/BundledCharacters/"
 fi
+python3 "$ROOT/scripts/prepare-node-runtime.py" "$APP/Contents/Resources/BundledNode"
 chmod 700 "$APP/Contents/MacOS/COS Control" "$APP/Contents/Resources/cos-control-helper"
 /usr/bin/xattr -cr "$APP"
 # Public releases fail closed unless both Developer ID signing and notarization
@@ -119,10 +121,12 @@ if [ -n "$SIGN_ID" ] && [ -z "$NOTARY_PROFILE" ]; then
   exit 67
 fi
 if [ -n "$SIGN_ID" ]; then
+  /usr/bin/codesign --force --options runtime --timestamp --entitlements "$ROOT/Resources/Node.entitlements" --sign "$SIGN_ID" "$APP/Contents/Resources/BundledNode/bin/node"
   /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP/Contents/Resources/cos-control-helper"
   /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP/Contents/MacOS/COS Control"
   /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP"
 elif [ -n "$LOCAL_SIGN_ID" ]; then
+  /usr/bin/codesign --force --sign "$LOCAL_SIGN_ID" "$APP/Contents/Resources/BundledNode/bin/node"
   # 0.5.217: sign the helper with an explicit identity-based designated requirement.
   # A --deep sign left the nested helper on a cdhash requirement, so every rebuild
   # re-prompted for Documents access and the status probe blocked inside the prompt.
@@ -173,6 +177,7 @@ VERIFY_DIR="$BUILD_DIR/verify"
 /bin/mkdir -p "$VERIFY_DIR"
 /usr/bin/ditto -x -k "$ZIP" "$VERIFY_DIR"
 /usr/bin/codesign --verify --deep --strict "$VERIFY_DIR/COS Control.app"
+python3 "$ROOT/Tests/check-bundled-runtime.py" "$VERIFY_DIR/COS Control.app/Contents/Resources"
 if [ -n "$SIGN_ID" ]; then
   /usr/bin/xcrun stapler validate "$VERIFY_DIR/COS Control.app"
   /usr/sbin/spctl -a -vv --type execute "$VERIFY_DIR/COS Control.app"

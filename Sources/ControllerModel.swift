@@ -177,6 +177,8 @@ final class ControllerModel: ObservableObject {
     @Published var activityOpenWorkID: String?
     /// Opens the Activity window at a section. Set by the app, which owns the window presenter.
     var openActivity: ((ActivitySection?) -> Void)?
+    var openSetup: (() -> Void)?
+    private var firstRunPresented = false
     /// 0.5.247: the one Work handoff journal and its tracker, shared with the Activity window so tracking keeps
     /// running while the window is closed. Nil in previews and checks (no background work).
     private(set) var workHandoffStore: WorkHandoffStore?
@@ -461,7 +463,8 @@ final class ControllerModel: ObservableObject {
         loadScheduledJobRuns()
         loadPetSprite()
         hydrateClaudeSessionsFromCache()
-        meetingAudioNotifier.requestAuthorization()
+        // Ask for notification permission when a live meeting needs alerts,
+        // not before a fresh install has even shown its welcome window.
         startWorkTracking()
     }
 
@@ -716,6 +719,10 @@ final class ControllerModel: ObservableObject {
             // library) hung this call forever and left every row at its decode default.
             let response = try await helper.run(["status"], timeout: 45)
             status = ServerStatus(response.details)
+            if status.needsFirstRun && !firstRunPresented, let openSetup {
+                firstRunPresented = true
+                openSetup()
+            }
             if !quiet { error = nil }
             await loadOrphans(quiet: true)
             await loadMeetingAudioWatch()

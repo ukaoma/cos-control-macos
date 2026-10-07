@@ -108,11 +108,18 @@ struct HelperResponse: Codable, Sendable {
 }
 
 struct ServerStatus: Sendable {
+    /// Absence must be proven. A failed probe, foreign owner, disabled service,
+    /// or interrupted transaction is never a fresh install.
+    var needsFirstRun: Bool {
+        runtimeState == "notInstalled" && !installed && !running && !serviceLoaded
+            && launchAgentKind == "absent" && !ownerConflict && !transactionPending
+    }
     var installed = false
     var serviceLoaded = false
     var running = false
     var managedContract = false
     var runtimeState = "unknown"
+    var setupProviderInstalled = false
     var ownershipVerified = false
     var ownerConflict = false
     var launchAgentKind = "absent"
@@ -333,6 +340,7 @@ struct ServerStatus: Sendable {
         running = details["running"]?.bool ?? false
         managedContract = details["managedContract"]?.bool ?? false
         runtimeState = details["runtimeState"]?.string ?? "unknown"
+        setupProviderInstalled = details["setupProviderInstalled"]?.bool ?? false
         ownershipVerified = details["ownershipVerified"]?.bool ?? false
         ownerConflict = details["ownerConflict"]?.bool ?? false
         launchAgentKind = details["launchAgentKind"]?.string ?? "absent"

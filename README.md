@@ -8,26 +8,62 @@ It starts, stops, updates, diagnoses, and safely rolls back the public
 
 - macOS 14 or newer
 - Apple Silicon
-- Node.js 20.11 or newer
 - Claude Code, Codex CLI, or Cursor Agent (`agent`)
+
+New builds bundle Node/npm privately. A working system Node installation remains
+supported, but customers no longer need to install it. Setup downloads the COS
+server from npm and verifies it through the existing managed lifecycle. An
+internet connection and a signed-in supported AI provider are still required.
+
+## First run (0.5.261 candidate, not yet published)
+
+The app opens a persistent welcome window only after proving there is no existing
+service, owner conflict, or unfinished transaction. Get started prepares Node if
+needed and installs/starts COS in the app. Closing the window does not cancel
+setup; the menu-bar panel offers Get started again. Existing installations keep
+their current controls. Notification permission is deferred until a live meeting
+needs alerts. Voice model provisioning remains separate.
+
+The bundled runtime lives in a versioned private Application Support directory,
+so moving or replacing the app does not break launchd or recovery. Its archive is
+SHA-256 pinned in `Resources/node-runtime.json`; the build preserves upstream
+licences, signs the executable before the enclosing app, and tests the extracted
+bundle with a Finder-style PATH and an isolated home.
 
 ## Build
 
 ```bash
 COS_SIGN_IDENTITY="Developer ID Application: NAME (TEAMID)" \
 COS_NOTARY_PROFILE="cos-control-notary" \
-./scripts/build-release.sh
+./scripts/build-public-release.sh
 ```
 
 Signed builds fail closed unless Developer ID signing and notarization are both
 configured, and the script then verifies the extracted ZIP with codesign,
 stapler, and Gatekeeper. Those post-checks run on the signed path only.
 
-**Current release state:** Developer ID enrollment is not configured. Releases
+**Current release state (October 7):** Apple Developer membership is active and
+certificate tools are available. Developer ID Application signing is installed and a
+timestamped signing probe passed. The `cos-control-notary` Keychain profile is configured.
+The onboarding preview was accepted by Apple, stapled, and accepted by Gatekeeper;
+it is not yet published. Prior releases
 use the stable `COS Control Local` signing identity, preserving the designated
 requirement and Accessibility grants across updates. They are not Apple-notarized;
 first installation may require the documented macOS Open Anyway flow. Ad-hoc
 signing is reserved for throwaway QA on a machine without a stable identity.
+
+`build-public-release.sh` requires an available Developer ID Application identity
+and a notarytool Keychain profile before compiling, and writes to `dist/public`.
+`build-release.sh` remains available for local QA with the stable local identity.
+Local QA output is not a notarized customer release. The first Developer ID
+release needs a clean-Mac Gatekeeper test and an upgrade test from the old local
+identity; signing cannot bypass macOS privacy consent and that identity change
+may prompt existing users for permissions again.
+
+The onboarding QA ZIP is approximately 110 MiB with its bundled runtime. Publish
+the signed ZIP as a release asset (or equivalent HTTPS object download), and point
+the website and appcast at that asset. Do not commit it as a regular website Git
+file. The integrated candidate is 0.5.261 (build 314), including the 0.5.260 task-editor fixes. Its notarized archive is frozen; do not rebuild changed code under this version. The earlier onboarding-only preview used development baseline 0.5.259. Clean-Mac first launch and interactive permission migration remain publication gates.
 
 The controller stores immutable npm
 server generations under `~/Library/Application Support/COS Control` and uses

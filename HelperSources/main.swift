@@ -438,6 +438,31 @@ final class COSControlHelper {
         case "self-test": try selfTest()
         case "self-test-lock-crash": try selfTestLockCrash()
         case "status": emit(ok: true, message: "Status refreshed", details: statusDetails())
+        case "setup": try withMutationLock {
+            // First run must never turn into adoption, repair or an update after
+            // a stale UI check. Recheck ownership under the lifecycle lock.
+            let snapshot = ownershipSnapshot()
+            guard loadManifest() == nil, loadTransaction() == nil,
+                  !inPlaceActive(), snapshot.launchAgentKind == .absent,
+                  !snapshot.serviceLoaded, snapshot.allListenerPIDs.isEmpty else {
+                throw HelperError.message("COS already has a local service or unfinished setup. Open COS Control to review or repair it.")
+            }
+            guard !detectedManagedProviders().isEmpty || resolveAgentBinary() != nil else {
+                throw HelperError.message("Connect an AI app first, then try again. COS works with Claude Code, Codex or Cursor Agent.")
+            }
+            try install(requestedVersion: "latest", workDirectory: nil)
+        }
+        case "self-test-bundled-runtime":
+            guard ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"]?.hasPrefix("/tmp/") == true else {
+                throw HelperError.message("Runtime test requires an isolated temporary home.")
+            }
+            try withMutationLock { try prepareBundledNode() }
+            guard let node = managedNodeExecutable("node"), let npm = managedNodeExecutable("npm") else {
+                throw HelperError.message("Bundled runtime was not prepared.")
+            }
+            let probe = try execute(npm, ["--version"], environment: nodeToolEnvironment(node: node), timeout: 15)
+            guard probe.code == 0, nodeVersion(at: node).valid else { throw HelperError.message("Runtime probe failed.") }
+            emit(ok: true, message: "Bundled Node and npm work with the Finder PATH", details: ["node": node, "npmVersion": probe.output])
         case "doctor": emit(ok: true, message: "Doctor complete", details: doctorDetails(redacted: false))
         case "install": try withMutationLock {
             let requested = option("--version", in: args) ?? "latest"
@@ -763,6 +788,7 @@ final class COSControlHelper {
 
     private func executableCandidates(_ name: String) -> [String] {
         var candidates: [String] = []
+        if let managed = managedNodeExecutable(name) { candidates.append(managed) }
         if name == "codex" {
             candidates.append("/Applications/Codex.app/Contents/Resources/codex")
             candidates.append(home.appendingPathComponent("Applications/Codex.app/Contents/Resources/codex").path)
@@ -790,6 +816,77 @@ final class COSControlHelper {
 
     private func findExecutable(_ name: String) -> String? {
         executableCandidates(name).first { fm.isExecutableFile(atPath: $0) }
+    }
+
+    private var nodeReceiptURL: URL { runtimeRoot.appendingPathComponent("node-runtime.json") }
+
+    private func managedNodeExecutable(_ name: String) -> String? {
+        guard ["node", "npm", "npx"].contains(name),
+              let data = try? Data(contentsOf: nodeReceiptURL),
+              let receipt = try? JSONSerialization.jsonObject(with: data) as? [String: String],
+              let version = receipt["version"],
+              version.range(of: #"^\d+\.\d+\.\d+$"#, options: .regularExpression) != nil else { return nil }
+        let root = runtimeRoot.appendingPathComponent("node/\(version)")
+        let executable = root.appendingPathComponent("bin/\(name)")
+        guard executable.resolvingSymlinksInPath().path.hasPrefix(root.path + "/"),
+              fm.isExecutableFile(atPath: executable.path) else { return nil }
+        return executable.path
+    }
+
+    /// Copy the app-owned runtime once into a versioned support directory.
+    /// launchd never points inside Downloads, a mounted image, or a replaceable
+    /// app bundle. Old runtimes stay available to retained server generations.
+    private func prepareBundledNode() throws {
+        if let node = managedNodeExecutable("node"), managedNodeExecutable("npm") != nil,
+           nodeVersion(at: node).valid { return }
+        let resources = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.deletingLastPathComponent()
+        let source = resources.appendingPathComponent("BundledNode", isDirectory: true)
+        guard let data = try? Data(contentsOf: source.appendingPathComponent("runtime.json")),
+              let pin = try? JSONSerialization.jsonObject(with: data) as? [String: String],
+              let version = pin["version"],
+              version.range(of: #"^\d+\.\d+\.\d+$"#, options: .regularExpression) != nil else {
+            throw HelperError.message("This copy of COS Control is missing its setup files. Download COS Control again from gotcos.com/control.")
+        }
+        progress("Preparing COS on this Mac…")
+        let parent = runtimeRoot.appendingPathComponent("node", isDirectory: true)
+        try ensurePrivateDirectory(parent)
+        let destination = parent.appendingPathComponent(version, isDirectory: true)
+        let temporary = parent.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: temporary) }
+        try fm.copyItem(at: source, to: temporary)
+        let node = temporary.appendingPathComponent("bin/node")
+        try validatePrivateRegularFile(node)
+        let probe = nodeVersion(at: node.path)
+        guard probe.valid, probe.display == version else { throw HelperError.message("COS setup files failed verification. Download the app again.") }
+        let npmCLI = temporary.appendingPathComponent("lib/node_modules/npm/bin/npm-cli.js")
+        try validatePrivateRegularFile(npmCLI)
+        let npmProbe = try execute(node.path, [npmCLI.path, "--version"], timeout: 15)
+        guard npmProbe.code == 0 else { throw HelperError.message("COS could not prepare its setup files. Try again.") }
+        if fm.fileExists(atPath: destination.path) {
+            // An interrupted copy cannot be mistaken for a completed runtime.
+            // Never overwrite a runtime that may belong to a retained generation.
+            let existing = nodeVersion(at: destination.appendingPathComponent("bin/node").path)
+            guard existing.valid, existing.display == version,
+                  try sha256(destination.appendingPathComponent("bin/node")) == sha256(node) else {
+                throw HelperError.message("COS found damaged setup files. Open COS Control diagnostics before retrying.")
+            }
+        } else {
+            try fm.moveItem(at: temporary, to: destination)
+        }
+        try atomicWrite(["version": version], to: nodeReceiptURL, permissions: 0o600)
+        guard managedNodeExecutable("node") != nil, managedNodeExecutable("npm") != nil else {
+            throw HelperError.message("COS setup files are incomplete. Download the app again.")
+        }
+    }
+
+    private func prepareNodeIfNeeded() throws {
+        // Preserve a working developer install. Fresh Macs use the app's own
+        // Node/npm and never need a global install or an administrator password.
+        if let node = findExecutable("node"), nodeVersion(at: node).valid,
+           let npm = findExecutable("npm"),
+           let probe = try? execute(npm, ["--version"], environment: nodeToolEnvironment(node: node), timeout: 15),
+           probe.code == 0 { return }
+        try prepareBundledNode()
     }
 
     /// Build the one PATH used by every managed launch. Provider directories
@@ -1273,6 +1370,7 @@ final class COSControlHelper {
         let ownership = ownershipSnapshot()
         try assertAdoptableOwnership(ownership)
 
+        try prepareNodeIfNeeded()
         progress("Resolving npm release…")
         let release = try resolveVersion(requestedVersion)
         try requireVideoUploadDowngradeSafe(targetVersion: release.version)
@@ -2619,6 +2717,7 @@ final class COSControlHelper {
             "managedContract": managed,
             "maintenanceContractVersion": maintenance?["contractVersion"] ?? NSNull(),
             "runtimeState": state.rawValue,
+            "setupProviderInstalled": !detectedManagedProviders().isEmpty || resolveAgentBinary() != nil,
             "ownershipVerified": directOwner,
             "ownerConflict": state == .ownerConflict,
             "launchAgentKind": snapshot.launchAgentKind.rawValue,

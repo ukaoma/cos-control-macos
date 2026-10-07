@@ -5,11 +5,13 @@ struct COSControlApp: App {
     @StateObject private var model: ControllerModel
     @StateObject private var activityWindow: ActivityWindowPresenter
     @StateObject private var sessionPet: SessionPetPresenter
+    @StateObject private var setupWindow: SetupWindowPresenter
 
     init() {
         let model = ControllerModel()
         let activityWindow = ActivityWindowPresenter()
         let sessionPet = SessionPetPresenter()
+        let setupWindow = SetupWindowPresenter()
         sessionPet.bindIfNeeded(model: model) { section in
             activityWindow.show(model: model, section: section)
         }
@@ -18,9 +20,11 @@ struct COSControlApp: App {
         HotKeyCenter.shared.onFire = { activityWindow.show(model: model, section: nil) }
         HotKeyCenter.shared.register(model.activityHotKey)
         model.openActivity = { section in activityWindow.show(model: model, section: section) }
+        model.openSetup = { setupWindow.show(model: model) }
         _model = StateObject(wrappedValue: model)
         _activityWindow = StateObject(wrappedValue: activityWindow)
         _sessionPet = StateObject(wrappedValue: sessionPet)
+        _setupWindow = StateObject(wrappedValue: setupWindow)
         // Reproducible native QA without competing for the live menu-bar
         // hotkey. This opens the same presenter and WebView as the UI chips.
         let environment = ProcessInfo.processInfo.environment

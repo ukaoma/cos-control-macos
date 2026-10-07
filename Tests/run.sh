@@ -16,6 +16,7 @@ mkdir -p "$TMP/home"
 # opted in by hand. The self-test proves each rule can fail.
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT"
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT" --selftest
+"$ROOT/Tests/run-onboarding.sh"
 
 # 0.5.254 (Miles, 2026-10-01 08:44: resizing Work with 268 tasks lagged; the board was rebuilt 27 times on each step).
 # A hard gate on counts, never milliseconds: over a 1200 to 1900 pt sweep of a 268-task board the rows are rebuilt 0
@@ -110,6 +111,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" \
   "$ROOT/Sources/SessionPet.swift" \
+  "$ROOT/Sources/ControlSetup.swift" \
   "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   -o "$TMP/COS Control"
@@ -2510,6 +2512,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" \
   "$ROOT/Sources/SessionPet.swift" \
+  "$ROOT/Sources/ControlSetup.swift" \
   "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   -o "$TMP/COS Control"
@@ -5846,8 +5849,8 @@ if "meetingAudio = []" not in load_catch:
     fail("a failed check must clear its rows, never keep a stale Reaching this Mac")
 init = body(model, "init(startBackgroundWork: Bool = true, allowActivityLoads: Bool = false) {")
 guard_at, ask_at = init.find("guard startBackgroundWork else { return }"), init.find("meetingAudioNotifier.requestAuthorization()")
-if guard_at < 0 or ask_at < guard_at:
-    fail("notification permission is asked at launch, and only by the background-work model")
+if guard_at < 0 or ask_at >= 0:
+    fail("launch must preserve the background-work guard and defer notification consent until a live meeting")
 notifier = body(model, "final class MeetingAudioNotifier")
 if "private lazy var center" not in notifier or "center.delegate = self" not in notifier or ".alert" not in notifier:
     fail("the notifier must create its center on first use, own the delegate and ask for alerts")
@@ -5857,6 +5860,9 @@ _load_and_permission = load + body(model, "private func loadMeetingAlertPermissi
 if "NSLog(" in _load_and_permission or _load_and_permission.count("meetingAudioLog.") < 2:
     fail("failed checks and alert state changes must be logged with meetingAudioLog in the open (0.5.229)")
 permission = body(model, "private func loadMeetingAlertPermission() async {")
+live_at, ask_at = permission.find("guard !meetingAudio.isEmpty else { return }"), permission.find("requestAuthorization()")
+if live_at < 0 or ask_at < live_at or "await loadMeetingAlertPermission()" not in load:
+    fail("a successful meeting check must request consent only when there is a live meeting")
 if ".notDetermined" not in permission or "requestAuthorization()" not in permission or "meetingAlertsOff = off" not in permission:
     fail("a Mac with no answer on record is asked again, and alerts that are off show in the panel")
 if "ForEach(model.meetingAudio)" not in views or "watch.rowLabel(amongLive: model.meetingAudio.count)" not in views or "Text(watch.panelCaption)" not in views:
