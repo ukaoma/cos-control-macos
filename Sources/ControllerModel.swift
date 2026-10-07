@@ -6614,6 +6614,17 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    /// 0.5.259 (QA G-W1): one day of the library, read without touching the Meetings list (its month, rows, day or
+    /// error). Speakers' Open meeting uses it, because a month read stops at 200 rows and a day read does not run out.
+    func libraryRows(day: String) async -> SpeakersMeetingLink.DayRead {
+        do {
+            let response = try await helper.run(["meetings-library", "--day", day, "--limit", String(SpeakersMeetingLink.dayLimit)])
+            return .rows((response.details["meetings"]?.array ?? []).compactMap(LibraryMeeting.init))
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+    }
+
     func selectLibraryDay(_ day: String?) {
         libraryDay = day
         libraryDayAutoApplied = true

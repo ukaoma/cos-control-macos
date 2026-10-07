@@ -4426,13 +4426,71 @@ enum SpeakersMeetingLink {
         return rows.first { $0.sessionId == sessionId }
     }
 
-    /// The month an `ops:<domain>:<YYYY-MM>:<file>` record lives in, so a review of an older meeting can load that month
-    /// before looking again. Any other record (a standalone capture, a merge) names no month.
-    static func month(ofRecordID id: String) -> String? {
-        let parts = id.split(separator: ":", maxSplits: 3, omittingEmptySubsequences: false)
-        guard parts.count == 4, parts[0] == "ops", !parts[1].isEmpty, !parts[3].isEmpty else { return nil }
-        let month = String(parts[2])
-        return month.range(of: "^[0-9]{4}-(0[1-9]|1[0-2])$", options: .regularExpression) != nil ? month : nil
+    /// The days to look the meeting up on, best first (QA G-W1, 2026-10-07). A month read stops at 200 rows, and August
+    /// 2026 held 320 meetings, so a month list cannot prove a meeting is missing; one day holds a few dozen at most. In
+    /// order: the day a record's file name starts with (`ops:`, `direct:`, a filed `standalone:`), the review's own date
+    /// (its write-up, then its Speakers row), then the start a G2 session id carries.
+    static func days(recordIds: [String], reviewDates: [String?], sessionId: String, calendar: Calendar = .current) -> [String] {
+        var out: [String] = []
+        func add(_ day: String?) { if let day, isDay(day), !out.contains(day) { out.append(day) } }
+        for id in recordIds { add(fileDay(ofRecordID: id)) }
+        for date in reviewDates { add(date) }
+        add(sessionDay(sessionId, calendar: calendar))
+        return out
+    }
+
+    static func isDay(_ value: String) -> Bool {
+        value.range(of: "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$", options: .regularExpression) != nil
+    }
+
+    /// `ops:<domain>:<YYYY-MM>:<file>`, `direct:<YYYY-MM>:<file>` and `standalone:<domain>:<YYYY-MM>:<file>` name a file
+    /// whose name starts with its day. A merge, an import or a `standalone:<session>` id names none.
+    static func fileDay(ofRecordID id: String) -> String? {
+        let parts = id.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        let month: String, file: String
+        switch parts.first {
+        case "ops" where parts.count >= 4, "standalone" where parts.count >= 4:
+            month = parts[2]; file = parts[3...].joined(separator: ":")
+        case "direct" where parts.count >= 3:
+            month = parts[1]; file = parts[2...].joined(separator: ":")
+        default:
+            return nil
+        }
+        let day = String(file.prefix(10))
+        return isDay(day) && day.hasPrefix(month + "-") ? day : nil
+    }
+
+    /// `meeting_<epoch ms>_…`: the local day the capture started.
+    static func sessionDay(_ sessionId: String, calendar: Calendar = .current) -> String? {
+        let parts = sessionId.split(separator: "_", omittingEmptySubsequences: false)
+        guard parts.count >= 2, parts[0] == "meeting", parts[1].count == 13, parts[1].allSatisfy(\.isASCII), parts[1].allSatisfy(\.isNumber),
+              let ms = Double(parts[1]) else { return nil }
+        let c = calendar.dateComponents([.year, .month, .day], from: Date(timeIntervalSince1970: ms / 1000))
+        return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
+    }
+
+    /// One day's read of the library.
+    enum DayRead: Sendable { case rows([LibraryMeeting]), failed(String) }
+    /// What one day's read said.
+    enum Lookup: Equatable { case answered(rows: Int), failed(String) }
+    /// The helper's own cap on a day read. A day that fills it may hold more.
+    static let dayLimit = 200
+
+    /// The line a miss leaves in the review. Absence is said only when every day it could be on answered in full and none
+    /// held it; anything less is a failure to load, with the reason when there is one.
+    static func missNote(_ lookups: [Lookup]) -> String {
+        if lookups.isEmpty { return "Couldn't load this meeting: its date isn't known." }
+        for lookup in lookups {
+            if case .failed(let reason) = lookup {
+                let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return "Couldn't load this meeting." }
+                return "Couldn't load this meeting: " + (trimmed.hasSuffix(".") ? trimmed : trimmed + ".")
+            }
+        }
+        if lookups.contains(where: { if case .answered(let n) = $0 { return n >= dayLimit }; return false }) {
+            return "Couldn't load this meeting: its day has more meetings than one read returns."
+        }
+        return "This meeting isn't in the meetings list."
     }
 }
 

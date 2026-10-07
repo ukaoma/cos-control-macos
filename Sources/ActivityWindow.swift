@@ -2591,24 +2591,35 @@ struct ActivityWindow: View {
     }
 
     /// 0.5.259 (Miles, 2026-10-06: "We need the ability to get to a meeting from the speaker view."): the review's meeting
-    /// in Meetings, with Back returning to the review. A meeting outside the loaded month loads its month first; one that
-    /// is still not listed says so in the review instead of doing nothing.
+    /// in Meetings, with Back returning to the review. A meeting the loaded month does not list is read by its day, which
+    /// leaves the Meetings list on its own month (QA G-W1, U-N1, U-N2). A miss says why, and says the meeting is absent
+    /// only when every day it could be on answered in full.
     private func openMeetingFromSpeakers() {
         guard let review = model.openReview else { return }
         let recordIds = [review.blendedRecordId ?? "", review.recordId]
         let sessionId = review.sessionId
+        let reviewDates = [model.openContent?.sessionId == sessionId ? model.openContent?.date : nil,
+                           model.reviewableMeetings.first { $0.sessionId == sessionId }?.date]
         model.openMeetingNote = nil
         Task { @MainActor in
             var row = SpeakersMeetingLink.row(in: model.libraryMeetings, recordIds: recordIds, sessionId: sessionId)
-            if row == nil, let month = recordIds.lazy.compactMap(SpeakersMeetingLink.month(ofRecordID:)).first {
-                model.libraryMonth = month
-                await model.loadLibraryMeetings()
-                row = SpeakersMeetingLink.row(in: model.libraryMeetings, recordIds: recordIds, sessionId: sessionId)
+            var lookups: [SpeakersMeetingLink.Lookup] = []
+            if row == nil {
+                for day in SpeakersMeetingLink.days(recordIds: recordIds, reviewDates: reviewDates, sessionId: sessionId) {
+                    switch await model.libraryRows(day: day) {
+                    case .rows(let rows):
+                        lookups.append(.answered(rows: rows.count))
+                        row = SpeakersMeetingLink.row(in: rows, recordIds: recordIds, sessionId: sessionId)
+                    case .failed(let reason):
+                        lookups.append(.failed(reason))
+                    }
+                    if row != nil { break }
+                }
             }
-            // The user may have moved on while the month loaded.
+            // The user may have moved on while the day loaded.
             guard section == .speakers, selectedSpeakerSessionID == sessionId else { return }
             guard let row else {
-                model.openMeetingNote = "This meeting isn't in the meetings list."
+                model.openMeetingNote = SpeakersMeetingLink.missNote(lookups)
                 return
             }
             meetingReturnWorkID = nil

@@ -6,3 +6,7 @@ dist/
 # icon build intermediates (regenerated from Resources/AppIcon.svg)
 icon/icon_1024.png
 icon/AppIcon.iconset/
+
+# Python bytecode from the test scripts
+__pycache__/
+Tests/__pycache__/

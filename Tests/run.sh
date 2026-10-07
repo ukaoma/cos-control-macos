@@ -2605,9 +2605,23 @@ open_body = open_meeting.group(0)
 need(re.search(r"selectedLibraryRecordID\s*=\s*row\.id", open_body) is not None and "model.openLibraryMeeting(row)" in open_body
      and re.search(r"section\s*=\s*\.meetings", open_body) is not None,
      "Open meeting does not land on the Meetings detail route")
-need("await model.loadLibraryMeetings()" in open_body and "SpeakersMeetingLink.month(ofRecordID:)" in open_body,
-     "Open meeting does not load an older meeting's month before giving up")
-need(re.search(r'model\.openMeetingNote\s*=\s*"', open_body) is not None, "Open meeting fails silently when no row is found")
+# QA G-W1/U-N1 (2026-10-07): a month read stops at 200 rows, so a meeting the loaded month does not list is read by its
+# day; that read touches none of the Meetings list's state, and a miss is worded by missNote from what each day said.
+need("await model.libraryRows(day: day)" in open_body and "SpeakersMeetingLink.days(" in open_body,
+     "Open meeting does not read the meeting's day before giving up")
+need(re.search(r"model\.libraryMonth\s*=|loadLibraryMeetings\(\)", open_body) is None, "Open meeting switches the Meetings month")
+rows_fn = re.search(r"func libraryRows\(day: String\).*?\n    \}", model, re.S)
+need(rows_fn is not None and '"--day", day' in rows_fn.group(0), "libraryRows does not read one day")
+need(rows_fn is not None and re.search(r"\blibrary(Month|Months|Meetings|Day|Days|Error)\s*=", rows_fn.group(0)) is None,
+     "libraryRows writes the Meetings list's state")
+need("model.openMeetingNote = SpeakersMeetingLink.missNote(lookups)" in open_body and "isn't in the meetings list" not in activity,
+     "Open meeting words its miss itself instead of through missNote")
+need(re.search(r"case \.failed\(let reason\):\s*lookups\.append\(\.failed\(reason\)\)", open_body) is not None,
+     "a failed day read is not kept for the miss note")
+# U-N2: a record id that names no day (standalone:<session>, a merge) falls back to the review's own dates.
+need(re.search(r"reviewDates = \[model\.openContent\?\.sessionId == sessionId \? model\.openContent\?\.date : nil,\s*model\.reviewableMeetings\.first \{ \$0\.sessionId == sessionId \}\?\.date\]", activity) is not None
+     and "reviewDates: reviewDates" in open_body,
+     "Open meeting ignores the review's own date")
 need("onOpenMeeting?()" in views and "if onOpenMeeting != nil" in views, "SpeakerReviewPane has no Open meeting button")
 need("model.openMeetingNote" in views, "the Open meeting note is never shown")
 need(re.search(r"else if let sessionId = meetingReturnSpeakerSessionID \{ returnFromMeetingToSpeakers\(sessionId\) \}", activity) is not None,

@@ -4185,7 +4185,8 @@ struct ModelsContract {
         print("COS Control: thread detail body (every section, counts, order, empty) passed")
     }
 
-    /// 0.5.259: Speakers' Open meeting finds the review's row, and loads an older month only for an `ops:` record.
+    /// 0.5.259: Speakers' Open meeting finds the review's row, reads it by its day, and says "isn't there" only when every
+    /// day it could be on answered in full (QA G-W1, U-N2).
     static func checkSpeakersMeetingLink() {
         func row(_ record: String, session: String, month: String = "2026-10") -> LibraryMeeting {
             LibraryMeeting(.object(["recordId": .string(record), "sessionId": .string(session), "month": .string(month),
@@ -4203,11 +4204,49 @@ struct ModelsContract {
                      "speakers open meeting: a row carrying the session is the fallback")
         precondition(SpeakersMeetingLink.row(in: rows, recordIds: ["", "ops:quilt:2026-09:old.md"], sessionId: "") == nil,
                      "speakers open meeting: an empty session matches no row")
-        precondition(SpeakersMeetingLink.month(ofRecordID: "ops:quilt:2026-09:2026-09-03_G2 Recording, 07:00.md") == "2026-09",
-                     "speakers open meeting: an ops record names its month, even with colons in the file name")
-        for id in ["standalone:meeting_1", "blended:abc", "ops:quilt:2026-13:x.md", "ops:quilt:26-09:x.md", "ops::2026-09:x.md", "ops:quilt:2026-09:", ""] {
-            precondition(SpeakersMeetingLink.month(ofRecordID: id) == nil, "speakers open meeting: \(id) names no month")
+        // The day a record's file names: ops, direct and a filed standalone record; never a merge, an import or a session id.
+        precondition(SpeakersMeetingLink.fileDay(ofRecordID: "ops:quilt:2026-09:2026-09-03_G2 Recording, 07:00.md") == "2026-09-03",
+                     "speakers day lookup: an ops record names its day, even with colons in the file name")
+        precondition(SpeakersMeetingLink.fileDay(ofRecordID: "direct:2026-09:2026-09-04_Weekly.md") == "2026-09-04",
+                     "speakers day lookup: a direct record names its day")
+        precondition(SpeakersMeetingLink.fileDay(ofRecordID: "standalone:quilt:2026-09:2026-09-05_Capture.md") == "2026-09-05",
+                     "speakers day lookup: a filed standalone record names its day")
+        for id in ["standalone:meeting_1788436840031_oyppcf", "blended:abc", "imported:fireflies:0123456789abcdef", "ops:quilt:2026-09:Weekly_sync.md",
+                   "ops:quilt:2026-09:2026-10-01_wrong_month.md", "ops:quilt:2026-13:2026-13-01_x.md", "direct:2026-09:", ""] {
+            precondition(SpeakersMeetingLink.fileDay(ofRecordID: id) == nil, "speakers day lookup: \(id) names no day")
         }
+        var chicago = Calendar(identifier: .gregorian); chicago.timeZone = TimeZone(identifier: "America/Chicago")!
+        var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(identifier: "UTC")!
+        precondition(SpeakersMeetingLink.sessionDay("meeting_1788483600000_ab12cd", calendar: chicago) == "2026-09-03"
+                     && SpeakersMeetingLink.sessionDay("meeting_1788483600000", calendar: utc) == "2026-09-04",
+                     "speakers day lookup: a session id's start is read as a local day")
+        for id in ["meeting_17884836000_x", "meeting_178848360000x_y", "session_1788483600000", "meeting_", ""] {
+            precondition(SpeakersMeetingLink.sessionDay(id, calendar: chicago) == nil, "speakers day lookup: \(id) carries no start")
+        }
+        // Order and fallbacks (U-N2): the file's day, then the review's own dates, then the session's start; no repeats.
+        // A session id with no start in it, so only the review's own date can name the day.
+        precondition(SpeakersMeetingLink.days(recordIds: ["", "standalone:capture_abc123"], reviewDates: [nil, "2026-09-03"],
+                                              sessionId: "capture_abc123", calendar: chicago) == ["2026-09-03"],
+                     "speakers day lookup: a standalone review falls back to its own date")
+        precondition(SpeakersMeetingLink.days(recordIds: ["", "ops:quilt:2026-09:2026-09-03_x.md"], reviewDates: ["2026-09-03", "2026-09-02"],
+                                              sessionId: "meeting_1788483600000_a", calendar: chicago) == ["2026-09-03", "2026-09-02"],
+                     "speakers day lookup: the file's day first, then the review's dates, without repeats")
+        precondition(SpeakersMeetingLink.days(recordIds: ["blended:abc", "direct:2026-09:nameless.md"], reviewDates: [nil, "not a day"],
+                                              sessionId: "meeting_1788483600000_a", calendar: chicago) == ["2026-09-03"],
+                     "speakers day lookup: with no other date, the session's start")
+        // The miss line (G-W1): absence only when every day answered in full; anything else is a failure to load.
+        precondition(SpeakersMeetingLink.missNote([.answered(rows: 9)]) == "This meeting isn't in the meetings list."
+                     && SpeakersMeetingLink.missNote([.answered(rows: 0), .answered(rows: 25)]) == "This meeting isn't in the meetings list.",
+                     "speakers miss note: absence is said when every day answered and none held it")
+        precondition(SpeakersMeetingLink.missNote([.answered(rows: 9), .failed("Request failed (502)")]) == "Couldn't load this meeting: Request failed (502).",
+                     "speakers miss note: a failed day read is a failure to load, with its reason")
+        precondition(SpeakersMeetingLink.missNote([.failed("The helper timed out.")]) == "Couldn't load this meeting: The helper timed out."
+                     && SpeakersMeetingLink.missNote([.failed("  ")]) == "Couldn't load this meeting.",
+                     "speakers miss note: the reason is said once, and left out when there is none")
+        precondition(SpeakersMeetingLink.missNote([.answered(rows: SpeakersMeetingLink.dayLimit)]).hasPrefix("Couldn't load this meeting"),
+                     "speakers miss note: a day read that filled its cap proves nothing")
+        precondition(SpeakersMeetingLink.missNote([]) == "Couldn't load this meeting: its date isn't known.",
+                     "speakers miss note: with no day to read, nothing is claimed")
     }
 
     static func main() throws {
