@@ -339,6 +339,12 @@ struct ActivityWindow: View {
     /// own delay, which is how `anime.stagger` translates into SwiftUI.
     @State private var painted = false
     @State private var hoveredSection: ActivitySection?
+    /// 0.5.259: the Needs you item Next ⌘] opened last, so the next press opens the one after it.
+    @State private var homeNextCursor: ActivityHome.NextCursor?
+    /// 0.5.259: how each source's load on opening came back, for the quiet line (ActivityHome.line).
+    @State private var homeLoads: [ActivityHome.Source: ActivityHome.SourceState] = [:]
+    /// 0.5.259: the view Memories opens on when an item asks for one ("review"); cleared by the next tab choice.
+    @State private var memoriesOpenView: String?
     /// One indicator that travels between tabs instead of six that blink.
     @Namespace private var railIndicator
 
@@ -834,6 +840,7 @@ struct ActivityWindow: View {
 
     private func select(_ requested: ActivitySection) {
         if taskDetail != nil { requestCloseTaskDetail(); return }
+        memoriesOpenView = nil
         if !isolatedWorkPreview { showingLinkedSession = false; historicalWorkID = nil }
         let next = ActivitySection.resolvedLaunch(requested, environment: ProcessInfo.processInfo.environment)
         guard ActivitySection.allCases.contains(next) else { return }
@@ -1005,6 +1012,7 @@ struct ActivityWindow: View {
                 let seats = homeSeats(now: now)
                 let desks = seats.map(ActivityHome.desks)
                 let sources = homeNeedSources(desks: desks)
+                let needs = ActivityHome.needs(sources)
                 VStack(alignment: .leading, spacing: 22) {
                     HStack(alignment: .center, spacing: 12) {
                         COSLockupView(height: 17)
@@ -1021,8 +1029,8 @@ struct ActivityWindow: View {
                             .font(COSType.display(13, italic: true))
                             .foregroundStyle(.secondary)
                     }
-                    needsYouLine(ActivityHome.needs(sources), available: sources.anyAvailable, now: now)
-                    homeGrid(homeInputs(now: now, seats: seats), desks: desks ?? [], now: now)
+                    needsYouLine(needs, states: homeSourceStates(desks: desks), now: now)
+                    homeGrid(homeInputs(now: now, seats: seats), desks: desks, now: now)
                 }
                 .padding(28)
                 // 0.5.259: wider than the 900 pt of before, so a card's lead line has room (the mock's home fills the
@@ -1031,15 +1039,29 @@ struct ActivityWindow: View {
                 .frame(maxWidth: .infinity)
             }
         }
+        // 0.5.259 (QA U-N9): with the pet off nothing else refreshes the sessions list, so a session that finished could
+        // still read as quiet. While the home shows, read it once a minute; the task ends when the home goes.
+        .task { await refreshHomeSessions() }
     }
 
-    /// 0.5.259 board 1: what waits on Miles. Sessions first, in full; then the backlog as one short segment of counts
-    /// (ActivityHome.parts). Next ⌘] opens the first item in that order. ⌘] is also Speakers' Next to name;
+    private func refreshHomeSessions() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(60))
+            guard !Task.isCancelled else { return }
+            guard Self.allowsLiveSectionLoads(isolatedWorkPreview: isolatedWorkPreview, backgroundWorkEnabled: model.activityLoadsEnabled),
+                  section == nil, !model.petEnabled else { continue }
+            await model.loadClaudeSessions()
+        }
+    }
+
+    /// 0.5.259 board 1: what waits on Miles. Sessions first, in full (three at most, then "+N sessions"); then the
+    /// backlog as one short segment of counts (ActivityHome.parts). Next ⌘] opens the first item, then the next one each
+    /// press (ActivityHome.nextTarget). ⌘] is also Speakers' Next to name;
     /// the two never both respond, because this line lives only on the home and the speaker review only on its own route
     /// of the same if/else chain (activityFrame). Tests/activity-home-pins.py pins both.
     @ViewBuilder
-    private func needsYouLine(_ needs: [ActivityHome.Need], available: Bool, now: Date) -> some View {
-        switch ActivityHome.line(needs, available: available) {
+    private func needsYouLine(_ needs: [ActivityHome.Need], states: [ActivityHome.Source: ActivityHome.SourceState], now: Date) -> some View {
+        switch ActivityHome.line(needs, states: states) {
         case .hidden:
             EmptyView()
         case .quiet:
@@ -1062,17 +1084,25 @@ struct ActivityWindow: View {
                 // wraps. The backlog is one segment, so it never splits across rows.
                 let parts = ActivityHome.parts(needs)
                 NeedsFlowLayout(spacing: 18, lineSpacing: 7) {
-                    ForEach(parts.sessions) { need in
-                        needRow(need, now: now)
+                    ForEach(parts.shown) { need in
+                        needRow(need, in: needs, single: parts.sessions.count == 1, now: now)
                             .layoutValue(key: NeedsFlowShrinks.self, value: true)
                     }
+                    if parts.moreSessions > 0 {
+                        Button { select(.sessions) } label: {
+                            Text(ActivityHome.moreSessionsLabel(parts.moreSessions)).font(COSType.body(12.5)).foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .fixedSize()
+                        .help("Open Sessions")
+                    }
                     if !parts.backlog.isEmpty {
-                        backlogSegment(parts)
+                        backlogSegment(parts, in: needs)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 Button {
-                    if let next = ActivityHome.nextTarget(needs) { openNeed(next) }
+                    if let next = ActivityHome.nextTarget(needs, after: homeNextCursor) { openNeed(next, in: needs) }
                 } label: {
                     HStack(spacing: 7) {
                         Text(ActivityHome.nextLabel(needs)).font(COSType.body(12, weight: .semibold))
@@ -1092,7 +1122,7 @@ struct ActivityWindow: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut("]", modifiers: .command)
-                .help("Open the oldest thing waiting on you (⌘])")
+                .help("Open the first thing waiting on you (⌘]). Press again for the next.")
                 .fixedSize()
             }
             .padding(.vertical, 11)
@@ -1103,38 +1133,40 @@ struct ActivityWindow: View {
 
     private var needsRule: some View { Rectangle().fill(COSPalette.gold.opacity(0.28)).frame(height: 1) }
 
-    /// One session item: a filled amber dot when it asked (a fact), an open one when it is only quiet ("may need you",
-    /// never a fact). Click opens it the way Sessions does.
-    private func needRow(_ need: ActivityHome.Need, now: Date) -> some View {
-        Button { openNeed(need) } label: {
+    /// One session item: a filled amber dot when it is a fact (need.isFact: it asked, or failed), an open one when it
+    /// is only quiet ("may need you", never a fact). Click opens it the way Sessions does.
+    /// `single`: the only session item, which shows what it asked; it has the line's room, and its title never gives
+    /// way to that text.
+    private func needRow(_ need: ActivityHome.Need, in needs: [ActivityHome.Need], single: Bool, now: Date) -> some View {
+        Button { openNeed(need, in: needs) } label: {
             HStack(spacing: 6) {
                 Group {
-                    if need.kind == .maybe {
-                        Circle().strokeBorder(COSPalette.amber, lineWidth: 1.4)
-                    } else {
+                    if need.isFact {
                         Circle().fill(COSPalette.amber)
+                    } else {
+                        Circle().strokeBorder(COSPalette.amber, lineWidth: 1.4)
                     }
                 }
                 .frame(width: 7, height: 7)
                 if let desk = need.desk {
                     ActivityProviderMark(session: desk.session, size: 11).foregroundStyle(.secondary)
                 }
-                // What a session did ("asked you a question") is the fact; its title gives way first. For a count, the
-                // count stays whole and the meeting it names gives way.
+                // What a session did ("asked you a question") is the fact; its title gives way first. With one session,
+                // what it asked is the extra, so that text gives way and the title stays.
                 Text(need.what)
                     .font(COSType.body(12.5, weight: .medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                    .layoutPriority(need.isSession ? 0 : 1)
+                    .layoutPriority(single ? 1 : 0)
                 if !need.why.isEmpty {
                     Text(need.why).font(COSType.body(12.5)).foregroundStyle(.secondary).lineLimit(1)
-                        .layoutPriority(need.isSession ? 1 : 0)
+                        .layoutPriority(single ? 0 : 1)
                 }
                 if let age = need.age(now: now) {
                     Text(age).font(COSType.mono(10.5)).foregroundStyle(.tertiary).fixedSize()
                 }
             }
-            .frame(maxWidth: 360, alignment: .leading)
+            .frame(maxWidth: single ? 560 : 360, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1142,21 +1174,21 @@ struct ActivityWindow: View {
     }
 
     /// The backlog as one segment of counts: "Also · 1 voice to name · 3 memories · 7 work items" after session items,
-    /// the counts alone when there are none. Each count opens its section; its help text says the rest.
-    private func backlogSegment(_ parts: ActivityHome.LineParts) -> some View {
+    /// the counts alone when there are none (ActivityHome.backlogPieces). Each count opens its section; its help text
+    /// says the rest.
+    private func backlogSegment(_ parts: ActivityHome.LineParts, in needs: [ActivityHome.Need]) -> some View {
         HStack(spacing: 6) {
-            if parts.alsoPrefix {
-                Text("Also").foregroundStyle(.secondary)
-            }
-            ForEach(Array(parts.backlog.enumerated()), id: \.element.id) { index, need in
-                if index > 0 || parts.alsoPrefix {
-                    Text("·").foregroundStyle(.tertiary)
+            ForEach(ActivityHome.backlogPieces(parts)) { piece in
+                switch piece {
+                case .also: Text(piece.text).foregroundStyle(.secondary)
+                case .dot: Text(piece.text).foregroundStyle(.tertiary)
+                case .count(let need):
+                    Button { openNeed(need, in: needs) } label: {
+                        Text(piece.text).foregroundStyle(.primary).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help([need.what, need.why].filter { !$0.isEmpty }.joined(separator: " · "))
                 }
-                Button { openNeed(need) } label: {
-                    Text(ActivityHome.backlogLabel(need)).foregroundStyle(.primary).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help([need.what, need.why].filter { !$0.isEmpty }.joined(separator: " · "))
             }
         }
         .font(COSType.body(12.5))
@@ -1165,8 +1197,9 @@ struct ActivityWindow: View {
     }
 
     /// Each item in its own section: a session as Sessions opens it, the newest meeting with voices to name in Speakers'
-    /// review, Memories, and Work on what needs attention.
-    private func openNeed(_ need: ActivityHome.Need) {
+    /// review, Memories on To review, and Work on what needs attention. It becomes where Next ⌘] carries on from.
+    private func openNeed(_ need: ActivityHome.Need, in needs: [ActivityHome.Need]) {
+        homeNextCursor = ActivityHome.NextCursor(id: need.id, index: needs.firstIndex { $0.id == need.id } ?? 0)
         switch need.kind {
         case .asked, .maybe:
             if let desk = need.desk { openDesk(desk) }
@@ -1177,7 +1210,10 @@ struct ActivityWindow: View {
             voiceParentName = nil
             selectedSpeakerSessionID = meeting.sessionId
             model.openSpeakerReview(meeting)
-        case .memories: select(.memories)
+        case .memories:
+            select(.memories)
+            memoriesSubview = .toReview
+            memoriesOpenView = "review"
         case .work:
             select(.work)
             workWorkspaceState.query = ""
@@ -1194,10 +1230,11 @@ struct ActivityWindow: View {
         model.openClaudeSession(desk.openRow)
     }
 
-    /// Four columns, two rows: seven tiles stay above the fold. Three columns would put Work on a third row at the minimum
-    /// window height. 0.5.259: each row is as tall as its tallest card (a card's body now varies), and a tap on a card
-    /// opens its tab while its desks take their own clicks (a Button card would swallow them).
-    private func homeGrid(_ inputs: ActivityHome.CardInputs, desks: [ActivityHome.Desk], now: Date) -> some View {
+    /// Four columns, two rows: the seven visible tiles (Work, or Tasks when Work is off) stay above the fold. Three columns
+    /// would put Work on a third row at the minimum window height. 0.5.259: each row is as tall as its tallest card (a
+    /// card's body now varies), and a tap on a card opens its tab while its desks take their own clicks (a Button card
+    /// would swallow them). `desks` is nil until the session list has loaded.
+    private func homeGrid(_ inputs: ActivityHome.CardInputs, desks: [ActivityHome.Desk]?, now: Date) -> some View {
         let tiles = Array(ActivitySection.allCases.enumerated())
         let rows = stride(from: 0, to: tiles.count, by: 4).map { Array(tiles[$0..<min($0 + 4, tiles.count)]) }
         return VStack(alignment: .leading, spacing: 14) {
@@ -1205,7 +1242,7 @@ struct ActivityWindow: View {
                 HStack(alignment: .top, spacing: 14) {
                     ForEach(rows[row], id: \.element.id) { index, item in
                         activityHomeCard(item, index: index, body: homeCardBody(item, inputs),
-                                         desks: item == .sessions ? desks : [], now: now)
+                                         desks: item == .sessions ? desks : nil, now: now)
                             .onTapGesture { select(item) }
                             .accessibilityElement(children: .contain)
                             .accessibilityAddTraits(.isButton)
@@ -1243,7 +1280,7 @@ struct ActivityWindow: View {
     /// sub lines, and a quiet footer naming what the big number counts. The mono caps caption is gone (it read as an
     /// eyebrow kicker) and the description moved to the card's help text.
     private func activityHomeCard(_ item: ActivitySection, index: Int, body: ActivityHome.CardBody,
-                                  desks: [ActivityHome.Desk], now: Date) -> some View {
+                                  desks: [ActivityHome.Desk]?, now: Date) -> some View {
         let hot = hoveredSection == item
         // anime.stagger(45) is just an index-scaled delay.
         let step = Double(index) * 0.045
@@ -1271,7 +1308,8 @@ struct ActivityWindow: View {
             .wipeIn(painted, delay: step + 0.33, reduceMotion: reduceMotion)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.18).delay(hot ? 0.07 : 0),
                        value: hot)
-        let metric = Text(body.count)
+        // No number until its source has loaded: never a placeholder that reads as a value.
+        let metric = Text(body.count ?? "")
             .font(COSType.display(22, weight: .medium))
             .monospacedDigit()
             .foregroundStyle(hot ? COSPalette.gold : Color.primary)
@@ -1298,7 +1336,9 @@ struct ActivityWindow: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                if !desks.isEmpty {
+                // The Sessions card keeps its one-row strip once the list has loaded, desks or not, so its height never
+                // moves with the number of sessions.
+                if let desks {
                     deskStrip(desks, now: now).padding(.bottom, 3)
                 }
                 if !body.lead.isEmpty {
@@ -1357,20 +1397,27 @@ struct ActivityWindow: View {
 
     /// 0.5.259 board 3: a desk per running, waiting or finished-today session, at most 12, then "+N".
     private func deskStrip(_ desks: [ActivityHome.Desk], now: Date) -> some View {
-        let strip = ActivityHome.strip(desks)
-        return ChipFlowLayout(spacing: 5) {
-            ForEach(strip.shown) { desk in
-                ActivityDeskMark(desk: desk, now: now, reduceMotion: reduceMotion) { openDesk(desk) }
-            }
-            if strip.more > 0 {
-                Text("+\(strip.more)")
-                    .font(COSType.mono(10, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(height: 22)
-                    .padding(.horizontal, 3)
-                    .help("\(strip.more) more in Sessions")
+        // One row, sized to the card (ActivityHome.deskFit): the desks that fit, then "+N" for the rest.
+        GeometryReader { geometry in
+            let fit = ActivityHome.deskFit(count: desks.count, width: geometry.size.width)
+            HStack(spacing: ActivityHome.deskGap) {
+                ForEach(desks.prefix(fit.shown)) { desk in
+                    ActivityDeskMark(desk: desk, now: now, reduceMotion: reduceMotion) { openDesk(desk) }
+                }
+                if fit.more > 0 {
+                    Button { select(.sessions) } label: {
+                        Text("+\(fit.more)")
+                            .font(COSType.mono(10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(width: ActivityHome.deskMoreWidth, height: ActivityHome.deskHeight, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("\(fit.more) more in Sessions")
+                }
             }
         }
+        .frame(height: ActivityHome.deskHeight)
     }
 
     /// The count and what it counts, read from the model rather than scraped out of
@@ -1417,6 +1464,16 @@ struct ActivityWindow: View {
     private func homeNeedSources(desks: [ActivityHome.Desk]?) -> ActivityHome.NeedSources {
         ActivityHome.NeedSources(desks: desks, voices: homeVoices, memoriesToReview: model.status.learningToReview,
                                  memoriesOldest: homeOldestReview, workAttention: homeWorkItems?.filter(\.needsAttention).count)
+    }
+
+    /// Each source's state for the quiet line: the load on opening (homeLoads), or rows already in hand.
+    private func homeSourceStates(desks: [ActivityHome.Desk]?) -> [ActivityHome.Source: ActivityHome.SourceState] {
+        [
+            .sessions: ActivityHome.sourceState(enabled: true, loaded: homeLoads[.sessions], hasData: desks != nil),
+            .voices: ActivityHome.sourceState(enabled: true, loaded: homeLoads[.voices], hasData: !model.reviewableMeetings.isEmpty),
+            .memories: ActivityHome.sourceState(enabled: true, loaded: homeLoads[.memories], hasData: model.status.learningToReview != nil),
+            .work: ActivityHome.sourceState(enabled: workConnectionsEnabled && !isolatedWorkPreview, loaded: homeLoads[.work], hasData: homeWorkItems != nil),
+        ]
     }
 
     private func homeInputs(now: Date, seats: [ActivityHome.Seat]?) -> ActivityHome.CardInputs {
@@ -3831,7 +3888,7 @@ struct ActivityWindow: View {
     @ViewBuilder
     private func memoriesSurface() -> some View {
         if MemoriesWebView.bundleURL != nil {
-            MemoriesWebView(model: model, openSection: { section in select(section) })
+            MemoriesWebView(model: model, initialView: memoriesOpenView, openSection: { section in select(section) })
         } else {
             memoriesPane()
         }
@@ -5553,9 +5610,14 @@ struct ActivityWindow: View {
         // Prove the server here instead of inheriting the model's initial
         // `running = false` placeholder from the unopened menu-bar panel.
         await model.refresh(quiet: true)
+        // 0.5.259: a server that reports no review count leaves memories out of the quiet line rather than waited for.
+        homeLoads[.memories] = model.status.learningToReview == nil ? .off : .answered
         async let sessions: Void = model.loadClaudeSessions()
+        // 0.5.259 (QA U-W4): Work loads beside the sessions, not last, so the home's line is complete sooner.
+        async let work: Void = loadHomeWork()
         if model.recentMessages.isEmpty { await model.refreshRecentMessages(quiet: true) }
         if model.reviewableMeetings.isEmpty { await model.loadReviewableMeetings() }
+        homeLoads[.voices] = model.reviewableMeetings.isEmpty && model.reviewError != nil ? .failed : .answered
         if model.voiceDirectory.isEmpty { await model.loadVoiceDirectory() }
         if model.extAudioSessions.isEmpty { await model.loadExtAudio() }
         if model.status.memoryAvailable == true, model.memoryRecords.isEmpty {
@@ -5565,17 +5627,25 @@ struct ActivityWindow: View {
             await model.loadContextRecords(kind: "thread")
         }
         await sessions
+        homeLoads[.sessions] = model.claudeSessions.isEmpty && model.claudeSessionsError != nil ? .failed : .answered
         if model.tasks.isEmpty { await model.loadTasks(force: true) }
         await model.loadDomains()
         reconcileTaskDomain()
-        // 0.5.259: the home's Work card and Needs you line read Work's board, its meeting reviews and Intake, and the
-        // Memories card dates its oldest wait from the review list: the loaders Work and Memories already use.
-        if workConnectionsEnabled, model.workTasks.isEmpty {
+        await work
+        // 0.5.259: the Memories card dates its oldest wait from the review list, the loader Memories already uses.
+        if (model.status.learningToReview ?? 0) > 0, model.toReviewEvents.isEmpty { await model.loadToReviewEvents() }
+    }
+
+    /// 0.5.259: the home's Work card and Needs you line read Work's board, its meeting reviews and Intake: the loaders
+    /// Work already uses.
+    private func loadHomeWork() async {
+        guard workConnectionsEnabled else { homeLoads[.work] = .off; return }
+        if model.workTasks.isEmpty {
             await model.loadWorkTasks()
             await reviewStore.refresh()
             await model.loadWorkIntake()
         }
-        if (model.status.learningToReview ?? 0) > 0, model.toReviewEvents.isEmpty { await model.loadToReviewEvents() }
+        homeLoads[.work] = model.workTasksError == nil ? .answered : .failed
     }
 
     private func load(_ item: ActivitySection) async {
@@ -6342,7 +6412,7 @@ private struct ActivityDeskMark: View {
         Button(action: open) {
             ActivityProviderMark(session: desk.session, size: 12)
                 .foregroundStyle(tint)
-                .frame(width: 26, height: 22)
+                .frame(width: ActivityHome.deskWidth, height: ActivityHome.deskHeight)
                 .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(desk.state == .asked ? COSPalette.amber.opacity(0.14) : COSPalette.raised))
                 .overlay {
@@ -6402,7 +6472,16 @@ private struct ActivityDeskMark: View {
 struct MemoriesWebView: NSViewRepresentable {
     @ObservedObject var model: ControllerModel
     @Environment(\.colorScheme) private var colorScheme
+    /// 0.5.259: the view the page opens on ("review" from the home's memories item), through the page's own
+    /// cosBridge.show once it has loaded. nil opens it as before.
+    var initialView: String? = nil
     var openSection: (ActivitySection) -> Void
+
+    /// The script that opens the page on `view`. Only the page's own view names pass.
+    static func openScript(_ view: String?) -> String? {
+        guard let view, ["recent", "applied", "memories", "review", "knowledge"].contains(view) else { return nil }
+        return "window.cosBridge && window.cosBridge.show('\(view)')"
+    }
 
     static var bundleURL: URL? {
         Bundle.main.url(forResource: "memories", withExtension: "html", subdirectory: "memories")
@@ -6536,6 +6615,9 @@ struct MemoriesWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.userContentController.add(context.coordinator, name: "cos")
+        if let script = Self.openScript(initialView) {
+            configuration.userContentController.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        }
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.appearance = NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)
         view.setValue(false, forKey: "drawsBackground")

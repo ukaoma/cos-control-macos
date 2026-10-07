@@ -2667,8 +2667,9 @@ need('static func workConnectedTest(model: ControllerModel)' in activity and
      "the explicitly connected candidate must use the real Activity shell and identify live data")
 need('if connectedWorkTest {\n                await model.refresh(quiet: true)\n                await load(.work)' in activity,
      "connected candidate startup must load capabilities and Work rather than every unrelated Activity source")
-need(activity.count('backgroundWorkEnabled: model.activityLoadsEnabled)') == 3,
-     "foreground Activity load permission must guard all three load paths independently of background services")
+# 0.5.259: four paths. The fourth is the home's once-a-minute sessions refresh with the pet off (refreshHomeSessions).
+need(activity.count('backgroundWorkEnabled: model.activityLoadsEnabled)') == 4,
+     "foreground Activity load permission must guard all four load paths independently of background services")
 workspace = (root / "Sources/WorkWorkspaceView.swift").read_text()
 need('receiptFallback(id)' in workspace and 'no item has been recreated' in workspace,
      "missing canonical items must preserve read-only receipt history")
