@@ -672,6 +672,12 @@ struct WorkHandoffView: View {
                 Button(applied ? "Selected" : "Use this") {
                     store.updateDraft(WorkHandoffStore.applying(advice, to: draft), for: source)
                 }.buttonStyle(COSQuietButtonStyle()).disabled(applied || store.busy || validating)
+                // 0.5.262: only on a Continue: the card follows that session without sending anything.
+                if advice.action == .continueSession, let sessionID = advice.sessionID, WorkProgress.boardTask(source.id) != nil {
+                    WorkFollowButton(follows: store.follows, workID: source.id, sessionID: sessionID, disabled: isPreview) {
+                        store.followAdvice(advice, source: source)
+                    }
+                }
             }.padding(10).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 7))
         } else if let text = WorkHandoffStore.adviceUnavailableText(store.adviceUnavailableReason(for: source)) {
             Text(text).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
@@ -1125,5 +1131,20 @@ struct WorkSessionsView: View {
                 await store.refreshReceipts()
             }
         }
+    }
+}
+
+/// 0.5.262: "Follow" beside Jev's Continue advice. Observes the follows itself, so it reads "Following" at once.
+struct WorkFollowButton: View {
+    @ObservedObject var follows: WorkFollowStore
+    let workID: String
+    let sessionID: String
+    var disabled = false
+    let action: () -> Void
+    var body: some View {
+        let following = follows.follows(for: workID).contains { $0.sessionID == sessionID }
+        Button(following ? "Following" : "Follow") { action() }
+            .buttonStyle(COSQuietButtonStyle()).disabled(following || disabled)
+            .help("The card follows this session: when the evidence shows the work finished, COS moves it to QA. Nothing is sent.")
     }
 }

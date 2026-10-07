@@ -201,7 +201,7 @@ enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
 }
 
 @MainActor final class WorkWorkspaceState: ObservableObject {
-    @Published var scope: WorkWorkspaceScope = .all { didSet { intakeOpen = false; waitingOpen = false; startItemID = nil } }
+    @Published var scope: WorkWorkspaceScope = .all { didSet { intakeOpen = false; waitingOpen = false; movedOpen = false; startItemID = nil } }
     @Published var domain: String? { didSet { startItemID = nil } }
     @Published var query = ""
     @Published var selectedID: String? { didSet { if oldValue != selectedID { personFocus = nil } } }
@@ -223,8 +223,11 @@ enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
     let boardMemo = WorkBoardMemo()
     /// Work → Intake (server 6.57.0). Its own route flag: the Intake row or toggle opens it, and choosing a view
     /// or a domain closes it (the observers above), so no opener can leave Intake covering the board.
-    @Published var waitingOpen = false
-    @Published var intakeOpen = false
+    @Published var waitingOpen = false { didSet { if waitingOpen { movedOpen = false } } }
+    @Published var intakeOpen = false { didSet { if intakeOpen { movedOpen = false } } }
+    /// 0.5.262: Moved for you, beside Needs attention. Its own route flag, like Intake: its sidebar row and its count open
+    /// it, and opening any other list closes it.
+    @Published var movedOpen = false { didSet { if movedOpen { intakeOpen = false; waitingOpen = false } } }
     /// 0.5.244: the item whose Start work overlay is open (a drop on Start work, or Start work… on a card).
     @Published var startItemID: String?
     @Published var startSending = false
@@ -285,7 +288,7 @@ enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
     /// Escape on the board clears an active search before it navigates anywhere. False when there is nothing to clear
     /// or the board is not what is showing (a card, a meeting, Start work, Intake or Waiting on is open).
     func escapeClearsSearch() -> Bool {
-        guard !query.isEmpty, selectedID == nil, !meetingPicker, startItemID == nil, !intakeOpen, !waitingOpen else { return false }
+        guard !query.isEmpty, selectedID == nil, !meetingPicker, startItemID == nil, !intakeOpen, !waitingOpen, !movedOpen else { return false }
         query = ""; bandIndex = 0
         return true
     }
@@ -1349,7 +1352,9 @@ struct WorkWorkspaceView: View {
                 HStack(spacing: 0) {
                     sidebar.frame(width: 148)
                     Divider()
-                    if state.waitingOpen {
+                    if state.movedOpen {
+                        movedForYouSurface
+                    } else if state.waitingOpen {
                         WorkWaitingView(model: model)
                     } else if state.intakeOpen {
                         WorkIntakeView(model: model, domain: state.domain, onOpenMeeting: onOpenMeeting)
@@ -1362,7 +1367,8 @@ struct WorkWorkspaceView: View {
             } else {
                 compactNavigation
                 Divider()
-                if state.waitingOpen { WorkWaitingView(model: model) }
+                if state.movedOpen { movedForYouSurface }
+                else if state.waitingOpen { WorkWaitingView(model: model) }
                 else if state.intakeOpen { WorkIntakeView(model: model, domain: state.domain, onOpenMeeting: onOpenMeeting) }
                 else if layout == .board { boardSurface }
                 else if hasDetail {
@@ -1473,6 +1479,18 @@ struct WorkWorkspaceView: View {
         let progress = items.filter(\.inProgress).count, attention = items.filter(\.needsAttention).count
         countLink("\(progress) in progress", count: progress, scope: .progress, tint: COSPalette.accent)
         countLink("\(attention) " + (attention == 1 ? "needs attention" : "need attention"), count: attention, scope: .attention, tint: Color.primary)
+        // 0.5.262: Moved for you, read from the move log.
+        let moved = handoffStore.moves.movedForYou.count
+        if moved > 0 {
+            Button { state.query = ""; state.movedOpen = true; returnToList() } label: {
+                HStack(spacing: 3) {
+                    Text("\(moved) moved for you")
+                    Image(systemName: "chevron.right").font(.system(size: 8.5, weight: .semibold))
+                }.foregroundStyle(COSPalette.accent).padding(.bottom, 2)
+                    .overlay(alignment: .bottom) { Rectangle().stroke(style: StrokeStyle(lineWidth: 1, dash: [2, 2])).foregroundStyle(COSPalette.accent.opacity(0.55)).frame(height: 0.5) }
+                    .contentShape(Rectangle())
+            }.buttonStyle(.plain).help("Show what COS moved, or would move")
+        }
     }
     /// 0.5.244: each count opens its list in Focus, or the item itself when there is exactly one.
     private func countLink(_ text: String, count: Int, scope: WorkWorkspaceScope, tint: Color) -> some View {
@@ -1539,8 +1557,14 @@ struct WorkWorkspaceView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 5) {
                 ForEach(WorkWorkspaceScope.allCases) { scope in
-                    navigationRow(scope.title, selected: state.scope == scope && state.domain == nil && !state.intakeOpen) {
+                    navigationRow(scope.title, selected: state.scope == scope && state.domain == nil && !state.intakeOpen && !state.movedOpen) {
                         state.scope = scope; state.domain = nil; state.intakeOpen = false; state.focusOverride = false; returnToList()
+                    }
+                    // 0.5.262: beside Needs attention, with its count.
+                    if scope == .attention {
+                        navigationRow("Moved for you", selected: state.movedOpen, count: handoffStore.moves.movedForYou.count) {
+                            state.query = ""; state.movedOpen = true; returnToList()
+                        }
                     }
                 }
                 if model.workBatchAvailable {
@@ -1571,12 +1595,13 @@ struct WorkWorkspaceView: View {
         return count > 0 ? "Sort · \(count) new" : "Sort"
     }
 
-    private func navigationRow(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+    private func navigationRow(_ title: String, selected: Bool, count: Int? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Rectangle().fill(selected ? COSPalette.gold : .clear).frame(width: 2)
                 Text(title).font(COSType.body(12, weight: selected ? .semibold : .regular)).multilineTextAlignment(.leading)
                 Spacer(minLength: 0)
+                if let count, count > 0 { Text("\(count)").font(COSType.mono(10.5)).foregroundStyle(COSPalette.accent) }
             }.padding(.vertical, 9).padding(.trailing, 6).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
         }.buttonStyle(.plain).foregroundStyle(selected ? Color.primary : COSPalette.muted)
             .accessibilityAddTraits(selected ? .isSelected : [])
@@ -2097,6 +2122,20 @@ struct WorkWorkspaceView: View {
         }
     }
 
+    /// 0.5.262: Moved for you, read from the move log.
+    @ViewBuilder private var movedForYouSurface: some View {
+        WorkMovedForYouView(moves: handoffStore.moves, follows: handoffStore.follows, shadow: model.workEvidenceShadow, lookup: { workID in
+            board.item(sourceID: workID).map { ($0.title, $0.task.map { $0.checked ? "complete" : $0.workStage }) }
+        }, onUndo: model.workTracker == nil ? nil : { moveID in undoLoggedMove(moveID) }, onOpen: { workID in
+            if let item = board.item(sourceID: workID) { state.movedOpen = false; select(item) }
+        })
+    }
+    private func undoLoggedMove(_ moveID: String) {
+        guard let tracker = model.workTracker else { return }
+        state.mutationError = nil
+        Task { if let problem = await tracker.undo(moveID: moveID) { state.mutationError = problem } }
+    }
+
     private func undoMove(_ receiptID: String, _ eventID: String) {
         guard let tracker = model.workTracker else { return }
         state.mutationError = nil
@@ -2207,6 +2246,11 @@ struct WorkWorkspaceView: View {
             cardTapArea(item, handoff: handoff, running: running, hit: hit)
             // Outside the tap area: its Undo is its own control, not part of the card's single action.
             if let autoMove, let tracking { cardWhyLine(tracking, autoMove).padding(.horizontal, 12).padding(.bottom, 10) }
+            // 0.5.262: what COS moved (or would move) stays on the card until you open it.
+            if item.task != nil {
+                WorkCardMoveMark(moves: handoffStore.moves, follows: handoffStore.follows, workID: item.sourceID)
+                    .padding(.horizontal, 12).padding(.bottom, 10)
+            }
             if let task = item.task {
                 ForEach(task.meetingRefs.prefix(2)) { meeting in
                     Button { onOpenMeeting(meeting) } label: {
@@ -2657,7 +2701,7 @@ struct WorkWorkspaceView: View {
             Text([task.createdAt.isEmpty ? "Created date unknown" : "Created " + task.createdAt,
                   "Owner: " + (task.owner.isEmpty ? "Unknown" : task.owner), task.dueDate.isEmpty ? "" : "Due " + task.dueDate].filter { !$0.isEmpty }.joined(separator: " · "))
                 .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
-            ForEach(handoffStore.confirmedSessionCards.keys.filter { handoffStore.confirmedSessionCards[$0]?.workID == task.workSourceID }.sorted(), id: \.self) { sessionID in
+            ForEach(handoffStore.linkedSessions(workID: task.workSourceID), id: \.self) { sessionID in
                 Button("Open linked session") { onOpenSession(sessionID) }.buttonStyle(COSTextButtonStyle())
             }
             if let error = task.workMetadataError { Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger) }
@@ -2667,7 +2711,11 @@ struct WorkWorkspaceView: View {
     private func taskBody(_ task: TaskRow) -> some View {
         VStack(alignment: .leading, spacing: 20) {
             sourceMeetings(task)
-            fact("Done when", task.doneWhen.isEmpty ? "No finish line recorded. Use Edit task to define one." : task.doneWhen)
+            // 0.5.262: the finish line as a checklist, with what COS moved and the sessions the card follows.
+            WorkFinishLineSection(moves: handoffStore.moves, follows: handoffStore.follows, task: task, shadow: model.workEvidenceShadow,
+                                  onUndo: model.workTracker == nil ? nil : { moveID in undoLoggedMove(moveID) },
+                                  onEditTask: handoffStore.isolated ? nil : { onEditTask(task) },
+                                  onStopFollowing: { handoffStore.pauseCard(workID: task.workSourceID, stage: task.workStage, why: "You stopped following.") })
             if !task.source.isEmpty { fact("Source", task.source) }
             if !task.runAt.isEmpty { fact("Scheduled", task.runAt) }
             Text("Task editing, scheduling, and completion stay attached to the original task. Agent output does not change its completion state.")
@@ -2847,6 +2895,8 @@ struct WorkWorkspaceView: View {
     private func domainLabel(_ domain: String) -> String { model.domainOptions.first { $0.name == domain }?.label ?? domain.replacingOccurrences(of: "_", with: " ").capitalized }
     private func select(_ item: WorkWorkspaceItem) {
         state.selectedID = item.id; state.meetingPicker = false; reviewStore.selectedMeeting = nil; handoffStore.selectedWorkID = item.sourceID
+        // 0.5.262: opening a card acknowledges what COS moved on it (its mark goes; the history stays on the card).
+        if item.task != nil { handoffStore.moves.acknowledge(workID: item.sourceID, at: Date().timeIntervalSince1970) }
     }
     private func returnToList() { state.selectedID = nil; handoffStore.selectedWorkID = nil; state.meetingPicker = false; state.linkTarget = nil; reviewStore.selectedMeeting = nil }
     private func closePickerOrDetail() {

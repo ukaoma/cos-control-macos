@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import SwiftUI
 import Darwin
@@ -277,7 +278,17 @@ struct WorkGlassesRequest: Equatable, Sendable {
     let cardFiles: WorkCardFileStore
     /// 0.5.258: the files on each meeting (`~/cos-data/meeting-context`). A card's send carries its linked meetings'.
     let meetingFiles: WorkCardFileStore
-    @Published private(set) var confirmedSessionCards: [String: WorkSessionCardLink] = [:]
+    /// 0.5.262: session -> the cards it is linked to (one thread can serve several cards, validation W5). A 0.5.261 file
+    /// (session -> one card) reads as a list of one.
+    @Published private(set) var confirmedSessionCards: [String: [WorkSessionCardLink]] = [:]
+    /// 0.5.262: which sessions each card follows (work-follows.json), and every stage move Control made (work-moves.jsonl).
+    let follows: WorkFollowStore
+    let moves: WorkMoveLog
+    /// 0.5.262: the lock file only the evaluating Control process holds (WorkTrackerLease).
+    var leaseURL: URL { companionURL("work-tracker.lease") }
+    /// A new line in the move log redraws what shows Moved for you's count (the board's rows are not rebuilt: they key on
+    /// their own epochs).
+    private var moveLogWatch: AnyCancellable?
     private let storageURL: URL
     private let transport: Transport
     private var storageReady = true
@@ -307,7 +318,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
         self.cardFiles = cardFiles ?? (isolated ? .preview() : storageURL == nil ? WorkCardFileStore(root: ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("work-context") } ?? WorkCardFiles.defaultRoot()) : WorkCardFileStore(root: nil))
         let helper = HelperClient()
         self.transport = transport ?? { args, data in
-            try await helper.run(args, timeout: args.first == "session-chat-fork" ? 310 : (args.first == "work-new" ? 85 : 45), stdinData: data)
+            try await helper.run(args, timeout: args.first == "session-chat-fork" ? 310 : (args.first == "work-new" ? 85 : args.first == "work-evidence-check" ? 95 : 45), stdinData: data)
         }
         let base: URL
         if isolated {
@@ -317,11 +328,14 @@ struct WorkGlassesRequest: Equatable, Sendable {
         } else {
             base = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("work-handoffs") } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/COS Control/work-handoffs")
         }
-        self.storageURL = storageURL ?? base.appendingPathComponent(isolated ? "preview-handoffs.json" : "handoffs.json")
+        let journal = storageURL ?? base.appendingPathComponent(isolated ? "preview-handoffs.json" : "handoffs.json")
+        self.storageURL = journal
+        follows = WorkFollowStore(url: Self.companionURL(journal, "work-follows.json"))
+        moves = WorkMoveLog(url: Self.companionURL(journal, "work-moves.jsonl"))
         let linksURL = self.storageURL.deletingPathExtension().appendingPathExtension("session-cards.json")
-        if let data = try? Data(contentsOf: linksURL), data.count < 2_000_000,
-           let links = try? JSONDecoder().decode([String: WorkSessionCardLink].self, from: data) { confirmedSessionCards = links }
+        if let data = try? Data(contentsOf: linksURL), data.count < 2_000_000 { confirmedSessionCards = Self.decodeSessionCards(data) }
         do { try loadJournal() } catch { storageReady = false; self.error = "Handoff history could not be read. Sending is disabled: \(error.localizedDescription)" }
+        moveLogWatch = moves.objectWillChange.sink { [weak self] _ in MainActor.assumeIsolated { self?.objectWillChange.send() } }
         if isolated {
             selectedWorkID = "sample-task-website"
             if sessions.isEmpty { sessions = Self.sampleSessions }
@@ -330,19 +344,67 @@ struct WorkGlassesRequest: Equatable, Sendable {
     }
 
     /// Explicit association only. No prompt, delivery receipt, completion or model call is invented.
+    /// 0.5.262: a session can be linked to several cards, and the card follows the session from now on.
     func confirmSessionCard(sessionID: String, source: WorkSource) -> Bool {
         guard !busy, storageReady, let native = Self.nativeID(sessionID), Self.appSessionID(native) != nil,
               ["claude", "codex", "cursor"].contains(String(sessionID.split(separator: ":")[0])) else { return false }
         var next = confirmedSessionCards
-        next[sessionID] = WorkSessionCardLink(workID: source.id, title: source.title, sourceRevision: source.revision, at: Date().timeIntervalSince1970)
+        let now = Date().timeIntervalSince1970
+        var links = (next[sessionID] ?? []).filter { $0.workID != source.id }
+        links.append(WorkSessionCardLink(workID: source.id, title: source.title, sourceRevision: source.revision, at: now))
+        next[sessionID] = links
         do {
             let url = storageURL.deletingPathExtension().appendingPathExtension("session-cards.json")
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try JSONEncoder().encode(next).write(to: url, options: .atomic)
             confirmedSessionCards = next
+            follows.add(workID: source.id, sessionID: sessionID, origin: .link, startedAt: now)
             WorkLoopMetrics.record("sessionLinked", values: ["sessionID": sessionID, "workID": source.id], root: storageURL.deletingLastPathComponent())
             return true
         } catch { self.error = "The session link could not be saved: \(error.localizedDescription)"; return false }
+    }
+    /// The cards a session is linked to, oldest link first.
+    func linkedCards(sessionID: String) -> [WorkSessionCardLink] { confirmedSessionCards[sessionID] ?? [] }
+    /// The sessions linked to a card.
+    func linkedSessions(workID: String) -> [String] {
+        confirmedSessionCards.filter { $0.value.contains { $0.workID == workID } }.keys.sorted()
+    }
+    nonisolated static func decodeSessionCards(_ data: Data) -> [String: [WorkSessionCardLink]] {
+        if let links = try? JSONDecoder().decode([String: [WorkSessionCardLink]].self, from: data) { return links }
+        if let old = try? JSONDecoder().decode([String: WorkSessionCardLink].self, from: data) { return old.mapValues { [$0] } }
+        return [:]
+    }
+    /// 0.5.262: "Follow" beside Jev's Continue advice. The card follows that session from now on; nothing is sent.
+    @discardableResult func followAdvice(_ advice: SessionAdvice, source: WorkSource) -> Bool {
+        guard advice.action == .continueSession, let sessionID = advice.sessionID else { return false }
+        return follows.add(workID: source.id, sessionID: sessionID, origin: .follow, startedAt: Date().timeIntervalSince1970)
+    }
+    /// 0.5.262: a file beside the journal. The real journal's are named as the plan names them (work-follows.json,
+    /// work-moves.jsonl, work-tracker.lease); any other journal's carry its name, so two checks never share one.
+    nonisolated static func companionURL(_ journal: URL, _ name: String) -> URL {
+        let folder = journal.deletingLastPathComponent()
+        return journal.lastPathComponent == "handoffs.json" ? folder.appendingPathComponent(name)
+            : folder.appendingPathComponent(journal.deletingPathExtension().lastPathComponent + "." + name)
+    }
+    func companionURL(_ name: String) -> URL { Self.companionURL(storageURL, name) }
+    /// 0.5.262: every stage change Control makes goes in the move log (ControllerModel.setWorkStage), and one you make
+    /// backward pauses the card's follows.
+    func recordStageMove(workID: String, title: String, from: String, to: String, move: WorkStageMove, shadow: Bool = false, at: Double = Date().timeIntervalSince1970) {
+        moves.append(WorkMoveLine(type: .move, id: move.id, at: at, workID: workID, from: from, to: to, by: move.by, shadow: shadow ? true : nil,
+                                  judgedRevision: move.judgedRevision, clauses: move.clauses.isEmpty ? nil : move.clauses,
+                                  why: move.why, title: title, receiptID: move.receiptID, eventID: move.eventID))
+        guard !shadow else { return }
+        let wasPaused = follows.isPaused(workID)
+        follows.noteStageChange(workID: workID, from: from, to: to, by: move.by, at: at)
+        if !wasPaused, follows.isPaused(workID) { recordPause(workID: workID, stage: to, why: "You moved it back to \(WorkProgress.stageTitle(to)).", at: at) }
+    }
+    /// Pauses every follow on a card and says so in the move log.
+    func pauseCard(workID: String, stage: String, why: String, at: Double = Date().timeIntervalSince1970) {
+        follows.pause(workID: workID, stage: stage, why: why, at: at)
+        recordPause(workID: workID, stage: stage, why: why, at: at)
+    }
+    private func recordPause(workID: String, stage: String, why: String, at: Double) {
+        moves.append(WorkMoveLine(type: .pause, id: "pause-" + UUID().uuidString.lowercased(), at: at, workID: workID, from: stage, why: why))
     }
 
     private func loadJournal() throws {
@@ -1930,6 +1992,17 @@ struct WorkGlassesRequest: Equatable, Sendable {
             let details = try await call(["work-completion-check"], body)
             if let verdict = WorkCompletionVerdict(details: details) { return (verdict, nil) }
             return (nil, details["reason"]?.string ?? "unavailable")
+        } catch { return (nil, "unavailable") }
+    }
+    /// 0.5.262: the server's evidence check for a card (contract 2026-10-07). Nil with a reason when there is no answer:
+    /// an older server, the switch off, a cap, or an unreachable server. Every failure is advice only.
+    func evidenceCheck(_ body: [String: Any], sent: Int) async -> (result: WorkEvidenceResult?, reason: String?) {
+        guard !isolated else { return (nil, "unavailable") }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: body)
+            let details = try await call(["work-evidence-check"], data)
+            if let result = WorkEvidenceResult(details: details, sent: sent) { return (result, nil) }
+            return (nil, details["reason"]?.string ?? "invalid_answer")
         } catch { return (nil, "unavailable") }
     }
     // MARK: - Not done yet (0.5.247)

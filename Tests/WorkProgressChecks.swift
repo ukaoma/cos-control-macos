@@ -118,6 +118,13 @@ private actor TrackingTransport {
         lastActivityAt = lastActivity; readState = state
     }
     func setCompletion(_ details: [String: JSONValue]) { completion = details }
+    /// 0.5.262: the evidence check's answer (or a queue of answers), and every body it was sent.
+    var evidence: [String: JSONValue] = ["provider": .string("none"), "reason": .string("server_too_old")]
+    var evidenceAnswers: [[String: JSONValue]] = []
+    var evidenceBodies: [Data] = []
+    func setEvidence(_ details: [String: JSONValue]) { evidence = details }
+    func queueEvidence(_ answers: [[String: JSONValue]]) { evidenceAnswers = answers }
+    func evidenceSent() -> [Data] { evidenceBodies }
     func setJobResult(_ text: String?) { jobResult = text }
     func count(_ verb: String) -> Int { calls.filter { $0.first == verb }.count }
     func sent() -> [String] { sentPrompts }
@@ -148,6 +155,9 @@ private actor TrackingTransport {
         case "work-completion-check":
             completionBodies.append((try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: String] ?? [:])
             details = completion
+        case "work-evidence-check":
+            evidenceBodies.append(data ?? Data())
+            details = evidenceAnswers.isEmpty ? evidence : evidenceAnswers.removeFirst()
         case "work-new":
             let payload = (try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: Any] ?? [:]
             jobIdentity = payload["clientJobId"] as? String ?? ""
@@ -236,11 +246,20 @@ private actor TrackingTransport {
     /// Runs inside a move (to hold the journal while the tracker records it).
     var duringMove: (() -> Void)?
     var savedButRefreshFailsNext = false
+    /// 0.5.262: what each move carried, the store whose move log a move is written to, the server's evidence check, and
+    /// per-card revisions and finish lines.
+    var contexts: [WorkStageMove] = []
+    weak var log: WorkHandoffStore?
+    var evidenceCheck = false
+    var revisions: [String: String] = [:]
+    var doneWhen: [String: String] = [:]
+    var created: [String: String] = [:]
     func task(_ identity: String) -> TaskRow {
         var row: [String: JSONValue] = ["id": .string(identity), "domain": .string("Quilt"), "title": .string("Homepage CTA"),
-                                        "text": .string(texts[identity] ?? "Draft the homepage call to action " + identity), "doneWhen": .string(""),
+                                        "text": .string(texts[identity] ?? "Draft the homepage call to action " + identity), "doneWhen": .string(doneWhen[identity] ?? ""),
+                                        "createdAt": .string(created[identity] ?? ""),
                                         "workStage": .string(rows[identity] ?? "planned"), "workIdentity": .string(identity),
-                                        "workRevision": .string(String(repeating: "a", count: 64))]
+                                        "workRevision": .string(revisions[identity] ?? String(repeating: "a", count: 64))]
         if let forced = checked[identity] { row["checked"] = .bool(forced) }
         else if rows[identity] == "complete" { row["checked"] = .bool(true) }
         if let metadataError { row["workMetadataError"] = .string(metadataError) }
@@ -250,16 +269,21 @@ private actor TrackingTransport {
         .init(tasks: { self.rows.keys.sorted().map(self.task) },
               writable: { self.writable },
               reload: {},
-              move: { task, stage in
+              move: { task, stage, move in
                   if let failure = self.failNext { self.failNext = nil; throw HelperClientError.commandFailed(failure) }
+                  let from = self.rows[task.workIdentity] ?? "planned"
                   self.moves.append((task.workIdentity, stage)); self.rows[task.workIdentity] = stage
+                  self.contexts.append(move)
+                  // As ControllerModel.setWorkStage does once the write is accepted (0.5.262).
+                  self.log?.recordStageMove(workID: task.workSourceID, title: task.text, from: from, to: stage, move: move)
                   self.duringMove?()
                   if self.savedButRefreshFailsNext {
                       self.savedButRefreshFailsNext = false
                       throw HelperClientError.commandFailed("Change saved, but refreshing Work failed: timeout")
                   }
               },
-              readFresh: { self.readable })
+              readFresh: { self.readable },
+              evidenceCheck: { self.evidenceCheck })
     }
 }
 
@@ -276,6 +300,10 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         projectionChecks()
         try revisionParityChecks()
         try await trackerChecks()
+        // 0.5.262: cards follow their threads and move on evidence.
+        try followPureChecks()
+        try await followTrackerChecks()
+        print("PASS: 0.5.262 follows (\(followChecksRun) checks: finish line split, evidence policy, move log, follows store, lease, settings; tracker: failed-send revival, multi-card link, isolation, done line live in shadow, per-card pause across two follows, judgedRevision drop, shadow never moves, fallback without the capability, receipts skip the completion check with it)")
         print("PASS: Work tracking (status line, delivery, stages, projections, tracker: pending turns, arrival, reports, several tasks, pause, moved back, retries, busy journal, Jev gating, baseline, job result, superseded, back-off, New session link, Work sessions not jobs, start it then open it in the app, named after the task and linked while it runs, glasses requests, revision parity with the server's 12 golden rows, a glasses Start never sends the Mac's draft, Mac actions told to wait during a glasses send, no session bound after the deadline; 0.5.253: Cursor filled in for you to send (New session and Continue, cut and clipboard, found once sent, never a guess, Not sending it, a 0.5.252 Cursor run), Cursor refused from the glasses, results posted one pass at a time, a shared, locked ledger, the claim token never on a command line, 401 and 403 retried, fresh board reads, Open in Claude recorded while the journal is held)")
     }
 
@@ -2771,3 +2799,436 @@ private func stamp(_ seconds: Double) -> String { WorkProgress.stamp(seconds) }
         }
     }
 }
+
+// MARK: - 0.5.262: follows, evidence, the move log
+
+@MainActor private var followChecksRun = 0
+@MainActor private func fcheck(_ condition: Bool, _ message: @autoclosure () -> String = "", line: UInt = #line) {
+    followChecksRun += 1
+    if !condition { fatalError("follow check failed at line \(line): \(message())") }
+}
+@MainActor private final class Flag { var on: Bool; init(_ on: Bool) { self.on = on } }
+
+/// An evidence-check answer in the server's shape (contract 2026-10-07).
+private func evidenceAnswer(_ clauses: [(text: String, verdict: String, confidence: Double, kind: String, source: String?)],
+                            basis: String = "clauses", sources: [String] = ["session", "url"], truncated: Bool = false,
+                            cached: Bool = false, cursors: [(String, String, String)] = [], deterministic: Bool = false) -> [String: JSONValue] {
+    let answer: [String: JSONValue] = [
+        "provider": .string("jev"), "model": .string("jev-1.13.0"), "basis": .string(basis),
+        "clauses": .array(clauses.map { c in
+            var row: [String: JSONValue] = ["text": .string(c.text), "verdict": .string(c.verdict), "confidence": .number(c.confidence),
+                                            "kind": .string(c.kind), "deterministic": .bool(deterministic)]
+            row["evidence"] = c.source.map { JSONValue.object(["source": .string($0), "ref": .string("https://bottlepos.com/october-switch-offer"),
+                                                       "excerpt": .string("200 \u{00B7} Switch to Bottle POS"), "at": .string("2026-10-07T21:32:00Z")]) } ?? .null
+            return JSONValue.object(row)
+        }),
+        "sources": .array(sources.map(JSONValue.string)),
+        "cursors": .array(cursors.map { JSONValue.object(["provider": .string($0.0), "sessionId": .string($0.1), "cursor": .string($0.2)]) }),
+        "truncated": .bool(truncated), "cached": .bool(cached), "skipped": .null]
+    return answer
+}
+
+extension WorkProgressChecks {
+    @MainActor static func followPureChecks() throws {
+        // The finish line: split on ';' and new lines only, nothing dropped.
+        fcheck(WorkFinishLine.clauses("Page is live; ads are running\nGraham signs off") == ["Page is live", "ads are running", "Graham signs off"])
+        fcheck(WorkFinishLine.clauses("Page live and ads running") == ["Page live and ads running"], "never split on and (Skeptic W4)")
+        fcheck(WorkFinishLine.clauses(" ; ;") == [] && WorkFinishLine.clauses("") == [])
+        fcheck(WorkFinishLine.normalized("A\nB") == "A; B" && WorkFinishLine.normalized("A;B") == "A;B", "kept as typed unless it has new lines")
+        fcheck(WorkFinishLine.problem("Page is live; ads are running") == nil)
+        fcheck(WorkFinishLine.problem((1...7).map { "part \($0)" }.joined(separator: "; ")) != nil, "at most 6 parts")
+        fcheck(WorkFinishLine.problem(String(repeating: "x", count: 301)) != nil, "a part of 301 characters")
+        fcheck(WorkFinishLine.problem(String(repeating: "x", count: 300)) == nil)
+        fcheck(WorkFinishLine.problem("Ship it [run 2026-12-25 09:00]") != nil && WorkFinishLine.problem("ok [stage review]") != nil, "markers refused")
+        fcheck(WorkFinishLine.problem("ok [stage reviewed]") == nil, "only the server's markers")
+        fcheck(WorkFinishLine.problem(String(repeating: "x;", count: 260)) != nil, "under 501 characters")
+
+        // The evidence policy.
+        func result(_ details: [String: JSONValue], sent: Int) -> WorkEvidenceResult? { WorkEvidenceResult(details: details, sent: sent) }
+        let two = ["https://bottlepos.com/october-switch-offer page is live", "Facebook ads are running against it"]
+        let both = try require(result(evidenceAnswer([(two[0], "met", 0.93, "fact", "url"), (two[1], "met", 0.85, "fact", "slack")]), sent: 2))
+        fcheck(both.decision == .move)
+        let pete = try require(result(evidenceAnswer([(two[0], "met", 0.93, "fact", "url"), (two[1], "not_met", 0.8, "intent", "slack")]), sent: 2))
+        fcheck(pete.decision == .partial(met: 1, of: 2), "Pete's card is 1 of 2")
+        let intent = try require(result(evidenceAnswer([(two[0], "met", 0.93, "fact", "url"), (two[1], "met", 0.99, "intent", "slack")]), sent: 2))
+        fcheck(intent.decision == .partial(met: 1, of: 2), "only fact counts: ready to go live is intent")
+        let draft = try require(result(evidenceAnswer([(two[0], "met", 0.99, "draft", "url"), (two[1], "met", 0.99, "fact", "slack")]), sent: 2))
+        fcheck(draft.decision == .partial(met: 1, of: 2), "a draft is not a fact")
+        let low = try require(result(evidenceAnswer([(two[0], "met", 0.79, "fact", "url"), (two[1], "met", 0.95, "fact", "slack")]), sent: 2))
+        fcheck(low.decision == .partial(met: 1, of: 2), "0.80 bar")
+        let deterministic = try require(result(evidenceAnswer([(two[0], "met", 0.5, "fact", "url"), (two[1], "met", 0.5, "fact", "slack")], deterministic: true), sent: 2))
+        fcheck(deterministic.decision == .move, "a deterministic pass stands in for confidence")
+        let noEvidence = try require(result(evidenceAnswer([(two[0], "met", 0.99, "fact", nil), (two[1], "met", 0.99, "fact", "slack")]), sent: 2))
+        fcheck(noEvidence.decision == .partial(met: 1, of: 2), "met needs evidence")
+        let truncated = try require(result(evidenceAnswer([(two[0], "met", 0.99, "fact", "url"), (two[1], "met", 0.99, "fact", "slack")], truncated: true), sent: 2))
+        fcheck(truncated.decision == .hold, "a truncated read is unclear")
+        fcheck(result(evidenceAnswer([(two[0], "met", 0.9, "fact", "url")]), sent: 2) == nil, "an answer must judge every clause sent")
+        fcheck(result(evidenceAnswer([(two[0], "done", 0.9, "fact", "url")]), sent: 1) == nil, "an unknown verdict is no answer")
+        fcheck(result(["provider": .string("none"), "reason": .string("jev_cap")], sent: 0) == nil)
+        // The title path (no Done when): 0.90 and two distinct sources, fact only.
+        let title = "Launch the October switch offer"
+        fcheck(result(evidenceAnswer([(title, "met", 0.95, "fact", "session")], basis: "title", sources: ["session", "slack"]), sent: 0)?.decision == .move)
+        fcheck(result(evidenceAnswer([(title, "met", 0.95, "fact", "session")], basis: "title", sources: ["session"]), sent: 0)?.decision == .hold, "one source is not enough")
+        fcheck(result(evidenceAnswer([(title, "met", 0.89, "fact", "session")], basis: "title", sources: ["session", "slack"]), sent: 0)?.decision == .hold, "0.90 bar")
+        fcheck(result(evidenceAnswer([(title, "met", 0.99, "intent", "session")], basis: "title", sources: ["session", "slack"]), sent: 0)?.decision == .hold, "intent on the title path")
+        fcheck(result(evidenceAnswer([(title, "met", 0.99, "fact", "session")], basis: "title", sources: ["session", "slack"], deterministic: true), sent: 0)?.decision == .move)
+        fcheck(result(evidenceAnswer([(title, "met", 0.89, "fact", "url")], basis: "title", sources: ["url", "slack"], deterministic: true), sent: 0)?.decision == .hold,
+               "deterministic does not lower the title bar")
+        fcheck(result(evidenceAnswer([(title, "met", 0.95, "fact", "session")], basis: "title"), sent: 1) == nil, "the title path answers a request with no clauses")
+
+        // The move log: append, undo, ack, a busy lock, rotation, and a second reader.
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("work-follow-pure-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let logURL = root.appendingPathComponent("work-moves.jsonl")
+        let log = WorkMoveLog(url: logURL)
+        let a = WorkMoveLine(type: .move, id: "m1", at: 100, workID: "task:Quilt:0123456789ab", from: "built", to: "qa", by: .cos, why: "every part of the finish line is met")
+        let b = WorkMoveLine(type: .move, id: "m2", at: 200, workID: "task:Quilt:bbbbbbbbbbbb", from: "planned", to: "qa", by: .cos, shadow: true, why: "x")
+        let mine = WorkMoveLine(type: .move, id: "m3", at: 300, workID: "task:Quilt:bbbbbbbbbbbb", from: "qa", to: "built", by: .you, why: "You moved it")
+        fcheck(log.append(a) && log.append(b) && log.append(mine))
+        fcheck(log.movedForYou.map(\.id) == ["m2", "m1"], "COS's moves, newest first; yours are not listed")
+        fcheck(log.mark(workID: "task:Quilt:bbbbbbbbbbbb")?.shadow == true && log.mark(workID: "task:Quilt:bbbbbbbbbbbb")?.mark(now: 200 + 7_200) == "COS would move this \u{00B7} 2h ago")
+        fcheck(log.mark(workID: "task:Quilt:0123456789ab")?.mark(now: 160) == "Moved by COS \u{00B7} 1m ago")
+        log.acknowledge(moveID: "m2", at: 400)
+        log.recordUndo(moveID: "m1", at: 410)
+        log.recordUndo(moveID: "m1", at: 420)   // once
+        fcheck(log.movedForYou.isEmpty && log.entries.first { $0.id == "m1" }?.undoneAt == 410)
+        let text = try String(contentsOf: logURL, encoding: .utf8)
+        fcheck(text.split(separator: "\n").count == 5, "3 moves, 1 ack and 1 undo, nothing edited in place: \(text)")
+        fcheck(WorkMoveLog(url: logURL).entries.map(\.id) == ["m1", "m2", "m3"] && WorkMoveLog(url: logURL).movedForYou.isEmpty, "a second reader sees the same")
+        // A busy lock: the line waits, is kept and shown, and lands on the next flush.
+        var busy = true
+        log.lockOverride = { !busy }
+        let c = WorkMoveLine(type: .move, id: "m4", at: 500, workID: "task:Quilt:0123456789ab", from: "draft", to: "qa", by: .cos)
+        fcheck(!log.append(c) && log.queued.count == 1 && log.movedForYou.first?.id == "m4", "kept while the lock is busy")
+        fcheck(!WorkMoveLog(url: logURL).entries.contains { $0.id == "m4" })
+        busy = false
+        fcheck(log.flush() && log.queued.isEmpty && WorkMoveLog(url: logURL).entries.contains { $0.id == "m4" }, "never dropped")
+        // A real lock held by another writer: the bounded wait gives up and keeps the line.
+        log.lockOverride = nil
+        let holder = try require(workLockFile(logURL.path + ".lock", wait: 0))
+        let started = Date()
+        fcheck(!log.append(WorkMoveLine(type: .ack, id: "ack-m4", at: 510, workID: "task:Quilt:0123456789ab", move: "m4")))
+        fcheck(Date().timeIntervalSince(started) < 2, "the wait is bounded")
+        workUnlockFile(holder)
+        fcheck(log.flush() && WorkMoveLog(url: logURL).movedForYou.isEmpty)
+        // Rotation at 20 MB.
+        let handle = try FileHandle(forWritingTo: logURL); try handle.truncate(atOffset: UInt64(WorkMoveLog.rotateAt)); try handle.close()
+        fcheck(log.append(WorkMoveLine(type: .move, id: "m5", at: 600, workID: "task:Quilt:0123456789ab", from: "draft", to: "qa", by: .cos)))
+        let rotated = try require(log.rotatedURL)
+        fcheck(FileManager.default.fileExists(atPath: rotated.path), "the full file moved aside")
+        fcheck(try String(contentsOf: logURL, encoding: .utf8).split(separator: "\n").count == 1, "a new file starts")
+        fcheck(WorkMoveLog(url: logURL).movedForYou.map(\.id) == ["m5"])
+
+        // The follows store: one follow per card and session, a card's pause covers every follow, forward resumes.
+        let followsURL = root.appendingPathComponent("work-follows.json")
+        let follows = WorkFollowStore(url: followsURL)
+        let card = "task:Quilt:0123456789ab"
+        fcheck(follows.add(workID: card, sessionID: "claude:s-one", origin: .link, startedAt: 1))
+        fcheck(!follows.add(workID: card, sessionID: "claude:s-one", origin: .follow, startedAt: 2), "once per card and session")
+        fcheck(follows.add(workID: card, sessionID: "codex:s-two", origin: .follow, startedAt: 3))
+        fcheck(!follows.add(workID: "review:wr_x", sessionID: "claude:s-one", origin: .link, startedAt: 1), "only board tasks")
+        fcheck(follows.active(for: card).map(\.sessionID) == ["codex:s-two", "claude:s-one"])
+        follows.pause(workID: card, stage: "built", why: "You undid COS's move.", at: 10)
+        fcheck(follows.active(for: card).isEmpty && follows.follows(for: card).allSatisfy(\.paused))
+        fcheck(follows.add(workID: card, sessionID: "claude:s-three", origin: .link, startedAt: 11) && follows.follows(for: card).allSatisfy(\.paused), "a new follow on a paused card starts paused")
+        fcheck(WorkFollowStore(url: followsURL).isPaused(card), "the pause is on disk")
+        follows.resumeIfMovedForward(workID: card, currentStage: "built")
+        fcheck(follows.isPaused(card), "not moved forward yet")
+        follows.noteStageChange(workID: card, from: "built", to: "qa", by: .cos, at: 12)
+        fcheck(follows.isPaused(card), "COS's own moves never resume")
+        follows.noteStageChange(workID: card, from: "built", to: "qa", by: .you, at: 12)
+        fcheck(!follows.isPaused(card) && follows.active(for: card).count == 3, "you moved it forward: following again")
+        follows.noteStageChange(workID: card, from: "qa", to: "draft", by: .you, at: 13)
+        fcheck(follows.isPaused(card) && follows.card(card).pausedStage == "draft", "you moved it back: paused")
+        // A busy file: the change is kept and replayed over what another process wrote.
+        busy = true
+        follows.lockOverride = { !busy }
+        follows.setCursor(workID: card, sessionID: "claude:s-one", cursor: "c-1")
+        fcheck(follows.waitingWrites == 1 && WorkFollowStore(url: followsURL).follows(for: card).first { $0.sessionID == "claude:s-one" }?.cursor == nil)
+        let other = WorkFollowStore(url: followsURL)
+        fcheck(other.add(workID: "task:Quilt:bbbbbbbbbbbb", sessionID: "claude:s-one", origin: .link, startedAt: 20), "another process writes meanwhile")
+        busy = false
+        fcheck(follows.flush() && follows.waitingWrites == 0)
+        let disk = WorkFollowStore(url: followsURL)
+        fcheck(disk.follows(for: card).first { $0.sessionID == "claude:s-one" }?.cursor == "c-1" && disk.follows(for: "task:Quilt:bbbbbbbbbbbb").count == 1, "both writes survive")
+        // A finish line's partial state.
+        var state = WorkCardFollowState()
+        state.basis = "clauses"
+        state.clauses = [WorkClauseState(text: "page is live", verdict: "met", confidence: 0.93, kind: "fact", evidence: WorkMoveClause(text: "page is live", verdict: "met", source: "url"), at: 1),
+                         WorkClauseState(text: "Facebook ads are running against it", verdict: "not_met", confidence: 0.8, kind: "intent", at: 1)]
+        fcheck(state.partial?.met == 1 && state.partial?.of == 2 && state.partialLine == "1 of 2 met \u{00B7} waiting: Facebook ads are running against it")
+        state.clauses?[1].verdict = "met"; state.clauses?[1].kind = "fact"; state.clauses?[1].evidence = WorkMoveClause(text: "x", verdict: "met", source: "slack")
+        fcheck(state.partial == nil, "all met is not partial")
+        // The history line names each met clause's evidence.
+        let moved = WorkMoveEntry(line: WorkMoveLine(type: .move, id: "h", at: 0, workID: card, from: "built", to: "qa", by: .cos,
+            clauses: [WorkMoveClause(text: "page is live", verdict: "met", source: "url", excerpt: "200 \u{00B7} Switch", at: nil),
+                      WorkMoveClause(text: "ads are running", verdict: "met", source: "slack")], why: "w"), undoneAt: nil, ackedAt: nil)
+        fcheck(moved.history == "Moved to QA by COS \u{00B7} page is live (200) + ads are running (Slack)", moved.history)
+
+        // The lease: one holder at a time; it frees when released.
+        let leaseURL = root.appendingPathComponent("work-tracker.lease")
+        let first = WorkTrackerLease(url: leaseURL), second = WorkTrackerLease(url: leaseURL)
+        fcheck(first.acquire() && first.acquire() && !second.acquire(), "a second holder is refused")
+        first.release()
+        fcheck(second.acquire() && !first.acquire(), "freed on release")
+        second.release()
+
+        // The Work background model setting: round-trips, keeps other keys, refuses a file it does not understand.
+        let settings = root.appendingPathComponent("work-evidence.json")
+        fcheck(WorkEvidenceSettings.read(settings) == .haiku, "Haiku by default")
+        try Data(#"{"lastSweep":"2026-10-07T21:30:00Z","nested":{"a":1}}"#.utf8).write(to: settings)
+        try WorkEvidenceSettings.write(.sonnet, to: settings)
+        fcheck(WorkEvidenceSettings.read(settings) == .sonnet)
+        let saved = try require((try JSONSerialization.jsonObject(with: Data(contentsOf: settings))) as? [String: Any])
+        fcheck(saved["slackSweepModel"] as? String == "sonnet" && saved["lastSweep"] as? String == "2026-10-07T21:30:00Z"
+               && (saved["nested"] as? [String: Any])?["a"] as? Int == 1, "other keys are kept: \(saved)")
+        try WorkEvidenceSettings.write(.haiku, to: settings)
+        fcheck(WorkEvidenceSettings.read(settings) == .haiku)
+        try Data(#"{"slackSweepModel":"opus"}"#.utf8).write(to: settings)
+        fcheck(WorkEvidenceSettings.read(settings) == .haiku, "an unknown model reads as Haiku")
+        try Data("[1,2]".utf8).write(to: settings)
+        var refused = false
+        do { try WorkEvidenceSettings.write(.sonnet, to: settings) } catch { refused = true }
+        let untouched = try String(contentsOf: settings, encoding: .utf8)
+        fcheck(refused && untouched == "[1,2]", "a file that is not an object is left as it is")
+        fcheck(WorkSweepModel.allCases == [.haiku, .sonnet] && WorkSweepModel.haiku.title.contains("Recommended"))
+
+        // Session cards: one session, several cards; a 0.5.261 file reads as a list of one.
+        let old = try JSONEncoder().encode(["claude:x": WorkSessionCardLink(workID: card, title: "T", sourceRevision: "r", at: 1)])
+        fcheck(WorkHandoffStore.decodeSessionCards(old)["claude:x"]?.map(\.workID) == [card])
+        fcheck(WorkHandoffStore.companionURL(URL(fileURLWithPath: "/x/work-handoffs/handoffs.json"), "work-follows.json").path == "/x/work-handoffs/work-follows.json")
+        fcheck(WorkHandoffStore.companionURL(URL(fileURLWithPath: "/x/check.json"), "work-follows.json").path == "/x/check.work-follows.json")
+    }
+
+    @MainActor static func followTrackerChecks() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("work-follow-checks-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let idA = "0123456789ab", idB = "bbbbbbbbbbbb"
+        let cardA = "task:Quilt:" + idA, cardB = "task:Quilt:" + idB
+        let s1 = "claude:0f3c9a2e-1111-4222-8333-944455556666", s2 = "claude:1a2b3c4d-1111-4222-8333-944455556666"
+        func source(_ identity: String) -> WorkSource {
+            WorkSource(id: "task:Quilt:" + identity, title: "Task " + identity, revision: "1", project: "Quilt", context: "Task " + identity)
+        }
+        struct Journal: Codable { var version = 2; var receipts: [WorkHandoffReceipt]; var sessions: [WorkSession] = [] }
+        func setUp(_ name: String, receipts: [WorkHandoffReceipt] = [], evidence: Bool = true, shadow: Bool = false)
+            throws -> (WorkHandoffStore, TrackingTransport, FakeBoard, Clock, WorkProgressTracker, Flag) {
+            let url = root.appendingPathComponent(name + ".json")
+            if !receipts.isEmpty { try JSONEncoder().encode(Journal(receipts: receipts)).write(to: url) }
+            let transport = TrackingTransport()
+            let store = WorkHandoffStore(isolated: false, storageURL: url, transport: { args, data in try await transport.run(args, data) })
+            store.openURL = { url in fatalError("a Work check reached the desktop: open \(url)") }
+            store.copyToClipboard = { _ in fatalError("a Work check reached the desktop: the clipboard") }
+            let board = FakeBoard(); board.rows[idA] = "built"; board.rows[idB] = "built"
+            board.log = store; board.evidenceCheck = evidence
+            board.doneWhen[idA] = "https://bottlepos.com/october-switch-offer page is live; Facebook ads are running against it"
+            board.created[idA] = "2026-10-02"
+            let clock = Clock(), flag = Flag(shadow)
+            let tracker = WorkProgressTracker(store: store, board: board.board, notify: { _ in }, now: { clock.now() }, shadow: { flag.on })
+            return (store, transport, board, clock, tracker, flag)
+        }
+        func idleRead(_ transport: TrackingTransport, _ replies: [(String, String?)] = [("Working on it.", nil)], clock: Clock, quiet: Double = 600) async {
+            let now = clock.now().timeIntervalSince1970
+            await transport.setRead(replies: replies.map { ($0.0, $0.1 ?? stamp(now - quiet - 30)) }, lastActivity: stamp(now - quiet))
+        }
+        let met = evidenceAnswer([("https://bottlepos.com/october-switch-offer page is live", "met", 0.93, "fact", "url"),
+                                  ("Facebook ads are running against it", "met", 0.86, "fact", "slack")],
+                                 cursors: [("claude", "0f3c9a2e-1111-4222-8333-944455556666", "cursor-after-1")])
+        let pete = evidenceAnswer([("https://bottlepos.com/october-switch-offer page is live", "met", 0.93, "fact", "url"),
+                                   ("Facebook ads are running against it", "not_met", 0.8, "intent", "slack")])
+
+        // 1. A failed send is followed once its session shows activity after the failure; the receipt is untouched.
+        do {
+            let created = Date().timeIntervalSince1970 - 3_600
+            var failed = WorkHandoffReceipt(id: "r-failed", workID: cardA, workTitle: "Pete's offer page", sourceRevision: "1", mode: .continueSession,
+                                            provider: "claude", modelID: "existing-session", sessionID: s1, sessionTitle: "Pete thread",
+                                            status: "failed", detail: "Plan limit reached.", prompt: "Go", createdAt: created)
+            failed.channel = "turn"; failed.progress = WorkProgress(tag: idA)
+            let (store, transport, board, clock, tracker, _) = try setUp("revival", receipts: [failed], shadow: true)
+            await transport.setRead(replies: [("Older reply", stamp(created - 60))], lastActivity: stamp(created - 60))
+            await tracker.tick()
+            fcheck(store.follows.follows(for: cardA).isEmpty, "no activity after the failure: not followed")
+            let journalBefore = try Data(contentsOf: root.appendingPathComponent("revival.json"))
+            await transport.setEvidence(met)
+            await idleRead(transport, [("Picked it back up after the limit reset.", stamp(created + 900))], clock: clock)
+            await tracker.tick()
+            let follow = try require(store.follows.follows(for: cardA).first)
+            fcheck(follow.origin == .receipt && follow.receiptID == "r-failed" && follow.sessionID == s1, "revived")
+            fcheck(try Data(contentsOf: root.appendingPathComponent("revival.json")) == journalBefore && store.receipts.first?.status == "failed", "the receipt stays as it was")
+            fcheck(board.moves.isEmpty && store.moves.movedForYou.first?.shadow == true, "shadow mode: a would-move, no move")
+            let body = try require((try JSONSerialization.jsonObject(with: try require(await transport.evidenceSent().last))) as? [String: Any])
+            fcheck(Set(body.keys) == ["domain", "id", "follows", "clauses", "since"] && body["id"] as? String == idA && body["domain"] as? String == "Quilt")
+            let sent = try require(body["follows"] as? [[String: Any]])
+            fcheck(sent.count == 1 && sent[0]["sessionId"] as? String == "0f3c9a2e-1111-4222-8333-944455556666" && sent[0]["cursor"] is NSNull, "\(sent)")
+            fcheck((body["clauses"] as? [String])?.count == 2 && (body["since"] as? String)?.hasPrefix("2026-10-0") == true, "clauses split, look back to the card's creation day")
+            fcheck(store.follows.follows(for: cardA).first?.cursor == "cursor-after-1", "the server's cursor is kept")
+        }
+
+        // 2. One session linked to two cards; an untagged done moves neither (canary 5); a tagged done line moves its
+        //    own card even in shadow mode, live.
+        do {
+            let (store, transport, board, clock, tracker, _) = try setUp("isolation", evidence: false, shadow: true)
+            fcheck(store.confirmSessionCard(sessionID: s1, source: source(idA)) && store.confirmSessionCard(sessionID: s1, source: source(idB)))
+            fcheck(store.linkedCards(sessionID: s1).map(\.workID) == [cardA, cardB] && store.linkedSessions(workID: cardB) == [s1])
+            fcheck(store.follows.follows(for: cardA).first?.origin == .link && store.follows.follows(for: cardB).count == 1)
+            let after = Date().timeIntervalSince1970 + 5
+            clock.offset = 30
+            await idleRead(transport, [("Done. Both are finished.", stamp(after))], clock: clock, quiet: 5)
+            await tracker.tick()
+            fcheck(board.moves.isEmpty, "an untagged done in a shared thread moves neither card")
+            fcheck(await transport.count("work-evidence-check") == 0, "no evidence check on a server without it")
+            clock.offset = 300
+            await idleRead(transport, [("COS-WORK \(idA): done: The offer page is live and the ads are on.", stamp(after + 100))], clock: clock)
+            await tracker.tick()
+            fcheck(board.rows[idA] == "qa" && board.rows[idB] == "built", "the tagged card only: \(board.rows)")
+            let move = try require(store.moves.mark(workID: cardA))
+            fcheck(!move.shadow && move.line.by == .cos && move.line.from == "built" && move.line.why?.hasPrefix("the session reported done") == true,
+                   "the done line moves live in shadow mode")
+            fcheck(board.contexts.last?.by == .cos)
+        }
+
+        // 3. Per-card pause across two follows: COS moves on evidence, you Undo, and neither follow moves it for the next
+        //    cycles (canary 4); you move it forward and it follows again.
+        do {
+            let (store, transport, board, clock, tracker, _) = try setUp("pause", shadow: false)
+            fcheck(store.confirmSessionCard(sessionID: s1, source: source(idA)))
+            let advice = try require(SessionAdvice(details: ["provider": .string("jev"), "action": .string("continue"), "sessionId": .string(s2),
+                                                             "confidence": .number(0.82), "reason": .string("Same thread.")]))
+            fcheck(store.followAdvice(advice, source: source(idA)) && store.follows.follows(for: cardA).count == 2)
+            let newSession = try require(SessionAdvice(details: ["provider": .string("jev"), "action": .string("new"), "confidence": .number(0.9)]))
+            fcheck(!store.followAdvice(newSession, source: source(idA)), "Follow is only for Continue advice")
+            await transport.setEvidence(met)
+            clock.offset = 60
+            await idleRead(transport, clock: clock)
+            await tracker.tick()
+            fcheck(board.rows[idA] == "qa" && board.moves.count == 1, "every clause met: moved to QA")
+            let sentFollows = try require((try JSONSerialization.jsonObject(with: try require(await transport.evidenceSent().last))) as? [String: Any])["follows"] as? [[String: Any]]
+            fcheck(sentFollows?.count == 2, "both follows go to the server")
+            let move = try require(store.moves.mark(workID: cardA))
+            fcheck(move.line.clauses?.count == 2 && move.line.judgedRevision == String(repeating: "a", count: 64) && move.line.why == "every part of the finish line is met")
+            fcheck(move.history.hasPrefix("Moved to QA by COS \u{00B7} https://bottlepos.com"), move.history)
+            fcheck(await tracker.undo(moveID: move.id) == nil && board.rows[idA] == "built")
+            fcheck(store.follows.isPaused(cardA) && store.follows.follows(for: cardA).allSatisfy(\.paused), "every follow on the card paused")
+            fcheck(store.moves.entries.first { $0.id == move.id }?.undoneAt != nil && store.moves.lines.contains { $0.type == .pause && $0.workID == cardA })
+            fcheck(store.moves.lines.contains { $0.type == .move && $0.by == .you && $0.to == "built" }, "the Undo is logged as your move")
+            fcheck(await tracker.undo(moveID: move.id) != nil, "undone once")
+            let checks = await transport.count("work-evidence-check")
+            for cycle in 1...2 {
+                clock.offset += 600
+                await idleRead(transport, [("More work, cycle \(cycle)", nil)], clock: clock)
+                await tracker.tick()
+                fcheck(board.rows[idA] == "built" && board.moves.count == 2, "cycle \(cycle): no move after Undo")
+            }
+            fcheck(await transport.count("work-evidence-check") == checks, "a paused card is not checked")
+            // You move it forward yourself: following again, and it moves on the evidence.
+            board.rows[idA] = "built"
+            store.recordStageMove(workID: cardA, title: "T", from: "draft", to: "built", move: .you)
+            fcheck(store.follows.isPaused(cardA), "built is where it was paused, not past it")
+            board.rows[idA] = "built"
+            store.recordStageMove(workID: cardA, title: "T", from: "built", to: "qa", move: .you)
+            fcheck(!store.follows.isPaused(cardA), "moved past where it was paused: following again")
+        }
+
+        // 4. The lease: a second tracker on the same journal evaluates nothing while the first holds it.
+        do {
+            let (store, transport, board, clock, tracker, _) = try setUp("lease", shadow: false)
+            fcheck(store.confirmSessionCard(sessionID: s1, source: source(idA)))
+            fcheck(tracker.lease.acquire())
+            let other = WorkProgressTracker(store: store, board: board.board, notify: { _ in }, now: { clock.now() }, shadow: { false })
+            await transport.setEvidence(met)
+            clock.offset = 60
+            await idleRead(transport, clock: clock)
+            await other.tick()
+            fcheck(await transport.calls.isEmpty && board.moves.isEmpty, "no read, no check, no move without the lease")
+            tracker.lease.release()
+            await other.tick()
+            fcheck(board.rows[idA] == "qa", "the lease freed: the other one evaluates")
+        }
+
+        // 5. judgedRevision: a card that changed between the check and the write is not moved; it is checked again.
+        do {
+            let (store, transport, board, clock, tracker, _) = try setUp("revision", shadow: false)
+            fcheck(store.confirmSessionCard(sessionID: s1, source: source(idA)))
+            await transport.setEvidence(met)
+            board.writable = false
+            clock.offset = 60
+            await idleRead(transport, clock: clock)
+            await tracker.tick()
+            fcheck(board.moves.isEmpty && store.follows.card(cardA).pending?.judgedRevision == String(repeating: "a", count: 64), "pending on a read-only board")
+            board.revisions[idA] = String(repeating: "b", count: 64)
+            board.writable = true
+            await tracker.tick()
+            fcheck(board.moves.isEmpty && store.follows.card(cardA).pending == nil && store.follows.card(cardA).checkedRevision == nil,
+                   "dropped: the card changed since it was judged")
+            let checks = await transport.count("work-evidence-check")
+            await tracker.tick()
+            fcheck(await transport.count("work-evidence-check") == checks + 1 && board.rows[idA] == "qa", "checked again, then moved")
+            fcheck(board.contexts.last?.judgedRevision == String(repeating: "b", count: 64))
+        }
+
+        // 6. Shadow mode never moves, and logs one would-move per verdict; partial shows "1 of 2 met".
+        do {
+            let (store, transport, board, clock, tracker, flag) = try setUp("shadow", shadow: true)
+            fcheck(store.confirmSessionCard(sessionID: s1, source: source(idA)))
+            await transport.setEvidence(pete)
+            clock.offset = 60
+            await idleRead(transport, clock: clock)
+            await tracker.tick()
+            fcheck(store.follows.card(cardA).partialLine?.hasPrefix("1 of 2 met \u{00B7} waiting: Facebook ads") == true && store.moves.movedForYou.isEmpty, "Pete's card: 1 of 2, no move")
+            await transport.setEvidence(met)
+            for cycle in 1...3 {
+                clock.offset += 600
+                await idleRead(transport, [("Cycle \(cycle)", nil)], clock: clock)
+                await tracker.tick()
+            }
+            fcheck(board.moves.isEmpty && board.rows[idA] == "built", "shadow mode never moves")
+            let would = store.moves.lines.filter { $0.type == .move && $0.shadow == true }
+            fcheck(would.count == 1 && would[0].to == "qa" && would[0].clauses?.count == 2, "one would-move for one verdict: \(would.count)")
+            fcheck(store.moves.mark(workID: cardA)?.mark(now: clock.now().timeIntervalSince1970).hasPrefix("COS would move this") == true)
+            fcheck(await tracker.undo(moveID: would[0].id) != nil && board.moves.isEmpty, "a would-move has nothing to undo")
+            store.moves.acknowledge(workID: cardA, at: clock.now().timeIntervalSince1970)
+            fcheck(store.moves.movedForYou.isEmpty && store.moves.mark(workID: cardA) == nil, "opening the card clears its mark")
+            // Shadow off: the same evidence moves it.
+            flag.on = false
+            store.follows.setCard(cardA) { $0.checkedAt = nil }
+            await tracker.tick()
+            fcheck(board.rows[idA] == "qa", "shadow off: moved")
+        }
+
+        // 7. Without the capability: link follows fall back to the completion check (shadow-gated), never the evidence check.
+        do {
+            let (store, transport, board, clock, tracker, _) = try setUp("fallback", evidence: false, shadow: true)
+            fcheck(store.confirmSessionCard(sessionID: s1, source: source(idA)))
+            await transport.setCompletion(["provider": .string("jev"), "verdict": .string("done"), "confidence": .number(0.93), "basis": .string("done_when")])
+            clock.offset = 60
+            let after = Date().timeIntervalSince1970 + 1
+            await idleRead(transport, [("Finished the page and turned on the ads.", stamp(after))], clock: clock, quiet: 100)
+            await tracker.tick()
+            let completions = await transport.count("work-completion-check"), evidenceChecks = await transport.count("work-evidence-check")
+            fcheck(completions == 1 && evidenceChecks == 0, "\(completions) completion, \(evidenceChecks) evidence")
+            fcheck(board.moves.isEmpty && store.moves.movedForYou.first?.shadow == true, "a fallback move is shadowed too")
+            await tracker.tick()
+            fcheck(await transport.count("work-completion-check") == 1, "one reply is judged once")
+        }
+
+        // 8. With the capability, a handoff's own idle reply goes to the evidence check, not the completion check.
+        do {
+            let (store, transport, board, clock, tracker, _) = try setUp("handoff-evidence", shadow: true)
+            let one = WorkSession(id: s1, nativeID: "0f3c9a2e-1111-4222-8333-944455556666", provider: "claude", title: "Launch copy", summary: "", project: "Website", status: "idle")
+            store.sessions = [one]
+            await store.submit(source: source(idA), mode: .continueSession, session: one, model: nil, prompt: "Draft the CTA")
+            await transport.setTurn("completed")
+            await transport.setEvidence(pete)
+            let created = try require(store.receipts.first).createdAt
+            clock.offset = 600
+            await transport.setRead(replies: [("Here is the page, no status line.", stamp(created + 30))], lastActivity: stamp(created + 40))
+            await tracker.tick()
+            await tracker.tick()
+            fcheck(await transport.count("work-completion-check") == 0, "the evidence check replaces the completion check")
+            fcheck(await transport.count("work-evidence-check") >= 1 && store.follows.follows(for: cardA).first?.origin == .receipt)
+            fcheck(store.follows.card(cardA).partial?.met == 1 && board.rows[idA] != "qa")
+        }
+    }
+}
+

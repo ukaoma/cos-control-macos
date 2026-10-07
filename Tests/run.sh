@@ -72,9 +72,9 @@ fi
 /usr/bin/python3 -c '
 import json, sys
 value = json.loads(sys.argv[1])
-# 62 at 0.5.253 (the 13 Cursor chat finder checks went with the finder, 7 for the re-claim token on stdin came in); 68 at
-# 0.5.252 (the glasses request result body and failure codes); 51 at 0.5.250.
-if not value.get("ok") or value.get("details", {}).get("checks", 0) < 62:
+# 76 at 0.5.262 (14 for the evidence check's body); 62 at 0.5.253 (the 13 Cursor chat finder checks went with the finder, 7
+# for the re-claim token on stdin came in); 68 at 0.5.252 (the glasses request result body and failure codes); 51 at 0.5.250.
+if not value.get("ok") or value.get("details", {}).get("checks", 0) < 76:
     sys.exit("helper self-test-work FAILED: " + str(value)[:2000])
 ' "$WORK_SELF_TEST"
 

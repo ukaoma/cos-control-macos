@@ -135,7 +135,7 @@ private actor HandoffTransport {
         let linker = WorkHandoffStore(storageURL: linkedURL, transport: { _, _ in fatalError("Link confirmation must not dispatch") })
         let linkedID = "codex:11111111-1111-4111-8111-111111111111"
         precondition(linker.confirmSessionCard(sessionID: linkedID, source: WorkSource.taskSnapshot(unique)))
-        precondition(WorkHandoffStore(storageURL: linkedURL).confirmedSessionCards[linkedID]?.workID == unique.workSourceID)
+        precondition(WorkHandoffStore(storageURL: linkedURL).linkedCards(sessionID: linkedID).first?.workID == unique.workSourceID)
         precondition(linker.receipts.isEmpty)
         WorkLoopMetrics.record("sort", values: ["seconds": 75, "catchUp": false], root: root)
         let metricText = try String(contentsOf: root.appendingPathComponent("work-loop-observations.jsonl"), encoding: .utf8)

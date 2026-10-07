@@ -2205,6 +2205,18 @@ struct ControlPanel: View {
             Toggle("Open new sessions in the app", isOn: Binding(get: { model.workOpensTabs }, set: { model.workOpensTabs = $0 }))
                 .toggleStyle(COSSwitchStyle())
                 .help("Start Claude and Codex work in the background, then open it in their app when the first reply is done. Off: it stays in the background on this Mac. Cursor always opens its own window with the handoff filled in, for you to send")
+            // 0.5.262: shadow mode for moves on evidence. On by default until Miles has reviewed a week of would-moves.
+            Toggle("Only show what COS would move", isOn: Binding(get: { model.workEvidenceShadow }, set: { model.workEvidenceShadow = $0 }))
+                .toggleStyle(COSSwitchStyle())
+                .help("COS checks the evidence on the cards it follows and lists what it would move to QA under Moved for you, without moving anything. Turn this off to let it move cards. A session's own done line moves a card either way")
+            // 0.5.262: the Slack sweep for Work evidence is a standing, unattended cost, so its model is chosen here.
+            VStack(alignment: .leading, spacing: 6) {
+                COSDropdown("Work background model", selection: Binding(get: { model.workSweepModel }, set: { model.workSweepModel = $0 }),
+                            options: WorkSweepModel.allCases.map { COSDropdownOption($0, $0.title) })
+                Text("Runs once each weekday at 4:30 PM to collect Slack evidence for your Work cards. Haiku only gathers messages; Jev makes the call, so the cheaper model is enough.")
+                    .font(COSType.body(11)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+                if let error = model.workSweepModelError { Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.danger) }
+            }
             DisclosureGroup("Advanced") {
                 // 0.5.234: the Meetings clock. The server sends 24-hour times and
                 // the tab used to print them raw; twelve-hour is the default here

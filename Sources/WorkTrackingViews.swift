@@ -243,3 +243,287 @@ struct WorkLatestMoveStrip: View {
         return Text("Moved ") + Text(title).fontWeight(.semibold) + Text(tail)
     }
 }
+
+// MARK: - 0.5.262: what COS moved, on the card and in Moved for you
+
+/// The persistent mark on a board card (Miles, 2026-10-07: "the visual cue that we leave on the card to let the user
+/// know, when they come back, what's been automated or moved"). It stays until you open the card or say Got it:
+/// "Moved by COS · 2h ago", "COS would move this · 2h ago" in shadow mode, and "1 of 2 met · waiting: …" while the
+/// finish line is partly met. Observes the move log and the follows itself, so a new move marks one card and never
+/// rebuilds the board.
+struct WorkCardMoveMark: View {
+    @ObservedObject var moves: WorkMoveLog
+    @ObservedObject var follows: WorkFollowStore
+    let workID: String
+    var now: Date = Date()
+
+    var body: some View {
+        let mark = moves.mark(workID: workID)
+        let partial = follows.card(workID).partialLine
+        if mark != nil || partial != nil {
+            VStack(alignment: .leading, spacing: 4) {
+                if let mark {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        WorkMoveMarkDot(shadow: mark.shadow)
+                        Text(mark.mark(now: now.timeIntervalSince1970))
+                            .font(COSType.body(10.5, weight: .semibold)).foregroundStyle(mark.shadow ? COSPalette.muted : COSPalette.accent).lineLimit(1)
+                    }
+                    .help(mark.history)
+                }
+                if let partial {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        WorkPartialGlyph(met: follows.card(workID).partial?.met ?? 0, of: follows.card(workID).partial?.of ?? 0)
+                        Text(partial).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).lineLimit(2)
+                    }
+                }
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+}
+
+/// Solid gold for a move COS made; a hollow ring for one it would make (shadow mode).
+struct WorkMoveMarkDot: View {
+    let shadow: Bool
+    var body: some View {
+        Group {
+            if shadow { Circle().strokeBorder(COSPalette.muted, lineWidth: 1.5) } else { Circle().fill(COSPalette.gold) }
+        }.frame(width: 7, height: 7)
+    }
+}
+
+/// "1 of 2": one small tick per part, filled when met.
+struct WorkPartialGlyph: View {
+    let met: Int
+    let of: Int
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<max(of, 0), id: \.self) { index in
+                RoundedRectangle(cornerRadius: 1).fill(index < met ? COSPalette.accent : COSPalette.line).frame(width: 6, height: 6)
+            }
+        }
+    }
+}
+
+/// One clause's evidence line: "200 · Switch to Bottle POS: $3,000 + Free Hardware · url · 4:31 PM".
+enum WorkClauseText {
+    static func state(_ clause: WorkClauseState?) -> String {
+        guard let clause else { return "Not checked yet" }
+        if clause.met { return "Met" }
+        switch clause.verdict {
+        case "met": return clause.kind == "fact" ? "Met, without evidence COS can point to" : "Said, not shown (\(clause.kind))"
+        case "not_met": return "Not met yet"
+        default: return "Not clear yet"
+        }
+    }
+    static func evidence(_ clause: WorkClauseState?) -> String? {
+        guard let evidence = clause?.evidence else { return nil }
+        var parts: [String] = []
+        if let excerpt = evidence.excerpt, !excerpt.isEmpty { parts.append("\u{201C}" + WorkProgress.clip(excerpt, 140) + "\u{201D}") }
+        parts.append(source(evidence.source))
+        if let at = evidence.at.flatMap(WorkProgress.parseStamp) { parts.append(WorkTracking.clock(at)) }
+        return parts.joined(separator: " \u{00B7} ")
+    }
+    static func source(_ raw: String?) -> String {
+        switch raw {
+        case "url": return "the page"
+        case "session": return "the session"
+        case "slack": return "Slack"
+        case "meeting": return "a linked meeting"
+        case "file": return "a card file"
+        case let other?: return other
+        case nil: return "no source"
+        }
+    }
+}
+
+/// The card detail's finish line: each part with its state and evidence, what COS moved and why, and which sessions the
+/// card follows. Replaces the plain Done when line.
+struct WorkFinishLineSection: View {
+    @ObservedObject var moves: WorkMoveLog
+    @ObservedObject var follows: WorkFollowStore
+    let task: TaskRow
+    let shadow: Bool
+    /// Nil where no tracker runs (previews): no Undo.
+    var onUndo: ((String) -> Void)?
+    var onEditTask: (() -> Void)?
+    var onStopFollowing: (() -> Void)?
+    var now: Date = Date()
+
+    private var workID: String { task.workSourceID }
+
+    var body: some View {
+        let clauses = WorkFinishLine.clauses(task.doneWhen)
+        let card = follows.card(workID)
+        let following = follows.follows(for: workID)
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Done when").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
+            if clauses.isEmpty {
+                Text("No finish line recorded. Use Edit task to define one.").font(COSType.body(13))
+                if !following.isEmpty {
+                    HStack(spacing: 8) {
+                        Text("Add a finish line so COS can move this on evidence. Until then it needs the task itself shown done in two places.")
+                            .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+                        if let onEditTask { Button("Add a finish line") { onEditTask() }.buttonStyle(COSTextButtonStyle()) }
+                    }
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 9) {
+                    ForEach(Array(clauses.enumerated()), id: \.offset) { index, text in
+                        clauseRow(text, Self.state(for: text, at: index, card: card))
+                    }
+                }
+                if let partial = card.partial {
+                    Text("\(partial.met) of \(partial.of) met").font(COSType.mono(10.5)).foregroundStyle(COSPalette.muted)
+                }
+            }
+            if let note = card.note { Text(note).font(COSType.body(11)).foregroundStyle(COSPalette.amber) }
+            let history = moves.history(workID: workID).prefix(4)
+            if !history.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(history)) { entry in historyRow(entry) }
+                }.padding(.top, 4)
+            }
+            followLine(following, card: card)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .contain).accessibilityLabel("Finish line")
+    }
+
+    /// The newest verdict for this part: by its text, else by its place (the server may tidy the text it echoes).
+    nonisolated static func state(for text: String, at index: Int, card: WorkCardFollowState) -> WorkClauseState? {
+        guard card.basis == "clauses", let clauses = card.clauses else { return nil }
+        return clauses.first { $0.text == text } ?? (clauses.indices.contains(index) ? clauses[index] : nil)
+    }
+
+    private func clauseRow(_ text: String, _ state: WorkClauseState?) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Group {
+                if state?.met == true { Circle().fill(COSPalette.accent) } else { Circle().strokeBorder(COSPalette.muted, lineWidth: 1.5) }
+            }.frame(width: 9, height: 9).padding(.top, 4)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(text).font(COSType.body(13)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                Text(WorkClauseText.state(state) + (WorkClauseText.evidence(state).map { " \u{00B7} " + $0 } ?? ""))
+                    .font(COSType.body(11)).foregroundStyle(state?.met == true ? COSPalette.accent : COSPalette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func historyRow(_ entry: WorkMoveEntry) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            WorkMoveMarkDot(shadow: entry.shadow).opacity(entry.byCOS ? 1 : 0.4)
+            Text(entry.history + " \u{00B7} " + WorkMoveEntry.ago(entry.line.at, now: now.timeIntervalSince1970)
+                 + (entry.undoneAt != nil ? " \u{00B7} undone" : ""))
+                .font(COSType.body(11.5)).foregroundStyle(entry.undoneAt != nil ? COSPalette.muted : Color.primary)
+                .strikethrough(entry.undoneAt != nil).fixedSize(horizontal: false, vertical: true)
+            if let onUndo, entry.byCOS, !entry.shadow, entry.undoneAt == nil,
+               entry.line.to == (task.checked ? "complete" : task.workStage) {
+                Button("Undo") { onUndo(entry.id) }.buttonStyle(COSTextButtonStyle()).controlSize(.small)
+                    .help("Move it back to " + WorkProgress.stageTitle(entry.line.from ?? "") + ". COS stops following this card until you move it forward.")
+            }
+        }
+    }
+
+    @ViewBuilder private func followLine(_ following: [WorkFollow], card: WorkCardFollowState) -> some View {
+        if !following.isEmpty {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if card.paused {
+                    Text((card.pausedWhy.map { $0 + " " } ?? "") + "COS stopped following this card. Move it forward yourself to start again.")
+                        .font(COSType.body(11)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("Following " + (following.count == 1 ? "1 session" : "\(following.count) sessions")
+                         + (shadow ? ". COS shows what it would move and moves nothing." : ". COS moves it to QA when every part is met."))
+                        .font(COSType.body(11)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+                    if let onStopFollowing { Button("Stop following") { onStopFollowing() }.buttonStyle(COSTextButtonStyle()).controlSize(.small) }
+                }
+            }
+        }
+    }
+}
+
+/// Moved for you: every move COS made, and every one it would have made in shadow mode, that you have not undone or
+/// acknowledged. Read from the move log (work-moves.jsonl), never from receipts, so a move stays here however long ago it
+/// was made.
+struct WorkMovedForYouView: View {
+    @ObservedObject var moves: WorkMoveLog
+    @ObservedObject var follows: WorkFollowStore
+    let shadow: Bool
+    /// The card's title and stage now, by work id.
+    let lookup: (String) -> (title: String, stage: String?)?
+    var onUndo: ((String) -> Void)?
+    let onOpen: (String) -> Void
+    var now: Date = Date()
+
+    var body: some View {
+        let entries = moves.movedForYou
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Moved for you").font(COSType.display(23, weight: .medium))
+                Text(shadow ? "Shadow mode is on: COS lists what it would move and moves nothing. Turn it off in Settings when these look right."
+                            : "What COS moved since you last looked, and why. Undo puts a card back, and COS stops following it until you move it forward.")
+                    .font(COSType.body(12)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+                if entries.isEmpty {
+                    Text("Nothing new. Moves COS makes on evidence show here until you open the card or say Got it.")
+                        .font(COSType.body(12.5)).foregroundStyle(COSPalette.muted).padding(.top, 6)
+                }
+                ForEach(entries) { entry in row(entry) }
+            }.frame(maxWidth: 720, alignment: .leading).padding(22).frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func row(_ entry: WorkMoveEntry) -> some View {
+        let item = lookup(entry.line.workID)
+        let title = (item?.title ?? entry.line.title ?? "A card no longer on the board").replacingOccurrences(of: "**", with: "")
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                WorkMoveMarkDot(shadow: entry.shadow)
+                Text(entry.mark(now: now.timeIntervalSince1970)).font(COSType.body(11, weight: .semibold))
+                    .foregroundStyle(entry.shadow ? COSPalette.muted : COSPalette.accent)
+                Spacer(minLength: 8)
+                Text(WorkProgress.stageTitle(entry.line.from ?? "") + " to " + WorkProgress.stageTitle(entry.line.to ?? ""))
+                    .font(COSType.mono(10.5)).foregroundStyle(COSPalette.muted)
+            }
+            Button { onOpen(entry.line.workID) } label: {
+                Text(title).font(COSType.body(13.5, weight: .medium)).multilineTextAlignment(.leading).lineLimit(3)
+                    .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+            }.buttonStyle(.plain).help("Open this card")
+            if let why = entry.line.why, !why.isEmpty {
+                Text(why.prefix(1).uppercased() + why.dropFirst() + ".").font(COSType.body(12)).fixedSize(horizontal: false, vertical: true)
+            }
+            if let clauses = entry.line.clauses, !clauses.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(Array(clauses.enumerated()), id: \.offset) { _, clause in
+                        HStack(alignment: .top, spacing: 8) {
+                            Group {
+                                if clause.verdict == "met" { Circle().fill(COSPalette.accent) } else { Circle().strokeBorder(COSPalette.muted, lineWidth: 1.5) }
+                            }.frame(width: 7, height: 7).padding(.top, 5)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(clause.text).font(COSType.body(12)).fixedSize(horizontal: false, vertical: true)
+                                Text(evidenceLine(clause)).font(COSType.body(11)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                }
+            }
+            HStack(spacing: 10) {
+                if let onUndo, !entry.shadow, entry.byCOS, item?.stage == entry.line.to {
+                    Button("Undo") { onUndo(entry.id) }.buttonStyle(COSTextButtonStyle())
+                        .help("Move it back to " + WorkProgress.stageTitle(entry.line.from ?? "") + ". COS stops following this card until you move it forward.")
+                }
+                Button("Got it") { moves.acknowledge(moveID: entry.id, at: Date().timeIntervalSince1970) }.buttonStyle(COSTextButtonStyle())
+                    .help("Clear this from Moved for you and from the card")
+                Spacer(minLength: 0)
+            }
+        }.padding(14)
+            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 9))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(entry.shadow ? COSPalette.line : COSPalette.gold.opacity(0.45)))
+    }
+
+    private func evidenceLine(_ clause: WorkMoveClause) -> String {
+        var parts: [String] = [clause.verdict == "met" ? "Met" : clause.verdict == "not_met" ? "Not met" : "Not clear"]
+        if let excerpt = clause.excerpt, !excerpt.isEmpty { parts.append("\u{201C}" + WorkProgress.clip(excerpt, 140) + "\u{201D}") }
+        if clause.source != nil { parts.append(WorkClauseText.source(clause.source)) }
+        if let at = clause.at.flatMap(WorkProgress.parseStamp) { parts.append(WorkTracking.clock(at)) }
+        return parts.joined(separator: " \u{00B7} ")
+    }
+}

@@ -475,12 +475,14 @@ final class ControllerModel: ObservableObject {
             tasks: { [weak self] in self?.workTasks ?? [] },
             writable: { [weak self] in self?.workBoardWritable ?? false },
             reload: { [weak self] in await self?.loadWorkTasks(force: true) },
-            move: { [weak self] task, stage in
+            move: { [weak self] task, stage, move in
                 guard let self else { throw HelperClientError.commandFailed("COS Control is closing.") }
-                try await self.setWorkStage(task, stage: stage)
+                try await self.setWorkStage(task, stage: stage, move: move)
             },
-            readFresh: { [weak self] in await self?.reloadWorkTasksFresh() ?? false }),
-            notify: { [weak self] notice in self?.postWorkNotice(notice) })
+            readFresh: { [weak self] in await self?.reloadWorkTasksFresh() ?? false },
+            evidenceCheck: { [weak self] in self?.workEvidenceCheckAvailable ?? false }),
+            notify: { [weak self] notice in self?.postWorkNotice(notice) },
+            shadow: { [weak self] in self?.workEvidenceShadow ?? true })
         store.opensInApp = workOpensTabs
         // 0.5.254: card files load, and copies a relaunch interrupted start again (with background work only). A card's
         // identity is stamped on its task before its first file is saved (fix pass 1, QA W1).
@@ -548,6 +550,24 @@ final class ControllerModel: ObservableObject {
         meetingAudioNotifier.onOpenWork = { [weak self] workID in self?.openWorkItem(workID) }
         tracker.start()
     }
+    /// 0.5.262: shadow mode (on unless you turned it off in Settings). COS checks the evidence on the cards it follows and
+    /// logs what it would move in Moved for you, and moves nothing. The session's own done line moves a card either way.
+    var workEvidenceShadow: Bool {
+        get { UserDefaults.standard.object(forKey: Self.workEvidenceShadowKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: Self.workEvidenceShadowKey); objectWillChange.send() }
+    }
+    nonisolated static let workEvidenceShadowKey = "cos.workEvidenceShadow"
+    /// 0.5.262: which model gathers Slack evidence in the end-of-day Work sweep (work-evidence.json, read by COS's
+    /// work_slack_sweep.py). Haiku unless you chose Sonnet.
+    var workSweepModel: WorkSweepModel {
+        get { WorkEvidenceSettings.read(WorkEvidenceSettings.defaultURL()) }
+        set {
+            do { try WorkEvidenceSettings.write(newValue, to: WorkEvidenceSettings.defaultURL()); workSweepModelError = nil }
+            catch { workSweepModelError = "The Work background model could not be saved: " + error.localizedDescription }
+            objectWillChange.send()
+        }
+    }
+    @Published var workSweepModelError: String?
     /// Work notifications are on unless you turned them off in Settings.
     var workNotificationsEnabled: Bool {
         get { UserDefaults.standard.object(forKey: Self.workNotificationsKey) as? Bool ?? true }
@@ -2767,6 +2787,8 @@ final class ControllerModel: ObservableObject {
     @Published var workBoardWritable = false
     @Published var workTaskEditAvailable = false
     @Published var workBatchAvailable = false
+    /// 0.5.262: `capabilities.evidenceCheck` on the Work board.
+    @Published var workEvidenceCheckAvailable = false
     private var workTasksRequested = false
     private var workTasksLoadInFlight: Task<Void, Never>?
     /// 0.5.253: which load the rows and the error on record come from (WorkBoardReads).
@@ -2816,6 +2838,8 @@ final class ControllerModel: ObservableObject {
             workBoardWritable = capabilities["version"]?.int == 1 && capabilities["writable"]?.bool == true
             workTaskEditAvailable = workBoardWritable && capabilities["editTasks"]?.int == 1
             workBatchAvailable = workBoardWritable && capabilities["workBatch"]?.int == 1
+            // 0.5.262: the server's evidence check (contract 2026-10-07). Absent, tracking falls back to the completion check.
+            workEvidenceCheckAvailable = capabilities["evidenceCheck"]?.bool == true
             workTasksError = nil
             workBoardReads.record(generation, ok: true)
         } catch {
@@ -3065,11 +3089,16 @@ final class ControllerModel: ObservableObject {
         return true
     }
 
-    func setWorkStage(_ task: TaskRow, stage: String) async throws {
+    /// 0.5.262: `move` says who made it and why; every stage change Control makes is written to the move log
+    /// (work-moves.jsonl) once the write is accepted. A drag, a menu or an Undo is yours; the tracker's moves are COS's.
+    func setWorkStage(_ task: TaskRow, stage: String, move: WorkStageMove = .you) async throws {
         guard TaskRow.workStages.contains(stage) else { throw HelperClientError.invalidResponse("Unsupported Work stage.") }
+        let from = task.checked ? "complete" : task.workStage
         // 0.5.259: noted for Recent activity once the write is accepted, before the board is read again.
         try await mutateWorkTask(task, command: "work-set-stage", extra: ["workStage": stage]) { [weak self] in
             self?.workActivity.recordStageChange(task, to: stage)
+            self?.workHandoffStore?.recordStageMove(workID: task.workSourceID, title: task.text.isEmpty ? task.title : task.text,
+                                                    from: from, to: stage, move: move)
         }
         if stage == "complete" { workHandoffStore?.settleCompleted(workID: task.workSourceID) }
     }

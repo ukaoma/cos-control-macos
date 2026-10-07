@@ -528,6 +528,7 @@ final class COSControlHelper {
         case "work-intake-resolve": try emitWorkIntakeResolve()
         case "work-session-recommend": try emitWorkSessionRecommend()
         case "work-completion-check": try emitWorkCompletionCheck()
+        case "work-evidence-check": try emitWorkEvidenceCheck()
         case "work-search": try emitWorkSearch()
         case "jev-status": try emitJevStatus()
         case "jev-key-set": try emitJevKeySet()
@@ -5067,6 +5068,59 @@ final class COSControlHelper {
             return
         }
         emit(ok: true, message: "Completion check ready", details: result)
+    }
+
+    /// 0.5.262: the server's evidence check for one card (`POST /api/work-board/evidence-check`, contract 2026-10-07):
+    /// the card's domain and id, the sessions it follows with their read cursors, the finish line's clauses and the
+    /// look-back time. The server reads the card, the sessions, the URLs in the clauses, linked meetings and the Slack
+    /// sweep itself, and judges every clause in one Jev call; it never moves a card. Every failure is an answer with a
+    /// reason, never an error: a server without the route is `server_too_old`. The body is bounded at 16 KB (4 follows,
+    /// 6 clauses of 300 characters, cursors); the 4 KB cap of the completion check was too small (validation W6). The
+    /// wait (90 s) covers the server's URL fetches (5 s each) and Jev.
+    private func emitWorkEvidenceCheck() throws {
+        let data = try readBoundedStdin(16_384)
+        guard let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any], Self.evidenceCheckBodyValid(body) else {
+            throw HelperError.message("Choose an exact task, at most 4 sessions and at most 6 finish-line parts to check.")
+        }
+        let candidate = try reviewCandidateTransport()
+        let token = try candidate?.token ?? readToken()
+        guard let response = request("/api/work-board/evidence-check", method: "POST", token: token,
+                                      body: String(decoding: data, as: UTF8.self), timeout: 90, reviewCandidatePort: candidate?.port) else {
+            emit(ok: true, message: "Evidence check unavailable", details: ["provider": "none", "reason": "unreachable"]); return
+        }
+        guard response.status == 200, let result = response.body else {
+            emit(ok: true, message: "Evidence check unavailable", details: ["provider": "none",
+                "reason": Self.sessionRecommendFailureReason(status: response.status, body: response.body)])
+            return
+        }
+        emit(ok: true, message: "Evidence check ready", details: result)
+    }
+
+    /// Exactly the contract's keys: `domain`, `id`, `follows` (0 to 4 of `{provider, sessionId, cursor}`, each session a
+    /// safe id, the cursor null or an opaque string), `clauses` (0 to 6 strings of 1 to 300 characters) and `since`.
+    static func evidenceCheckBodyValid(_ body: [String: Any]) -> Bool {
+        guard Set(body.keys) == ["domain", "id", "follows", "clauses", "since"],
+              let domain = body["domain"] as? String, !domain.isEmpty, domain.utf16.count <= 64, !domain.contains("/"), !domain.hasPrefix("."),
+              let id = body["id"] as? String, id.range(of: "^[a-f0-9]{12}$", options: .regularExpression) != nil,
+              let since = body["since"] as? String, since.count <= 40,
+              since.range(of: #"^\d{4}-\d{2}-\d{2}T[0-9:.]+Z$"#, options: .regularExpression) != nil,
+              let follows = body["follows"] as? [Any], follows.count <= 4,
+              let clauses = body["clauses"] as? [Any], clauses.count <= 6 else { return false }
+        for clause in clauses {
+            guard let text = clause as? String, (1...300).contains(text.count),
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        }
+        var seen = Set<String>()
+        for follow in follows {
+            guard let row = follow as? [String: Any], Set(row.keys) == ["provider", "sessionId", "cursor"],
+                  let provider = row["provider"] as? String, let session = row["sessionId"] as? String,
+                  sessionChatValidationError(provider: provider, threadId: session) == nil,
+                  seen.insert(provider + ":" + session).inserted else { return false }
+            if let cursor = row["cursor"], !(cursor is NSNull) {
+                guard let text = cursor as? String, (1...2_048).contains(text.utf8.count) else { return false }
+            }
+        }
+        return true
     }
 
     /// 0.5.259: which board card a search means, by Jev (server 6.65.0 `POST /api/work/search`). Control sends only the
@@ -15427,7 +15481,25 @@ final class COSControlHelper {
               Self.workRequestFailure(status: 502, code: "<b>") == "http_502" else {
             throw HelperError.message("Work glasses request self-test failed")
         }
-        emit(ok: true, message: "Work model/admission contract passed", details: ["checks": 62])
+        // 0.5.262: the evidence check's body is exactly the contract's (14 checks).
+        let session = "0f3c9a2e-1111-4222-8333-944455556666"
+        let goodEvidence: [String: Any] = ["domain": "quilt", "id": "5755b516df8f", "since": "2026-10-02T23:52:00.000Z",
+            "follows": [["provider": "claude", "sessionId": session, "cursor": NSNull()]],
+            "clauses": ["https://bottlepos.com/october-switch-offer page is live", "Facebook ads are running against it"]]
+        func evidence(_ change: (inout [String: Any]) -> Void) -> Bool { var body = goodEvidence; change(&body); return Self.evidenceCheckBodyValid(body) }
+        guard Self.evidenceCheckBodyValid(goodEvidence),
+              evidence({ $0["clauses"] = [String]() }), evidence({ $0["follows"] = [[String: Any]]() }),
+              evidence({ $0["follows"] = [["provider": "claude", "sessionId": session, "cursor": "b:123|t:2026"]] }),
+              !evidence({ $0["extra"] = 1 }), !evidence({ $0.removeValue(forKey: "since") }),
+              !evidence({ $0["clauses"] = Array(repeating: "part", count: 7) }),
+              !evidence({ $0["clauses"] = [String(repeating: "x", count: 301)] }), !evidence({ $0["clauses"] = [" "] }),
+              !evidence({ $0["follows"] = Array(repeating: ["provider": "claude", "sessionId": session, "cursor": NSNull()], count: 2) }),
+              !evidence({ $0["follows"] = [["provider": "claude", "sessionId": "../../etc", "cursor": NSNull()]] }),
+              !evidence({ $0["follows"] = [["provider": "claude", "sessionId": session]] }),
+              !evidence({ $0["id"] = "nope" }), !evidence({ $0["since"] = "yesterday" }) else {
+            throw HelperError.message("Work evidence check body self-test failed")
+        }
+        emit(ok: true, message: "Work model/admission contract passed", details: ["checks": 76])
     }
 
     private func emitSessionChatTurn(args: [String]) throws {

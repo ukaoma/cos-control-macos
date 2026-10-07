@@ -25,6 +25,8 @@ import SwiftUI
         if clean.isEmpty { return "Enter a task name." }
         if clean.utf16.count > 2000 { return "Keep the task name under 2,001 characters." }
         if doneWhen.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count > 500 { return "Keep the finish line under 501 characters." }
+        // 0.5.262: the finish line COS checks part by part: at most 6 parts of at most 300 characters, and never a marker.
+        if let problem = WorkFinishLine.problem(doneWhen) { return problem }
         return nil
     }
 
@@ -123,6 +125,7 @@ struct WorkTaskEditor: View {
                     .accessibilityLabel("Done when").font(COSType.body(13)).textFieldStyle(.plain).cosField().disabled(state.busy)
                 Text("Saved with the task name. Add a finish line before running this task.")
                     .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                WorkFinishLinePreview(doneWhen: state.doneWhen)
             }
             VStack(alignment: .leading, spacing: 6) {
                 detailLine("Domain", task.domain)
@@ -180,7 +183,8 @@ struct WorkTaskEditor: View {
     private func saveTaskEdits() {
         guard canSave else { state.error = unavailableReason ?? state.validationMessage ?? "Wait for the current save to finish."; return }
         let text = state.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finish = state.doneWhen.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 0.5.262: parts on separate lines are saved `;`-joined, as COS reads them. No words are dropped.
+        let finish = WorkFinishLine.normalized(state.doneWhen).trimmingCharacters(in: .whitespacesAndNewlines)
         runDetailAction { try await model.saveWorkTaskEdits(task, text: text, doneWhen: finish) }
     }
     private func runDetailAction(_ work: @escaping () async throws -> Void) {
@@ -758,13 +762,18 @@ struct ActivityWindow: View {
                                     .buttonStyle(COSQuietButtonStyle()).padding(10)
                             }
                             if workConnectionsEnabled, workReceipt == nil, let sessionID = selectedSessionID {
-                                if let link = handoffStore.confirmedSessionCards[sessionID] {
+                                // 0.5.262: one session can be linked to several cards; each linked card follows it.
+                                let links = handoffStore.linkedCards(sessionID: sessionID)
+                                ForEach(links, id: \.workID) { link in
                                     Button("Linked to \(link.title)") { model.closeClaudeSession(); openHandoffWork(link.workID) }.buttonStyle(COSQuietButtonStyle()).padding(10)
-                                } else if let row = model.openClaudeRow,
-                                          let task = WorkSessionCardSuggestion.best(title: row.title, summary: row.discussionSummary, tasks: model.workTasks) {
+                                }
+                                if let row = model.openClaudeRow,
+                                   let task = WorkSessionCardSuggestion.best(title: row.title, summary: row.discussionSummary, tasks: model.workTasks),
+                                   !links.contains(where: { $0.workID == task.workSourceID }) {
                                     HStack {
                                         Text("This looks like: " + task.text).font(COSType.body(12)).lineLimit(2)
                                         Button("Link to card") { _ = handoffStore.confirmSessionCard(sessionID: sessionID, source: WorkSource.taskSnapshot(task)) }
+                                            .help("The card follows this session from now on")
                                     }.padding(10)
                                 }
                             }
@@ -7177,5 +7186,26 @@ private struct ActivityEscapeHandler: NSViewRepresentable {
         weak var view: NSView?
         var monitor: Any?
         var action: (() -> Bool)?
+    }
+}
+
+/// 0.5.262: what COS will check, part by part, shown under Done when as you type. Separate parts with a semicolon; you
+/// confirm them by saving. Nothing is dropped or rewritten.
+struct WorkFinishLinePreview: View {
+    let doneWhen: String
+    var body: some View {
+        let parts = WorkFinishLine.clauses(doneWhen)
+        if parts.count >= 1 {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(parts.count == 1 ? "COS checks this as one part. Separate parts with a semicolon."
+                                      : "COS checks \(parts.count) parts, one by one:")
+                    .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                if parts.count > 1 {
+                    ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
+                        Text("\(index + 1). " + part).font(COSType.body(11.5)).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }.accessibilityElement(children: .combine)
+        }
     }
 }
