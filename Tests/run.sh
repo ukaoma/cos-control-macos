@@ -1127,7 +1127,7 @@ import sys
 store, helper, model, models, aw, petview, handoffview = (open(p).read() for p in sys.argv[1:8])
 snapshot = handoffview[handoffview.index("    static func taskSnapshot(_ task: TaskRow) -> WorkSource {"):handoffview.index("/// Sends a resolved plan exactly as the Agent workspace does.")]
 assert "let whole = plainTitle(task.text.isEmpty ? task.title : task.text)" in snapshot and "context: context, fullTitle: whole)" in snapshot, "a task's snapshot carries its whole title (0.5.251), without inline markdown (0.5.252)"
-assert ".disabled(row.heldByServer)" in aw and "if model.openClaudeRow?.workRunning == true {" in aw, "Sessions: no Open in platform or composer while the server holds it"
+assert ".disabled(row.heldByServer || model.platformOpening)" in aw and "if model.openClaudeRow?.workRunning == true {" in aw, "Sessions: no Open in platform or composer while the server holds it"
 assert petview.count("openInPlatform: session.heldByServer ? nil : {") == 2 and petview.count("if session.heldByServer {") == 2, "the pet opens a held session in Control"
 def body(src, start, end):
     i = src.index(start); return src[i:src.index(end, i)]

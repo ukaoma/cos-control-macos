@@ -1,26 +1,26 @@
-# 0.5.265 (318)
+## 0.5.265 (build 318)
 
 - Meetings and Speakers now offer **Link to existing task**. Search across domains, optionally include completed work, choose a task and explicitly link it without creating a duplicate.
 - Reuses canonical saved-meeting references and the revision-guarded Work writer. Existing task identity, text, status and prior meeting links are preserved. Linked references and meeting files participate in the next Work handoff; a running agent is not messaged automatically.
 - Already-linked, incomplete-reference, missing-revision, read-only and full-link cases explain why a link cannot be added. Refresh failures and stale-write refusals stay visible.
 - Speakers resolves the saved meeting using the existing exact-record resolver, stays in Speakers while the picker is open, and ignores a lookup if the review changes before it finishes.
-- Unpublished candidate. Includes 0.5.264 recovery and 0.5.263 Cloud Puff/onboarding work; keep prior notarized archives frozen.
+- Includes 0.5.264 recovery and 0.5.263 Cloud Puff/onboarding work. Published as the unchanged Developer ID signed, Apple-notarized archive; prior archives remain frozen.
 
-# 0.5.264 (317)
+## 0.5.264 (build 317)
 
 - Open in platform shows progress and persistent recovery instructions in the Sessions pane, including missing Claude Desktop, archived sessions, unavailable transcripts and helper failures. Repeated clicks cannot launch overlapping opens.
 - Waiting follow-ups show their recorded hold reason. Queue copy no longer promises delivery merely because a turn ends.
 - Keeps bundled runtime onboarding, Developer ID release signing and the Cloud Puff default from 0.5.263. Chris’s specific stalled-send cause still requires his installed versions and refusal evidence; these changes do not bypass session ownership or resend uncertain turns.
 
-# 0.5.263 (316)
+## 0.5.263 (build 316)
 
 - New installations start with Cloud Puff, bundled for offline first launch. Existing pet choices remain intact. Use Cloud Puff restores the default; the COS robot and animated characters remain available.
 
-# 0.5.262 (315)
+## 0.5.262 (build 315)
 
 - New installations start with the simple built-in COS robot. Existing chosen sprites and stock character upgrades remain intact; Miles Windu stays optional in Characters.
 
-# 0.5.261 (314)
+## 0.5.261 (build 314)
 
 - Bundle a verified private Node runtime so first-run server setup needs no Homebrew, Node, npm, or npx installation.
 - Add a persistent welcome window with provider guidance, automatic server setup, retry, and deferred notification consent.
