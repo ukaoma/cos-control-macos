@@ -12,7 +12,7 @@ struct JediUpgradeContract {
         defer { try? fm.removeItem(at: scratch) }
         var migrations = 0
         var frames = 0
-        for character in PetSpriteStore.bundledCharacters where character.id != PetSpriteStore.defaultCharacterID {
+        for character in PetSpriteStore.bundledCharacters where character.id != PetSpriteStore.legacyDefaultCharacterID {
             let source = bundles.appendingPathComponent(character.id)
             let expected = PetSpriteStore.loadStateMap(in: source)
             let sourceState = try Data(contentsOf: source.appendingPathComponent(PetSpriteStore.stateFileName))

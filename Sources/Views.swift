@@ -395,7 +395,7 @@ struct ControlPanel: View {
             pendingOpenPetsRow.map { "Use \($0.displayName) as the session pet figure?" }
                 ?? "Use this figure as the session pet figure?",
             isPresented: $confirmOpenPetsSprite,
-            message: "Replaces the current session pet sprite with this gallery thumbnail. Choose \(PetSpriteStore.defaultCharacterName) under Characters to put the animated Jedi back; Use COS figure switches to the drawn figure.",
+            message: "Replaces the current session pet sprite with this gallery thumbnail. Choose an animated character under Characters, or Use COS figure to return to the default COS robot.",
             actions: [
                 .normal("Use") {
                     if let row = pendingOpenPetsRow {
@@ -4044,7 +4044,7 @@ private struct PetSpriteStateControls: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("\(PetSpriteStore.defaultCharacterName) ships as the default. Patrol to five-droid swarm. Saber on running, success, error, and attention.")
+            Text("\(PetSpriteStore.defaultCharacterName) is the simple default. Running, Done and Waiting stay in the ledger. Animated characters are optional in Characters.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

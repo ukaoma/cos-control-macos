@@ -7778,11 +7778,11 @@ enum PetSpriteStore {
             isAdvanced: true
         ),
     ]
-    static let defaultCharacterID = "jedi-miles-windu"
-    static var defaultCharacterName: String {
-        bundledCharacters.first(where: { $0.id == defaultCharacterID })?.displayName
-            ?? "Jedi Miles Windu"
-    }
+    // The drawn COS robot needs no sprite download. Keep the historical Miles
+    // identity separate: stock-art upgrades must never replace a user's choice.
+    static let defaultCharacterID = "cos-figure"
+    static let defaultCharacterName = "COS robot"
+    static let legacyDefaultCharacterID = "jedi-miles-windu"
 
     static func bundledCharacter(id: String) -> BundledPetCharacter? {
         bundledCharacters.first { $0.id == id }
@@ -7801,7 +7801,7 @@ enum PetSpriteStore {
     }
 
     static func bundledDefaultURL(bundle: Bundle = .main) -> URL? {
-        guard let character = bundledCharacter(id: defaultCharacterID) else { return nil }
+        guard let character = bundledCharacter(id: legacyDefaultCharacterID) else { return nil }
         return bundledCharacterURL(character, bundle: bundle)
     }
 
@@ -7859,7 +7859,7 @@ enum PetSpriteStore {
               let installedState = canonicalState(installedData)
         else { return .notApplicable }
 
-        for character in bundledCharacters where character.id != defaultCharacterID {
+        for character in bundledCharacters where character.id != legacyDefaultCharacterID {
             let source: URL? = if let sourceRootOverride {
                 sourceRootOverride.appendingPathComponent(character.id, isDirectory: true)
             } else {

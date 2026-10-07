@@ -126,6 +126,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   -framework AppKit -o "$TMP/helper-transport-contract"
 "$TMP/helper-transport-contract"
 "$TMP/models-contract"
+zsh "$ROOT/Tests/run-simple-pet.sh" "$TMP/simple-pet-proof"
 # 0.5.232: the Markdown parser is pure Foundation and pinned by an EXECUTED contract
 # (the scribe's meeting, lists, tasks, tables, code, quotes, details, speaker lines).
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
@@ -2915,8 +2916,8 @@ need('if petSessions.isEmpty && petDismissals.stamps.isEmpty' in apply_pet_body
      and 'petSessions.count < 2' not in apply_pet_body,
      "the live list must auto-close only when nothing is left to show — the "
      "restore row must survive dropping the last session")
-need('installBundledDefault(into: directory)' in model,
-     "a fresh install no longer seeds the shipped character")
+need('installBundledDefault(into: directory)' not in model,
+     "fresh installs must use the drawn robot without overwriting existing artwork")
 need('petDefaultSeededKey' in model,
      "default seeding is not gated by a flag, so Use COS figure would be undone on relaunch")
 need('petDefaultArtGenerationKey' in model and 'refreshRecognizedBundledDefault' in model,
@@ -3016,7 +3017,7 @@ retained_fn = models_src[models_src.index("static func refreshRecognizedBundledC
 retained_fn = retained_fn[:retained_fn.index("\n    static func installDefault(")]
 need("canonicalState(data) == installedState" in retained_fn and "installed == retained" in retained_fn,
      "Jedi migration must match complete metadata and retained image bytes")
-need("character.id != defaultCharacterID" in retained_fn,
+need("character.id != legacyDefaultCharacterID" in retained_fn,
      "the Jedi migration must not target Miles")
 need("removeAll(" not in retained_fn,
      "stock upgrade must not clear the active character before landing files")

@@ -15,7 +15,7 @@ supported, but customers no longer need to install it. Setup downloads the COS
 server from npm and verifies it through the existing managed lifecycle. An
 internet connection and a signed-in supported AI provider are still required.
 
-## First run (0.5.261 candidate, not yet published)
+## First run (0.5.262 candidate, not yet published)
 
 The app opens a persistent welcome window only after proving there is no existing
 service, owner conflict, or unfinished transaction. Get started prepares Node if
@@ -23,6 +23,10 @@ needed and installs/starts COS in the app. Closing the window does not cancel
 setup; the menu-bar panel offers Get started again. Existing installations keep
 their current controls. Notification permission is deferred until a live meeting
 needs alerts. Voice model provisioning remains separate.
+
+New users start with the simple built-in COS robot beside the session status
+ledger. It requires no sprite download. Existing pet selections are preserved;
+Miles Windu and the other animated characters remain optional in Characters.
 
 The bundled runtime lives in a versioned private Application Support directory,
 so moving or replacing the app does not break launchd or recovery. Its archive is
@@ -63,7 +67,7 @@ may prompt existing users for permissions again.
 The onboarding QA ZIP is approximately 110 MiB with its bundled runtime. Publish
 the signed ZIP as a release asset (or equivalent HTTPS object download), and point
 the website and appcast at that asset. Do not commit it as a regular website Git
-file. The integrated candidate is 0.5.261 (build 314), including the 0.5.260 task-editor fixes. Its notarized archive is frozen; do not rebuild changed code under this version. The earlier onboarding-only preview used development baseline 0.5.259. Clean-Mac first launch and interactive permission migration remain publication gates.
+file. The integrated candidate is 0.5.262 (build 315), including the 0.5.260 task-editor fixes, 0.5.261 onboarding and the simple robot default. Accepted notarized archives are frozen; do not rebuild changed code under their versions. The earlier onboarding-only preview used development baseline 0.5.259. Clean-Mac first launch and interactive permission migration remain publication gates.
 
 The controller stores immutable npm
 server generations under `~/Library/Application Support/COS Control` and uses

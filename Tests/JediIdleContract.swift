@@ -43,7 +43,7 @@ struct JediIdleContract {
                 precondition(frames.count == 8, "\(character.id)/\(label) still resolves to a static pose")
                 let interval = intervals[pose] ?? pose.frameInterval(forFrames: frames.count)
                 let restPoses = PetSpriteStore.restPoses(for: pose, stateMap: map)
-                if character.id != PetSpriteStore.defaultCharacterID {
+                if character.id != PetSpriteStore.legacyDefaultCharacterID {
                     precondition(interval == (pose == .patrol ? 0.14 : 0.24) && scales[pose] == 1)
                     if pose == .patrol {
                         let expectedRests: [PetSpritePose] = character.id == "jedi-nia-solari" ? [.idle, .waiting] : [.idle]

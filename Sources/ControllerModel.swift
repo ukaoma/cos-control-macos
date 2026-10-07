@@ -3390,11 +3390,7 @@ final class ControllerModel: ObservableObject {
     }
 
     func restoreDefaultCharacter() {
-        guard let character = PetSpriteStore.bundledCharacter(id: PetSpriteStore.defaultCharacterID) else {
-            petNotice = "This build does not carry the default character."
-            return
-        }
-        useBundledCharacter(character)
+        resetPetSprite()
     }
 
     /// Always the BUNDLED art, and one FRAME of it. Reading the installed idle
@@ -3469,11 +3465,10 @@ final class ControllerModel: ObservableObject {
 
     func loadPetSprite() {
         let directory = PetSpriteStore.supportDirectory()
-        // Seed the shipped character once, ever. Gated on a flag rather than on
-        // "is the folder empty" so that Use COS figure stays chosen.
+        // New users start with the drawn COS robot (no sprite files). Mark the
+        // default as chosen without writing or deleting any existing artwork.
         if !UserDefaults.standard.bool(forKey: Self.petDefaultSeededKey) {
             UserDefaults.standard.set(true, forKey: Self.petDefaultSeededKey)
-            PetSpriteStore.installBundledDefault(into: directory)
         }
         if UserDefaults.standard.integer(forKey: Self.petDefaultArtGenerationKey)
             < Self.petDefaultArtGeneration {

@@ -2056,8 +2056,8 @@ struct ModelsContract {
             precondition(character.folderName == folder,
                          "\(id) must resolve its packaged resource folder")
         }
-        precondition(PetSpriteStore.defaultCharacterName == "Jedi Miles Windu",
-                     "the seeded default and selectable catalog entry must share one identity")
+        precondition(PetSpriteStore.defaultCharacterName == "COS robot" && PetSpriteStore.defaultCharacterID == "cos-figure",
+                     "fresh installs must use the drawn COS robot")
         let seedRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("cos-seed-\(ProcessInfo.processInfo.processIdentifier)")
         let seedSource = seedRoot.appendingPathComponent("DefaultPet", isDirectory: true)

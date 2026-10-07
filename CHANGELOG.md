@@ -1,3 +1,7 @@
+# 0.5.262 (315)
+
+- New installations start with the simple built-in COS robot. Existing chosen sprites and stock character upgrades remain intact; Miles Windu stays optional in Characters.
+
 # 0.5.261 (314)
 
 - Bundle a verified private Node runtime so first-run server setup needs no Homebrew, Node, npm, or npx installation.
