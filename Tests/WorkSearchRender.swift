@@ -105,6 +105,8 @@ import SwiftUI
         try render(view(state(query: "", order: .recent)), width: 1500, height: 1250, name: "work-order-recent", out: out)
         try render(view(await asked(state(query: "website launch", order: .recent))), width: 1500, height: 1250, name: "work-search-recent", out: out)
         try render(view(await asked(state(query: "competitor ads", order: .newest, reason: "server_too_old"))), width: 1500, height: 1250, name: "work-search-old-server", out: out)
+        try render(view(await asked(state(query: "competitor ads", order: .board))), width: 760, height: 560, name: "work-search-760", out: out)
+        try render(view(await asked(state(query: "competitor ads", order: .board, reason: "jev_unavailable"))), width: 760, height: 560, name: "work-search-unavailable-760", out: out)
         print("wrote PNGs to \(out.path)")
     }
 
