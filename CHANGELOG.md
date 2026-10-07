@@ -1,3 +1,8 @@
+## 0.5.259 (build 312)
+
+- **Open meeting from Speakers.** A meeting's speaker review has an Open meeting button. It opens that meeting in Meetings, with its transcript, summary and files, and Back returns to the review. A merged meeting opens as the merged record, which is the row Meetings lists. A meeting from an earlier month loads that month first. When Meetings has no row for it, the review says so.
+- **Nameless drops on a meeting get a time.** A screenshot or file dropped on a meeting without a name of its own is named for when it was dropped, like a paste: "Dropped screenshot 2026-10-06 at 22.56.12.png". Several in one drop are numbered (1), (2). Before, every one read "Dropped file.png". Drops on a Work card keep "Dropped file", because that is the name its suggestions replace.
+
 ## 0.5.258 (build 311) — Files on a meeting
 
 Drop screenshots, slides, PDFs and other files onto a meeting, and every Work card linked to that meeting sends them to its agent after the card's own files. Needs server 6.64.0. With an older server the meeting says to update the server.

@@ -45,7 +45,9 @@ import UniformTypeIdentifiers
         meetingQAChecks()
         try await meetingStoreChecks(home, fixtures)
         try await meetingResolveChecks(home, fixtures)
-        print("PASS: Work card files (names, sniffing, secrets, caps, duplicates, apps and disk images, iCloud timeout, the block never first and right before the instruction, Cursor keeps every path or refuses, Continue and Fork send only what is new, cleanup and its references, the manifest under its lock, companions made and resumed, drop routes and the private card type, the countdown waits and stops, glasses sends carry the files; fix pass 1: no delete, write or open outside the store or through a link (P1 to P4), no link with a password, secrets by name, content and alias, folders too wide or holding secrets, the identity stamped before the first file, Remove hides with Undo, cleanup only 14 days after completion and the newest file or handoff, never on leaving the board; 0.5.258 files on a meeting: the key grammar and each store's ids, one block with sub-headings, Cursor keeps every path, dedupe, the 20 cap, meeting files dropped first to fit, Continue, Vision text copies, a credential screenshot sent nowhere, paste, aliases, retention)")
+        meetingDropNameChecks()
+        try await meetingDropNameStoreChecks(home, fixtures)
+        print("PASS: Work card files (names, sniffing, secrets, caps, duplicates, apps and disk images, iCloud timeout, the block never first and right before the instruction, Cursor keeps every path or refuses, Continue and Fork send only what is new, cleanup and its references, the manifest under its lock, companions made and resumed, drop routes and the private card type, the countdown waits and stops, glasses sends carry the files; fix pass 1: no delete, write or open outside the store or through a link (P1 to P4), no link with a password, secrets by name, content and alias, folders too wide or holding secrets, the identity stamped before the first file, Remove hides with Undo, cleanup only 14 days after completion and the newest file or handoff, never on leaving the board; 0.5.258 files on a meeting: the key grammar and each store's ids, one block with sub-headings, Cursor keeps every path, dedupe, the 20 cap, meeting files dropped first to fit, Continue, Vision text copies, a credential screenshot sent nowhere, paste, aliases, retention; 0.5.259 a nameless meeting drop is named for when it was dropped)")
     }
 
     /// Names the behaviour a failure is about, so a mutation is credited to the check that names it.
@@ -1699,5 +1701,64 @@ extension WorkCardFilesChecks {
         let manifest = WorkCardFiles.readManifest(WorkCardFiles.folder(root: root, workID: id))!
         check(manifest.aliases.count == WorkCardFiles.maxAliases && manifest.aliases.last == "ops:quilt:2026-09:r33.md" && manifest.meetingTitle == "Title 33",
               "meeting aliases", "\(manifest.aliases.count) \(String(describing: manifest.aliases.last)) \(String(describing: manifest.meetingTitle))")
+    }
+}
+
+// MARK: - 0.5.259 nameless meeting drops
+
+extension WorkCardFilesChecks {
+    static var dropMoment: Date {
+        var parts = DateComponents()
+        parts.year = 2026; parts.month = 10; parts.day = 6; parts.hour = 22; parts.minute = 56; parts.second = 12
+        return Calendar.current.date(from: parts)!
+    }
+
+    /// Miles, 2026-10-06: two screenshots dropped on one meeting both read "Dropped file.png".
+    static func meetingDropNameChecks() {
+        let at = dropMoment
+        let shot = WorkCardFiles.unnamedDropName(card: "Dropped file", ext: "png", image: true, policy: .meeting, at: at)
+        check(shot == "Dropped screenshot 2026-10-06 at 22.56.12.png", "meeting drop name", shot)
+        let file = WorkCardFiles.unnamedDropName(card: "Dropped file", ext: "pdf", image: false, policy: .meeting, at: at)
+        check(file == "Dropped file 2026-10-06 at 22.56.12.pdf", "meeting drop name", file)
+        let later = WorkCardFiles.unnamedDropName(card: "Dropped file", ext: "png", image: true, policy: .meeting, at: at.addingTimeInterval(2))
+        check(later != shot, "meeting drop name", "two drops seconds apart share \(later)")
+        let first = WorkCardFiles.unnamedDropName(card: "Dropped file", ext: "png", image: true, policy: .meeting, at: at, ordinal: 0, count: 2)
+        let second = WorkCardFiles.unnamedDropName(card: "Dropped file", ext: "png", image: true, policy: .meeting, at: at, ordinal: 1, count: 2)
+        check(first == "Dropped screenshot 2026-10-06 at 22.56.12 (1).png" && second == "Dropped screenshot 2026-10-06 at 22.56.12 (2).png",
+              "meeting drop name", "one drop of two: \(first) \(second)")
+        // A card's nameless drop keeps the name its suggestions look for.
+        let card = WorkCardFiles.unnamedDropName(card: "Dropped file", ext: "png", image: true, policy: .work, at: at, ordinal: 1, count: 3)
+        let cardData = WorkCardFiles.unnamedDropName(card: "Dropped image", ext: "png", image: true, policy: .work, at: at)
+        check(card == "Dropped file.png" && cardData == "Dropped image.png" && WorkFileSuggestion.unnamedDrop(card) && WorkFileSuggestion.unnamedDrop(cardData),
+              "card drop name", "\(card) \(cardData)")
+    }
+
+    /// The same rule through the real drop path: two nameless items in one drop on a meeting, and one on a card.
+    static func meetingDropNameStoreChecks(_ home: URL, _ fx: Fixtures) async throws {
+        func namelessPromise() -> NSItemProvider {
+            let promise = NSItemProvider()
+            let source = fx.png
+            promise.registerFileRepresentation(forTypeIdentifier: UTType.png.identifier, fileOptions: [], visibility: .all) { completion in
+                completion(source, false, nil); return nil
+            }
+            return promise
+        }
+        let data = NSItemProvider()
+        let tiff = NSImage(cgImage: Fixtures.image(24, 24, 0.6), size: NSSize(width: 24, height: 24)).tiffRepresentation!
+        data.registerDataRepresentation(forTypeIdentifier: UTType.tiff.identifier, visibility: .all) { completion in completion(tiff, nil); return nil }
+        let meetings = WorkCardFileStore(root: home.appendingPathComponent("cos-data/meeting-context-names", isDirectory: true), policy: .meeting)
+        meetings.loadIfNeeded()
+        let key = "g2:meeting_1791305182547_names"
+        await meetings.intakeMeeting(providers: [namelessPromise(), data], key: key, info: meetingInfo, now: dropMoment)
+        await meetings.waitForCompanions()
+        let id = WorkCardFiles.meetingID(forKey: key)!
+        let names = meetings.files(for: id).map(\.display).sorted()
+        check(names == ["Dropped screenshot 2026-10-06 at 22.56.12 (1).png", "Dropped screenshot 2026-10-06 at 22.56.12 (2).png"],
+              "meeting drop name", "through the drop path: \(names) \(flashText(meetings, id))")
+        let cards = WorkCardFileStore(root: home.appendingPathComponent("cos-data/work-context-names", isDirectory: true))
+        let card = WorkSource(id: "task:quilt:259259259259", title: "Names", revision: "r1", project: "quilt", context: "c")
+        await cards.intake(providers: [namelessPromise()], source: card)
+        let cardNames = cards.files(for: card.id).map(\.display)
+        check(cardNames == ["Dropped file.png"], "card drop name", "through the drop path: \(cardNames) \(flashText(cards, card.id))")
     }
 }

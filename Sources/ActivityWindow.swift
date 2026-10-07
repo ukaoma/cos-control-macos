@@ -314,6 +314,8 @@ struct ActivityWindow: View {
     @State private var selectedLibraryRecordID: String?
     @State private var meetingReturnWorkID: String?
     @State private var meetingReturnToWork = false
+    /// 0.5.259: the speaker review a meeting was opened from, so Back returns to it.
+    @State private var meetingReturnSpeakerSessionID: String?
     @State private var meetingWorkLoaded = false
     @State private var selectedSessionID: String?
     @State private var taskCapture = ""
@@ -483,7 +485,8 @@ struct ActivityWindow: View {
                             model: model,
                             showsBackButton: false,
                             onNextUnnamed: openNextUnnamedReview,
-                            nextUnnamedAvailable: nextUnnamedReview != nil
+                            nextUnnamedAvailable: nextUnnamedReview != nil,
+                            onOpenMeeting: openMeetingFromSpeakers
                         )
                     } else {
                         centeredProgress("Loading meeting…")
@@ -873,6 +876,7 @@ struct ActivityWindow: View {
         }
         if section == .sessions, showingLinkedSession { goBack(); return true }
         if section == .meetings, meetingReturnToWork { goBack(); return true }
+        if section == .meetings, selectedLibraryRecordID != nil, meetingReturnSpeakerSessionID != nil { goBack(); return true }
         return false
     }
 
@@ -934,6 +938,7 @@ struct ActivityWindow: View {
             selectedLibraryRecordID = nil
             model.closeLibraryDetail()
             if meetingReturnToWork { returnFromMeetingToWork() }
+            else if let sessionId = meetingReturnSpeakerSessionID { returnFromMeetingToSpeakers(sessionId) }
         } else if section == .meetings, model.meetingImportRouteActive {
             model.closeMeetingImport()
         } else if section == .meetings, model.meetingSuggestionsRouteActive {
@@ -980,6 +985,7 @@ struct ActivityWindow: View {
         selectedLibraryRecordID = nil
         meetingReturnWorkID = nil
         meetingReturnToWork = false
+        meetingReturnSpeakerSessionID = nil
         selectedSessionID = nil
         model.closeSpeakerReview()
         model.closeContextDetail()
@@ -1305,6 +1311,7 @@ struct ActivityWindow: View {
         guard workConnectionsEnabled, let row = reference.libraryMeeting else { return }
         meetingReturnToWork = section == .work
         meetingReturnWorkID = workWorkspaceState.selectedID
+        meetingReturnSpeakerSessionID = nil
         meetingWorkLoaded = false
         if isolatedWorkPreview {
             guard reference.recordId == "sample-meeting", reference.domain == "Website", reference.month == "2026-09",
@@ -1462,6 +1469,7 @@ struct ActivityWindow: View {
             MeetingLibraryBody(model: model) { meeting in
                 meetingReturnWorkID = nil
                 meetingReturnToWork = false
+                meetingReturnSpeakerSessionID = nil
                 meetingWorkLoaded = false
                 selectedLibraryRecordID = meeting.id
                 model.openLibraryMeeting(meeting)
@@ -2340,6 +2348,47 @@ struct ActivityWindow: View {
         selectedSpeakerSessionID = sessionId
         withOptionalAnimation { section = .speakers }
         model.openSpeakerReview(sessionId: sessionId, recordId: recordId)
+    }
+
+    /// 0.5.259 (Miles, 2026-10-06: "We need the ability to get to a meeting from the speaker view."): the review's meeting
+    /// in Meetings, with Back returning to the review. A meeting outside the loaded month loads its month first; one that
+    /// is still not listed says so in the review instead of doing nothing.
+    private func openMeetingFromSpeakers() {
+        guard let review = model.openReview else { return }
+        let recordIds = [review.blendedRecordId ?? "", review.recordId]
+        let sessionId = review.sessionId
+        model.openMeetingNote = nil
+        Task { @MainActor in
+            var row = SpeakersMeetingLink.row(in: model.libraryMeetings, recordIds: recordIds, sessionId: sessionId)
+            if row == nil, let month = recordIds.lazy.compactMap(SpeakersMeetingLink.month(ofRecordID:)).first {
+                model.libraryMonth = month
+                await model.loadLibraryMeetings()
+                row = SpeakersMeetingLink.row(in: model.libraryMeetings, recordIds: recordIds, sessionId: sessionId)
+            }
+            // The user may have moved on while the month loaded.
+            guard section == .speakers, selectedSpeakerSessionID == sessionId else { return }
+            guard let row else {
+                model.openMeetingNote = "This meeting isn't in the meetings list."
+                return
+            }
+            meetingReturnWorkID = nil
+            meetingReturnToWork = false
+            meetingWorkLoaded = false
+            meetingReturnSpeakerSessionID = sessionId
+            selectedLibraryRecordID = row.id
+            model.openLibraryMeeting(row)
+            withOptionalAnimation { section = .meetings }
+        }
+    }
+
+    /// Back from a meeting opened in a speaker review: the review is still loaded, so this only switches back to it.
+    private func returnFromMeetingToSpeakers(_ sessionId: String) {
+        meetingReturnSpeakerSessionID = nil
+        if selectedSpeakerSessionID != sessionId || model.openReview?.sessionId != sessionId {
+            selectedSpeakerSessionID = sessionId
+            model.openSpeakerReview(sessionId: sessionId)
+        }
+        withOptionalAnimation { section = .speakers }
     }
 
     private var nextUnnamedReview: ReviewableMeeting? {

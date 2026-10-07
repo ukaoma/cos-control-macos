@@ -544,6 +544,20 @@ enum WorkCardFiles {
         return flat.count <= displayLimit ? flat : String(flat.prefix(displayLimit - 1)).trimmingCharacters(in: .whitespaces) + "\u{2026}"
     }
 
+    /// 0.5.259 (Miles, 2026-10-06: two screenshots dropped on one meeting both read "Dropped file.png"): a nameless drop on
+    /// a MEETING is named for when it was dropped, like a paste, and numbered when one drop brings several. A card's keeps
+    /// "Dropped file" or "Dropped image": `WorkFileSuggestion.unnamedDrop` reads exactly those to offer a name from the
+    /// file's words, and only cards get those offers.
+    nonisolated static func unnamedDropName(card stem: String, ext: String, image: Bool, policy: ContextFilePolicy,
+                                            at date: Date, ordinal: Int = 0, count: Int = 1) -> String {
+        let suffix = ext.isEmpty ? "" : "." + ext
+        guard policy == .meeting else { return stem + suffix }
+        let format = DateFormatter()
+        format.locale = Locale(identifier: "en_US_POSIX"); format.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        let number = count > 1 ? " (\(ordinal + 1))" : ""
+        return (image ? "Dropped screenshot " : "Dropped file ") + format.string(from: date) + number + suffix
+    }
+
     /// Lowercase ASCII letters and digits joined by single dashes, from a name without its extension. Never empty.
     nonisolated static func slug(_ display: String) -> String {
         let stem = (display as NSString).deletingPathExtension
@@ -2202,7 +2216,7 @@ extension WorkCardFiles {
     /// copy already in the card's folder, a web link, or why there is nothing to take.
     enum Staged { case finder(URL), copy(URL, String, String), web(URL), refused(WorkCardRefusal) }
 
-    private func stage(_ provider: NSItemProvider, root: URL, workID: String) async -> Staged {
+    private func stage(_ provider: NSItemProvider, root: URL, workID: String, ordinal: Int = 0, count: Int = 1, at date: Date = Date()) async -> Staged {
         if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
             guard let url = await Self.loadURL(provider), url.isFileURL else { return .refused(.noFile) }
             return .finder(url)
@@ -2226,7 +2240,9 @@ extension WorkCardFiles {
                 }
             }
             let ext = UTType(promised)?.preferredFilenameExtension ?? ""
-            let display = named.map { name in (name as NSString).pathExtension.isEmpty && !ext.isEmpty ? name + "." + ext : name } ?? ("Dropped file" + (ext.isEmpty ? "" : "." + ext))
+            let display = named.map { name in (name as NSString).pathExtension.isEmpty && !ext.isEmpty ? name + "." + ext : name }
+                ?? WorkCardFiles.unnamedDropName(card: "Dropped file", ext: ext, image: UTType(promised)?.conforms(to: .image) == true,
+                                                 policy: policy, at: date, ordinal: ordinal, count: count)
             guard copied else { try? FileManager.default.removeItem(at: staging); return .refused(.copyFailed(display, "The app didn't hand it over.")) }
             return .copy(staging, display, "promise")
         }
@@ -2236,7 +2252,8 @@ extension WorkCardFiles {
                 _ = provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in continuation.resume(returning: data) }
             }
             let staging = WorkCardFiles.stagingURL(folder)
-            let display = ((named.map { ($0 as NSString).deletingPathExtension }) ?? "Dropped image") + ".png"
+            let display = named.map { ($0 as NSString).deletingPathExtension + ".png" }
+                ?? WorkCardFiles.unnamedDropName(card: "Dropped image", ext: "png", image: true, policy: policy, at: date, ordinal: ordinal, count: count)
             guard let data, let png = Self.pngData(data), (try? png.write(to: staging)) != nil else { return .refused(.copyFailed(display, "The image could not be read.")) }
             _ = chmod(staging.path, 0o600)
             return .copy(staging, display, "data")
@@ -2620,14 +2637,15 @@ extension WorkCardFileStore {
     }
 
     /// A drop on a meeting's Files box: Finder files, promises (the screenshot thumbnail, Photos, Mail), image data, links.
-    func intakeMeeting(providers: [NSItemProvider], key: String, info: WorkMeetingInfo) async {
+    func intakeMeeting(providers: [NSItemProvider], key: String, info: WorkMeetingInfo, now: Date = Date()) async {
         guard let root, policy == .meeting, let id = WorkCardFiles.meetingID(forKey: key), !providers.isEmpty else { return }
         let timeout = iCloudTimeout, reader = reader
         begin(id, providers.count)
         var loads: [Task<Staged, Never>] = []
-        for provider in providers {
+        let count = providers.count
+        for (ordinal, provider) in providers.enumerated() {
             let box = WorkUncheckedBox(provider)
-            loads.append(Task { @MainActor in await self.stage(box.value, root: root, workID: id) })
+            loads.append(Task { @MainActor in await self.stage(box.value, root: root, workID: id, ordinal: ordinal, count: count, at: now) })
         }
         var notes: [WorkCardRefusal] = []
         var added = false

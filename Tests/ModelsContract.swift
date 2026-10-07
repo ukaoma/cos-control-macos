@@ -4185,7 +4185,33 @@ struct ModelsContract {
         print("COS Control: thread detail body (every section, counts, order, empty) passed")
     }
 
+    /// 0.5.259: Speakers' Open meeting finds the review's row, and loads an older month only for an `ops:` record.
+    static func checkSpeakersMeetingLink() {
+        func row(_ record: String, session: String, month: String = "2026-10") -> LibraryMeeting {
+            LibraryMeeting(.object(["recordId": .string(record), "sessionId": .string(session), "month": .string(month),
+                                    "filename": .string("x.md"), "domain": .string("quilt")]))!
+        }
+        let capture = row("ops:quilt:2026-10:capture.md", session: "meeting_1")
+        let merged = row("blended:abc", session: "")
+        let other = row("ops:quilt:2026-10:other.md", session: "meeting_2")
+        let rows = [other, capture, merged]
+        precondition(SpeakersMeetingLink.row(in: rows, recordIds: ["blended:abc", "ops:quilt:2026-10:capture.md"], sessionId: "meeting_1")?.recordId == "blended:abc",
+                     "speakers open meeting: the merged record is the row Meetings lists")
+        precondition(SpeakersMeetingLink.row(in: rows, recordIds: ["", "ops:quilt:2026-10:capture.md"], sessionId: "meeting_2")?.recordId == "ops:quilt:2026-10:capture.md",
+                     "speakers open meeting: the capture's record wins over a session match")
+        precondition(SpeakersMeetingLink.row(in: rows, recordIds: ["", "standalone:meeting_2"], sessionId: "meeting_2")?.recordId == "ops:quilt:2026-10:other.md",
+                     "speakers open meeting: a row carrying the session is the fallback")
+        precondition(SpeakersMeetingLink.row(in: rows, recordIds: ["", "ops:quilt:2026-09:old.md"], sessionId: "") == nil,
+                     "speakers open meeting: an empty session matches no row")
+        precondition(SpeakersMeetingLink.month(ofRecordID: "ops:quilt:2026-09:2026-09-03_G2 Recording, 07:00.md") == "2026-09",
+                     "speakers open meeting: an ops record names its month, even with colons in the file name")
+        for id in ["standalone:meeting_1", "blended:abc", "ops:quilt:2026-13:x.md", "ops:quilt:26-09:x.md", "ops::2026-09:x.md", "ops:quilt:2026-09:", ""] {
+            precondition(SpeakersMeetingLink.month(ofRecordID: id) == nil, "speakers open meeting: \(id) names no month")
+        }
+    }
+
     static func main() throws {
+        checkSpeakersMeetingLink()
         checkThreadBody()
         checkHotKeyCombo()
         checkLearningModels()

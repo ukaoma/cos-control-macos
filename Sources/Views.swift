@@ -2961,6 +2961,8 @@ struct SpeakerReviewPane: View {
     var showsBackButton = true
     var onNextUnnamed: (() -> Void)? = nil
     var nextUnnamedAvailable = false
+    /// 0.5.259: the meeting this review belongs to, in Meetings.
+    var onOpenMeeting: (() -> Void)? = nil
     /// Which span the pointer is over. Held here so the bar and the legend
     /// highlight the same thing.
     @State private var hoveredSpan: SpeakerTimelineSpan?
@@ -3005,6 +3007,11 @@ struct SpeakerReviewPane: View {
                                 .font(.system(size: 10.5, design: .monospaced))
                                 .foregroundStyle(COSPalette.green)
                         }
+                        if let note = model.openMeetingNote {
+                            Text(note)
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(COSPalette.amber)
+                        }
                         if review.unnamedVoiceCount > 0 {
                             Text(review.unnamedVoiceCount == 1
                                  ? "1 voice still needs a name"
@@ -3022,6 +3029,15 @@ struct SpeakerReviewPane: View {
                     }
                 }
                 Spacer()
+                if onOpenMeeting != nil, model.openReview?.recordId.isEmpty == false {
+                    Button {
+                        onOpenMeeting?()
+                    } label: {
+                        Label("Open meeting", systemImage: "calendar").font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open this meeting's transcript, summary and files")
+                }
                 // Two forms because they serve different jobs: the summary is
                 // pasteable into Slack or email, the full one carries the
                 // transcript for an LLM. Both are built server-side with the

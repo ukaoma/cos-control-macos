@@ -4405,6 +4405,28 @@ enum MeetingMonth {
     }
 }
 
+/// 0.5.259 (Miles, 2026-10-06: "We need the ability to get to a meeting from the speaker view."): which Meetings row a
+/// speaker review belongs to. The merged record comes first, because it is the row Meetings lists; then the capture's
+/// own record; then any row carrying the review's session.
+enum SpeakersMeetingLink {
+    static func row(in rows: [LibraryMeeting], recordIds: [String], sessionId: String) -> LibraryMeeting? {
+        for id in recordIds where !id.isEmpty {
+            if let row = rows.first(where: { $0.recordId == id }) { return row }
+        }
+        guard !sessionId.isEmpty else { return nil }
+        return rows.first { $0.sessionId == sessionId }
+    }
+
+    /// The month an `ops:<domain>:<YYYY-MM>:<file>` record lives in, so a review of an older meeting can load that month
+    /// before looking again. Any other record (a standalone capture, a merge) names no month.
+    static func month(ofRecordID id: String) -> String? {
+        let parts = id.split(separator: ":", maxSplits: 3, omittingEmptySubsequences: false)
+        guard parts.count == 4, parts[0] == "ops", !parts[1].isEmpty, !parts[3].isEmpty else { return nil }
+        let month = String(parts[2])
+        return month.range(of: "^[0-9]{4}-(0[1-9]|1[0-2])$", options: .regularExpression) != nil ? month : nil
+    }
+}
+
 struct LibraryMeetingDay: Sendable, Hashable {
     let date: String
     let count: Int

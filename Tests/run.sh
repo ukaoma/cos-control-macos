@@ -2577,6 +2577,26 @@ need(library_opener is not None, "openLibraryMeeting not found")
 need(re.search(r"openLibraryRow\s*=", library_opener.group(0)) is not None,
      "openLibraryMeeting never assigns openLibraryRow, so the route can never activate")
 
+# 0.5.259 (Miles, 2026-10-06: "We need the ability to get to a meeting from the speaker view."): the review is mounted
+# with its opener inside the route gate, the opener lands on the Meetings detail route the gates above read (window
+# selection plus the model's row), an older meeting's month is loaded before giving up, a miss is said, and Back returns.
+speaker_mount = re.search(r"if model\.reviewRouteActive\s*\{\s*SpeakerReviewPane\((.*?)\)\s*\} else", activity, re.S)
+need(speaker_mount is not None and "onOpenMeeting: openMeetingFromSpeakers" in speaker_mount.group(1),
+     "SpeakerReviewPane is not mounted with onOpenMeeting inside its route gate")
+open_meeting = re.search(r"private func openMeetingFromSpeakers\(\) \{.*?\n    \}", activity, re.S)
+need(open_meeting is not None, "openMeetingFromSpeakers not found")
+open_body = open_meeting.group(0)
+need(re.search(r"selectedLibraryRecordID\s*=\s*row\.id", open_body) is not None and "model.openLibraryMeeting(row)" in open_body
+     and re.search(r"section\s*=\s*\.meetings", open_body) is not None,
+     "Open meeting does not land on the Meetings detail route")
+need("await model.loadLibraryMeetings()" in open_body and "SpeakersMeetingLink.month(ofRecordID:)" in open_body,
+     "Open meeting does not load an older meeting's month before giving up")
+need(re.search(r'model\.openMeetingNote\s*=\s*"', open_body) is not None, "Open meeting fails silently when no row is found")
+need("onOpenMeeting?()" in views and "if onOpenMeeting != nil" in views, "SpeakerReviewPane has no Open meeting button")
+need("model.openMeetingNote" in views, "the Open meeting note is never shown")
+need(re.search(r"else if let sessionId = meetingReturnSpeakerSessionID \{ returnFromMeetingToSpeakers\(sessionId\) \}", activity) is not None,
+     "Back from a meeting opened in Speakers does not return to the review")
+
 need('selectedSessionID != nil' in activity, "session detail has no window-local selection gate")
 session_mount = re.search(r'if model\.claudeSessionRouteActive\s*\{(.*?)\} else \{\s*centeredProgress\("Loading session…"\)', activity, re.S)
 need(session_mount is not None and 'ClaudeSessionDetailPane(model: model' in session_mount.group(1),

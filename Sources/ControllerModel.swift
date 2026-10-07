@@ -247,6 +247,8 @@ final class ControllerModel: ObservableObject {
     /// older than 6.21.28 or the fetch failed — the review still renders.
     @Published var openContent: MeetingContent?
     @Published var copyNote: String?
+    /// 0.5.259: why Open meeting found no Meetings row for this review. Cleared whenever a review opens or closes.
+    @Published var openMeetingNote: String?
     /// Why the write-up is absent: "route_absent" (server too old) or an error
     /// string. nil when content loaded. Previously a 404 and a real failure both
     /// rendered as silence, with no way to tell the user to update the server.
@@ -7595,6 +7597,7 @@ final class ControllerModel: ObservableObject {
         reviewSelectionGeneration &+= 1
         selectedReviewRecordID = recordId
         openContent = nil
+        openMeetingNote = nil
         persistSpeakerList { $0.markOpened(sessionId) }
         speakerReviewTask?.cancel()
         stopPlayback()
@@ -7698,6 +7701,7 @@ final class ControllerModel: ObservableObject {
         speakerReviewTask?.cancel()
         speakerReviewTask = nil
         reviewLoading = false
+        openMeetingNote = nil
         // Audio kept playing after the panel closed, and a stale note followed the
         // user into the next meeting's rows.
         stopPlayback()
