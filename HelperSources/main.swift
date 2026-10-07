@@ -370,6 +370,9 @@ final class COSControlHelper {
         "COS_SESSION_HOOK_SSE",
         // 0.5.241: the server's daily Jev input-token cap (6.57.0). A hand-set cap must survive Update Server.
         "COS_JEV_DAILY_TOKENS",
+        // 0.5.259: Work search's own switch and daily cap (6.65.0), for the same reason.
+        "COS_JEV_SEARCH",
+        "COS_JEV_SEARCH_DAILY_TOKENS",
     ]
 
     private lazy var support = home.appendingPathComponent("Library/Application Support/COS Control", isDirectory: true)
@@ -4967,9 +4970,11 @@ final class COSControlHelper {
         emit(ok: true, message: "Completion check ready", details: result)
     }
 
-    /// 0.5.259: which board card a search means, by Jev (server 6.65.0 `POST /api/work/search`). Only the query and the
-    /// view (a domain and scope, or exact card ids) cross; the server reads the cards itself. Every failure is an answer
-    /// with a reason, never an error, so the board keeps its word search: a server without the route is `server_too_old`.
+    /// 0.5.259: which board card a search means, by Jev (server 6.65.0 `POST /api/work/search`). Control sends only the
+    /// query and the view (a domain and scope, or exact card ids); the server reads the cards and sends their text on to
+    /// Jev (TypeSafe) with URLs, emails and secrets removed. Every failure is an answer with a reason, never an error, so
+    /// the board keeps its word search: a server without the route is `server_too_old`. The wait (25 s) is longer than the
+    /// server's own wait for Jev (20 s), so a slow answer is never read as unreachable.
     private func emitWorkSearch() throws {
         let data = try readBoundedStdin(16_384)
         guard let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any], Self.workSearchBodyValid(body) else {
@@ -4978,7 +4983,7 @@ final class COSControlHelper {
         let candidate = try reviewCandidateTransport()
         let token = try candidate?.token ?? readToken()
         guard let response = request("/api/work/search", method: "POST", token: token, body: String(decoding: data, as: UTF8.self),
-                                      timeout: 12, reviewCandidatePort: candidate?.port) else {
+                                      timeout: 25, reviewCandidatePort: candidate?.port) else {
             emit(ok: true, message: "Meaning search unavailable", details: ["available": false, "reason": "unreachable"]); return
         }
         guard response.status == 200, let answer = response.body else {
@@ -4989,12 +4994,12 @@ final class COSControlHelper {
         emit(ok: true, message: "Search answered", details: Self.workSearchAnswer(answer))
     }
 
-    /// Exactly a `query` (2 to 200 characters once trimmed) and optionally a safe `domain`, a board `scope`, and up to
-    /// 254 card `ids` (12 hex): the shape the server takes.
+    /// Exactly a `query` (2 to 200 code points once trimmed, counted as the server counts) and optionally a safe `domain`, a
+    /// board `scope`, and up to 254 card `ids` (12 hex): the shape the server takes.
     static func workSearchBodyValid(_ body: [String: Any]) -> Bool {
         guard Set(body.keys).isSubset(of: ["query", "domain", "scope", "ids"]), let query = body["query"] as? String else { return false }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard (2...200).contains(trimmed.count) else { return false }
+        guard (2...200).contains(trimmed.unicodeScalars.count) else { return false }
         if let raw = body["domain"] {
             guard let domain = raw as? String, !domain.isEmpty, domain.utf16.count <= 64, !domain.hasPrefix("."),
                   domain == domain.trimmingCharacters(in: .whitespacesAndNewlines),

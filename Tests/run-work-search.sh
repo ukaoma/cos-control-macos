@@ -25,4 +25,10 @@ if [[ -f "$f" ]]; then cat "$f"; else print -r -- '{"ok":false,"message":"The se
 SH
 chmod +x "$DIR/cos-control-helper"
 CFFIXED_USER_HOME="$HOME_DIR" HOME="$HOME_DIR" COS_CONTROL_TEST_HOME="$HOME_DIR" COS_SEARCH_FIXTURES="$DIR/fixtures" \
-  "$DIR/work-search-checks"
+  "$DIR/work-search-checks" 2>"$DIR/stderr.log" || { cat "$DIR/stderr.log" >&2; exit 1; }
+# QA round 1: every degrade reason leaves a trace in the log, and the trace never carries the query's words.
+for reason in unreachable jev_unavailable http_503 search_off jev_not_configured jev_cap_reached jev_breaker_open jev_key_rejected jev_request_rejected a_reason_from_a_later_server; do
+  grep -q "COS Work search: meaning search unavailable ($reason)" "$DIR/stderr.log" || { print -r -- "check failed [degrade log]: $reason left no trace" >&2; exit 1; }
+done
+if grep -q "transient failure\|lifts later\|definitive " "$DIR/stderr.log"; then print -r -- "check failed [degrade log]: a log line carries the query's words" >&2; exit 1; fi
+print -r -- "PASS: Work search degrade log (every reason traced, no query words)"

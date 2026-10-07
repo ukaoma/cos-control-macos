@@ -107,6 +107,11 @@ try:
     assert not run(['work-search'], b' ' * 16385)['ok'] and not run(['work-search'], b'not json')['ok']
     assert len(calls) == before, 'no refused body reaches the server'
     assert search({'query': 'needs me', 'ids': ['%012x' % i for i in range(254)]})['ok'] and len(calls) == before + 1, '254 ids is a full Choice'
+    # Counted in code points, as the server counts: "\U0001F44D\U0001F3FD" is one character and two code points.
+    thumb = '\U0001F44D\U0001F3FD'
+    before = len(calls)
+    assert not search({'query': thumb * 100 + 'a'})['ok'] and len(calls) == before, 'a query of 201 code points (101 characters) is refused'
+    assert search({'query': thumb * 100})['ok'] and len(calls) == before + 1, 'a query of 200 code points is sent'
 
     # K8: the row whitelist passes the three date fields, each in its own shape; the rest of a row is unchanged.
     r = run(['work-tasks'])

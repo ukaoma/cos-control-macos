@@ -14,7 +14,8 @@ import Foundation
     precondition(items.first?.needsAttention == true && items.last?.completed == true, "Attention and active work must precede completed history")
     precondition(items.filter { !$0.completed && !$0.needsAttention && !$0.inProgress }.first?.id == "task:quilt:0", "Ordering within each work state remains stable")
     precondition(Set(items.map(\.id)).count == 68, "Domain namespaces must preserve distinct legacy IDs")
-    precondition(WorkWorkspaceProjection.filter(items, scope: .all, domain: nil, query: "unique-64").count == 1,
+    // 0.5.259: the query matches by the board's word rule (a word finds the words it starts), so "64" names one card.
+    precondition(WorkWorkspaceProjection.filter(items, scope: .all, domain: nil, query: "64").count == 1,
                  "Search covers full source text beyond the legacy first 30/50 rows")
     let completed = WorkWorkspaceProjection.filter(items, scope: .completed, domain: nil, query: "")
     precondition(completed.count == 1 && completed[0].domain == "quilt", "Agent done never marks a task completed")
