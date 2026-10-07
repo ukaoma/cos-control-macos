@@ -9263,6 +9263,8 @@ enum ActivityHome {
         let open: ClaudeSession
         let state: DeskState?
         let inList: Bool
+        /// The row's last write, read once.
+        let updated: Date?
     }
 
     struct Desk: Identifiable {
@@ -9283,25 +9285,35 @@ enum ActivityHome {
     /// A session's desk state. `live`: its state is current (it came from the live list, or there is no live list). A
     /// row the live list does not carry is not running or waiting any more, whatever its last snapshot said.
     static func deskState(_ session: ClaudeSession, live: Bool, now: Date, calendar: Calendar = .current) -> DeskState? {
+        deskState(session, updated: session.updatedDate, live: live, now: now, calendar: calendar)
+    }
+
+    /// The same, with the session's last write already read (a seat reads it once: parsing it is the costly part).
+    static func deskState(_ session: ClaudeSession, updated: Date?, live: Bool, now: Date, calendar: Calendar) -> DeskState? {
         guard !session.isKeepWarm else { return nil }
         if live {
             if ClaudeSession.needsAPerson(session) { return .asked }
             if session.isPetWorking {
                 // A run the COS server holds (a scheduled job, a Work New session) cannot stop on a prompt.
-                if !session.heldByServer, let updated = session.updatedDate, now.timeIntervalSince(updated) >= quietAfter { return .maybe }
+                if !session.heldByServer, let updated, now.timeIntervalSince(updated) >= quietAfter { return .maybe }
                 return .working
             }
         }
-        if let updated = session.updatedDate, calendar.isDate(updated, inSameDayAs: now) { return .finished }
+        if let updated, calendar.isDate(updated, inSameDayAs: now) { return .finished }
         return nil
     }
 
     /// The pet's live list (petSessions) when the pet is on, so the home and the pet never disagree; the Sessions list
     /// otherwise. Live rows are matched to list rows by `ClaudeSession.sameSession` (the live list may carry a short id).
     static func seats(list: [ClaudeSession], live: [ClaudeSession]?, now: Date, calendar: Calendar = .current) -> [Seat] {
+        func seat(_ row: ClaudeSession, open: ClaudeSession, live: Bool, inList: Bool) -> Seat {
+            let updated = stamp(row.updatedAt)
+            return Seat(row: row, open: open, state: deskState(row, updated: updated, live: live, now: now, calendar: calendar),
+                        inList: inList, updated: updated)
+        }
         let real = list.filter { !$0.isKeepWarm }
         guard let live else {
-            return real.map { Seat(row: $0, open: $0, state: deskState($0, live: true, now: now, calendar: calendar), inList: true) }
+            return real.map { seat($0, open: $0, live: true, inList: true) }
         }
         var seats: [Seat] = []
         var taken = Set<String>()
@@ -9311,10 +9323,10 @@ enum ActivityHome {
             liveSeen.append(row)
             let listed = real.first { !taken.contains($0.id) && ClaudeSession.sameSession($0.id, row.id) }
             if let listed { taken.insert(listed.id) }
-            seats.append(Seat(row: row, open: listed ?? row, state: deskState(row, live: true, now: now, calendar: calendar), inList: listed != nil))
+            seats.append(seat(row, open: listed ?? row, live: true, inList: listed != nil))
         }
         for row in real where !taken.contains(row.id) {
-            seats.append(Seat(row: row, open: row, state: deskState(row, live: false, now: now, calendar: calendar), inList: true))
+            seats.append(seat(row, open: row, live: false, inList: true))
         }
         return seats
     }
@@ -9324,7 +9336,7 @@ enum ActivityHome {
     static func desks(_ seats: [Seat]) -> [Desk] {
         seats.compactMap { seat -> Desk? in
             guard let state = seat.state, !seat.row.isScheduledJob else { return nil }
-            let since = state == .asked ? (stamp(seat.row.stateSince) ?? seat.row.updatedDate) : seat.row.updatedDate
+            let since = state == .asked ? (stamp(seat.row.stateSince) ?? seat.updated) : seat.updated
             return Desk(session: seat.row, openRow: seat.open, state: state, since: since)
         }.sorted { a, b in
             if a.state.rank != b.state.rank { return a.state.rank < b.state.rank }
@@ -9383,7 +9395,21 @@ enum ActivityHome {
     }
 
     struct Need: Identifiable {
-        enum Kind: String { case asked, maybe, voices, memories, work }
+        enum Kind: String {
+            case asked, maybe, voices, memories, work
+
+            /// The line's order: a session that asked (or failed), then one only quiet, then the backlog (voices,
+            /// memories, Work), which the cards below also show.
+            var order: Int {
+                switch self {
+                case .asked: 0
+                case .maybe: 1
+                case .voices: 2
+                case .memories: 3
+                case .work: 4
+                }
+            }
+        }
         let kind: Kind
         let what: String
         let why: String
@@ -9439,17 +9465,42 @@ enum ActivityHome {
         return ordered(out)
     }
 
-    /// Oldest first. An item with no date (Work; memories before their list loads) follows the dated ones in the order
-    /// it was listed: it is never placed by a date it does not have.
+    /// What blocks a session comes first: a question or a failed turn, then a session that is only quiet, oldest first
+    /// within each. Then the backlog in a fixed order: voices, memories, Work. Next ⌘] follows this order, so it opens a
+    /// blocked session before any backlog. An item with no date follows the dated ones of its kind, in the order it was
+    /// listed: it is never placed by a date it does not have.
     static func ordered(_ items: [Need]) -> [Need] {
         items.enumerated().sorted { a, b in
+            let x = a.element.kind.order, y = b.element.kind.order
+            if x != y { return x < y }
             switch (a.element.since, b.element.since) {
-            case let (x?, y?) where x != y: return x < y
+            case let (p?, q?) where p != q: return p < q
             case (.some, .none): return true
             case (.none, .some): return false
             default: return a.offset < b.offset
             }
         }.map(\.element)
+    }
+
+    /// The line in two parts: session items in full (mark, title, why, age), then the backlog as one short segment of
+    /// counts ("Also · 1 voice to name · 3 memories · 7 work items"). The cards below already name the meeting and say
+    /// what each count means, so the segment carries neither. "Also" only follows session items.
+    struct LineParts {
+        let sessions: [Need]
+        let backlog: [Need]
+        var alsoPrefix: Bool { !sessions.isEmpty && !backlog.isEmpty }
+    }
+
+    static func parts(_ items: [Need]) -> LineParts {
+        LineParts(sessions: items.filter(\.isSession), backlog: items.filter { !$0.isSession })
+    }
+
+    /// A backlog part's words: its count alone ("1 voice to name", "3 memories", "7 work items").
+    static func backlogLabel(_ need: Need) -> String { need.what }
+
+    /// The segment as it reads.
+    static func backlogText(_ parts: LineParts) -> String {
+        ((parts.alsoPrefix ? ["Also"] : []) + parts.backlog.map(backlogLabel)).joined(separator: " · ")
     }
 
     enum Line: Equatable { case hidden, quiet, items }
@@ -9460,7 +9511,44 @@ enum ActivityHome {
         return available ? .quiet : .hidden
     }
 
-    /// What Next ⌘] opens: the oldest item.
+    /// Where an item of the line sits: its row, its x and the width it is given.
+    struct FlowPlace: Equatable {
+        let row: Int
+        let x: CGFloat
+        let width: CGFloat
+    }
+
+    /// A session item that does not quite fit the rest of a row may give up to a quarter of its width (its title
+    /// truncates) rather than start a new row. Anything less wraps.
+    static let flowMinShare: CGFloat = 0.75
+
+    /// The Needs you line's rows. Each item keeps its own width where it fits; one that may shrink (`shrinks`: a session
+    /// item, never the backlog segment) takes the rest of the row when that keeps at least `flowMinShare` of it; otherwise
+    /// it starts the next row. An item wider than a whole row gets the row.
+    static func flow(ideal: [CGFloat], shrinks: [Bool], width: CGFloat, spacing: CGFloat) -> [FlowPlace] {
+        var places: [FlowPlace] = []
+        var row = 0
+        var x: CGFloat = 0
+        for (index, want) in ideal.enumerated() {
+            let room = width - x
+            if x == 0 || want <= room {
+                let given = min(want, width)
+                places.append(FlowPlace(row: row, x: x, width: given))
+                x += given + spacing
+            } else if index < shrinks.count, shrinks[index], room >= want * flowMinShare {
+                places.append(FlowPlace(row: row, x: x, width: room))
+                x = width + spacing
+            } else {
+                row += 1
+                let given = min(want, width)
+                places.append(FlowPlace(row: row, x: 0, width: given))
+                x = given + spacing
+            }
+        }
+        return places
+    }
+
+    /// What Next ⌘] opens: the first item in the line's order (ordered).
     static func nextTarget(_ items: [Need]) -> Need? { items.first }
     /// With one item the button reads "Open".
     static func nextLabel(_ items: [Need]) -> String { items.count == 1 ? "Open" : "Next" }
@@ -9676,13 +9764,14 @@ enum ActivityHome {
                                                   hour: clock.count == 2 ? clock[0] : 0, minute: clock.count == 2 ? clock[1] : 0))
     }
 
+    /// An ISO 8601 stamp, with or without fractional seconds. Date.ISO8601FormatStyle, which reads one in about 1 µs:
+    /// ClaudeSession.updatedDate builds two formatters per read (about 0.2 ms), and the home reads every session's stamp
+    /// each time it draws.
     static func stamp(_ raw: String) -> Date? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        let fraction = ISO8601DateFormatter()
-        fraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fraction.date(from: trimmed) { return date }
-        return ISO8601DateFormatter().date(from: trimmed)
+        return (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(trimmed))
+            ?? (try? Date.ISO8601FormatStyle().parse(trimmed))
     }
 
     static func clip(_ text: String, _ limit: Int) -> String {

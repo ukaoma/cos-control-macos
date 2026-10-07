@@ -38,6 +38,22 @@ line = body(win, "private func needsYouLine(", "\n    private var needsRule")
 need('.keyboardShortcut("]", modifiers: .command)' in line, "[⌘] routing] the home's ⌘] is on the Next button")
 need("if let next = ActivityHome.nextTarget(needs) { openNeed(next) }" in line, "[⌘] routing] Next opens ActivityHome.nextTarget, the oldest item")
 need(len(re.findall(r"\bneedsYouLine\(", win)) == 2, "[⌘] routing] the Needs you line is drawn by the home alone")
+# Compact backlog: the line draws session items in full, then the backlog as one segment of counts, in the order Next uses.
+need("let parts = ActivityHome.parts(needs)" in line and "ForEach(parts.sessions) { need in" in line and "backlogSegment(parts)" in line
+     and "ForEach(needs)" not in line and line.index("ForEach(parts.sessions)") < line.index("backlogSegment(parts)"),
+     "[compact backlog] sessions in full first, then one backlog segment")
+need("NeedsFlowLayout(spacing: 18, lineSpacing: 7) {" in line and line.count("NeedsFlowShrinks") == 1
+     and re.search(r"needRow\(need, now: now\)\n\s*\.layoutValue\(key: NeedsFlowShrinks\.self, value: true\)", line),
+     "[compact line] session items may shrink in the line; the backlog segment never does")
+flow_layout = body(win, "private struct NeedsFlowLayout: Layout {", "\n}\n")
+need("ActivityHome.flow(ideal:" in flow_layout and "shrinks: subviews.map { $0[NeedsFlowShrinks.self] }" in flow_layout
+     and "proposal: ProposedViewSize(width: place.width, height: nil)" in flow_layout,
+     "[compact line] the line is placed by ActivityHome.flow, at the widths it gives")
+segment = body(win, "private func backlogSegment(", "private func openNeed(")
+need("Text(ActivityHome.backlogLabel(need))" in segment and "if parts.alsoPrefix {" in segment and 'Text("Also")' in segment,
+     "[compact backlog] the segment draws ActivityHome's counts, with Also only where it says")
+need("Text(need.why" not in segment and "Text(need.what" not in segment and "needRow(" not in segment,
+     "[compact backlog] no meeting name or description in the segment (help text only)")
 home = body(win, "private var activityHome: some View {", "private func needsYouLine(")
 need("needsYouLine(" in home, "[⌘] routing] the home draws the Needs you line")
 frame = body(win, "private var activityFrame: some View {", "\n    var body: some View {")
@@ -113,4 +129,4 @@ need("await model.loadWorkTasks()" in overview and "await reviewStore.refresh()"
      "[loads] the home loads Work's board, reviews and Intake")
 need("await model.loadToReviewEvents()" in overview, "[loads] the home loads the review list for the oldest wait")
 
-print("COS Control: Activity home wiring pinned (0.5.259): one ⌘] per route, items open their sections, one set of seats, Reduce Motion, cards and loads")
+print("COS Control: Activity home wiring pinned (0.5.259): one ⌘] per route, sessions then one backlog segment, items open their sections, one set of seats, Reduce Motion, cards and loads")

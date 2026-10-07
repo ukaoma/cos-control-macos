@@ -3,8 +3,8 @@ import SwiftUI
 
 /// 0.5.259, run by hand (Tests/run-activity-home-render.sh <folder>): the shipped Activity window on its home, with
 /// fixture data shaped like Miles's screenshots of 2026-10-06, drawn off screen to PNGs for a side-by-side check against
-/// MOCK_activity_work_search_2026-10-06 (the first board). Three states: things waiting, one thing waiting, nothing
-/// waiting. Background work is off, so nothing loads from a server. Windows are never ordered in, the process can never
+/// MOCK_activity_work_search_2026-10-06 (the first board). Four states: things waiting, one thing waiting, nothing
+/// waiting, and only the backlog waiting. Background work is off, so nothing loads from a server. Windows are never ordered in, the process can never
 /// become active, and nothing is clicked, typed or dragged.
 @main @MainActor struct ActivityHomeRender {
     static let now = Date()
@@ -21,10 +21,12 @@ import SwiftUI
         try render(ActivityWindow(model: busy), width: 760, height: 560, name: "home-busy-760", out: out)
         try render(ActivityWindow(model: model(.one)), width: 1280, height: 900, name: "home-one", out: out)
         try render(ActivityWindow(model: model(.quiet)), width: 1280, height: 900, name: "home-quiet", out: out)
+        try render(ActivityWindow(model: model(.backlog)), width: 1280, height: 900, name: "home-backlog", out: out)
         print("wrote PNGs to \(out.path)")
     }
 
-    enum Scene { case busy, one, quiet }
+    /// busy: sessions waiting and a backlog; one: a single question; quiet: nothing waits; backlog: no session waits.
+    enum Scene { case busy, one, quiet, backlog }
 
     static func iso(_ minutesAgo: Double) -> String { ISO8601DateFormatter().string(from: now.addingTimeInterval(-minutesAgo * 60)) }
     /// A meeting's `yyyy-MM-dd` and `HH:mm`, so many minutes ago (never in the future, whatever the hour of the run).
@@ -47,7 +49,7 @@ import SwiftUI
         var status = model.status
         status.running = true
         status.memoryAvailable = true; status.memoryCount = 5528
-        status.learningToReview = scene == .busy ? 3 : 0
+        status.learningToReview = scene == .busy || scene == .backlog ? 3 : 0
         status.threadsAvailable = true; status.threadCount = 66; status.activeThreadCount = 32
         model.status = status
         let midnight = Calendar.current.startOfDay(for: now)
@@ -71,7 +73,7 @@ import SwiftUI
                                        "voiceReview": .object(["voices": .number(Double(unnamed + 3)), "unattributedVoices": .number(Double(unnamed)), "humanTouched": .bool(unnamed == 0)])]))!
         }
         model.reviewableMeetings = [
-            meeting("m1", "Deprioritize CityHive, Feature DoorDash Integrations", 40, unnamed: scene == .busy ? 1 : 0),
+            meeting("m1", "Deprioritize CityHive, Feature DoorDash Integrations", 40, unnamed: scene == .busy || scene == .backlog ? 1 : 0),
             meeting("m2", "Morning standup", 190, unnamed: 0),
         ]
         // Meetings: 45 in October.
@@ -83,7 +85,7 @@ import SwiftUI
 
         // Memories: three to review, the oldest from Sunday.
         let sunday = Calendar.current.date(byAdding: .day, value: -2, to: midnight)!.addingTimeInterval(15 * 3600)
-        model.toReviewEvents = scene == .busy ? [LearningEvent(.object(["event_id": .string("e1"), "ts": .string(ISO8601DateFormatter().string(from: sunday)), "title": .string("Pattern")]))!] : []
+        model.toReviewEvents = scene == .busy || scene == .backlog ? [LearningEvent(.object(["event_id": .string("e1"), "ts": .string(ISO8601DateFormatter().string(from: sunday)), "title": .string("Pattern")]))!] : []
         // Threads: the latest seen.
         model.threadRecords = [ContextRecord.thread(["id": .string("t1"), "name": .string("Bottle POS October switch offer"), "last_seen": .string(iso(90))])]
 
@@ -102,7 +104,7 @@ import SwiftUI
             ]
         case .one:
             sessions += [session("a2", "IT Retail lane images", "waiting", updated: 3, provider: "cursor", since: 3)]
-        case .quiet:
+        case .quiet, .backlog:
             break
         }
         sessions += (sessions.count..<80).map { session("o\($0)", "Older session \($0)", "recent", updated: minutesToday + 60 * Double($0 + 1)) }
@@ -110,7 +112,7 @@ import SwiftUI
 
         // Work: 7 need attention, 35 new to sort (fresh mentions), none in progress. Quiet: nothing needs attention.
         var tasks: [TaskRow] = []
-        for index in 0..<(scene == .busy ? 7 : 0) {
+        for index in 0..<(scene == .busy || scene == .backlog ? 7 : 0) {
             tasks += [TaskRow(.object(["id": .string("f\(index)"), "domain": .string("quilt"), "text": .string("Failed task \(index)"),
                                        "failed": .bool(true), "workStage": .string("planned"), "stage": .string("planned")]))!]
         }

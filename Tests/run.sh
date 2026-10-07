@@ -1156,8 +1156,9 @@ PY
 
 # ── 0.5.259: the Activity home (Needs you, live cards, desks) ─────────────────
 # Behaviour, executed against fixture rows (Tests/run-activity-home.sh), then the wiring the compiled-only views hide:
-# one ⌘] per route, items open their own sections, one set of seats, Reduce Motion. Hand-run: Tests/mutate-activity-home.py
-# (the mutation lane) and Tests/run-activity-home-render.sh (PNGs against the mock).
+# one ⌘] per route, sessions then one backlog segment, items open their own sections, one set of seats, Reduce Motion.
+# Hand-run: Tests/mutate-activity-home.py (the mutation lane), Tests/run-activity-home-render.sh (PNGs against the mock)
+# and Tests/run-activity-home-perf.sh (the first frame, and when the loads on opening start).
 "$ROOT/Tests/run-activity-home.sh"
 /usr/bin/python3 "$ROOT/Tests/activity-home-pins.py" "$ROOT"
 

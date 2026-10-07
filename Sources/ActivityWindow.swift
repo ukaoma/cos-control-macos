@@ -1033,7 +1033,8 @@ struct ActivityWindow: View {
         }
     }
 
-    /// 0.5.259 board 1: what waits on Miles, oldest first, and Next ⌘] to the oldest. ⌘] is also Speakers' Next to name;
+    /// 0.5.259 board 1: what waits on Miles. Sessions first, in full; then the backlog as one short segment of counts
+    /// (ActivityHome.parts). Next ⌘] opens the first item in that order. ⌘] is also Speakers' Next to name;
     /// the two never both respond, because this line lives only on the home and the speaker review only on its own route
     /// of the same if/else chain (activityFrame). Tests/activity-home-pins.py pins both.
     @ViewBuilder
@@ -1057,10 +1058,16 @@ struct ActivityWindow: View {
                 }
                 .font(COSType.display(15.5, weight: .medium))
                 .fixedSize()
-                // Each item starts with its dot, which is what separates it from the one before, also where a row wraps.
-                ChipFlowLayout(spacing: 22, lineSpacing: 7) {
-                    ForEach(needs) { need in
+                // A session item starts with its dot, which is what separates it from the one before, also where a row
+                // wraps. The backlog is one segment, so it never splits across rows.
+                let parts = ActivityHome.parts(needs)
+                NeedsFlowLayout(spacing: 18, lineSpacing: 7) {
+                    ForEach(parts.sessions) { need in
                         needRow(need, now: now)
+                            .layoutValue(key: NeedsFlowShrinks.self, value: true)
+                    }
+                    if !parts.backlog.isEmpty {
+                        backlogSegment(parts)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1096,18 +1103,16 @@ struct ActivityWindow: View {
 
     private var needsRule: some View { Rectangle().fill(COSPalette.gold.opacity(0.28)).frame(height: 1) }
 
-    /// One item: a filled amber dot when a session asked (a fact), an open one when it is only quiet ("may need you",
-    /// never a fact), a grey one for a count. Click opens it in its own section.
+    /// One session item: a filled amber dot when it asked (a fact), an open one when it is only quiet ("may need you",
+    /// never a fact). Click opens it the way Sessions does.
     private func needRow(_ need: ActivityHome.Need, now: Date) -> some View {
         Button { openNeed(need) } label: {
             HStack(spacing: 6) {
                 Group {
                     if need.kind == .maybe {
                         Circle().strokeBorder(COSPalette.amber, lineWidth: 1.4)
-                    } else if need.isSession {
-                        Circle().fill(COSPalette.amber)
                     } else {
-                        Circle().fill(Color.secondary.opacity(0.55))
+                        Circle().fill(COSPalette.amber)
                     }
                 }
                 .frame(width: 7, height: 7)
@@ -1134,6 +1139,29 @@ struct ActivityWindow: View {
         }
         .buttonStyle(.plain)
         .help(need.desk.map { $0.help(now: now) } ?? [need.what, need.why].filter { !$0.isEmpty }.joined(separator: " · "))
+    }
+
+    /// The backlog as one segment of counts: "Also · 1 voice to name · 3 memories · 7 work items" after session items,
+    /// the counts alone when there are none. Each count opens its section; its help text says the rest.
+    private func backlogSegment(_ parts: ActivityHome.LineParts) -> some View {
+        HStack(spacing: 6) {
+            if parts.alsoPrefix {
+                Text("Also").foregroundStyle(.secondary)
+            }
+            ForEach(Array(parts.backlog.enumerated()), id: \.element.id) { index, need in
+                if index > 0 || parts.alsoPrefix {
+                    Text("·").foregroundStyle(.tertiary)
+                }
+                Button { openNeed(need) } label: {
+                    Text(ActivityHome.backlogLabel(need)).foregroundStyle(.primary).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help([need.what, need.why].filter { !$0.isEmpty }.joined(separator: " · "))
+            }
+        }
+        .font(COSType.body(12.5))
+        .lineLimit(1)
+        .fixedSize()
     }
 
     /// Each item in its own section: a session as Sessions opens it, the newest meeting with voices to name in Speakers'
@@ -6228,6 +6256,47 @@ struct MeetingStatusPills: View {
 
 
 // ── Memories web host ─────────────────────────────────────────────
+
+/// Marks a Needs you item that may give up part of its width (a session item, whose title truncates).
+private struct NeedsFlowShrinks: LayoutValueKey {
+    static let defaultValue = false
+}
+
+/// 0.5.259: the Needs you line's rows, placed by ActivityHome.flow. A session item that nearly fits the rest of a row
+/// truncates its title rather than start a new row; the backlog segment never shrinks.
+private struct NeedsFlowLayout: Layout {
+    var spacing: CGFloat
+    var lineSpacing: CGFloat
+
+    private func places(_ subviews: Subviews, width: CGFloat) -> [ActivityHome.FlowPlace] {
+        ActivityHome.flow(ideal: subviews.map { $0.sizeThatFits(.unspecified).width },
+                          shrinks: subviews.map { $0[NeedsFlowShrinks.self] }, width: width, spacing: spacing)
+    }
+
+    private func rows(_ subviews: Subviews, _ places: [ActivityHome.FlowPlace]) -> [CGFloat] {
+        var heights: [CGFloat] = []
+        for (subview, place) in zip(subviews, places) {
+            let height = subview.sizeThatFits(ProposedViewSize(width: place.width, height: nil)).height
+            if place.row < heights.count { heights[place.row] = max(heights[place.row], height) } else { heights.append(height) }
+        }
+        return heights
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? subviews.reduce(0) { $0 + $1.sizeThatFits(.unspecified).width + spacing }
+        let heights = rows(subviews, places(subviews, width: width))
+        return CGSize(width: width, height: heights.reduce(0, +) + lineSpacing * CGFloat(max(0, heights.count - 1)))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let placed = places(subviews, width: bounds.width)
+        let heights = rows(subviews, placed)
+        for (subview, place) in zip(subviews, placed) {
+            let y = bounds.minY + heights.prefix(place.row).reduce(0, +) + lineSpacing * CGFloat(place.row)
+            subview.place(at: CGPoint(x: bounds.minX + place.x, y: y), proposal: ProposedViewSize(width: place.width, height: nil))
+        }
+    }
+}
 
 /// A session's provider mark (Resources/mark-claude.svg, mark-codex.svg, mark-cursor.svg), drawn the way Sessions draws
 /// it: a template image tinted by its caller.

@@ -49,7 +49,7 @@ import Foundation
         deskChecks()
         needsChecks()
         cardChecks()
-        print("PASS: Activity home (0.5.259): \(ran) checks: desks (running, waiting, finished today; cap 12 then +N; Reduce Motion), Needs you (oldest first, may need you never as fact, missing sources left out, the quiet line, Next ⌘]), and card leads that never repeat their footers")
+        print("PASS: Activity home (0.5.259): \(ran) checks: desks (running, waiting, finished today; cap 12 then +N; Reduce Motion), Needs you (sessions first, oldest first within, then the backlog as one segment; may need you never as fact, missing sources left out, the quiet line, Next ⌘]), and card leads that never repeat their footers")
     }
 
     // MARK: Desks
@@ -146,6 +146,10 @@ import Foundation
         let asked = session("a1", "waiting", updated: 12, name: "Bottle POS switch offer", since: 12, kind: "question")
         let quiet = session("q1", "running", updated: 16, provider: "codex", name: "gotcos docs sweep")
         let desks = ActivityHome.desks(ActivityHome.seats(list: [asked, quiet], live: nil, now: now, calendar: calendar))
+        // Two of each kind of session: a failed turn 40 min ago and a question 12 min ago; quiet 30 and 16 min.
+        let failedOld = session("e1", "error", updated: 40)
+        let quietOld = session("q2", "running", updated: 30, name: "Older quiet")
+        let busy = ActivityHome.desks(ActivityHome.seats(list: [asked, quiet, failedOld, quietOld], live: nil, now: now, calendar: calendar))
         let meetings = [
             meeting("m1", "Weekly pipeline", date: "2026-10-05", time: "09:30", unnamed: 2),
             meeting("m2", "Deprioritize CityHive, Feature DoorDash Integrations", date: "2026-10-06", time: "11:46", unnamed: 1),
@@ -160,11 +164,36 @@ import Foundation
         let sunday = ISO8601DateFormatter().date(from: "2026-10-04T15:00:00Z")!
         let all = ActivityHome.NeedSources(desks: desks, voices: voices, memoriesToReview: 3, memoriesOldest: sunday, workAttention: 7)
         let items = ActivityHome.needs(all, calendar: calendar)
-        check(items.map(\.kind) == [.memories, .voices, .maybe, .asked, .work], "oldest first", "\(items.map(\.kind.rawValue))")
-        check(items.last?.since == nil, "oldest first", "an undated item follows the dated ones")
-        let undatedFirst = ActivityHome.ordered([ActivityHome.Need(kind: .work, what: "1 work item", why: "needs attention", since: nil),
-                                                 ActivityHome.Need(kind: .memories, what: "1 memory", why: "to review", since: sunday)])
-        check(undatedFirst.map(\.kind) == [.memories, .work], "oldest first", "listed first, an undated item still follows")
+        // [sessions first] a blocked session leads, then a quiet one, then the backlog, though Sunday's memories are older.
+        check(items.prefix(2).map(\.kind) == [.asked, .maybe] && items.dropFirst(2).allSatisfy { !$0.isSession },
+              "sessions first", "\(items.map(\.kind.rawValue))")
+        check(items.dropFirst(2).map(\.kind) == [.voices, .memories, .work], "backlog order", "\(items.map(\.kind.rawValue))")
+        let ranked = ActivityHome.needs(.init(desks: busy, voices: voices, memoriesToReview: 3, memoriesOldest: sunday, workAttention: 7), calendar: calendar)
+        check(ranked.prefix(4).map(\.kind) == [.asked, .asked, .maybe, .maybe], "sessions first", "asked and failed, then quiet: \(ranked.map(\.kind.rawValue))")
+        check(ranked.prefix(4).map { $0.desk?.session.id ?? "" } == ["claude:e1", "claude:a1", "claude:q2", "codex:q1"],
+              "oldest first", "within each group: \(ranked.map { $0.desk?.session.id ?? $0.kind.rawValue })")
+        // [oldest first] within a group, the older first; an undated item follows the dated ones of its kind.
+        check(ranked[0].since! < ranked[1].since! && ranked[2].since! < ranked[3].since!, "oldest first", "within each session group")
+        let undated = ActivityHome.ordered([ActivityHome.Need(kind: .asked, what: "No stamp", why: "asked you a question", since: nil),
+                                            ActivityHome.Need(kind: .asked, what: "Stamped", why: "asked you a question", since: sunday)])
+        check(undated.map(\.what) == ["Stamped", "No stamp"], "oldest first", "listed first, an undated item still follows")
+        // [backlog order] voices, memories, Work, whatever their dates.
+        let backlogOnly = ActivityHome.ordered([ActivityHome.Need(kind: .work, what: "1 work item", why: "needs attention", since: nil),
+                                                ActivityHome.Need(kind: .memories, what: "1 memory", why: "to review", since: sunday),
+                                                ActivityHome.Need(kind: .voices, what: "1 voice to name", why: "Later meeting", since: now)])
+        check(backlogOnly.map(\.kind) == [.voices, .memories, .work], "backlog order", "\(backlogOnly.map(\.kind.rawValue))")
+
+        // [compact backlog] the backlog is one segment of counts: no meeting name, no description; "Also" only after sessions.
+        let parts = ActivityHome.parts(items)
+        check(parts.sessions.map(\.kind) == [.asked, .maybe] && parts.backlog.map(\.kind) == [.voices, .memories, .work], "compact backlog", "split")
+        check(ActivityHome.backlogText(parts) == "Also · 3 voices to name · 3 memories · 7 work items", "compact backlog", ActivityHome.backlogText(parts))
+        let alone = ActivityHome.parts(ActivityHome.needs(.init(desks: [], voices: voices, memoriesToReview: 3, memoriesOldest: sunday, workAttention: 7), calendar: calendar))
+        check(!alone.alsoPrefix && ActivityHome.backlogText(alone) == "3 voices to name · 3 memories · 7 work items", "compact backlog", ActivityHome.backlogText(alone))
+        check(!ActivityHome.parts(ActivityHome.needs(.init(desks: desks), calendar: calendar)).alsoPrefix, "compact backlog", "no Also with sessions alone")
+        for need in parts.backlog {
+            let label = ActivityHome.backlogLabel(need)
+            check(!label.contains("Deprioritize") && !label.contains("to review") && !label.contains("attention"), "compact backlog", "\(label): the cards say the rest")
+        }
 
         // [may need you] the open dot, its own words, never a fact.
         let maybe = items.first { $0.kind == .maybe }!
@@ -196,12 +225,31 @@ import Foundation
         check(ActivityHome.line(items, available: true) == .items, "quiet line", "items show")
         check(ActivityHome.quietLine == "Nothing is waiting on you.", "quiet line", ActivityHome.quietLine)
 
-        // [next] Next ⌘] opens the oldest item; with one item the button reads Open.
-        check(ActivityHome.nextTarget(items)?.kind == .memories, "next", "the oldest item")
+        // [compact line] a session item that nearly fits the rest of a row gives up at most a quarter of its width rather
+        // than start a row; the backlog segment never shrinks. Widths measured from the 920 pt render: 350 and 323 for
+        // the two sessions, 245 for the backlog, about 658 pt of row.
+        let narrow = ActivityHome.flow(ideal: [350, 323, 245], shrinks: [true, true, false], width: 658, spacing: 18)
+        check(narrow.map(\.row) == [0, 0, 1] && narrow[1].width == 658 - 368 && narrow[2].x == 0, "compact line", "two rows at 920: \(narrow)")
+        let wide = ActivityHome.flow(ideal: [350, 323, 245], shrinks: [true, true, false], width: 857, spacing: 18)
+        check(wide.map(\.row) == [0, 0, 1] && wide[1].width == 323, "compact line", "1280: sessions whole, backlog wraps whole: \(wide)")
+        check(ActivityHome.flow(ideal: [350, 323, 245], shrinks: [true, true, false], width: 1000, spacing: 18).map(\.row) == [0, 0, 0],
+              "compact line", "one row when it all fits")
+        let tooNarrow = ActivityHome.flow(ideal: [350, 323, 245], shrinks: [true, true, false], width: 600, spacing: 18)
+        check(tooNarrow.map(\.row) == [0, 1, 1] && tooNarrow[1].width == 323, "compact line", "more than a quarter lost: it wraps whole: \(tooNarrow)")
+        let backlogStaysWhole = ActivityHome.flow(ideal: [350, 245], shrinks: [true, false], width: 560, spacing: 18)
+        check(backlogStaysWhole.map(\.row) == [0, 1] && backlogStaysWhole[1].width == 245, "compact line", "the backlog never shrinks: \(backlogStaysWhole)")
+        let huge = ActivityHome.flow(ideal: [900], shrinks: [true], width: 658, spacing: 18)
+        check(huge == [ActivityHome.FlowPlace(row: 0, x: 0, width: 658)], "compact line", "wider than a row: it gets the row")
+
+        // [next] Next ⌘] opens the first item in the line's order: a blocked session before any backlog, even an older
+        // one; with one item the button reads Open.
+        check(ActivityHome.nextTarget(items)?.kind == .asked, "next", "the blocked session, not Sunday's memories")
+        check(ActivityHome.nextTarget(ranked)?.desk?.session.id == "claude:e1", "next", "the oldest blocked session")
         check(ActivityHome.nextTarget([]) == nil, "next", "nothing to open")
         check(ActivityHome.nextLabel(items) == "Next" && ActivityHome.nextLabel([items[1]]) == "Open", "next", "Open with one item")
         let sessionsOnly = ActivityHome.needs(.init(desks: desks), calendar: calendar)
-        check(ActivityHome.nextTarget(sessionsOnly)?.desk?.session.id == "codex:q1", "next", "the session quiet longest first")
+        check(ActivityHome.nextTarget(sessionsOnly)?.desk?.session.id == "claude:a1", "next", "a question before a longer quiet")
+        check(ActivityHome.nextTarget(alone.backlog)?.kind == .voices, "next", "with no sessions, the backlog in its order")
     }
 
     // MARK: Cards
