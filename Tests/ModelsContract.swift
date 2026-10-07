@@ -240,6 +240,11 @@ struct ModelsContract {
             return t
         }
         precondition(QueuedSessionTurn(.object(["status": .string("waiting")])) == nil, "a row without an id is dropped")
+        precondition(turn("fence", "waiting", 0, 10, reason: "native_target_fenced").waitingDetail?.contains("unconfirmed") == true)
+        precondition(turn("head", "waiting", 0, 10, reason: "native_head_unavailable").waitingDetail?.contains("transcript") == true)
+        precondition(turn("busy", "waiting", 0, 10, reason: "native_target_busy").waitingDetail?.contains("available") == true)
+        precondition(turn("future", "waiting", 0, 10, reason: "new_reason").waitingDetail == "Waiting: new reason")
+        precondition(turn("delivered", "delivered", 0, 10, reason: "native_target_busy").waitingDetail == nil)
         let next = turn("a", "waiting", 0, 10)
         precondition(next.stateLine == "Next" && next.cancellable && next.showsInQueue, "position 0 is Next and cancellable")
         precondition(turn("b", "waiting", 1, 11).stateLine == "2nd in line", "position 1 reads 2nd in line")

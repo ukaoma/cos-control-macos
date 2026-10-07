@@ -1,3 +1,9 @@
+# 0.5.264 (317)
+
+- Open in platform shows progress and persistent recovery instructions in the Sessions pane, including missing Claude Desktop, archived sessions, unavailable transcripts and helper failures. Repeated clicks cannot launch overlapping opens.
+- Waiting follow-ups show their recorded hold reason. Queue copy no longer promises delivery merely because a turn ends.
+- Keeps bundled runtime onboarding, Developer ID release signing and the Cloud Puff default from 0.5.263. Chris’s specific stalled-send cause still requires his installed versions and refusal evidence; these changes do not bypass session ownership or resend uncertain turns.
+
 # 0.5.263 (316)
 
 - New installations start with Cloud Puff, bundled for offline first launch. Existing pet choices remain intact. Use Cloud Puff restores the default; the COS robot and animated characters remain available.

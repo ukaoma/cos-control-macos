@@ -127,6 +127,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
 "$TMP/helper-transport-contract"
 "$TMP/models-contract"
 zsh "$ROOT/Tests/run-simple-pet.sh" "$TMP/simple-pet-proof"
+zsh "$ROOT/Tests/run-session-open-recovery.sh"
 # 0.5.232: the Markdown parser is pure Foundation and pinned by an EXECUTED contract
 # (the scribe's meeting, lists, tasks, tables, code, quotes, details, speaker lines).
 swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
@@ -1149,7 +1150,7 @@ assert "next.workRunning = runningWorkSessionIDs.contains { sameSession($0, sess
 pet = body(model, "    private func applyPetSessions(", "        petSessionsRaw = sessions")
 assert "let sessions = ClaudeSession.markingWork(sessions, workSessionIDs: workSessionIDs, runningWorkSessionIDs: runningWorkSessionIDs)" in pet, "the pet marks Work sessions"
 reveal = body(model, "    func openSessionInPlatform(_ session: ClaudeSession) {", "    func openPetSessionInControl(")
-assert reveal.index("guard !session.heldByServer else {") < reveal.index("Task { await revealPetSession(session) }"), "no Open in platform while the server holds the session"
+assert reveal.index("guard !session.heldByServer else {") < reveal.index("await revealPetSession(session)"), "no Open in platform while the server holds the session"
 assert "!session.heldByServer && sessionChatGateMessage(for: session) == nil" in model, "no pet Continue while the server holds the session"
 assert "if mode == .continueSession, Self.serverHold(onSession: session.id, in: receipts) != nil {" in submit, "no Work Continue while the server holds the session"
 assert "Self.linkableJobStates.contains(state)" in store, "only a running or well-finished job links its session (QA W2)"

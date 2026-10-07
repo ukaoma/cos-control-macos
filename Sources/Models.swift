@@ -1523,6 +1523,18 @@ struct QueuedSessionTurn: Identifiable, Sendable, Equatable {
     /// the transcript's and the user's own doing; they drop off the list.
     var showsInQueue: Bool { ["waiting", "delivering", "refused", "expired"].contains(status) }
 
+    /// A parked turn has not been delivered. Keep the reason visible instead of promising a turn-end send.
+    var waitingDetail: String? {
+        guard isWaiting, !reason.isEmpty else { return nil }
+        switch reason {
+        case "native_target_fenced": return "An earlier send is unconfirmed. Check the session on your Mac before releasing its fence."
+        case "native_head_unavailable": return "COS cannot read the latest transcript. Open the original session, then check again."
+        case "native_target_busy", "native_turn_in_progress", "native_thread_working": return "Waiting for this session to become available."
+        case "live_desktop_process": return "The AI app still owns this session. COS is waiting for it to become available."
+        default: return "Waiting: " + reason.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
     /// "Next", "2nd in line", "Delivering…", "Refused · delivery attempts exhausted".
     var stateLine: String {
         switch status {

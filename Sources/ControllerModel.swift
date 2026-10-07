@@ -398,7 +398,7 @@ final class ControllerModel: ObservableObject {
         Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
     }
 
-    private let helper = HelperClient()
+    private let helper: HelperClient
 
     /// The Memories web host runs the same helper commands the native panes do,
     /// through this one door, so the page cannot reach the client directly.
@@ -435,7 +435,8 @@ final class ControllerModel: ObservableObject {
     let activityLoadsEnabled: Bool
     /// 0.5.259: when Control last changed each card's stage (Work's Recent activity order).
     let workActivity: WorkActivityJournal
-    init(startBackgroundWork: Bool = true, allowActivityLoads: Bool = false) {
+    init(startBackgroundWork: Bool = true, allowActivityLoads: Bool = false, helper: HelperClient = HelperClient()) {
+        self.helper = helper
         backgroundWorkEnabled = startBackgroundWork
         activityLoadsEnabled = startBackgroundWork || allowActivityLoads
         workActivity = WorkActivityJournal(url: WorkActivityJournal.defaultURL(background: startBackgroundWork))
@@ -1876,6 +1877,9 @@ final class ControllerModel: ObservableObject {
     @Published var sessionSemanticAvailable = true
     @Published var sessionSemanticReason: String?
     @Published var openClaudeRow: ClaudeSession?
+    @Published var platformOpenSessionID: String?
+    @Published var platformOpenNotice: String?
+    @Published var platformOpening = false
     @Published var claudeSessionDetail: ClaudeSessionDetail?
     @Published var claudeSessionDetailLoading = false
     /// 0.5.233: the Claude Code hooks install state as the server reports it. Five
@@ -4030,9 +4034,17 @@ final class ControllerModel: ObservableObject {
             openPetSessionInControl(session)
             return
         }
+        guard !platformOpening else { return }
+        platformOpenSessionID = session.id
+        platformOpenNotice = "Opening session in its app…"
+        platformOpening = true
         petFocusID = session.id
         markPetCompletionSeen(id: session.id)
-        Task { await revealPetSession(session) }
+        Task {
+            await revealPetSession(session)
+            platformOpenNotice = petNotice ?? "Asked the app to open this session. If it did not appear, open the app and select the session there."
+            platformOpening = false
+        }
     }
 
     func openPetSessionInControl(_ session: ClaudeSession) {
@@ -4049,6 +4061,7 @@ final class ControllerModel: ObservableObject {
     }
 
     private func revealPetSession(_ session: ClaudeSession) async {
+        petNotice = nil
         var arguments = [
             "session-reveal",
             "--provider", session.provider,
@@ -4254,6 +4267,8 @@ final class ControllerModel: ObservableObject {
         case "running": "This session is still running. Open it in Claude when it finishes."
         case "archived": "This session is archived in Claude. Unarchive it there to open it."
         case "no_transcript": "Claude has no transcript for this session anymore, so there is nothing to open."
+        case "no_desktop": "Install and open Claude Desktop to open this session in its app."
+        case "invalid": "This session has an incomplete ID. Refresh Sessions, then try again."
         default: nil
         }
     }

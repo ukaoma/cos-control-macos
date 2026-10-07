@@ -5973,7 +5973,7 @@ struct ClaudeSessionDetailPane: View {
                 HStack(spacing: 10) {
                     // 0.5.250: not while the COS server is still running a Work New session's first turn (two writers).
                     Button("Open in platform") { model.openSessionInPlatform(row) }
-                        .disabled(row.heldByServer)
+                        .disabled(row.heldByServer || model.platformOpening)
                         .help(row.heldByServer ? "Still running on the COS server. It opens in the app when the first reply is done." : "")
                     if let detail = model.claudeSessionDetail {
                         Button("Copy session") { model.copyClaudeSession() }
@@ -5990,6 +5990,16 @@ struct ClaudeSessionDetailPane: View {
                 .controlSize(.small)
                 .padding(.horizontal, 24)
                 .padding(.vertical, 12)
+                if model.platformOpenSessionID == row.id, let notice = model.platformOpenNotice {
+                    Text(verbatim: notice)
+                        .font(COSType.body(12))
+                        .foregroundStyle(COSPalette.accent)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 10)
+                        .accessibilityIdentifier("session-platform-open-notice")
+                }
                 if let note = model.copyNote {
                     Text(note)
                         .font(COSType.body(11))
@@ -6238,8 +6248,8 @@ struct SessionChatComposer: View {
             let waiting = queue.filter(\.isWaiting).count
             if !queue.isEmpty || (model.openClaudeRow?.queuedTurns ?? 0) > 0 {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(waiting == 1 ? "1 follow-up queued; it lands when this turn ends."
-                         : waiting > 1 ? "\(waiting) follow-ups queued; they land in order when this turn ends."
+                    Text(waiting == 1 ? "1 follow-up queued. It sends when this session is available."
+                         : waiting > 1 ? "\(waiting) follow-ups queued. They send in order when this session is available."
                          : "Queue")
                         .font(.system(size: 10.5))
                         .foregroundStyle(COSPalette.accent)
@@ -6250,11 +6260,17 @@ struct SessionChatComposer: View {
                                 .foregroundStyle(turn.isDelivering ? COSPalette.green
                                                  : turn.isWaiting ? COSPalette.accent : COSPalette.amber)
                                 .frame(width: 118, alignment: .leading)
-                            Text(verbatim: model.queuedTurnText(turn))
-                                .font(.system(size: 11.5))
-                                .foregroundStyle(turn.isWaiting || turn.isDelivering ? Color.primary : Color.secondary)
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true)
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(verbatim: model.queuedTurnText(turn))
+                                    .font(COSType.body(11.5))
+                                    .foregroundStyle(turn.isWaiting || turn.isDelivering ? Color.primary : Color.secondary)
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if let reason = turn.waitingDetail {
+                                    Text(verbatim: reason).font(COSType.body(11)).foregroundStyle(COSPalette.amber)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
                             Spacer(minLength: 8)
                             if turn.cancellable {
                                 if model.chatEditingTurn?.clientTurnId == turn.clientTurnId {
