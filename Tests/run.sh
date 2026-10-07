@@ -1046,7 +1046,7 @@ assert "onSendingChange: { sending = $0 }" in sheet, "a send from the chooser in
 dot = body(whv, "struct WorkLiveDot: View {", "/// How a handoff reads on the board")
 assert "@Environment(\\.accessibilityReduceMotion)" in dot and "guard live, !reduceMotion" in dot
 esc_aw = body(aw, "private func handleActivityEscape() -> Bool {", "private func goBack()")
-assert esc_aw.index("workWorkspaceState.startItemID != nil") < esc_aw.index("confirmingTaskDismiss"), "Activity Escape must close the Start work overlay first"
+assert esc_aw.index("workWorkspaceState.startItemID != nil") < esc_aw.index("taskDetail != nil"), "Activity Escape must close the Start work overlay first"
 assert "if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }" in esc_aw, "Escape must not close the overlay mid-send"
 for fn in ["private func goHome() {", "private func goBack() {", "private func clearDetail() {", "private func openConnectedWork(_ id: String) {", "private func openHandoffWork(_ id: String) {"]:
     assert "if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }" in aw[aw.index(fn):aw.index(fn) + 320].split("\n")[2], fn + " must close the Start work overlay unless a send is being handed over"
