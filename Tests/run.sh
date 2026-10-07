@@ -72,7 +72,7 @@ fi
 /usr/bin/python3 -c '
 import json, sys
 value = json.loads(sys.argv[1])
-# 76 at 0.5.262 (14 for the evidence check's body); 62 at 0.5.253 (the 13 Cursor chat finder checks went with the finder, 7
+# 76 at 0.5.262 (14 for the evidence check body); 62 at 0.5.253 (the 13 Cursor chat finder checks went with the finder, 7
 # for the re-claim token on stdin came in); 68 at 0.5.252 (the glasses request result body and failure codes); 51 at 0.5.250.
 if not value.get("ok") or value.get("details", {}).get("checks", 0) < 76:
     sys.exit("helper self-test-work FAILED: " + str(value)[:2000])
@@ -526,7 +526,8 @@ root = pathlib.Path(sys.argv[1])
 info = plistlib.loads((root / "Resources/Info.plist").read_bytes())
 version, build = info["CFBundleShortVersionString"], info["CFBundleVersion"]
 head = (root / "CHANGELOG.md").read_text().splitlines()
-entry = next((l for l in head if l.startswith("## ")), "")
+# A "## Unreleased" section above it collects a feature branch's notes until the release names it (0.5.262 follows).
+entry = next((l for l in head if l.startswith("## ") and l.strip() != "## Unreleased"), "")
 m = re.match(r"## (\d+\.\d+\.\d+) \(build (\d+)\)", entry)
 if not m:
     sys.exit(f"CHANGELOG top entry is not '## X.Y.Z (build N)': {entry!r}")
