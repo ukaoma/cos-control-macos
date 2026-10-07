@@ -66,6 +66,7 @@ cp "$ROOT/Resources/Fonts/"*.ttf "$APP/Contents/Resources/Fonts/"
 mkdir -p "$APP/Contents/Resources/memories"
 cp "$ROOT/Resources/memories/memories.html" "$ROOT/Resources/memories/memories-app.js" "$ROOT/Resources/memories/memory-workspace.js" "$ROOT/Resources/memories/memory-stewardship.js" "$ROOT/Resources/memories/graph-explorer.js" "$ROOT/Resources/memories/memories-theme.css" "$ROOT/Resources/memories/graph-explorer.css" "$ROOT/Resources/memories/d3.min.js" "$APP/Contents/Resources/memories/"
 mkdir -p "$APP/Contents/Resources/DefaultPet"
+cp -R "$ROOT/Resources/StarterPet" "$APP/Contents/Resources/StarterPet"
 cp "$ROOT/Resources/DefaultPet/"*.png "$ROOT/Resources/DefaultPet/"*.json "$APP/Contents/Resources/DefaultPet/"
 # Additional processed characters live under one copied resource root. The
 # Swift registry chooses them by stable ID; adding one never needs another

@@ -8,12 +8,25 @@ import SwiftUI
         precondition(NSHomeDirectory().contains("cos-simple-pet-test"))
         let directory = PetSpriteStore.supportDirectory()
         precondition(directory.path.hasPrefix(NSHomeDirectory() + "/"))
+        let bundled = Bundle.main.resourceURL!.appendingPathComponent("StarterPet/cloud-puff.webp")
+        let expected = try Data(contentsOf: bundled)
+        let installed = directory.appendingPathComponent("\(PetSpriteStore.fileStem).webp")
+        // CLI test binaries can share a preferences domain across disposable
+        // homes through cfprefsd. Explicitly start this test's domain fresh.
+        precondition(Bundle.main.bundleIdentifier != "com.gotcos.control")
+        UserDefaults.standard.removeObject(forKey: "cos.sessionPetDefaultSeeded")
+        UserDefaults.standard.removeObject(forKey: "cos.sessionPetDefaultArtGeneration")
         let model = ControllerModel(startBackgroundWork: false)
-        precondition(model.petCustomSprite == nil && model.petSpriteKit.frames(for: .idle).isEmpty,
-                     "fresh setup must draw the robot even with bundled Jedi available")
+        model.loadPetSprite() // the no-background initializer intentionally skips startup work
+        precondition(model.petCustomSprite != nil && (try! Data(contentsOf: installed)) == expected,
+                     "fresh setup must install the bundled Cloud Puff without a network request")
+        model.loadPetSprite()
+        precondition((try! Data(contentsOf: installed)) == expected)
+        print("PASS: fresh setup and repeated loading use the exact bundled Cloud Puff")
+        model.resetPetSprite()
         model.loadPetSprite()
         precondition(model.petCustomSprite == nil && model.petSpriteKit.frames(for: .idle).isEmpty)
-        print("PASS: fresh setup and repeated loading retain the drawn COS robot")
+        print("PASS: explicit COS robot choice survives reload")
 
         for character in PetSpriteStore.bundledCharacters {
             let source = PetSpriteStore.bundledCharacterURL(character)!
@@ -25,30 +38,39 @@ import SwiftUI
             precondition(try! Data(contentsOf: stateURL) == before)
             precondition(!model.petSpriteKit.frames(for: .idle).isEmpty)
             print("PASS: missing seed preference preserves chosen \(character.displayName)")
-            model.restoreDefaultCharacter()
+            model.resetPetSprite()
         }
 
         let source = PetSpriteStore.bundledDefaultURL()!
         let map = PetSpriteStore.loadStateMap(in: source)
         let custom = try Data(contentsOf: source.appendingPathComponent(map[.idle]!.file))
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let customURL = directory.appendingPathComponent("\(PetSpriteStore.fileStem).png")
         try custom.write(to: customURL)
         UserDefaults.standard.removeObject(forKey: "cos.sessionPetDefaultSeeded")
         model.loadPetSprite()
         precondition(model.petCustomSprite != nil && (try! Data(contentsOf: customURL)) == custom)
         model.restoreDefaultCharacter()
-        precondition(model.petCustomSprite == nil && model.petSpriteKit.frames(for: .idle).isEmpty)
         model.loadPetSprite()
-        precondition(model.petCustomSprite == nil && model.petSpriteKit.frames(for: .idle).isEmpty)
-        print("PASS: custom artwork survives loading; explicit restore stays on the robot")
+        precondition(model.petCustomSprite != nil && (try! Data(contentsOf: installed)) == expected)
+        print("PASS: custom artwork survives loading; explicit restore returns to Cloud Puff")
+
+        model.resetPetSprite()
+        UserDefaults.standard.removeObject(forKey: "cos.sessionPetDefaultSeeded")
+        let held = bundled.appendingPathExtension("held")
+        try FileManager.default.moveItem(at: bundled, to: held)
+        model.loadPetSprite()
+        precondition(!UserDefaults.standard.bool(forKey: "cos.sessionPetDefaultSeeded"))
+        try FileManager.default.moveItem(at: held, to: bundled)
+        model.loadPetSprite()
+        precondition((try! Data(contentsOf: installed)) == expected)
+        print("PASS: missing starter artwork does not consume first-run seeding; retry succeeds")
 
         let out = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
         try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             let view = VStack(spacing: 12) {
-                SessionPetSprite(working: false, reduceMotion: true, size: 88)
-                Text("COS robot").font(COSType.display(22))
+                SessionPetSprite(working: false, reduceMotion: true, customImage: model.petCustomSprite, size: 88)
+                Text("Cloud Puff").font(COSType.display(22))
                 Text("Simple default session pet").font(COSType.body(13))
             }.foregroundStyle(.primary).frame(width: 360, height: 200)
                 .background(Color(nsColor: .windowBackgroundColor))
@@ -65,9 +87,9 @@ import SwiftUI
             let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
             host.cacheDisplay(in: host.bounds, to: rep)
             let suffix = appearance == .aqua ? "light" : "dark"
-            try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("cos-robot-\(suffix).png"))
+            try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("cloud-puff-\(suffix).png"))
             window.close()
         }
-        print("PASS: robot rendered in light and dark without a sprite asset")
+        print("PASS: bundled Cloud Puff rendered in light and dark")
     }
 }

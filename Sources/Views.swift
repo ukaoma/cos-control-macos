@@ -395,7 +395,7 @@ struct ControlPanel: View {
             pendingOpenPetsRow.map { "Use \($0.displayName) as the session pet figure?" }
                 ?? "Use this figure as the session pet figure?",
             isPresented: $confirmOpenPetsSprite,
-            message: "Replaces the current session pet sprite with this gallery thumbnail. Choose an animated character under Characters, or Use COS figure to return to the default COS robot.",
+            message: "Replaces the current session pet sprite with this gallery thumbnail. Use Cloud Puff restores the default; Characters offers animated pets.",
             actions: [
                 .normal("Use") {
                     if let row = pendingOpenPetsRow {
@@ -732,6 +732,8 @@ struct ControlPanel: View {
                     }
                     .font(.caption)
                     Divider()
+                    Button("Use Cloud Puff") { model.restoreDefaultCharacter() }
+                        .help("Restore the bundled default pet. Artwork from OpenPets.")
                     HStack {
                         Button("Install sprite pack") {
                             model.choosePetSpritePack()

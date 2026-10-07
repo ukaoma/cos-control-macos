@@ -3391,6 +3391,10 @@ final class ControllerModel: ObservableObject {
 
     func restoreDefaultCharacter() {
         resetPetSprite()
+        if !PetSpriteStore.seedStarterDefault(into: PetSpriteStore.supportDirectory()) {
+            petNotice = "Could not restore Cloud Puff. Try again."
+        }
+        loadPetSprite()
     }
 
     /// Always the BUNDLED art, and one FRAME of it. Reading the installed idle
@@ -3465,9 +3469,10 @@ final class ControllerModel: ObservableObject {
 
     func loadPetSprite() {
         let directory = PetSpriteStore.supportDirectory()
-        // New users start with the drawn COS robot (no sprite files). Mark the
-        // default as chosen without writing or deleting any existing artwork.
-        if !UserDefaults.standard.bool(forKey: Self.petDefaultSeededKey) {
+        // Bundle starter art for offline first launch. A previous choice,
+        // including the empty drawn-robot selection, stays chosen.
+        if !UserDefaults.standard.bool(forKey: Self.petDefaultSeededKey),
+           PetSpriteStore.seedStarterDefault(into: directory) {
             UserDefaults.standard.set(true, forKey: Self.petDefaultSeededKey)
         }
         if UserDefaults.standard.integer(forKey: Self.petDefaultArtGenerationKey)

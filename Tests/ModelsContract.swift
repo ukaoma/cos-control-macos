@@ -2056,8 +2056,8 @@ struct ModelsContract {
             precondition(character.folderName == folder,
                          "\(id) must resolve its packaged resource folder")
         }
-        precondition(PetSpriteStore.defaultCharacterName == "COS robot" && PetSpriteStore.defaultCharacterID == "cos-figure",
-                     "fresh installs must use the drawn COS robot")
+        precondition(PetSpriteStore.defaultCharacterName == "Cloud Puff" && PetSpriteStore.defaultCharacterID == "cloud-puff",
+                     "fresh installs must use Cloud Puff")
         let seedRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("cos-seed-\(ProcessInfo.processInfo.processIdentifier)")
         let seedSource = seedRoot.appendingPathComponent("DefaultPet", isDirectory: true)

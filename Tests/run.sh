@@ -2917,7 +2917,7 @@ need('if petSessions.isEmpty && petDismissals.stamps.isEmpty' in apply_pet_body
      "the live list must auto-close only when nothing is left to show — the "
      "restore row must survive dropping the last session")
 need('installBundledDefault(into: directory)' not in model,
-     "fresh installs must use the drawn robot without overwriting existing artwork")
+     "fresh installs must not seed the legacy Miles pack")
 need('petDefaultSeededKey' in model,
      "default seeding is not gated by a flag, so Use COS figure would be undone on relaunch")
 need('petDefaultArtGenerationKey' in model and 'refreshRecognizedBundledDefault' in model,

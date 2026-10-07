@@ -1,3 +1,7 @@
+# 0.5.263 (316)
+
+- New installations start with Cloud Puff, bundled for offline first launch. Existing pet choices remain intact. Use Cloud Puff restores the default; the COS robot and animated characters remain available.
+
 # 0.5.262 (315)
 
 - New installations start with the simple built-in COS robot. Existing chosen sprites and stock character upgrades remain intact; Miles Windu stays optional in Characters.

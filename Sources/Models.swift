@@ -7778,11 +7778,31 @@ enum PetSpriteStore {
             isAdvanced: true
         ),
     ]
-    // The drawn COS robot needs no sprite download. Keep the historical Miles
+    // Cloud Puff is bundled for offline first launch. Keep the historical Miles
     // identity separate: stock-art upgrades must never replace a user's choice.
-    static let defaultCharacterID = "cos-figure"
-    static let defaultCharacterName = "COS robot"
+    static let defaultCharacterID = "cloud-puff"
+    static let defaultCharacterName = "Cloud Puff"
     static let legacyDefaultCharacterID = "jedi-miles-windu"
+
+    /// Existing artwork is a choice, even when the seed preference is missing.
+    /// Missing or unwritable bundled art returns false so first launch can retry.
+    @discardableResult
+    static func seedStarterDefault(into directory: URL, bundle: Bundle = .main,
+                                   fileManager: FileManager = .default) -> Bool {
+        if existingSpriteURL(in: directory, fileManager: fileManager) != nil
+            || fileManager.fileExists(atPath: directory.appendingPathComponent(stateFileName).path)
+            || PetSpritePose.allCases.contains(where: {
+                existingPoseURL($0, in: directory, fileManager: fileManager) != nil
+            }) { return true }
+        guard let source = bundle.resourceURL?.appendingPathComponent("StarterPet/cloud-puff.webp"),
+              let bytes = try? Data(contentsOf: source), NSImage(data: bytes) != nil
+        else { return false }
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            try bytes.write(to: directory.appendingPathComponent("\(fileStem).webp"), options: .atomic)
+            return true
+        } catch { return false }
+    }
 
     static func bundledCharacter(id: String) -> BundledPetCharacter? {
         bundledCharacters.first { $0.id == id }
