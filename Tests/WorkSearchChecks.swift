@@ -191,11 +191,14 @@ import SwiftUI
         check(WorkSearch.note("jev_not_configured") == "Meaning search needs a TypeSafe key in Settings", "degrade line", "no TypeSafe key")
         check(WorkSearch.note("jev_key_rejected") == "TypeSafe did not accept the saved key. Check it in Settings.", "degrade line", "a refused key (6.65.0 QA)")
         check(WorkSearch.note("jev_request_rejected") == "Meaning search could not take this search", "degrade line", "a refused request (6.65.0 QA)")
-        for quiet in ["search_off", "jev_unavailable", "unreachable", "http_500", "invalid_search_request", "a_reason_from_a_later_server", nil] as [String?] {
+        for quiet in ["search_off", nil] as [String?] {
             check(WorkSearch.note(quiet) == nil, "degrade line", "no line for \(String(describing: quiet))")
         }
         let cards = board(2)
         let off = result(cards, query: "launch", meaning: meaning([:], key: WorkSearchKey(query: "launch", scope: .all, domain: nil), available: false, reason: "search_off"))
+        for reason in ["unreachable", "jev_unavailable", "http_503", "a_future_reason"] {
+            check(WorkSearch.note(reason)?.contains("Showing word matches.") == true, "degrade line", "\(reason) must explain word-only fallback")
+        }
         check(off.note == nil && off.hits.count == 2, "degrade line", "switched off: the words alone, and nothing said")
         let old = result(cards, query: "launch", meaning: meaning([:], available: false, reason: "server_too_old"))
         check(old.note == "Meaning search needs COS server 6.65", "degrade line", "\(String(describing: old.note))")
@@ -620,25 +623,25 @@ import SwiftUI
         check(state.meaningPending == nil, "pending line", "a cancelled search still reads as pending")
         state.searchPause = .zero
 
-        // A passing failure is never kept, and the same search asks again; a definitive answer ends the asking; the cap's
+        // A passing failure keeps its explanation and the same search asks again; a definitive answer ends the asking; the cap's
         // answer is kept for its line but asked again.
         state.query = "transient failure"
         await gate.set(fail: true)
         var before = await gate.count()
         await state.searchMeaning(ask(), isolated: false)
-        check(state.meaning == nil, "transient answers", "an unreachable answer was kept")
+        check(state.meaning?.reason == "unreachable" && WorkSearch.note(state.meaning?.reason) != nil, "transient answers", "an unreachable answer lost its explanation")
         await state.searchMeaning(ask(), isolated: false)
         var now = await gate.count()
         check(now == before + 2, "transient answers", "the same search did not ask again after a passing failure")
         await gate.set(fail: false)
-        // A reason this build does not know falls back to the words: logged, never kept, asked again, no line.
+        // Unknown reasons also explain the word-only fallback and allow another request.
         for reason in ["jev_unavailable", "http_503", "invalid_search_request", "a_reason_from_a_later_server"] {
             await gate.set(answer: HelperResponse(ok: true, message: "", details: ["available": .bool(false), "reason": .string(reason)]))
             before = await gate.count()
             await state.searchMeaning(ask(), isolated: false)
             await state.searchMeaning(ask(), isolated: false)
             now = await gate.count()
-            check(state.meaning == nil && now == before + 2, "transient answers", "\(reason) was kept or not asked again")
+            check(state.meaning?.reason == reason && WorkSearch.note(reason) != nil && now == before + 2, "transient answers", "\(reason) lost its line or was not asked again")
         }
         for reason in ["search_off", "jev_not_configured", "server_too_old", "too_many_candidates", "jev_request_rejected"] {
             state.query = "definitive " + reason

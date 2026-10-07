@@ -163,7 +163,7 @@ search_fn = body(board, "    func searchMeaning(", "    /// Escape on the board 
 need('NSLog("COS Work search: meaning search unavailable (%@), %ld-character search"' in search_fn and "request.length)" in search_fn,
      "every degrade leaves a trace, never the query's words")
 need("if let kept = meaning, kept.key == request.key, WorkSearch.settled(kept) { return }" in search_fn
-     and "meaning = WorkSearch.keeps(answer) ? answer : nil" in search_fn, "a passing failure is never kept and never ends the asking")
+     and "meaning = WorkSearch.keeps(answer) ? answer : nil" in search_fn, "a failure explanation never ends the asking")
 need("meaningPending = request.key" in search_fn and "defer { if meaningPending == request.key { meaningPending = nil } }" in search_fn,
      "the board knows while an answer is on its way, and stops knowing when it is not")
 need("try await helper.run(args, timeout: 30, stdinData: data)" in board, "the app waits longer than the helper")

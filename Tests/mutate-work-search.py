@@ -133,7 +133,7 @@ MUTANTS = [
     ("pending never told", V, "        meaningPending = request.key\n", "", "[pending line]", "swift"),
     ("pending never cleared", V, "        defer { if meaningPending == request.key { meaningPending = nil } }\n", "", "[pending line]", "swift"),
     ("pending ignored by the line", V, '(pending ? "Searching by meaning\\u{2026}" : "No matches on this board")', '"No matches on this board"', "[pending line]", "swift"),
-    ("transient answers kept", V, "meaning = WorkSearch.keeps(answer) ? answer : nil", "meaning = answer", "[transient answers]", "swift"),
+    ("temporary failure line hidden", V, 'case "jev_unavailable": "Meaning search is temporarily unavailable. Showing word matches."', 'case "jev_unavailable": nil', "[degrade line]", "swift"),
     ("any answer settles", V, '{ meaning.available || definitiveReasons.contains(meaning.reason ?? "") }', "{ _ = meaning; return true }", "[transient answers]", "swift"),
     ("search_off asked again", V, 'definitiveReasons: Set<String> = ["search_off", "jev_not_configured"', 'definitiveReasons: Set<String> = ["jev_not_configured"', "[definitive answers]", "swift"),
     ("a refused request asked again", V, '"too_many_candidates", "jev_request_rejected"]', '"too_many_candidates"]', "[definitive answers]", "swift"),

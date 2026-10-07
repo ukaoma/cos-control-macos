@@ -264,7 +264,7 @@ enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
 
     /// Asks Jev for the card the search means, after a pause in typing. Typing never waits on it: the board shows the
     /// title and word matches at once, and this answer joins them when it arrives, if the search is still the same.
-    /// A passing failure (unreachable, jev_unavailable, an HTTP error, a bad answer) is never kept, and neither a kept cap
+    /// A passing failure keeps its explanation visible but never settles the search, and neither a kept cap
     /// nor breaker answer stops the next search asking again: only an answer that ran, or one that cannot change by asking
     /// again (WorkSearch.settled), ends the asking for its search. While an answer is on its way the board says so.
     func searchMeaning(_ request: WorkSearchRequest, isolated: Bool) async {
@@ -790,8 +790,7 @@ enum WorkSearch {
 
     /// The one line said when meaning search could not run, only where it matters: the breaker (an hour), the day's budget,
     /// too many cards, no TypeSafe key or one TypeSafe refused, a request Jev refused, and a server without the route.
-    /// Nothing for a switch turned off on purpose, a passing failure, or a reason this build does not know (the words
-    /// still work, and the log names it).
+    /// A temporary or unknown failure explains the word-only fallback. A switch deliberately turned off stays quiet.
     nonisolated static func note(_ reason: String?) -> String? {
         switch reason {
         case "jev_breaker_open": "Meaning search is paused for an hour"
@@ -801,7 +800,10 @@ enum WorkSearch {
         case "jev_key_rejected": "TypeSafe did not accept the saved key. Check it in Settings."
         case "jev_request_rejected": "Meaning search could not take this search"
         case "server_too_old": "Meaning search needs COS server 6.65"
-        default: nil
+        case "unreachable": "Could not reach COS server. Showing word matches."
+        case "jev_unavailable": "Meaning search is temporarily unavailable. Showing word matches."
+        case "search_off", nil: nil
+        default: "Meaning search could not run. Showing word matches."
         }
     }
     /// Reasons that cannot change by asking again for the same search (a refused request is refused again). A key that
@@ -810,7 +812,7 @@ enum WorkSearch {
     /// An answer that ends the asking for its search: it ran, or its reason is definitive.
     nonisolated static func settled(_ meaning: WorkSearchMeaning) -> Bool { meaning.available || definitiveReasons.contains(meaning.reason ?? "") }
     /// An answer worth keeping at all: settled, or one that has a line to say (the cap or the breaker, asked again next
-    /// time). A passing failure is dropped, so nothing about it lingers.
+    /// time). Failure explanations remain visible without suppressing the next request.
     nonisolated static func keeps(_ meaning: WorkSearchMeaning) -> Bool { settled(meaning) || note(meaning.reason) != nil }
 
     /// Why a card is in Best matches.
