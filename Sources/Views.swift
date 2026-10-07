@@ -3850,6 +3850,8 @@ struct GraphEntityPane: View {
 /// intrinsic size and the row breaks wherever the width runs out.
 struct ChipFlowLayout: Layout {
     var spacing: CGFloat = 7
+    /// Between rows, when it differs from the gap between chips (0.5.259: the Activity home's Needs you line).
+    var lineSpacing: CGFloat? = nil
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? .infinity
@@ -3858,7 +3860,7 @@ struct ChipFlowLayout: Layout {
             let size = subview.sizeThatFits(.unspecified)
             if x > 0, x + size.width > width {
                 x = 0
-                y += rowHeight + spacing
+                y += rowHeight + (lineSpacing ?? spacing)
                 rowHeight = 0
             }
             x += size.width + spacing
@@ -3874,7 +3876,7 @@ struct ChipFlowLayout: Layout {
             let size = subview.sizeThatFits(.unspecified)
             if x > bounds.minX, x + size.width > bounds.maxX {
                 x = bounds.minX
-                y += rowHeight + spacing
+                y += rowHeight + (lineSpacing ?? spacing)
                 rowHeight = 0
             }
             subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
