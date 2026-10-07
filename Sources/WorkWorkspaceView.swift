@@ -354,6 +354,8 @@ enum WorkBoardMetrics {
     nonisolated(unsafe) static var boards = 0
     /// 0.5.259: how often the board's card dates were worked out (once per data change, never per redraw).
     nonisolated(unsafe) static var dates = 0
+    nonisolated(unsafe) static var activityBodies = 0
+    static func countActivityBody() { activityBodies += 1 }
     static func countBody() { bodies += 1 }
     static func countBoard() { boards += 1 }
 }

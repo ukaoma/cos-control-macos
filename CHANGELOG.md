@@ -1,3 +1,11 @@
+## 0.5.260 (build 313) · Task editing
+
+- Task-name and finish-line drafts live in the editor, so typing no longer invalidates the full Activity window and Work board.
+- The editor uses GOTCOS typography, warm surfaces, themed fields, and a gold Save changes button that stays visible. Task details show the Work stage. Secondary actions are grouped under More task actions.
+- One revision-guarded Save changes action writes the task name and finish line together. Background refreshes keep the draft and original revision; errors leave the draft open.
+- Refresh availability checks the configured task bridge without discarding or rebasing the draft. Repair advice distinguishes missing bridge support from invalid task metadata.
+- Macs using the full COS Python bridge also need its task-edit-work command and editTasks capability. The server’s bundled portable bridge already supports both; updating the npm server alone does not update a separately configured COS checkout.
+
 ## 0.5.259 (build 312) · Activity and Work search
 
 - **Open meeting from Speakers.** A meeting's speaker review has an Open meeting button. It opens that meeting in Meetings, with its transcript, summary and files, and Back returns to the review. A merged meeting opens as the merged record, which is the row Meetings lists. A meeting the loaded month does not show is looked up by its own day, so a meeting from any day opens and the Meetings list stays on its month. When the lookup fails, the review says "Couldn't load this meeting" with the reason. It says the meeting isn't in the list only when every day it could be on was read in full.

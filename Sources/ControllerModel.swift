@@ -3144,8 +3144,11 @@ final class ControllerModel: ObservableObject {
     }
 
     func saveWorkTaskEdits(_ task: TaskRow, text: String, doneWhen: String) async throws {
-        guard workTaskEditAvailable, task.workMetadataError == nil, !task.workRevision.isEmpty else {
-            throw HelperClientError.commandFailed("Refresh Work or update the server before editing this task name.")
+        guard workTaskEditAvailable else {
+            throw HelperClientError.commandFailed("Task editing is unavailable. Refresh availability; if it stays unavailable, update the configured task bridge.")
+        }
+        guard task.workMetadataError == nil, !task.workRevision.isEmpty else {
+            throw HelperClientError.commandFailed("This task’s saved details need refreshing or repair. Your draft has not been saved.")
         }
         let body = try JSONSerialization.data(withJSONObject: ["domain": task.domain, "id": task.id,
             "expectedText": task.text, "expectedRevision": task.workRevision, "text": text, "doneWhen": doneWhen])

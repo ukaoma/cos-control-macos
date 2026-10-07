@@ -26,6 +26,8 @@ mkdir -p "$TMP/home"
 # them on every layout pass). For home and every tab it must still hold what the tab needs, at least the 760 x 560
 # measured before, and grow without a limit.
 "$ROOT/Tests/run-activity-sizing.sh" check
+# Typing in the task editor must not rebuild Activity or the Work board.
+"$ROOT/Tests/run-task-editor.sh"
 
 node "$ROOT/Tests/MemoryWorkspaceStartup.cjs"
 node "$ROOT/Tests/MemoryOwnerRaces.cjs"
@@ -1653,14 +1655,14 @@ need('path.hasPrefix("/api/domains") ? "6.44.2"' in helper,
 # 0.5.188: the row opens a detail, and domains have a place to be set.
 views = open(f"{root}/Sources/Views.swift", encoding="utf-8").read()
 need("openTaskDetail(task)" in activity, "the task row does not open a detail")
-need("private func taskDetailSheet" in activity, "the task detail sheet is gone")
+need("private var taskDetailSheet" in activity, "the task detail sheet is gone")
 # The row rendered `title`, which the server caps at 44 for a G2 lens row.
 need("task.text.isEmpty ? task.title : task.text" in activity,
      "the row still renders the lens-capped title instead of the full text")
-detail = activity[activity.index("private func taskDetailSheet"):]
+detail = activity[activity.index("private var taskDetailSheet"):]
 detail = detail[:detail.index("\n    private func detailLine")]
-save_edits = activity[activity.index("private func saveTaskEdits"):activity.index("private func closeTaskDetail")]
-need("model.saveWorkTaskEdits(task, text: text, doneWhen: finish)" in save_edits and "model.setTaskText(" not in save_edits and "saveTaskEdits()" in detail, "task editing must save both fields through one revision-guarded transaction")
+save_edits = activity[activity.index("private func saveTaskEdits"):activity.index("private func runDetailAction")]
+need("model.saveWorkTaskEdits(task, text: text, doneWhen: finish)" in save_edits and "model.setTaskText(" not in save_edits and "saveTaskEdits()" in activity, "task editing must save both fields through one revision-guarded transaction")
 for action in ("setTaskChecked", "moveTask", "scheduleTask", "runTask"):
     need(f"model.{action}(" in detail, f"the detail view cannot {action}")
 need('Text(task.checked ? "Reopen" : "Done")' in detail or 'task.checked ? "Reopen" : "Done"' in detail,
@@ -1669,8 +1671,8 @@ need('Text(task.checked ? "Reopen" : "Done")' in detail or 'task.checked ? "Reop
 need('task.agentState == "running"' in detail, "Run now is offered while an agent is already running")
 # Its own route flag, written only by the opener, so a board refresh cannot
 # dismiss the sheet under the user.
-need(len(re.findall(r"taskDetail = ", activity)) == 3 and "taskDetail = refreshed" in activity,
-     "taskDetail may only open, close, or refresh after its own successful mutation")
+need("@State private var taskDetail: WorkTaskEditorState?" in activity and "taskDetail = WorkTaskEditorState(task: current)" in activity,
+     "the task route must hold an isolated draft from the freshest row")
 
 need("private var domainsCard" in views, "there is no Domains settings card")
 need("model.saveDomains(" in views, "the Domains card cannot save")
@@ -1704,8 +1706,8 @@ need('task.agentState == "running" || task.doneWhen.isEmpty' in detail,
      "Run now is offered on a task with no finish line")
 # Setting the finish line must NOT close the sheet: it unblocks the very button
 # it enables, and closing would hide the result of the action.
-need("}, closeOnSuccess: false)" in detail,
-     "setting the finish line closes the sheet it just unblocked")
+need('Button("Set")' not in detail and "Saved with the task name." in detail,
+     "the finish line must share the atomic Save changes action")
 need('ForEach(["planning", "active", "review"]' in detail, "the detail view has no stage moves")
 
 # 0.5.212: Run at is not a board-level orphan. Capture files to inbox.
@@ -1724,7 +1726,7 @@ need(".popover(" in row, "Schedule on the row has no timestamp picker")
 need("private func taskSchedulePopover" in activity, "the Schedule popover is gone")
 need('Text("Legacy schedule for")' in detail, "the overlay Schedule action has no timestamp")
 need("DatePicker" in detail, "the overlay lost its schedule DatePicker")
-overlay = activity[activity.index("private var taskEditorOverlay"):activity.index("private func taskDetailSheet")]
+overlay = activity[activity.index("struct WorkTaskEditor: View"):activity.index("private var taskDetailSheet")]
 need(".shadow(" not in overlay, "the task overlay still has a drop shadow")
 need("COSPalette.card" in overlay and "COSPalette.line" in overlay,
      "the task overlay is not the board's card/hairline")
@@ -2724,7 +2726,8 @@ need('guard !handoffStore.isolated else { return }' in workspace and
 need('taskEditorOverlay' in activity and 'ActivityEscapeHandler(onEscape: handleActivityEscape)' in activity and
      '.cosConfirm("Save task changes?"' in activity, "secondary editing must retain fixed close, window-scoped Escape and dirty confirmation")
 escape = activity[activity.index('private func handleActivityEscape()'):activity.index('private func goBack()')]
-need('if confirmingTaskDismiss { confirmingTaskDismiss = false; return true }' in escape and
+need('if confirmingDismiss { confirmingDismiss = false; return false }' in activity and
+     'if taskDetail?.requestClose() == true { closeTaskDetail() }' in activity and
      'if taskDetail != nil { requestCloseTaskDetail(); return true }' in escape and
      'if section == .sessions, showingLinkedSession { goBack(); return true }' in escape,
      "Escape must cancel dirty confirmation before closing the editor and route linked Sessions through header Back")
@@ -5617,8 +5620,8 @@ if "case .speakers:\n            await loadSpeakerSubview(speakerSubview, refres
     fail("opening Speakers must load the current view through loadSpeakerSubview")
 # Work's additional overlays made the full SwiftUI expression too large for the
 # solver. The extracted frame still owns the same bounded, clipped content.
-root_body = body(activity, "    private var activityFrame: some View {\n        VStack(spacing: 0) {\n            navigationBar", "    var body: some View {\n        activityFrame")
-if "    var body: some View {\n        activityFrame\n        .frame(minWidth: 760, minHeight: 560)" not in activity:
+root_body = body(activity, "    private var activityFrame: some View {\n        VStack(spacing: 0) {\n            navigationBar", "    var body: some View {\n        let _ = WorkBoardMetrics.countActivityBody()\n        activityFrame")
+if "    var body: some View {\n        let _ = WorkBoardMetrics.countActivityBody()\n        activityFrame\n        .frame(minWidth: 760, minHeight: 560)" not in activity:
     fail("Activity body must mount the extracted frame with its content minimum")
 if not re.search(r"activityHome\n\s*\}\n\s*\}\n(?:\s*//.*\n)*\s*\.frame\(minWidth: 0, maxWidth: \.infinity, minHeight: 0, maxHeight: \.infinity, alignment: \.top\)\n\s*\.clipped\(\)\n\s*\}\n\s*\}\n\s*$", root_body):
     fail("the content under the toolbar must be .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top).clipped()")

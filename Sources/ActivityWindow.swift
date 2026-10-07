@@ -1,5 +1,204 @@
 import AppKit
 import SwiftUI
+
+/// A draft belongs to the editor, not the Activity window. The parent holds this
+/// reference in @State without observing it; only the small editor subscribes.
+@MainActor final class WorkTaskEditorState: ObservableObject {
+    let task: TaskRow
+    @Published var text: String
+    @Published var doneWhen: String
+    @Published var busy = false
+    @Published var error = ""
+    @Published var confirmingDismiss = false
+    @Published var runAt: Date
+
+    init(task: TaskRow) {
+        self.task = task
+        text = task.text.isEmpty ? task.title : task.text
+        doneWhen = task.doneWhen
+        runAt = task.runAtDate ?? Date()
+    }
+
+    var dirty: Bool { text != (task.text.isEmpty ? task.title : task.text) || doneWhen != task.doneWhen }
+    var validationMessage: String? {
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if clean.isEmpty { return "Enter a task name." }
+        if clean.utf16.count > 2000 { return "Keep the task name under 2,001 characters." }
+        if doneWhen.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count > 500 { return "Keep the finish line under 501 characters." }
+        return nil
+    }
+
+    /// Escape cancels the confirmation first. A failed/busy save never discards a draft.
+    func requestClose() -> Bool {
+        guard !busy else { return false }
+        if confirmingDismiss { confirmingDismiss = false; return false }
+        if dirty { confirmingDismiss = true; return false }
+        return true
+    }
+
+    /// Return success only after the write verifies; callers close on success.
+    func perform(_ work: () async throws -> Void) async -> Bool {
+        guard !busy else { return false }
+        busy = true; error = ""; confirmingDismiss = false
+        defer { busy = false }
+        do { try await work(); return true }
+        catch { self.error = error.localizedDescription; return false }
+    }
+}
+
+struct WorkTaskEditor: View {
+    @ObservedObject var model: ControllerModel
+    @ObservedObject var state: WorkTaskEditorState
+    let close: () -> Void
+
+    private var task: TaskRow { state.task }
+    private var unavailableReason: String? {
+        if !model.workTaskEditAvailable { return "Task editing is unavailable. Refresh availability; if it stays unavailable, update the configured task bridge." }
+        if let error = task.workMetadataError { return "This task’s saved details need repair: \(error)" }
+        if task.workRevision.isEmpty { return "This task has no saved revision. Keep your draft and reopen the task after refreshing Work." }
+        return nil
+    }
+    private var canSave: Bool { !state.busy && unavailableReason == nil && state.validationMessage == nil }
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                COSPalette.ink.opacity(0.22).ignoresSafeArea().contentShape(Rectangle())
+                    .onTapGesture { requestClose() }
+                VStack(spacing: 0) {
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("WORK / TASK").font(COSType.mono(9, weight: .semibold)).tracking(1.2).foregroundStyle(COSPalette.accent)
+                            Text("Edit task").font(COSType.display(24, weight: .medium))
+                        }
+                        Spacer()
+                        Button("Close") { requestClose() }.disabled(state.busy)
+                    }.padding(20)
+                    Rectangle().fill(COSPalette.line).frame(height: 1)
+                    ScrollView { taskDetailSheet }
+                    Rectangle().fill(COSPalette.line).frame(height: 1)
+                    VStack(alignment: .leading, spacing: 10) {
+                        if !state.error.isEmpty {
+                            Text(state.error).font(COSType.body(11.5)).foregroundStyle(COSPalette.danger).textSelection(.enabled)
+                            Text("Your draft is still here.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                        }
+                        if let reason = unavailableReason {
+                            Text(reason).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                            Button("Refresh availability") { refreshAvailability() }.disabled(state.busy)
+                        } else if let validation = state.validationMessage {
+                            Text(validation).font(COSType.body(11)).foregroundStyle(COSPalette.danger)
+                        }
+                        HStack(spacing: 10) {
+                            Button("Cancel") { requestClose() }.disabled(state.busy)
+                            Spacer()
+                            if state.busy { ProgressView().controlSize(.small) }
+                            Button("Save changes") { saveTaskEdits() }
+                                .buttonStyle(COSPrimaryButtonStyle()).disabled(!canSave || !state.dirty)
+                        }
+                    }.padding(20).background(COSPalette.raised)
+                }
+                .frame(width: min(600, max(320, geometry.size.width - 40)), height: min(660, max(320, geometry.size.height - 40)))
+                .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .cosControlTheme()
+        .cosConfirm("Save task changes?", isPresented: $state.confirmingDismiss,
+            message: "Save your task name and finish line, discard these edits, or keep editing.",
+            actions: [.normal("Save") { saveTaskEdits() }, .destructive("Discard") { close() }, .cancel("Keep editing")])
+    }
+
+    private var taskDetailSheet: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Task name").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
+                TextEditor(text: $state.text)
+                    .accessibilityLabel("Task name").font(COSType.body(14)).cosEditor()
+                    .disabled(state.busy).frame(height: 108)
+            }
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Done when").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
+                TextField("What does finished look like?", text: $state.doneWhen)
+                    .accessibilityLabel("Done when").font(COSType.body(13)).textFieldStyle(.plain).cosField().disabled(state.busy)
+                Text("Saved with the task name. Add a finish line before running this task.")
+                    .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                detailLine("Domain", task.domain)
+                detailLine("Stage", task.workStage.capitalized)
+                if !task.source.isEmpty { detailLine("Source", task.source) }
+            }
+            DisclosureGroup("More task actions") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 8) {
+                        Button(task.checked ? "Reopen" : "Done") {
+                            runDetailAction { try await model.setTaskChecked(id: task.id, domain: task.domain, checked: !task.checked) }
+                        }
+                        Button("To inbox") {
+                            runDetailAction { try await model.moveTask(id: task.id, domain: task.domain, section: "inbox") }
+                        }.disabled(task.section == "inbox")
+                    }.disabled(state.busy || state.dirty)
+                    Text("Save your edits before changing status or scheduling.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    detailLine("Lane", task.column)
+                    detailLine("Section", task.section)
+                    detailLine("Ref", task.ref)
+                    if !task.agentState.isEmpty { detailLine("Agent", task.agentState) }
+                    Text("Legacy schedule for").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    DatePicker("Schedule for", selection: $state.runAt, displayedComponents: [.date, .hourAndMinute])
+                        .labelsHidden().disabled(state.busy)
+                    HStack(spacing: 8) {
+                        Button("Schedule") {
+                            let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd HH:mm"
+                            runDetailAction { try await model.scheduleTask(id: task.id, domain: task.domain, runAt: formatter.string(from: state.runAt)) }
+                        }
+                        Button("Legacy run now") { runDetailAction { try await model.runTask(id: task.id, domain: task.domain) } }
+                            .disabled(task.agentState == "running" || task.doneWhen.isEmpty)
+                    }.disabled(state.busy || state.dirty)
+                    Text("Uses the existing task dispatcher. Choose a session from Work’s agent workspace for a directed handoff.")
+                        .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+                    HStack(spacing: 8) {
+                        Text("Move to").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                        ForEach(["planning", "active", "review"], id: \.self) { stage in
+                            Button(stage.capitalized) { runDetailAction { try await model.setTaskStage(id: task.id, domain: task.domain, stage: stage) } }
+                                .disabled(task.stage == stage)
+                        }
+                    }.disabled(state.busy || state.dirty)
+                }.padding(.top, 10)
+            }.font(COSType.body(11, weight: .medium))
+        }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func detailLine(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(label).font(COSType.body(11)).foregroundStyle(COSPalette.muted).frame(width: 64, alignment: .leading)
+            Text(value).font(COSType.body(11.5)).textSelection(.enabled)
+            Spacer(minLength: 0)
+        }
+    }
+    private func requestClose() { if state.requestClose() { close() } }
+    private func saveTaskEdits() {
+        guard canSave else { state.error = unavailableReason ?? state.validationMessage ?? "Wait for the current save to finish."; return }
+        let text = state.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finish = state.doneWhen.trimmingCharacters(in: .whitespacesAndNewlines)
+        runDetailAction { try await model.saveWorkTaskEdits(task, text: text, doneWhen: finish) }
+    }
+    private func runDetailAction(_ work: @escaping () async throws -> Void) {
+        Task {
+            if await state.perform(work) { close() }
+        }
+    }
+    private func refreshAvailability() {
+        guard !state.busy else { return }
+        state.busy = true
+        Task {
+            defer { state.busy = false }
+            await model.loadWorkTasks(force: true)
+            state.error = model.workTasksError ?? ""
+            // Only capabilities refresh: never rebase an unsaved draft onto a newer revision.
+        }
+    }
+}
 import WebKit
 
 /// Click-only host for Activity on every supported macOS release.
@@ -322,14 +521,9 @@ struct ActivityWindow: View {
     @State private var taskDomain = "quilt"
     /// The task whose detail is open. Its own route flag, written only by
     /// openTaskDetail, so a board refresh cannot close the sheet under the user.
-    @State private var taskDetail: TaskRow?
-    @State private var taskDetailDraft = ""
-    @State private var taskDoneWhenDraft = ""
-    @State private var taskDetailBusy = false
-    @State private var taskDetailError = ""
-    @State private var taskSavedText = ""
-    @State private var taskSavedDoneWhen = ""
-    @State private var confirmingTaskDismiss = false
+    // The route owns a reference; only WorkTaskEditor observes its draft publications.
+    // Keystrokes must never invalidate the full Activity/Work window.
+    @State private var taskDetail: WorkTaskEditorState?
     /// Stamp used only by Schedule. Capture files to inbox with no time.
     @State private var taskRunAt = Date()
     /// Which row's Schedule popover is open. The picker used to sit above the
@@ -380,6 +574,21 @@ struct ActivityWindow: View {
     static func workConnectedTest(model: ControllerModel) -> ActivityWindow {
         var view = ActivityWindow(model: model)
         view._section = State(initialValue: .work)
+        return view
+    }
+
+    /// Offscreen regression harness: the production Activity tree with an open draft.
+    static func taskEditorFixture(model: ControllerModel, state: WorkTaskEditorState) -> ActivityWindow {
+        precondition(!model.backgroundWorkEnabled)
+        var view = ActivityWindow(model: model)
+        view._section = State(initialValue: .work)
+        view._taskDetail = State(initialValue: state)
+        view._handoffStore = StateObject(wrappedValue: WorkHandoffStore(transport: { _, _ in
+            HelperResponse(ok: true, message: "Fixture", details: ["sessions": .array([])])
+        }))
+        view._reviewStore = StateObject(wrappedValue: WorkReviewStore(transport: { _, _ in
+            HelperResponse(ok: true, message: "Fixture", details: ["reviews": .array([])])
+        }))
         return view
     }
 
@@ -582,6 +791,7 @@ struct ActivityWindow: View {
     }
 
     var body: some View {
+        let _ = WorkBoardMetrics.countActivityBody()
         activityFrame
         .frame(minWidth: 760, minHeight: 560)
         .font(COSType.body(13))
@@ -629,9 +839,6 @@ struct ActivityWindow: View {
             }
         }
         .overlay { taskEditorOverlay }
-        .cosConfirm("Save task changes?", isPresented: $confirmingTaskDismiss,
-            message: "Save your task text and finish line, discard these edits, or keep editing.",
-            actions: [.normal("Save") { saveTaskEdits() }, .destructive("Discard") { closeTaskDetail() }, .cancel("Cancel")])
         .cosConfirm(
             "Restore this naming’s previous labels?",
             isPresented: Binding(get: { heldNamingUndoHandle != nil }, set: { if !$0 { heldNamingUndoHandle = nil } }),
@@ -874,7 +1081,6 @@ struct ActivityWindow: View {
             if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }
             return true
         }
-        if confirmingTaskDismiss { confirmingTaskDismiss = false; return true }
         if heldNamingUndoHandle != nil { heldNamingUndoHandle = nil; return true }
         if taskDetail != nil { requestCloseTaskDetail(); return true }
         if heldNamingOverlayOpen {
@@ -978,7 +1184,7 @@ struct ActivityWindow: View {
         // A send being handed over keeps its overlay; it shows the result when you come back to Work.
         if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }; workWorkspaceState.focusOverride = false
         guard !isolatedWorkPreview else { return }
-        if !taskDetailBusy { closeTaskDetail() }
+        if taskDetail?.busy != true { closeTaskDetail() }
         model.closeMediaPreview()
         selectedTurnID = nil
         selectedArchiveDate = nil
@@ -2005,194 +2211,19 @@ struct ActivityWindow: View {
 
     private func openTaskDetail(_ task: TaskRow) {
         guard !isolatedWorkPreview else { return }
-        taskDetail = model.workTasks.first { $0.domain == task.domain && ($0.id == task.id || (!$0.workIdentity.isEmpty && $0.workIdentity == task.workIdentity)) } ?? task
-        taskDetailDraft = task.text.isEmpty ? task.title : task.text
-        taskDoneWhenDraft = task.doneWhen
-        taskSavedText = taskDetailDraft
-        taskSavedDoneWhen = taskDoneWhenDraft
-        taskDetailError = ""
-        prepareSchedule(from: task)
-    }
-
-    private var taskEditsDirty: Bool {
-        taskDetailDraft != taskSavedText || taskDoneWhenDraft != taskSavedDoneWhen
+        let current = model.workTasks.first { $0.domain == task.domain && ($0.id == task.id || (!$0.workIdentity.isEmpty && $0.workIdentity == task.workIdentity)) } ?? task
+        taskDetail = WorkTaskEditorState(task: current)
     }
 
     private func requestCloseTaskDetail() {
-        guard !taskDetailBusy else { return }
-        if confirmingTaskDismiss { confirmingTaskDismiss = false; return }
-        if taskEditsDirty { confirmingTaskDismiss = true } else { closeTaskDetail() }
+        if taskDetail?.requestClose() == true { closeTaskDetail() }
     }
 
-    private func saveTaskEdits() {
-        guard let task = taskDetail, !taskDetailBusy else { return }
-        let text = taskDetailDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finish = taskDoneWhenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { taskDetailError = "Task text cannot be empty."; return }
-        runDetailAction {
-            try await model.saveWorkTaskEdits(task, text: text, doneWhen: finish)
-            taskSavedDoneWhen = finish; taskDoneWhenDraft = finish; taskSavedText = text
-        }
-    }
-
-    private func closeTaskDetail() {
-        confirmingTaskDismiss = false
-        taskDetail = nil
-        taskDetailDraft = ""
-        taskDoneWhenDraft = ""
-        taskDetailError = ""
-    }
-
-    /// Runs one detail action and keeps the sheet open on failure, because the
-    /// message is the only thing that explains why nothing changed.
-    private func runDetailAction(_ work: @escaping () async throws -> Void, closeOnSuccess: Bool = true) {
-        taskDetailBusy = true
-        taskDetailError = ""
-        Task {
-            defer { taskDetailBusy = false }
-            do {
-                try await work()
-                if ActivitySection.allCases.contains(.work) { await model.loadWorkTasks() }
-                if closeOnSuccess { closeTaskDetail() }
-                else if let original = taskDetail,
-                        let refreshed = (ActivitySection.allCases.contains(.work) ? model.workTasks : model.tasks).first(where: { $0.id == original.id && $0.domain == original.domain }) {
-                    taskDetail = refreshed
-                }
-            } catch {
-                taskDetailError = error.localizedDescription
-            }
-        }
-    }
+    private func closeTaskDetail() { taskDetail = nil }
 
     @ViewBuilder private var taskEditorOverlay: some View {
-        if let task = taskDetail {
-            ZStack {
-                Color.black.opacity(0.22).ignoresSafeArea().contentShape(Rectangle())
-                    .onTapGesture { requestCloseTaskDetail() }
-                VStack(spacing: 0) {
-                    HStack {
-                        Text("Edit task").font(COSType.display(18, weight: .medium))
-                        Spacer()
-                        Button("Close") { requestCloseTaskDetail() }.buttonStyle(COSQuietButtonStyle()).disabled(taskDetailBusy)
-                    }.padding(16)
-                    Divider()
-                    ScrollView { taskDetailSheet(task) }
-                }.frame(width: 540, height: 450)
-                    .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func taskDetailSheet(_ task: TaskRow) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Task name").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
-            TextEditor(text: $taskDetailDraft)
-                .accessibilityLabel("Task name")
-                .font(COSType.body(13.5))
-                .cosEditor()
-                .disabled(taskDetailBusy)
-                .frame(minHeight: 72, maxHeight: 140)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(COSPalette.line))
-            VStack(alignment: .leading, spacing: 5) {
-                Text("DONE WHEN").font(COSType.body(10)).foregroundStyle(
-                    task.doneWhen.isEmpty ? Color.orange : Color.secondary)
-                HStack(spacing: 8) {
-                    TextField("What does finished look like?", text: $taskDoneWhenDraft)
-                        .disabled(taskDetailBusy)
-                        .textFieldStyle(.plain)
-                        .cosField()
-                    Button("Set") {
-                        // Sheet stays open: setting the finish line is what UNBLOCKS
-                        // Run now, so closing here would hide the button it enables.
-                        runDetailAction({
-                            try await model.saveWorkTaskEdits(task, text: task.text, doneWhen: taskDoneWhenDraft.trimmingCharacters(in: .whitespacesAndNewlines))
-                            taskSavedDoneWhen = taskDoneWhenDraft
-                        }, closeOnSuccess: false)
-                    }
-                    .disabled(taskDetailBusy)
-                }
-                if task.doneWhen.isEmpty {
-                    // Named here rather than left to a failed run: the server
-                    // refuses the dispatch with 409 done_when_required.
-                    Text("Run now needs a finish line.")
-                        .font(COSType.body(10.5)).foregroundStyle(.orange)
-                }
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                detailLine("Domain", task.domain)
-                detailLine("Stage", task.stage.capitalized)
-                detailLine("Lane", task.column)
-                detailLine("Section", task.section)
-                if !task.runAt.isEmpty { detailLine("Scheduled", task.runAt) }
-                if !task.source.isEmpty { detailLine("Source", task.source) }
-                if !task.agentState.isEmpty { detailLine("Agent", task.agentState) }
-                detailLine("Ref", task.ref)
-            }
-            if !taskDetailError.isEmpty {
-                Text(taskDetailError).font(COSType.body(11.5)).foregroundStyle(.red)
-            }
-            HStack(spacing: 8) {
-                Button("Cancel") { requestCloseTaskDetail() }.disabled(taskDetailBusy)
-                Button("Save changes") { saveTaskEdits() }
-                    .disabled(taskDetailBusy || !model.workTaskEditAvailable || taskDetailDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                Button(task.checked ? "Reopen" : "Done") {
-                    runDetailAction { try await model.setTaskChecked(id: task.id, domain: task.domain, checked: !task.checked) }
-                }
-                .disabled(taskDetailBusy || taskEditsDirty)
-                Spacer()
-            }
-            if !model.workTaskEditAvailable {
-                Text("Update the server and refresh Work to save task names safely.").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
-            }
-            HStack(spacing: 8) {
-                Button("To inbox") {
-                    runDetailAction { try await model.moveTask(id: task.id, domain: task.domain, section: "inbox") }
-                }
-                .disabled(taskDetailBusy || taskEditsDirty || task.section == "inbox")
-                Spacer()
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Legacy schedule for").font(COSType.body(11)).foregroundStyle(.secondary)
-                DatePicker("Schedule for", selection: $taskRunAt, displayedComponents: [.date, .hourAndMinute])
-                    .labelsHidden().disabled(taskDetailBusy)
-                HStack(spacing: 8) {
-                    Button("Schedule") {
-                        runDetailAction { try await model.scheduleTask(id: task.id, domain: task.domain, runAt: taskRunAtStamp()) }
-                    }.disabled(taskDetailBusy || taskEditsDirty)
-                    Button("Legacy run now") {
-                        runDetailAction { try await model.runTask(id: task.id, domain: task.domain) }
-                    }.disabled(taskDetailBusy || taskEditsDirty || task.agentState == "running" || task.doneWhen.isEmpty)
-                    Spacer()
-                }
-                Text("Uses the existing task dispatcher. Choose a session from Work’s agent workspace for a directed handoff.")
-                    .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
-            }
-            HStack(spacing: 8) {
-                Text("Move to").font(COSType.body(11)).foregroundStyle(.secondary)
-                ForEach(["planning", "active", "review"], id: \.self) { stage in
-                    Button(stage.capitalized) {
-                        runDetailAction { try await model.setTaskStage(id: task.id, domain: task.domain, stage: stage) }
-                    }
-                    .disabled(taskDetailBusy || taskEditsDirty || task.stage == stage)
-                }
-                Spacer()
-            }
-
-        }
-        .padding(20)
-        .frame(width: 520)
-        .buttonStyle(COSQuietButtonStyle())
-    }
-
-    private func detailLine(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(label).font(COSType.body(11)).foregroundStyle(.secondary).frame(width: 74, alignment: .leading)
-            Text(value).font(COSType.body(11.5)).textSelection(.enabled)
-            Spacer()
+        if let state = taskDetail {
+            WorkTaskEditor(model: model, state: state, close: closeTaskDetail)
         }
     }
 
