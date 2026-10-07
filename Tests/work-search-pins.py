@@ -42,7 +42,9 @@ need("private var boardCards: [WorkWorkspaceItem] { board.visible(scope: state.s
 col = body(board, "    private func boardColumn(", "    private func boardCard(")
 need('_ = board.visible(scope: state.scope, domain: state.domain, query: "")' in col and "query: state.query" not in col,
      "a column reads the same cards as the board, never the Focus filter")
-need("let kept = pass.search.active ? all.filter { pass.search.shown.contains($0.id) } : all" in col, "a column keeps only what the search shows")
+need("let kept = WorkSearch.kept(all, pass.search)" in col, "a column keeps only what the search shows")
+need("let shownCount = WorkSearch.kept(cards.filter { $0.task != nil }, search).count" in dash,
+     "the board line counts with the same rule as the columns")
 need("let cards = WorkCardDating.sorted(kept, id: \\.id, order: pass.order, dates: pass.dates)" in col, "Order sorts every column")
 need("WorkSearch.countLabel(kept: cards.count, of: all.count, active: pass.search.active)" in col, "a column header says n of m while searching")
 need('pass.search.active ? "No matches here" : "No tasks here"' in col, "an empty column says No matches here while searching")

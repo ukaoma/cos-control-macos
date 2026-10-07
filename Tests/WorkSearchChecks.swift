@@ -2,7 +2,8 @@ import Foundation
 import SwiftUI
 
 // 0.5.259 Work search and order (board 4 of the 10/6 mock): the words a search looks for and how a card matches them,
-// Jev's thresholds (0.15 for a match, 0.05 to stay in a column), a late answer dropped, Best matches and why each matched,
+// Jev's one threshold (0.15, for the band, the counts and the columns alike, so every count agrees), a late answer
+// dropped, Best matches and why each matched,
 // the counts, other domains, the degrade lines, the keys, Order and its memory, the created day and the last activity
 // from each source, the stage-move journal (written by the app's own stage writes through a stand-in helper) and its
 // bound, and the request and answer the helper's work-search carries. Failures read "check failed [<behaviour>]" so the
@@ -12,6 +13,7 @@ import SwiftUI
     @MainActor static func main() async throws {
         wordChecks()
         matchChecks()
+        invariantChecks()
         mergeChecks()
         bandChecks()
         countChecks()
@@ -32,7 +34,7 @@ import SwiftUI
         memoChecks()
         try journalChecks()
         try await journalWriteChecks()
-        print("PASS: Work search and order (words and stopwords, title and word matches by word start, Jev at 0.15 for a match and 0.05 for a column, a late answer dropped and a new search cancelling the wait, Best matches ranked and why, n of m, N more in another domain, one line for a paused or missing meaning search and none when it is off, the keys, Order with undated cards last, remembered per board, the created day and the last activity from each source, the stage-move journal written by the board, Intake and the tracker's writes, atomic and bounded to 2,000, and the work-search request and answer)")
+        print("PASS: Work search and order (words and stopwords, title and word matches by word start, one Jev threshold (0.15) with N matches, N of M tasks and every column's n of m agreeing, a late answer dropped and a new search cancelling the wait, Best matches ranked and why, n of m, N more in another domain, one line for a paused or missing meaning search and none when it is off, the keys, Order with undated cards last, remembered per board, the created day and the last activity from each source, the stage-move journal written by the board, Intake and the tracker's writes, atomic and bounded to 2,000, and the work-search request and answer)")
     }
 
     /// Names the behaviour a failure is about, so a mutation is credited to the check that names it.
@@ -120,8 +122,9 @@ import SwiftUI
         let scored = result(cards, query: "competitor ads", meaning: meaning([id(2): 0.15, id(3): 0.149, id(4): 0.05, id(5): 0.049, id(1): 0.9, "task:quilt:elsewhere": 0.8]))
         check(scored.hits[id(2)] == WorkSearchHit(kind: .meaning, words: [], p: 0.15), "band threshold", "0.15 counts as a meaning match")
         check(scored.hits[id(3)] == nil, "band threshold", "0.149 is not a match")
-        check(scored.shown.contains(id(3)) && scored.shown.contains(id(4)), "column threshold", "0.05 and up stay in their column")
-        check(!scored.shown.contains(id(5)), "column threshold", "under 0.05 leaves the column")
+        check(!scored.shown.contains(id(3)) && !scored.shown.contains(id(4)) && !scored.shown.contains(id(5)), "one threshold",
+              "a card Jev rates under 0.15 is not on the board while searching")
+        check(scored.shown == Set(scored.hits.keys), "one threshold", "the columns show exactly the matches")
         check(scored.hits[id(1)] == WorkSearchHit(kind: .title, words: ["competitor", "ads"], p: 0.9), "meaning merge",
               "a card the words found keeps its kind, with Jev's score")
         check(scored.titleCount == 1 && scored.wordsCount == 0 && scored.meaningCount == 1, "meaning merge",
@@ -217,16 +220,78 @@ import SwiftUI
         // Targeted: the intended card first by meaning, at 0.47.
         let targeted = result(cards, query: "delivery partners", meaning: meaning([id(1): 0.47, id(5): 0.04]))
         check(targeted.band == [id(1)] && targeted.hits[id(1)]?.kind == .meaning && targeted.shown == [id(1)], "targeted answer", "\(targeted.band) \(targeted.shown)")
-        // Broad: Jev spreads thin. Its one card over 0.15 leads, the words fill the band, and the 0.05 to 0.15 cards stay in columns.
+        // Broad: Jev spreads thin. Its one card over 0.15 leads, the words fill the band, and nothing under 0.15 shows.
         let broad = result(cards, query: "website", meaning: meaning([id(5): 0.23, id(6): 0.11, id(1): 0.07, id(2): 0.06, id(3): 0.04]))
         check(broad.band == [id(5), id(2), id(3)], "broad answer", "the meaning card, then the title matches: \(broad.band)")
         check(broad.titleCount == 3 && broad.meaningCount == 1 && broad.hits.count == 4, "broad answer", "\(broad.kindsText)")
-        check(broad.shown == [id(1), id(2), id(3), id(4), id(5), id(6)], "broad answer", "columns keep the 0.05 cards too: \(broad.shown.count)")
+        check(broad.shown == [id(2), id(3), id(4), id(5)], "broad answer", "only the matches, never the 0.05 to 0.15 cards: \(broad.shown.count)")
         // K7: an older server. One line; the words still find everything they found.
         let old = result(cards, query: "website", meaning: meaning([:], key: WorkSearchKey(query: "website", scope: .all, domain: nil), available: false, reason: "server_too_old"))
         let local = result(cards, query: "website")
         check(old.hits == local.hits && old.band == local.band && old.shown == local.shown && old.note == "Meaning search needs COS server 6.65",
               "older server", "an older server changed more than the one line: \(String(describing: old.note))")
+    }
+
+    /// One threshold, so every count agrees (10/6 review of work-search-active): the result line's "N matches" is the
+    /// number of cards on the board, the board line's "N of M tasks", and the sum of the columns' "n of m", each worked
+    /// out with the rule the view uses (WorkSearch.kept and countLabel). On the mock's board for "competitor ads" (the
+    /// weekly-review card Jev rated 0.06 showed with 4 matches counted) and on a broad search (Jev 0.23, 0.12, 0.06, 0.06
+    /// beside several word matches).
+    static func invariantChecks() {
+        let mock: [(String, String, String)] = [
+            ("mentioned", "Make DoorDash the most prominent e-commerce integration and move CityHive to the lowest tier", "Deprioritize CityHive, Feature DoorDash Integrations (G2)"),
+            ("mentioned", "Send Cort screenshots of the paid search campaigns Scotch is running, so the team can target the Bottle POS promo", ""),
+            ("mentioned", "Decide with Niala the incentive budget for the Capterra review push to liquor store customers", ""),
+            ("mentioned", "Review the Clover and Square funnel audit with Graham", ""),
+            ("planned", "Launch the refreshed IT Retail site on Thursday, with the competitor pages and site refreshes", ""),
+            ("planned", "Launch the refreshed CigarsPOS site at the start of next sprint", ""),
+            ("planned", "Fix the Bottle POS website backlog left over from launch", ""),
+            ("planned", "Finish the MarktPOS origins video for an October 23 final: animation polish and color grading", ""),
+            ("planned", "Start a weekly review of the new website's session-to-contact rate and keyword rankings", "PR Strategy [2026-09-15]"),
+            ("draft", "October switch offer page for Bottle POS, the response to Scotch", "Manual entry 2026-10-06"),
+            ("draft", "Small Business Season promo landing pages: review and sign off", "Launchpad Huddle [2026-09-29]"),
+            ("built", "IT Retail 3D lane module on the sandbox homepage", "Manual entry 2026-10-03"),
+            ("qa", "Bottle POS hardware expanding cards: rescan the pages before upload", "[2026-09-24]"),
+            ("complete", "Bottle POS review scores read live from HubDB, refreshed weekly by a Cloudflare Worker", "Manual entry 2026-10-01"),
+            ("complete", "Swap the RLS 2026 promo on Wednesday 9/30 at 11:59 PM ET", "Weatherford Weekly Sync [2026-09-28]"),
+        ]
+        let cards = items(mock.enumerated().map { index, card in
+            task(hex(index + 1), card.1, stage: card.0, checked: card.0 == "complete", source: card.2) })
+        let id = { (n: Int) in cards.first { $0.task?.id == hex(n) }!.id }
+        func agree(_ found: WorkSearchResult, _ label: String) {
+            let n = found.hits.count
+            let kept = WorkSearch.kept(cards, found)
+            check(kept.count == n && Set(kept.map(\.id)) == Set(found.hits.keys), "count invariant",
+                  "\(label): the columns show \(kept.count) cards, the line counts \(n)")
+            let line = WorkSearch.countLabel(kept: kept.count, of: cards.count, active: found.active)
+            check(line == "\(n) of \(cards.count)" && found.countText == (n == 1 ? "1 match" : "\(n) matches"), "count invariant",
+                  "\(label): \(found.countText) but \(line) tasks")
+            check(found.titleCount + found.wordsCount + found.meaningCount == n, "count invariant", "\(label): the kinds do not add up to \(n)")
+            var columns = 0
+            for stage in WorkBoardStage.allCases {
+                let column = cards.filter { $0.task.map(WorkBoardStage.stage(for:)) == stage }
+                let shown = WorkSearch.kept(column, found)
+                check(WorkSearch.countLabel(kept: shown.count, of: column.count, active: found.active) == "\(shown.count) of \(column.count)", "count invariant",
+                      "\(label): \(stage.title) says something other than n of m")
+                columns += shown.count
+            }
+            check(columns == n, "count invariant", "\(label): the columns' n of m add up to \(columns), the line says \(n)")
+        }
+        let active = result(cards, query: "competitor ads", meaning: meaning([id(2): 0.62, id(10): 0.41, id(4): 0.18, id(9): 0.06]))
+        agree(active, "competitor ads")
+        check(active.hits.count == 4 && !WorkSearch.kept(cards, active).contains { $0.id == id(9) }, "one threshold",
+              "the weekly-review card Jev rated 0.06 is on the board: \(active.hits.count) matches")
+        let broad = result(cards, query: "website launch", meaning: meaning([id(12): 0.23, id(11): 0.12, id(10): 0.06, id(13): 0.06, id(9): 0.06],
+                                                                           key: WorkSearchKey(query: "website launch", scope: .all, domain: nil)))
+        agree(broad, "website launch")
+        // Card 11 matches by its source ("Launchpad Huddle"), so it stays by its words; 10 and 13 have only 0.06. (Which kind
+        // each match is, and the band's order, are the merge and band checks' to judge.)
+        check(broad.hits.count == 6 && broad.hits[id(12)] != nil && broad.hits[id(9)] != nil && broad.hits[id(11)] != nil
+              && broad.hits[id(10)] == nil && broad.hits[id(13)] == nil, "one threshold",
+              "a broad search: the 0.23 card and the word matches, never a card with only 0.12 or 0.06: \(broad.kindsText)")
+        let inactive = result(cards, query: "the")
+        check(WorkSearch.kept(cards, inactive).count == cards.count && WorkSearch.countLabel(kept: cards.count, of: cards.count, active: false) == "\(cards.count)",
+              "one threshold", "no search: every card, plain counts")
     }
 
     // MARK: Keys

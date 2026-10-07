@@ -621,7 +621,7 @@ struct WorkSearchResult: Equatable, Sendable {
     var active = false
     /// The matches the result line counts and the cards that get the gold border, by item id.
     var hits: [String: WorkSearchHit] = [:]
-    /// The cards the columns keep: the matches, and cards Jev rates at least 0.05.
+    /// The cards the columns keep: exactly the matches the result line counts (one threshold, 0.15 for meaning).
     var shown: Set<String> = []
     /// Best matches, at most three item ids.
     var band: [String] = []
@@ -653,10 +653,9 @@ enum WorkSearch {
     nonisolated static let stopwords: Set<String> = ["a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "into", "is",
         "me", "my", "of", "on", "or", "our", "so", "that", "the", "their", "this", "to", "up", "was", "we", "with", "you", "your"]
     nonisolated static let bandLimit = 3
-    /// Jev's answer counts as a meaning match from here (the Best matches band and the counts).
+    /// Jev's answer counts as a meaning match from here: in Best matches, the counts and the columns alike. There is no
+    /// lower tier (10/6 review): a card under it is not on the board while searching, so every count agrees.
     nonisolated static let bandThreshold = 0.15
-    /// A card Jev rates at least this stays in its column.
-    nonisolated static let columnThreshold = 0.05
     /// Jev is asked from this many characters, after `pause`.
     nonisolated static let meaningMinimum = 3
     nonisolated static let pause: Duration = .milliseconds(400)
@@ -797,17 +796,17 @@ enum WorkSearch {
         guard !words.isEmpty else { return WorkSearchResult() }
         var result = WorkSearchResult(active: true)
         for item in board { if let hit = fields(item).match(words) { result.hits[item.id] = hit } }
-        result.shown = Set(result.hits.keys)
         if let meaning {
             if meaning.available {
                 let onBoard = Set(board.map(\.id))
                 for (id, p) in meaning.scores where onBoard.contains(id) {
-                    if p >= columnThreshold { result.shown.insert(id) }
                     if var hit = result.hits[id] { hit.p = p; result.hits[id] = hit }
                     else if p >= bandThreshold { result.hits[id] = WorkSearchHit(kind: .meaning, words: [], p: p) }
                 }
             } else { result.note = note(meaning.reason) }
         }
+        // The columns show exactly what the result line counts.
+        result.shown = Set(result.hits.keys)
         result.titleCount = result.hits.values.filter { $0.kind == .title }.count
         result.wordsCount = result.hits.values.filter { $0.kind == .words }.count
         result.meaningCount = result.hits.values.filter { $0.kind == .meaning }.count
@@ -817,6 +816,12 @@ enum WorkSearch {
         result.elsewhere = counts.map { WorkSearchElsewhere(domain: $0.key, count: $0.value) }
             .sorted { $0.count == $1.count ? $0.domain < $1.domain : $0.count > $1.count }
         return result
+    }
+
+    /// What a list of cards keeps while searching (every card when not): the board line and each column use this one rule,
+    /// so "N matches", "N of M tasks" and the columns' "n of m" always agree.
+    nonisolated static func kept(_ cards: [WorkWorkspaceItem], _ result: WorkSearchResult) -> [WorkWorkspaceItem] {
+        result.active ? cards.filter { result.shown.contains($0.id) } : cards
     }
 
     /// A count while searching: "2 of 5" (what the search kept of all there is); otherwise all there is.
@@ -1643,7 +1648,7 @@ struct WorkWorkspaceView: View {
         let order = boardOrder
         let pass = WorkBoardPass(search: search, order: order, dates: order == .board ? [:] : cardDates(cards), now: Date())
         let taskCount = cards.filter { $0.task != nil }.count
-        let shownCount = cards.filter { $0.task != nil && search.shown.contains($0.id) }.count
+        let shownCount = WorkSearch.kept(cards.filter { $0.task != nil }, search).count
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -2048,8 +2053,8 @@ struct WorkWorkspaceView: View {
         let board = self.board
         _ = board.visible(scope: state.scope, domain: state.domain, query: "")
         let all = board.column(stage)
-        // 0.5.259: a search keeps only its matches (and cards Jev rates at least 0.05); Order sorts what is left.
-        let kept = pass.search.active ? all.filter { pass.search.shown.contains($0.id) } : all
+        // 0.5.259: a search keeps only its matches; Order sorts what is left.
+        let kept = WorkSearch.kept(all, pass.search)
         let cards = WorkCardDating.sorted(kept, id: \.id, order: pass.order, dates: pass.dates)
         let targeted = columnTarget == stage
         // One decision for the header, the list, and a card face. The list is a scroll view, so a drop on the
