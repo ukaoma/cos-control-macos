@@ -20,6 +20,9 @@ import SwiftUI
         elsewhereChecks()
         noteChecks()
         calibrationChecks()
+        emptyColumnChecks()
+        focusParityChecks()
+        datesCostChecks()
         keyChecks()
         escapeChecks()
         orderChecks()
@@ -34,7 +37,7 @@ import SwiftUI
         memoChecks()
         try journalChecks()
         try await journalWriteChecks()
-        print("PASS: Work search and order (words and stopwords, title and word matches by word start, one Jev threshold (0.15) with N matches, N of M tasks and every column's n of m agreeing, a late answer dropped and a new search cancelling the wait, Best matches ranked and why, n of m, N more in another domain, one line for a paused or missing meaning search and none when it is off, the keys, Order with undated cards last, remembered per board, the created day and the last activity from each source, the stage-move journal written by the board, Intake and the tracker's writes, atomic and bounded to 2,000, and the work-search request and answer)")
+        print("PASS: Work search and order (words and stopwords, title and word matches by word start, one Jev threshold (0.15) with N matches, N of M tasks and every column's n of m agreeing, a late answer dropped and a new search cancelling the wait, Best matches ranked and why, n of m, N more in another domain, one line for a paused or missing meaning search and none when it is off, the keys, Order with undated cards last, remembered per board, the created day and the last activity from each source, the stage-move journal written by the board, Intake and the tracker's writes, atomic and bounded to 2,000, the work-search request and answer; QA round 1: separate breaker and budget lines, too many cards and no key said once, \u{201C}Searching by meaning\u{2026}\u{201D} while pending, passing failures asked again and definitive answers kept, dated and first seen, never created, the server's source-date rule, code points, Focus matching as the board, dates worked out once per data change, the Complete column honest on All work)")
     }
 
     /// Names the behaviour a failure is about, so a mutation is credited to the check that names it.
@@ -132,7 +135,7 @@ import SwiftUI
         check(!scored.shown.contains("task:quilt:elsewhere") && scored.hits["task:quilt:elsewhere"] == nil, "meaning merge", "a card not on this board is ignored")
         let down = result(cards, query: "competitor ads", meaning: meaning([id(2): 0.8], available: false, reason: "jev_cap_reached"))
         check(down.hits.count == 1 && !down.shown.contains(id(2)), "meaning merge", "an answer that could not run adds nothing")
-        check(down.note == "Meaning search is paused for today", "degrade line", "\(String(describing: down.note))")
+        check(down.note == "Meaning search has used today\u{2019}s budget", "degrade line", "\(String(describing: down.note))")
     }
 
     static func bandChecks() {
@@ -181,10 +184,14 @@ import SwiftUI
     }
 
     static func noteChecks() {
-        check(WorkSearch.note("jev_cap_reached") == "Meaning search is paused for today", "degrade line", "the day's budget")
-        check(WorkSearch.note("jev_breaker_open") == "Meaning search is paused for today", "degrade line", "the breaker")
+        check(WorkSearch.note("jev_cap_reached") == "Meaning search has used today\u{2019}s budget", "degrade line", "the day's budget")
+        check(WorkSearch.note("jev_breaker_open") == "Meaning search is paused for an hour", "degrade line", "the breaker, an hour")
         check(WorkSearch.note("server_too_old") == "Meaning search needs COS server 6.65", "degrade line", "an older server")
-        for quiet in ["search_off", "jev_not_configured", "jev_unavailable", "too_many_candidates", "unreachable", "http_500", nil] as [String?] {
+        check(WorkSearch.note("too_many_candidates") == "Meaning search covers up to 254 cards. Pick a domain.", "degrade line", "too many cards")
+        check(WorkSearch.note("jev_not_configured") == "Meaning search needs a TypeSafe key in Settings", "degrade line", "no TypeSafe key")
+        check(WorkSearch.note("jev_key_rejected") == "TypeSafe did not accept the saved key. Check it in Settings.", "degrade line", "a refused key (6.65.0 QA)")
+        check(WorkSearch.note("jev_request_rejected") == "Meaning search could not take this search", "degrade line", "a refused request (6.65.0 QA)")
+        for quiet in ["search_off", "jev_unavailable", "unreachable", "http_500", "invalid_search_request", "a_reason_from_a_later_server", nil] as [String?] {
             check(WorkSearch.note(quiet) == nil, "degrade line", "no line for \(String(describing: quiet))")
         }
         let cards = board(2)
@@ -214,9 +221,11 @@ import SwiftUI
         check(empty.band.first == id(3) && empty.band.count == 3 && Set(empty.band) == [id(3), id(2), id(4)], "empty answer", "the band is the word matches: \(empty.band)")
         // Empty answer, no local matches: no rows, and the line says so.
         let none = result(cards, query: "zebra pancake recipe", meaning: meaning([:], key: WorkSearchKey(query: "zebra pancake recipe", scope: .all, domain: nil)))
-        check(none.active && none.hits.isEmpty && none.band.isEmpty && none.shown.isEmpty && none.headline == "No matches on this board", "no matches",
-              "\(none.headline) \(none.band)")
-        check(empty.headline == "3 matches", "no matches", "a search with matches leads with its count: \(empty.headline)")
+        check(none.active && none.hits.isEmpty && none.band.isEmpty && none.shown.isEmpty && none.headline(pending: false) == "No matches on this board", "no matches",
+              "\(none.headline(pending: false)) \(none.band)")
+        check(none.headline(pending: true) == "Searching by meaning\u{2026}", "pending line", "no matches yet while Jev's answer is on its way")
+        check(empty.headline(pending: false) == "3 matches" && empty.headline(pending: true) == "3 matches", "no matches",
+              "a search with matches leads with its count: \(empty.headline(pending: false))")
         // Targeted: the intended card first by meaning, at 0.47.
         let targeted = result(cards, query: "delivery partners", meaning: meaning([id(1): 0.47, id(5): 0.04]))
         check(targeted.band == [id(1)] && targeted.hits[id(1)]?.kind == .meaning && targeted.shown == [id(1)], "targeted answer", "\(targeted.band) \(targeted.shown)")
@@ -346,7 +355,11 @@ import SwiftUI
         check(order(.recent) == ["c", "a", "d", "b", "e"], "recent order", "newest activity first, ties in board order, no date last: \(order(.recent))")
         check(order(.newest) == ["e", "a", "d", "c", "b"], "newest order", "\(order(.newest))")
         check(order(.oldest) == ["c", "a", "d", "e", "b"], "oldest order", "oldest first and still no date last: \(order(.oldest))")
-        check(WorkBoardOrder.allCases.map(\.title) == ["Board order", "Recent activity", "Newest created", "Oldest created"], "order names")
+        check(WorkBoardOrder.allCases.map(\.title) == ["Board order", "Recent activity", "Newest", "Oldest"], "order names",
+              "Order never claims a creation day: \(WorkBoardOrder.allCases.map(\.title))")
+        check(WorkBoardOrder.allCases.allSatisfy { !($0.title + $0.help).lowercased().contains("creat") }, "order names", "no choice says created")
+        check(WorkBoardOrder.recent.help.contains("show up when the task file is next committed")
+              && WorkBoardOrder.newest.help.contains("its meeting or source, else when it first appeared"), "order names", "each choice says what it orders by")
     }
 
     static func persistenceChecks() {
@@ -376,17 +389,28 @@ import SwiftUI
 
     static func createdChecks() {
         func created(_ source: String, _ extra: [String: JSONValue] = [:]) -> Date? {
-            WorkCardDating.created(task(hex(1), "x", source: source, extra: extra), calendar: calendar)
+            WorkCardDating.created(task(hex(1), "x", source: source, extra: extra), calendar: calendar)?.day
+        }
+        func firstSeen(_ source: String, _ extra: [String: JSONValue] = [:]) -> Bool? {
+            WorkCardDating.created(task(hex(1), "x", source: source, extra: extra), calendar: calendar)?.firstSeen
         }
         check(created("Manual entry 2026-10-06") == day("2026-10-06"), "created day", "the source label's date")
         check(created("PR Strategy [2026-09-15]") == day("2026-09-15"), "created day", "a bracketed date")
         check(created("Sync 2026-13-01 then 2026-02-30, held 2026-09-02") == day("2026-09-02"), "created day", "the first real day")
-        check(created("Ticket 12026-10-06 and 2026-10-061") == nil, "created day", "digits around a date are not a date")
+        // The server's rule (task-dates.ts sourceDate): 20YY-MM-DD anywhere in the label's words; a link's target is not words.
+        check(created("Ticket 12026-10-06") == day("2026-10-06"), "source date parity", "20YY-MM-DD anywhere, as the server reads it")
+        check(created("Imported 1999-12-31, reviewed 2026-09-03") == day("2026-09-03"), "source date parity", "only 20YY")
+        check(created("[Work details](https://example.com/2025-01-01) 2026-09-03") == day("2026-09-03"), "source date parity",
+              "a link's target is not label text")
+        check(created("[Kickoff 2026-08-01](https://example.com/2025-01-01)") == day("2026-08-01"), "source date parity", "a link's words are")
         check(created("No meeting linked") == nil, "created day", "no date")
         check(created("Manual entry 2026-09-15", ["createdOn": .string("2026-10-01"), "createdFrom": .string("git")]) == day("2026-10-01"),
               "created day", "the server's day wins")
         check(created("Manual entry 2026-09-15", ["createdOn": .string("2026-02-30")]) == day("2026-09-15"), "created day", "a server day that is not real")
         check(WorkCardDating.day("2026-10-06", calendar: calendar).map { calendar.component(.hour, from: $0) } == 0, "created day", "the start of the day here")
+        check(firstSeen("x", ["createdOn": .string("2026-05-23"), "createdFrom": .string("git")]) == true, "honest dates", "a git day is first seen")
+        check(firstSeen("x", ["createdOn": .string("2026-09-22"), "createdFrom": .string("source")]) == false, "honest dates", "a source day is the card's date")
+        check(firstSeen("Manual entry 2026-09-22") == false, "honest dates", "the label's own date is the card's date")
     }
 
     static func activityChecks() {
@@ -426,8 +450,9 @@ import SwiftUI
         check(line(WorkCardDates(created: day("2026-10-06"), active: day("2026-10-06"), activeIsDay: true), .recent) == "active today", "date line",
               "a created day never reads as hours")
         check(line(WorkCardDates(), .recent) == "No date" && line(nil, .newest) == "No date", "date line")
-        check(line(WorkCardDates(created: day("2026-10-06")), .newest) == "created Oct 6", "date line")
-        check(line(WorkCardDates(created: day("2025-12-30")), .oldest) == "created Dec 30, 2025", "date line", "another year says which")
+        check(line(WorkCardDates(created: day("2026-09-22")), .newest) == "dated Sep 22", "honest dates", "a meeting's or source's day")
+        check(line(WorkCardDates(created: day("2026-05-23"), firstSeen: true), .oldest) == "first seen May 23", "honest dates", "a git day")
+        check(line(WorkCardDates(created: day("2025-12-30")), .oldest) == "dated Dec 30, 2025", "date line", "another year says which")
     }
 
     // MARK: Rows, request and answer
@@ -466,6 +491,10 @@ import SwiftUI
               "search request", "more cards than a Choice holds are never sent")
         check(WorkSearch.request(key: all.key, query: String(repeating: "x", count: 300), items: cards).body["query"]?.string == String(repeating: "x", count: 200),
               "search request", "the query is cut at 200 characters")
+        // Counted in code points, as the server counts: "👍🏽" is one character and two code points.
+        let thumbs = WorkSearch.request(key: all.key, query: "launch " + String(repeating: "\u{1F44D}\u{1F3FD}", count: 150), items: cards)
+        check(thumbs.body["query"]?.string?.unicodeScalars.count == 200 && thumbs.length == 200, "code points",
+              "the query is cut at 200 code points: \(thumbs.body["query"]?.string?.unicodeScalars.count ?? -1)")
     }
 
     actor Gate {
@@ -571,6 +600,137 @@ import SwiftUI
         state.previewSearchTransport = { args, data in try await gate.call(args, data) }
         await state.searchMeaning(ask(), isolated: true)
         check(await gate.count() == 4, "meaning minimum", "the preview's own fake is used")
+
+        // While the answer is on its way the board knows (it says "Searching by meaning…"), and after it, not.
+        state.query = "delivery partners again"
+        let pendingKey = state.currentSearchKey
+        await gate.set(hold: true)
+        let held = Task { await state.searchMeaning(ask(), isolated: false) }
+        spins = 0
+        while await gate.count() == 4, spins < 2_000 { try await Task.sleep(for: .milliseconds(2)); spins += 1 }
+        check(state.meaningPending == pendingKey, "pending line", "the board was not told an answer is on its way")
+        await gate.release(); await gate.set(hold: false); await held.value
+        check(state.meaningPending == nil && state.meaning?.key == pendingKey, "pending line", "the answer landed but the board still waits")
+        state.searchPause = .milliseconds(300)
+        state.query = "pending during the pause"
+        let paused = Task { await state.searchMeaning(ask(), isolated: false) }
+        try await Task.sleep(for: .milliseconds(30))
+        check(state.meaningPending == state.currentSearchKey, "pending line", "the pause before asking is pending too")
+        paused.cancel(); await paused.value
+        check(state.meaningPending == nil, "pending line", "a cancelled search still reads as pending")
+        state.searchPause = .zero
+
+        // A passing failure is never kept, and the same search asks again; a definitive answer ends the asking; the cap's
+        // answer is kept for its line but asked again.
+        state.query = "transient failure"
+        await gate.set(fail: true)
+        var before = await gate.count()
+        await state.searchMeaning(ask(), isolated: false)
+        check(state.meaning == nil, "transient answers", "an unreachable answer was kept")
+        await state.searchMeaning(ask(), isolated: false)
+        var now = await gate.count()
+        check(now == before + 2, "transient answers", "the same search did not ask again after a passing failure")
+        await gate.set(fail: false)
+        // A reason this build does not know falls back to the words: logged, never kept, asked again, no line.
+        for reason in ["jev_unavailable", "http_503", "invalid_search_request", "a_reason_from_a_later_server"] {
+            await gate.set(answer: HelperResponse(ok: true, message: "", details: ["available": .bool(false), "reason": .string(reason)]))
+            before = await gate.count()
+            await state.searchMeaning(ask(), isolated: false)
+            await state.searchMeaning(ask(), isolated: false)
+            now = await gate.count()
+            check(state.meaning == nil && now == before + 2, "transient answers", "\(reason) was kept or not asked again")
+        }
+        for reason in ["search_off", "jev_not_configured", "server_too_old", "too_many_candidates", "jev_request_rejected"] {
+            state.query = "definitive " + reason
+            await gate.set(answer: HelperResponse(ok: true, message: "", details: ["available": .bool(false), "reason": .string(reason)]))
+            before = await gate.count()
+            await state.searchMeaning(ask(), isolated: false)
+            await state.searchMeaning(ask(), isolated: false)
+            now = await gate.count()
+            check(state.meaning?.reason == reason && now == before + 1, "definitive answers", "\(reason) was not kept, or asked twice")
+        }
+        for reason in ["jev_cap_reached", "jev_breaker_open", "jev_key_rejected"] {
+            state.query = "lifts later " + reason
+            await gate.set(answer: HelperResponse(ok: true, message: "", details: ["available": .bool(false), "reason": .string(reason)]))
+            before = await gate.count()
+            await state.searchMeaning(ask(), isolated: false)
+            check(state.meaning(for: state.currentSearchKey)?.reason == reason, "definitive answers", "\(reason): its line has nothing to show")
+            await state.searchMeaning(ask(), isolated: false)
+            now = await gate.count()
+            check(now == before + 2, "transient answers", "\(reason) lifts, so the next search asks again")
+        }
+        check(!WorkSearch.settled(WorkSearchMeaning(key: pendingKey, available: false, reason: "unreachable"))
+              && WorkSearch.settled(WorkSearchMeaning(key: pendingKey, available: true)), "definitive answers", "settled")
+    }
+
+    /// What an empty column says: nothing claimed while Jev's answer is on its way; on All work, where Jev covers open
+    /// cards only (the server's rule), the Complete column says only that its words found nothing.
+    static func emptyColumnChecks() {
+        let all = WorkSearchKey(query: "x", scope: .all, domain: nil), quilt = WorkSearchKey(query: "x", scope: .all, domain: "quilt")
+        let done = WorkSearchKey(query: "x", scope: .completed, domain: nil)
+        check(WorkSearch.emptyColumn(.planned, key: all, active: false, pending: false) == "No tasks here", "empty columns", "no search")
+        check(WorkSearch.emptyColumn(.planned, key: all, active: true, pending: true) == "Searching\u{2026}", "empty columns", "pending claims nothing")
+        check(WorkSearch.emptyColumn(.planned, key: all, active: true, pending: false) == "No matches here", "empty columns", "open cards on All work")
+        check(WorkSearch.emptyColumn(.complete, key: all, active: true, pending: false) == "No word matches here", "empty columns",
+              "All work: Jev never searched Complete")
+        check(WorkSearch.emptyColumn(.complete, key: quilt, active: true, pending: false) == "No matches here"
+              && WorkSearch.emptyColumn(.complete, key: done, active: true, pending: false) == "No matches here", "empty columns",
+              "a domain board and Completed search their completed cards")
+    }
+
+    /// Focus finds the same cards as the board's words (QA C7): one rule, no Jev, file names included.
+    static func focusParityChecks() {
+        let cards = items([task(hex(1), "Send Cort the paid search ads"), task(hex(2), "Review the leads report"),
+                           task(hex(3), "Launch the competitor pages", meetings: ["Ads review"]), task(hex(4), "Fix the backlog"),
+                           task(hex(5), "Done thing", checked: true)])
+        let names: (String) -> [String] = { id in id.hasSuffix(hex(4)) ? ["Ads mockups.pdf"] : [] }
+        for query in ["ads", "competitor ads", "paid", "leads", "the", "backlog review"] {
+            let focus = WorkWorkspaceProjection.filter(cards, scope: .all, domain: nil, query: query, fileNames: names).filter { $0.task != nil }.map(\.id)
+            let board = WorkSearch.result(query: query, board: cards, elsewhere: [], meaning: nil) { WorkSearch.fields($0, files: names($0.sourceID)) }
+            let expected = board.active ? cards.map(\.id).filter { board.hits[$0] != nil } : cards.map(\.id)
+            check(focus == expected, "focus parity", "\(query): Focus \(focus.count), the board \(expected.count)")
+        }
+        check(WorkWorkspaceProjection.filter(cards, scope: .all, domain: nil, query: "ads", fileNames: names).contains { $0.id == cards[3].id }, "focus parity",
+              "a card file's name finds the card in Focus too")
+    }
+
+    /// Ordering by date costs nothing per redraw (QA S-W5): the dates are worked out once per data change, and a redraw's
+    /// lines and order for 300 cards take well under a frame.
+    static func datesCostChecks() {
+        let memo = WorkBoardMemo()
+        let tasks = (1...300).map { task(hex($0), "Card \($0)", source: "Manual entry 2026-09-\(String(format: "%02d", $0 % 28 + 1))",
+                                         extra: ["lineChangedAt": .string("2026-10-0\($0 % 6 + 1)T12:00:00.000Z")]) }
+        memo.refreshed(WorkBoardDataKey(tasks: 1)) { items(tasks) }
+        var builds = 0
+        let build: ([WorkWorkspaceItem]) -> [String: WorkCardDates] = { all in
+            builds += 1
+            return Dictionary(uniqueKeysWithValues: all.compactMap { item in
+                item.task.map { (item.id, WorkCardDating.dates(task: $0, moved: nil, session: nil, file: nil, calendar: calendar)) } })
+        }
+        let start = WorkBoardMetrics.dates
+        var dates: [String: WorkCardDates] = [:]
+        for _ in 0..<20 { dates = memo.cardDates(filesEpoch: 1, movesEpoch: 1, build: build) }
+        check(builds == 1 && WorkBoardMetrics.dates == start + 1 && dates.count == 300, "dates memo", "20 redraws built the dates \(builds) times")
+        _ = memo.cardDates(filesEpoch: 2, movesEpoch: 1, build: build)
+        _ = memo.cardDates(filesEpoch: 2, movesEpoch: 2, build: build)
+        memo.refreshed(WorkBoardDataKey(tasks: 2)) { items(tasks) }
+        _ = memo.cardDates(filesEpoch: 2, movesEpoch: 2, build: build)
+        check(builds == 4, "dates memo", "a file, a move and a data change each rebuild once: \(builds)")
+        let cards = items(tasks), now = at("2026-10-07T04:10:00Z")
+        var times: [Double] = []
+        for _ in 0..<7 {
+            let began = Date()
+            for order in [WorkBoardOrder.recent, .newest] {
+                let sorted = WorkCardDating.sorted(cards, id: \.id, order: order, dates: dates)
+                for card in sorted { _ = WorkCardDating.line(dates[card.id], order: order, now: now, calendar: calendar) }
+            }
+            times.append(Date().timeIntervalSince(began) * 1000)
+        }
+        let median = times.sorted()[times.count / 2]
+        check(median < 20, "dates cost", "a 300-card redraw's lines and order took \(String(format: "%.1f", median)) ms (median of 7, both orders)")
+        let journal = WorkActivityJournal(url: nil)
+        journal.record("task:quilt:a"); journal.record("task:quilt:b")
+        check(journal.epoch == 2, "dates memo", "the journal's epoch counts moves")
     }
 
     /// The board's memo: the search is built once per search, answer and data; card files are read once per change.

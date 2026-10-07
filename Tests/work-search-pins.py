@@ -32,8 +32,10 @@ logic = body(board, "// MARK: - Work search and order (0.5.259", "/// Task page 
 dash = body(board, "    private var dashboard: some View {", "    // MARK: Work search and order (0.5.259)")
 need("let cards = boardCards" in dash and "let search = boardSearch()" in dash and "let order = boardOrder" in dash,
      "the board works out its cards, its search and its order once per draw")
-need("WorkBoardPass(search: search, order: order, dates: order == .board ? [:] : cardDates(cards), now: Date())" in dash,
-     "the dates are worked out only while ordering by date")
+need("dates: order == .board ? [:] : board.cardDates(filesEpoch: cardFiles.manifestsEpoch, movesEpoch: model.workActivity.epoch) { cardDates($0) }" in dash,
+     "the dates are worked out only while ordering by date, once per data change (QA S-W5)")
+need("WorkBoardPass(search: search, key: key, pending: state.meaningPending == key, order: order," in dash,
+     "each column knows the search and whether Jev's answer is on its way")
 need("boardColumn(stage, pass: pass)" in dash and "visible.filter" not in dash, "every column draws from the pass; the board never reads the Focus list's query filter")
 need("WorkSearch.countLabel(kept: shownCount, of: taskCount, active: search.active) + \" tasks" in dash, "the board line says n of m tasks while searching")
 need("if search.active { searchResults(search) }" in dash, "the result line and Best matches show only while searching")
@@ -47,7 +49,8 @@ need("let shownCount = WorkSearch.kept(cards.filter { $0.task != nil }, search).
      "the board line counts with the same rule as the columns")
 need("let cards = WorkCardDating.sorted(kept, id: \\.id, order: pass.order, dates: pass.dates)" in col, "Order sorts every column")
 need("WorkSearch.countLabel(kept: cards.count, of: all.count, active: pass.search.active)" in col, "a column header says n of m while searching")
-need('pass.search.active ? "No matches here" : "No tasks here"' in col, "an empty column says No matches here while searching")
+need('WorkSearch.emptyColumn(stage, key: pass.key, active: pass.search.active, pending: pass.pending)' in col,
+     "an empty column says what is true: searching, no matches, or no word matches where Jev did not look")
 need("hit: pass.search.hits[item.id], dateLine: WorkCardDating.line(pass.dates[item.id], order: pass.order, now: pass.now, calendar: .current)" in col,
      "each card gets its match and its date line")
 card = body(board, "    private func boardCard(", "    private func canChangeStage(")
@@ -100,7 +103,8 @@ need(esc.index("workWorkspaceState.startItemID != nil") < esc.index("escapeClear
 
 # 4. The result line, Best matches and the degrade line.
 res = body(board, "    private func searchResults(", "    /// One Best match:")
-need("Text(search.headline)" in res and "if !search.hits.isEmpty { Text(search.kindsText)" in res, "the result line: N matches and the kinds, or No matches on this board")
+need("Text(search.headline(pending: state.meaningPending == state.currentSearchKey))" in res and "if !search.hits.isEmpty { Text(search.kindsText)" in res,
+     "the result line: N matches and the kinds, Searching by meaning while pending, or No matches on this board")
 need("WorkSearch.elsewhereText(" in res and "state.domain = nil; state.scope = .all" in res, "N more in <Domain> switches to All work")
 need("bestMatchRow(item, hit: hit, highlighted: index == min(state.bandIndex, search.band.count - 1))" in res, "the walked row is the highlighted one")
 need("if let note = search.note { Text(note)" in res, "one muted line when meaning search could not run")
@@ -131,8 +135,8 @@ success = change[change.index('if await workLoop("batch"'):change.index("return 
 need('if let stage = fields["workStage"] { workActivity.recordStageChange(current, to: stage) }' in success, "Intake and Waiting on stage changes are noted")
 tracker = body(model, "        let tracker = WorkProgressTracker(store: store, board: .init(", "notify:")
 need("try await self.setWorkStage(task, stage: stage)" in tracker, "the tracker moves cards through setWorkStage, so its moves are noted")
-need('try? Self.encode(moves).write(to: url, options: .atomic)' in logic and "moves = Self.bounded(next, limit: Self.limit)" in logic,
-     "the journal is written atomically and bounded")
+need('do { try Self.encode(moves).write(to: url, options: .atomic) }' in logic and "moves = Self.bounded(next, limit: Self.limit)" in logic
+     and 'NSLog("COS Work: the stage-move journal could not be saved' in logic, "the journal is written atomically and bounded, and a failed save is logged")
 
 # 7. The helper: work-search is routed and read-only; the row whitelist carries the date fields; fixture mode never spends Jev.
 need('case "work-search": try emitWorkSearch()' in helper, "the helper routes work-search")
@@ -145,6 +149,38 @@ proj = body(helper, "    static func workTaskProjection(", "    private func emi
 need("for (key, valid) in workTaskDateFields {" in proj and '("createdOn",' in proj and '("createdFrom",' in proj and '("lineChangedAt",' in proj,
      "the row whitelist passes createdOn, createdFrom and lineChangedAt")
 need("WorkCardDating.created(task" not in helper, "dates are worked out in the app, not the helper")
+
+# 9. QA round 1. Focus uses the board's word rule and ⌘F; every degrade leaves a trace; the waits nest (app 30 s > helper
+# 25 s > server 20 s); the search's switch and cap survive Update Server; the comments say where task text goes.
+need("board.visible(scope: state.scope, domain: state.domain, query: state.query, filesEpoch: cardFiles.manifestsEpoch," in board
+     and "if !words.isEmpty && WorkSearch.fields(item, files: fileNames(item.sourceID)).match(words) == nil { return false }" in board,
+     "Focus narrows by the board's word rule, with file names")
+work_list = body(board, "    private var workList: some View {", "    @ViewBuilder private var detailPane: some View {")
+need("WorkBoardSearchField(prompt: \"Search work\", query: $state.query, focusRequest: state.searchFocusRequest" in work_list
+     and '.keyboardShortcut("f", modifiers: .command)' in work_list and "searchMeaning" not in work_list, "Focus has the board's box and ⌘F, and never asks Jev")
+need(re.search(r"struct WorkSearchField\b", board) is None, "the old substring box is gone")
+search_fn = body(board, "    func searchMeaning(", "    /// Escape on the board clears")
+need('NSLog("COS Work search: meaning search unavailable (%@), %ld-character search"' in search_fn and "request.length)" in search_fn,
+     "every degrade leaves a trace, never the query's words")
+need("if let kept = meaning, kept.key == request.key, WorkSearch.settled(kept) { return }" in search_fn
+     and "meaning = WorkSearch.keeps(answer) ? answer : nil" in search_fn, "a passing failure is never kept and never ends the asking")
+need("meaningPending = request.key" in search_fn and "defer { if meaningPending == request.key { meaningPending = nil } }" in search_fn,
+     "the board knows while an answer is on its way, and stops knowing when it is not")
+need("try await helper.run(args, timeout: 30, stdinData: data)" in board, "the app waits longer than the helper")
+need("timeout: 25, reviewCandidatePort: candidate?.port" in body(helper, "    private func emitWorkSearch() throws {", "    static func workSearchBodyValid("),
+     "the helper waits longer than the server's 20 s wait for Jev")
+need("(2...200).contains(trimmed.unicodeScalars.count)" in helper and "whole.unicodeScalars.prefix(maxQuery)" in board,
+     "query length is counted in code points on both sides, as the server counts")
+env = re.search(r"providerEnvironmentKeys: Set<String> = \[(.*?)\]", helper, re.S).group(1)
+need('"COS_JEV_SEARCH"' in env and '"COS_JEV_SEARCH_DAILY_TOKENS"' in env, "the search's switch and cap survive Update Server")
+need("no task text leaves the app" not in board and "URLs, emails and secrets removed" in board and "URLs, emails and secrets removed" in helper,
+     "[where task text goes] the comments say task text goes on to Jev, cleaned")
+
+# A wall-clock threshold can miss this regression on a fast Mac. Check the hot path
+# directly too: card date labels must never allocate a formatter on each redraw.
+date_labels = body(board, "    nonisolated static func line(_ dates:", "/// 0.5.259: when Control last changed")
+need(re.search(r"\b(?:ISO8601DateFormatter|DateFormatter)\s*\(", strip(date_labels)) is None,
+     "[dates cost] card date labels do not allocate a formatter per redraw")
 
 # 8. Copy: no em dash and no eyebrow kicker in what this adds.
 added = logic + dash + res + row + menu + field
