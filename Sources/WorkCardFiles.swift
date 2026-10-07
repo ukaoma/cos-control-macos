@@ -1963,7 +1963,11 @@ extension WorkCardFiles {
     /// Nil: files are off (a check's store, a root that is not allowed). Nothing is read or written.
     let root: URL?
     let isolated: Bool
-    @Published private(set) var manifests: [String: WorkContextManifest] = [:]
+    @Published private(set) var manifests: [String: WorkContextManifest] = [:] { didSet { manifestsEpoch &+= 1 } }
+    /// 0.5.259: bumps on every change, so Work's search reads file names again and Recent activity sees a new file.
+    private(set) var manifestsEpoch = 0
+    /// The newest file added to a card (Recent activity), seconds since 1970.
+    func lastAdded(_ workID: String) -> Double? { manifests[workID]?.files.map(\.addedAt).max() }
     /// Drops still being copied, per work id (they count as preparing).
     @Published private(set) var intaking: [String: Int] = [:]
     @Published private(set) var flashes: [String: WorkCardFlash] = [:]

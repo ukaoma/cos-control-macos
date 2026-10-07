@@ -82,6 +82,9 @@ python3 "$ROOT/Tests/hardening-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-intake-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-jev-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-progress-helper-checks.py" "$TMP/cos-control-helper"
+# 0.5.259: work-search through the compiled helper (pass-through, the answer's own shape, every failure an answer) and the
+# task-row whitelist carrying createdOn, createdFrom and lineChangedAt (canaries K7, K8).
+python3 "$ROOT/Tests/work-search-helper-checks.py" "$TMP/cos-control-helper"
 # 0.5.252: the glasses request inbox commands (list, claim, result) against a loopback fixture.
 python3 "$ROOT/Tests/work-requests-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/HeldNamingGuardMutations.py"
@@ -1153,6 +1156,10 @@ PY
 # Behaviour, executed against real fixtures (Tests/run-work-card-files.sh), then the wiring the compiled-only views hide.
 "$ROOT/Tests/run-work-card-files.sh"
 /usr/bin/python3 "$ROOT/Tests/work-card-files-pins.py" "$ROOT"
+# 0.5.259 Work search and order (board 4): behaviour executed against fixtures and a stand-in helper
+# (Tests/run-work-search.sh), then the wiring the compiled-only views hide.
+"$ROOT/Tests/run-work-search.sh"
+/usr/bin/python3 "$ROOT/Tests/work-search-pins.py" "$ROOT"
 
 # ── 0.5.259: the Activity home (Needs you, live cards, desks) ─────────────────
 # Behaviour, executed against fixture rows (Tests/run-activity-home.sh), then the wiring the compiled-only views hide:

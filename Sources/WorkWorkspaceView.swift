@@ -238,6 +238,58 @@ enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
     @Published var expandedReviews: Set<String> = []
     @Published var expandedNotes: Set<String> = []
 
+    // 0.5.259 Work search and order (board 4 of the 10/6 mock).
+    /// Jev's answer for the board's search. Read through `meaning(for:)`, so an answer for an older search never shows.
+    @Published private(set) var meaning: WorkSearchMeaning?
+    /// Answers dropped because the search changed while they were on the way (read by the checks).
+    private(set) var staleMeaningDrops = 0
+    /// The helper's `work-search` (server 6.65.0). Replaced in checks.
+    var searchTransport: WorkSearch.Transport = WorkSearch.helperTransport()
+    /// The isolated preview never asks the server; a render harness may give it a fake.
+    var previewSearchTransport: WorkSearch.Transport?
+    /// Jev is asked after this pause in typing.
+    var searchPause: Duration = WorkSearch.pause
+    /// The Best matches row ↓ ↑ have walked to (Return opens it).
+    @Published var bandIndex = 0
+    /// ⌘F bumps it; the search field takes the focus.
+    @Published var searchFocusRequest = 0
+    /// Order per board. The preview keeps its choices here only; the app also remembers them in `orderStore`.
+    @Published private(set) var orders: [String: WorkBoardOrder] = [:]
+    var orderStore: WorkBoardOrderStore = .standard
+
+    var currentSearchKey: WorkSearchKey { WorkSearchKey(query: WorkSearch.normalized(query), scope: scope, domain: domain) }
+    func meaning(for key: WorkSearchKey) -> WorkSearchMeaning? { meaning?.key == key ? meaning : nil }
+
+    /// Asks Jev for the card the search means, after a pause in typing. Typing never waits on it: the board shows the
+    /// title and word matches at once, and this answer joins them when it arrives, if the search is still the same.
+    func searchMeaning(_ request: WorkSearchRequest, isolated: Bool) async {
+        guard request.wantsMeaning, let transport = isolated ? previewSearchTransport : searchTransport else { return }
+        if meaning?.key == request.key { return }
+        do { try await Task.sleep(for: searchPause) } catch { return }
+        let answer = await WorkSearch.ask(request, transport: transport)
+        guard !Task.isCancelled, request.key == currentSearchKey else { staleMeaningDrops += 1; return }
+        meaning = answer
+    }
+
+    /// Escape on the board clears an active search before it navigates anywhere. False when there is nothing to clear
+    /// or the board is not what is showing (a card, a meeting, Start work, Intake or Waiting on is open).
+    func escapeClearsSearch() -> Bool {
+        guard !query.isEmpty, selectedID == nil, !meetingPicker, startItemID == nil, !intakeOpen, !waitingOpen else { return false }
+        query = ""; bandIndex = 0
+        return true
+    }
+
+    func order(domain: String?, scope: WorkWorkspaceScope, isolated: Bool) -> WorkBoardOrder {
+        let key = WorkBoardOrder.key(domain: domain, scope: scope)
+        if let chosen = orders[key] { return chosen }
+        return isolated ? .board : (orderStore.read(key).flatMap(WorkBoardOrder.init(rawValue:)) ?? .board)
+    }
+    func setOrder(_ order: WorkBoardOrder, domain: String?, scope: WorkWorkspaceScope, isolated: Bool) {
+        let key = WorkBoardOrder.key(domain: domain, scope: scope)
+        orders[key] = order
+        if !isolated { orderStore.write(key, order.rawValue) }
+    }
+
     /// 0.5.254 resize pass: the board's rows for these stores, rebuilt only when one of their sources changed
     /// (WorkBoardDataKey). The Work view reads every row through here.
     func board(model: ControllerModel, handoffStore: WorkHandoffStore, reviewStore: WorkReviewStore, now: Date = Date()) -> WorkBoardMemo {
@@ -318,6 +370,13 @@ struct WorkBoardDataKey: Equatable {
     private var columns: [WorkBoardStage: [WorkWorkspaceItem]] = [:]
     private var cardsDomain: String??
     private var cards: [WorkBoardSessionCard] = []
+    /// 0.5.259: the board's search, kept until the search, Jev's answer, the rows or the card files change.
+    private struct SearchKey: Equatable { var filter: Filter; var meaning: WorkSearchMeaning?; var files: Int }
+    private var searchKey: SearchKey?
+    private var searchResult = WorkSearchResult()
+    /// Each card's words, made once per data change (and again when card files change).
+    private var searchIndex: [String: WorkSearchFields] = [:]
+    private var searchIndexFiles: Int?
 
     @discardableResult func refreshed(_ key: WorkBoardDataKey, build: () -> [WorkWorkspaceItem]) -> WorkBoardMemo {
         guard key != self.key else { return self }
@@ -329,7 +388,28 @@ struct WorkBoardDataKey: Equatable {
             if byID[item.id] == nil { byID[item.id] = item }
         }
         filter = nil; cardsDomain = nil
+        searchKey = nil; searchIndex = [:]; searchIndexFiles = nil
         return self
+    }
+
+    /// 0.5.259: what a search finds on the board (`scope`, `domain`): the cards it keeps, the Best matches, the counts,
+    /// and how many other domains' cards match. Built once per search, answer and data, never per column or redraw.
+    func search(scope: WorkWorkspaceScope, domain: String?, query: String, meaning: WorkSearchMeaning?, filesEpoch: Int,
+                fileNames: (String) -> [String]) -> WorkSearchResult {
+        let next = SearchKey(filter: Filter(scope: scope, domain: domain, query: query), meaning: meaning, files: filesEpoch)
+        if next == searchKey { return searchResult }
+        if searchIndexFiles != filesEpoch { searchIndex = [:]; searchIndexFiles = filesEpoch }
+        let onBoard = WorkWorkspaceProjection.filter(items, scope: scope, domain: domain, query: "").filter { $0.task != nil }
+        let elsewhere = domain == nil ? [] : WorkWorkspaceProjection.filter(items, scope: scope, domain: nil, query: "")
+            .filter { $0.task != nil && $0.domain != domain }
+        searchResult = WorkSearch.result(query: query, board: onBoard, elsewhere: elsewhere, meaning: meaning) { item in
+            if let ready = searchIndex[item.id] { return ready }
+            let made = WorkSearch.fields(item, files: fileNames(item.sourceID))
+            searchIndex[item.id] = made
+            return made
+        }
+        searchKey = next
+        return searchResult
     }
     /// The first row for a work id, as `items.first { $0.sourceID == id }` would find it.
     func item(sourceID: String) -> WorkWorkspaceItem? { bySourceID[sourceID] }
@@ -477,6 +557,499 @@ enum WorkWorkspaceProjection {
     }
 }
 
+// MARK: - Work search and order (0.5.259, board 4 of the 10/6 mock)
+
+/// How a card matched a board search. A card counts once, by its strongest local reason: every query word in its title,
+/// else any query word anywhere on the card. Jev's meaning counts only for a card the words did not find.
+enum WorkSearchKind: String, Sendable { case title, words, meaning }
+
+struct WorkSearchHit: Equatable, Sendable {
+    var kind: WorkSearchKind
+    /// The query words found (all of them for a title match). None for a meaning match.
+    var words: [String]
+    /// Jev's probability for this card, when its answer named the card.
+    var p: Double? = nil
+}
+
+/// The search an answer belongs to: the query (normalized) on one board.
+struct WorkSearchKey: Hashable, Sendable {
+    var query: String
+    var scope: WorkWorkspaceScope
+    var domain: String?
+}
+
+/// Jev's answer for one search (server 6.65.0 `POST /api/work/search`, through the helper's `work-search`).
+struct WorkSearchMeaning: Equatable, Sendable {
+    var key: WorkSearchKey
+    var available: Bool
+    /// Why it could not run (the server's reason, `server_too_old` for a server without the route, `unreachable`).
+    var reason: String?
+    /// Probability by board item id.
+    var scores: [String: Double] = [:]
+}
+
+/// What the board asks: the view (scope, and the domain on a domain board) or, for a list only Control computes (Needs
+/// attention, In progress), the cards' own ids. The server reads the cards itself; no task text leaves the app.
+struct WorkSearchRequest: Sendable {
+    var key: WorkSearchKey
+    var body: [String: JSONValue]
+    /// A server row id to the board items it names.
+    var lookup: [String: [String]]
+    /// At least three characters and a word that is not a stopword, and a card list the server can hold.
+    var wantsMeaning: Bool
+}
+
+/// One card's words for a search: its title, and everything else on it (task text, source label, meeting names, file names).
+struct WorkSearchFields: Sendable {
+    let title: [String]
+    let other: [String]
+    init(title: String, other: [String]) {
+        self.title = WorkSearch.tokens(title)
+        self.other = other.flatMap { WorkSearch.tokens($0) }
+    }
+    func match(_ words: [String]) -> WorkSearchHit? {
+        guard !words.isEmpty else { return nil }
+        if words.allSatisfy({ WorkSearch.found($0, in: title) }) { return WorkSearchHit(kind: .title, words: words) }
+        let hit = words.filter { WorkSearch.found($0, in: title) || WorkSearch.found($0, in: other) }
+        return hit.isEmpty ? nil : WorkSearchHit(kind: .words, words: hit)
+    }
+}
+
+/// What a search found on a board.
+struct WorkSearchResult: Equatable, Sendable {
+    /// The query has a word to look for. Off: the board shows every card, as before.
+    var active = false
+    /// The matches the result line counts and the cards that get the gold border, by item id.
+    var hits: [String: WorkSearchHit] = [:]
+    /// The cards the columns keep: exactly the matches the result line counts (one threshold, 0.15 for meaning).
+    var shown: Set<String> = []
+    /// Best matches, at most three item ids.
+    var band: [String] = []
+    var titleCount = 0, wordsCount = 0, meaningCount = 0
+    /// Other domains with matching cards, most first (domain boards only).
+    var elsewhere: [WorkSearchElsewhere] = []
+    /// One muted line when meaning search could not run and that matters.
+    var note: String?
+
+    /// "4 matches"
+    var countText: String { hits.count == 1 ? "1 match" : "\(hits.count) matches" }
+    /// The result line's lead: the count, or that nothing on this board matched.
+    var headline: String { hits.isEmpty ? "No matches on this board" : countText }
+    /// "1 by title · 3 by meaning": the kinds that found something.
+    var kindsText: String {
+        [(titleCount, "by title"), (wordsCount, "by words"), (meaningCount, "by meaning")]
+            .filter { $0.0 > 0 }.map { "\($0.0) \($0.1)" }.joined(separator: " · ")
+    }
+}
+
+struct WorkSearchElsewhere: Equatable, Sendable {
+    var domain: String
+    var count: Int
+}
+
+enum WorkSearch {
+    typealias Transport = @Sendable ([String], Data?) async throws -> HelperResponse
+    /// Words a search ignores. Not "it": IT Retail is a brand.
+    nonisolated static let stopwords: Set<String> = ["a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "into", "is",
+        "me", "my", "of", "on", "or", "our", "so", "that", "the", "their", "this", "to", "up", "was", "we", "with", "you", "your"]
+    nonisolated static let bandLimit = 3
+    /// Jev's answer counts as a meaning match from here: in Best matches, the counts and the columns alike. There is no
+    /// lower tier (10/6 review): a card under it is not on the board while searching, so every count agrees.
+    nonisolated static let bandThreshold = 0.15
+    /// Jev is asked from this many characters, after `pause`.
+    nonisolated static let meaningMinimum = 3
+    nonisolated static let pause: Duration = .milliseconds(400)
+    /// A Jev Choice holds 254 cards plus none.
+    nonisolated static let maxCandidates = 254
+    nonisolated static let maxQuery = 200
+
+    nonisolated static func helperTransport() -> Transport {
+        let helper = HelperClient()
+        return { args, data in try await helper.run(args, timeout: 15, stdinData: data) }
+    }
+
+    /// Case, width and accents do not change what was asked.
+    nonisolated static func fold(_ text: String) -> String {
+        text.precomposedStringWithCompatibilityMapping.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+    }
+    nonisolated static func normalized(_ query: String) -> String {
+        fold(query).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+    /// The runs of letters and digits in `text`, where they sit.
+    nonisolated static func wordRanges(_ text: String) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var start: String.Index?
+        var index = text.startIndex
+        while index < text.endIndex {
+            let letter = text[index].unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) }
+            if letter { if start == nil { start = index } }
+            else if let open = start { ranges.append(open..<index); start = nil }
+            index = text.index(after: index)
+        }
+        if let open = start { ranges.append(open..<text.endIndex) }
+        return ranges
+    }
+    nonisolated static func tokens(_ text: String) -> [String] { wordRanges(text).map { fold(String(text[$0])) } }
+    /// The words a query looks for: no stopwords, no single letters, each once.
+    nonisolated static func words(_ query: String) -> [String] {
+        var seen = Set<String>()
+        return tokens(query).filter { $0.count >= 2 && !stopwords.contains($0) && seen.insert($0).inserted }
+    }
+    /// A query word is found where a word on the card starts with it: "launch" finds "launches", "ads" never finds "leads".
+    nonisolated static func found(_ word: String, in tokens: [String]) -> Bool { tokens.contains { $0.hasPrefix(word) } }
+
+    /// A card's words: the title, then the task text, its source, its meetings' names and its files' names.
+    @MainActor static func fields(_ item: WorkWorkspaceItem, files: [String]) -> WorkSearchFields {
+        guard let task = item.task else { return WorkSearchFields(title: item.title, other: [item.review?.markdown ?? ""] + files) }
+        return WorkSearchFields(title: WorkSource.plainTitle(item.title),
+                                other: [task.text, task.title, task.source] + task.meetingRefs.map(\.title) + files)
+    }
+
+    /// The request for the board's search. `items` are the board's cards in board order.
+    @MainActor static func request(key: WorkSearchKey, query: String, items: [WorkWorkspaceItem]) -> WorkSearchRequest {
+        let trimmed = String(query.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxQuery))
+        var body: [String: JSONValue] = ["query": .string(trimmed)]
+        var lookup: [String: [String]] = [:]
+        var ids: [String] = []
+        for item in items {
+            guard let task = item.task, task.id.range(of: "^[a-f0-9]{12}$", options: .regularExpression) != nil else { continue }
+            if lookup[task.id] == nil { ids.append(task.id) }
+            lookup[task.id, default: []].append(item.id)
+        }
+        var fits = true
+        switch key.scope {
+        case .attention, .progress:
+            body["ids"] = .array(ids.map(JSONValue.string))
+            fits = !ids.isEmpty && ids.count <= maxCandidates
+        case .all, .completed:
+            body["scope"] = .string(key.scope.rawValue)
+            if let domain = key.domain { body["domain"] = .string(domain) }
+        }
+        return WorkSearchRequest(key: key, body: body, lookup: lookup,
+                                 wantsMeaning: fits && trimmed.count >= meaningMinimum && !words(trimmed).isEmpty)
+    }
+
+    /// Asks the helper. Never throws: a failure is an answer that says why, and the words keep working.
+    nonisolated static func ask(_ request: WorkSearchRequest, transport: Transport) async -> WorkSearchMeaning {
+        do {
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            let response = try await transport(["work-search"], try encoder.encode(JSONValue.object(request.body)))
+            return parse(response, request: request)
+        } catch {
+            return WorkSearchMeaning(key: request.key, available: false, reason: "unreachable")
+        }
+    }
+    nonisolated static func parse(_ response: HelperResponse, request: WorkSearchRequest) -> WorkSearchMeaning {
+        guard response.ok else { return WorkSearchMeaning(key: request.key, available: false, reason: "unreachable") }
+        guard response.details["available"]?.bool == true else {
+            return WorkSearchMeaning(key: request.key, available: false, reason: response.details["reason"]?.string ?? "jev_unavailable")
+        }
+        var scores: [String: Double] = [:]
+        for row in response.details["results"]?.array ?? [] {
+            guard let id = row.object?["id"]?.string, let p = row.object?["p"]?.double, p.isFinite, p >= 0, p <= 1 else { continue }
+            for item in request.lookup[id] ?? [] { scores[item] = max(scores[item] ?? 0, p) }
+        }
+        return WorkSearchMeaning(key: request.key, available: true, reason: nil, scores: scores)
+    }
+
+    /// The one line said when meaning search could not run, only where it matters: the day's budget or the breaker,
+    /// and a server without the route. Nothing for a switch turned off on purpose, or a passing failure.
+    nonisolated static func note(_ reason: String?) -> String? {
+        switch reason {
+        case "jev_cap_reached", "jev_breaker_open": "Meaning search is paused for today"
+        case "server_too_old": "Meaning search needs COS server 6.65"
+        default: nil
+        }
+    }
+
+    /// Why a card is in Best matches.
+    nonisolated static func why(_ hit: WorkSearchHit) -> String {
+        switch hit.kind {
+        case .title: "Title"
+        case .words: "Words: " + hit.words.prefix(2).map { "\u{201C}" + $0 + "\u{201D}" }.joined(separator: ", ")
+        case .meaning: "Similar meaning"
+        }
+    }
+
+    /// Best matches: cards Jev rates at least 0.15 first (most likely first), then title matches, then word matches
+    /// (most words first); board order breaks ties. At most three.
+    nonisolated static func band(order: [String], hits: [String: WorkSearchHit]) -> [String] {
+        let position = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+        func group(_ hit: WorkSearchHit) -> Int {
+            if let p = hit.p, p >= bandThreshold { return 0 }
+            return hit.kind == .title ? 1 : hit.kind == .words ? 2 : 3
+        }
+        return hits.sorted { left, right in
+            let l = group(left.value), r = group(right.value)
+            if l != r { return l < r }
+            if l == 0, left.value.p != right.value.p { return (left.value.p ?? 0) > (right.value.p ?? 0) }
+            if l == 2, left.value.words.count != right.value.words.count { return left.value.words.count > right.value.words.count }
+            return (position[left.key] ?? .max, left.key) < (position[right.key] ?? .max, right.key)
+        }.prefix(bandLimit).map(\.key)
+    }
+
+    /// The search over `board` (the board's cards, in board order), with Jev's `meaning` when it is for this search,
+    /// and the local matches among `elsewhere` (other domains' cards) for "N more in".
+    @MainActor static func result(query: String, board: [WorkWorkspaceItem], elsewhere: [WorkWorkspaceItem], meaning: WorkSearchMeaning?,
+                       fields: (WorkWorkspaceItem) -> WorkSearchFields) -> WorkSearchResult {
+        let words = words(query)
+        guard !words.isEmpty else { return WorkSearchResult() }
+        var result = WorkSearchResult(active: true)
+        for item in board { if let hit = fields(item).match(words) { result.hits[item.id] = hit } }
+        if let meaning {
+            if meaning.available {
+                let onBoard = Set(board.map(\.id))
+                for (id, p) in meaning.scores where onBoard.contains(id) {
+                    if var hit = result.hits[id] { hit.p = p; result.hits[id] = hit }
+                    else if p >= bandThreshold { result.hits[id] = WorkSearchHit(kind: .meaning, words: [], p: p) }
+                }
+            } else { result.note = note(meaning.reason) }
+        }
+        // The columns show exactly what the result line counts.
+        result.shown = Set(result.hits.keys)
+        result.titleCount = result.hits.values.filter { $0.kind == .title }.count
+        result.wordsCount = result.hits.values.filter { $0.kind == .words }.count
+        result.meaningCount = result.hits.values.filter { $0.kind == .meaning }.count
+        result.band = band(order: board.map(\.id), hits: result.hits)
+        var counts: [String: Int] = [:]
+        for item in elsewhere where fields(item).match(words) != nil { counts[item.domain, default: 0] += 1 }
+        result.elsewhere = counts.map { WorkSearchElsewhere(domain: $0.key, count: $0.value) }
+            .sorted { $0.count == $1.count ? $0.domain < $1.domain : $0.count > $1.count }
+        return result
+    }
+
+    /// What a list of cards keeps while searching (every card when not): the board line and each column use this one rule,
+    /// so "N matches", "N of M tasks" and the columns' "n of m" always agree.
+    nonisolated static func kept(_ cards: [WorkWorkspaceItem], _ result: WorkSearchResult) -> [WorkWorkspaceItem] {
+        result.active ? cards.filter { result.shown.contains($0.id) } : cards
+    }
+
+    /// A count while searching: "2 of 5" (what the search kept of all there is); otherwise all there is.
+    nonisolated static func countLabel(kept: Int, of all: Int, active: Bool) -> String { active ? "\(kept) of \(all)" : "\(all)" }
+
+    /// "2 more in Personal", or "5 more in other domains" when several have matches. `elsewhere` carries display names.
+    nonisolated static func elsewhereText(_ elsewhere: [WorkSearchElsewhere]) -> String? {
+        guard let first = elsewhere.first else { return nil }
+        let total = elsewhere.reduce(0) { $0 + $1.count }
+        return elsewhere.count == 1 ? "\(total) more in " + first.domain : "\(total) more in other domains"
+    }
+
+    /// The title with the start of each word that matched underlined in gold.
+    @MainActor static func underlined(_ title: AttributedString, words: [String]) -> AttributedString {
+        guard !words.isEmpty else { return title }
+        var out = title
+        let plain = String(title.characters)
+        for range in wordRanges(plain) {
+            let token = fold(String(plain[range]))
+            guard let word = words.first(where: { token.hasPrefix($0) }) else { continue }
+            let offset = plain.distance(from: plain.startIndex, to: range.lowerBound)
+            let length = min(word.count, plain.distance(from: range.lowerBound, to: range.upperBound))
+            let start = out.characters.index(out.startIndex, offsetBy: offset)
+            let end = out.characters.index(start, offsetBy: length)
+            out[start..<end].underlineStyle = Text.LineStyle(pattern: .solid, color: COSPalette.gold)
+        }
+        return out
+    }
+
+    /// The keys a focused search answers.
+    enum Key: Sendable { case down, up, open, clear }
+    enum KeyAction: Equatable, Sendable { case highlight(Int), open(Int), clear, pass }
+    /// ↓ ↑ walk Best matches (stopping at the ends), Return opens the row walked to (the first by default), Escape
+    /// clears a search. With nothing to act on, the key goes on to the field and the window.
+    nonisolated static func key(_ key: Key, query: String, highlighted: Int, bandCount: Int) -> KeyAction {
+        switch key {
+        case .clear: return query.isEmpty ? .pass : .clear
+        case .down: return bandCount == 0 ? .pass : .highlight(min(max(highlighted, 0) + 1, bandCount - 1))
+        case .up: return bandCount == 0 ? .pass : .highlight(max(min(highlighted, bandCount - 1) - 1, 0))
+        case .open: return bandCount == 0 ? .pass : .open(min(max(highlighted, 0), bandCount - 1))
+        }
+    }
+}
+
+/// 0.5.259: how each column is ordered. "Order", not "Sort": the rail's "Sort · N new" already means triage.
+enum WorkBoardOrder: String, CaseIterable, Identifiable, Sendable {
+    case board, recent, newest, oldest
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .board: "Board order"
+        case .recent: "Recent activity"
+        case .newest: "Newest created"
+        case .oldest: "Oldest created"
+        }
+    }
+    var help: String {
+        switch self {
+        case .board: "As you arranged each column"
+        case .recent: "Last stage move, session, file or edit. Cards with no date go last."
+        case .newest, .oldest: "By the day the card was created. Cards with no date go last."
+        }
+    }
+    /// The remembered choice for one board.
+    nonisolated static func key(domain: String?, scope: WorkWorkspaceScope) -> String {
+        "cos.workOrder." + (domain.map { "domain:" + $0 } ?? "all") + "|" + scope.rawValue
+    }
+}
+
+/// Where the Order choices are remembered (UserDefaults in the app; a dictionary in checks).
+struct WorkBoardOrderStore: Sendable {
+    var read: @Sendable (String) -> String?
+    var write: @Sendable (String, String) -> Void
+    static let standard = WorkBoardOrderStore(read: { UserDefaults.standard.string(forKey: $0) },
+                                              write: { UserDefaults.standard.set($1, forKey: $0) })
+}
+
+/// When a card was created and last active.
+struct WorkCardDates: Equatable, Sendable {
+    var created: Date?
+    var active: Date?
+    /// The newest activity is the created day, not a moment.
+    var activeIsDay = false
+}
+
+enum WorkCardDating {
+    /// A `YYYY-MM-DD` that is a real day, at the start of that day here.
+    nonisolated static func day(_ text: String, calendar: Calendar) -> Date? {
+        let parts = text.split(separator: "-").compactMap { Int($0) }
+        guard text.count == 10, parts.count == 3, (1...12).contains(parts[1]), (1...31).contains(parts[2]),
+              let date = calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2])),
+              calendar.component(.day, from: date) == parts[2], calendar.component(.month, from: date) == parts[1] else { return nil }
+        return date
+    }
+    /// The first real `YYYY-MM-DD` in a source label ("Manual entry 2026-10-06", "PR Strategy [2026-09-15]").
+    nonisolated static func firstDay(in source: String, calendar: Calendar) -> Date? {
+        var rest = source[...]
+        while let range = rest.range(of: #"(?<![0-9])[0-9]{4}-[0-9]{2}-[0-9]{2}(?![0-9])"#, options: .regularExpression) {
+            if let date = day(String(rest[range]), calendar: calendar) { return date }
+            rest = rest[range.upperBound...]
+        }
+        return nil
+    }
+    /// The server's day (`createdOn`, 6.65.0), else the first day in the source label, else none.
+    nonisolated static func created(_ task: TaskRow, calendar: Calendar) -> Date? {
+        if let server = task.createdOn, let date = day(server, calendar: calendar) { return date }
+        return firstDay(in: task.source, calendar: calendar)
+    }
+    nonisolated static func instant(_ text: String?) -> Date? {
+        guard let text, !text.isEmpty else { return nil }
+        let fractional = ISO8601DateFormatter(); fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text)
+    }
+    /// Recent activity is the newest of: the line's last change (server 6.65.0), Control's own stage move, the last
+    /// session Work started for the card, the last file added to it, and the day it was created.
+    nonisolated static func dates(task: TaskRow, moved: Date?, session: Date?, file: Date?, calendar: Calendar) -> WorkCardDates {
+        let created = created(task, calendar: calendar)
+        let moments = [instant(task.lineChangedAt), moved, session, file].compactMap { $0 }
+        if let newest = moments.max(), created.map({ newest >= $0 }) ?? true {
+            return WorkCardDates(created: created, active: newest, activeIsDay: false)
+        }
+        return WorkCardDates(created: created, active: created, activeIsDay: created != nil)
+    }
+    /// The last session Work started for each card: its newest handoff that was not refused, failed or canceled.
+    nonisolated static func lastSessions(_ receipts: [WorkHandoffReceipt]) -> [String: Date] {
+        var newest: [String: Double] = [:]
+        for receipt in receipts where receipt.createdAt > 0 && !["refused", "failed", "canceled"].contains(receipt.status) {
+            newest[receipt.workID] = max(newest[receipt.workID] ?? 0, receipt.createdAt)
+        }
+        return newest.mapValues { Date(timeIntervalSince1970: $0) }
+    }
+    /// Every column in `order`: newest or oldest first, cards with no date last; board order breaks ties.
+    nonisolated static func sorted<Card>(_ cards: [Card], id: (Card) -> String, order: WorkBoardOrder, dates: [String: WorkCardDates]) -> [Card] {
+        guard order != .board else { return cards }
+        let keyed = cards.enumerated().map { (offset: $0.offset, card: $0.element,
+                                              date: order == .recent ? dates[id($0.element)]?.active : dates[id($0.element)]?.created) }
+        return keyed.sorted { left, right in
+            switch (left.date, right.date) {
+            case let (l?, r?) where l != r: return order == .oldest ? l < r : l > r
+            case (nil, .some): return false
+            case (.some, nil): return true
+            default: return left.offset < right.offset
+            }
+        }.map(\.card)
+    }
+    /// The date line a card shows while ordering by date: "active 2 h ago", "created Oct 6", "No date".
+    nonisolated static func line(_ dates: WorkCardDates?, order: WorkBoardOrder, now: Date, calendar: Calendar) -> String? {
+        switch order {
+        case .board: return nil
+        case .recent:
+            guard let active = dates?.active else { return "No date" }
+            return "active " + age(active, isDay: dates?.activeIsDay == true, now: now, calendar: calendar)
+        case .newest, .oldest:
+            guard let created = dates?.created else { return "No date" }
+            let format = DateFormatter(); format.calendar = calendar; format.timeZone = calendar.timeZone
+            format.locale = Locale(identifier: "en_US_POSIX")
+            format.dateFormat = calendar.component(.year, from: created) == calendar.component(.year, from: now) ? "MMM d" : "MMM d, yyyy"
+            return "created " + format.string(from: created)
+        }
+    }
+    /// "now", "12 min ago", "2 h ago", "yesterday", "5 days ago"; a day reads "today".
+    nonisolated static func age(_ date: Date, isDay: Bool, now: Date, calendar: Calendar) -> String {
+        let seconds = now.timeIntervalSince(date)
+        if !isDay && seconds < 86_400 {
+            if seconds < 60 { return "now" }
+            if seconds < 3_600 { return "\(Int(seconds) / 60) min ago" }
+            return "\(Int(seconds) / 3_600) h ago"
+        }
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: now)).day ?? 0
+        return days <= 0 ? "today" : days == 1 ? "yesterday" : "\(days) days ago"
+    }
+}
+
+/// 0.5.259: when Control last changed each card's stage, kept on this Mac for Recent activity
+/// (Application Support/COS Control/work-activity.json, work id to ISO time). Written atomically on every stage change
+/// Control makes (the board, Intake, Waiting on, and the tracker's own moves and Undo), bounded to the newest 2,000.
+@MainActor final class WorkActivityJournal {
+    nonisolated static let limit = 2_000
+    let url: URL?
+    private(set) var moves: [String: Date] = [:]
+
+    init(url: URL?) {
+        self.url = url
+        if let url, let data = try? Data(contentsOf: url) { moves = Self.decode(data) }
+    }
+    /// The app's file. Checks write under their own home; the resize harness and a model without background work write
+    /// nothing, so no check can touch the real journal.
+    nonisolated static func defaultURL(background: Bool) -> URL? {
+        let environment = ProcessInfo.processInfo.environment
+        if let home = environment["COS_CONTROL_TEST_HOME"] { return URL(fileURLWithPath: home).appendingPathComponent("work-activity.json") }
+        guard background, environment["COS_PERF_FIXTURES"] == nil else { return nil }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/COS Control/work-activity.json")
+    }
+    /// A stage change only: writing the stage a card already has (the identity stamp) is not activity.
+    func recordStageChange(_ task: TaskRow, to stage: String, at date: Date = Date()) {
+        guard let next = WorkBoardStage(rawValue: stage), next != WorkBoardStage.stage(for: task) else { return }
+        record(task.workSourceID, at: date)
+    }
+    func record(_ workID: String, at date: Date = Date()) {
+        var next = moves
+        next[workID] = date
+        moves = Self.bounded(next, limit: Self.limit)
+        guard let url else { return }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? Self.encode(moves).write(to: url, options: .atomic)
+    }
+    /// The newest `limit` moves (ties by id, so the cut is stable).
+    nonisolated static func bounded(_ moves: [String: Date], limit: Int) -> [String: Date] {
+        guard moves.count > limit else { return moves }
+        let kept = moves.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.prefix(limit)
+        return Dictionary(uniqueKeysWithValues: kept.map { ($0.key, $0.value) })
+    }
+    nonisolated static func encode(_ moves: [String: Date]) -> Data {
+        let format = ISO8601DateFormatter(); format.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let body: [String: Any] = ["version": 1, "moves": moves.mapValues { format.string(from: $0) }]
+        return (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data()
+    }
+    /// What can be read of a file (a bad entry is skipped; a bad file reads as empty), bounded.
+    nonisolated static func decode(_ data: Data) -> [String: Date] {
+        guard let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let raw = body["moves"] as? [String: Any] else { return [:] }
+        var moves: [String: Date] = [:]
+        for (id, value) in raw where !id.isEmpty && id.utf8.count <= 2_200 {
+            if let date = WorkCardDating.instant(value as? String) { moves[id] = date }
+        }
+        return bounded(moves, limit: limit)
+    }
+}
+
 /// Task page width, kept only at the two breaks that change the layout. The raw width is not stored, so a resize
 /// between them does not rebuild the text field.
 private struct DetailSpan: Equatable, Sendable {
@@ -525,6 +1098,69 @@ private struct WorkSearchField: View {
                 if text != value { text = value }
             }
     }
+}
+
+/// 0.5.259: what one draw of the board passes to its columns: the search, the order and each card's dates.
+private struct WorkBoardPass {
+    var search: WorkSearchResult
+    var order: WorkBoardOrder
+    var dates: [String: WorkCardDates]
+    var now: Date
+}
+
+/// 0.5.259: the board's search box. Characters stay in this view; the board follows after a very short pause, so a burst
+/// of typing redraws it once. ⌘F (the board's shortcut) focuses it; ↓ ↑ walk Best matches, Return opens one, Escape clears.
+struct WorkBoardSearchField: View {
+    var prompt: String
+    @Binding var query: String
+    var focusRequest: Int
+    var onKey: (WorkSearch.Key) -> Bool
+    @State private var text = ""
+    @State private var primed = false
+    @State private var wait: Task<Void, Never>?
+    @FocusState private var focused: Bool
+    nonisolated static let settle: Duration = .milliseconds(80)
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").font(.system(size: 12, weight: .medium)).foregroundStyle(COSPalette.muted)
+            TextField(prompt, text: $text)
+                .textFieldStyle(.plain)
+                .focused($focused)
+                .onKeyPress(keys: [.downArrow, .upArrow, .return, .escape]) { press in
+                    handle(press.key == .downArrow ? .down : press.key == .upArrow ? .up : press.key == .return ? .open : .clear) ? .handled : .ignored
+                }
+            if !text.isEmpty {
+                Button("Esc") { clear() }.buttonStyle(.plain).font(COSType.mono(10.5)).foregroundStyle(COSPalette.muted).help("Clear the search (Esc)")
+            }
+        }
+        .font(COSType.body(13)).padding(.horizontal, 12).padding(.vertical, 8)
+        .background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(focused ? COSPalette.gold.opacity(0.8) : COSPalette.line))
+        .help("⌘F searches the board. Esc clears.")
+        .onAppear { if !primed { text = query; primed = true } }
+        .onChange(of: text) { _, value in
+            wait?.cancel()
+            wait = Task { @MainActor in
+                try? await Task.sleep(for: Self.settle)
+                guard !Task.isCancelled else { return }
+                if query != value { query = value }
+            }
+        }
+        .onChange(of: query) { _, value in if text != value { text = value } }
+        .onChange(of: focusRequest) { _, _ in focused = true }
+    }
+
+    /// A key acts on what is typed: the board's matches catch up first, then the board decides (WorkSearch.key).
+    private func handle(_ key: WorkSearch.Key) -> Bool {
+        if key == .clear {
+            guard !text.isEmpty else { return false }
+            clear(); return true
+        }
+        if query != text { wait?.cancel(); query = text }
+        return onKey(key)
+    }
+    private func clear() { wait?.cancel(); text = ""; query = "" }
 }
 
 /// Debounce threshold changes while always cancelling an older pending layout.
@@ -1005,19 +1641,35 @@ struct WorkWorkspaceView: View {
     /// Start work (confirm, then send). Nothing runs on a drop.
     private var dashboard: some View {
         WorkBoardMetrics.countBoard()
+        // 0.5.259: the board's cards (every card in this view; the search narrows the columns, not this list), what the
+        // search found, and the order each column follows. Worked out once here, never per column.
+        let cards = boardCards
+        let search = boardSearch()
+        let order = boardOrder
+        let pass = WorkBoardPass(search: search, order: order, dates: order == .board ? [:] : cardDates(cards), now: Date())
+        let taskCount = cards.filter { $0.task != nil }.count
+        let shownCount = WorkSearch.kept(cards.filter { $0.task != nil }, search).count
         return VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 16) {
+            HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(boardName).font(COSType.display(23, weight: .medium))
-                    Text("\(visible.filter { $0.task != nil }.count) tasks · Drag a card to change its stage, or onto Start work to put a session on it")
+                    Text(WorkSearch.countLabel(kept: shownCount, of: taskCount, active: search.active) + " tasks · Drag a card to change its stage, or onto Start work to put a session on it")
                         .font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                 }
                 Spacer(minLength: 8)
-                WorkSearchField(prompt: state.domain == nil ? "Search work" : "Search this domain", query: $state.query).textFieldStyle(.plain)
-                    .font(COSType.body(12)).padding(10).frame(maxWidth: 240)
-                    .background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(COSPalette.line))
+                VStack(alignment: .trailing, spacing: 8) {
+                    WorkBoardSearchField(prompt: state.domain == nil && state.scope == .all ? "Search work" : "Search this board", query: $state.query,
+                                         focusRequest: state.searchFocusRequest, onKey: { boardSearchKey($0) })
+                        .frame(maxWidth: 360)
+                    orderMenu(order)
+                }
             }.padding(18)
+            .background {
+                // ⌘F: the search box takes the focus. Drawn nowhere; only its shortcut is live.
+                Button("Search the board") { state.searchFocusRequest &+= 1 }.keyboardShortcut("f", modifiers: .command)
+                    .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+            }
+            if search.active { searchResults(search) }
             if !handoffStore.isolated && !model.workBoardWritable {
                 Text("Board is read-only. Stage changes and meeting links need the connected Work service.")
                     .font(COSType.body(11)).foregroundStyle(COSPalette.muted).padding(.horizontal, 18).padding(.bottom, 10)
@@ -1044,7 +1696,8 @@ struct WorkWorkspaceView: View {
             // 0.5.254: a file dropped on a column or the session row says where files go, then fades.
             WorkCardFlashView(files: cardFiles, workID: nil).clipShape(RoundedRectangle(cornerRadius: 7))
                 .padding(.horizontal, 18).padding(.bottom, 10)
-            let reviews = visible.filter { $0.review != nil }
+            let words = WorkSearch.words(state.query)
+            let reviews = cards.filter { $0.review != nil && (!search.active || WorkSearch.fields($0, files: []).match(words) != nil) }
             if !reviews.isEmpty {
                 HStack {
                     Text("Meeting reviews").font(COSType.body(11, weight: .semibold)).foregroundStyle(COSPalette.muted)
@@ -1057,12 +1710,111 @@ struct WorkWorkspaceView: View {
             latestMoveStrip
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 12) {
-                    ForEach(WorkBoardStage.allCases) { stage in boardColumn(stage) }
+                    ForEach(WorkBoardStage.allCases) { stage in boardColumn(stage, pass: pass) }
                 }.padding(.horizontal, 18).padding(.bottom, 18)
             }.frame(minHeight: 220)
             Text(handoffStore.isolated ? "Sample stages reset when this preview closes." : "Stages reflect your decisions. Moving a card does not run an agent or publish changes. Start work asks before anything is sent.")
                 .font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).padding(.horizontal, 18).padding(.bottom, 10)
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).background(COSPalette.panel)
+        // 0.5.259: Jev is asked after a pause in typing; a new search cancels the wait (and drops a late answer).
+        .task(id: state.currentSearchKey) {
+            if state.bandIndex != 0 { state.bandIndex = 0 }   // a published write redraws the board, even of the same value
+            await state.searchMeaning(WorkSearch.request(key: state.currentSearchKey, query: state.query, items: boardCards), isolated: handoffStore.isolated)
+        }
+    }
+
+    // MARK: Work search and order (0.5.259)
+
+    /// The board's cards for this view, before the search narrows the columns.
+    private var boardCards: [WorkWorkspaceItem] { board.visible(scope: state.scope, domain: state.domain, query: "") }
+    private var boardOrder: WorkBoardOrder { state.order(domain: state.domain, scope: state.scope, isolated: handoffStore.isolated) }
+    private func boardSearch() -> WorkSearchResult {
+        board.search(scope: state.scope, domain: state.domain, query: state.query, meaning: state.meaning(for: state.currentSearchKey),
+                     filesEpoch: cardFiles.manifestsEpoch, fileNames: { workID in cardFiles.files(for: workID).map(\.display) })
+    }
+    /// Each card's created day and last activity (only while ordering by date).
+    private func cardDates(_ cards: [WorkWorkspaceItem]) -> [String: WorkCardDates] {
+        let calendar = Calendar.current
+        let sessions = WorkCardDating.lastSessions(handoffStore.receipts)
+        let moves = model.workActivity.moves
+        var dates: [String: WorkCardDates] = [:]
+        for item in cards {
+            guard let task = item.task else { continue }
+            let file = cardFiles.lastAdded(item.sourceID).flatMap { $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
+            dates[item.id] = WorkCardDating.dates(task: task, moved: moves[item.sourceID], session: sessions[item.sourceID], file: file, calendar: calendar)
+        }
+        return dates
+    }
+
+    /// ↓ ↑ Return and Escape from the search box (WorkSearch.key decides; this only applies it). The search is read
+    /// again here, so a key pressed right after typing acts on what was typed.
+    private func boardSearchKey(_ key: WorkSearch.Key) -> Bool {
+        let search = boardSearch()
+        switch WorkSearch.key(key, query: state.query, highlighted: state.bandIndex, bandCount: search.band.count) {
+        case .highlight(let index): state.bandIndex = index; return true
+        case .open(let index):
+            if let item = board.item(id: search.band[index]) { select(item) }
+            return true
+        case .clear: state.query = ""; state.bandIndex = 0; return true
+        case .pass: return false
+        }
+    }
+
+    /// The result line, Best matches, and the one line about meaning search when it matters.
+    private func searchResults(_ search: WorkSearchResult) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(search.headline).font(COSType.body(12.5, weight: .semibold))
+                if !search.hits.isEmpty { Text(search.kindsText).font(COSType.body(12)).foregroundStyle(COSPalette.muted) }
+                Spacer(minLength: 8)
+                if let more = WorkSearch.elsewhereText(search.elsewhere.map { WorkSearchElsewhere(domain: domainLabel($0.domain), count: $0.count) }) {
+                    Button(more) { state.domain = nil; state.scope = .all; state.focusOverride = false }
+                        .buttonStyle(COSTextButtonStyle()).help("Search all work")
+                }
+            }
+            if !search.band.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(Array(search.band.enumerated()), id: \.element) { index, id in
+                        if let item = board.item(id: id), let hit = search.hits[id] {
+                            bestMatchRow(item, hit: hit, highlighted: index == min(state.bandIndex, search.band.count - 1))
+                            if index < search.band.count - 1 { Divider().overlay(COSPalette.line.opacity(0.6)) }
+                        }
+                    }
+                }
+                .overlay(alignment: .top) { Rectangle().fill(COSPalette.line).frame(height: 1) }
+                .overlay(alignment: .bottom) { Rectangle().fill(COSPalette.line).frame(height: 1) }
+            }
+            if let note = search.note { Text(note).font(COSType.body(11)).foregroundStyle(COSPalette.muted) }
+        }.padding(.horizontal, 18).padding(.bottom, 12)
+    }
+
+    /// One Best match: its stage, its title with the found words underlined, and why it matched. A tap opens it.
+    private func bestMatchRow(_ item: WorkWorkspaceItem, hit: WorkSearchHit, highlighted: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Text(item.task.map { WorkBoardStage.stage(for: $0).title } ?? "Review").font(COSType.mono(10.5)).foregroundStyle(COSPalette.muted)
+                .frame(width: 76, alignment: .leading)
+            Text(WorkSearch.underlined(AttributedString(WorkSource.plainTitle(item.title)), words: hit.words))
+                .font(COSType.body(12.5)).lineLimit(1).truncationMode(.tail).frame(maxWidth: .infinity, alignment: .leading)
+            Text(WorkSearch.why(hit)).font(COSType.body(11.5)).italic(hit.kind == .meaning)
+                .foregroundStyle(hit.kind == .meaning ? COSPalette.gold.opacity(0.8) : COSPalette.accent).lineLimit(1)
+                .frame(width: 180, alignment: .trailing)
+        }
+        .padding(.vertical, 8).padding(.horizontal, 6)
+        .background(highlighted ? COSPalette.gold.opacity(0.07) : Color.clear)
+        .contentShape(Rectangle())
+        .onTapGesture { select(item) }
+        .accessibilityElement(children: .combine).accessibilityAddTraits(.isButton).accessibilityAction { select(item) }
+        .help("Open this card")
+    }
+
+    /// Order: the house dropdown beside the search, as the app's other sort menus (never a row of buttons).
+    private func orderMenu(_ order: WorkBoardOrder) -> some View {
+        COSDropdown("Order", selection: Binding(get: { order }, set: { choice in
+            state.setOrder(choice, domain: state.domain, scope: state.scope, isolated: handoffStore.isolated)
+        }), options: WorkBoardOrder.allCases.map { COSDropdownOption($0, $0.title) })
+        .font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+        .fixedSize()
+        .help(order.help)
     }
 
     private var sessionsRow: some View {
@@ -1297,10 +2049,13 @@ struct WorkWorkspaceView: View {
             .accessibilityHint("Drop a board card here, or use Start work in a card's context menu")
     }
 
-    private func boardColumn(_ stage: WorkBoardStage) -> some View {
+    private func boardColumn(_ stage: WorkBoardStage, pass: WorkBoardPass) -> some View {
         let board = self.board
-        _ = board.visible(scope: state.scope, domain: state.domain, query: state.query)
-        let cards = board.column(stage)
+        _ = board.visible(scope: state.scope, domain: state.domain, query: "")
+        let all = board.column(stage)
+        // 0.5.259: a search keeps only its matches; Order sorts what is left.
+        let kept = WorkSearch.kept(all, pass.search)
+        let cards = WorkCardDating.sorted(kept, id: \.id, order: pass.order, dates: pass.dates)
         let targeted = columnTarget == stage
         // One decision for the header, the list, and a card face. The list is a scroll view, so a drop on the
         // column behind it never arrived. No size is measured here.
@@ -1341,7 +2096,7 @@ struct WorkWorkspaceView: View {
                 HStack {
                     Text(stage.title).font(COSType.body(13, weight: .semibold))
                     Spacer()
-                    Text("\(cards.count)").font(COSType.mono(11)).foregroundStyle(COSPalette.muted)
+                    Text(WorkSearch.countLabel(kept: cards.count, of: all.count, active: pass.search.active)).font(COSType.mono(11)).foregroundStyle(COSPalette.muted)
                 }.padding(.horizontal, 12).padding(.top, 13)
                 Text(stage.subtitle).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).padding(.horizontal, 12).padding(.top, 5).padding(.bottom, 13)
                 Divider().overlay(COSPalette.line)
@@ -1350,8 +2105,11 @@ struct WorkWorkspaceView: View {
             .onDrop(of: WorkCardFiles.boardDropTypes, delegate: columnDrop)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
-                    if cards.isEmpty { Text(targeted ? "Drop to move here" : "No tasks here").font(COSType.body(12)).foregroundStyle(COSPalette.muted).padding(12) }
-                    ForEach(cards) { item in boardCard(item, acceptColumn: accept, markColumn: mark, takeColumn: takeColumn, finishColumn: finishColumn) }
+                    if cards.isEmpty { Text(targeted ? "Drop to move here" : pass.search.active ? "No matches here" : "No tasks here").font(COSType.body(12)).foregroundStyle(COSPalette.muted).padding(12) }
+                    ForEach(cards) { item in
+                        boardCard(item, hit: pass.search.hits[item.id], dateLine: WorkCardDating.line(pass.dates[item.id], order: pass.order, now: pass.now, calendar: .current),
+                                  acceptColumn: accept, markColumn: mark, takeColumn: takeColumn, finishColumn: finishColumn)
+                    }
                 }.padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -1363,7 +2121,7 @@ struct WorkWorkspaceView: View {
             .overlay(RoundedRectangle(cornerRadius: 9).stroke(targeted ? COSPalette.gold.opacity(0.8) : COSPalette.line))
     }
 
-    private func boardCard(_ item: WorkWorkspaceItem, acceptColumn: @escaping (String) -> Void, markColumn: @escaping (Bool) -> Void, takeColumn: @escaping () -> Bool, finishColumn: @escaping () -> Void) -> some View {
+    private func boardCard(_ item: WorkWorkspaceItem, hit: WorkSearchHit? = nil, dateLine: String? = nil, acceptColumn: @escaping (String) -> Void, markColumn: @escaping (Bool) -> Void, takeColumn: @escaping () -> Bool, finishColumn: @escaping () -> Void) -> some View {
         let handoff = item.activity.map { WorkHandoffState($0) }
         let running = handoff == .running
         let tracking = item.tracking
@@ -1371,7 +2129,7 @@ struct WorkWorkspaceView: View {
         let autoMove = tracking?.undoableMove(currentStage: stageRaw)
         let asking = tracking?.asksForYou == true
         return VStack(alignment: .leading, spacing: 0) {
-            cardTapArea(item, handoff: handoff, running: running)
+            cardTapArea(item, handoff: handoff, running: running, hit: hit)
             // Outside the tap area: its Undo is its own control, not part of the card's single action.
             if let autoMove, let tracking { cardWhyLine(tracking, autoMove).padding(.horizontal, 12).padding(.bottom, 10) }
             if let task = item.task {
@@ -1379,6 +2137,11 @@ struct WorkWorkspaceView: View {
                     Button { onOpenMeeting(meeting) } label: {
                         Label(meeting.title, systemImage: "calendar").font(COSType.body(10.5)).lineLimit(2).multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                     }.buttonStyle(.plain).foregroundStyle(COSPalette.accent).padding(.horizontal, 12).padding(.bottom, 10)
+                }
+                // 0.5.259: under the card's source, only while ordering by date.
+                if let dateLine {
+                    Text(dateLine).font(COSType.mono(10.5)).foregroundStyle(COSPalette.muted).frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.horizontal, 12).padding(.bottom, 9).padding(.top, task.meetingRefs.isEmpty ? -2 : -4)
                 }
                 Divider().overlay(COSPalette.line)
                 // 0.5.254 (card face A): the file count sits in the footer that holds the stage menu.
@@ -1388,7 +2151,7 @@ struct WorkWorkspaceView: View {
             }
         }.background(COSPalette.panel, in: RoundedRectangle(cornerRadius: 7))
             .clipShape(RoundedRectangle(cornerRadius: 7))
-            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Self.cardStroke(asking: asking, running: running, moved: autoMove != nil)))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Self.cardStroke(asking: asking, running: running, moved: autoMove != nil, matched: hit != nil)))
             .overlay(alignment: .leading) { cardRule(asking: asking, running: running) }
             // 0.5.254: the whole card takes files (on the card itself; "Add to card" is drawn over it, never the target).
             // A work-card drag on this face is the column's move. The Files box never gets that callback.
@@ -1411,10 +2174,10 @@ struct WorkWorkspaceView: View {
 
     /// 0.5.246: a tap gesture, not a Button. A Button swallows the drag (measured with real mouse drags: a
     /// Button-wrapped card never dropped; a tap-gesture card dropped every time), so cards could not be dragged.
-    private func cardTapArea(_ item: WorkWorkspaceItem, handoff: WorkHandoffState?, running: Bool) -> some View {
+    private func cardTapArea(_ item: WorkWorkspaceItem, handoff: WorkHandoffState?, running: Bool, hit: WorkSearchHit? = nil) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
-                Text(inlineTitle(item.title)).font(COSType.body(13, weight: .medium)).multilineTextAlignment(.leading).lineLimit(5)
+                Text(WorkSearch.underlined(inlineTitle(item.title), words: hit?.words ?? [])).font(COSType.body(13, weight: .medium)).multilineTextAlignment(.leading).lineLimit(5)
                 cardStatus(item, handoff: handoff, running: running)
                 if let task = item.task, task.meetingRefs.isEmpty {
                     Text(task.source.isEmpty ? "No meeting linked" : task.source).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).lineLimit(2)
@@ -1452,8 +2215,9 @@ struct WorkWorkspaceView: View {
             }
         }
     }
-    nonisolated static func cardStroke(asking: Bool, running: Bool, moved: Bool) -> Color {
-        asking ? COSPalette.amber.opacity(0.6) : running ? COSPalette.green.opacity(0.6) : moved ? COSPalette.gold.opacity(0.45) : COSPalette.line
+    nonisolated static func cardStroke(asking: Bool, running: Bool, moved: Bool, matched: Bool = false) -> Color {
+        asking ? COSPalette.amber.opacity(0.6) : running ? COSPalette.green.opacity(0.6) : moved ? COSPalette.gold.opacity(0.45)
+            : matched ? COSPalette.gold.opacity(0.5) : COSPalette.line
     }
     @ViewBuilder private func cardRule(asking: Bool, running: Bool) -> some View {
         if asking || running { Rectangle().fill(asking ? COSPalette.amber : COSPalette.green).frame(width: 3).clipShape(RoundedRectangle(cornerRadius: 2)) }

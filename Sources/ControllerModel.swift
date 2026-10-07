@@ -431,9 +431,12 @@ final class ControllerModel: ObservableObject {
 
     let backgroundWorkEnabled: Bool
     let activityLoadsEnabled: Bool
+    /// 0.5.259: when Control last changed each card's stage (Work's Recent activity order).
+    let workActivity: WorkActivityJournal
     init(startBackgroundWork: Bool = true, allowActivityLoads: Bool = false) {
         backgroundWorkEnabled = startBackgroundWork
         activityLoadsEnabled = startBackgroundWork || allowActivityLoads
+        workActivity = WorkActivityJournal(url: WorkActivityJournal.defaultURL(background: startBackgroundWork))
         guard startBackgroundWork else { return }
         try? Self.pruneMediaHandoffs()
         refreshTask = Task { [weak self] in
@@ -2877,6 +2880,7 @@ final class ControllerModel: ObservableObject {
             var op: [String: String] = ["id": current.id, "action": action, "expectedText": current.text, "expectedRevision": current.workRevision]
             op.merge(fields) { _, new in new }
             if await workLoop("batch", body: ["domain": current.domain, "ops": [op]]) != nil {
+                if let stage = fields["workStage"] { workActivity.recordStageChange(current, to: stage) }
                 if fields["workStage"] == "complete" { workHandoffStore?.settleCompleted(workID: current.workSourceID) }
                 await loadWorkTasks(force: true); await loadWaitingWork(); await loadDroppedWork()
                 return true
@@ -3052,7 +3056,10 @@ final class ControllerModel: ObservableObject {
 
     func setWorkStage(_ task: TaskRow, stage: String) async throws {
         guard TaskRow.workStages.contains(stage) else { throw HelperClientError.invalidResponse("Unsupported Work stage.") }
-        try await mutateWorkTask(task, command: "work-set-stage", extra: ["workStage": stage])
+        // 0.5.259: noted for Recent activity once the write is accepted, before the board is read again.
+        try await mutateWorkTask(task, command: "work-set-stage", extra: ["workStage": stage]) { [weak self] in
+            self?.workActivity.recordStageChange(task, to: stage)
+        }
         if stage == "complete" { workHandoffStore?.settleCompleted(workID: task.workSourceID) }
     }
 
@@ -3060,7 +3067,7 @@ final class ControllerModel: ObservableObject {
         try await mutateWorkTask(task, command: "work-link-meeting", extra: ["meeting": meeting.json])
     }
 
-    private func mutateWorkTask(_ task: TaskRow, command: String, extra: [String: Any]) async throws {
+    private func mutateWorkTask(_ task: TaskRow, command: String, extra: [String: Any], saved: (() -> Void)? = nil) async throws {
         guard workBoardWritable else { throw HelperClientError.invalidResponse("This server does not support Work board changes. Update the server and refresh.") }
         guard task.workMetadataError == nil, !task.workRevision.isEmpty else {
             throw HelperClientError.invalidResponse(task.workMetadataError ?? "This task has no current Work revision. Refresh before changing it.")
@@ -3069,6 +3076,7 @@ final class ControllerModel: ObservableObject {
         for (key, value) in extra { payload[key] = value }
         let response = try await helper.run([command], timeout: 30, stdinData: try JSONSerialization.data(withJSONObject: payload))
         guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+        saved?()
         await loadWorkTasks(force: true)
         if let error = workTasksError {
             throw HelperClientError.commandFailed("Change saved, but refreshing Work failed: " + error)
