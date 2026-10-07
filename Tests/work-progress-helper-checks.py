@@ -110,7 +110,7 @@ try:
     state['check'] = 200
     before = len(calls)
     for bad in (dict(ev, extra=1), {k: v for k, v in ev.items() if k != 'since'}, dict(ev, clauses=['a'] * 7), dict(ev, clauses=['x' * 301]),
-                dict(ev, clauses=['']), dict(ev, follows=[ev['follows'][0]] * 5), dict(ev, follows=[dict(ev['follows'][0], sessionId='../../etc')]),
+                dict(ev, clauses=['']), dict(ev, follows=[dict(ev['follows'][0], sessionId=f'0f3c9a2e-1111-4222-8333-94445555666{n}') for n in range(5)]), dict(ev, follows=[ev['follows'][0]] * 2), dict(ev, follows=[dict(ev['follows'][0], sessionId='../../etc')]),
                 dict(ev, follows=[{'provider': 'claude', 'sessionId': SESSION}]), dict(ev, follows=[dict(ev['follows'][0], cursor=7)]),
                 dict(ev, id='nope'), dict(ev, since='yesterday'), dict(ev, domain='../x')):
         assert not run(['work-evidence-check'], json.dumps(bad).encode())['ok'], bad

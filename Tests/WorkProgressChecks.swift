@@ -3061,7 +3061,9 @@ extension WorkProgressChecks {
             fcheck(Set(body.keys) == ["domain", "id", "follows", "clauses", "since"] && body["id"] as? String == idA && body["domain"] as? String == "Quilt")
             let sent = try require(body["follows"] as? [[String: Any]])
             fcheck(sent.count == 1 && sent[0]["sessionId"] as? String == "0f3c9a2e-1111-4222-8333-944455556666" && sent[0]["cursor"] is NSNull, "\(sent)")
-            fcheck((body["clauses"] as? [String])?.count == 2 && (body["since"] as? String)?.hasPrefix("2026-10-0") == true, "clauses split, look back to the card's creation day")
+            let since = try require(WorkProgressTracker.cardCreated(board.task(idA)))
+            fcheck((body["clauses"] as? [String])?.count == 2 && body["since"] as? String == WorkProgress.stamp(since)
+                   && (body["since"] as? String)?.hasPrefix("2026-10-02") == true, "clauses split, look back to the card's creation day: \(body["since"] ?? "")")
             fcheck(store.follows.follows(for: cardA).first?.cursor == "cursor-after-1", "the server's cursor is kept")
         }
 
@@ -3098,6 +3100,9 @@ extension WorkProgressChecks {
             fcheck(store.followAdvice(advice, source: source(idA)) && store.follows.follows(for: cardA).count == 2)
             let newSession = try require(SessionAdvice(details: ["provider": .string("jev"), "action": .string("new"), "confidence": .number(0.9)]))
             fcheck(!store.followAdvice(newSession, source: source(idA)), "Follow is only for Continue advice")
+            let fork = try require(SessionAdvice(details: ["provider": .string("jev"), "action": .string("fork"), "sessionId": .string("claude:3c3c3c3c-1111-4222-8333-944455556666"),
+                                                           "confidence": .number(0.9), "reason": .string("Branch it.")]))
+            fcheck(!store.followAdvice(fork, source: source(idA)) && store.follows.follows(for: cardA).count == 2, "not on a Fork")
             await transport.setEvidence(met)
             clock.offset = 60
             await idleRead(transport, clock: clock)
@@ -3228,6 +3233,31 @@ extension WorkProgressChecks {
             fcheck(await transport.count("work-completion-check") == 0, "the evidence check replaces the completion check")
             fcheck(await transport.count("work-evidence-check") >= 1 && store.follows.follows(for: cardA).first?.origin == .receipt)
             fcheck(store.follows.card(cardA).partial?.met == 1 && board.rows[idA] != "qa")
+        }
+
+        // 10. At most 8 checks a day that call Jev; a cached answer (no Jev call) does not count.
+        do {
+            let (store, transport, _, clock, tracker, _) = try setUp("cap", shadow: true)
+            fcheck(store.confirmSessionCard(sessionID: s1, source: source(idA)))
+            var cached = pete; cached["cached"] = .bool(true); cached["skipped"] = .string("no_new_evidence")
+            await transport.setEvidence(cached)
+            for cycle in 1...10 {
+                clock.offset += 600
+                await idleRead(transport, [("Cached cycle \(cycle)", nil)], clock: clock)
+                await tracker.tick()
+            }
+            fcheck(await transport.count("work-evidence-check") == 10, "cached answers are not capped")
+            await transport.setEvidence(pete)
+            for cycle in 1...10 {
+                clock.offset += 600
+                await idleRead(transport, [("Jev cycle \(cycle)", nil)], clock: clock)
+                await tracker.tick()
+            }
+            fcheck(await transport.count("work-evidence-check") == 18, "8 checks that call Jev, then none until a day has passed")
+            clock.offset += 86_400
+            await idleRead(transport, [("Next day", nil)], clock: clock)
+            await tracker.tick()
+            fcheck(await transport.count("work-evidence-check") == 19, "a day later it checks again")
         }
 
         // 9. Stop following pauses the 0.5.247 handoff path too: its done line moves no paused card (validation W6).

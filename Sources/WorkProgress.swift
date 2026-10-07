@@ -451,7 +451,9 @@ struct WorkMoveEntry: Identifiable, Equatable, Sendable {
         let to = WorkProgress.stageTitle(line.to ?? "")
         let head = shadow ? "COS would move this to \(to)" : (byCOS ? "Moved to \(to) by COS" : "You moved it to \(to)")
         let parts = (line.clauses ?? []).filter { $0.verdict == "met" }.map(WorkMoveEntry.clauseLabel)
-        let reason = parts.isEmpty ? (line.why ?? "") : parts.joined(separator: " + ")
+        // Your own move needs no reason ("You moved it to Built"); an Undo says it was one.
+        let why = byCOS || line.why != WorkStageMove.you.why ? (line.why ?? "") : ""
+        let reason = parts.isEmpty ? why : parts.joined(separator: " + ")
         return reason.isEmpty ? head : head + " \u{00B7} " + reason
     }
     nonisolated static func clauseLabel(_ clause: WorkMoveClause) -> String {

@@ -39,7 +39,8 @@ import SwiftUI
             state.clauses = [WorkClauseState(text: page, verdict: "met", confidence: 0.93, kind: "fact", evidence: pageMet, deterministic: true, at: now - 600),
                              WorkClauseState(text: ads, verdict: "not_met", confidence: 0.8, kind: "intent", evidence: adsWaiting, at: now - 600)]
         }
-        // The board.
+        // The board (no card open: the preview store selects its first sample).
+        store.selectedWorkID = nil
         let model = ControllerModel(startBackgroundWork: false)
         let board = WorkWorkspaceView(model: model, handoffStore: store, reviewStore: WorkWorkspaceProjection.previewReviewStore(),
                                       state: WorkWorkspaceState(), onOpenSession: { _ in }, onEditTask: { _ in }, onReviewMeeting: { _ in })
