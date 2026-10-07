@@ -271,7 +271,7 @@ struct WorkBoardReads: Equatable, Sendable {
         // 1. Received: record once, move to Draft, notify.
         if progress.receivedAt == nil && (WorkProgress.deliveryConfirmed(row) || arrival != nil) {
             let text = WorkProgress.receivedText(row, fromTranscript: arrival != nil && !WorkProgress.deliveryConfirmed(row))
-            let target = WorkProgress.boardTask(row.workID) != nil && progress.paused != true && !store.follows.isPaused(row.workID) ? WorkProgress.target(for: .received) : nil
+            let target = WorkProgress.boardTask(row.workID) != nil && progress.paused != true ? WorkProgress.target(for: .received) : nil
             guard store.updateReceipt(id, { current in
                 guard var next = current.progress, next.receivedAt == nil else { return false }
                 next.receivedAt = arrival ?? at
@@ -311,7 +311,7 @@ struct WorkBoardReads: Equatable, Sendable {
         let report = WorkProgress.latestReport(tag: progress.tag, replies: eligible)
         let reportIsNew = report.map { progress.reported != $0.report.kind || progress.evidence != $0.report.evidence } ?? false
         if !unseen.isEmpty || reportIsNew {
-            let target = WorkProgress.boardTask(row.workID) != nil && progress.paused != true && !store.follows.isPaused(row.workID) ? WorkProgress.target(for: .done) : nil
+            let target = WorkProgress.boardTask(row.workID) != nil && progress.paused != true ? WorkProgress.target(for: .done) : nil
             guard store.updateReceipt(id, { current in
                 guard var next = current.progress, !next.finished else { return false }
                 if next.workingAt == nil, let first = unseen.first ?? eligible.first {
@@ -386,7 +386,7 @@ struct WorkBoardReads: Equatable, Sendable {
         }
         jevTriedAt[id] = nil
         let moves = verdict.movesCard
-        let target = progress.paused != true && !store.follows.isPaused(row.workID) ? WorkProgress.target(for: .done) : nil
+        let target = progress.paused != true ? WorkProgress.target(for: .done) : nil
         write(id) { current in
             guard var next = current.progress, !(next.jevAsked ?? []).contains(newest.digest) else { return false }
             next.jevAsked = (next.jevAsked ?? []) + [newest.digest]

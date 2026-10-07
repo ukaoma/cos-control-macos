@@ -134,7 +134,7 @@ change = body(model, "    func changeWorkCard(", "    @Published var workUndoBat
 success = change[change.index('if await workLoop("batch"'):change.index("return true")]
 need('if let stage = fields["workStage"] { workActivity.recordStageChange(current, to: stage) }' in success, "Intake and Waiting on stage changes are noted")
 tracker = body(model, "        let tracker = WorkProgressTracker(store: store, board: .init(", "notify:")
-need("try await self.setWorkStage(task, stage: stage)" in tracker, "the tracker moves cards through setWorkStage, so its moves are noted")
+need("try await self.setWorkStage(task, stage: stage, move: move)" in tracker, "the tracker moves cards through setWorkStage, so its moves are noted")
 need('do { try Self.encode(moves).write(to: url, options: .atomic) }' in logic and "moves = Self.bounded(next, limit: Self.limit)" in logic
      and 'NSLog("COS Work: the stage-move journal could not be saved' in logic, "the journal is written atomically and bounded, and a failed save is logged")
 

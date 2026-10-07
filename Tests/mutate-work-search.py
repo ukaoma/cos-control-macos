@@ -127,7 +127,7 @@ MUTANTS = [
     ("view: files read by the wrong id", V, "let file = cardFiles.lastAdded(item.sourceID).flatMap", "let file = cardFiles.lastAdded(item.id).flatMap", "each by the card's work id", "pins"),
     ("files: the first file, not the last", "Sources/WorkCardFiles.swift", "manifests[workID]?.files.map(\\.addedAt).max()", "manifests[workID]?.files.map(\\.addedAt).min()", "newest addedAt", "pins"),
     ("files: no epoch for the search", "Sources/WorkCardFiles.swift", "= [:] { didSet { manifestsEpoch &+= 1 } }", "= [:]", "reaches the search", "pins"),
-    ("tracker: moves around setWorkStage", C, "try await self.setWorkStage(task, stage: stage)", "try await self.mutateWorkStageQuietly(task, stage: stage)", "tracker moves cards", "pins"),
+    ("tracker: moves around setWorkStage", C, "try await self.setWorkStage(task, stage: stage, move: move)", "try await self.mutateWorkStageQuietly(task, stage: stage)", "tracker moves cards", "pins"),
     # QA round 1.
     ("order names claim creation", V, '        case .newest: "Newest"\n', '        case .newest: "Newest created"\n', "[order names]", "swift"),
     ("pending never told", V, "        meaningPending = request.key\n", "", "[pending line]", "swift"),

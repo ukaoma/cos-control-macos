@@ -3229,6 +3229,28 @@ extension WorkProgressChecks {
             fcheck(await transport.count("work-evidence-check") >= 1 && store.follows.follows(for: cardA).first?.origin == .receipt)
             fcheck(store.follows.card(cardA).partial?.met == 1 && board.rows[idA] != "qa")
         }
+
+        // 9. Stop following pauses the 0.5.247 handoff path too: its done line moves no paused card (validation W6).
+        do {
+            let (store, transport, board, clock, tracker, _) = try setUp("handoff-paused", evidence: false, shadow: false)
+            let one = WorkSession(id: s1, nativeID: "0f3c9a2e-1111-4222-8333-944455556666", provider: "claude", title: "Launch copy", summary: "", project: "Website", status: "idle")
+            store.sessions = [one]
+            board.rows[idA] = "draft"
+            await store.submit(source: source(idA), mode: .continueSession, session: one, model: nil, prompt: "Draft the CTA")
+            await transport.setTurn("completed")
+            let created = try require(store.receipts.first).createdAt
+            await transport.setRead(replies: [("Started.", stamp(created + 10))], lastActivity: stamp(created + 10))
+            await tracker.tick()
+            fcheck(store.follows.follows(for: cardA).count == 1, "the handoff's session is followed")
+            store.pauseCard(workID: cardA, stage: "draft", why: "You stopped following.")
+            fcheck(store.moves.lines.contains { $0.type == .pause && $0.workID == cardA && $0.why == "You stopped following." })
+            clock.offset = 600
+            await transport.setRead(replies: [("COS-WORK \(idA): done: Shipped the CTA and checked it.", stamp(created + 60))], lastActivity: stamp(created + 70))
+            await tracker.tick(); await tracker.tick()
+            fcheck(board.rows[idA] == "draft" && board.moves.isEmpty, "a paused card is not moved by its handoff's done line: \(board.rows)")
+            let reported = try require(store.receipts.first).progress
+            fcheck(reported?.reported == .done && reported?.pendingStage == nil, "the report is recorded; the move is dropped")
+        }
     }
 }
 

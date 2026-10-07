@@ -527,3 +527,23 @@ struct WorkMovedForYouView: View {
         return parts.joined(separator: " \u{00B7} ")
     }
 }
+
+/// 0.5.262, in Settings: shadow mode for moves on evidence (on until Miles has reviewed a week of would-moves), and the
+/// Work background model, the one the end-of-day Slack sweep uses (a standing, unattended cost).
+struct WorkEvidenceSettingsRows: View {
+    @ObservedObject var model: ControllerModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle("Only show what COS would move", isOn: Binding(get: { model.workEvidenceShadow }, set: { model.workEvidenceShadow = $0 }))
+                .toggleStyle(COSSwitchStyle())
+                .help("COS checks the evidence on the cards it follows and lists what it would move to QA under Moved for you, without moving anything. Turn this off to let it move cards. A session's own done line moves a card either way")
+            VStack(alignment: .leading, spacing: 6) {
+                COSDropdown("Work background model", selection: Binding(get: { model.workSweepModel }, set: { model.workSweepModel = $0 }),
+                            options: WorkSweepModel.allCases.map { COSDropdownOption($0, $0.title) })
+                Text("Runs once each weekday at 4:30 PM to collect Slack evidence for your Work cards. Haiku only gathers messages; Jev makes the call, so the cheaper model is enough.")
+                    .font(COSType.body(11)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+                if let error = model.workSweepModelError { Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.danger) }
+            }
+        }
+    }
+}
