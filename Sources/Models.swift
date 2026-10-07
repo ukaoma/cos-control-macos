@@ -1653,6 +1653,9 @@ struct ClaudeSession: Identifiable, Sendable {
     let lastReply: String
     /// Follow-ups queued at this session and not yet delivered (6.48.1's `queued_turns`).
     let queuedTurns: Int
+    /// 0.5.259: the transcript holds a question to the user still open (the helper's `waitingOnUser`), so a wait the
+    /// helper read from the transcript is known, not inferred from quiet.
+    let waitingOnUser: Bool
 
     /// 0.5.247: a Work handoff names this session. The COS server starts every Work New session with `claude -p`,
     /// and the helper calls any run the server starts "COS server", a scheduled job, so Miles's handoff showed in
@@ -1992,6 +1995,7 @@ struct ClaudeSession: Identifiable, Sendable {
         failure = o["failure"]?.string ?? ""
         lastReply = o["lastReply"]?.string ?? ""
         queuedTurns = o["queuedTurns"]?.int ?? 0
+        waitingOnUser = o["waitingOnUser"]?.bool ?? false
         namedTitle = o["namedTitle"]?.bool ?? false
     }
 
@@ -9312,11 +9316,17 @@ struct WorkSortGroup: Identifiable {
 /// reads only what Control already holds, so Tests/ActivityHomeChecks.swift executes every rule. A source Control has not
 /// loaded is nil here, and its item or line is left out: never a made-up 0.
 enum ActivityHome {
-    /// A session mid-turn this long without a transcript write may be sitting on a permission prompt COS cannot see. It is
-    /// never stated as fact: "quiet, may need you", with an open dot.
-    static let quietAfter: TimeInterval = 15 * 60
-    /// Desks drawn before "+N".
+    /// Desks drawn before "+N", at most.
     static let deskCap = 12
+    /// A desk's size, the gap between desks, and the room "+N" takes: the strip is one row (deskFit).
+    static let deskWidth: CGFloat = 26
+    static let deskHeight: CGFloat = 22
+    static let deskGap: CGFloat = 5
+    static let deskMoreWidth: CGFloat = 30
+    /// Session items the Needs you line draws before "+N sessions".
+    static let sessionCap = 3
+    /// What a single waiting session asked, shown in the line up to this many characters.
+    static let detailLimit = 60
     static let quietLine = "Nothing is waiting on you."
 
     // MARK: Desks
@@ -9364,7 +9374,7 @@ enum ActivityHome {
         let since: Date?
         var id: String { session.id }
 
-        var stateLabel: String { state == .asked && session.state == "error" ? "stopped with an error" : state.label }
+        var stateLabel: String { state == .asked ? ActivityHome.askedWords(session) : state.label }
         /// "<title> · <state> · <age>".
         func help(now: Date) -> String {
             ([session.title, stateLabel] + [since.map { ActivityHome.age($0, now: now) }].compactMap { $0 }).joined(separator: " · ")
@@ -9373,6 +9383,11 @@ enum ActivityHome {
 
     /// A session's desk state. `live`: its state is current (it came from the live list, or there is no live list). A
     /// row the live list does not carry is not running or waiting any more, whatever its last snapshot said.
+    ///
+    /// Asked is a wait COS knows of (knownWait) or a failed turn. "Quiet, may need you" is a wait the helper only read
+    /// from an open turn quiet for 15 minutes, which may be a permission prompt COS cannot see. Running is working: the
+    /// helper counts a live subagent as activity, and with hooks the server sees every prompt, so COS adds no timer of
+    /// its own (QA 2026-10-07: sessions busy with subagents read as quiet).
     static func deskState(_ session: ClaudeSession, live: Bool, now: Date, calendar: Calendar = .current) -> DeskState? {
         deskState(session, updated: session.updatedDate, live: live, now: now, calendar: calendar)
     }
@@ -9381,15 +9396,48 @@ enum ActivityHome {
     static func deskState(_ session: ClaudeSession, updated: Date?, live: Bool, now: Date, calendar: Calendar) -> DeskState? {
         guard !session.isKeepWarm else { return nil }
         if live {
-            if ClaudeSession.needsAPerson(session) { return .asked }
-            if session.isPetWorking {
+            if session.state == "error" { return .asked }
+            if session.state == "waiting" {
+                if knownWait(session) { return .asked }
                 // A run the COS server holds (a scheduled job, a Work New session) cannot stop on a prompt.
-                if !session.heldByServer, let updated, now.timeIntervalSince(updated) >= quietAfter { return .maybe }
-                return .working
+                return session.heldByServer ? .working : .maybe
             }
+            if session.isPetWorking { return .working }
         }
         if let updated, calendar.isDate(updated, inSameDayAs: now) { return .finished }
         return nil
+    }
+
+    /// A wait COS knows of: the hooks or the registry said so (`stateSource`), the server named its kind, the registry
+    /// said what it waits for, or the transcript holds a question still open.
+    static func knownWait(_ session: ClaudeSession) -> Bool {
+        session.stateSource == "hook" || session.stateSource == "registry" || !session.waitingKind.isEmpty
+            || !session.waitingFor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || session.waitingOnUser
+    }
+
+    /// What a session waiting on Miles is doing, by the server's waiting kind (permission, question, plan, mcp_input).
+    /// An unknown kind keeps the question words.
+    static func askedWords(_ session: ClaudeSession) -> String {
+        if session.state == "error" { return "stopped with an error" }
+        switch session.waitingKind {
+        case "permission": return "wants your permission"
+        case "plan": return "has a plan to approve"
+        case "mcp_input": return "needs your input"
+        default: return "asked you a question"
+        }
+    }
+
+    /// With one session waiting there is room for what it asked (its waiting detail, up to `detailLimit` characters):
+    /// "asked: “Use the sandbox homepage or a new draft?”", "wants your permission: Bash git push". A plan (long), a
+    /// failed turn or no detail keeps the plain words.
+    static func askedDetail(_ session: ClaudeSession) -> String {
+        let detail = clip(session.waitingDetail.trimmingCharacters(in: .whitespacesAndNewlines), detailLimit)
+        guard session.state == "waiting", !detail.isEmpty, session.waitingKind != "plan" else { return askedWords(session) }
+        switch session.waitingKind {
+        case "permission": return "wants your permission: " + detail
+        case "mcp_input": return "needs your input: " + detail
+        default: return "asked: \u{201C}" + detail + "\u{201D}"
+        }
     }
 
     /// The pet's live list (petSessions) when the pet is on, so the home and the pet never disagree; the Sessions list
@@ -9435,9 +9483,16 @@ enum ActivityHome {
         }
     }
 
-    /// At most `deskCap` desks, then "+N".
-    static func strip(_ desks: [Desk]) -> (shown: [Desk], more: Int) {
-        (Array(desks.prefix(deskCap)), max(0, desks.count - deskCap))
+    /// The desk strip is one row: as many desks as the card's width holds (`deskCap` at most), then "+N" for the rest,
+    /// so the card is the same height whatever the count.
+    static func deskFit(count: Int, width: CGFloat) -> (shown: Int, more: Int) {
+        func span(_ n: Int, more: Bool) -> CGFloat {
+            CGFloat(n) * deskWidth + CGFloat(max(0, n - 1)) * deskGap + (more ? (n > 0 ? deskGap : 0) + deskMoreWidth : 0)
+        }
+        if count <= deskCap, span(count, more: false) <= width { return (count, 0) }
+        var shown = min(count, deskCap)
+        while shown > 0, span(shown, more: true) > width { shown -= 1 }
+        return (shown, count - shown)
     }
 
     struct SessionTally: Equatable {
@@ -9522,16 +9577,16 @@ enum ActivityHome {
         var memoriesOldest: Date?
         /// nil: Work has not loaded, or is off.
         var workAttention: Int?
-        var anyAvailable: Bool { desks != nil || voices != nil || memoriesToReview != nil || workAttention != nil }
     }
 
     static func needs(_ sources: NeedSources, calendar: Calendar = .current) -> [Need] {
         var out: [Need] = []
-        for desk in sources.desks ?? [] {
+        let waiting = (sources.desks ?? []).filter { $0.state == .asked || $0.state == .maybe }
+        for desk in waiting {
             switch desk.state {
             case .asked:
                 out.append(Need(kind: .asked, what: desk.session.title,
-                                why: desk.session.state == "error" ? "stopped with an error" : "asked you a question",
+                                why: waiting.count == 1 ? askedDetail(desk.session) : askedWords(desk.session),
                                 since: desk.since, desk: desk))
             case .maybe:
                 out.append(Need(kind: .maybe, what: desk.session.title, why: "quiet, may need you", since: desk.since, desk: desk))
@@ -9577,6 +9632,11 @@ enum ActivityHome {
     struct LineParts {
         let sessions: [Need]
         let backlog: [Need]
+        /// The session items drawn in full: `sessionCap` at most, so a run of waiting sessions never pushes the cards
+        /// down the window.
+        var shown: [Need] { Array(sessions.prefix(sessionCap)) }
+        /// The rest, behind "+N sessions", which opens Sessions.
+        var moreSessions: Int { max(0, sessions.count - sessionCap) }
         var alsoPrefix: Bool { !sessions.isEmpty && !backlog.isEmpty }
     }
 
@@ -9584,20 +9644,65 @@ enum ActivityHome {
         LineParts(sessions: items.filter(\.isSession), backlog: items.filter { !$0.isSession })
     }
 
-    /// A backlog part's words: its count alone ("1 voice to name", "3 memories", "7 work items").
-    static func backlogLabel(_ need: Need) -> String { need.what }
+    static func moreSessionsLabel(_ count: Int) -> String { count == 1 ? "+1 session" : "+\(count) sessions" }
 
-    /// The segment as it reads.
-    static func backlogText(_ parts: LineParts) -> String {
-        ((parts.alsoPrefix ? ["Also"] : []) + parts.backlog.map(backlogLabel)).joined(separator: " · ")
+    /// The backlog segment as drawn, piece by piece: "Also" after session items, a dot between parts, and each count
+    /// alone ("1 voice to name", "3 memories", "7 work items"), never a meeting name or a description.
+    enum BacklogPiece: Identifiable {
+        case also
+        case dot(Int)
+        case count(Need)
+
+        var id: String {
+            switch self {
+            case .also: "also"
+            case .dot(let index): "dot\(index)"
+            case .count(let need): need.id
+            }
+        }
+
+        var text: String {
+            switch self {
+            case .also: "Also"
+            case .dot: "·"
+            case .count(let need): need.what
+            }
+        }
+    }
+
+    static func backlogPieces(_ parts: LineParts) -> [BacklogPiece] {
+        var pieces: [BacklogPiece] = parts.alsoPrefix ? [.also] : []
+        for (index, need) in parts.backlog.enumerated() {
+            if !pieces.isEmpty { pieces.append(.dot(index)) }
+            pieces.append(.count(need))
+        }
+        return pieces
+    }
+
+    /// The sources the line reads. Work counts only when Work is connected; memories only on a server that reports
+    /// the review count.
+    enum Source: String, CaseIterable { case sessions, voices, memories, work }
+    enum SourceState: Equatable { case pending, answered, failed, off }
+
+    /// A source's state for the quiet line: off when it does not apply; failed when its last load failed, even with
+    /// older rows in hand; answered when its load came back or its rows are in hand; pending otherwise.
+    static func sourceState(enabled: Bool, loaded: SourceState?, hasData: Bool) -> SourceState {
+        guard enabled else { return .off }
+        switch loaded {
+        case .failed: return .failed
+        case .off: return .off
+        case .answered: return .answered
+        case .pending, nil: return hasData ? .answered : .pending
+        }
     }
 
     enum Line: Equatable { case hidden, quiet, items }
-    /// Items when anything waits; the one quiet line when a source answered and nothing waits; nothing while no source
-    /// has loaded, because "Nothing is waiting on you" is a claim.
-    static func line(_ items: [Need], available: Bool) -> Line {
+    /// Items when anything waits. The one quiet line only once every source that applies has answered: "Nothing is
+    /// waiting on you" is a claim, so it is not made while a source is still loading, or after one failed.
+    static func line(_ items: [Need], states: [Source: SourceState]) -> Line {
         if !items.isEmpty { return .items }
-        return available ? .quiet : .hidden
+        let counted = Source.allCases.map { states[$0] ?? .pending }.filter { $0 != .off }
+        return !counted.isEmpty && counted.allSatisfy { $0 == .answered } ? .quiet : .hidden
     }
 
     /// Where an item of the line sits: its row, its x and the width it is given.
@@ -9637,8 +9742,20 @@ enum ActivityHome {
         return places
     }
 
-    /// What Next ⌘] opens: the first item in the line's order (ordered).
-    static func nextTarget(_ items: [Need]) -> Need? { items.first }
+    /// The item Next ⌘] opened last, and where it stood.
+    struct NextCursor: Equatable {
+        let id: String
+        let index: Int
+    }
+
+    /// What Next ⌘] opens: the first item in the line's order, then the one after the item it opened last, wrapping.
+    /// When that item has gone (answered, named, reviewed), the one now in its place is next.
+    static func nextTarget(_ items: [Need], after cursor: NextCursor?) -> Need? {
+        guard !items.isEmpty else { return nil }
+        guard let cursor else { return items.first }
+        if let index = items.firstIndex(where: { $0.id == cursor.id }) { return items[(index + 1) % items.count] }
+        return cursor.index < items.count ? items[cursor.index] : items.first
+    }
     /// With one item the button reads "Open".
     static func nextLabel(_ items: [Need]) -> String { items.count == 1 ? "Open" : "Next" }
 
@@ -9651,7 +9768,8 @@ enum ActivityHome {
     }
 
     struct CardBody: Equatable {
-        var count = "—"
+        /// The big number; nil until its source has loaded (drawn as nothing, never a placeholder).
+        var count: String?
         var lead: [Span] = []
         var subs: [String] = []
         /// What the big number counts.
@@ -9692,8 +9810,8 @@ enum ActivityHome {
         var tasks: [TaskRow]?
     }
 
-    /// The seven Activity cards, by the same raw values as ActivitySection (Tests/activity-home-pins.py pins the two
-    /// lists equal), so these rules compile with the models alone.
+    /// The Activity cards, by the same raw values as ActivitySection (Tests/activity-home-pins.py pins the two lists
+    /// equal), so these rules compile with the models alone. Seven show: Work, or Tasks when Work is off.
     enum Card: String, CaseIterable { case messages, speakers, meetings, memories, threads, sessions, tasks, work }
 
     static func card(_ section: Card, _ input: CardInputs) -> CardBody {
@@ -9744,23 +9862,21 @@ enum ActivityHome {
                 body.subs = [latest.title]
             }
         case .memories:
-            if let review = input.toReview {
-                body.count = n(review)
-                body.footer = "\(n(review)) to review"
-                if review > 0 {
-                    if let oldest = input.oldestReview {
-                        body.lead = [Span(text: "Oldest waiting since " + dayWord(oldest, now: input.now, calendar: input.calendar), waits: true)]
-                        body.subs = ["Open Memories to keep or let go"]
-                    } else {
-                        body.lead = [Span(text: "Waiting for you to keep or let go", waits: true)]
-                    }
-                } else if let memories = input.memories {
-                    body.lead = [Span(text: "\(n(memories)) stored")]
-                }
-            } else if let memories = input.memories {
+            // The big number is the memories kept, as before 0.5.259. The lead says what waits to be reviewed.
+            if let memories = input.memories {
                 body.count = n(memories)
-                body.footer = "\(n(memories)) stored"
-            } else if input.memorySetupNeeded {
+                body.footer = "\(n(memories)) kept"
+            }
+            if let review = input.toReview {
+                if review > 0 {
+                    body.lead = [Span(text: "\(n(review)) to review", waits: true)]
+                    if let oldest = input.oldestReview {
+                        body.subs = ["Oldest waiting since " + dayWord(oldest, now: input.now, calendar: input.calendar)]
+                    }
+                } else {
+                    body.lead = [Span(text: "Nothing to review")]
+                }
+            } else if input.memories == nil, input.memorySetupNeeded {
                 body.lead = [Span(text: "Setup needed")]
             }
         case .threads:

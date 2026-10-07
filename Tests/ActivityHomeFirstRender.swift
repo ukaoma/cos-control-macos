@@ -2,11 +2,19 @@ import AppKit
 import SwiftUI
 
 /// 0.5.259, run by hand (Tests/run-activity-home-perf.sh): how long the Activity window takes to draw its home for the
-/// first time, and whether the loads it starts on opening (from 0.5.259 also Work's board, its meeting reviews, Intake and
-/// the Memories review list) begin only after that first frame. The helper is a stand-in that answers every command after
-/// 300 ms and writes when each call starts and ends, so the order is read from its log. It uses only what the Activity
-/// window had before 0.5.259 too, so the same file measures both. Windows are never ordered in, the process can never
-/// become active, and nothing is clicked, typed or dragged.
+/// first time, and when the loads it starts on opening (from 0.5.259 also Work's board, its meeting reviews, Intake and
+/// the Memories review list) begin and end. The helper is a stand-in that answers every command after 300 ms and writes
+/// when each call starts and ends. It uses only what the Activity window had before 0.5.259 too, so the same file
+/// measures both. Windows are never ordered in, the process can never become active, and nothing is clicked, typed or
+/// dragged.
+///
+/// What it can show: the first frame's cost, the same with the loads off and on, against a before tree; which helper calls
+/// the window makes, in what order, and when the last one ends.
+/// What it cannot show (QA 2026-10-07): that the loads never block the first frame. The frame is drawn synchronously
+/// before the run loop turns, and SwiftUI starts a view's .task only on a later turn, so no load could ever start inside
+/// it here: "the first call came after the frame" holds by construction and cannot fail. Nor does it see a frame drawn
+/// after a load returns (the board built from Work's rows, for instance), a slow helper on the real Mac, or the window
+/// on screen.
 @main @MainActor struct ActivityHomeFirstRender {
     static func main() throws {
         NSApplication.shared.setActivationPolicy(.prohibited)

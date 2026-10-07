@@ -22,11 +22,16 @@ import SwiftUI
         try render(ActivityWindow(model: model(.one)), width: 1280, height: 900, name: "home-one", out: out)
         try render(ActivityWindow(model: model(.quiet)), width: 1280, height: 900, name: "home-quiet", out: out)
         try render(ActivityWindow(model: model(.backlog)), width: 1280, height: 900, name: "home-backlog", out: out)
+        let crowd = model(.desks)
+        try render(ActivityWindow(model: crowd), width: 920, height: 680, name: "home-desks-920", out: out)
+        // 760 wide and tall enough to show the Sessions card's strip (at 560 it sits below the fold, and the home scrolls).
+        try render(ActivityWindow(model: crowd), width: 760, height: 900, name: "home-desks-760", out: out)
         print("wrote PNGs to \(out.path)")
     }
 
-    /// busy: sessions waiting and a backlog; one: a single question; quiet: nothing waits; backlog: no session waits.
-    enum Scene { case busy, one, quiet, backlog }
+    /// busy: sessions waiting and a backlog; one: a single question; quiet: nothing waits; backlog: no session waits;
+    /// desks: 16 sessions today (five waiting), for the one-row strip and "+N sessions".
+    enum Scene { case busy, one, quiet, backlog, desks }
 
     static func iso(_ minutesAgo: Double) -> String { ISO8601DateFormatter().string(from: now.addingTimeInterval(-minutesAgo * 60)) }
     /// A meeting's `yyyy-MM-dd` and `HH:mm`, so many minutes ago (never in the future, whatever the hour of the run).
@@ -36,10 +41,14 @@ import SwiftUI
         return (ActivityHome.dayKey(date), String(format: "%02d:%02d", clock.hour ?? 0, clock.minute ?? 0))
     }
 
-    static func session(_ id: String, _ name: String, _ state: String, updated: Double, provider: String = "claude", since: Double? = nil) -> ClaudeSession {
+    /// A session row. A wait the hooks reported carries `source: "hook"` and its kind; a wait without them is the helper's
+    /// reading of 15 quiet minutes ("quiet, may need you").
+    static func session(_ id: String, _ name: String, _ state: String, updated: Double, provider: String = "claude", since: Double? = nil,
+                        kind: String = "", detail: String = "", source: String = "") -> ClaudeSession {
         var o: [String: JSONValue] = ["id": .string(id), "provider": .string(provider), "name": .string(name), "state": .string(state),
-                                      "updatedAt": .string(iso(updated)), "workspace": .string("MU-Chief-Staff")]
-        if let since { o["stateSince"] = .string(iso(since)); o["waitingKind"] = .string("question") }
+                                      "updatedAt": .string(iso(updated)), "workspace": .string("MU-Chief-Staff"),
+                                      "waitingKind": .string(kind), "waitingDetail": .string(detail), "stateSource": .string(source)]
+        if let since { o["stateSince"] = .string(iso(since)) }
         return ClaudeSession(.object(o))!
     }
 
@@ -94,8 +103,8 @@ import SwiftUI
         switch scene {
         case .busy:
             sessions += [
-                session("a1", "Bottle POS switch offer", "waiting", updated: 12, since: 12),
-                session("q1", "gotcos docs sweep", "running", updated: 16, provider: "codex"),
+                session("a1", "Bottle POS switch offer", "waiting", updated: 12, since: 12, kind: "question", source: "hook"),
+                session("q1", "gotcos docs sweep", "waiting", updated: 16, provider: "codex"),
                 session("w1", "Speakers: open meeting (0.5.259)", "running", updated: 1),
                 session("w2", "IT Retail lane images", "running", updated: 2, provider: "cursor"),
                 session("d1", "Meeting files release", "recent", updated: min(18, minutesToday - 1)),
@@ -103,16 +112,27 @@ import SwiftUI
                 session("d3", "SBP Rain form fix", "recent", updated: min(385, minutesToday - 1)),
             ]
         case .one:
-            sessions += [session("a2", "IT Retail lane images", "waiting", updated: 3, provider: "cursor", since: 3)]
+            sessions += [session("a2", "IT Retail lane images", "waiting", updated: 3, provider: "cursor", since: 3, kind: "question",
+                                 detail: "Use the sandbox homepage or a new draft?", source: "hook")]
         case .quiet, .backlog:
             break
+        case .desks:
+            let names = ["Bottle POS switch offer", "IT Retail lane images", "gotcos docs sweep", "Glasses 611 strip", "SBP Rain form fix"]
+            let kinds = ["question", "permission", "plan", "question", "mcp_input"]
+            for index in 0..<5 {
+                sessions.append(session("x\(index)", names[index], "waiting", updated: Double(4 + index * 3), provider: ["claude", "codex", "cursor"][index % 3],
+                                        since: Double(4 + index * 3), kind: kinds[index], source: "hook"))
+            }
+            sessions.append(session("q2", "Work search order", "waiting", updated: 22))
+            for index in 0..<4 { sessions.append(session("r\(index)", "Running \(index)", "running", updated: Double(index + 1), provider: ["claude", "codex", "cursor"][index % 3])) }
+            for index in 0..<6 { sessions.append(session("f\(index)", "Finished \(index)", "recent", updated: min(Double(30 + index * 20), minutesToday - 1))) }
         }
         sessions += (sessions.count..<80).map { session("o\($0)", "Older session \($0)", "recent", updated: minutesToday + 60 * Double($0 + 1)) }
         model.claudeSessions = sessions
 
         // Work: 7 need attention, 35 new to sort (fresh mentions), none in progress. Quiet: nothing needs attention.
         var tasks: [TaskRow] = []
-        for index in 0..<(scene == .busy || scene == .backlog ? 7 : 0) {
+        for index in 0..<(scene == .busy || scene == .backlog || scene == .desks ? 7 : 0) {
             tasks += [TaskRow(.object(["id": .string("f\(index)"), "domain": .string("quilt"), "text": .string("Failed task \(index)"),
                                        "failed": .bool(true), "workStage": .string("planned"), "stage": .string("planned")]))!]
         }
