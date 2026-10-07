@@ -1,10 +1,15 @@
+## 0.5.266 (build 319)
+
+- Apply the GOTCOS checkbox style to Include completed tasks in the meeting-to-task picker. Includes the 0.5.265 meeting linking and prior onboarding improvements.
+- Replaces the unpublished 0.5.265 candidate after release QA found the unthemed toggle.
+
 ## 0.5.265 (build 318)
 
 - Meetings and Speakers now offer **Link to existing task**. Search across domains, optionally include completed work, choose a task and explicitly link it without creating a duplicate.
 - Reuses canonical saved-meeting references and the revision-guarded Work writer. Existing task identity, text, status and prior meeting links are preserved. Linked references and meeting files participate in the next Work handoff; a running agent is not messaged automatically.
 - Already-linked, incomplete-reference, missing-revision, read-only and full-link cases explain why a link cannot be added. Refresh failures and stale-write refusals stay visible.
 - Speakers resolves the saved meeting using the existing exact-record resolver, stays in Speakers while the picker is open, and ignores a lookup if the review changes before it finishes.
-- Includes 0.5.264 recovery and 0.5.263 Cloud Puff/onboarding work. Published as the unchanged Developer ID signed, Apple-notarized archive; prior archives remain frozen.
+- Includes 0.5.264 recovery and 0.5.263 Cloud Puff/onboarding work. Notarized candidate, superseded before publication by 0.5.266; prior archives remain frozen.
 
 ## 0.5.264 (build 317)
 

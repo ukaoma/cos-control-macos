@@ -1854,6 +1854,7 @@ struct MeetingTaskLinkSheet: View {
                 TextField("Search tasks across all domains", text: $query).textFieldStyle(.plain).cosField()
                     .onChange(of: query) { _, _ in selected = nil; error = nil }
                 Toggle("Include completed tasks", isOn: $includeCompleted).font(COSType.body(12))
+                    .toggleStyle(COSCheckStyle())
                     .onChange(of: includeCompleted) { _, _ in selected = nil; error = nil }
                 if model.workTasksLoading { ProgressView("Loading tasks…").controlSize(.small) }
                 if let issue = model.workTasksError { Text(issue).foregroundStyle(COSPalette.danger) }
