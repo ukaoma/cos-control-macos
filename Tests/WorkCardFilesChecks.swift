@@ -1625,12 +1625,13 @@ extension WorkCardFilesChecks {
         // Round 2: labels with spaces, a label and value read as two lines, editor gutters, and past 8,000 characters.
         for shot in ["API Key: a8f5f167f44f4964e6c998dee827110c", "Client Secret: 9xQ2-vLp7_RtZ4mNw", "Access Token: EAAGm0PX4ZCpsBA1b2c3",
                      "DATABASE_PASSWORD\nP4ssw0rd!xQz9", "API key\n9f86d081884c7d659a2feaa0c55ad015", "aws_secret_access_key\nwJalrXUtnFEMI/K7MDENG/bPxRfiCY",
-                     "12 | DB_PASSWORD=Zx9!kLm2pQ", "12: DB_PASSWORD=Zx9!kLm2pQ", String(repeating: "log line without secrets\n", count: 400) + "OPENAI_API_KEY=sk-proj-Zq8vT41mWb2LxR9kHn3P"] {
+                     "12 | DB_PASSWORD=Zx9!kLm2pQ", "12: DB_PASSWORD=Zx9!kLm2pQ", "12  DATABASE_PASSWORD=correcthorsebatterystaple", String(repeating: "log line without secrets\n", count: 400) + "OPENAI_API_KEY=sk-proj-Zq8vT41mWb2LxR9kHn3P"] {
             check(WorkCardFiles.ocrLooksSecret(shot), "meeting OCR secret", "missed: \(shot.suffix(48))")
         }
         for plain in ["Q3 pipeline review\nGrocery opportunities up 18 percent", "Bearer of good news", "Step 12 PORT=5432", "commit 3f9a1c2b7d4e",
                       "Token: ERC-20", "Pass: Mandatory", "Secret: Sauce", "Credentials: Required", "Bearer tokens/authentication/oauth flow",
-                      "Bearer\nauthenticationflowsandmore", "Password\nRequired", "API key\nRequired", "Client Secret: rotate quarterly"] {
+                      "Bearer\nauthenticationflowsandmore", "Password\nRequired", "API key\nRequired", "Client Secret: rotate quarterly", "API Key: Required",
+                      "Access Token: Expired", "Client Secret: Rotated", "API Key: v2", "Client Secret: <your-secret-1>"] {
             // The text-file rule's own calls on a slide ("Token: ERC-20") stay as they are (they fail closed); what the
             // OCR rules ADD must flag none of these.
             check(WorkCardFiles.secretContent(plain) || !WorkCardFiles.ocrLooksSecret(plain), "meeting OCR secret", "a plain slide flagged: \(plain)")
