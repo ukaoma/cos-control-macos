@@ -871,6 +871,8 @@ struct ActivityWindow: View {
             if !model.addVoiceBusy { closeHeldNamingOverlay() }
             return true
         }
+        // 0.5.259: on the Work board, Escape clears an active search before it goes back anywhere.
+        if section == .work, workWorkspaceState.escapeClearsSearch() { return true }
         if section == .sessions, showingLinkedSession { goBack(); return true }
         if section == .meetings, meetingReturnToWork { goBack(); return true }
         return false

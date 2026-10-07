@@ -500,6 +500,7 @@ final class COSControlHelper {
         case "work-intake-resolve": try emitWorkIntakeResolve()
         case "work-session-recommend": try emitWorkSessionRecommend()
         case "work-completion-check": try emitWorkCompletionCheck()
+        case "work-search": try emitWorkSearch()
         case "jev-status": try emitJevStatus()
         case "jev-key-set": try emitJevKeySet()
         case "jev-key-clear": try emitJevKeyClear()
@@ -4581,9 +4582,20 @@ final class COSControlHelper {
             if let error = row["workMetadataError"] as? String, !error.isEmpty { projected["workMetadataError"] = error }
             projected["meetingRefs"] = row["meetingRefs"] as? [[String: Any]] ?? []
             projected["checked"] = taskFlag(row, "checked")
+            // 0.5.259 (server 6.65.0): when a card was created and its line last changed, for Work's Order. Each passes
+            // only in its own shape; an older server (or any other value) reads as null.
+            for (key, valid) in workTaskDateFields {
+                if let value = row[key] as? String, valid(value) { projected[key] = value } else { projected[key] = NSNull() }
+            }
             return projected
         }
     }
+
+    static let workTaskDateFields: [(String, @Sendable (String) -> Bool)] = [
+        ("createdOn", { $0.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil }),
+        ("createdFrom", { ["source", "git"].contains($0) }),
+        ("lineChangedAt", { $0.count <= 40 && $0.range(of: #"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$"#, options: .regularExpression) != nil }),
+    ]
 
     private func emitWorkYourMove() throws {
         let candidate = try reviewCandidateTransport()
@@ -4953,6 +4965,65 @@ final class COSControlHelper {
             return
         }
         emit(ok: true, message: "Completion check ready", details: result)
+    }
+
+    /// 0.5.259: which board card a search means, by Jev (server 6.65.0 `POST /api/work/search`). Only the query and the
+    /// view (a domain and scope, or exact card ids) cross; the server reads the cards itself. Every failure is an answer
+    /// with a reason, never an error, so the board keeps its word search: a server without the route is `server_too_old`.
+    private func emitWorkSearch() throws {
+        let data = try readBoundedStdin(16_384)
+        guard let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any], Self.workSearchBodyValid(body) else {
+            throw HelperError.message("Search needs a query of 2 to 200 characters, and a domain, a scope or card ids.")
+        }
+        let candidate = try reviewCandidateTransport()
+        let token = try candidate?.token ?? readToken()
+        guard let response = request("/api/work/search", method: "POST", token: token, body: String(decoding: data, as: UTF8.self),
+                                      timeout: 12, reviewCandidatePort: candidate?.port) else {
+            emit(ok: true, message: "Meaning search unavailable", details: ["available": false, "reason": "unreachable"]); return
+        }
+        guard response.status == 200, let answer = response.body else {
+            emit(ok: true, message: "Meaning search unavailable", details: ["available": false,
+                 "reason": Self.sessionRecommendFailureReason(status: response.status, body: response.body)])
+            return
+        }
+        emit(ok: true, message: "Search answered", details: Self.workSearchAnswer(answer))
+    }
+
+    /// Exactly a `query` (2 to 200 characters once trimmed) and optionally a safe `domain`, a board `scope`, and up to
+    /// 254 card `ids` (12 hex): the shape the server takes.
+    static func workSearchBodyValid(_ body: [String: Any]) -> Bool {
+        guard Set(body.keys).isSubset(of: ["query", "domain", "scope", "ids"]), let query = body["query"] as? String else { return false }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (2...200).contains(trimmed.count) else { return false }
+        if let raw = body["domain"] {
+            guard let domain = raw as? String, !domain.isEmpty, domain.utf16.count <= 64, !domain.hasPrefix("."),
+                  domain == domain.trimmingCharacters(in: .whitespacesAndNewlines),
+                  domain.range(of: "[/\\\\\\x00-\\x1f\\x7f]", options: .regularExpression) == nil else { return false }
+        }
+        if let raw = body["scope"] { guard let scope = raw as? String, ["all", "attention", "progress", "completed"].contains(scope) else { return false } }
+        if let raw = body["ids"] {
+            guard let ids = raw as? [Any], ids.count <= 254,
+                  ids.allSatisfy({ ($0 as? String)?.range(of: "^[a-f0-9]{12}$", options: .regularExpression) != nil }) else { return false }
+        }
+        return true
+    }
+
+    /// The server's answer, in its own shape only: hits are a 12-hex `id` and a `p` from 0 to 1 (at most 20); a reason
+    /// is a short code. Anything else reads as `jev_unavailable`.
+    static func workSearchAnswer(_ body: [String: Any]) -> [String: Any] {
+        guard let available = body["available"] as? Bool else { return ["available": false, "reason": "jev_unavailable"] }
+        guard available else {
+            let reason = (body["reason"] as? String).flatMap { $0.range(of: "^[a-z_]{3,48}$", options: .regularExpression) != nil ? $0 : nil }
+            return ["available": false, "reason": reason ?? "jev_unavailable"]
+        }
+        guard let rows = body["results"] as? [[String: Any]] else { return ["available": false, "reason": "jev_unavailable"] }
+        let results: [[String: Any]] = rows.prefix(20).compactMap { row in
+            guard let id = row["id"] as? String, id.range(of: "^[a-f0-9]{12}$", options: .regularExpression) != nil,
+                  let number = row["p"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  case let p = number.doubleValue, p.isFinite, p >= 0, p <= 1 else { return nil }
+            return ["id": id, "p": p]
+        }
+        return ["available": true, "results": results, "cached": body["cached"] as? Bool ?? false]
     }
 
     /// Exactly `domain`, a 12-hex task `id`, a `provider` and its `sessionId`, and optionally `after` (an ISO time: judge

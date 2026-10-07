@@ -2373,6 +2373,12 @@ struct TaskRow: Identifiable, Sendable {
     let workRevision: String
     let meetingRefs: [WorkMeetingReference]
     let workMetadataError: String?
+    /// 0.5.259 (server 6.65.0): the day the card was created (`YYYY-MM-DD`), where that day came from (`source`, the
+    /// date in its source label, or `git`, the day its line first appeared), and when its line last changed (ISO).
+    /// An older server sends none of them: nil, and Control reads the source label's date itself.
+    let createdOn: String?
+    let createdFrom: String?
+    let lineChangedAt: String?
     static let workStages = ["mentioned", "planned", "draft", "built", "qa", "complete"]
     var workSourceID: String { "task:\(domain):\(workIdentity)" }
 
@@ -2435,6 +2441,9 @@ struct TaskRow: Identifiable, Sendable {
             metadataError = "Some saved meeting references are invalid. Refresh before changing this task."
         }
         workMetadataError = metadataError
+        createdOn = o["createdOn"]?.string.flatMap { $0.isEmpty ? nil : $0 }
+        createdFrom = o["createdFrom"]?.string.flatMap { $0.isEmpty ? nil : $0 }
+        lineChangedAt = o["lineChangedAt"]?.string.flatMap { $0.isEmpty ? nil : $0 }
     }
 }
 
