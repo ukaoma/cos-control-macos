@@ -225,7 +225,7 @@ enum WorkWorkspaceScope: String, CaseIterable, Identifiable {
     /// or a domain closes it (the observers above), so no opener can leave Intake covering the board.
     @Published var waitingOpen = false { didSet { if waitingOpen { movedOpen = false } } }
     @Published var intakeOpen = false { didSet { if intakeOpen { movedOpen = false } } }
-    /// 0.5.262: Moved for you, beside Needs attention. Its own route flag, like Intake: its sidebar row and its count open
+    /// Next release: Moved for you, beside Needs attention. Its own route flag, like Intake: its sidebar row and its count open
     /// it, and opening any other list closes it.
     @Published var movedOpen = false { didSet { if movedOpen { intakeOpen = false; waitingOpen = false } } }
     /// 0.5.244: the item whose Start work overlay is open (a drop on Start work, or Start work… on a card).
@@ -1479,7 +1479,7 @@ struct WorkWorkspaceView: View {
         let progress = items.filter(\.inProgress).count, attention = items.filter(\.needsAttention).count
         countLink("\(progress) in progress", count: progress, scope: .progress, tint: COSPalette.accent)
         countLink("\(attention) " + (attention == 1 ? "needs attention" : "need attention"), count: attention, scope: .attention, tint: Color.primary)
-        // 0.5.262: Moved for you, read from the move log.
+        // Next release: Moved for you, read from the move log.
         let moved = handoffStore.moves.movedForYou.count
         if moved > 0 {
             Button { state.query = ""; state.movedOpen = true; returnToList() } label: {
@@ -1560,7 +1560,7 @@ struct WorkWorkspaceView: View {
                     navigationRow(scope.title, selected: state.scope == scope && state.domain == nil && !state.intakeOpen && !state.movedOpen) {
                         state.scope = scope; state.domain = nil; state.intakeOpen = false; state.focusOverride = false; returnToList()
                     }
-                    // 0.5.262: beside Needs attention, with its count.
+                    // Next release: beside Needs attention, with its count.
                     if scope == .attention {
                         navigationRow("Moved for you", selected: state.movedOpen, count: handoffStore.moves.movedForYou.count) {
                             state.query = ""; state.movedOpen = true; returnToList()
@@ -2122,7 +2122,7 @@ struct WorkWorkspaceView: View {
         }
     }
 
-    /// 0.5.262: Moved for you, read from the move log.
+    /// Next release: Moved for you, read from the move log.
     @ViewBuilder private var movedForYouSurface: some View {
         WorkMovedForYouView(moves: handoffStore.moves, follows: handoffStore.follows, shadow: model.workEvidenceShadow, lookup: { workID in
             board.item(sourceID: workID).map { ($0.title, $0.task.map { $0.checked ? "complete" : $0.workStage }) }
@@ -2246,7 +2246,7 @@ struct WorkWorkspaceView: View {
             cardTapArea(item, handoff: handoff, running: running, hit: hit)
             // Outside the tap area: its Undo is its own control, not part of the card's single action.
             if let autoMove, let tracking { cardWhyLine(tracking, autoMove).padding(.horizontal, 12).padding(.bottom, 10) }
-            // 0.5.262: what COS moved (or would move) stays on the card until you open it.
+            // Next release: what COS moved (or would move) stays on the card until you open it.
             if item.task != nil {
                 WorkCardMoveMark(moves: handoffStore.moves, follows: handoffStore.follows, workID: item.sourceID)
                     .padding(.horizontal, 12).padding(.bottom, 10)
@@ -2711,11 +2711,13 @@ struct WorkWorkspaceView: View {
     private func taskBody(_ task: TaskRow) -> some View {
         VStack(alignment: .leading, spacing: 20) {
             sourceMeetings(task)
-            // 0.5.262: the finish line as a checklist, with what COS moved and the sessions the card follows.
+            // Next release: the finish line as a checklist, with what COS moved and the sessions the card follows.
             WorkFinishLineSection(moves: handoffStore.moves, follows: handoffStore.follows, task: task, shadow: model.workEvidenceShadow,
                                   onUndo: model.workTracker == nil ? nil : { moveID in undoLoggedMove(moveID) },
                                   onEditTask: handoffStore.isolated ? nil : { onEditTask(task) },
-                                  onStopFollowing: { handoffStore.pauseCard(workID: task.workSourceID, stage: task.workStage, why: "You stopped following.") })
+                                  onStopFollowing: { handoffStore.pauseCard(workID: task.workSourceID, stage: task.workStage, why: "You stopped following.") },
+                                  onFollowAgain: { handoffStore.resumeCard(workID: task.workSourceID); model.workTracker?.poke() },
+                                  acknowledgesArrivals: true)
             if !task.source.isEmpty { fact("Source", task.source) }
             if !task.runAt.isEmpty { fact("Scheduled", task.runAt) }
             Text("Task editing, scheduling, and completion stay attached to the original task. Agent output does not change its completion state.")
@@ -2895,7 +2897,7 @@ struct WorkWorkspaceView: View {
     private func domainLabel(_ domain: String) -> String { model.domainOptions.first { $0.name == domain }?.label ?? domain.replacingOccurrences(of: "_", with: " ").capitalized }
     private func select(_ item: WorkWorkspaceItem) {
         state.selectedID = item.id; state.meetingPicker = false; reviewStore.selectedMeeting = nil; handoffStore.selectedWorkID = item.sourceID
-        // 0.5.262: opening a card acknowledges what COS moved on it (its mark goes; the history stays on the card).
+        // Next release: opening a card acknowledges what COS moved on it (its mark goes; the history stays on the card).
         if item.task != nil { handoffStore.moves.acknowledge(workID: item.sourceID, at: Date().timeIntervalSince1970) }
     }
     private func returnToList() { state.selectedID = nil; handoffStore.selectedWorkID = nil; state.meetingPicker = false; state.linkTarget = nil; reviewStore.selectedMeeting = nil }

@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// 0.5.262, run by hand (Tests/run-work-follows-render.sh <folder>): what COS moved, drawn off screen to PNGs. The
+/// Next release, run by hand (Tests/run-work-follows-render.sh <folder>): what COS moved, drawn off screen to PNGs. The
 /// board with a "Moved by COS" card, a "COS would move this" card and a "1 of 2 met" card; Moved for you; the card
 /// detail's finish line checklist and history; and the Settings rows (shadow mode and the Work background model). The
 /// isolated preview store and a scratch home: no server, no provider. Windows are never ordered in, the process can
@@ -78,12 +78,29 @@ import SwiftUI
                               move: WorkStageMove(by: .cos, why: "every part of the finish line is met", clauses: [pageMet, adsMet]), at: now - 300)
         try render(WorkFinishLineSection(moves: store.moves, follows: store.follows, task: qa, shadow: false, onUndo: { _ in },
                                          onEditTask: {}, onStopFollowing: {}).padding(22), width: 640, name: "card-detail-moved", out: out)
+        // Paused (you moved it back, or Stop following): Follow again beside the paused line.
+        store.pauseCard(workID: pete.workSourceID, stage: "built", why: "You moved it back to Built.", at: now - 120)
+        try render(WorkFinishLineSection(moves: store.moves, follows: store.follows, task: pete, shadow: false, onUndo: { _ in },
+                                         onEditTask: {}, onStopFollowing: {}, onFollowAgain: {}).padding(22), width: 640, name: "card-detail-paused", out: out)
+        store.resumeCard(workID: pete.workSourceID, at: now - 60)
         // The card after it moved, on the board column's width.
         try render(VStack(alignment: .leading, spacing: 10) {
             WorkCardMoveMark(moves: store.moves, follows: store.follows, workID: review.workSourceID)
             WorkCardMoveMark(moves: store.moves, follows: store.follows, workID: draft.workSourceID)
             WorkCardMoveMark(moves: store.moves, follows: store.follows, workID: website.workSourceID)
         }.padding(12), width: 234, name: "card-marks", out: out)
+        // The unified update row at the top of the panel (390 pt panel, 12 pt sides), in every state.
+        let states: [(String, UpdateRow.State)] = [
+            ("current", .current), ("control-behind", .controlBehind(latest: "0.5.270")),
+            ("server-behind", .serverBehind(installed: "6.65.0", latest: "6.66.0")),
+            ("both-behind", .bothBehind(control: "0.5.270", serverInstalled: "6.65.0", serverLatest: "6.66.0")),
+            ("couldnt-check", .unknown(control: true, server: true)), ("couldnt-check-server", .unknown(control: false, server: true))]
+        for (name, state) in states {
+            try render(UpdateRowView(state: state, controlVersion: "0.5.266", serverVersion: "6.65.0",
+                                     notes: name.contains("control") || name.contains("both") ? "Cards follow their threads and move on evidence." : nil,
+                                     checking: false, busy: false, onCheck: {}, onInstallControl: {}, onUpdateServer: {}).padding(12),
+                       width: 390, name: "update-row-" + name, out: out)
+        }
         // Settings: shadow mode and the Work background model.
         try render(WorkEvidenceSettingsRows(model: model).padding(16), width: 390, name: "settings-work-evidence", out: out)
         // The task editor's finish line preview.

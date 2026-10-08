@@ -72,9 +72,9 @@ fi
 /usr/bin/python3 -c '
 import json, sys
 value = json.loads(sys.argv[1])
-# 76 at 0.5.262 (14 for the evidence check body); 62 at 0.5.253 (the 13 Cursor chat finder checks went with the finder, 7
+# 80 in the next release (18 for the evidence check body, UTF-16 clause and 512-character cursor limits); 62 at 0.5.253 (the 13 Cursor chat finder checks went with the finder, 7
 # for the re-claim token on stdin came in); 68 at 0.5.252 (the glasses request result body and failure codes); 51 at 0.5.250.
-if not value.get("ok") or value.get("details", {}).get("checks", 0) < 76:
+if not value.get("ok") or value.get("details", {}).get("checks", 0) < 80:
     sys.exit("helper self-test-work FAILED: " + str(value)[:2000])
 ' "$WORK_SELF_TEST"
 
@@ -526,7 +526,7 @@ root = pathlib.Path(sys.argv[1])
 info = plistlib.loads((root / "Resources/Info.plist").read_bytes())
 version, build = info["CFBundleShortVersionString"], info["CFBundleVersion"]
 head = (root / "CHANGELOG.md").read_text().splitlines()
-# A "## Unreleased" section above it collects a feature branch's notes until the release names it (0.5.262 follows).
+# A "## Unreleased" section above it collects a feature branch's notes until the release names it (the next release's follows).
 entry = next((l for l in head if l.startswith("## ") and l.strip() != "## Unreleased"), "")
 m = re.match(r"## (\d+\.\d+\.\d+) \(build (\d+)\)", entry)
 if not m:
@@ -535,7 +535,23 @@ if (m.group(1), m.group(2)) != (version, build):
     sys.exit(
         f"version touchpoints disagree: Info.plist {version} (build {build}) "
         f"vs CHANGELOG {m.group(1)} (build {m.group(2)})"
-    )
+    )# An "## Unreleased" section belongs to a branch that has NOT bumped the version (QA W3, 2026-10-07: the follows branch
+# carried a released number in its notes). Info.plist must still read what it read when the section was added; a bump
+# means the release names the notes first (rename "## Unreleased" to "## X.Y.Z (build N)").
+if any(l.strip() == "## Unreleased" for l in head):
+    import subprocess
+    def git(*args):
+        r = subprocess.run(["git", "-C", str(root), *args], capture_output=True)
+        return r.stdout if r.returncode == 0 else None
+    added = (git("log", "--reverse", "--format=%H", "-S## Unreleased", "--", "CHANGELOG.md") or b"").split()
+    then = git("show", added[0].decode() + ":Resources/Info.plist") if added else None
+    if then is None:
+        print("    ## Unreleased: no git history to compare against (not a checkout); version bump not checked")
+    else:
+        before = plistlib.loads(then)
+        if (before["CFBundleShortVersionString"], before["CFBundleVersion"]) != (version, build):
+            sys.exit(f"Info.plist was bumped to {version} (build {build}) while '## Unreleased' remains in CHANGELOG.md: "
+                     "name the release in the CHANGELOG (rename the section) before bumping")
 PY
 
 # --- Signing: a shipped build must never be ad-hoc --------------------------
@@ -795,9 +811,12 @@ assert _panel.index('updateRow') < _panel.index('statusCard'), \
     'the update row must sit at the top of the panel, above the status card'
 # The CALL SITE, not the words: the footer's own comment quotes the old label
 # ("Check for updates Quit"), so a bare string check trips on documentation.
-_row = views.split('private var updateRow')[1].split('private var updateBanner')[0]
-assert 'Button("Check for updates"' in _row, \
-    'the manual check must live in the top update row'
+# One row for COS Control and the server (next release): updateRow renders UpdateRowView, which carries the check.
+_row = views.split('private var updateRow')[1].split('private var ')[0]
+assert 'UpdateRowView(' in _row, 'the top update row is the unified Control + server row'
+_rowView = views.split('struct UpdateRowView')[1]
+assert 'Button("Check for updates"' in _rowView and 'onUpdateServer()' in _rowView and 'onInstallControl()' in _rowView, \
+    'the manual check, Install and Update Server must live in the top update row'
 # The whole footer body, bounded by the next declaration. A 1200-char window
 # stopped one line short of the Quit button — the third fixed-window pin to
 # break this way today, so this one slices to a real boundary.

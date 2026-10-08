@@ -25,7 +25,7 @@ import SwiftUI
         if clean.isEmpty { return "Enter a task name." }
         if clean.utf16.count > 2000 { return "Keep the task name under 2,001 characters." }
         if doneWhen.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count > 500 { return "Keep the finish line under 501 characters." }
-        // 0.5.262: the finish line COS checks part by part: at most 6 parts of at most 300 characters, and never a marker.
+        // Next release: the finish line COS checks part by part: at most 6 parts of at most 300 characters, and never a marker.
         if let problem = WorkFinishLine.problem(doneWhen) { return problem }
         return nil
     }
@@ -183,7 +183,7 @@ struct WorkTaskEditor: View {
     private func saveTaskEdits() {
         guard canSave else { state.error = unavailableReason ?? state.validationMessage ?? "Wait for the current save to finish."; return }
         let text = state.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        // 0.5.262: parts on separate lines are saved `;`-joined, as COS reads them. No words are dropped.
+        // Next release: parts on separate lines are saved `;`-joined, as COS reads them. No words are dropped.
         let finish = WorkFinishLine.normalized(state.doneWhen).trimmingCharacters(in: .whitespacesAndNewlines)
         runDetailAction { try await model.saveWorkTaskEdits(task, text: text, doneWhen: finish) }
     }
@@ -762,7 +762,7 @@ struct ActivityWindow: View {
                                     .buttonStyle(COSQuietButtonStyle()).padding(10)
                             }
                             if workConnectionsEnabled, workReceipt == nil, let sessionID = selectedSessionID {
-                                // 0.5.262: one session can be linked to several cards; each linked card follows it.
+                                // Next release: one session can be linked to several cards; each linked card follows it.
                                 let links = handoffStore.linkedCards(sessionID: sessionID)
                                 ForEach(links, id: \.workID) { link in
                                     Button("Linked to \(link.title)") { model.closeClaudeSession(); openHandoffWork(link.workID) }.buttonStyle(COSQuietButtonStyle()).padding(10)
@@ -7189,7 +7189,7 @@ private struct ActivityEscapeHandler: NSViewRepresentable {
     }
 }
 
-/// 0.5.262: what COS will check, part by part, shown under Done when as you type. Separate parts with a semicolon; you
+/// Next release: what COS will check, part by part, shown under Done when as you type. Separate parts with a semicolon; you
 /// confirm them by saving. Nothing is dropped or rewritten.
 struct WorkFinishLinePreview: View {
     let doneWhen: String

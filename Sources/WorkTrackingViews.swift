@@ -244,7 +244,7 @@ struct WorkLatestMoveStrip: View {
     }
 }
 
-// MARK: - 0.5.262: what COS moved, on the card and in Moved for you
+// MARK: - Next release: what COS moved, on the card and in Moved for you
 
 /// The persistent mark on a board card (Miles, 2026-10-07: "the visual cue that we leave on the card to let the user
 /// know, when they come back, what's been automated or moved"). It stays until you open the card or say Got it:
@@ -255,7 +255,8 @@ struct WorkCardMoveMark: View {
     @ObservedObject var moves: WorkMoveLog
     @ObservedObject var follows: WorkFollowStore
     let workID: String
-    var now: Date = Date()
+    /// A fixed clock (the render harness); nil keeps "2h ago" current (QA note: it never updated).
+    var now: Date? = nil
 
     var body: some View {
         let mark = moves.mark(workID: workID)
@@ -265,7 +266,7 @@ struct WorkCardMoveMark: View {
                 if let mark {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         WorkMoveMarkDot(shadow: mark.shadow)
-                        Text(mark.mark(now: now.timeIntervalSince1970))
+                        WorkAgeText(now: now) { mark.mark(now: $0.timeIntervalSince1970) }
                             .font(COSType.body(10.5, weight: .semibold)).foregroundStyle(mark.shadow ? COSPalette.muted : COSPalette.accent).lineLimit(1)
                     }
                     .help(mark.history)
@@ -279,6 +280,17 @@ struct WorkCardMoveMark: View {
             }
             .accessibilityElement(children: .combine)
         }
+    }
+}
+
+/// Text with an age in it ("Moved by COS · 2h ago") that stays current: redrawn once a minute, only this text. A fixed
+/// `now` (the render harness) draws it once.
+struct WorkAgeText: View {
+    let now: Date?
+    let text: (Date) -> String
+    var body: some View {
+        if let now { Text(text(now)) }
+        else { TimelineView(.periodic(from: .now, by: 60)) { context in Text(text(context.date)) } }
     }
 }
 
@@ -348,7 +360,10 @@ struct WorkFinishLineSection: View {
     var onUndo: ((String) -> Void)?
     var onEditTask: (() -> Void)?
     var onStopFollowing: (() -> Void)?
-    var now: Date = Date()
+    var onFollowAgain: (() -> Void)?
+    /// The card's detail is on screen: a move that lands now is acknowledged here, as opening the card would.
+    var acknowledgesArrivals = false
+    var now: Date? = nil
 
     private var workID: String { task.workSourceID }
 
@@ -387,6 +402,10 @@ struct WorkFinishLineSection: View {
             followLine(following, card: card)
         }.frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .contain).accessibilityLabel("Finish line")
+            .onChange(of: moves.mark(workID: workID)?.id) { previous, _ in
+                guard acknowledgesArrivals else { return }
+                moves.acknowledgeArrival(workID: workID, previous: previous, at: Date().timeIntervalSince1970)
+            }
     }
 
     /// The newest verdict for this part: by its text, else by its place (the server may tidy the text it echoes).
@@ -412,8 +431,8 @@ struct WorkFinishLineSection: View {
     private func historyRow(_ entry: WorkMoveEntry) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             WorkMoveMarkDot(shadow: entry.shadow).opacity(entry.byCOS ? 1 : 0.4)
-            Text(entry.history + " \u{00B7} " + WorkMoveEntry.ago(entry.line.at, now: now.timeIntervalSince1970)
-                 + (entry.undoneAt != nil ? " \u{00B7} undone" : ""))
+            WorkAgeText(now: now) { entry.history + " \u{00B7} " + WorkMoveEntry.ago(entry.line.at, now: $0.timeIntervalSince1970)
+                 + (entry.undoneAt != nil ? " \u{00B7} undone" : "") }
                 .font(COSType.body(11.5)).foregroundStyle(entry.undoneAt != nil ? COSPalette.muted : Color.primary)
                 .strikethrough(entry.undoneAt != nil).fixedSize(horizontal: false, vertical: true)
             if let onUndo, entry.byCOS, !entry.shadow, entry.undoneAt == nil,
@@ -428,8 +447,11 @@ struct WorkFinishLineSection: View {
         if !following.isEmpty {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 if card.paused {
-                    Text((card.pausedWhy.map { $0 + " " } ?? "") + "COS stopped following this card. Move it forward yourself to start again.")
+                    Text((card.pausedWhy.map { $0 + " " } ?? "") + "COS stopped following this card. Move it forward yourself, or follow it again.")
                         .font(COSType.body(11)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+                    // QA W5: Stop following had no way back short of a move.
+                    if let onFollowAgain { Button("Follow again") { onFollowAgain() }.buttonStyle(COSTextButtonStyle()).controlSize(.small)
+                        .help("COS follows this card's sessions again and moves it to QA when the evidence shows it finished") }
                 } else {
                     Text("Following " + (following.count == 1 ? "1 session" : "\(following.count) sessions")
                          + (shadow ? ". COS shows what it would move and moves nothing." : ". COS moves it to QA when every part is met."))
@@ -452,7 +474,7 @@ struct WorkMovedForYouView: View {
     let lookup: (String) -> (title: String, stage: String?)?
     var onUndo: ((String) -> Void)?
     let onOpen: (String) -> Void
-    var now: Date = Date()
+    var now: Date? = nil
 
     var body: some View {
         let entries = moves.movedForYou
@@ -477,7 +499,7 @@ struct WorkMovedForYouView: View {
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 WorkMoveMarkDot(shadow: entry.shadow)
-                Text(entry.mark(now: now.timeIntervalSince1970)).font(COSType.body(11, weight: .semibold))
+                WorkAgeText(now: now) { entry.mark(now: $0.timeIntervalSince1970) }.font(COSType.body(11, weight: .semibold))
                     .foregroundStyle(entry.shadow ? COSPalette.muted : COSPalette.accent)
                 Spacer(minLength: 8)
                 Text(WorkProgress.stageTitle(entry.line.from ?? "") + " to " + WorkProgress.stageTitle(entry.line.to ?? ""))
@@ -528,7 +550,7 @@ struct WorkMovedForYouView: View {
     }
 }
 
-/// 0.5.262, in Settings: shadow mode for moves on evidence (on until Miles has reviewed a week of would-moves), and the
+/// Next release, in Settings: shadow mode for moves on evidence (on until Miles has reviewed a week of would-moves), and the
 /// Work background model, the one the end-of-day Slack sweep uses (a standing, unattended cost).
 struct WorkEvidenceSettingsRows: View {
     @ObservedObject var model: ControllerModel

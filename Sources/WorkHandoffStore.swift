@@ -278,13 +278,13 @@ struct WorkGlassesRequest: Equatable, Sendable {
     let cardFiles: WorkCardFileStore
     /// 0.5.258: the files on each meeting (`~/cos-data/meeting-context`). A card's send carries its linked meetings'.
     let meetingFiles: WorkCardFileStore
-    /// 0.5.262: session -> the cards it is linked to (one thread can serve several cards, validation W5). A 0.5.261 file
+    /// Next release: session -> the cards it is linked to (one thread can serve several cards, validation W5). A 0.5.261 file
     /// (session -> one card) reads as a list of one.
     @Published private(set) var confirmedSessionCards: [String: [WorkSessionCardLink]] = [:]
-    /// 0.5.262: which sessions each card follows (work-follows.json), and every stage move Control made (work-moves.jsonl).
+    /// Next release: which sessions each card follows (work-follows.json), and every stage move Control made (work-moves.jsonl).
     let follows: WorkFollowStore
     let moves: WorkMoveLog
-    /// 0.5.262: the lock file only the evaluating Control process holds (WorkTrackerLease).
+    /// Next release: the lock file only the evaluating Control process holds (WorkTrackerLease).
     var leaseURL: URL { companionURL("work-tracker.lease") }
     /// A new line in the move log redraws what shows Moved for you's count (the board's rows are not rebuilt: they key on
     /// their own epochs).
@@ -344,7 +344,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
     }
 
     /// Explicit association only. No prompt, delivery receipt, completion or model call is invented.
-    /// 0.5.262: a session can be linked to several cards, and the card follows the session from now on.
+    /// Next release: a session can be linked to several cards, and the card follows the session from now on.
     func confirmSessionCard(sessionID: String, source: WorkSource) -> Bool {
         guard !busy, storageReady, let native = Self.nativeID(sessionID), Self.appSessionID(native) != nil,
               ["claude", "codex", "cursor"].contains(String(sessionID.split(separator: ":")[0])) else { return false }
@@ -374,12 +374,12 @@ struct WorkGlassesRequest: Equatable, Sendable {
         if let old = try? JSONDecoder().decode([String: WorkSessionCardLink].self, from: data) { return old.mapValues { [$0] } }
         return [:]
     }
-    /// 0.5.262: "Follow" beside Jev's Continue advice. The card follows that session from now on; nothing is sent.
+    /// Next release: "Follow" beside Jev's Continue advice. The card follows that session from now on; nothing is sent.
     @discardableResult func followAdvice(_ advice: SessionAdvice, source: WorkSource) -> Bool {
         guard advice.action == .continueSession, let sessionID = advice.sessionID else { return false }
         return follows.add(workID: source.id, sessionID: sessionID, origin: .follow, startedAt: Date().timeIntervalSince1970)
     }
-    /// 0.5.262: a file beside the journal. The real journal's are named as the plan names them (work-follows.json,
+    /// Next release: a file beside the journal. The real journal's are named as the plan names them (work-follows.json,
     /// work-moves.jsonl, work-tracker.lease); any other journal's carry its name, so two checks never share one.
     nonisolated static func companionURL(_ journal: URL, _ name: String) -> URL {
         let folder = journal.deletingLastPathComponent()
@@ -387,7 +387,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
             : folder.appendingPathComponent(journal.deletingPathExtension().lastPathComponent + "." + name)
     }
     func companionURL(_ name: String) -> URL { Self.companionURL(storageURL, name) }
-    /// 0.5.262: every stage change Control makes goes in the move log (ControllerModel.setWorkStage), and one you make
+    /// Next release: every stage change Control makes goes in the move log (ControllerModel.setWorkStage), and one you make
     /// backward pauses the card's follows.
     func recordStageMove(workID: String, title: String, from: String, to: String, move: WorkStageMove, shadow: Bool = false, at: Double = Date().timeIntervalSince1970) {
         moves.append(WorkMoveLine(type: .move, id: move.id, at: at, workID: workID, from: from, to: to, by: move.by, shadow: shadow ? true : nil,
@@ -397,6 +397,17 @@ struct WorkGlassesRequest: Equatable, Sendable {
         let wasPaused = follows.isPaused(workID)
         follows.noteStageChange(workID: workID, from: from, to: to, by: move.by, at: at)
         if !wasPaused, follows.isPaused(workID) { recordPause(workID: workID, stage: to, why: "You moved it back to \(WorkProgress.stageTitle(to)).", at: at) }
+    }
+    /// Follows on cards no longer open go, but only after a read of the whole board (a partial read never prunes).
+    func pruneFollows(board: [TaskRow], complete: Bool) {
+        guard complete else { return }
+        follows.prune(openWorkIDs: Set(board.filter { !$0.checked && $0.workStage != "complete" }.map(\.workSourceID)))
+    }
+    /// Follow again: every follow on the card starts again, and the move log says so.
+    func resumeCard(workID: String, at: Double = Date().timeIntervalSince1970) {
+        guard follows.isPaused(workID) else { return }
+        follows.resume(workID: workID)
+        moves.append(WorkMoveLine(type: .resume, id: "resume-" + UUID().uuidString.lowercased(), at: at, workID: workID, why: "You chose Follow again."))
     }
     /// Pauses every follow on a card and says so in the move log.
     func pauseCard(workID: String, stage: String, why: String, at: Double = Date().timeIntervalSince1970) {
@@ -1994,16 +2005,32 @@ struct WorkGlassesRequest: Equatable, Sendable {
             return (nil, details["reason"]?.string ?? "unavailable")
         } catch { return (nil, "unavailable") }
     }
-    /// 0.5.262: the server's evidence check for a card (contract 2026-10-07). Nil with a reason when there is no answer:
-    /// an older server, the switch off, a cap, or an unreachable server. Every failure is advice only.
-    func evidenceCheck(_ body: [String: Any], sent: Int) async -> (result: WorkEvidenceResult?, reason: String?) {
-        guard !isolated else { return (nil, "unavailable") }
+    /// The server's answer to one evidence check: a result, or a reason with what the refusal carries (contract v2:
+    /// `retryAt` on jev_cap and jev_breaker, `cursors` on no_evidence).
+    struct EvidenceAnswer: Sendable {
+        var result: WorkEvidenceResult?
+        var reason: String?
+        var retryAt: Double? = nil
+        var cursors: [WorkEvidenceResult.Cursor] = []
+    }
+    /// Next release: the server's evidence check for a card (contract 2026-10-07). Nil with a reason when there is no answer:
+    /// an older server, the switch off, a cap, or an unreachable server. Every failure is advice only. The helper
+    /// refusing the body is `helper_refused`, never "unavailable" (QA W11: a refusal read as an outage).
+    func evidenceCheck(_ body: [String: Any], sent: Int) async -> EvidenceAnswer {
+        guard !isolated else { return EvidenceAnswer(reason: "unavailable") }
+        let response: HelperResponse
         do {
             let data = try JSONSerialization.data(withJSONObject: body)
-            let details = try await call(["work-evidence-check"], data)
-            if let result = WorkEvidenceResult(details: details, sent: sent) { return (result, nil) }
-            return (nil, details["reason"]?.string ?? "invalid_answer")
-        } catch { return (nil, "unavailable") }
+            response = try await transport(["work-evidence-check"], data)
+        } catch { return EvidenceAnswer(reason: "unavailable") }
+        guard response.ok else {
+            evidenceLog.notice("evidence check refused by the helper: \(response.message, privacy: .public)")
+            return EvidenceAnswer(reason: "helper_refused")
+        }
+        let details = response.details
+        if let result = WorkEvidenceResult(details: details, sent: sent) { return EvidenceAnswer(result: result) }
+        return EvidenceAnswer(reason: details["reason"]?.string ?? "invalid_answer", retryAt: details["retryAt"]?.string.flatMap(WorkProgress.parseStamp),
+                              cursors: WorkEvidenceResult.cursors(details))
     }
     // MARK: - Not done yet (0.5.247)
     //
@@ -2247,6 +2274,7 @@ struct WorkGlassesRequest: Equatable, Sendable {
 }
 
 private let requestsLog = Logger(subsystem: "com.gotcos.control", category: "work-requests")
+private let evidenceLog = Logger(subsystem: "com.gotcos.control", category: "work-tracking")
 
 // MARK: - Glasses requests (0.5.252, server 6.59.0)
 //

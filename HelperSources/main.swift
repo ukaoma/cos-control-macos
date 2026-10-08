@@ -698,6 +698,7 @@ final class COSControlHelper {
         case "review-audio-list": try emitReviewAudioList(args: args)
         case "fetch-media": try emitFetchedMedia(args: args)
         case "check-app-update": try emitAppUpdateCheck(args: args)
+        case "check-server-update": emitServerUpdateCheck()
         case "openpets-catalog": try emitOpenPetsCatalog(args: args)
         case "openpets-thumb": try emitOpenPetsThumb(args: args)
         case "stage-app-update": try emitStageAppUpdate(args: args)
@@ -5070,7 +5071,7 @@ final class COSControlHelper {
         emit(ok: true, message: "Completion check ready", details: result)
     }
 
-    /// 0.5.262: the server's evidence check for one card (`POST /api/work-board/evidence-check`, contract 2026-10-07):
+    /// Next release: the server's evidence check for one card (`POST /api/work-board/evidence-check`, contract 2026-10-07):
     /// the card's domain and id, the sessions it follows with their read cursors, the finish line's clauses and the
     /// look-back time. The server reads the card, the sessions, the URLs in the clauses, linked meetings and the Slack
     /// sweep itself, and judges every clause in one Jev call; it never moves a card. Every failure is an answer with a
@@ -5106,9 +5107,9 @@ final class COSControlHelper {
               since.range(of: #"^\d{4}-\d{2}-\d{2}T[0-9:.]+Z$"#, options: .regularExpression) != nil,
               let follows = body["follows"] as? [Any], follows.count <= 4,
               let clauses = body["clauses"] as? [Any], clauses.count <= 6 else { return false }
+        // Counted as the server counts (contract v2 `clauseChars` 300, `clauseUnit` utf16, after trimming): an emoji is 2.
         for clause in clauses {
-            guard let text = clause as? String, (1...300).contains(text.count),
-                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+            guard let text = clause as? String, (1...300).contains(text.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count) else { return false }
         }
         var seen = Set<String>()
         for follow in follows {
@@ -5117,7 +5118,8 @@ final class COSControlHelper {
                   sessionChatValidationError(provider: provider, threadId: session) == nil,
                   seen.insert(provider + ":" + session).inserted else { return false }
             if let cursor = row["cursor"], !(cursor is NSNull) {
-                guard let text = cursor as? String, (1...2_048).contains(text.utf8.count) else { return false }
+                // Contract v2 `cursorChars`: 512 (base64url, so characters, bytes and UTF-16 units agree).
+                guard let text = cursor as? String, (1...512).contains(text.utf16.count) else { return false }
             }
         }
         return true
@@ -7796,6 +7798,16 @@ final class COSControlHelper {
         }
         try bytes.write(to: dest, options: .atomic)
         emit(ok: true, message: "Thumbnail ready", details: ["path": dest.path, "id": id])
+    }
+
+    /// The npm `latest` of the glasses server, read-only (`npm view`, as Update Server resolves it). Never an error: an
+    /// npm or network miss is `reason: unreachable`, which the panel shows as "couldn't check", never as up to date.
+    private func emitServerUpdateCheck() {
+        if let release = try? resolveVersion("latest") {
+            emit(ok: true, message: "Server release resolved", details: ["latestVersion": release.version, "package": packageName, "reason": "ok"])
+        } else {
+            emit(ok: true, message: "Server update check unavailable", details: ["package": packageName, "reason": "unreachable"])
+        }
     }
 
     private func emitAppUpdateCheck(args: [String]) throws {
@@ -15481,7 +15493,7 @@ final class COSControlHelper {
               Self.workRequestFailure(status: 502, code: "<b>") == "http_502" else {
             throw HelperError.message("Work glasses request self-test failed")
         }
-        // 0.5.262: the evidence check's body is exactly the contract's (14 checks).
+        // The evidence check's body is exactly the contract's (18 checks).
         let session = "0f3c9a2e-1111-4222-8333-944455556666"
         let goodEvidence: [String: Any] = ["domain": "quilt", "id": "5755b516df8f", "since": "2026-10-02T23:52:00.000Z",
             "follows": [["provider": "claude", "sessionId": session, "cursor": NSNull()]],
@@ -15496,10 +15508,15 @@ final class COSControlHelper {
               !evidence({ $0["follows"] = Array(repeating: ["provider": "claude", "sessionId": session, "cursor": NSNull()], count: 2) }),
               !evidence({ $0["follows"] = [["provider": "claude", "sessionId": "../../etc", "cursor": NSNull()]] }),
               !evidence({ $0["follows"] = [["provider": "claude", "sessionId": session]] }),
-              !evidence({ $0["id"] = "nope" }), !evidence({ $0["since"] = "yesterday" }) else {
+              !evidence({ $0["id"] = "nope" }), !evidence({ $0["since"] = "yesterday" }),
+              // UTF-16, as the server counts: 150 emoji are 300 units, 151 are 302; a cursor of 512 passes, 513 does not.
+              evidence({ $0["clauses"] = [String(repeating: "\u{1F680}", count: 150)] }),
+              !evidence({ $0["clauses"] = [String(repeating: "\u{1F680}", count: 151)] }),
+              evidence({ $0["follows"] = [["provider": "claude", "sessionId": session, "cursor": String(repeating: "a", count: 512)]] }),
+              !evidence({ $0["follows"] = [["provider": "claude", "sessionId": session, "cursor": String(repeating: "a", count: 513)]] }) else {
             throw HelperError.message("Work evidence check body self-test failed")
         }
-        emit(ok: true, message: "Work model/admission contract passed", details: ["checks": 76])
+        emit(ok: true, message: "Work model/admission contract passed", details: ["checks": 80])
     }
 
     private func emitSessionChatTurn(args: [String]) throws {

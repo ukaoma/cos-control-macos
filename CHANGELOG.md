@@ -2,9 +2,13 @@
 
 - **Cards follow their threads.** A Work card now follows every session its work went to, including a send that failed and was picked back up in that session later, a session you link with **Link to card** (one session can now be linked to several cards), and a session you choose with the new **Follow** button beside Jev's Continue suggestion. Following does not stop after 14 days while the card is open.
 - **Cards can move to QA on evidence.** With COS server support, COS checks each part of the card's Done when (split at semicolons) against the session, the page, linked meetings and Slack, and moves the card to QA only when every part is met with a fact it can point to. A card with no Done when needs the task shown done in two places. A session's own done line still moves its card, as before.
-- **Shadow mode is on.** Until you turn off **Only show what COS would move** in Settings, COS lists what it would move and moves nothing.
+- **Shadow mode is on.** Until you turn off **Only show what COS would move** in Settings, COS lists what it would move and moves nothing. **This changes 0.5.261 behaviour:** a reply Jev read as done used to move its card to QA; in shadow mode it is listed as a would-move instead. A session's own `COS-WORK <id>: done` line still moves its card. Turning shadow mode off checks every followed card again on the next pass.
 - **Moved for you**, beside Needs attention, lists what COS moved or would move, why, and the evidence for each part, with Undo and Got it. Each card keeps a quiet mark ("Moved by COS · 2h ago", "COS would move this", or "1 of 2 met") until you open it, and its detail shows the finish line as a checklist with the history of moves.
-- **Undo, moving a card back, or Stop following** pauses every session on that card until you move it forward yourself.
+- **Undo, moving a card back, or Stop following** pauses every session on that card until you move it forward yourself, or choose **Follow again**. A card COS moved that you moved back somewhere else (the glasses, the server) is paused too, and one done report moves a card once.
+- A part of the finish line once met stays met until newer evidence about that part says otherwise, so a page that went live last week still counts this week.
+- If the server's evidence check is switched off or has no key, COS falls back to the completion check; when its daily budget or breaker is hit, COS waits until the server says to try again.
+- On first launch COS follows only sends from the last 14 days, and checks at most three new cards at a time.
+- **One update row** at the top of the panel covers COS Control and the glasses server: both current, either one behind (Install, or Update Server), or "Couldn't check" when a check did not answer. The footer no longer says "npm latest" unless the check said so.
 - **Work background model** in Settings picks the model for the end-of-day Slack evidence sweep: Haiku (recommended) or Sonnet.
 - Only one COS Control evaluates cards at a time, so a review copy running beside the app never moves a card twice. Without the server's evidence check, tracking works as before.
 

@@ -3879,6 +3879,76 @@ struct AppUpdateInfo: Sendable {
     }
 }
 
+/// The glasses server's npm `latest` (helper `check-server-update`).
+struct ServerUpdateInfo: Equatable, Sendable {
+    var latestVersion: String?
+    /// ok / unreachable / idle
+    var reason: String = "idle"
+    init(latestVersion: String? = nil, reason: String = "idle") { self.latestVersion = latestVersion; self.reason = reason }
+    init(_ details: [String: JSONValue]) {
+        latestVersion = details["latestVersion"]?.string.flatMap { UpdateRow.semver($0) != nil ? $0 : nil }
+        reason = latestVersion == nil ? "unreachable" : (details["reason"]?.string ?? "ok")
+    }
+}
+
+/// The one update row at the top of the panel (queued in the follows plan): COS Control from its appcast and the
+/// glasses server from npm `latest`, against the installed versions. A check that failed says "couldn't check", never
+/// "up to date".
+enum UpdateRow {
+    enum State: Equatable, Sendable {
+        case current
+        case controlBehind(latest: String)
+        case serverBehind(installed: String, latest: String)
+        case bothBehind(control: String, serverInstalled: String, serverLatest: String)
+        /// Nothing is known to be behind, and at least one check did not answer: which ones.
+        case unknown(control: Bool, server: Bool)
+    }
+    nonisolated static func semver(_ raw: String) -> [Int]? {
+        let core = raw.split(separator: "-").first.map(String.init) ?? raw
+        let parts = core.split(separator: ".").map { Int($0) }
+        guard parts.count == 3, parts.allSatisfy({ $0 != nil }) else { return nil }
+        return parts.compactMap { $0 }
+    }
+    /// True when `latest` is newer than `installed`; nil when either cannot be read.
+    nonisolated static func newer(_ latest: String, than installed: String) -> Bool? {
+        guard let a = semver(latest), let b = semver(installed) else { return nil }
+        return a.lexicographicallyPrecedes(b) ? false : a != b
+    }
+    /// `serverInstalled` nil means no managed server to update (not installed, or self-managed): only Control counts.
+    nonisolated static func state(app: AppUpdateInfo, serverInstalled: String?, server: ServerUpdateInfo?) -> State {
+        let controlBehind = app.shouldSurface ? app.latestVersion : nil
+        let controlKnown = controlBehind != nil || app.reason == "upToDate"
+        var serverBehind: (String, String)?
+        var serverKnown = serverInstalled == nil
+        if let installed = serverInstalled, let latest = server?.latestVersion, server?.reason == "ok", let isNewer = newer(latest, than: installed) {
+            serverKnown = true
+            if isNewer { serverBehind = (installed, latest) }
+        }
+        switch (controlBehind, serverBehind) {
+        case let (control?, (installed, latest)?): return .bothBehind(control: control, serverInstalled: installed, serverLatest: latest)
+        case let (control?, nil): return .controlBehind(latest: control)
+        case let (nil, (installed, latest)?): return .serverBehind(installed: installed, latest: latest)
+        case (nil, nil): return controlKnown && serverKnown ? .current : .unknown(control: !controlKnown, server: !serverKnown)
+        }
+    }
+    /// The footer's server claim: "(npm latest)" only when the check said so.
+    nonisolated static func footerServerNote(_ state: State) -> String {
+        switch state {
+        case .current: return " (npm latest)"
+        case .serverBehind(_, let latest), .bothBehind(_, _, let latest): return " (npm has \(latest))"
+        case .unknown(_, let server): return server ? " (npm not checked)" : " (npm latest)"
+        case .controlBehind: return " (npm latest)"
+        }
+    }
+    nonisolated static func unknownText(control: Bool, server: Bool) -> String {
+        switch (control, server) {
+        case (true, true): return "Couldn't check for updates"
+        case (true, false): return "Couldn't check for a COS Control update"
+        default: return "Couldn't check for a server update"
+        }
+    }
+}
+
 /// Status-item glyph. Template image so it follows the menu bar tint.
 /// The eyeglasses / eyeglasses.slash literals stay at the call site so running
 /// state remains visible with the panel closed. The badge is a mask pip, not

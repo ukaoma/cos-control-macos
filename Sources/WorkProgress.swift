@@ -328,7 +328,7 @@ struct WorkCompletionVerdict: Equatable, Sendable {
     }
 }
 
-// MARK: - 0.5.262: cards follow their threads and move on evidence
+// MARK: - Next release: cards follow their threads and move on evidence
 //
 // Miles, 2026-10-07: "A card being worked in a thread follows that thread. When the evidence says it's finished, it moves
 // to QA on its own, and the board tells him what moved and why." Plan v2 (PLAN_work_cards_follow_evidence_v2_2026-10-07)
@@ -344,7 +344,10 @@ struct WorkCompletionVerdict: Equatable, Sendable {
 /// The finish line: a task's Done when, split into the parts COS checks one by one.
 enum WorkFinishLine {
     nonisolated static let maxClauses = 6
+    /// UTF-16 units, after trimming (contract v2 `clauseChars`, `clauseUnit: "utf16"`).
     nonisolated static let maxClauseLength = 300
+    /// The server's cursor limit (contract v2 `cursorChars`; base64url, so characters, bytes and UTF-16 units agree).
+    nonisolated static let maxCursorLength = 512
     /// The Done when field's own limit (the 0.5.260 editor: under 501 characters).
     nonisolated static let maxLength = 500
     /// The server's square-bracket markers (task_rows.py `_MARKER_BODY`). The server refuses them in user text
@@ -375,7 +378,9 @@ enum WorkFinishLine {
         }
         let parts = clauses(saved)
         if parts.count > maxClauses { return "COS checks at most 6 parts. Join some with a comma." }
-        if parts.contains(where: { $0.count > maxClauseLength }) { return "Keep each part under 301 characters." }
+        // Counted in UTF-16 units, as the server and the helper count them (an emoji is 2): a part the server would refuse
+        // with a 400 is refused here, before it is retried forever.
+        if parts.contains(where: { $0.utf16.count > maxClauseLength }) { return "Keep each part under 301 characters." }
         return nil
     }
 }
@@ -411,7 +416,7 @@ struct WorkStageMove: Sendable {
 
 /// One line of work-moves.jsonl. Nothing is edited in place: an Undo or a Got it is its own line naming a move.
 struct WorkMoveLine: Codable, Equatable, Sendable {
-    enum Kind: String, Codable, Sendable { case move, undo, ack, pause }
+    enum Kind: String, Codable, Sendable { case move, undo, ack, pause, resume }
     var type: Kind
     var id: String
     var at: Double
@@ -557,8 +562,15 @@ nonisolated func workUnlockFile(_ fd: Int32) { flock(fd, LOCK_UN); close(fd) }
         return true
     }
 
-    /// Every move, with its undo and ack.
+    /// Every move, with its undo and ack. Built once per change of the log (QA: the views read this on every redraw).
     var entries: [WorkMoveEntry] {
+        if let cached = entriesCache, cached.epoch == epoch { return cached.entries }
+        let built = buildEntries()
+        entriesCache = (epoch, built)
+        return built
+    }
+    private var entriesCache: (epoch: Int, entries: [WorkMoveEntry])?
+    private func buildEntries() -> [WorkMoveEntry] {
         var undone: [String: Double] = [:], acked: [String: Double] = [:]
         for line in lines {
             guard let move = line.move else { continue }
@@ -572,6 +584,32 @@ nonisolated func workUnlockFile(_ fd: Int32) { flock(fd, LOCK_UN); close(fd) }
     /// The card's marker: its newest open COS move.
     func mark(workID: String) -> WorkMoveEntry? { movedForYou.first { $0.line.workID == workID } }
     func history(workID: String) -> [WorkMoveEntry] { entries.filter { $0.line.workID == workID }.sorted { $0.line.at > $1.line.at } }
+    /// The newest real (not shadow) COS move of this card that was not undone.
+    func latestCOSMove(workID: String) -> WorkMoveEntry? {
+        entries.filter { $0.line.workID == workID && $0.byCOS && !$0.shadow && $0.undoneAt == nil }.max { $0.line.at < $1.line.at }
+    }
+    /// Whether COS already moved this card to `to` at or after `since` (a done report already acted on, by this Control,
+    /// another one, or the 0.5.247 handoff path).
+    func cosMoved(workID: String, to: String, since: Double) -> Bool {
+        entries.contains { $0.line.workID == workID && $0.byCOS && !$0.shadow && $0.line.to == to && $0.line.at >= since }
+    }
+    /// Whether Control saw something happen to this card since `at` (a move of yours, a pause, a Follow again): a move
+    /// back it saw is already handled, so only one it did not see reads as "moved back outside Control".
+    func seenSince(workID: String, at: Double, except moveID: String) -> Bool {
+        lines.contains { $0.workID == workID && $0.at >= at && $0.id != moveID
+            && (($0.type == .move && $0.by == .you && $0.shadow != true) || $0.type == .pause || $0.type == .resume) }
+    }
+    /// When you last moved this card yourself (a drag, a menu, an Undo), from the log.
+    func lastMoveByYou(workID: String) -> Double? {
+        lines.filter { $0.type == .move && $0.workID == workID && $0.by == .you && $0.shadow != true }.map(\.at).max()
+    }
+    /// A move that lands on a card whose detail is open is acknowledged there and then (opening the card acknowledges a
+    /// move; a move that arrives while it is open is seen the same way). True when it acknowledged one.
+    @discardableResult func acknowledgeArrival(workID: String, previous: String?, at: Double) -> Bool {
+        guard let mark = mark(workID: workID), mark.id != previous else { return false }
+        acknowledge(moveID: mark.id, at: at)
+        return true
+    }
 
     /// Got it: one `ack` line per open COS move on this card (opening the card acknowledges it).
     func acknowledge(workID: String, at: Double) {
@@ -610,7 +648,9 @@ struct WorkFollow: Codable, Equatable, Sendable, Identifiable {
     var id: String { workID + "|" + sessionID }
 }
 
-/// The newest verdict for one clause, with the evidence it rested on.
+/// The verdict kept for one clause, with the evidence it rested on. A met verdict is sticky: it stays until a newer
+/// verdict about the same clause replaces it (WorkEvidencePolicy.merge), so a met fact never ages out of the server's
+/// read window (QA blocker, 2026-10-07).
 struct WorkClauseState: Codable, Equatable, Sendable {
     var text: String
     var verdict: String
@@ -618,8 +658,14 @@ struct WorkClauseState: Codable, Equatable, Sendable {
     var kind: String
     var evidence: WorkMoveClause? = nil
     var deterministic: Bool = false
+    /// When this verdict was judged.
     var at: Double
-    var met: Bool { verdict == "met" && kind == "fact" && evidence != nil }
+    /// The distinct sources of the items that support it (contract v2 `supporting`, met only).
+    var sources: [String]? = nil
+    /// The one "met" (QA W5): what the card shows and what the move needs are the same predicate.
+    var met: Bool { WorkEvidencePolicy.met(verdict: verdict, kind: kind, hasEvidence: evidence != nil, confidence: confidence, deterministic: deterministic) }
+    /// The evidence's own time, else when it was judged.
+    var evidenceAt: Double { evidence?.at.flatMap(WorkProgress.parseStamp) ?? at }
 }
 
 /// A move the evidence decided on and could not write yet.
@@ -649,6 +695,13 @@ struct WorkCardFollowState: Codable, Equatable, Sendable {
     var shadowKey: String? = nil
     /// Why the card is not checked (a finish line in too many parts).
     var note: String? = nil
+    /// The done reports (reply digests) this card was already moved on, at most 8: one report moves a card once
+    /// (QA blocker: a card moved back outside Control was moved to QA again every pass).
+    var actedDone: [String]? = nil
+    /// The COS move this card was found moved back from (on the board, outside Control). Paused for once, never again.
+    var backwardFrom: String? = nil
+    /// The newest decision, for the card and the shadow week: "moved", "would move", "partial", "hold: truncated" …
+    var lastDecision: String? = nil
     var paused: Bool { pausedAt != nil }
     /// "1 of 2 met" while some parts of the finish line are met and some are not.
     var partial: (met: Int, of: Int)? {
@@ -775,6 +828,16 @@ struct WorkCardFollowState: Codable, Equatable, Sendable {
             return true
         }
     }
+    /// Shadow mode changed: every card is checked again on its next pass (QA W6: a move could otherwise wait 4 hours).
+    func clearChecked() {
+        update { file in
+            var changed = false
+            for (id, card) in file.cards where card.checkedAt != nil || card.shadowKey != nil {
+                file.cards[id]?.checkedAt = nil; file.cards[id]?.shadowKey = nil; changed = true
+            }
+            return changed
+        }
+    }
     func setCursor(workID: String, sessionID: String, cursor: String?) {
         update { file in
             guard let index = file.follows.firstIndex(where: { $0.workID == workID && $0.sessionID == sessionID }),
@@ -806,23 +869,73 @@ struct WorkCardFollowState: Codable, Equatable, Sendable {
 }
 
 extension WorkFollowStore {
-    /// The receipts a card follows: every one with a session doing its work, except a send that never reached it
-    /// (refused, canceled, cleared unconfirmed). A failed send is followed only once its session's transcript shows
-    /// activity after the failure (`revivable`, then `add` by the tracker).
-    nonisolated static func followable(_ receipt: WorkHandoffReceipt) -> Bool {
+    /// How far back a receipt makes a follow on its own (QA W3: the first launch made follows from every old receipt).
+    nonisolated static let backfillDays = 14.0
+    /// The receipts a card follows: one with a session doing its work, sent in the last 14 days or still tracked, except a
+    /// send that never reached it (refused, canceled, cleared unconfirmed) or one whose fate is unknown. A failed send is
+    /// followed only once you wrote in its session after the failure (`revivable`, then `add` by the tracker).
+    nonisolated static func followable(_ receipt: WorkHandoffReceipt, now: Double, tracked: Bool = false) -> Bool {
         WorkProgress.boardTask(receipt.workID) != nil && WorkProgress.workingSession(receipt) != nil
-            && !["refused", "canceled", "failed"].contains(receipt.status) && !receipt.clearedUnconfirmed
+            && !["refused", "canceled", "failed", "unknown"].contains(receipt.status) && !receipt.clearedUnconfirmed
+            && (tracked || now - receipt.createdAt < backfillDays * 86_400)
     }
-    nonisolated static func revivable(_ receipt: WorkHandoffReceipt) -> Bool {
+    nonisolated static func revivable(_ receipt: WorkHandoffReceipt, now: Double) -> Bool {
         WorkProgress.boardTask(receipt.workID) != nil && WorkProgress.workingSession(receipt) != nil && receipt.status == "failed"
+            && now - receipt.createdAt < backfillDays * 86_400
     }
     /// When a failed send failed: the newest moment the receipt records.
     nonisolated static func failedAt(_ receipt: WorkHandoffReceipt) -> Double {
         max(receipt.createdAt, receipt.progress?.events.map(\.at).max() ?? receipt.createdAt)
     }
-    /// The transcript shows activity after the failure: a timed reply or message of yours after it.
-    nonisolated static func activityAfter(_ floor: Double, replies: [WorkProgress.Reply], prompts: [WorkProgress.Reply]) -> Bool {
-        (replies + prompts).contains { ($0.at ?? 0) > floor }
+    /// You picked the session up after the failure: a timed message of yours after it. A reply alone never counts: the
+    /// failure's own error reply is written after the send (QA W4, it revived the send on its own error).
+    nonisolated static func activityAfter(_ floor: Double, prompts: [WorkProgress.Reply]) -> Bool {
+        prompts.contains { ($0.at ?? 0) > floor }
+    }
+}
+
+/// Control's policy for moves on evidence (contract, Control section). The server never moves a card.
+enum WorkEvidencePolicy {
+    /// Clause path: every clause met with fact evidence at 0.80 or a deterministic pass.
+    nonisolated static let clauseBar = 0.80
+    /// Title path (no Done when): met at 0.90 with at least two distinct SUPPORTING sources.
+    nonisolated static let titleBar = 0.90
+    nonisolated static let titleSources = 2
+
+    /// The one "met" (QA W5), for the card's display and for the move alike: fact evidence at the clause bar.
+    nonisolated static func met(verdict: String, kind: String, hasEvidence: Bool, confidence: Double, deterministic: Bool) -> Bool {
+        verdict == "met" && kind == "fact" && hasEvidence && (confidence >= clauseBar || deterministic)
+    }
+
+    enum Decision: Equatable, Sendable { case move, partial(met: Int, of: Int), hold }
+
+    /// The decision over the clause states Control keeps (the merged set, not one answer). `expected` is how many
+    /// clauses the finish line has now.
+    nonisolated static func decision(basis: String, states: [WorkClauseState], expected: Int) -> Decision {
+        if basis == "title" {
+            guard expected == 0, states.count == 1, let state = states.first, state.met, state.confidence >= titleBar,
+                  Set(state.sources ?? []).subtracting([""]).count >= titleSources else { return .hold }
+            return .move
+        }
+        guard expected > 0, states.count == expected else { return .hold }
+        let met = states.filter(\.met).count
+        if met == expected { return .move }
+        return .partial(met: met, of: expected)
+    }
+
+    /// Newest evidence per clause wins, and a met verdict is sticky (QA blocker B, plan v2 section 3): the server judges
+    /// only replies after each cursor, so a clause met last week reads "not met" this week when nothing new mentions it.
+    /// A kept met verdict yields only to a newer verdict about the same clause: one whose evidence is dated after the
+    /// met verdict's evidence. Clauses are matched by text; a clause no longer in the finish line goes.
+    nonisolated static func merge(previous: [WorkClauseState]?, previousBasis: String?, fresh: [WorkClauseVerdict], basis: String,
+                                  at: Double) -> [WorkClauseState] {
+        let kept = previousBasis == basis ? (previous ?? []) : []
+        return fresh.map { verdict in
+            let next = verdict.state(at: at)
+            guard let old = kept.first(where: { $0.text == verdict.text }), old.met, !next.met else { return next }
+            if let newer = verdict.evidence?.at.flatMap(WorkProgress.parseStamp), newer > old.evidenceAt { return next }
+            return old
+        }
     }
 }
 
@@ -834,8 +947,11 @@ struct WorkClauseVerdict: Equatable, Sendable {
     var kind: String
     var evidence: WorkMoveClause?
     var deterministic: Bool
-    /// Met with fact evidence at the bar: 0.80, or a deterministic pass.
-    func metForMove(threshold: Double) -> Bool {
+    /// Contract v2: the distinct sources of the items that support a met verdict (`supporting[].source`). Never the
+    /// sources that were only offered (QA W1/W4: the title path counted a failed URL check as a second source).
+    var supportingSources: [String] = []
+    /// Met with fact evidence at the bar (the shared predicate; `threshold` is the clause bar).
+    func metForMove(threshold: Double = WorkEvidencePolicy.clauseBar) -> Bool {
         verdict == "met" && kind == "fact" && evidence != nil && (confidence >= threshold || deterministic)
     }
     var moveClause: WorkMoveClause {
@@ -843,9 +959,13 @@ struct WorkClauseVerdict: Equatable, Sendable {
         clause.text = text; clause.verdict = verdict; clause.kind = kind; clause.deterministic = deterministic
         return clause
     }
+    func state(at: Double) -> WorkClauseState {
+        WorkClauseState(text: text, verdict: verdict, confidence: confidence, kind: kind, evidence: evidence, deterministic: deterministic,
+                        at: at, sources: supportingSources.isEmpty ? nil : supportingSources)
+    }
 }
 
-/// The server's answer to `POST /api/work-board/evidence-check` (contract 2026-10-07).
+/// The server's answer to `POST /api/work-board/evidence-check` (contract 2026-10-07, v2 section).
 struct WorkEvidenceResult: Equatable, Sendable {
     struct Cursor: Equatable, Sendable { var provider: String; var sessionId: String; var cursor: String }
     var basis: String
@@ -855,12 +975,14 @@ struct WorkEvidenceResult: Equatable, Sendable {
     var truncated: Bool
     var cached: Bool
     var skipped: String?
+    /// The answer carries contract v2's per-clause `supporting`: a truncated read's cursor then points inside the gap,
+    /// and must be saved so the next call walks it (a v1 cursor pointed past the gap, and saving it lost the gap).
+    var v2: Bool
 
     nonisolated static let verdicts: Set<String> = ["met", "not_met", "unclear"]
     nonisolated static let kinds: Set<String> = ["fact", "intent", "draft", "none"]
-    /// Clause path: every clause met with fact evidence at 0.80 or deterministic. Title path: 0.90 and 2 sources.
-    nonisolated static let clauseBar = 0.80
-    nonisolated static let titleBar = 0.90
+    nonisolated static var clauseBar: Double { WorkEvidencePolicy.clauseBar }
+    nonisolated static var titleBar: Double { WorkEvidencePolicy.titleBar }
 
     /// Nil unless the answer is Jev's and well formed; a clause path answer must judge exactly the clauses sent, a title
     /// path answer exactly one.
@@ -868,6 +990,7 @@ struct WorkEvidenceResult: Equatable, Sendable {
         guard details["provider"]?.string == "jev", let basis = details["basis"]?.string, ["clauses", "title"].contains(basis),
               let rows = details["clauses"]?.array else { return nil }
         var clauses: [WorkClauseVerdict] = []
+        var v2 = false
         for row in rows {
             guard let o = row.object, let text = o["text"]?.string, let verdict = o["verdict"]?.string, Self.verdicts.contains(verdict),
                   let confidence = o["confidence"]?.double, confidence.isFinite, (0...1).contains(confidence),
@@ -877,34 +1000,40 @@ struct WorkEvidenceResult: Equatable, Sendable {
                 evidence = WorkMoveClause(text: text, verdict: verdict, kind: kind, source: source, ref: e["ref"]?.string,
                                           excerpt: e["excerpt"]?.string.map { WorkProgress.clip($0, 200) }, at: e["at"]?.string)
             }
+            var supporting: [String] = []
+            if let items = o["supporting"]?.array {
+                v2 = true
+                for item in items {
+                    guard let source = item.object?["source"]?.string, !source.isEmpty, !supporting.contains(source) else { continue }
+                    supporting.append(source)
+                }
+            }
             clauses.append(WorkClauseVerdict(text: text, verdict: verdict, confidence: confidence, kind: kind, evidence: evidence,
-                                             deterministic: o["deterministic"]?.bool == true))
+                                             deterministic: o["deterministic"]?.bool == true, supportingSources: verdict == "met" ? supporting : []))
         }
         guard basis == "clauses" ? (clauses.count == sent && sent > 0) : (clauses.count == 1 && sent == 0) else { return nil }
-        self.basis = basis; self.clauses = clauses
+        self.basis = basis; self.clauses = clauses; self.v2 = v2
         sources = (details["sources"]?.array ?? []).compactMap(\.string)
-        cursors = (details["cursors"]?.array ?? []).compactMap(\.object).compactMap { o in
-            guard let provider = o["provider"]?.string, let session = o["sessionId"]?.string, let cursor = o["cursor"]?.string else { return nil }
-            return Cursor(provider: provider, sessionId: session, cursor: cursor)
-        }
+        cursors = Self.cursors(details)
         truncated = details["truncated"]?.bool == true
         cached = details["cached"]?.bool == true
         skipped = details["skipped"]?.string
     }
+    /// The read positions an answer carries (also a `{provider: none, reason: no_evidence}` answer, which read the
+    /// sessions). A cursor longer than the server's limit is never kept.
+    nonisolated static func cursors(_ details: [String: JSONValue]) -> [Cursor] {
+        (details["cursors"]?.array ?? []).compactMap(\.object).compactMap { o in
+            guard let provider = o["provider"]?.string, let session = o["sessionId"]?.string, let cursor = o["cursor"]?.string,
+                  (1...WorkFinishLine.maxCursorLength).contains(cursor.utf16.count) else { return nil }
+            return Cursor(provider: provider, sessionId: session, cursor: cursor)
+        }
+    }
 
-    enum Decision: Equatable, Sendable { case move, partial(met: Int, of: Int), hold }
-    /// Control's policy (contract, Control section). The server never moves a card.
+    typealias Decision = WorkEvidencePolicy.Decision
+    /// This answer on its own (a card with no kept verdicts). The tracker decides over the merged set instead.
     var decision: Decision {
         if truncated { return .hold }   // a read that stopped short is unclear
-        if basis == "title" {
-            guard let clause = clauses.first, clause.verdict == "met", clause.kind == "fact", let evidence = clause.evidence,
-                  clause.confidence >= Self.titleBar,
-                  Set(sources + [evidence.source ?? ""]).subtracting([""]).count >= 2 else { return .hold }
-            return .move
-        }
-        let met = clauses.filter { $0.metForMove(threshold: Self.clauseBar) }.count
-        if met == clauses.count && met > 0 { return .move }
-        return .partial(met: met, of: clauses.count)
+        return WorkEvidencePolicy.decision(basis: basis, states: clauses.map { $0.state(at: 0) }, expected: basis == "title" ? 0 : clauses.count)
     }
     /// The why-line for a move.
     var why: String {
@@ -912,7 +1041,7 @@ struct WorkEvidenceResult: Equatable, Sendable {
     }
 }
 
-// MARK: - 0.5.262: the Work background model (Settings)
+// MARK: - Next release: the Work background model (Settings)
 //
 // Miles, 2026-10-07: the end-of-day Slack sweep for Work evidence is a standing, unattended token cost, so he picks its
 // model in Settings. COS's `operations/scripts/work_slack_sweep.py` reads `slackSweepModel` from this file; an unknown

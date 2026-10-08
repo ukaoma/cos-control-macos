@@ -151,6 +151,13 @@ final class ControllerModel: ObservableObject {
     @Published var recentGlassesStatus: RecentGlassesStatus = .idle
     @Published var recentGlassesDate: String?
     @Published var appUpdate = AppUpdateInfo()
+    /// The glasses server's npm `latest`, for the update row (nil until checked).
+    @Published var serverUpdate: ServerUpdateInfo?
+    /// The update row's state: Control from the appcast, the server from npm, against what is installed.
+    var updateRowState: UpdateRow.State {
+        let installed = status.runtimeState == "managedInPlace" ? nil : (status.installedVersion ?? status.version).flatMap { $0.isEmpty ? nil : $0 }
+        return UpdateRow.state(app: appUpdate, serverInstalled: installed, server: serverUpdate)
+    }
 
     /// Dismissed notice ids. Keyed by id so a NEW notice appears even though an
     /// older one was dismissed, and re-reading the same one never nags.
@@ -182,6 +189,8 @@ final class ControllerModel: ObservableObject {
     /// 0.5.247: the one Work handoff journal and its tracker, shared with the Activity window so tracking keeps
     /// running while the window is closed. Nil in previews and checks (no background work).
     private(set) var workHandoffStore: WorkHandoffStore?
+    /// Checks only (a model built without background work has no store): the store a check's stage writes log to.
+    func useWorkHandoffStoreForChecks(_ store: WorkHandoffStore) { workHandoffStore = store }
     /// 0.5.258: an older server answered the card-link lookup with 404; it is not asked again this launch.
     private var meetingKeysRouteAbsent = false
     /// The sessions Work handoffs name, so Sessions shows them as work rather than as COS server jobs (0.5.247).
@@ -454,9 +463,11 @@ final class ControllerModel: ObservableObject {
         updateCheckTask = Task { [weak self] in
             await self?.completeAppUpdateIfNeeded()
             await self?.checkForAppUpdate()
+            await self?.checkForServerUpdate()
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(6 * 60 * 60))
                 await self?.checkForAppUpdate()
+                await self?.checkForServerUpdate()
             }
         }
         loadPetDismissals()
@@ -550,14 +561,19 @@ final class ControllerModel: ObservableObject {
         meetingAudioNotifier.onOpenWork = { [weak self] workID in self?.openWorkItem(workID) }
         tracker.start()
     }
-    /// 0.5.262: shadow mode (on unless you turned it off in Settings). COS checks the evidence on the cards it follows and
+    /// Next release: shadow mode (on unless you turned it off in Settings). COS checks the evidence on the cards it follows and
     /// logs what it would move in Moved for you, and moves nothing. The session's own done line moves a card either way.
     var workEvidenceShadow: Bool {
         get { UserDefaults.standard.object(forKey: Self.workEvidenceShadowKey) as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: Self.workEvidenceShadowKey); objectWillChange.send() }
+        set {
+            let changed = newValue != workEvidenceShadow
+            UserDefaults.standard.set(newValue, forKey: Self.workEvidenceShadowKey); objectWillChange.send()
+            // QA W6: every card is checked again on the next pass, not after the 4-hour recheck.
+            if changed { workHandoffStore?.follows.clearChecked(); workTracker?.poke() }
+        }
     }
     nonisolated static let workEvidenceShadowKey = "cos.workEvidenceShadow"
-    /// 0.5.262: which model gathers Slack evidence in the end-of-day Work sweep (work-evidence.json, read by COS's
+    /// Next release: which model gathers Slack evidence in the end-of-day Work sweep (work-evidence.json, read by COS's
     /// work_slack_sweep.py). Haiku unless you chose Sonnet.
     var workSweepModel: WorkSweepModel {
         get { WorkEvidenceSettings.read(WorkEvidenceSettings.defaultURL()) }
@@ -622,12 +638,24 @@ final class ControllerModel: ObservableObject {
     /// landed before the release. There was no way to ask.
     ///
     /// Every path here reports: an update, up-to-date, or the failure.
+    /// The server's npm `latest` (read-only). A miss keeps the last answer only if it had one; otherwise it reads as
+    /// "couldn't check".
+    func checkForServerUpdate() async {
+        do {
+            let response = try await helper.run(["check-server-update"], timeout: 40)
+            let incoming = ServerUpdateInfo(response.details)
+            if incoming.reason != "ok", serverUpdate?.reason == "ok" { return }
+            serverUpdate = incoming
+        } catch { if serverUpdate?.reason != "ok" { serverUpdate = ServerUpdateInfo(reason: "unreachable") } }
+    }
+
     func checkForAppUpdateManually() async {
         guard !updateCheckInFlight else { return }
         updateCheckInFlight = true
         notice = nil
         error = nil
         defer { updateCheckInFlight = false }
+        await checkForServerUpdate()
         do {
             let response = try await helper.run([
                 "check-app-update",
@@ -2787,7 +2815,7 @@ final class ControllerModel: ObservableObject {
     @Published var workBoardWritable = false
     @Published var workTaskEditAvailable = false
     @Published var workBatchAvailable = false
-    /// 0.5.262: `capabilities.evidenceCheck` on the Work board.
+    /// Next release: `capabilities.evidenceCheck` on the Work board.
     @Published var workEvidenceCheckAvailable = false
     private var workTasksRequested = false
     private var workTasksLoadInFlight: Task<Void, Never>?
@@ -2834,11 +2862,13 @@ final class ControllerModel: ObservableObject {
             // 0.5.258: the linked meetings' keys, so "Files to send" shows their files before a send asks again.
             if parsed.contains(where: { !$0.meetingRefs.isEmpty }) { Task { [weak self] in await self?.resolveMeetingKeys(for: parsed) } }
             workTasksComplete = response.details["complete"]?.bool == true
+            // QA W5: follows on cards that are complete or gone from a whole-board read go.
+            workHandoffStore?.pruneFollows(board: parsed, complete: workTasksComplete)
             let capabilities = response.details["capabilities"]?.object ?? [:]
             workBoardWritable = capabilities["version"]?.int == 1 && capabilities["writable"]?.bool == true
             workTaskEditAvailable = workBoardWritable && capabilities["editTasks"]?.int == 1
             workBatchAvailable = workBoardWritable && capabilities["workBatch"]?.int == 1
-            // 0.5.262: the server's evidence check (contract 2026-10-07). Absent, tracking falls back to the completion check.
+            // Next release: the server's evidence check (contract 2026-10-07). Absent, tracking falls back to the completion check.
             workEvidenceCheckAvailable = capabilities["evidenceCheck"]?.bool == true
             workTasksError = nil
             workBoardReads.record(generation, ok: true)
@@ -2915,7 +2945,12 @@ final class ControllerModel: ObservableObject {
             var op: [String: String] = ["id": current.id, "action": action, "expectedText": current.text, "expectedRevision": current.workRevision]
             op.merge(fields) { _, new in new }
             if await workLoop("batch", body: ["domain": current.domain, "ops": [op]]) != nil {
-                if let stage = fields["workStage"] { workActivity.recordStageChange(current, to: stage) }
+                if let stage = fields["workStage"] {
+                    workActivity.recordStageChange(current, to: stage)
+                    // QA W1: Keep to planned and Done are your moves too: logged, and a move back pauses the card's follows.
+                    workHandoffStore?.recordStageMove(workID: current.workSourceID, title: current.text.isEmpty ? current.title : current.text,
+                                                      from: current.checked ? "complete" : current.workStage, to: stage, move: .you)
+                }
                 if fields["workStage"] == "complete" { workHandoffStore?.settleCompleted(workID: current.workSourceID) }
                 await loadWorkTasks(force: true); await loadWaitingWork(); await loadDroppedWork()
                 return true
@@ -3089,7 +3124,7 @@ final class ControllerModel: ObservableObject {
         return true
     }
 
-    /// 0.5.262: `move` says who made it and why; every stage change Control makes is written to the move log
+    /// Next release: `move` says who made it and why; every stage change Control makes is written to the move log
     /// (work-moves.jsonl) once the write is accepted. A drag, a menu or an Undo is yours; the tracker's moves are COS's.
     func setWorkStage(_ task: TaskRow, stage: String, move: WorkStageMove = .you) async throws {
         guard TaskRow.workStages.contains(stage) else { throw HelperClientError.invalidResponse("Unsupported Work stage.") }

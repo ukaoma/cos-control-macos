@@ -672,7 +672,7 @@ struct WorkHandoffView: View {
                 Button(applied ? "Selected" : "Use this") {
                     store.updateDraft(WorkHandoffStore.applying(advice, to: draft), for: source)
                 }.buttonStyle(COSQuietButtonStyle()).disabled(applied || store.busy || validating)
-                // 0.5.262: only on a Continue: the card follows that session without sending anything.
+                // Next release: only on a Continue: the card follows that session without sending anything.
                 if advice.action == .continueSession, let sessionID = advice.sessionID, WorkProgress.boardTask(source.id) != nil {
                     WorkFollowButton(follows: store.follows, workID: source.id, sessionID: sessionID, disabled: isPreview) {
                         store.followAdvice(advice, source: source)
@@ -1134,7 +1134,7 @@ struct WorkSessionsView: View {
     }
 }
 
-/// 0.5.262: "Follow" beside Jev's Continue advice. Observes the follows itself, so it reads "Following" at once.
+/// Next release: "Follow" beside Jev's Continue advice. Observes the follows itself, so it reads "Following" at once.
 struct WorkFollowButton: View {
     @ObservedObject var follows: WorkFollowStore
     let workID: String

@@ -55,14 +55,14 @@ struct WorkBoardReads: Equatable, Sendable {
         var tasks: () -> [TaskRow]
         var writable: () -> Bool
         var reload: () async -> Void
-        /// 0.5.262: the move carries who made it and why, for the move log (ControllerModel.setWorkStage).
+        /// Next release: the move carries who made it and why, for the move log (ControllerModel.setWorkStage).
         var move: (TaskRow, String, WorkStageMove) async throws -> Void
         /// 0.5.252: a glasses request is checked only against a board that was just read; a failed read leaves the old
         /// rows in `tasks`. 0.5.253 (QA, deferred from 0.5.252): reloads the board and says whether the rows now come
         /// from a read that began after this call and read the board (WorkBoardReads). An older read that failed, or one
         /// a newer read superseded, never counts as read because a newer one ran.
         var readFresh: () async -> Bool
-        /// 0.5.262: the server has `POST /api/work-board/evidence-check` (`capabilities.evidenceCheck`). Without it the
+        /// Next release: the server has `POST /api/work-board/evidence-check` (`capabilities.evidenceCheck`). Without it the
         /// tracker falls back to the completion check.
         var evidenceCheck: () -> Bool = { false }
     }
@@ -84,10 +84,17 @@ struct WorkBoardReads: Equatable, Sendable {
     private let board: Board
     private let notify: (WorkProgressNotice) -> Void
     private let now: () -> Date
-    /// 0.5.262: shadow mode (Settings, on by default): evidence-path moves are logged as would-moves and never made.
+    /// Next release: shadow mode (Settings, on by default): evidence-path moves are logged as would-moves and never made.
     private let shadow: () -> Bool
-    /// 0.5.262: only the Control process holding this lease evaluates and moves cards.
+    /// Only the Control process holding this lease follows cards and moves them (the follow pass, the evidence and done-line
+    /// moves, and the handoff path's board moves). Every Control still records its own sends, opens its own apps and links
+    /// its own Cursor chats (QA W7: the lease once stopped a second Control from tracking anything).
     let lease: WorkTrackerLease
+    /// Whether this pass holds the lease.
+    private var holdsLease = false
+    private var leaseNoted = false
+    /// The server said the evidence check is off or out of budget: until when, and whether the completion check stands in.
+    private var evidenceOff: (until: Date, fallback: Bool, reason: String)?
     /// Session reads made this pass, shared by the handoffs and the follows.
     private var passReads: [String: SessionRead] = [:]
     /// Per card: when an evidence or completion check last got no answer. Retried at most every 10 minutes.
@@ -123,11 +130,15 @@ struct WorkBoardReads: Equatable, Sendable {
     nonisolated static let jevRetryAfter: Double = 600
     /// Messages read per session: enough to hold a status line past a few more exchanges.
     nonisolated static let turnsPerRead = 24
-    /// 0.5.262: evidence checks that call Jev, per card per day (plan v2 section 7). A cached answer costs nothing and
+    /// Next release: evidence checks that call Jev, per card per day (plan v2 section 7). A cached answer costs nothing and
     /// does not count.
     nonisolated static let maxChecksPerDay = 8
     /// A quiet card is checked again after this long (a page can go live with no new reply).
     nonisolated static let evidenceRecheck: Double = 4 * 3_600
+    /// Cards checked for the first time in one pass, at most (QA W3: the first launch checked every old card at once).
+    nonisolated static let firstChecksPerPass = 3
+    /// Done reports remembered per card.
+    nonisolated static let actedDoneKept = 8
 
     init(store: WorkHandoffStore, board: Board, notify: @escaping (WorkProgressNotice) -> Void, now: @escaping () -> Date = Date.init,
          shadow: @escaping () -> Bool = { true }, lease: WorkTrackerLease? = nil) {
@@ -173,25 +184,27 @@ struct WorkBoardReads: Equatable, Sendable {
         guard !ticking else { return }
         ticking = true; defer { ticking = false }
         store.retryJournalIfUnavailable()
-        // 0.5.262: one evaluating process. Another Control (a review candidate beside the stable app) leaves cards alone.
-        guard lease.acquire() else {
-            trackingLog.notice("tracker lease held by another COS Control; this one does not evaluate")
-            return
-        }
         flushDeferred()
         store.moves.flush(); store.follows.flush()
+        // One process follows cards and moves them; another Control (a review candidate beside the stable app) still
+        // tracks its own sends, and leaves their moves pending for the holder.
+        holdsLease = lease.acquire()
+        if !holdsLease, !leaseNoted { trackingLog.notice("tracker lease held by another COS Control; this one follows and moves no card") }
+        leaseNoted = !holdsLease
         passReads = [:]
         let start = now().timeIntervalSince1970
         // Moves decided earlier that could not be made yet.
-        for row in store.receipts where row.progress?.pendingStage != nil && isNewest(row)
-            && start - row.createdAt < WorkProgress.trackedDays * 86_400 {
-            await attemptMove(row.id)
+        if holdsLease {
+            for row in store.receipts where row.progress?.pendingStage != nil && isNewest(row)
+                && start - row.createdAt < WorkProgress.trackedDays * 86_400 {
+                await attemptMove(row.id)
+            }
         }
         postFailures()
         let open = candidates(now: start)
         if !open.isEmpty { await trackPass(open, start: start) }
-        // 0.5.262: cards follow their sessions, and move on evidence.
-        await followPass(start: start, tracked: Set(open.map(\.id)))
+        // Next release: cards follow their sessions, and move on evidence.
+        if holdsLease { await followPass(start: start, tracked: Set(open.map(\.id))) }
         // 0.5.249: a New session whose first reply is done opens in its app, tracked or not (a done first reply ends
         // tracking), once, and never while its run is going.
         await store.openReadyApps()
@@ -358,9 +371,9 @@ struct WorkBoardReads: Equatable, Sendable {
               let task = WorkProgress.boardTask(row.workID), let sessionID = WorkProgress.workingSession(row),
               let newest = eligible.last, newest.at != nil,
               !WorkProgress.reports(in: newest.text).contains(where: { $0.tag == progress.tag }) else { return }
-        // 0.5.262: with the server's evidence check, the card's follows are judged there (followPass); the completion
-        // check is the fallback for a server without it.
-        guard !board.evidenceCheck() else { return }
+        // Next release: with the server's evidence check, the card's follows are judged there (followPass); the completion
+        // check is the fallback for a server without it, or with it switched off (evidence_disabled).
+        guard evidenceRoute(now()) == .fallback else { return }
         let asked = progress.jevAsked ?? []
         guard !asked.contains(newest.digest), asked.count < WorkProgress.maxJevAsks else { return }
         let nowDate = now(), at = nowDate.timeIntervalSince1970
@@ -386,7 +399,9 @@ struct WorkBoardReads: Equatable, Sendable {
         }
         jevTriedAt[id] = nil
         let moves = verdict.movesCard
-        let target = progress.paused != true ? WorkProgress.target(for: .done) : nil
+        // Shadow mode gates this path too (QA W2): on a server without the evidence check, a Jev "done" is a would-move.
+        let shadowed = moves && shadow()
+        let target = progress.paused != true && !shadowed ? WorkProgress.target(for: .done) : nil
         write(id) { current in
             guard var next = current.progress, !(next.jevAsked ?? []).contains(newest.digest) else { return false }
             next.jevAsked = (next.jevAsked ?? []) + [newest.digest]
@@ -397,7 +412,12 @@ struct WorkBoardReads: Equatable, Sendable {
             }
             current.progress = next; return true
         }
-        if moves {
+        if shadowed {
+            trackingLog.notice("decision receipt=\(id, privacy: .public) decision=would-move (shadow, completion check)")
+            if let card = board.tasks().first(where: { $0.domain == task.domain && $0.workIdentity == task.identity }), !store.follows.isPaused(row.workID) {
+                await moveOnEvidence(card, why: "Jev read the reply as done", clauses: [], live: false, at: at)
+            }
+        } else if moves {
             await attemptMove(id)
             post(id, key: "done", title: "Done: " + row.workTitle, body: verdict.text + movedSuffix(id, to: "qa"))
         }
@@ -434,7 +454,8 @@ struct WorkBoardReads: Equatable, Sendable {
         // No move is ever queued on a paused handoff (every target is nil while paused, and Undo clears the queue in the
         // same write that pauses). An Undo whose record still waits on a busy journal is caught below: the card sits
         // before COS's unrecorded move, which reads as moved back by you.
-        guard let row = store.receipts.first(where: { $0.id == id }), let progress = row.progress,
+        // Only the lease holder moves cards; the move stays pending in the journal for it.
+        guard holdsLease, let row = store.receipts.first(where: { $0.id == id }), let progress = row.progress,
               let target = progress.pendingStage, let identity = WorkProgress.boardTask(row.workID) else { return }
         if boardReadAt.map({ now().timeIntervalSince($0) > Self.boardFreshness }) ?? true {
             await board.reload(); boardReadAt = now()
@@ -443,7 +464,7 @@ struct WorkBoardReads: Equatable, Sendable {
             moveFailed(id, target, "the card is not on the board right now"); return
         }
         let current = task.checked ? "complete" : task.workStage
-        // 0.5.262: a card paused by an Undo, a move back or Stop following moves for no handoff (validation W6).
+        // Next release: a card paused by an Undo, a move back or Stop following moves for no handoff (validation W6).
         if store.follows.isPaused(row.workID) {
             write(id) { row in guard row.progress?.pendingStage != nil else { return false }; row.progress?.pendingStage = nil; return true }
             return
@@ -530,7 +551,7 @@ struct WorkBoardReads: Equatable, Sendable {
         }
         boardReadAt = nil
         let at = now().timeIntervalSince1970
-        // 0.5.262: the move log says it was undone, and every follow on the card stops until you move it forward.
+        // Next release: the move log says it was undone, and every follow on the card stops until you move it forward.
         if let logged = store.moves.move(receiptID: receiptID, eventID: eventID) { store.moves.recordUndo(moveID: logged.id, at: at) }
         if !store.follows.isPaused(row.workID) {
             store.pauseCard(workID: row.workID, stage: from, why: "You undid COS\u{2019}s move.", at: at)
@@ -549,7 +570,7 @@ struct WorkBoardReads: Equatable, Sendable {
     }
     func dismissLatestMove() { latestMove = nil }
 
-    // MARK: - Follows and evidence (0.5.262)
+    // MARK: - Follows and evidence (next release)
 
     /// Idle from the transcript, never from a job's status: untouched for `quietBeforeJev`, not generating, not waiting.
     nonisolated static func transcriptIdle(_ read: SessionRead, now: Double) -> Bool {
@@ -558,31 +579,84 @@ struct WorkBoardReads: Equatable, Sendable {
         return true
     }
 
-    /// One pass over the cards that follow sessions: new follows from receipts and links, failed sends whose session
-    /// came back to life, then each open card before QA is judged.
+    /// Where a card's evidence goes this pass: the server's evidence check, the completion check standing in for it (no
+    /// capability, or the check switched off or without a key), or nowhere until the cap or the breaker clears.
+    enum EvidenceRoute: Equatable { case evidence, fallback, wait }
+    func evidenceRoute(_ date: Date) -> EvidenceRoute {
+        guard board.evidenceCheck() else { return .fallback }
+        if let off = evidenceOff {
+            if date < off.until { return off.fallback ? .fallback : .wait }
+            evidenceOff = nil
+        }
+        return .evidence
+    }
+    /// What the server's refusal means for the next checks (contract v2): switched off or no key, the completion check
+    /// stands in until tomorrow; the day's cap waits for its `retryAt` (the next UTC midnight); the breaker for its own.
+    func noteEvidenceUnavailable(_ reason: String, retryAt: Double?) {
+        let date = now()
+        let tomorrow = Calendar.current.startOfDay(for: date).addingTimeInterval(86_400)
+        // A retryAt in the past or more than two days out is not believed.
+        let given = retryAt.map(Date.init(timeIntervalSince1970:)).flatMap { $0 > date && $0.timeIntervalSince(date) <= 2 * 86_400 ? $0 : nil }
+        switch reason {
+        case "evidence_disabled", "jev_not_configured": evidenceOff = (tomorrow, true, reason)
+        case "jev_cap": evidenceOff = (given ?? Self.nextUTCMidnight(date), false, reason)
+        case "jev_breaker": evidenceOff = (given ?? date.addingTimeInterval(3_600), false, reason)
+        default: return
+        }
+        trackingLog.notice("evidence check off reason=\(reason, privacy: .public) until=\(WorkProgress.stamp(self.evidenceOff?.until.timeIntervalSince1970 ?? 0), privacy: .public)")
+    }
+    nonisolated static func nextUTCMidnight(_ date: Date) -> Date {
+        var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(identifier: "UTC") ?? .current
+        return utc.startOfDay(for: date).addingTimeInterval(86_400)
+    }
+    /// One decision, logged and kept on the card, so the shadow week can be read back (QA W11).
+    private func decided(_ workID: String, _ decision: String) {
+        trackingLog.notice("decision card=\(workID, privacy: .public) decision=\(decision, privacy: .public)")
+        store.follows.setCard(workID) { $0.lastDecision = decision }
+    }
+    /// The same, for a state that repeats every pass (not idle, a cap, a wait): logged when it starts, not every 30 s.
+    private func decidedOnce(_ workID: String, _ decision: String) {
+        guard store.follows.card(workID).lastDecision != decision else { return }
+        decided(workID, decision)
+    }
+
+    /// One pass over the cards that follow sessions: new follows from receipts and links, failed sends you picked up
+    /// again, a card moved back outside Control, then each open card before QA is judged.
     private func followPass(start: Double, tracked: Set<String>) async {
         let follows = store.follows
         var open: [String: TaskRow] = [:]
         for task in board.tasks() where !task.checked && task.workStage != "complete" && open[task.workSourceID] == nil { open[task.workSourceID] = task }
-        for row in store.receipts where WorkFollowStore.followable(row) && open[row.workID] != nil {
+        for row in store.receipts where open[row.workID] != nil && WorkFollowStore.followable(row, now: start, tracked: tracked.contains(row.id)) {
             if let session = WorkProgress.workingSession(row) {
                 follows.add(workID: row.workID, sessionID: session, origin: .receipt, startedAt: row.createdAt, receiptID: row.id)
             }
         }
-        // A link made by another Control process, or before 0.5.262.
+        // A link made by another Control process, or before this build.
         for (sessionID, links) in store.confirmedSessionCards {
             for link in links where open[link.workID] != nil { follows.add(workID: link.workID, sessionID: sessionID, origin: .link, startedAt: link.at) }
         }
         for (workID, task) in open where follows.isPaused(workID) { follows.resumeIfMovedForward(workID: workID, currentStage: task.workStage) }
+        // A card COS moved that now sits before where COS put it was moved back outside Control (the lens, the CLI, the
+        // server, or before this build): it is paused, once per move (QA blocker 3).
+        for (workID, task) in open.sorted(by: { $0.key < $1.key }) where !follows.follows(for: workID).isEmpty {
+            await pauseIfMovedBack(task, at: start)
+        }
         var revivals: [(receipt: WorkHandoffReceipt, session: String)] = []
-        for row in store.receipts where WorkFollowStore.revivable(row) && open[row.workID] != nil {
+        for row in store.receipts where open[row.workID] != nil && WorkFollowStore.revivable(row, now: start) {
             guard let session = WorkProgress.workingSession(row), !follows.follows(for: row.workID).contains(where: { $0.sessionID == session }) else { continue }
             revivals.append((row, session))
         }
-        let cards = open.values.filter { task in
+        var cards = open.values.filter { task in
             WorkProgress.advances(from: task.workStage, to: "qa")
                 && (!follows.active(for: task.workSourceID).isEmpty || revivals.contains { $0.receipt.workID == task.workSourceID })
         }.sorted { $0.workSourceID < $1.workSourceID }
+        // At most a few cards are checked for the first time per pass, newest follow first; the rest wait their turn.
+        let fresh = cards.filter { follows.card($0.workSourceID).checkedAt == nil && follows.card($0.workSourceID).clauses == nil }
+            .sorted { (follows.follows(for: $0.workSourceID).map(\.startedAt).max() ?? 0) > (follows.follows(for: $1.workSourceID).map(\.startedAt).max() ?? 0) }
+        let waiting = Set(fresh.dropFirst(Self.firstChecksPerPass).map(\.workSourceID))
+        if !waiting.isEmpty { trackingLog.notice("first checks deferred cards=\(waiting.count, privacy: .public) (at most \(Self.firstChecksPerPass, privacy: .public) a pass)") }
+        cards = cards.filter { !waiting.contains($0.workSourceID) }
+        revivals = revivals.filter { !waiting.contains($0.receipt.workID) }
         guard !cards.isEmpty else { return }
         let sessions = Set(cards.flatMap { follows.active(for: $0.workSourceID).map(\.sessionID) } + revivals.map(\.session))
         for sessionID in sessions.sorted() where passReads[sessionID] == nil && shouldRead(sessionID) {
@@ -594,12 +668,11 @@ struct WorkBoardReads: Equatable, Sendable {
                 trackingLog.notice("follow read failed session=\(sessionID, privacy: .public)")
             }
         }
-        // A failed send is followed once its session's transcript shows activity after the failure (W1). The receipt
-        // itself stays as it is.
+        // A failed send is followed once you wrote in its session after the failure (W1, QA W4). The receipt itself stays
+        // as it is.
         for revival in revivals {
             let floor = WorkFollowStore.failedAt(revival.receipt)
-            guard let read = passReads[revival.session], read.hasHistory,
-                  WorkFollowStore.activityAfter(floor, replies: read.replies, prompts: read.prompts) else { continue }
+            guard let read = passReads[revival.session], read.hasHistory, WorkFollowStore.activityAfter(floor, prompts: read.prompts) else { continue }
             if follows.add(workID: revival.receipt.workID, sessionID: revival.session, origin: .receipt, startedAt: floor, receiptID: revival.receipt.id) {
                 trackingLog.notice("revived failed send receipt=\(revival.receipt.id, privacy: .public)")
             }
@@ -607,10 +680,43 @@ struct WorkBoardReads: Equatable, Sendable {
         for task in cards { await evaluate(task, now: start, tracked: tracked) }
     }
 
+    /// A card COS moved (the newest real, not undone COS move in the log) that now sits before that move's stage: you
+    /// moved it back somewhere Control did not see. The board is read again first, so a stale read never pauses a card.
+    private func pauseIfMovedBack(_ task: TaskRow, at: Double) async {
+        let workID = task.workSourceID, follows = store.follows
+        guard let latest = store.moves.latestCOSMove(workID: workID), let to = latest.line.to, follows.card(workID).backwardFrom != latest.id,
+              Self.movedBack(current: task.checked ? "complete" : task.workStage, cosMovedTo: to),
+              !store.moves.seenSince(workID: workID, at: latest.line.at, except: latest.id) else { return }
+        guard await board.readFresh(), let identity = WorkProgress.boardTask(workID),
+              let fresh = board.tasks().first(where: { $0.domain == identity.domain && $0.workIdentity == identity.identity }) else { return }
+        boardReadAt = now()
+        let current = fresh.checked ? "complete" : fresh.workStage
+        guard Self.movedBack(current: current, cosMovedTo: to) else { return }
+        follows.setCard(workID) { $0.backwardFrom = latest.id; $0.pending = nil }
+        if !follows.isPaused(workID) {
+            store.pauseCard(workID: workID, stage: current, why: "You moved it back to \(WorkProgress.stageTitle(current)).", at: at)
+        }
+        decided(workID, "paused: moved back to \(current) outside Control")
+    }
+    /// The card sits before the stage COS moved it to.
+    nonisolated static func movedBack(current: String, cosMovedTo: String) -> Bool {
+        current != cosMovedTo && current != "complete" && WorkProgress.advances(from: current, to: cosMovedTo)
+    }
+
     /// Whether the 0.5.247 handoff path already reads this follow (its receipt is tracked): its done line and Jev check
     /// stay there, so a card is never judged twice for one reply.
     private func handledByHandoff(_ follow: WorkFollow, tracked: Set<String>) -> Bool {
         follow.origin == .receipt && follow.receiptID.map(tracked.contains) == true
+    }
+
+    /// Whether this done report was already acted on: by this follow (its digest), or by any COS move of the card to QA
+    /// made after the reply (the move log, or a 0.5.247 handoff's own Progress, which predates the log).
+    private func doneActedOn(_ workID: String, digest: String, replyAt: Double) -> Bool {
+        if store.follows.card(workID).actedDone?.contains(digest) == true { return true }
+        if store.moves.cosMoved(workID: workID, to: "qa", since: replyAt) { return true }
+        return store.receipts.contains { row in
+            row.workID == workID && (row.progress?.events.contains { $0.kind == .moved && $0.toStage == "qa" && $0.at >= replyAt } ?? false)
+        }
     }
 
     private func evaluate(_ task: TaskRow, now at: Double, tracked: Set<String>) async {
@@ -620,21 +726,32 @@ struct WorkBoardReads: Equatable, Sendable {
         let active = follows.active(for: workID)
         guard !active.isEmpty else { return }
         // The session's own done line, from any followed session: it moves the card as it always has (never shadowed,
-        // never vetoed). Only lines tagged with this card's id count, so a thread following two cards moves neither on
-        // an untagged "done".
+        // never vetoed), and once per report. Only lines tagged with this card's id count, so a thread following two
+        // cards moves neither on an untagged "done".
         let tag = WorkProgress.tag(forWorkID: workID)
         for follow in active where !handledByHandoff(follow, tracked: tracked) {
             guard let read = passReads[follow.sessionID], read.hasHistory else { continue }
             let replies = read.replies.filter { ($0.at ?? 0) >= follow.startedAt }
-            if let found = WorkProgress.latestReport(tag: tag, replies: replies), found.report.kind == .done {
-                await moveOnEvidence(task, why: "the session reported done: \u{201C}\(WorkProgress.clip(found.report.evidence, 140))\u{201D}",
-                                     clauses: [], live: true, at: at)
-                return
+            guard let found = WorkProgress.latestReport(tag: tag, replies: replies), found.report.kind == .done else { continue }
+            let digest = found.reply.digest
+            if doneActedOn(workID, digest: digest, replyAt: found.reply.at ?? follow.startedAt) {
+                if follows.card(workID).actedDone?.contains(digest) != true {
+                    follows.setCard(workID) { $0.actedDone = Array((($0.actedDone ?? []) + [digest]).suffix(Self.actedDoneKept)) }
+                }
+                decidedOnce(workID, "hold: done line already acted on")
+                continue
             }
+            follows.setCard(workID) { $0.actedDone = Array((($0.actedDone ?? []) + [digest]).suffix(Self.actedDoneKept)) }
+            decided(workID, "move: the done line")
+            await moveOnEvidence(task, why: "the session reported done: \u{201C}\(WorkProgress.clip(found.report.evidence, 140))\u{201D}",
+                                 clauses: [], live: true, at: at)
+            return
         }
         if let tried = evidenceTriedAt[workID], now().timeIntervalSince(tried) < Self.jevRetryAfter { return }
-        if board.evidenceCheck() { await checkEvidence(task, active: active, at: at) }
-        else {
+        switch evidenceRoute(now()) {
+        case .evidence: await checkEvidence(task, active: active, at: at)
+        case .wait: decidedOnce(workID, "hold: " + (evidenceOff?.reason ?? "evidence check off"))
+        case .fallback:
             // The handoff path asks Jev about its own receipts as it did in 0.5.261; the fallback reads linked and
             // followed sessions, and a failed send's session once it came back to life.
             let failed = Set(store.receipts.filter { $0.status == "failed" }.map(\.id))
@@ -642,18 +759,25 @@ struct WorkBoardReads: Equatable, Sendable {
         }
     }
 
-    /// The evidence check (contract 2026-10-07), when every followed session that could be read is idle and something
+    /// The evidence check (contract 2026-10-07, v2), when every followed session that could be read is idle and something
     /// changed since the last check: a new reply, an edit to the card, or four quiet hours.
     private func checkEvidence(_ task: TaskRow, active: [WorkFollow], at: Double) async {
         let workID = task.workSourceID, follows = store.follows
         guard let identity = WorkProgress.boardTask(workID) else { return }
         let reads = active.compactMap { passReads[$0.sessionID] }
-        guard !reads.isEmpty, reads.allSatisfy({ Self.transcriptIdle($0, now: at) }) else { return }
+        guard !reads.isEmpty, reads.allSatisfy({ Self.transcriptIdle($0, now: at) }) else {
+            decidedOnce(workID, reads.isEmpty ? "wait: no session read" : "wait: not idle")
+            return
+        }
         let card = follows.card(workID)
         let activity = reads.compactMap(\.lastActivityAt).max()
         let due = card.checkedAt == nil || card.checkedRevision != task.workRevision
             || (activity ?? 0) > (card.checkedActivity ?? 0) || at - (card.checkedAt ?? 0) >= Self.evidenceRecheck
-        guard due, card.checks.filter({ at - $0 < 86_400 }).count < Self.maxChecksPerDay else { return }
+        guard due else { return }
+        guard card.checks.filter({ at - $0 < 86_400 }).count < Self.maxChecksPerDay else {
+            decidedOnce(workID, "hold: 8 checks today")
+            return
+        }
         if let problem = WorkFinishLine.problem(task.doneWhen) {
             follows.setCard(workID) { $0.note = problem }
             return
@@ -664,38 +788,77 @@ struct WorkBoardReads: Equatable, Sendable {
             "domain": identity.domain, "id": identity.identity,
             "follows": active.map { follow -> [String: Any] in
                 ["provider": follow.provider, "sessionId": WorkHandoffStore.nativeID(follow.sessionID) ?? follow.sessionID,
-                 "cursor": follow.cursor.map { $0 as Any } ?? NSNull()]
+                 "cursor": follow.cursor.flatMap { (1...WorkFinishLine.maxCursorLength).contains($0.utf16.count) ? $0 : nil }.map { $0 as Any } ?? NSNull()]
             },
             "clauses": clauses, "since": WorkProgress.stamp(since)]
         let judged = task.workRevision
         trackingLog.notice("evidence check card=\(workID, privacy: .public) clauses=\(clauses.count, privacy: .public)")
         let answer = await store.evidenceCheck(body, sent: clauses.count)
+        func keep(_ cursors: [WorkEvidenceResult.Cursor]) {
+            for cursor in cursors { follows.setCursor(workID: workID, sessionID: cursor.provider + ":" + cursor.sessionId, cursor: cursor.cursor) }
+        }
         guard let result = answer.result else {
+            // No verdict. A `no_evidence` answer read the sessions: its cursors are kept. The card is not asked again
+            // until something changes (QA W2: a failure retried every 10 minutes, re-reading up to 24 MB each time).
+            keep(answer.cursors)
+            let reason = answer.reason ?? "unavailable"
+            noteEvidenceUnavailable(reason, retryAt: answer.retryAt)
             evidenceTriedAt[workID] = now()
-            trackingLog.notice("evidence check no answer card=\(workID, privacy: .public) reason=\(answer.reason ?? "", privacy: .public)")
+            follows.setCard(workID) { card in
+                card.checkedAt = at; card.checkedRevision = judged; card.checkedActivity = activity
+                card.lastDecision = "no answer: " + reason
+            }
+            trackingLog.notice("decision card=\(workID, privacy: .public) decision=no answer reason=\(reason, privacy: .public)")
             return
         }
         evidenceTriedAt[workID] = nil
-        for cursor in result.cursors {
-            follows.setCursor(workID: workID, sessionID: cursor.provider + ":" + cursor.sessionId, cursor: cursor.cursor)
+        // A v2 server's truncated read returns a cursor inside the gap: kept, so the next call walks on. A v1 cursor from a
+        // truncated read pointed past the gap, and is not kept.
+        if !result.truncated || result.v2 { keep(result.cursors) }
+        let previousCheckedAt = card.checkedAt
+        if result.truncated {
+            // Partial: the kept verdicts stay, nothing moves, and the card is checked again soon (in 10 minutes). It does
+            // not count against the 8 a day.
+            evidenceTriedAt[workID] = now()
+            follows.setCard(workID) { card in
+                card.checkedAt = at; card.checkedRevision = judged; card.checkedActivity = nil; card.note = nil
+                card.lastDecision = "hold: the read stopped short"
+            }
+            trackingLog.notice("decision card=\(workID, privacy: .public) decision=hold (truncated)")
+            return
+        }
+        let merged = WorkEvidencePolicy.merge(previous: card.clauses, previousBasis: card.basis, fresh: result.clauses, basis: result.basis, at: at)
+        let decision = WorkEvidencePolicy.decision(basis: result.basis, states: merged, expected: clauses.count)
+        // A cached or skipped answer repeats verdicts judged before you last moved the card yourself: never a move.
+        let stale = (result.cached || result.skipped != nil)
+            && (store.moves.lastMoveByYou(workID: workID).map { $0 > (previousCheckedAt ?? 0) } ?? false)
+        let line: String
+        switch decision {
+        case .move: line = stale ? "hold: cached verdict predates your move" : (shadow() ? "would move" : "move")
+        case .partial(let met, let of): line = "partial: \(met) of \(of) met"
+        case .hold: line = "hold"
         }
         follows.setCard(workID) { card in
             card.checkedAt = at; card.checkedRevision = judged; card.checkedActivity = activity; card.note = nil
             card.checks = card.checks.filter { at - $0 < 86_400 }
             if !result.cached && result.skipped == nil { card.checks.append(at) }
-            // A read that stopped short is unclear: the last full verdicts stay.
-            if !result.truncated {
-                card.basis = result.basis
-                card.clauses = result.clauses.map { WorkClauseState(text: $0.text, verdict: $0.verdict, confidence: $0.confidence, kind: $0.kind,
-                                                                    evidence: $0.evidence, deterministic: $0.deterministic, at: at) }
-            }
+            card.basis = result.basis
+            card.clauses = merged
+            card.lastDecision = line + (result.cached ? " (cached)" : "")
         }
-        guard result.decision == .move else { return }
-        await moveOnEvidence(task, why: result.why, clauses: result.clauses.map(\.moveClause), live: false, at: at)
+        trackingLog.notice("decision card=\(workID, privacy: .public) decision=\(line, privacy: .public) cached=\(result.cached, privacy: .public)")
+        guard decision == .move, !stale else { return }
+        let moveClauses = merged.map { state -> WorkMoveClause in
+            var clause = state.evidence ?? WorkMoveClause(text: state.text, verdict: state.verdict)
+            clause.text = state.text; clause.verdict = state.verdict; clause.kind = state.kind; clause.deterministic = state.deterministic
+            return clause
+        }
+        await moveOnEvidence(task, why: result.why, clauses: moveClauses, live: false, at: at)
     }
 
-    /// No evidence check on this server: the 0.5.247 completion check reads the newest reply of a linked or followed
-    /// session (a handoff's own sessions are read by the handoff path). At most twice per follow, once per reply.
+    /// No evidence check on this server (or it is switched off): the 0.5.247 completion check reads the newest reply of
+    /// a linked or followed session (a handoff's own sessions are read by the handoff path). At most twice per follow,
+    /// once per reply.
     private func completionFallback(_ task: TaskRow, active: [WorkFollow], at: Double) async {
         guard let identity = WorkProgress.boardTask(task.workSourceID) else { return }
         for follow in active {
@@ -708,13 +871,16 @@ struct WorkBoardReads: Equatable, Sendable {
                 if Self.finalJevReasons.contains(answer.reason ?? "") {
                     store.follows.markJudged(workID: task.workSourceID, sessionID: follow.sessionID, digest: newest.digest)
                 } else { evidenceTriedAt[task.workSourceID] = now() }
+                trackingLog.notice("decision card=\(task.workSourceID, privacy: .public) decision=no answer (completion check) reason=\(answer.reason ?? "", privacy: .public)")
                 return
             }
             store.follows.markJudged(workID: task.workSourceID, sessionID: follow.sessionID, digest: newest.digest)
             if verdict.movesCard {
+                decided(task.workSourceID, shadow() ? "would move (completion check)" : "move (completion check)")
                 await moveOnEvidence(task, why: verdict.text, clauses: [], live: false, at: at)
                 return
             }
+            trackingLog.notice("decision card=\(task.workSourceID, privacy: .public) decision=hold (completion check: not done)")
         }
     }
 
@@ -740,7 +906,7 @@ struct WorkBoardReads: Equatable, Sendable {
     /// moved: the move is dropped and the card checked again (validation B3).
     private func attemptFollowMove(_ workID: String) async {
         let follows = store.follows
-        guard let pending = follows.card(workID).pending, let identity = WorkProgress.boardTask(workID) else { return }
+        guard holdsLease, let pending = follows.card(workID).pending, let identity = WorkProgress.boardTask(workID) else { return }
         if boardReadAt.map({ now().timeIntervalSince($0) > Self.boardFreshness }) ?? true {
             await board.reload(); boardReadAt = now()
         }
@@ -879,7 +1045,7 @@ private struct WorkFailureStamp: Codable {
     let notifiedAt: Double
 }
 
-/// 0.5.262: an exclusive flock held for as long as this Control evaluates (validation W3). A stable app and a review
+/// Next release: an exclusive flock held for as long as this Control evaluates (validation W3). A stable app and a review
 /// candidate share App Support; the second one to start reads but never moves a card. Released when the tracker goes.
 final class WorkTrackerLease: @unchecked Sendable {
     let url: URL

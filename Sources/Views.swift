@@ -2205,7 +2205,7 @@ struct ControlPanel: View {
             Toggle("Open new sessions in the app", isOn: Binding(get: { model.workOpensTabs }, set: { model.workOpensTabs = $0 }))
                 .toggleStyle(COSSwitchStyle())
                 .help("Start Claude and Codex work in the background, then open it in their app when the first reply is done. Off: it stays in the background on this Mac. Cursor always opens its own window with the handoff filled in, for you to send")
-            // 0.5.262: shadow mode for moves on evidence, and the model the end-of-day Slack sweep uses.
+            // Next release: shadow mode for moves on evidence, and the model the end-of-day Slack sweep uses.
             WorkEvidenceSettingsRows(model: model)
             DisclosureGroup("Advanced") {
                 // 0.5.234: the Meetings clock. The server sends 24-hour times and
@@ -2230,9 +2230,6 @@ struct ControlPanel: View {
         .disabled(model.busy)
     }
 
-    /// Renders ONLY when the appcast advertises a genuinely newer build; offline,
-    /// up-to-date, killSwitch and malformed all render nothing at all. Install
-    /// downloads, SHA-checks, and swaps this app. The glasses server is not touched.
     /// A publisher notice from the appcast. Sits with the update banner at the top
     /// of the panel because that is where release-time news already lives, but it
     /// is NOT gated on an update being available: the person who most needs to
@@ -2276,58 +2273,12 @@ struct ControlPanel: View {
     /// the manual check in both states, so asking never means scrolling to the
     /// bottom of the panel.
     @ViewBuilder private var updateRow: some View {
-        if model.appUpdate.shouldSurface {
-            updateBanner
-        } else {
-            HStack(spacing: 8) {
-                Image(systemName: "checkmark.circle")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(COSPalette.green)
-                Text("COS Control \(ControllerModel.currentVersion)")
-                    .font(COSType.mono(10, weight: .bold))
-                Spacer(minLength: 8)
-                if model.updateCheckInFlight {
-                    Text("Checking…").font(COSType.mono(10)).foregroundStyle(.secondary)
-                } else {
-                    Button("Check for updates", systemImage: "arrow.triangle.2.circlepath") {
-                        Task { await model.checkForAppUpdateManually() }
-                    }
-                    .buttonStyle(COSQuietButtonStyle())
-                    .disabled(model.busy)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 11).padding(.vertical, 8)
-            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
-        }
-    }
-
-    @ViewBuilder private var updateBanner: some View {
-        if model.appUpdate.shouldSurface {
-            HStack(alignment: .center, spacing: 10) {
-                Image(systemName: "arrow.down.circle.fill").foregroundStyle(COSPalette.amber)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Update available: \(model.appUpdate.latestVersion ?? "")")
-                        .font(.caption.weight(.semibold))
-                    if let notes = model.appUpdate.notes, !notes.isEmpty {
-                        Text(notes)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                Spacer(minLength: 8)
-                Button("Install") { confirmInstallAppUpdate = true }
-                    .buttonStyle(COSPrimaryButtonStyle())
-                    .layoutPriority(1)
-                    .disabled(model.busy)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(11)
-            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.amber.opacity(0.45), lineWidth: 1))
-        }
+        UpdateRowView(state: model.updateRowState, controlVersion: ControllerModel.currentVersion,
+                      serverVersion: model.status.installedVersion ?? model.status.version, notes: model.appUpdate.notes,
+                      checking: model.updateCheckInFlight, busy: model.busy,
+                      onCheck: { Task { await model.checkForAppUpdateManually() } },
+                      onInstallControl: { confirmInstallAppUpdate = true },
+                      onUpdateServer: { model.perform("update") })
     }
 
     private var footer: some View {
@@ -2362,7 +2313,8 @@ struct ControlPanel: View {
         let controller = ControllerModel.currentVersion
         let live = model.status.version ?? model.status.installedVersion
         if let live, !live.isEmpty {
-            return "Controller \(controller)  •  Server \(live) (npm latest)"
+            // The npm claim comes from the check, never assumed (it said "npm latest" with no check behind it).
+            return "Controller \(controller)  •  Server \(live)" + UpdateRow.footerServerNote(model.updateRowState)
         }
         if model.status.runtimeState == "managedInPlace" {
             return "Controller \(controller)  •  Server self-managed"
@@ -4227,5 +4179,84 @@ private struct PetSizeControls: View {
             model.setPetCustomPixels(value)
         }
         pixelDraft = "\(model.petSize.pixels)"
+    }
+}
+
+
+/// The one update row at the top of the panel: COS Control and the glasses server together. Current shows both versions;
+/// behind offers Install (Control, its confirmation) and Update Server (the existing update path); a check that failed
+/// says so and offers to check again. Pure inputs, so the render harness draws every state.
+struct UpdateRowView: View {
+    let state: UpdateRow.State
+    let controlVersion: String
+    let serverVersion: String?
+    let notes: String?
+    let checking: Bool
+    let busy: Bool
+    let onCheck: () -> Void
+    let onInstallControl: () -> Void
+    let onUpdateServer: () -> Void
+
+    var body: some View {
+        switch state {
+        case .current:
+            standing(icon: "checkmark.circle", tint: COSPalette.green,
+                     text: "COS Control \(controlVersion)" + (serverVersion.map { "  \u{00B7}  Server \($0)" } ?? ""), detail: "Both up to date")
+        case .unknown(let control, let server):
+            standing(icon: "exclamationmark.circle", tint: COSPalette.amber, text: UpdateRow.unknownText(control: control, server: server),
+                     detail: "COS Control \(controlVersion)" + (serverVersion.map { "  \u{00B7}  Server \($0)" } ?? ""))
+        case .controlBehind(let latest):
+            offer(title: "COS Control \(latest) is available", detail: notes, control: true, server: false)
+        case .serverBehind(let installed, let latest):
+            offer(title: "Server \(latest) is available", detail: "Installed: \(installed). Update Server installs npm latest.", control: false, server: true)
+        case .bothBehind(let control, let installed, let latest):
+            offer(title: "Updates: COS Control \(control) and Server \(latest)", detail: "Server installed: \(installed).", control: true, server: true)
+        }
+    }
+
+    private func standing(icon: String, tint: Color, text: String, detail: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(tint)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(text).font(COSType.mono(10, weight: .bold)).lineLimit(1)
+                Text(detail).font(COSType.mono(9.5)).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            if checking {
+                Text("Checking\u{2026}").font(COSType.mono(10)).foregroundStyle(.secondary)
+            } else {
+                Button("Check for updates", systemImage: "arrow.triangle.2.circlepath") { onCheck() }
+                    .buttonStyle(COSQuietButtonStyle()).disabled(busy)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 11).padding(.vertical, 8)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
+    }
+
+    private func offer(title: String, detail: String?, control: Bool, server: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: "arrow.down.circle.fill").foregroundStyle(COSPalette.amber)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.caption.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                    if let detail, !detail.isEmpty {
+                        Text(detail).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                if server && control { Button("Update Server") { onUpdateServer() }.buttonStyle(COSQuietButtonStyle()).disabled(busy) }
+                else if server { Button("Update Server") { onUpdateServer() }.buttonStyle(COSPrimaryButtonStyle()).disabled(busy) }
+                if control { Button("Install") { onInstallControl() }.buttonStyle(COSPrimaryButtonStyle()).disabled(busy) }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(11)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.amber.opacity(0.45), lineWidth: 1))
     }
 }

@@ -1,5 +1,5 @@
 #!/bin/zsh
-# 0.5.262, by hand only (never a gate): what COS moved on the Work board, drawn off screen to PNGs in <folder>. The
+# Next release, by hand only (never a gate): what COS moved on the Work board, drawn off screen to PNGs in <folder>. The
 # isolated preview store and a scratch home: no server, no provider. No window is ordered in and nothing is clicked.
 set -euo pipefail
 ROOT="${0:A:h:h}"

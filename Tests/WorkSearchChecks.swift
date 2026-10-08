@@ -832,10 +832,28 @@ import SwiftUI
         let calls = (try? String(contentsOf: fixtures.appendingPathComponent("calls.log"), encoding: .utf8)) ?? ""
         check(calls.split(separator: "\n").contains("work-set-stage"), "journal stage change", "the move went through the helper: \(calls)")
         // Intake's Keep and Waiting on's Done write the stage through the batch.
+        // QA W1 (follows): the batch's stage changes are your moves in the move log, and one backward pauses the card.
+        let handoffs = WorkHandoffStore(isolated: false, storageURL: URL(fileURLWithPath: home).appendingPathComponent("work-handoffs/handoffs.json"),
+                                        transport: { _, _ in throw HelperClientError.commandFailed("no transport in these checks") })
+        model.useWorkHandoffStoreForChecks(handoffs)
+        check(handoffs.follows.add(workID: card.workSourceID, sessionID: "claude:0f3c9a2e-1111-4222-8333-944455556666", origin: .link, startedAt: 1),
+              "journal stage change", "a follow on the card")
         try await Task.sleep(for: .milliseconds(5))
         check(await model.changeWorkCard(card, action: "stage", fields: ["workStage": "complete"]), "journal stage change", model.workLoopError ?? "")
         let second = model.workActivity.moves[card.workSourceID]
         check(second != nil && first != nil && second! > first!, "journal stage change", "a batch stage change is noted")
+        check(handoffs.moves.lines.contains { $0.type == .move && $0.by == .you && $0.from == "planned" && $0.to == "complete" && $0.workID == card.workSourceID },
+              "journal stage change", "a batch stage change is in the move log: \(handoffs.moves.lines.map { "\($0.type) \($0.from ?? "") \($0.to ?? "")" })")
+        check(!handoffs.follows.isPaused(card.workSourceID), "journal stage change", "forward is not a pause")
+        var qaRow = row; qaRow["workStage"] = "qa"
+        try write("work-tasks", ["tasks": [qaRow], "count": 1, "total": 1, "complete": true, "capabilities": ["version": 1, "writable": true, "workBatch": 1]])
+        await model.loadWorkTasks(force: true)
+        guard let inQA = model.workTasks.first, inQA.workStage == "qa" else { fatalError("check failed [journal stage change]: the QA row did not load") }
+        check(await model.changeWorkCard(inQA, action: "stage", fields: ["workStage": "planned"]), "journal stage change", model.workLoopError ?? "")
+        check(handoffs.follows.isPaused(card.workSourceID) && handoffs.moves.lines.contains { $0.type == .pause && $0.workID == card.workSourceID },
+              "journal stage change", "Keep to planned from QA pauses the card's follows")
+        try write("work-tasks", ["tasks": [row], "count": 1, "total": 1, "complete": true, "capabilities": ["version": 1, "writable": true, "workBatch": 1]])
+        await model.loadWorkTasks(force: true)
         check(await model.changeWorkCard(card, action: "delegate", fields: ["owner": "Gina", "checkIn": "2026-10-13"]) && model.workActivity.moves[card.workSourceID] == second,
               "journal stage change", "a change that is not a stage is no move")
         // A refused write notes nothing.

@@ -93,7 +93,7 @@ try:
                 dict(good, after='yesterday'), dict(good, after=12), dict(good, after='2026-09-29T15:01:00.000Z' + '0' * 30)):
         assert not run(['work-completion-check'], json.dumps(bad).encode())['ok'], bad
     assert not run(['work-completion-check'], b' ' * 4097)['ok'] and len(calls) == before, 'No invalid check reaches the server'
-    # 0.5.262: the evidence check (contract 2026-10-07): exactly the contract's keys pass through to the route, every
+    # Next release: the evidence check (contract 2026-10-07): exactly the contract's keys pass through to the route, every
     # failure is an answer with a reason, and the body is bounded at 16 KB, not the completion check's 4 KB.
     ev = {'domain': 'quilt', 'id': '5755b516df8f', 'since': '2026-10-02T23:52:00.000Z',
           'follows': [{'provider': 'claude', 'sessionId': SESSION, 'cursor': None},
