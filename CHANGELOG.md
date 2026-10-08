@@ -1,3 +1,11 @@
+## 0.5.273 — 2026-10-08 — Guided setup and Activity Settings
+
+- Open Settings inside Activity, using the same controls and saved state as the menu-bar panel.
+- Includes the provider sign-in, Dock, permissions and resumable setup improvements from the onboarding candidates.
+- Voice setup downloads the signed and notarized whisper.cpp runtime without Homebrew, preserves your existing tier, and benchmarks new Macs before recommending a tier.
+- Pairs with server 6.66.0, including reliable Claude detection outside the interactive shell PATH.
+- Smaller-Mac benchmark calibration and physical clean-Mac testing remain documented limitations; existing Max choices are preserved.
+
 ## 0.5.272 candidate — 2026-10-08 — Voice setup without Homebrew
 
 - Download verified, Developer ID signed and notarized whisper.cpp 1.9.1 tools during voice setup using COS's bundled Node.
