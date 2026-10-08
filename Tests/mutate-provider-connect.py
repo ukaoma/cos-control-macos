@@ -30,7 +30,7 @@ MUTANTS = [
      '        let pathDirs', "[candidate order]", "core"),
     ("stale Codex.app shim usable", K, "            if isStaleShim(c.path) {", "            if false {", "[stale shim]", "core"),
     ("Claude Desktop's copy chosen", K, "firstIndex(where: { $0.executable && $0.source != \"claudeDesktop\" })", "firstIndex(where: { $0.executable })", "[claude desktop copy]", "core"),
-    ("any agent is Cursor", K, "                guard parsed.isCursor else {", "                guard parsed.isCursor || true else {", "[cursor identity]", "core"),
+    ("any agent is Cursor", K, "                guard proven else {", "                guard proven || true else {", "[cursor identity]", "core"),
     ("a redacted address reads signed out", K, '(emailLine.contains("@") || lower.contains("redacted"))', 'emailLine.contains("@")', "[cursor sign-in]", "core"),
     ("cloud provider read as subscription", K, '        if provider != "firstparty" { return .apiKey }\n', "", "[claude api key]", "core"),
     ("an old codex reads signed out", K, "        // send the user to sign in again.\n        return .unknown", "        // send the user to sign in again.\n        return .signInRequired", "[codex unknown]", "core"),
@@ -69,8 +69,8 @@ MUTANTS = [
     ("no disk check before download", M, "            if voice.enoughDisk[tier] == false {", "            if false {", "[voice disk]", "model"),
     ("setup starts without whisper.cpp", M, "return voice.whisperCli && voice.whisperServer && voice.setupAvailable", "return voice.setupAvailable", "[voice gate]", "model"),
     ("Cancel reads as a failure", M, "            } catch is CancellationError {", "            } catch is URLError {", "[voice cancel]", "model"),
-    ("skips forgotten", M, "func skip(_ id: SetupRowID) { skipped.insert(id); save() }", "func skip(_ id: SetupRowID) { skipped.insert(id) }", "[setup guide resume]", "model"),
-    ("finish card below the fold", V, "                header\n                // Early users: Finish setup at the top", "                updateRow\n                header\n                // Early users: Finish setup at the top", "[finish card]", "pins"),
+    ("skips forgotten", M, "skipped.insert(id); save() }", "skipped.insert(id) }", "[setup guide resume]", "model"),
+    ("finish card below the fold", V, "                DockNoticeLine(model: model)\n                // Early users: Finish setup at the top", "                updateRow\n                DockNoticeLine(model: model)\n                // Early users: Finish setup at the top", "[finish card]", "pins"),
     ("pet loses Settings", "Sources/SessionPet.swift", '        Button("Settings…") { model.showSettings?() }\n', "", "[pet menu]", "pins"),
     ("Dock menu loses the guide", W, '["Open Activity", "Setup guide…", "Settings…"]', '["Open Activity", "Settings…"]', "[dock menu]", "pins"),
     ("Guided Setup back to bare npx", C, "        let command = setupGuide.voice?.terminalCommand[normalized]\n            ?? ", "        let command = ", "[guided setup]", "pins"),
@@ -166,6 +166,7 @@ def main():
         if n != 1:
             results.append(f"MISSED TARGET ({n}x) {name}")
             survived.append(name)
+            print(results[-1], flush=True)
             continue
         path.write_text(text.replace(original, mutant), encoding="utf-8")
         started = time.time()
