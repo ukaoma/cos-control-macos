@@ -35,7 +35,7 @@ node "$ROOT/Tests/MemoryOwnerRaces.cjs"
 node "$ROOT/Tests/MemoriesAppliedCanary.cjs"
 node "$ROOT/Tests/MemoriesQuarantineCanary.cjs"
 
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/HelperSources/main.swift" \
   -framework Security -framework AppKit \
   -o "$TMP/cos-control-helper"
@@ -98,7 +98,7 @@ python3 "$ROOT/Tests/HeldNamingGuardMutations.py"
 # Views.swift and ControllerModel.swift -- so every UI and model change shipped
 # without ever being type-checked here, and "builds passed" meant something much
 # narrower than it read. Same source list as scripts/build-release.sh.
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/HelperClient.swift" \
   "$ROOT/Sources/ControllerModel.swift" \
@@ -116,12 +116,12 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   -o "$TMP/COS Control"
 
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Tests/ModelsContract.swift" \
   -framework AppKit \
   -o "$TMP/models-contract"
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Tests/HelperTransportContract.swift" \
   -framework AppKit -o "$TMP/helper-transport-contract"
 "$TMP/helper-transport-contract"
@@ -131,25 +131,25 @@ zsh "$ROOT/Tests/run-session-open-recovery.sh"
 zsh "$ROOT/Tests/run-meeting-task-link.sh"
 # 0.5.232: the Markdown parser is pure Foundation and pinned by an EXECUTED contract
 # (the scribe's meeting, lists, tasks, tables, code, quotes, details, speaker lines).
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Tests/MarkdownContract.swift" \
   -o "$TMP/markdown-contract"
 "$TMP/markdown-contract"
 # 0.5.233: the live feed reducer is pure Foundation and pinned by an EXECUTED contract
 # over recorded 6.48.2 stream frames (reseed, gap, prompt window, state line, elapsed).
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Tests/SessionLiveFeedContract.swift" \
   -o "$TMP/session-live-feed-contract"
 "$TMP/session-live-feed-contract" "$ROOT"
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediUpgradeContract.swift" \
   -framework AppKit -o "$TMP/jedi-upgrade-contract"
 "$TMP/jedi-upgrade-contract" "$ROOT"
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediGalleryContract.swift" \
   -framework AppKit -o "$TMP/jedi-gallery-contract"
 "$TMP/jedi-gallery-contract" "$ROOT/Resources"
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
@@ -2551,7 +2551,7 @@ if /usr/bin/grep -RE 'details\["token"\]|"token"[[:space:]]*:[[:space:]]*try rea
   exit 1
 fi
 
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/HelperClient.swift" \
   "$ROOT/Sources/ControllerModel.swift" \

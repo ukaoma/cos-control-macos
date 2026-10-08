@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 BIN="$(mktemp /tmp/cos-control2-contract.XXXXXX)"
 trap 'rm -f "$BIN"' EXIT
-swiftc -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
