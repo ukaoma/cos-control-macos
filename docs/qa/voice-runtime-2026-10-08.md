@@ -124,3 +124,30 @@ both measurements are retained rather than treating cold startup as inference.
 Server source: `57808ccbf87459c137558cbe0daaa386226e8bc9`.
 Server archive: `gotcos-glasses-server-6.66.0.tgz`, SHA-256
 `4cf5e0de5f441f7811935d9d912e287e53951615d76ed185f109e1a4441cd946`.
+
+- Frozen onboarding checks: **200 passed**; provider-status fixtures:
+  **101 passed**. These include new-user Automatic, adopting saved Max,
+  explicit choice after refresh, and low-disk managed setup.
+
+### Final Control artifact
+
+- `dist/voice-preview/COS-Control-macOS-arm64-0.5.272.zip`, **117,135,741 bytes**.
+- SHA-256: `9264c45accc2ab79a16954e7086ec3924bb9916eb3693c18b7564f0c8b849894`.
+- Apple **Accepted** submission `0e0e4a34-8531-439a-8763-8558ebb04b03`.
+  Stapled ticket validated; Gatekeeper accepted the final extracted ZIP as
+  Notarized Developer ID. Apple Events entitlements and helper's absence of
+  entitlements verified. No AppleDouble entries in the archive.
+- Bundled Node/npm passed Finder-PATH, isolated-home, repeat and relocated-helper
+  checks. The exact packaged helper passed the real-package and runtime
+  canaries again, including live/preview module imports, HTTP transcription,
+  saved-Max preservation, cancellation and corrupt-download rejection.
+- Exact-package warm measurement: **0.847 seconds engine / 1.051 seconds wall**
+  for the 30-second sample; Max recommended. Not a smaller-Mac calibration.
+- Receipts and full local evidence are in `dist/voice-preview/notarization.json`
+  and `dist/voice-preview/qa-logs/`. Runtime receipt is under
+  `dist/whisper-runtime/notarization.json`.
+
+Status: built, notarized and locally tested. Neither public npm, the runtime
+GitHub asset nor the Control appcast has been promoted by this phase. The
+candidate's new-user network flow needs those paired assets; do not label this
+as a complete clean-Mac or upgrade test. Existing live installation is unchanged.

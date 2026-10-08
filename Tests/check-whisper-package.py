@@ -49,6 +49,10 @@ with tempfile.TemporaryDirectory(prefix='cos-whisper-package-', dir='/tmp') as s
     print('METRICS:',json.dumps({k:receipt[k] for k in ['chip','memoryBytes','engineSeconds','elapsedSeconds','realTimeFactor','recommendedTier','metal']},sort_keys=True))
     # Check the daemon, not just the CLI: same local HTTP contract COS uses.
     binary = next(runtime.rglob('whisper-server'))
+    imports = f"const local=await import({json.dumps((installed/'server/lib/whisper-local.ts').as_uri())}); await import({json.dumps((installed/'server/lib/whisper-preview.ts').as_uri())}); if(!local.getWhisperHealth().serverConfigured) throw new Error('Explicit server path was not resolved'); console.log('packaged module imports passed'); process.exit(0);"
+    probe = subprocess.run([str(node),'--import','tsx/esm','--input-type=module','-e',imports],cwd=installed,env={**env,'COS_WHISPER_SERVER_BIN':str(binary),'COS_WHISPER_CLI_BIN':str(binary.parent/'whisper-cli')},capture_output=True,text=True,timeout=30)
+    assert probe.returncode==0,probe.stdout+probe.stderr
+    print('PASS: packaged live and preview modules import with bundled Node and resolve managed binaries')
     with socket.socket() as available:
         available.bind(('127.0.0.1',0)); port = available.getsockname()[1]
     url = f'http://127.0.0.1:{port}'
