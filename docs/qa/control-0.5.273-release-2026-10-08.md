@@ -26,3 +26,14 @@ Control 0.5.273 (326), source c9fc636; paired server 6.66.0, source d836219.
 A disposable-home package canary is not a physical clean-Mac/clean-account test, nor does it exercise all privacy prompts. The smaller-Mac recommendation threshold remains provisional. G2 619 physical acceptance and the missing Memory-alignment reproduction remain separate. No blanket claim of zero regressions.
 
 Full local logs and machine-readable receipt: `dist/public-273/qa-logs/` and `dist/public-273/release-receipt.json`.
+
+## Published package and final onboarding canary
+
+- npm accepted 6.66.0; registry integrity matches the frozen, tested tarball: `sha512-SXTT/dQNRrOsNalJAJ2SSeOLdP4iMPv5P2oOpd4+gEq4gK9yuSv/bMgpCZhiydoNfE1rMoBwbXC9ndx75qlX7g==`. Fresh-cache npx verification passes. Production dependency audit: zero vulnerabilities. Server main pushed at d836219.
+- Final notarized ZIP + real registry installation + bundled Node passes the isolated onboarding canary: host Homebrew/global Node blocked, missing login refuses readiness, login retry recovers, actual uncached Codex request succeeds (4,779 ms). No launchd setup or privacy-prompt coverage is implied by this canary.
+- Website/appcast publication commit 676fc1d. Four hosted Control assets verified, including matching versioned/latest ZIP bytes and correctly named SHA sidecars. Existing publisher notice preserved; historical version facts and glasses shipping pins left intact.
+- Local server upgrade is held while the Mac reports one active transcription session. The app is installed; server 6.65.0 remains healthy on Max. Native UI automation's stale handle after app replacement prevented completing the live Settings click/persistence check; compiled renders/wiring checks are not substituted for it.
+
+## Live public verification
+
+The deployed homepage, `/control/`, `/docs/`, `/wizard/` and `/control/appcast.json` match the release source byte-for-byte. The live appcast advertises Control 0.5.273 build 326 and server 6.66.0; its downloaded ZIP matches the expected SHA-256. Browser rendering confirms the 0.5.273 link and Activity Settings copy. The installed helper reports "COS Control is up to date" against the live appcast. GitHub public-content contracts passed. Automatic sitemap commit ab0475e follows site release commit 676fc1d without changing the verified pages.
