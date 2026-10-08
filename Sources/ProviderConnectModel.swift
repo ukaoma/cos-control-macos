@@ -947,9 +947,15 @@ enum SetupGuideRules {
             row.done = true
             return row
         }
+        let missing = voice.missingBytes[tier] ?? 0
+        if missing > 0 && voice.enoughDisk[tier] == false {
+            row.status = "Needs more disk space"
+            row.detail = "Voice models need about \(VoiceTier.gigabytes(missing + 750_000_000)) free; \(VoiceTier.gigabytes(voice.freeBytes)) is free. Free some space, then check again."
+            return row
+        }
         if voice.runtimeDownloadAvailable && (!voice.benchmarkComplete || !voice.whisperCli || !voice.whisperServer) {
             row.status = "Ready to set up voice"
-            row.detail = "COS downloads its own voice tools and models, then tests sample speech on this Mac. No Homebrew or Terminal. Your existing voice choice stays unchanged."
+            row.detail = "COS downloads its own voice tools and models, then tests sample speech on this Mac. No Homebrew or Terminal. Your existing voice choice stays unchanged." + (missing > 0 ? " Models: about \(VoiceTier.gigabytes(missing))." : "")
             row.action = voice.setupAvailable ? .voiceDownload(tier) : .none
             row.actionTitle = voice.setupAvailable ? "Set up and test voice" : nil
             return row
@@ -959,7 +965,6 @@ enum SetupGuideRules {
             row.detail = "Download the current COS Control for Apple silicon to set up local voice."
             return row
         }
-        let missing = voice.missingBytes[tier] ?? 0
         if missing > 0 {
             if voice.enoughDisk[tier] == false {
                 row.status = "Needs more disk space"

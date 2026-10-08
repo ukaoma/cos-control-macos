@@ -5872,8 +5872,10 @@ final class COSControlHelper {
     }
     private func explicitVoiceTier() -> String? {
         // Defaults reported by health are NOT a saved user choice.
-        let configured = loadManifest()?.providerEnvironment?["COS_WHISPER_TRANSCRIPTION_TIER"]
-            ?? loadedEnvironmentValue("COS_WHISPER_TRANSCRIPTION_TIER")
+        let saved = (try? voiceEnvText()).map(VoiceEnvFile.values)?["COS_WHISPER_TRANSCRIPTION_TIER"] ?? nil
+        let loaded = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] == nil
+            ? loadedEnvironmentValue("COS_WHISPER_TRANSCRIPTION_TIER") : nil
+        let configured = loadManifest()?.providerEnvironment?["COS_WHISPER_TRANSCRIPTION_TIER"] ?? saved ?? loaded
         return configured.flatMap(VoiceSetupCore.normalizedTier)
     }
     private func runVoiceBenchmark(environment: [String: String], modelName: String = "ggml-large-v3-turbo.bin") throws -> [String: Any] {

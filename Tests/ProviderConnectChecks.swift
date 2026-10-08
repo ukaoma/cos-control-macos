@@ -439,6 +439,8 @@ struct ProviderConnectChecks {
         var full = missing; full.enoughDisk = ["balanced": false]; full.freeBytes = 2_000_000_000
         let disk = row(full)
         check(disk.status == "Needs more disk space" && disk.action == SetupAction.none && disk.detail?.contains("2.0 GB is free") == true, "voice disk", disk.detail ?? "")
+        var freshDisk = full; freshDisk.runtimeDownloadAvailable = true
+        check(row(freshDisk).status == "Needs more disk space" && row(freshDisk).action == .none, "managed voice disk", "fresh Mac sees a reason instead of a no-op button")
         var degraded = voiceReady(); degraded.degraded = true; degraded.degradedReason = "Turbo fallback weights are missing."
         let apply = row(degraded)
         check(!apply.done && apply.action == .voiceApply("balanced") && apply.detail == "Turbo fallback weights are missing.", "voice apply", "a degraded tier is not done: \(apply)")
@@ -452,10 +454,10 @@ struct ProviderConnectChecks {
 
     static func voiceFlow() async {
         let fresh = SetupGuideState(defaults: UserDefaults(suiteName: "cos.voice-fresh.\(UUID().uuidString)")!)
-        fresh.readVoice = { Data(#"{"details":{"explicitTier":null}}"#.utf8) }
+        fresh.readVoice = { Data(#"{"explicitTier":null}"#.utf8) }
         await fresh.refreshVoice()
         check(fresh.voiceTier == "auto", "fresh voice", "no saved choice keeps Automatic")
-        fresh.readVoice = { Data(#"{"details":{"explicitTier":"max"}}"#.utf8) }
+        fresh.readVoice = { Data(#"{"explicitTier":"max"}"#.utf8) }
         await fresh.refreshVoice()
         check(fresh.voiceTier == "max" && !fresh.voiceTierChosen, "saved voice", "saved Max is adopted without inventing a pick")
         fresh.voiceTier = "balanced"
