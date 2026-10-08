@@ -1,3 +1,8 @@
+## 0.5.269 (build 322)
+
+- The Mac download opens again. Since 0.5.263, opening the downloaded zip with a double-click (Archive Utility) added three small files inside the app, and macOS then said COS Control "is damaged and can't be opened". The download is now packed so nothing is added when it is opened. Updates from inside COS Control were not affected.
+- For developers: the release build refuses an archive that would do this.
+
 ## 0.5.268 (build 321)
 
 - COS Control now finds Codex on a Mac that has only the ChatGPT app. The ChatGPT app moved its built-in Codex to a new folder on September 27, and COS Control still looked in the old Codex app, so Get started said "Connect an AI app first" even though Codex was installed. COS Control now looks in the same places as the COS server, in the same order, including a ChatGPT app installed in your own Applications folder.

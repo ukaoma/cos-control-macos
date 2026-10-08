@@ -174,11 +174,26 @@ if [ -n "$SIGN_ID" ]; then
   /usr/bin/xcrun stapler staple "$APP"
   /usr/bin/xcrun stapler validate "$APP"
   rm -f "$STAGED_ZIP"
-  /usr/bin/ditto -c -k --keepParent "$APP" "$STAGED_ZIP"
+  # 0.5.269: the FINAL archive carries no extended attributes or resource forks. With them, ditto writes an inline
+  # "._name" AppleDouble entry for every file (com.apple.provenance is on all of them). Archive Utility, which a
+  # double-click on a browser download uses, folds those back into attributes for regular files but cannot for the
+  # three BundledNode/bin symlinks (npm, npx, corepack), so it leaves ._npm, ._npx and ._corepack inside the bundle.
+  # Files added after signing break the seal and macOS says the app "is damaged" (0.5.263 to 0.5.268, every browser
+  # download; the in-app updater extracts with ditto and was unaffected). The stapled ticket is a file
+  # (Contents/CodeResources), not an attribute, so nothing the signature or Gatekeeper needs is dropped; the deep
+  # codesign check on the extracted copy below proves it.
+  /usr/bin/ditto -c -k --norsrc --noextattr --keepParent "$APP" "$STAGED_ZIP"
 else
   /usr/bin/ditto -c -k --norsrc --keepParent "$APP" "$STAGED_ZIP"
 fi
 /bin/mv "$STAGED_ZIP" "$ZIP"
+# 0.5.269: refuse an archive that carries AppleDouble or __MACOSX entries (see above): Archive Utility can leave
+# them inside the bundle as added files, which breaks the signature for every browser download.
+if /usr/bin/zipinfo -1 "$ZIP" | /usr/bin/grep -E -q '(^|/)\._|^__MACOSX/'; then
+  echo "Refusing to ship: $ZIP contains AppleDouble (._*) or __MACOSX entries; Archive Utility would break the signature." >&2
+  /usr/bin/zipinfo -1 "$ZIP" | /usr/bin/grep -E '(^|/)\._|^__MACOSX/' | /usr/bin/head -5 >&2
+  exit 69
+fi
 VERIFY_DIR="$BUILD_DIR/verify"
 /bin/mkdir -p "$VERIFY_DIR"
 /usr/bin/ditto -x -k "$ZIP" "$VERIFY_DIR"
