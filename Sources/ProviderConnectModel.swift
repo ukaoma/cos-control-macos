@@ -638,6 +638,11 @@ struct VoiceFacts: Sendable, Equatable {
     var whisperCli = false
     var whisperServer = false
     var brew = false
+    var runtimeDownloadAvailable = false
+    var explicitTier: String?
+    var preparedTier: String?
+    var recommendedTier: String?
+    var benchmarkComplete = false
     var missingBytes: [String: Int64] = [:]
     var enoughDisk: [String: Bool] = [:]
     var freeBytes: Int64 = 0
@@ -659,6 +664,12 @@ struct VoiceFacts: Sendable, Equatable {
         facts.whisperCli = object["whisperCli"] is String
         facts.whisperServer = object["whisperServer"] is String
         facts.brew = object["brew"] is String
+        facts.runtimeDownloadAvailable = object["runtimeDownloadAvailable"] as? Bool ?? false
+        facts.explicitTier = object["explicitTier"] as? String
+        let benchmark = object["benchmark"] as? [String: Any] ?? [:]
+        facts.preparedTier = benchmark["preparedTier"] as? String
+        facts.recommendedTier = benchmark["recommendedTier"] as? String
+        facts.benchmarkComplete = benchmark["setupComplete"] as? Bool ?? false
         for (key, value) in object["missingBytes"] as? [String: Any] ?? [:] { facts.missingBytes[key] = (value as? NSNumber)?.int64Value }
         for (key, value) in object["enoughDisk"] as? [String: Any] ?? [:] { facts.enoughDisk[key] = value as? Bool }
         facts.freeBytes = (object["freeBytes"] as? NSNumber)?.int64Value ?? 0
@@ -807,7 +818,7 @@ enum SetupGuideRules {
     }
 
     static func voice(_ facts: SetupFacts, skipped: Bool) -> SetupRow {
-        let tier = facts.voiceTier
+        let tier = facts.voiceTier == "auto" ? (facts.voice?.preparedTier ?? facts.voice?.explicitTier ?? "balanced") : facts.voiceTier
         var row = SetupRow(id: .voice, title: "Voice (local Whisper)", status: "Checking…",
                            unlocks: "Meetings and dictation transcribed on this Mac, with named speakers.",
                            detail: nil, done: false, skipped: skipped)
@@ -821,13 +832,16 @@ enum SetupGuideRules {
             row.done = true
             return row
         }
+        if voice.runtimeDownloadAvailable && (!voice.benchmarkComplete || !voice.whisperCli || !voice.whisperServer) {
+            row.status = "Ready to set up voice"
+            row.detail = "COS downloads its own voice tools and models, then tests sample speech on this Mac. No Homebrew or Terminal. Your existing voice choice stays unchanged."
+            row.action = voice.setupAvailable ? .voiceDownload(tier) : .none
+            row.actionTitle = voice.setupAvailable ? "Set up and test voice" : nil
+            return row
+        }
         guard voice.whisperCli && voice.whisperServer else {
-            row.status = "Needs whisper.cpp"
-            row.detail = voice.brew
-                ? "Local voice runs on whisper.cpp, which COS does not include. Install it with Homebrew in Terminal, then Check again."
-                : "Local voice runs on whisper.cpp, which COS does not include. It installs with Homebrew (brew.sh), which needs your administrator password once. Then run the command below."
-            row.action = .voiceNeedsWhisper("brew install whisper-cpp")
-            row.actionTitle = "Check again"
+            row.status = "Voice setup unavailable"
+            row.detail = "Download the current COS Control for Apple silicon to set up local voice."
             return row
         }
         let missing = voice.missingBytes[tier] ?? 0
@@ -875,7 +889,7 @@ final class SetupGuideState: ObservableObject {
     @Published private(set) var skipped: Set<SetupRowID> = []
     @Published private(set) var hidden = false
     @Published var voice: VoiceFacts?
-    @Published var voiceTier = "balanced"
+    @Published var voiceTier = "auto"
     @Published private(set) var voiceRunning = false
     @Published private(set) var voiceProgress: String?
     @Published var voiceMessage: String?
@@ -888,6 +902,7 @@ final class SetupGuideState: ObservableObject {
     /// `cos-control-helper voice-setup <tier>`, with each progress line; returns the final message.
     var runVoiceSetup: @MainActor (String, @escaping @Sendable (String) -> Void) async throws -> String = { _, _ in throw ProviderGuideError.unreadable }
     var applyTier: @MainActor (String) -> Void = { _ in }
+    var applyRecommendation: @MainActor () async throws -> Void = {}
     private var voiceTask: Task<Void, Never>?
 
     init(defaults: UserDefaults = .standard) {
@@ -921,10 +936,14 @@ final class SetupGuideState: ObservableObject {
                 let message = try await self.runVoiceSetup(tier) { line in
                     Task { @MainActor [weak self] in self?.voiceProgress = line }
                 }
+                try Task.checkCancellation()
                 self.voiceMessage = message
+                self.voiceProgress = "Applying the recommendation…"
+                // The helper rechecks saved settings under the lifecycle lock. Even if the
+                // user changed them while downloading, an automatic result cannot overwrite them.
+                if tier == "auto" { try await self.applyRecommendation() }
                 self.voiceRunning = false
                 self.voiceProgress = nil
-                self.applyTier(tier)
             } catch is CancellationError {
                 self.voiceRunning = false
                 self.voiceProgress = nil
@@ -944,7 +963,7 @@ final class SetupGuideState: ObservableObject {
 enum VoiceSetupGate {
     /// The in-app download runs only with whisper.cpp present, an installed server to run it, and enough disk.
     static func canStart(_ voice: VoiceFacts?, tier: String) -> Bool {
-        guard let voice, VoiceTier.all.contains(tier) else { return false }
-        return voice.whisperCli && voice.whisperServer && voice.setupAvailable && voice.enoughDisk[tier] != false
+        guard let voice, tier == "auto" || VoiceTier.all.contains(tier) else { return false }
+        return (voice.runtimeDownloadAvailable || (voice.whisperCli && voice.whisperServer)) && voice.setupAvailable && voice.enoughDisk[tier == "auto" ? (voice.explicitTier ?? "balanced") : tier] != false
     }
 }

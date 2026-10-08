@@ -329,6 +329,8 @@ final class COSControlHelper {
         "COS_TTS_PYTHON",
         "COS_TTS_ENGINE",
         "COS_TTS_KOKORO_VOICE",
+        "COS_WHISPER_SERVER_BIN",
+        "COS_WHISPER_CLI_BIN",
         "COS_WHISPER_PREVIEW_MODEL",
         "COS_WHISPER_REALTIME_MODEL",
         "COS_WHISPER_TRANSCRIPTION_TIER",
@@ -569,6 +571,13 @@ final class COSControlHelper {
         case "ollama-tags": try emitOllamaTags()
         case "provider-status": try emitProviderStatus(args: args)
         case "voice-status": emitVoiceStatus()
+        case "self-test-whisper-runtime":
+            guard let isolated = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"], isolated.hasPrefix("/tmp/"),
+                  let archive = args.dropFirst().first else { throw HelperError.message("An isolated temporary home and archive are required.") }
+            try ensureDirectories()
+            try prepareWhisperRuntime(archiveForTest: URL(fileURLWithPath: archive))
+            emit(ok: true, message: "Verified voice runtime installed in isolated home", details: managedWhisperEnvironment())
+        case "voice-apply-recommendation": try withMutationLock { try applyVoiceRecommendation() }
         case "voice-setup": try runVoiceSetup(args: args)
         case "set-thread-attach": try withMutationLock {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing Continue agent threads setting") }
@@ -1589,6 +1598,19 @@ final class COSControlHelper {
             }
         }
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: destination.path)
+        if source.path != destination.path {
+            for name in ["whisper-runtime.json", "VoiceBenchmark"] {
+                let resource = source.deletingLastPathComponent().appendingPathComponent(name)
+                let target = destination.deletingLastPathComponent().appendingPathComponent(name)
+                if fm.fileExists(atPath: resource.path) {
+                    let temporary = target.appendingPathExtension("new")
+                    try? fm.removeItem(at: temporary)
+                    try fm.copyItem(at: resource, to: temporary)
+                    if fm.fileExists(atPath: target.path) { _ = try fm.replaceItemAt(target, withItemAt: temporary) }
+                    else { try fm.moveItem(at: temporary, to: target) }
+                }
+            }
+        }
     }
 
     private func validatedWorkDirectory(_ value: String?) throws -> String? {
@@ -1848,6 +1870,7 @@ final class COSControlHelper {
         guard let node = manifest.nodePath ?? findExecutable("node") else { throw HelperError.message("Node.js not found") }
         var environment = manifest.providerEnvironment ?? [:]
         environment["HOME"] = home.path
+        environment.merge(managedWhisperEnvironment()) { existing, _ in existing }
         environment["COS_MANAGED"] = "1"
         environment["COS_ENTRYPOINT"] = "cos-control"
         environment["COS_SERVER_VERSION"] = manifest.version
@@ -5743,12 +5766,140 @@ final class COSControlHelper {
         ])
     }
 
+    // P1.5 resources travel with both the app helper and its stable recovery copy.
+    private var voiceResourceRoot: URL {
+        URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.deletingLastPathComponent()
+    }
+    private func whisperRuntimePin() throws -> [String: Any] {
+        let data = try Data(contentsOf: voiceResourceRoot.appendingPathComponent("whisper-runtime.json"))
+        guard let pin = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              pin["version"] as? String == "1.9.1", pin["revision"] as? String == "r1",
+              let hash = pin["sha256"] as? String, hash.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
+              let url = pin["url"] as? String, url.hasPrefix("https://github.com/ukaoma/cos-starter/releases/download/whisper-runtime-1.9.1-r1/"),
+              pin["bundle"] as? String == "COS Whisper Runtime.app" else {
+            throw HelperError.message("This copy of COS Control is missing verified voice setup files. Download it again.")
+        }
+        return pin
+    }
+    private var whisperRuntimeDestination: URL { runtimeRoot.appendingPathComponent("whisper/1.9.1-r1") }
+    private func managedWhisperEnvironment() -> [String: String] {
+        let bin = whisperRuntimeDestination.appendingPathComponent("COS Whisper Runtime.app/Contents/MacOS")
+        guard fm.isExecutableFile(atPath: bin.appendingPathComponent("whisper-cli").path),
+              fm.isExecutableFile(atPath: bin.appendingPathComponent("whisper-server").path),
+              fm.fileExists(atPath: whisperRuntimeDestination.appendingPathComponent("receipt.json").path) else { return [:] }
+        return ["COS_WHISPER_CLI_BIN": bin.appendingPathComponent("whisper-cli").path,
+                "COS_WHISPER_SERVER_BIN": bin.appendingPathComponent("whisper-server").path]
+    }
+    private func validateWhisperBundle(_ app: URL) throws {
+        // Pinned bytes plus expected Developer ID, not merely any valid signature.
+        let signature = try execute("/usr/bin/codesign", ["--verify", "--deep", "--strict", "-R", "=anchor apple generic and certificate leaf[subject.OU] = \"NV3X46LLCR\"", app.path], timeout: 30)
+        guard signature.code == 0 else { throw HelperError.message("Voice download failed its Developer ID check.") }
+        let assessment = try execute("/usr/sbin/spctl", ["--assess", "--type", "execute", app.path], timeout: 45)
+        guard assessment.code == 0 else { throw HelperError.message("macOS could not verify the notarized voice download. Check your connection and try again.") }
+        for name in VoiceSetupCore.whisperBinaries {
+            let file = app.appendingPathComponent("Contents/MacOS/\(name)")
+            try validatePrivateRegularFile(file)
+            guard fm.isExecutableFile(atPath: file.path) else { throw HelperError.message("Voice download is incomplete.") }
+        }
+    }
+    private func prepareWhisperRuntime(archiveForTest: URL? = nil) throws {
+        let pin = try whisperRuntimePin()
+        if !managedWhisperEnvironment().isEmpty {
+            let data = try Data(contentsOf: whisperRuntimeDestination.appendingPathComponent("receipt.json"))
+            let receipt = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            guard receipt?["sha256"] as? String == pin["sha256"] as? String else { throw HelperError.message("The installed voice runtime does not match this build.") }
+            try validateWhisperBundle(whisperRuntimeDestination.appendingPathComponent("COS Whisper Runtime.app"))
+            return
+        }
+        guard machineArchitecture() == "arm64" else { throw HelperError.message("This voice download requires Apple silicon.") }
+        let parent = runtimeRoot.appendingPathComponent("whisper")
+        try ensurePrivateDirectory(parent)
+        let stage = parent.appendingPathComponent(".stage-\(UUID().uuidString)")
+        try ensurePrivateDirectory(stage)
+        defer { try? fm.removeItem(at: stage) }
+        let zip = stage.appendingPathComponent("runtime.zip")
+        progress("Downloading local voice tools (about 3 MB)…")
+        if let archiveForTest {
+            guard ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"]?.hasPrefix("/tmp/") == true else { throw HelperError.message("Test archive requires an isolated home.") }
+            try fm.copyItem(at: archiveForTest, to: zip)
+        } else {
+        let result = try spawnStreaming("/usr/bin/curl", ["--fail", "--location", "--proto", "=https", "--proto-redir", "=https", "--connect-timeout", "20", "--max-time", "180", "--max-filesize", "20000000", "--output", zip.path, pin["url"] as! String], environment: ProcessInfo.processInfo.environment, workingDirectory: home.path)
+        guard result.code == 0, voiceSetupCancelled == 0 else { throw HelperError.message("Voice download stopped. Your settings did not change; try again.") }
+        }
+        guard try sha256(zip) == pin["sha256"] as? String else { throw HelperError.message("Voice download checksum did not match. Nothing was installed.") }
+        let extracted = stage.appendingPathComponent("extracted")
+        let unpack = try execute("/usr/bin/ditto", ["-x", "-k", zip.path, extracted.path], timeout: 30)
+        guard unpack.code == 0 else { throw HelperError.message("Could not unpack voice tools.") }
+        try validateWhisperBundle(extracted.appendingPathComponent("COS Whisper Runtime.app"))
+        try atomicWriteData(try JSONSerialization.data(withJSONObject: pin, options: [.sortedKeys]), to: extracted.appendingPathComponent("receipt.json"), permissions: 0o600)
+        guard !fm.fileExists(atPath: whisperRuntimeDestination.path) else { throw HelperError.message("An incomplete voice runtime exists. Open diagnostics before repairing it; the existing copy was kept.") }
+        try fm.moveItem(at: extracted, to: whisperRuntimeDestination)
+    }
+    private func machineArchitecture() -> String {
+        #if arch(arm64)
+        return "arm64"
+        #else
+        return "unsupported"
+        #endif
+    }
+    private var voiceBenchmarkURL: URL { support.appendingPathComponent("voice-benchmark.json") }
+    private func voiceBenchmarkResult() -> [String: Any]? {
+        guard let data = try? Data(contentsOf: voiceBenchmarkURL) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+    private func explicitVoiceTier() -> String? {
+        // Defaults reported by health are NOT a saved user choice.
+        let configured = loadManifest()?.providerEnvironment?["COS_WHISPER_TRANSCRIPTION_TIER"]
+            ?? loadedEnvironmentValue("COS_WHISPER_TRANSCRIPTION_TIER")
+        return configured.flatMap(VoiceSetupCore.normalizedTier)
+    }
+    private func runVoiceBenchmark(environment: [String: String], modelName: String = "ggml-large-v3-turbo.bin") throws -> [String: Any] {
+        guard appUpdateWorkBlockers().isEmpty else { throw HelperError.message("Finish active COS work before testing voice speed. Your settings did not change.") }
+        let pin = try whisperRuntimePin()
+        let sample = voiceResourceRoot.appendingPathComponent("VoiceBenchmark/speech-30s.wav")
+        guard try sha256(sample) == pin["benchmarkSHA256"] as? String,
+              let cli = environment["COS_WHISPER_CLI_BIN"] else { throw HelperError.message("The voice test sample is missing or damaged.") }
+        let battery = (try? execute("/usr/bin/pmset", ["-g", "batt"], timeout: 5).output.contains("Battery Power")) ?? true
+        let chip = (try? execute("/usr/sbin/sysctl", ["-n", "machdep.cpu.brand_string"], timeout: 5).output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? "Apple silicon"
+        progress("Testing 30 seconds of sample speech on this Mac…")
+        let start = Date()
+        let result = try spawnStreaming("/usr/bin/time", ["-l", cli, "-m", VoiceSetupCore.modelDirectory(home: home.path) + "/" + modelName, "-f", sample.path, "-l", "en", "-t", "4", "-nt"], environment: environment, workingDirectory: home.path, timeout: 180)
+        let seconds = Date().timeIntervalSince(start)
+        guard result.code == 0, voiceSetupCancelled == 0 else { throw HelperError.message("Voice speed test stopped. Your voice setting did not change.") }
+        let metal = result.text.contains("using Metal backend") || result.text.contains("Metal device") || result.text.contains("GPU name:")
+        let peak = result.text.split(separator: "\n").first { $0.contains("maximum resident set size") }.flatMap { Int64($0.trimmingCharacters(in: .whitespaces).split(separator: " ").first ?? "") }
+        guard let timing = result.text.split(separator: "\n").first(where: { $0.contains("whisper_print_timings:") && $0.contains("total time =") }),
+              let milliseconds = timing.split(separator: "=").last?.trimmingCharacters(in: .whitespaces).split(separator: " ").first.flatMap({ Double($0) }), milliseconds > 0 else {
+            throw HelperError.message("The voice test returned no usable timing. Your setting was kept.")
+        }
+        let rtf = milliseconds / 1000 / 30
+        let free = ((try? home.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage) ?? 0
+        let recommended = VoiceBenchmarkPolicy.recommendation(memoryBytes: ProcessInfo.processInfo.physicalMemory, realTimeFactor: rtf, onBattery: battery, metal: metal)
+        let output: [String: Any] = ["schemaVersion": 1, "policyVersion": VoiceBenchmarkPolicy.version,
+            "createdAt": ISO8601DateFormatter().string(from: Date()), "runtime": "1.9.1-r1", "model": modelName, "chip": chip,
+            "memoryBytes": ProcessInfo.processInfo.physicalMemory, "onBattery": battery, "metal": metal,
+            "freeDiskBytes": free, "sampleSeconds": 30, "elapsedSeconds": seconds, "engineSeconds": milliseconds / 1000, "realTimeFactor": rtf,
+            "peakMemoryBytes": peak.map { $0 as Any } ?? NSNull(), "recommendedTier": recommended,
+            "calibration": "provisional; smaller-Mac validation pending", "timingIncludesModelLoad": false]
+        return output
+    }
+    private func applyVoiceRecommendation() throws {
+        guard explicitVoiceTier() == nil else {
+            emit(ok: true, message: "Your existing voice choice was kept.", details: [:]); return
+        }
+        guard let result = voiceBenchmarkResult(), result["setupComplete"] as? Bool == true,
+              let tier = result["preparedTier"] as? String, VoiceSetupCore.normalizedTier(tier) != nil else {
+            throw HelperError.message("Finish the voice test and model download first.")
+        }
+        try setTranscriptionTier(tier)
+    }
+
     // MARK: Voice (local Whisper) setup, in the app (onboarding P1)
 
     /// Read-only: whisper.cpp, the model files, disk space, and the Terminal fallback command. No download, no write.
     private func voiceSetupFacts() -> [String: Any] {
         let environment = ProviderSearchEnvironment(
-            home: home.path, env: ProcessInfo.processInfo.environment,
+            home: home.path, env: ProcessInfo.processInfo.environment.merging(managedWhisperEnvironment()) { old, _ in old },
             isExecutable: { FileManager.default.isExecutableFile(atPath: $0) }, listDirectory: { _ in [] })
         let directory = VoiceSetupCore.modelDirectory(home: home.path)
         var sizes: [String: Int64] = [:]
@@ -5784,6 +5935,9 @@ final class COSControlHelper {
         return [
             "whisperCli": VoiceSetupCore.whisperPath("whisper-cli", in: environment) ?? NSNull(),
             "whisperServer": VoiceSetupCore.whisperPath("whisper-server", in: environment) ?? NSNull(),
+            "runtimeDownloadAvailable": machineArchitecture() == "arm64" && (try? whisperRuntimePin()) != nil,
+            "explicitTier": explicitVoiceTier() ?? NSNull(),
+            "benchmark": voiceBenchmarkResult() ?? [:],
             "brew": ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].first { fm.isExecutableFile(atPath: $0) } ?? NSNull(),
             "models": rows, "voiceprintPresent": voiceprintPresent,
             "freeBytes": free, "partialBytes": partial, "missingBytes": missing, "enoughDisk": enough,
@@ -5801,42 +5955,47 @@ final class COSControlHelper {
     /// group; partial downloads stay and the next run resumes them. Applying the tier is a separate, transactional
     /// `set-transcription-tier`.
     private func runVoiceSetup(args: [String]) throws {
-        guard let raw = args.dropFirst().first, let tier = VoiceSetupCore.normalizedTier(raw) else {
-            throw HelperError.message("Choose Balanced or Max.")
-        }
-        let facts = voiceSetupFacts()
-        guard facts["whisperCli"] is String, facts["whisperServer"] is String else {
-            throw HelperError.message("Local voice needs whisper.cpp, which COS does not include. Install it with Homebrew (brew install whisper-cpp), then try again.")
-        }
-        guard (facts["enoughDisk"] as? [String: Any])?[tier] as? Bool == true else {
-            let need = ((facts["missingBytes"] as? [String: Any])?[tier] as? Int64 ?? 0) + VoiceSetupCore.safetyMarginBytes
-            throw HelperError.message("Not enough free disk space: about \(VoiceSetupCore.gigabytes(need)) is needed. Free some space, then try again.")
-        }
-        guard let manifest = loadManifest() else { throw HelperError.message("Finish Get started first: voice setup uses the installed COS server.") }
+        let requested = args.dropFirst().first ?? "auto"
+        guard requested == "auto" || VoiceSetupCore.normalizedTier(requested) != nil else { throw HelperError.message("Choose Automatic, Balanced or Max.") }
+        guard let manifest = loadManifest() else { throw HelperError.message("Finish Get started first.") }
         let cli = packageRoot(for: manifest.generationPath).appendingPathComponent("bin/cli.cjs")
-        guard fm.fileExists(atPath: cli.path),
-              let node = manifest.nodePath.flatMap({ fm.isExecutableFile(atPath: $0) ? $0 : nil }) ?? managedNodeExecutable("node") ?? findExecutable("node") else {
-            throw HelperError.message("The installed COS server is incomplete. Repair it in COS Control, then try again.")
+        guard let source = try? String(contentsOf: cli, encoding: .utf8), source.contains("--voice-benchmark-prepare"), source.contains("--preserve-voice-settings") else {
+            throw HelperError.message("Update the COS server before using automatic voice setup. Your current voice setting was kept.")
         }
+        guard let node = manifest.nodePath.flatMap({ fm.isExecutableFile(atPath: $0) ? $0 : nil }) ?? managedNodeExecutable("node") else { throw HelperError.message("Repair COS setup files, then try again.") }
         try ensureDirectories()
-        let lockPath = support.appendingPathComponent("voice-setup.lock").path
-        let lock = open(lockPath, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
-        guard lock >= 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else { throw HelperError.message("Voice setup is already running.") }
+        let lock = open(support.appendingPathComponent("voice-setup.lock").path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR)
+        guard lock >= 0 else { throw HelperError.message("Could not lock voice setup.") }
         defer { close(lock) }
-        let environment = nodeToolEnvironment(node: node).merging(["NO_COLOR": "1", "FORCE_COLOR": "0"]) { _, new in new }
-        let output = try spawnStreaming(node, [cli.path, "--setup-transcription", "--transcription-tier", tier, "--prepare-only"],
-                                        environment: environment, workingDirectory: home.path)
-        let tail = String(stripEmails(output.text).suffix(1500))
-        guard output.code == 0 else {
-            throw HelperError.message("Voice setup stopped before it finished. Downloads so far are kept, and the next run resumes them. " + (tail.split(separator: "\n").last.map(String.init) ?? ""))
-        }
-        emit(ok: true, message: "Voice models are ready. Apply \(tier == "max" ? "Max" : "Balanced") to start using them.",
-             details: ["tier": tier, "log": tail])
+        guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { throw HelperError.message("Voice setup is already running.") }
+        try prepareWhisperRuntime()
+        let environment = nodeToolEnvironment(node: node).merging(managedWhisperEnvironment()) { _, new in new }.merging(["NO_COLOR": "1", "FORCE_COLOR": "0"]) { _, new in new }
+        progress("Preparing Large-v3-Turbo for the voice test…")
+        let prepare = try spawnStreaming(node, [cli.path, "--setup-transcription", "--transcription-tier", "balanced", "--prepare-only", "--voice-benchmark-prepare"], environment: environment, workingDirectory: home.path)
+        guard prepare.code == 0, voiceSetupCancelled == 0 else { throw HelperError.message("Voice preparation stopped. Downloads are kept for retry; your settings did not change.") }
+        var benchmark = try runVoiceBenchmark(environment: environment)
+        let existing = explicitVoiceTier()
+        let tier = VoiceBenchmarkPolicy.chosen(requested: requested, existing: existing, recommendation: benchmark["recommendedTier"] as! String)
+        benchmark["preparedTier"] = tier
+        benchmark["existingTier"] = existing ?? NSNull()
+        benchmark["setupComplete"] = false
+        try atomicWriteData(try JSONSerialization.data(withJSONObject: benchmark, options: [.sortedKeys]), to: voiceBenchmarkURL, permissions: 0o600)
+        progress("Preparing \(tier == "max" ? "Max" : "Balanced") voice models…")
+        let output = try spawnStreaming(node, [cli.path, "--setup-transcription", "--transcription-tier", tier, "--prepare-only", "--preserve-voice-settings"], environment: environment, workingDirectory: home.path)
+        guard output.code == 0, voiceSetupCancelled == 0 else { throw HelperError.message("Voice setup stopped. Downloads are kept for retry; your voice setting did not change.") }
+        let preview = tier == "balanced" ? try runVoiceBenchmark(environment: environment, modelName: "ggml-small.en.bin") : benchmark
+        benchmark["previewModel"] = tier == "balanced" ? "small.en" : "large-v3-turbo"
+        benchmark["previewRealTimeFactor"] = preview["realTimeFactor"]
+        benchmark["previewPeakMemoryBytes"] = preview["peakMemoryBytes"]
+        benchmark["setupComplete"] = true
+        try atomicWriteData(try JSONSerialization.data(withJSONObject: benchmark, options: [.sortedKeys]), to: voiceBenchmarkURL, permissions: 0o600)
+        let recommended = benchmark["recommendedTier"] as? String == "max" ? "Max" : "Balanced"
+        emit(ok: true, message: "Voice test complete. This Mac's initial recommendation is \(recommended)." + (existing == nil ? " Models are ready." : " Your existing voice choice was kept."), details: benchmark)
     }
 
     /// posix_spawn in its own process group, so Cancel (SIGTERM to this helper) stops node AND the curl it runs.
     private func spawnStreaming(_ executable: String, _ arguments: [String], environment: [String: String],
-                                workingDirectory: String) throws -> (code: Int32, text: String) {
+                                workingDirectory: String, timeout: TimeInterval = 14_400) throws -> (code: Int32, text: String) {
         var pipeFDs: [Int32] = [0, 0]
         guard pipe(&pipeFDs) == 0 else { throw HelperError.message("Could not prepare setup output.") }
         var actions: posix_spawn_file_actions_t? = nil
@@ -5850,7 +6009,7 @@ final class COSControlHelper {
         var attributes: posix_spawnattr_t? = nil
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP))
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
         posix_spawnattr_setpgroup(&attributes, 0)
         let argv = ([executable] + arguments).map { strdup($0) } + [nil]
         let envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
@@ -5860,9 +6019,17 @@ final class COSControlHelper {
         close(pipeFDs[1])
         guard spawned == 0 else { close(pipeFDs[0]); throw HelperError.message("Could not start voice setup (\(spawned)).") }
         voiceSetupChildGroup = pid
+        let childPID = pid
+        let deadline = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        deadline.schedule(deadline: .now() + timeout)
+        deadline.setEventHandler { killpg(childPID, SIGKILL) }
+        deadline.resume()
+        defer { deadline.cancel() }
+        voiceSetupCancelled = 0
         signal(SIGTERM) { _ in
-            if voiceSetupChildGroup > 0 { killpg(voiceSetupChildGroup, SIGTERM) }
-            _exit(143)
+            voiceSetupCancelled = 1
+            // Downloads write only resumable partials; never leave a child behind after Cancel.
+            if voiceSetupChildGroup > 0 { killpg(voiceSetupChildGroup, SIGKILL) }
         }
         defer { voiceSetupChildGroup = 0; signal(SIGTERM, SIG_DFL) }
         var text = ""
@@ -8312,7 +8479,7 @@ final class COSControlHelper {
         var attr: posix_spawnattr_t?
         posix_spawnattr_init(&attr)
         defer { posix_spawnattr_destroy(&attr) }
-        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP))
+        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
         posix_spawnattr_setpgroup(&attr, 0)
 
         let rc = posix_spawn(&pid, executable.path, &fileActions, &attr, argv, environ)

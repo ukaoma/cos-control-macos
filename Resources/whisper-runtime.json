@@ -1,0 +1,12 @@
+{
+  "version": "1.9.1",
+  "revision": "r1",
+  "archive": "cos-whisper-runtime-1.9.1-arm64-r1.zip",
+  "url": "https://github.com/ukaoma/cos-starter/releases/download/whisper-runtime-1.9.1-r1/cos-whisper-runtime-1.9.1-arm64-r1.zip",
+  "sha256": "cf302b2ae4d7aa010a290c8f0a98b3dbb1a3307cac56bac0ceee87274423e6aa",
+  "bytes": 2523509,
+  "bundle": "COS Whisper Runtime.app",
+  "team": "NV3X46LLCR",
+  "sourceCommit": "f049fff95a089aa9969deb009cdd4892b3e74916",
+  "benchmarkSHA256": "712169d8a78022fdda7d946aa478e3bbeea7f7dc75608d7327b4cc2a65a266cb"
+}

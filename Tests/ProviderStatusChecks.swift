@@ -221,6 +221,19 @@ struct ProviderStatusChecks {
     }
 
     static func voice() {
+        let gib: UInt64 = 1_073_741_824
+        check(VoiceBenchmarkPolicy.recommendation(memoryBytes: 16*gib, realTimeFactor: 0.1, onBattery: false, metal: true) == "max", "voice benchmark", "fast Apple silicon")
+        for value in [Double.nan, Double.infinity, 0, -1, 0.26] {
+            check(VoiceBenchmarkPolicy.recommendation(memoryBytes: 96*gib, realTimeFactor: value, onBattery: false, metal: true) == "balanced", "voice benchmark", "invalid or slow measurement")
+        }
+        check(VoiceBenchmarkPolicy.recommendation(memoryBytes: 8*gib, realTimeFactor: 0.1, onBattery: false, metal: true) == "balanced", "voice benchmark", "8 GB keeps small preview")
+        check(VoiceBenchmarkPolicy.recommendation(memoryBytes: 96*gib, realTimeFactor: 0.1, onBattery: true, metal: true) == "balanced", "voice benchmark", "battery conservative")
+        check(VoiceBenchmarkPolicy.recommendation(memoryBytes: 96*gib, realTimeFactor: 0.1, onBattery: false, metal: false) == "balanced", "voice benchmark", "CPU fallback conservative")
+        check(VoiceBenchmarkPolicy.chosen(requested: "auto", existing: "max", recommendation: "balanced") == "max", "voice choice", "Miles's Max survives")
+        check(VoiceBenchmarkPolicy.chosen(requested: "auto", existing: "balanced", recommendation: "max") == "balanced", "voice choice", "existing Balanced survives")
+        check(VoiceBenchmarkPolicy.chosen(requested: "auto", existing: nil, recommendation: "max") == "max", "voice choice", "new user gets recommendation")
+        check(VoiceBenchmarkPolicy.chosen(requested: "balanced", existing: "max", recommendation: "max") == "balanced", "voice choice", "explicit preparation choice wins, apply stays separate")
+
         let all = VoiceSetupCore.missingBytes(tier: "balanced", sizes: [:], voiceprintPresent: false)
         check(all == 1_624_555_275 + 487_614_201 + 3_095_033_483 + 26_485_263, "voice sizes", "Balanced from nothing: \(all)")
         check(VoiceSetupCore.missingBytes(tier: "max", sizes: [:], voiceprintPresent: true) == 1_624_555_275 + 3_095_033_483, "voice sizes", "Max needs no Small.en")

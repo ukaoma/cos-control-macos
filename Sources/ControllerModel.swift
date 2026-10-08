@@ -549,6 +549,10 @@ final class ControllerModel: ObservableObject {
             return response.message
         }
         guide.applyTier = { [weak self] tier in self?.setTranscriptionTier(tier) }
+        guide.applyRecommendation = {
+            let response = try await helper.run(["voice-apply-recommendation"], timeout: 180)
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+        }
         return guide
     }
 

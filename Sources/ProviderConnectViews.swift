@@ -510,19 +510,20 @@ struct SetupRowView: View {
         if let message = guide.voiceMessage {
             Text(message).font(COSType.body(10.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
-        if case .voiceNeedsWhisper(let command) = row.action {
-            ProviderCommandLine(command: command) { copyText(command) }
-            if guide.voice?.brew == false {
-                Button("Get Homebrew at brew.sh") { NSWorkspace.shared.open(URL(string: "https://brew.sh")!) }.buttonStyle(COSTextButtonStyle())
-            }
+        if let recommendation = guide.voice?.recommendedTier {
+            Text("Initial recommendation: \(VoiceTier.title(recommendation)). Based on speech processing speed; calibration on smaller Macs is still in progress.")
+                .font(COSType.body(10.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
-        if !row.done && !row.afterSetup, guide.voice?.whisperCli == true, !guide.voiceRunning {
+        if row.done && !guide.voiceRunning {
+            Button("Test this Mac again") { guide.startVoiceSetup() }.buttonStyle(COSTextButtonStyle())
+        }
+        if !row.done && !row.afterSetup, !guide.voiceRunning {
             VStack(alignment: .leading, spacing: 6) {
                 COSViewSwitch("Voice", selection: $guide.voiceTier,
-                              options: [COSViewOption("balanced", "Balanced"), COSViewOption("max", "Max")], showsLabel: false)
-                Text(VoiceTier.explanation(guide.voiceTier)).font(COSType.body(10.5)).foregroundStyle(.secondary)
+                              options: [COSViewOption("auto", "Automatic"), COSViewOption("balanced", "Balanced"), COSViewOption("max", "Max")], showsLabel: false)
+                Text(guide.voiceTier == "auto" ? "Test this Mac and recommend a tier. An existing voice choice is always kept." : VoiceTier.explanation(guide.voiceTier)).font(COSType.body(10.5)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                if let command = guide.voice?.terminalCommand[guide.voiceTier] {
+                if let command = guide.voice?.terminalCommand[guide.voiceTier == "auto" ? "balanced" : guide.voiceTier] {
                     Button("Or run it in Terminal") {
                         if !runInTerminal(command) { copyText(command) }
                     }

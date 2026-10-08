@@ -422,9 +422,13 @@ struct ProviderConnectChecks {
         check(ready.done && ready.status == "Ready · Balanced" && ready.detail == "Small.en live · Turbo commit · Large-v3 polish", "voice ready", "matches the panel's rows: \(ready.status) \(ready.detail ?? "")")
         var noWhisper = voiceReady(); noWhisper.whisperReady = false; noWhisper.whisperCli = false; noWhisper.whisperServer = false
         let needs = row(noWhisper)
-        check(needs.status == "Needs whisper.cpp" && needs.action == .voiceNeedsWhisper("brew install whisper-cpp") && needs.detail?.contains("does not include") == true, "voice whisper.cpp", "\(needs)")
+        check(needs.status == "Voice setup unavailable" && needs.action == .none, "voice whisper.cpp", "\(needs)")
         noWhisper.brew = false
-        check(row(noWhisper).detail?.contains("brew.sh") == true, "voice whisper.cpp", "no Homebrew: says so, never installs it")
+        check(row(noWhisper).detail?.contains("current COS Control") == true, "voice whisper.cpp", "old build gets a supported update path")
+        noWhisper.runtimeDownloadAvailable = true
+        check(row(noWhisper).action == .voiceDownload("balanced") && row(noWhisper).detail?.contains("No Homebrew") == true, "managed voice", "fresh Mac can download directly")
+        check(VoiceSetupGate.canStart(noWhisper, tier: "auto"), "managed voice", "no local whisper installation needed")
+        noWhisper.runtimeDownloadAvailable = false
         var missing = voiceReady(); missing.whisperReady = false; missing.requestedTier = nil; missing.missingBytes = ["balanced": 5_233_688_222, "max": 4_746_074_021]
         let dl = row(missing)
         check(dl.action == .voiceDownload("balanced") && dl.actionTitle == "Download 5.2 GB" && dl.detail?.contains("is free") == true, "voice download", "\(dl.actionTitle ?? "") \(dl.detail ?? "")")
@@ -456,18 +460,18 @@ struct ProviderConnectChecks {
             lines.append(tier)
             return "Voice models are ready."
         }
-        g.applyTier = { applied.append($0) }
+        g.applyTier = { applied.append($0) }; g.applyRecommendation = { applied.append("auto") }
         g.startVoiceSetup()
         check(g.voiceRunning && !g.skipped.contains(.voice), "voice flow", "starting unskips the row")
         g.startVoiceSetup()
         for _ in 0..<100 where g.voiceRunning { try? await Task.sleep(for: .milliseconds(20)) }
-        check(lines == ["balanced"] && applied == ["balanced"] && g.voiceMessage == "Voice models are ready.", "voice flow", "downloads once, then applies the tier: \(lines) \(applied)")
+        check(lines == ["auto"] && applied == ["auto"] && g.voiceMessage == "Voice models are ready.", "voice flow", "downloads once, then applies the tier: \(lines) \(applied)")
         // Cancel.
         let c = SetupGuideState(defaults: freshDefaults())
         c.voice = missing
         var cancelApplied: [String] = []
         c.runVoiceSetup = { _, _ in try await Task.sleep(for: .seconds(30)); return "x" }
-        c.applyTier = { cancelApplied.append($0) }
+        c.applyTier = { cancelApplied.append($0) }; c.applyRecommendation = { cancelApplied.append("auto") }
         c.startVoiceSetup()
         c.cancelVoiceSetup()
         for _ in 0..<100 where c.voiceRunning { try? await Task.sleep(for: .milliseconds(20)) }

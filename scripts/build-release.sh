@@ -52,6 +52,8 @@ mkdir -p "$BUILD_DIR" "$APP/Contents/MacOS" "$APP/Contents/Resources" "$DIST_DIR
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   -o "$APP/Contents/MacOS/COS Control"
 
+cp "$ROOT/Resources/whisper-runtime.json" "$APP/Contents/Resources/"
+cp -R "$ROOT/Resources/VoiceBenchmark" "$APP/Contents/Resources/"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp "$ROOT/Resources/COSMark.svg" "$APP/Contents/Resources/COSMark.svg"

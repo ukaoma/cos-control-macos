@@ -393,6 +393,10 @@ enum VoiceSetupCore {
 
     /// The server's own search for whisper.cpp: its two Homebrew paths, then PATH.
     static func whisperPath(_ name: String, in environment: ProviderSearchEnvironment) -> String? {
+        let key = name == "whisper-cli" ? "COS_WHISPER_CLI_BIN" : "COS_WHISPER_SERVER_BIN"
+        if let configured = environment.env[key], !configured.isEmpty {
+            return configured.hasPrefix("/") && environment.isExecutable(configured) ? configured : nil
+        }
         let known = ["/opt/homebrew/bin/\(name)", "/usr/local/bin/\(name)"]
         let path = (environment.env["PATH"] ?? "").split(separator: ":").map { "\($0)/\(name)" }.filter { $0.hasPrefix("/") }
         return (known + path).first { environment.isExecutable($0) }
@@ -459,3 +463,20 @@ enum VoiceSetupCore {
 
 /// voice-setup's child process group, for the helper's SIGTERM handler (Cancel). 0 when nothing runs.
 nonisolated(unsafe) var voiceSetupChildGroup: pid_t = 0
+nonisolated(unsafe) var voiceSetupCancelled: sig_atomic_t = 0
+
+// P1.5: deterministic policy kept apart from download/process effects.
+struct VoiceBenchmarkPolicy {
+    static let version = 1
+    // Provisional conservative threshold. Validate on smaller Macs before promoting broadly.
+    static let maximumTurboRTF = 0.25
+    static func recommendation(memoryBytes: UInt64, realTimeFactor: Double, onBattery: Bool, metal: Bool) -> String {
+        guard realTimeFactor.isFinite, realTimeFactor > 0, metal, !onBattery,
+              memoryBytes >= 16 * 1_073_741_824, realTimeFactor <= maximumTurboRTF else { return "balanced" }
+        return "max"
+    }
+    static func chosen(requested: String, existing: String?, recommendation: String) -> String {
+        if let tier = VoiceSetupCore.normalizedTier(requested) { return tier }
+        return existing.flatMap(VoiceSetupCore.normalizedTier) ?? recommendation
+    }
+}
