@@ -1213,6 +1213,10 @@ private struct SessionPetRoot: View {
         }
         Divider()
         Button("Hide pet") { model.setPetEnabled(false) }
+        Divider()
+        // Onboarding P1: the panel's settings and the setup guide, reachable from the pet too.
+        Button("Settings…") { model.showSettings?() }
+        Button("Setup guide…") { model.showSetupGuide?() }
     }
 
     private func handleSpriteClick() {

@@ -68,6 +68,7 @@ struct ProviderStatusChecks {
         ollama()
         claudeDesktopOnly()
         json()
+        voice()
         if failures > 0 {
             FileHandle.standardError.write(Data("provider-status checks: \(failures) failed, \(passes) passed\n".utf8))
             exit(1)
@@ -217,5 +218,28 @@ struct ProviderStatusChecks {
         check(object["signIn"] as? String == "signInRequired" && object["installed"] as? Bool == true, "json", "\(object)")
         check(JSONSerialization.isValidJSONObject(["providers": [object]]), "json", "serializable")
         check((object["candidates"] as? [[String: Any]])?.contains { $0["chosen"] as? Bool == true } == true, "json", "candidates mark the chosen one")
+    }
+
+    static func voice() {
+        let all = VoiceSetupCore.missingBytes(tier: "balanced", sizes: [:], voiceprintPresent: false)
+        check(all == 1_624_555_275 + 487_614_201 + 3_095_033_483 + 26_485_263, "voice sizes", "Balanced from nothing: \(all)")
+        check(VoiceSetupCore.missingBytes(tier: "max", sizes: [:], voiceprintPresent: true) == 1_624_555_275 + 3_095_033_483, "voice sizes", "Max needs no Small.en")
+        let have = ["ggml-large-v3-turbo.bin": Int64(1_624_555_275), "ggml-small.en.bin": 487_614_201, "ggml-large-v3.bin": 3_095_033_483]
+        check(VoiceSetupCore.missingBytes(tier: "balanced", sizes: have, voiceprintPresent: true) == 0, "voice sizes", "all present: nothing to download")
+        check(VoiceSetupCore.missingBytes(tier: "balanced", sizes: ["ggml-large-v3.bin": 10], voiceprintPresent: true) > 3_000_000_000, "voice sizes", "a truncated file is missing")
+        check(!VoiceSetupCore.enoughDisk(missing: 5_000_000_000, freeBytes: 5_500_000_000, partialBytes: 0), "voice disk", "the 750 MB margin is kept")
+        check(VoiceSetupCore.enoughDisk(missing: 5_000_000_000, freeBytes: 5_000_000_000, partialBytes: 800_000_000), "voice disk", "partial downloads count, as the server counts them")
+        check(VoiceSetupCore.enoughDisk(missing: 0, freeBytes: 0, partialBytes: 0), "voice disk", "nothing missing needs no space")
+        var p = VoiceSetupCore.progress("  Downloading ggml-large-v3-turbo (~1.5 GB).\n", current: nil)
+        check(p.model == "Large-v3-Turbo" && p.percent == nil, "voice progress", "\(p)")
+        p = VoiceSetupCore.progress("#####      31.4%\r########    52.0%\r", current: p.model)
+        check(p.model == "Large-v3-Turbo" && p.percent == 52.0, "voice progress", "curl's redraws: \(p)")
+        p = VoiceSetupCore.progress("Downloading ggml-large-v3 (~3.1 GB).", current: p.model)
+        check(p.model == "Large-v3" && VoiceSetupCore.progressMessage(model: p.model, percent: 7) == "Downloading Large-v3 (3.1 GB): 7%", "voice progress", "\(p)")
+        check(VoiceSetupCore.progress("Downloading ggml-small.en (~466 MB).", current: nil).model == "Small.en", "voice progress", "small.en")
+        check(VoiceSetupCore.normalizedTier(" Max ") == "max" && VoiceSetupCore.normalizedTier("turbo") == nil, "voice tier", "only Balanced or Max")
+        let brew = mac(["/opt/homebrew/bin/whisper-cli"])
+        check(VoiceSetupCore.whisperPath("whisper-cli", in: brew) == "/opt/homebrew/bin/whisper-cli" && VoiceSetupCore.whisperPath("whisper-server", in: brew) == nil, "voice whisper.cpp", "found only where the server looks")
+        check(VoiceSetupCore.shellQuote("/a b/it's") == "'/a b/it'\\''s'", "voice terminal", VoiceSetupCore.shellQuote("/a b/it's"))
     }
 }

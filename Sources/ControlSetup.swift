@@ -12,12 +12,14 @@ final class SetupWindowPresenter: ObservableObject {
             let host = NSHostingController(rootView: ControlSetupView(model: model))
             let window = NSWindow(contentViewController: host)
             window.title = "Welcome to COS"
-            window.styleMask = [.titled, .closable, .miniaturizable]
-            window.setContentSize(NSSize(width: 540, height: 540))
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.setContentSize(NSSize(width: 560, height: 680))
             window.isReleasedWhenClosed = false
             window.center()
             controller = NSWindowController(window: window)
         }
+        // The same window is the setup guide once COS is set up (Dock menu, Help, the panel, the pet).
+        controller?.window?.title = model.status.needsFirstRun || !model.status.running ? "Welcome to COS" : "COS setup guide"
         controller?.showWindow(nil)
         controller?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -63,16 +65,11 @@ struct ControlSetupView: View {
                     Button("Open Sessions") { model.openActivity?(.sessions) }
                         .buttonStyle(COSPrimaryButtonStyle())
                     PetIntroLine(model: model)
-                    Text("Connect your meeting sources and glasses when you’re ready. Voice features have additional downloads.")
+                    // The setup guide: every AI and the settings that go with it, each skippable and resumable here.
+                    Text("Finish setting up").font(COSType.body(18, weight: .semibold))
+                    Text("Skip anything for now. This guide stays in the Dock menu, Help, the menu-bar panel and the pet's menu.")
                         .font(COSType.body(13)).foregroundStyle(.secondary)
-                    VStack(alignment: .leading, spacing: 0) {
-                        JevGuideRow(model: model)
-                        Divider()
-                        GlassesGuideRow(openURL: { NSWorkspace.shared.open($0) })
-                    }
-                    .padding(.horizontal, 14)
-                    .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
+                    SetupGuideView(model: model, provider: model.providerGuide, guide: model.setupGuide, permissions: model.permissionGuide)
                 } else if model.status.needsFirstRun {
                     // Connect your AI (onboarding P1): per provider, installed and signed in, with Sign in, Skip for now
                     // and Pass to an AI app. Get started's hard gate is unchanged from 0.5.267 (installed).

@@ -18,6 +18,15 @@ extension DockPresence {
 @MainActor
 final class COSAppDelegate: NSObject, NSApplicationDelegate {
     static var onReopen: (@MainActor () -> Void)?
+    static var onOpenActivity: (@MainActor () -> Void)?
+    static var onSetupGuide: (@MainActor () -> Void)?
+    static var onSettings: (@MainActor () -> Void)?
+
+    /// Right-click on the Dock icon: Open Activity, Setup guide…, Settings….
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? { Self.makeDockMenu(target: self) }
+    @objc func dockOpenActivity() { Self.onOpenActivity?() }
+    @objc func dockSetupGuide() { Self.onSetupGuide?() }
+    @objc func dockSettings() { Self.onSettings?() }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         DockPresence.apply(DockPresence.mode(stored: UserDefaults.standard.string(forKey: DockPresence.modeKey)))
@@ -281,33 +290,26 @@ struct ProviderConnectCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Connect your AI").font(COSType.display(13, weight: .semibold))
-                Text(guide.summary).font(COSType.body(11)).foregroundStyle(.secondary)
+                Text("Setup guide").font(COSType.display(13, weight: .semibold))
+                Text(SetupGuideRules.finishTitle(SetupGuideRules.rows(model.setupFacts(provider: guide, guide: model.setupGuide), skipped: model.setupGuide.skipped))
+                        .replacingOccurrences(of: "Finish setup · ", with: ""))
+                    .font(COSType.body(11)).foregroundStyle(.secondary)
                 Spacer()
                 Button("Done") { guide.closePanelRoute() }.buttonStyle(COSTextButtonStyle())
             }
-            Text("Each AI you sign in to can run your sessions. COS checks again on its own while this is open.")
+            Text("Each AI you sign in to can run your sessions. Skip anything for now and come back here. COS checks again on its own while this is open.")
                 .font(COSType.body(11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            ProviderConnectList(guide: guide)
-            if let notice = guide.notice {
-                Text(notice).font(COSType.body(11)).foregroundStyle(COSPalette.accent)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
             if let error = guide.error {
                 Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.danger)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Divider()
-            JevGuideRow(model: model)
-            Divider()
-            GlassesGuideRow(openURL: { _ = guide.openURL($0) })
+            SetupGuideView(model: model, provider: guide, guide: model.setupGuide, permissions: model.permissionGuide)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(13)
         .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
-        .providerPolling(guide)
     }
 }
 
@@ -323,7 +325,7 @@ struct PanelConnectAIRow: View {
             } else {
                 Button { guide.openInPanel() } label: {
                     HStack(spacing: 8) {
-                        Label("AI apps", systemImage: "sparkles")
+                        Label("Setup guide", systemImage: "sparkles")
                             .font(COSType.body(12, weight: .medium))
                         Spacer(minLength: 6)
                         if guide.needCount > 0 {
@@ -337,40 +339,11 @@ struct PanelConnectAIRow: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Which AI apps COS can use, and one click to sign in to each")
+                .help("Your AI apps, local voice and their settings, each with one click to set up")
                 // One read for the summary; no polling until the card is open.
                 .task { if guide.report == nil { await guide.refresh() } }
             }
         }
-    }
-}
-
-/// F6: whether Work's Jev key is set (the key itself is never read), where to get one and what it unlocks.
-struct JevGuideRow: View {
-    @ObservedObject var model: ControllerModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Jev (TypeSafe)").font(COSType.body(12.5, weight: .semibold))
-                Spacer(minLength: 6)
-                HStack(spacing: 5) {
-                    Circle().fill(model.jevStatus?.configured == true ? COSPalette.green : COSPalette.muted).frame(width: 7, height: 7)
-                    Text(GuideExtras.jevStatus(configured: model.jevStatus?.configured, available: model.jevStatus?.available,
-                                               serverRunning: model.status.running))
-                        .font(COSType.body(11)).foregroundStyle(model.jevStatus?.configured == true ? COSPalette.green : COSPalette.muted)
-                }.fixedSize()
-            }
-            Text("Optional. Unlocks Work's suggestions: Continue, Fork or New for a task, and sorting meetings into Intake. Paste a key in Settings, under Jev (TypeSafe).")
-                .font(COSType.body(11)).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if model.jevStatus?.configured != true {
-                Button("Get a key at typesafe.ai") { NSWorkspace.shared.open(GuideExtras.typesafeURL) }
-                    .buttonStyle(COSTextButtonStyle())
-            }
-        }
-        .padding(.vertical, 7)
-        .task { if model.jevStatus == nil, model.status.running { await model.loadJevStatus() } }
     }
 }
 
@@ -449,5 +422,283 @@ struct AgentCliDetailLine: View {
         if let v = model.status.codexCliVersion { versions.append("Codex \(v)") }
         if let v = model.status.cursorCliVersion { versions.append("Cursor \(v)") }
         return versions.isEmpty ? nil : versions.joined(separator: " · ")
+    }
+}
+
+// MARK: - The setup guide (Miles 2026-10-08 10:52)
+
+extension ControllerModel {
+    /// What the setup guide's rows read, from the helper, the server's status and the permission guide.
+    func setupFacts(provider: ProviderGuide, guide: SetupGuideState) -> SetupFacts {
+        var facts = SetupFacts()
+        facts.report = provider.report
+        facts.providerSkipped = provider.skipped
+        facts.serverRunning = status.running
+        if var voice = guide.voice {
+            voice.whisperReady = status.whisperReady
+            voice.degraded = status.transcriptionTierDegraded
+            voice.degradedReason = status.transcriptionTierReason
+            voice.requestedTier = status.transcriptionRequestedTier
+            voice.previewModel = status.livePreviewModel
+            voice.commitModel = status.liveCommitModel
+            voice.polishModel = status.hqPolishModel
+            facts.voice = voice
+        }
+        facts.voiceTier = guide.voiceTier
+        facts.claudeSessionsEnabled = status.claudeSessionsEnabled
+        facts.threadAttachSupported = status.threadAttachSupported
+        facts.threadAttachEnabled = status.threadAttachEnabled
+        facts.jevConfigured = jevStatus?.configured
+        facts.permissionsNeedCount = permissionGuide.needCount
+        facts.ollamaPinnedModel = status.ollamaConfiguredModel
+        return facts
+    }
+}
+
+/// One non-provider row: status, what it unlocks, one action, Skip for now.
+struct SetupRowView: View {
+    @ObservedObject var model: ControllerModel
+    @ObservedObject var guide: SetupGuideState
+    let row: SetupRow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(row.title).font(COSType.body(12.5, weight: .semibold))
+                Spacer(minLength: 6)
+                HStack(spacing: 5) {
+                    if row.id == .voice && guide.voiceRunning { ProgressView().controlSize(.mini) }
+                    else { Circle().fill(row.done ? COSPalette.green : row.skipped || row.afterSetup ? COSPalette.muted : COSPalette.amber).frame(width: 7, height: 7) }
+                    Text(row.skipped && !row.done ? "Skipped for now" : row.status)
+                        .font(COSType.body(11, weight: row.done || row.skipped || row.afterSetup ? .regular : .semibold))
+                        .foregroundStyle(row.done ? COSPalette.green : row.skipped || row.afterSetup ? COSPalette.muted : COSPalette.amber)
+                }.fixedSize()
+            }
+            Text(row.unlocks).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let detail = row.detail {
+                Text(detail).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+            }
+            if row.id == .voice { voiceControls }
+            if !row.done && !row.afterSetup {
+                HStack(spacing: 12) {
+                    if let title = row.actionTitle, row.action != .none {
+                        Button(title) { perform(row.action) }
+                            .buttonStyle(COSPrimaryButtonStyle())
+                            .disabled(row.id == .voice && guide.voiceRunning)
+                    }
+                    if row.id == .voice && guide.voiceRunning {
+                        Button("Cancel") { guide.cancelVoiceSetup() }.buttonStyle(COSTextButtonStyle())
+                    } else if !row.skipped {
+                        Button("Skip for now") { guide.skip(row.id) }.buttonStyle(COSTextButtonStyle())
+                    } else {
+                        Button("Set up now") { guide.unskip(row.id) }.buttonStyle(COSTextButtonStyle())
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 2)
+            }
+        }
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Balanced or Max in plain words, the exact whisper.cpp command, live progress, and the Terminal fallback.
+    @ViewBuilder private var voiceControls: some View {
+        if let progress = guide.voiceProgress, guide.voiceRunning {
+            Text(progress).font(COSType.mono(10.5)).foregroundStyle(COSPalette.accent)
+        }
+        if let message = guide.voiceMessage {
+            Text(message).font(COSType.body(10.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        if case .voiceNeedsWhisper(let command) = row.action {
+            ProviderCommandLine(command: command) { copyText(command) }
+            if guide.voice?.brew == false {
+                Button("Get Homebrew at brew.sh") { NSWorkspace.shared.open(URL(string: "https://brew.sh")!) }.buttonStyle(COSTextButtonStyle())
+            }
+        }
+        if !row.done && !row.afterSetup, guide.voice?.whisperCli == true, !guide.voiceRunning {
+            VStack(alignment: .leading, spacing: 6) {
+                COSViewSwitch("Voice", selection: $guide.voiceTier,
+                              options: [COSViewOption("balanced", "Balanced"), COSViewOption("max", "Max")], showsLabel: false)
+                Text(VoiceTier.explanation(guide.voiceTier)).font(COSType.body(10.5)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let command = guide.voice?.terminalCommand[guide.voiceTier] {
+                    Button("Or run it in Terminal") {
+                        if !runInTerminal(command) { copyText(command) }
+                    }
+                    .buttonStyle(COSTextButtonStyle())
+                    .help("Runs the same setup in Terminal with COS Control's own Node, for when you want to watch it")
+                }
+            }
+        }
+    }
+
+    private func copyText(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func runInTerminal(_ command: String) -> Bool { model.providerGuide.runInTerminal(ProviderLogin.terminalScript(command)) }
+
+    private func perform(_ action: SetupAction) {
+        switch action {
+        case .provider, .none: break
+        case .openOllama:
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.electron.ollama") {
+                NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+            } else { _ = model.providerGuide.openURL(AIProvider.ollama.downloadURL) }
+        case .voiceNeedsWhisper: Task { await guide.refreshVoice() }
+        case .voiceDownload: guide.startVoiceSetup()
+        case .voiceApply(let tier): model.setTranscriptionTier(tier)
+        case .turnOnSessions: model.setClaudeSessionsEnabled(true)
+        case .turnOnContinue: model.setThreadAttachEnabled(true)
+        case .addJevKey: model.showSettings?()
+        case .openPermissions: model.permissionGuide.openInPanel()
+        }
+    }
+}
+
+/// The whole guide: your AI (the Connect your AI rows, with Sign in and Pass to), then local and voice, then the
+/// settings that go with them. Every row can be skipped and set up later from here.
+struct SetupGuideView: View {
+    @ObservedObject var model: ControllerModel
+    @ObservedObject var provider: ProviderGuide
+    @ObservedObject var guide: SetupGuideState
+    @ObservedObject var permissions: PermissionGuide
+
+    var body: some View {
+        let rows = SetupGuideRules.rows(model.setupFacts(provider: provider, guide: guide), skipped: guide.skipped)
+        VStack(alignment: .leading, spacing: 10) {
+            section("Your AI") {
+                ForEach(Array(AIProvider.agents.enumerated()), id: \.element.id) { index, p in
+                    if index > 0 { Divider() }
+                    ProviderRowView(guide: provider, provider: p)
+                    if let row = rows.first(where: { $0.id.rawValue == p.rawValue }), !row.done, provider.row(p).action == .install {
+                        Button(row.skipped ? "Set up now" : "Skip for now") {
+                            row.skipped ? provider.unskip(p) : provider.skip(p)
+                        }
+                        .buttonStyle(COSTextButtonStyle())
+                        .padding(.bottom, 6)
+                    }
+                }
+            }
+            section("On this Mac") {
+                ForEach(Array(rows.filter { [.ollama, .voice].contains($0.id) }.enumerated()), id: \.element.id) { index, row in
+                    if index > 0 { Divider() }
+                    SetupRowView(model: model, guide: guide, row: row)
+                }
+            }
+            section("Settings for your AI") {
+                ForEach(Array(rows.filter { [.sessions, .continueThreads, .jev, .permissions].contains($0.id) }.enumerated()), id: \.element.id) { index, row in
+                    if index > 0 { Divider() }
+                    SetupRowView(model: model, guide: guide, row: row)
+                }
+            }
+            if let notice = provider.notice {
+                Text(notice).font(COSType.body(11)).foregroundStyle(COSPalette.accent).fixedSize(horizontal: false, vertical: true)
+            }
+            GlassesGuideRow(openURL: { _ = provider.openURL($0) })
+            HStack(spacing: 14) {
+                if guide.hidden {
+                    Button("Show Finish setup at the top again") { guide.show() }.buttonStyle(COSTextButtonStyle())
+                } else {
+                    Button("Hide setup guide") { guide.hide() }.buttonStyle(COSTextButtonStyle())
+                        .help("Removes the Finish setup card. The guide stays in the Dock menu, the Help menu, the panel and the pet's menu")
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .providerPolling(provider)
+        .task { await guide.refreshVoice(); if model.jevStatus == nil, model.status.running { await model.loadJevStatus() } }
+    }
+
+    @ViewBuilder private func section<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title).font(COSType.body(13, weight: .semibold)).padding(.bottom, 2)
+            VStack(alignment: .leading, spacing: 0) { content() }
+                .padding(.horizontal, 12)
+                .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line, lineWidth: 1))
+        }
+    }
+}
+
+/// "Finish setup · N of M" at the top of the panel and Activity home, until every row is done or skipped, or Hide.
+struct FinishSetupCard: View {
+    @ObservedObject var model: ControllerModel
+    @ObservedObject var provider: ProviderGuide
+    @ObservedObject var guide: SetupGuideState
+    @ObservedObject var permissions: PermissionGuide
+    let open: () -> Void
+
+    var body: some View {
+        let rows = SetupGuideRules.rows(model.setupFacts(provider: provider, guide: guide), skipped: guide.skipped)
+        if SetupGuideRules.showFinishCard(rows, hidden: guide.hidden) {
+            let next = rows.first { !$0.handled && !$0.afterSetup }
+            let p = SetupGuideRules.progress(rows)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(SetupGuideRules.finishTitle(rows)).font(COSType.display(13, weight: .semibold))
+                    Spacer()
+                    Button("Hide") { guide.hide() }.buttonStyle(COSTextButtonStyle())
+                        .help("Hide the setup guide. Reopen it from the Dock menu, Help, the panel or the pet")
+                }
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(COSPalette.line)
+                        Capsule().fill(COSPalette.accent).frame(width: geo.size.width * CGFloat(p.handled) / CGFloat(max(1, p.total)))
+                    }
+                }
+                .frame(height: 4)
+                if let next {
+                    Text("Next: \(next.title). \(next.unlocks)").font(COSType.body(11)).foregroundStyle(.secondary)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                }
+                Button("Continue setup") { open() }.buttonStyle(COSPrimaryButtonStyle())
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(13)
+            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.accent.opacity(0.55), lineWidth: 1))
+            .task { if provider.report == nil { await provider.refresh() }; if guide.voice == nil { await guide.refreshVoice() } }
+        }
+    }
+}
+
+/// Opens the menu-bar panel from elsewhere (the pet's and the Dock's Settings…): a click on COS Control's own menu-bar
+/// button, found in the app's status bar window. Returns false when it cannot be found; the caller then opens the
+/// setup guide window instead.
+@MainActor enum MenuBarPanelOpener {
+    static func open() -> Bool {
+        for window in NSApp.windows where String(describing: type(of: window)).contains("StatusBarWindow") {
+            if let button = firstButton(in: window.contentView) {
+                button.performClick(nil)
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func firstButton(in view: NSView?) -> NSButton? {
+        guard let view else { return nil }
+        if let button = view as? NSButton { return button }
+        for sub in view.subviews { if let found = firstButton(in: sub) { return found } }
+        return nil
+    }
+}
+
+extension COSAppDelegate {
+    /// The Dock menu's items, in order. Built here so a check can read the titles without showing a menu.
+    static let dockMenuTitles = ["Open Activity", "Setup guide…", "Settings…"]
+
+    static func makeDockMenu(target: AnyObject) -> NSMenu {
+        let menu = NSMenu()
+        let actions: [Selector] = [#selector(COSAppDelegate.dockOpenActivity), #selector(COSAppDelegate.dockSetupGuide), #selector(COSAppDelegate.dockSettings)]
+        for (title, action) in zip(dockMenuTitles, actions) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = target
+            menu.addItem(item)
+        }
+        return menu
     }
 }

@@ -86,7 +86,9 @@ pin(not re.search(r"URLSession|NWConnection|http[s]?://(?!github\.com/jaywcjlove
 files = ["PermissionGuideModel.swift", "PermissionGuideSystem.swift", "PermissionFlowVendored.swift", "PermissionDragFlow.swift", "PermissionGuideViews.swift"]
 for script in list((root / "Tests").glob("*.sh")) + list((root / "scripts").glob("*.sh")):
     text = script.read_text(encoding="utf-8")
-    for command in re.findall(r"swiftc[^\n]*(?:\\\n[^\n]*)*", text):
+    # Join continuation lines first: a greedy [^\n]* swallowed the trailing backslash, so the old pattern saw only the
+    # first line of each command and this pin could never fail (found by a surviving mutant, 2026-10-08).
+    for command in [line for line in text.replace("\\\n", " ").splitlines() if "swiftc" in line]:
         if '"$ROOT/Sources/ControllerModel.swift"' in command:
             for f in files:
                 pin(f'"$ROOT/Sources/{f}"' in command, "source lists", f"{script.name} compiles ControllerModel without {f}")

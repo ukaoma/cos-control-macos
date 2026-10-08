@@ -23,6 +23,16 @@ struct COSControlApp: App {
         HotKeyCenter.shared.register(model.activityHotKey)
         model.openActivity = { section in activityWindow.show(model: model, section: section) }
         model.openSetup = { setupWindow.show(model: model) }
+        // The setup guide and Settings, from the Dock menu, Help, the panel and the pet (Miles 2026-10-08 10:52).
+        model.showSetupGuide = { setupWindow.show(model: model) }
+        model.showSettings = {
+            model.panelScrollTarget = "settings"
+            // The menu-bar panel scrolls to its settings when it opens; without a panel to open, the setup guide.
+            if !MenuBarPanelOpener.open() { setupWindow.show(model: model) }
+        }
+        COSAppDelegate.onOpenActivity = { activityWindow.show(model: model, section: nil) }
+        COSAppDelegate.onSetupGuide = { setupWindow.show(model: model) }
+        COSAppDelegate.onSettings = { model.showSettings?() }
         // A Dock click opens Welcome while COS is not set up, else Activity.
         COSAppDelegate.onReopen = {
             switch DockPresence.reopenTarget(needsFirstRun: model.status.needsFirstRun, activityAvailable: model.openActivity != nil) {
@@ -66,5 +76,18 @@ struct COSControlApp: App {
                 .accessibilityLabel("COS Control")
         }
         .menuBarExtraStyle(.window)
+        .commands {
+            // In the Dock, COS Control has a menu bar of its own: the setup guide lives in the app menu and Help.
+            CommandGroup(after: .appInfo) {
+                Button("Setup guide…") { setupWindow.show(model: model) }
+            }
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { model.showSettings?() }.keyboardShortcut(",")
+            }
+            CommandGroup(replacing: .help) {
+                Button("Setup guide…") { setupWindow.show(model: model) }
+                Button("COS Control help") { model.openSetupGuide() }
+            }
+        }
     }
 }

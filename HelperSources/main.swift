@@ -568,6 +568,8 @@ final class COSControlHelper {
         }
         case "ollama-tags": try emitOllamaTags()
         case "provider-status": try emitProviderStatus(args: args)
+        case "voice-status": emitVoiceStatus()
+        case "voice-setup": try runVoiceSetup(args: args)
         case "set-thread-attach": try withMutationLock {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing Continue agent threads setting") }
             try setThreadAttach(value)
@@ -5739,6 +5741,153 @@ final class COSControlHelper {
             "providers": rows,
             "checkedAt": ISO8601DateFormatter().string(from: Date()),
         ])
+    }
+
+    // MARK: Voice (local Whisper) setup, in the app (onboarding P1)
+
+    /// Read-only: whisper.cpp, the model files, disk space, and the Terminal fallback command. No download, no write.
+    private func voiceSetupFacts() -> [String: Any] {
+        let environment = ProviderSearchEnvironment(
+            home: home.path, env: ProcessInfo.processInfo.environment,
+            isExecutable: { FileManager.default.isExecutableFile(atPath: $0) }, listDirectory: { _ in [] })
+        let directory = VoiceSetupCore.modelDirectory(home: home.path)
+        var sizes: [String: Int64] = [:]
+        var partial: Int64 = 0
+        var rows: [[String: Any]] = []
+        for model in VoiceSetupCore.models {
+            let path = "\(directory)/\(model.name)"
+            let size = ((try? fm.attributesOfItem(atPath: path))?[.size] as? NSNumber)?.int64Value
+            if let size { sizes[model.name] = size }
+            partial += ((try? fm.attributesOfItem(atPath: path + ".partial"))?[.size] as? NSNumber)?.int64Value ?? 0
+            rows.append(["name": model.name, "label": model.label, "bytes": model.bytes,
+                         "present": (size ?? 0) >= model.minBytes, "tiers": model.tiers.sorted()])
+        }
+        let voiceprint = configDir.appendingPathComponent("models/\(VoiceSetupCore.voiceprintFile)").path
+        let voiceprintPresent = (((try? fm.attributesOfItem(atPath: voiceprint))?[.size] as? NSNumber)?.int64Value ?? 0) > 1_000_000
+        var probe = URL(fileURLWithPath: directory)
+        while !fm.fileExists(atPath: probe.path), probe.path != "/" { probe.deleteLastPathComponent() }
+        let free = ((try? probe.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage) ?? 0
+        var missing: [String: Any] = [:], enough: [String: Any] = [:], terminal: [String: Any] = [:]
+        let npx = managedNodeExecutable("npx") ?? findExecutable("npx")
+        for tier in ["balanced", "max"] {
+            let bytes = VoiceSetupCore.missingBytes(tier: tier, sizes: sizes, voiceprintPresent: voiceprintPresent)
+            missing[tier] = bytes
+            enough[tier] = VoiceSetupCore.enoughDisk(missing: bytes, freeBytes: free, partialBytes: partial)
+            if let npx {
+                // The bundled npx by absolute path, with its own bin first on PATH: a fresh Mac has no npx in Terminal.
+                let bin = URL(fileURLWithPath: npx).deletingLastPathComponent().path
+                terminal[tier] = "PATH=\(VoiceSetupCore.shellQuote(bin)):\"$PATH\" \(VoiceSetupCore.shellQuote(npx)) --yes @gotcos/glasses-server@latest --setup-transcription --transcription-tier \(tier) --prepare-only"
+            }
+        }
+        let manifest = loadManifest()
+        let cli = manifest.map { packageRoot(for: $0.generationPath).appendingPathComponent("bin/cli.cjs").path }
+        return [
+            "whisperCli": VoiceSetupCore.whisperPath("whisper-cli", in: environment) ?? NSNull(),
+            "whisperServer": VoiceSetupCore.whisperPath("whisper-server", in: environment) ?? NSNull(),
+            "brew": ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].first { fm.isExecutableFile(atPath: $0) } ?? NSNull(),
+            "models": rows, "voiceprintPresent": voiceprintPresent,
+            "freeBytes": free, "partialBytes": partial, "missingBytes": missing, "enoughDisk": enough,
+            "setupAvailable": cli.map { fm.fileExists(atPath: $0) } ?? false,
+            "terminalCommand": terminal,
+        ]
+    }
+
+    private func emitVoiceStatus() {
+        emit(ok: true, message: "Voice setup status", details: voiceSetupFacts())
+    }
+
+    /// Runs the installed server's own `--setup-transcription --prepare-only` with COS Control's Node, streaming each
+    /// download as progress lines ("Downloading Large-v3 (3.1 GB): 45%"). SIGTERM (Cancel) stops the whole child
+    /// group; partial downloads stay and the next run resumes them. Applying the tier is a separate, transactional
+    /// `set-transcription-tier`.
+    private func runVoiceSetup(args: [String]) throws {
+        guard let raw = args.dropFirst().first, let tier = VoiceSetupCore.normalizedTier(raw) else {
+            throw HelperError.message("Choose Balanced or Max.")
+        }
+        let facts = voiceSetupFacts()
+        guard facts["whisperCli"] is String, facts["whisperServer"] is String else {
+            throw HelperError.message("Local voice needs whisper.cpp, which COS does not include. Install it with Homebrew (brew install whisper-cpp), then try again.")
+        }
+        guard (facts["enoughDisk"] as? [String: Any])?[tier] as? Bool == true else {
+            let need = ((facts["missingBytes"] as? [String: Any])?[tier] as? Int64 ?? 0) + VoiceSetupCore.safetyMarginBytes
+            throw HelperError.message("Not enough free disk space: about \(VoiceSetupCore.gigabytes(need)) is needed. Free some space, then try again.")
+        }
+        guard let manifest = loadManifest() else { throw HelperError.message("Finish Get started first: voice setup uses the installed COS server.") }
+        let cli = packageRoot(for: manifest.generationPath).appendingPathComponent("bin/cli.cjs")
+        guard fm.fileExists(atPath: cli.path),
+              let node = manifest.nodePath.flatMap({ fm.isExecutableFile(atPath: $0) ? $0 : nil }) ?? managedNodeExecutable("node") ?? findExecutable("node") else {
+            throw HelperError.message("The installed COS server is incomplete. Repair it in COS Control, then try again.")
+        }
+        try ensureDirectories()
+        let lockPath = support.appendingPathComponent("voice-setup.lock").path
+        let lock = open(lockPath, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        guard lock >= 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else { throw HelperError.message("Voice setup is already running.") }
+        defer { close(lock) }
+        let environment = nodeToolEnvironment(node: node).merging(["NO_COLOR": "1", "FORCE_COLOR": "0"]) { _, new in new }
+        let output = try spawnStreaming(node, [cli.path, "--setup-transcription", "--transcription-tier", tier, "--prepare-only"],
+                                        environment: environment, workingDirectory: home.path)
+        let tail = String(stripEmails(output.text).suffix(1500))
+        guard output.code == 0 else {
+            throw HelperError.message("Voice setup stopped before it finished. Downloads so far are kept, and the next run resumes them. " + (tail.split(separator: "\n").last.map(String.init) ?? ""))
+        }
+        emit(ok: true, message: "Voice models are ready. Apply \(tier == "max" ? "Max" : "Balanced") to start using them.",
+             details: ["tier": tier, "log": tail])
+    }
+
+    /// posix_spawn in its own process group, so Cancel (SIGTERM to this helper) stops node AND the curl it runs.
+    private func spawnStreaming(_ executable: String, _ arguments: [String], environment: [String: String],
+                                workingDirectory: String) throws -> (code: Int32, text: String) {
+        var pipeFDs: [Int32] = [0, 0]
+        guard pipe(&pipeFDs) == 0 else { throw HelperError.message("Could not prepare setup output.") }
+        var actions: posix_spawn_file_actions_t? = nil
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+        posix_spawn_file_actions_adddup2(&actions, pipeFDs[1], 1)
+        posix_spawn_file_actions_adddup2(&actions, pipeFDs[1], 2)
+        posix_spawn_file_actions_addclose(&actions, pipeFDs[0])
+        posix_spawn_file_actions_addchdir_np(&actions, workingDirectory)
+        var attributes: posix_spawnattr_t? = nil
+        posix_spawnattr_init(&attributes)
+        defer { posix_spawnattr_destroy(&attributes) }
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP))
+        posix_spawnattr_setpgroup(&attributes, 0)
+        let argv = ([executable] + arguments).map { strdup($0) } + [nil]
+        let envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        defer { argv.forEach { free($0) }; envp.forEach { free($0) } }
+        var pid: pid_t = 0
+        let spawned = posix_spawn(&pid, executable, &actions, &attributes, argv, envp)
+        close(pipeFDs[1])
+        guard spawned == 0 else { close(pipeFDs[0]); throw HelperError.message("Could not start voice setup (\(spawned)).") }
+        voiceSetupChildGroup = pid
+        signal(SIGTERM) { _ in
+            if voiceSetupChildGroup > 0 { killpg(voiceSetupChildGroup, SIGTERM) }
+            _exit(143)
+        }
+        defer { voiceSetupChildGroup = 0; signal(SIGTERM, SIG_DFL) }
+        var text = ""
+        var model: String?
+        var lastMessage: String?
+        var buffer = [UInt8](repeating: 0, count: 16384)
+        while true {
+            let count = read(pipeFDs[0], &buffer, buffer.count)
+            if count < 0 && errno == EINTR { continue }
+            if count <= 0 { break }
+            let chunk = String(decoding: buffer[0..<count], as: UTF8.self)
+            text += chunk
+            if text.utf8.count > 2_000_000 { text = String(text.suffix(200_000)) }
+            let parsed = VoiceSetupCore.progress(chunk, current: model)
+            model = parsed.model
+            if let message = VoiceSetupCore.progressMessage(model: parsed.model, percent: parsed.percent), message != lastMessage {
+                progress(message)
+                lastMessage = message
+            }
+        }
+        close(pipeFDs[0])
+        var status: Int32 = 0
+        while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+        let exited = (status & 0x7f) == 0
+        return (exited ? (status >> 8) & 0xff : 128 + (status & 0x7f), text)
     }
 
     /// A probe child gets the PATH the managed server would get, so a launcher script (codex-cli's `sh` wrapper, an

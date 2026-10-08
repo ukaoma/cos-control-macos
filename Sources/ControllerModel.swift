@@ -435,6 +435,14 @@ final class ControllerModel: ObservableObject {
     /// `provider-status`, the Welcome step, the panel card and Pass to an AI app. Inert in a model built by a check:
     /// it runs no helper, opens no Terminal and no link.
     lazy var providerGuide: ProviderGuide = makeProviderGuide()
+    /// The setup guide's own state (skips, Hide, the in-app voice setup). Rows come from SetupGuideRules.
+    lazy var setupGuide: SetupGuideState = makeSetupGuide()
+    /// Opens the setup guide window (the Welcome window, which shows the full guide once COS is set up).
+    var showSetupGuide: (() -> Void)?
+    /// Opens the menu-bar panel on its settings (the pet's and the Dock's Settings…).
+    var showSettings: (() -> Void)?
+    /// The panel scrolls here when it appears ("settings"); the panel clears it.
+    @Published var panelScrollTarget: String?
     /// F4: the one-line session pet introduction, once, for anyone who never touched the pet settings.
     @Published var petIntroVisible = false
     /// F3: COS Control shows in the Dock unless "Show in menu bar only" is on (DockPresence in ProviderConnectModel).
@@ -521,6 +529,26 @@ final class ControllerModel: ObservableObject {
                 return (try? FileManager.default.contentsOfDirectory(atPath: path))?.isEmpty == true
             } catch { return false }
         }
+        return guide
+    }
+
+    private func makeSetupGuide() -> SetupGuideState {
+        let guide = SetupGuideState()
+        let bundleURL = Bundle.main.bundleURL.standardizedFileURL
+        guard bundleURL.pathExtension == "app", Bundle.main.bundleIdentifier != nil, backgroundWorkEnabled else { return guide }
+        let helper = self.helper
+        guide.readVoice = {
+            let response = try await helper.run(["voice-status"], timeout: 30)
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            return try JSONEncoder().encode(response.details)
+        }
+        guide.runVoiceSetup = { tier, progress in
+            // Hours at worst on a slow network (the server allows 1 h per model); Cancel ends it at any time.
+            let response = try await helper.run(["voice-setup", tier], timeout: 4 * 60 * 60, progress: progress)
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            return response.message
+        }
+        guide.applyTier = { [weak self] tier in self?.setTranscriptionTier(tier) }
         return guide
     }
 
@@ -1587,7 +1615,10 @@ final class ControllerModel: ObservableObject {
 
     func runGuidedSetup(tier: String) {
         let normalized = tier.lowercased() == "max" ? "max" : "balanced"
-        let command = "npx --yes @gotcos/glasses-server@latest --setup-transcription --transcription-tier \(normalized) --prepare-only"
+        // Onboarding P1: a fresh Mac has no npx in Terminal (Node ships only inside COS Control). Use the helper's
+        // command, which names COS Control's own npx by path; bare npx is the last resort.
+        let command = setupGuide.voice?.terminalCommand[normalized]
+            ?? "npx --yes @gotcos/glasses-server@latest --setup-transcription --transcription-tier \(normalized) --prepare-only"
         let escaped = command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         let script = "tell application \"Terminal\" to do script \"\(escaped)\""
         let process = Process()

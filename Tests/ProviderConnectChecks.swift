@@ -114,6 +114,9 @@ struct ProviderConnectChecks {
         dock()
         petIntro()
         agentCliLine()
+        setupGuide()
+        voiceRows()
+        await voiceFlow()
         if failures > 0 {
             FileHandle.standardError.write(Data("Connect your AI checks: \(failures) failed, \(passes) passed\n".utf8))
             exit(1)
@@ -140,8 +143,6 @@ struct ProviderConnectChecks {
         check(desktop.status == "Not installed" && desktop.detail?.contains("Claude Desktop") == true, "rows desktop only", "\(desktop)")
         let passing = ProviderRules.row(.cursor, mixed.status(.cursor), skipped: false, waiting: true)
         check(passing.waiting && passing.status == "Waiting for setup…" && passing.action == .install, "rows pass waiting", "a pass to an app shows on a not-installed row: \(passing)")
-        check(GuideExtras.jevStatus(configured: nil, available: nil, serverRunning: false) == "After setup", "jev row", "no server: never 'Checking…' forever")
-        check(GuideExtras.jevStatus(configured: true, available: true) == "Key saved" && GuideExtras.jevStatus(configured: false, available: true) == "No key yet", "jev row", "")
         check(ProviderRules.row(.ollama, mixed.status(.ollama), skipped: false, waiting: false).status == "Installed, not running", "rows ollama daemon down", "down is not 'not installed'")
         check(ProviderRules.row(.ollama, allIn.status(.ollama), skipped: false, waiting: false).status == "Running, 1 model", "rows ollama running", "")
         check(ProviderRules.row(.claude, nil, skipped: false, waiting: false).status == "Checking…", "rows checking", "")
@@ -356,5 +357,128 @@ struct ProviderConnectChecks {
                                             local: report(status("codex", path: chatgptCodex, signIn: "signInRequired")))
         check(codexPath?.contains("'\(chatgptCodex)' login") == true, "agent line", "the command that works on this Mac: \(codexPath ?? "nil")")
         check(AgentCliText.detail(server: [.claude: nil, .codex: nil], cursorState: nil, local: nil) == nil, "agent line unknown", "unknown is left to the caller's 'Unreported' line")
+    }
+
+    static func voiceReady() -> VoiceFacts {
+        var v = VoiceFacts(); v.whisperCli = true; v.whisperServer = true; v.brew = true; v.setupAvailable = true
+        v.missingBytes = ["balanced": 0, "max": 0]; v.enoughDisk = ["balanced": true, "max": true]; v.freeBytes = 900_000_000_000
+        v.whisperReady = true; v.requestedTier = "balanced"; v.previewModel = "Small.en"; v.commitModel = "Turbo"; v.polishModel = "Large-v3"
+        return v
+    }
+
+    static func facts(_ r: ProviderStatusReport, running: Bool = true, voice: VoiceFacts? = nil) -> SetupFacts {
+        var f = SetupFacts(); f.report = r; f.serverRunning = running; f.voice = voice
+        f.claudeSessionsEnabled = running ? false : nil; f.threadAttachSupported = running; f.threadAttachEnabled = running ? true : nil
+        f.jevConfigured = running ? false : nil; f.permissionsNeedCount = 1
+        return f
+    }
+
+    static func setupGuide() {
+        // Early user before Get started: server rows wait and are not counted.
+        let early = SetupGuideRules.rows(facts(allMissing, running: false), skipped: [])
+        check(early.filter(\.afterSetup).map(\.id) == [.voice, .sessions, .jev], "setup guide early", "\(early.filter(\.afterSetup).map(\.id))")
+        check(SetupGuideRules.progress(early) == (0, 5), "setup guide early", "counts claude, codex, cursor, ollama, permissions: \(SetupGuideRules.progress(early))")
+        check(SetupGuideRules.showFinishCard(early, hidden: false) && SetupGuideRules.finishTitle(early) == "Finish setup · 0 of 5", "finish card early", SetupGuideRules.finishTitle(early))
+        check(!SetupGuideRules.showFinishCard(early, hidden: true), "finish card hide", "Hide setup guide removes the card")
+        // Mid: codex signed in, voice ready, continue on.
+        let mid = SetupGuideRules.rows(facts(mixed, voice: voiceReady()), skipped: [.cursor])
+        let p = SetupGuideRules.progress(mid)
+        check(p.total == 9 && p.handled == 4, "finish card mid", "codex, cursor (skipped), voice, continue: \(p)")
+        check(mid.map(\.id) == [.claude, .codex, .cursor, .ollama, .voice, .sessions, .continueThreads, .jev, .permissions], "setup guide rows", "\(mid.map(\.id))")
+        // Done: everything done or skipped.
+        var allDone = facts(allIn, voice: voiceReady())
+        allDone.claudeSessionsEnabled = true; allDone.jevConfigured = true; allDone.permissionsNeedCount = 0
+        let done = SetupGuideRules.rows(allDone, skipped: [])
+        check(SetupGuideRules.progress(done) == (9, 9) && !SetupGuideRules.showFinishCard(done, hidden: false), "finish card done", "\(SetupGuideRules.progress(done))")
+        let skippedAll = SetupGuideRules.rows(facts(mixed, voice: voiceReady()), skipped: Set(SetupRowID.allCases))
+        check(!SetupGuideRules.showFinishCard(skippedAll, hidden: false), "finish card skipped", "skipping every row also ends the card")
+        // No Continue row on a server without it; settings rows say what they unlock.
+        var old = facts(mixed); old.threadAttachSupported = false
+        check(!SetupGuideRules.rows(old, skipped: []).contains { $0.id == .continueThreads }, "setup guide rows", "only settings this server has")
+        let sessions = mid.first { $0.id == .sessions }!
+        check(sessions.action == .turnOnSessions && sessions.detail?.contains("untrusted network") == true, "sessions row", "the privacy note travels with Turn on")
+        let ollama = SetupGuideRules.rows(facts(allIn), skipped: []).first { $0.id == .ollama }!
+        check(ollama.done && ollama.detail?.contains("qwen3:4b") == true && ollama.detail?.contains("Local model") == true, "ollama row", ollama.detail ?? "")
+        var pinned = facts(allIn); pinned.ollamaPinnedModel = "qwen3:4b"
+        check(SetupGuideRules.rows(pinned, skipped: []).first { $0.id == .ollama }!.detail?.contains("COS uses qwen3:4b") == true, "ollama row", "the existing Local model setting")
+        let down = SetupGuideRules.rows(facts(mixed), skipped: []).first { $0.id == .ollama }!
+        check(!down.done && down.action == .openOllama, "ollama row", "installed, not running: Open Ollama")
+        // Skips persist.
+        let d = freshDefaults()
+        let g = SetupGuideState(defaults: d)
+        g.skip(.voice); g.hide()
+        let g2 = SetupGuideState(defaults: d)
+        check(g2.skipped == [.voice] && g2.hidden, "setup guide resume", "skips and Hide are remembered")
+        g2.unskip(.voice); g2.show()
+        check(SetupGuideState(defaults: d).skipped.isEmpty && !SetupGuideState(defaults: d).hidden, "setup guide resume", "and can be undone")
+    }
+
+    static func voiceRows() {
+        func row(_ v: VoiceFacts, tier: String = "balanced") -> SetupRow {
+            var f = facts(allIn, voice: v); f.voiceTier = tier
+            return SetupGuideRules.voice(f, skipped: false)
+        }
+        let ready = row(voiceReady())
+        check(ready.done && ready.status == "Ready · Balanced" && ready.detail == "Small.en live · Turbo commit · Large-v3 polish", "voice ready", "matches the panel's rows: \(ready.status) \(ready.detail ?? "")")
+        var noWhisper = voiceReady(); noWhisper.whisperReady = false; noWhisper.whisperCli = false; noWhisper.whisperServer = false
+        let needs = row(noWhisper)
+        check(needs.status == "Needs whisper.cpp" && needs.action == .voiceNeedsWhisper("brew install whisper-cpp") && needs.detail?.contains("does not include") == true, "voice whisper.cpp", "\(needs)")
+        noWhisper.brew = false
+        check(row(noWhisper).detail?.contains("brew.sh") == true, "voice whisper.cpp", "no Homebrew: says so, never installs it")
+        var missing = voiceReady(); missing.whisperReady = false; missing.requestedTier = nil; missing.missingBytes = ["balanced": 5_233_688_222, "max": 4_746_074_021]
+        let dl = row(missing)
+        check(dl.action == .voiceDownload("balanced") && dl.actionTitle == "Download 5.2 GB" && dl.detail?.contains("is free") == true, "voice download", "\(dl.actionTitle ?? "") \(dl.detail ?? "")")
+        check(row(missing, tier: "max").actionTitle == "Download 4.7 GB", "voice download", "Max downloads less")
+        var full = missing; full.enoughDisk = ["balanced": false]; full.freeBytes = 2_000_000_000
+        let disk = row(full)
+        check(disk.status == "Needs more disk space" && disk.action == SetupAction.none && disk.detail?.contains("2.0 GB is free") == true, "voice disk", disk.detail ?? "")
+        var degraded = voiceReady(); degraded.degraded = true; degraded.degradedReason = "Turbo fallback weights are missing."
+        let apply = row(degraded)
+        check(!apply.done && apply.action == .voiceApply("balanced") && apply.detail == "Turbo fallback weights are missing.", "voice apply", "a degraded tier is not done: \(apply)")
+        var noServer = missing; noServer.setupAvailable = false
+        check(row(noServer).action == SetupAction.none, "voice download", "no installed server: no in-app download")
+        check(VoiceTier.explanation("balanced").contains("Small.en") && VoiceTier.explanation("max").contains("powerful Mac"), "voice tiers", "plain words")
+        let decoded = VoiceFacts.decode(Data(#"{"whisperCli":"/opt/homebrew/bin/whisper-cli","whisperServer":null,"brew":"/opt/homebrew/bin/brew","missingBytes":{"balanced":5233688222},"enoughDisk":{"balanced":true},"freeBytes":10,"setupAvailable":true,"terminalCommand":{"balanced":"x"}}"#.utf8))
+        check(decoded?.whisperCli == true && decoded?.whisperServer == false && decoded?.missingBytes["balanced"] == 5_233_688_222 && decoded?.terminalCommand["balanced"] == "x", "voice decode", "\(String(describing: decoded))")
+        check(!VoiceSetupGate.canStart(noWhisper, tier: "balanced") && !VoiceSetupGate.canStart(full, tier: "balanced") && VoiceSetupGate.canStart(missing, tier: "balanced") && !VoiceSetupGate.canStart(missing, tier: "turbo"), "voice gate", "")
+    }
+
+    static func voiceFlow() async {
+        var missing = voiceReady(); missing.whisperReady = false; missing.missingBytes = ["balanced": 5_000_000_000]
+        let g = SetupGuideState(defaults: freshDefaults())
+        g.voice = missing
+        g.skip(.voice)
+        var applied: [String] = []
+        var lines: [String] = []
+        g.runVoiceSetup = { tier, progress in
+            progress("Downloading Large-v3 (3.1 GB): 48%")
+            try await Task.sleep(for: .milliseconds(50))
+            lines.append(tier)
+            return "Voice models are ready."
+        }
+        g.applyTier = { applied.append($0) }
+        g.startVoiceSetup()
+        check(g.voiceRunning && !g.skipped.contains(.voice), "voice flow", "starting unskips the row")
+        g.startVoiceSetup()
+        for _ in 0..<100 where g.voiceRunning { try? await Task.sleep(for: .milliseconds(20)) }
+        check(lines == ["balanced"] && applied == ["balanced"] && g.voiceMessage == "Voice models are ready.", "voice flow", "downloads once, then applies the tier: \(lines) \(applied)")
+        // Cancel.
+        let c = SetupGuideState(defaults: freshDefaults())
+        c.voice = missing
+        var cancelApplied: [String] = []
+        c.runVoiceSetup = { _, _ in try await Task.sleep(for: .seconds(30)); return "x" }
+        c.applyTier = { cancelApplied.append($0) }
+        c.startVoiceSetup()
+        c.cancelVoiceSetup()
+        for _ in 0..<100 where c.voiceRunning { try? await Task.sleep(for: .milliseconds(20)) }
+        check(!c.voiceRunning && cancelApplied.isEmpty && c.voiceMessage?.contains("kept") == true, "voice cancel", "Cancel applies nothing and says the download is kept: \(c.voiceMessage ?? "")")
+        // Never starts without whisper.cpp.
+        let w = SetupGuideState(defaults: freshDefaults())
+        var none = missing; none.whisperCli = false
+        w.voice = none
+        var ran = false
+        w.runVoiceSetup = { _, _ in ran = true; return "" }
+        w.startVoiceSetup()
+        check(!w.voiceRunning && !ran, "voice gate", "no whisper.cpp: nothing runs")
     }
 }

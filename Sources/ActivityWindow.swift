@@ -1248,6 +1248,11 @@ struct ActivityWindow: View {
                             .font(COSType.display(13, italic: true))
                             .foregroundStyle(.secondary)
                     }
+                    // Early users: Finish setup at the top of Activity too (it opens the setup guide window).
+                    FinishSetupCard(model: model, provider: model.providerGuide, guide: model.setupGuide, permissions: model.permissionGuide) {
+                        model.showSetupGuide?()
+                    }
+                    .frame(maxWidth: 560, alignment: .leading)
                     needsYouLine(needs, states: homeSourceStates(desks: desks), now: now)
                     homeGrid(homeInputs(now: now, seats: seats), desks: desks, now: now)
                 }

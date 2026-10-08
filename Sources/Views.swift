@@ -1325,9 +1325,15 @@ struct ControlPanel: View {
     /// rather than a row inside Recent Glasses: that list is turns (messages and
     /// photos), and a meeting is a different kind of thing with a different action.
     private var mainPanel: some View {
+        ScrollViewReader { reader in
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header
+                // Early users: Finish setup at the top until every row is done or skipped, or Hide setup guide.
+                FinishSetupCard(model: model, provider: model.providerGuide, guide: model.setupGuide, permissions: model.permissionGuide) {
+                    model.providerGuide.openInPanel()
+                    withAnimation { reader.scrollTo("setup-guide", anchor: .top) }
+                }
                 updateRow
                 noticeBanner
                 if model.status.needsFirstRun {
@@ -1348,8 +1354,9 @@ struct ControlPanel: View {
                 controls
                 // F4: the session pet introduced once, with Keep, Calm and Hide.
                 PetIntroLine(model: model)
-                // Connect your AI: one line ("2 connected", "1 needs you") that opens its card in place.
+                // The setup guide: one line ("Setup guide · 3 of 9") that opens the whole guide in place.
                 PanelConnectAIRow(guide: model.providerGuide, model: model)
+                    .id("setup-guide")
                 // Permissions: one line ("All set", "1 needs you") that opens the guide card in place.
                 PanelPermissionsRow(guide: model.permissionGuide)
                 if model.status.morningBriefSupported { morningBriefCard }
@@ -1357,9 +1364,22 @@ struct ControlPanel: View {
                 if !model.fenceRecords.isEmpty { fencesCard }
                 if !model.doctorChecks.isEmpty { doctorCard }
                 utilities
+                    .id("settings")
                 footer
             }
             .padding(16)
+        }
+        // The pet's and the Dock's Settings… open this panel scrolled to its settings.
+        .onAppear { scrollToTarget(reader) }
+        .onChange(of: model.panelScrollTarget) { _, _ in scrollToTarget(reader) }
+        }
+    }
+
+    private func scrollToTarget(_ reader: ScrollViewProxy) {
+        guard let target = model.panelScrollTarget else { return }
+        DispatchQueue.main.async {
+            reader.scrollTo(target, anchor: .top)
+            model.panelScrollTarget = nil
         }
     }
 

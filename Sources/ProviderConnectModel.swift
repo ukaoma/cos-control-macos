@@ -454,19 +454,10 @@ enum AgentCliText {
     }
 }
 
-// MARK: - Jev and glasses rows (F5, F6)
+// MARK: - The glasses row (F5)
 
 enum GuideExtras {
-    static let typesafeURL = URL(string: "https://typesafe.ai")!
     static let glassesWizardURL = URL(string: "https://gotcos.com/wizard/#glasses-setup")!
-
-    /// The Jev row's status from the server's key state. The key is never read or shown.
-    static func jevStatus(configured: Bool?, available: Bool?, serverRunning: Bool = true) -> String {
-        guard serverRunning else { return "After setup" }
-        guard let available, let configured else { return "Checking…" }
-        if !available { return "Needs a newer COS server" }
-        return configured ? "Key saved" : "No key yet"
-    }
 }
 
 // MARK: - The guide
@@ -637,4 +628,323 @@ final class ProviderGuide: ObservableObject {
 enum ProviderGuideError: LocalizedError {
     case unreadable
     var errorDescription: String? { "the helper's answer could not be read" }
+}
+
+// MARK: - Voice (local Whisper)
+
+/// The helper's `voice-status` (read-only) joined with the server's own transcription fields, so a done row says
+/// exactly what the panel's Local Whisper and Transcription rows say.
+struct VoiceFacts: Sendable, Equatable {
+    var whisperCli = false
+    var whisperServer = false
+    var brew = false
+    var missingBytes: [String: Int64] = [:]
+    var enoughDisk: [String: Bool] = [:]
+    var freeBytes: Int64 = 0
+    var setupAvailable = false
+    var terminalCommand: [String: String] = [:]
+    // From the server's status.
+    var whisperReady = false
+    var degraded = false
+    var degradedReason: String?
+    var requestedTier: String?
+    var previewModel: String?
+    var commitModel: String?
+    var polishModel: String?
+
+    /// `voice-status` details, as JSON.
+    static func decode(_ data: Data) -> VoiceFacts? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        var facts = VoiceFacts()
+        facts.whisperCli = object["whisperCli"] is String
+        facts.whisperServer = object["whisperServer"] is String
+        facts.brew = object["brew"] is String
+        for (key, value) in object["missingBytes"] as? [String: Any] ?? [:] { facts.missingBytes[key] = (value as? NSNumber)?.int64Value }
+        for (key, value) in object["enoughDisk"] as? [String: Any] ?? [:] { facts.enoughDisk[key] = value as? Bool }
+        facts.freeBytes = (object["freeBytes"] as? NSNumber)?.int64Value ?? 0
+        facts.setupAvailable = object["setupAvailable"] as? Bool ?? false
+        facts.terminalCommand = object["terminalCommand"] as? [String: String] ?? [:]
+        return facts
+    }
+}
+
+enum VoiceTier {
+    static let all = ["balanced", "max"]
+    static func title(_ tier: String) -> String { tier == "max" ? "Max" : "Balanced" }
+    /// Plain words for the choice. The models are the server's (bin/cli.cjs --setup-transcription).
+    static func explanation(_ tier: String) -> String {
+        tier == "max"
+            ? "Max: Large-v3-Turbo for live text, Large-v3 to commit and to polish saved meetings. More accurate, and keeps Large-v3 in memory the whole time. Choose it only on a powerful Mac."
+            : "Balanced (recommended): fast Small.en for live text, Large-v3-Turbo to commit what you said, Large-v3 to polish saved meetings. Right for most Macs."
+    }
+    static func gigabytes(_ bytes: Int64) -> String {
+        bytes >= 1_000_000_000 ? String(format: "%.1f GB", Double(bytes) / 1_000_000_000) : "\(max(1, bytes / 1_000_000)) MB"
+    }
+}
+
+// MARK: - The setup guide (Miles 2026-10-08 10:52: every AI and its settings, skippable, resumable, prominent)
+
+enum SetupRowID: String, CaseIterable, Sendable {
+    case claude, codex, cursor, ollama, voice, sessions, continueThreads, jev, permissions
+}
+
+enum SetupAction: Sendable, Equatable {
+    case provider(AIProvider)          // the provider row's own Sign in / install steps
+    case openOllama                    // open the Ollama app
+    case voiceNeedsWhisper(String)     // the exact install command for whisper.cpp
+    case voiceDownload(String)         // tier
+    case voiceApply(String)            // tier
+    case turnOnSessions
+    case turnOnContinue
+    case addJevKey
+    case openPermissions
+    case none
+}
+
+struct SetupRow: Identifiable, Sendable, Equatable {
+    var id: SetupRowID
+    var title: String
+    var status: String
+    var unlocks: String
+    var detail: String?
+    var done: Bool
+    /// Needs the COS server first (before Get started): shown, never counted against the person.
+    var afterSetup = false
+    var skipped = false
+    var action: SetupAction = .none
+    var actionTitle: String?
+    var handled: Bool { done || skipped }
+}
+
+/// Everything the rows read, gathered by the app from the helper, the server's status and the permission guide.
+struct SetupFacts: Sendable, Equatable {
+    var report: ProviderStatusReport?
+    var providerSkipped: Set<AIProvider> = []
+    var serverRunning = false
+    var voice: VoiceFacts?
+    var voiceTier = "balanced"
+    var claudeSessionsEnabled: Bool?
+    var threadAttachSupported = false
+    var threadAttachEnabled: Bool?
+    var jevConfigured: Bool?
+    var permissionsNeedCount: Int?
+    var ollamaPinnedModel: String?
+}
+
+enum SetupGuideRules {
+    static func rows(_ facts: SetupFacts, skipped: Set<SetupRowID>) -> [SetupRow] {
+        var rows: [SetupRow] = []
+        for provider in [AIProvider.claude, .codex, .cursor] {
+            let status = facts.report?.status(provider)
+            let row = ProviderRules.row(provider, status, skipped: facts.providerSkipped.contains(provider), waiting: false)
+            let id = SetupRowID(rawValue: provider.rawValue)!
+            rows.append(SetupRow(id: id, title: provider.title, status: row.status,
+                                 unlocks: "Sessions, Continue and Work in \(provider.title).",
+                                 detail: nil, done: status?.signedIn == true,
+                                 skipped: facts.providerSkipped.contains(provider) || skipped.contains(id),
+                                 action: .provider(provider)))
+        }
+        rows.append(ollama(facts, skipped: skipped.contains(.ollama)))
+        rows.append(voice(facts, skipped: skipped.contains(.voice)))
+        if facts.serverRunning || facts.claudeSessionsEnabled != nil {
+            let on = facts.claudeSessionsEnabled == true
+            rows.append(SetupRow(id: .sessions, title: "Show your AI sessions", status: on ? "On" : "Off",
+                                 unlocks: "Lists your Claude, Codex and Cursor sessions in Activity and on the pet, so you can follow and continue them.",
+                                 detail: on ? nil : "It reads names, folders and times (not what was said) and serves them on your local network. Leave it off on an untrusted network.",
+                                 done: on, afterSetup: !facts.serverRunning, skipped: skipped.contains(.sessions),
+                                 action: on ? .none : .turnOnSessions, actionTitle: on ? nil : "Turn on"))
+        } else {
+            rows.append(after(.sessions, "Show your AI sessions", "Lists your AI sessions in Activity and on the pet.", skipped))
+        }
+        if facts.threadAttachSupported {
+            let on = facts.threadAttachEnabled == true
+            rows.append(SetupRow(id: .continueThreads, title: "Continue agent threads", status: on ? "On" : "Off",
+                                 unlocks: "A reply from COS writes into your real Claude or Codex session instead of starting a new thread.",
+                                 detail: nil, done: on, skipped: skipped.contains(.continueThreads),
+                                 action: on ? .none : .turnOnContinue, actionTitle: on ? nil : "Turn on"))
+        }
+        if facts.serverRunning {
+            let set = facts.jevConfigured == true
+            rows.append(SetupRow(id: .jev, title: "Jev (TypeSafe)", status: facts.jevConfigured == nil ? "Checking…" : set ? "Key saved" : "No key yet",
+                                 unlocks: "Work's suggestions: Continue, Fork or New for a task, and sorting meetings into Intake.",
+                                 detail: set ? nil : "Optional. Keys come from typesafe.ai; paste one in Settings, under Jev (TypeSafe).",
+                                 done: set, skipped: skipped.contains(.jev), action: set ? .none : .addJevKey, actionTitle: set ? nil : "Add a key"))
+        } else {
+            rows.append(after(.jev, "Jev (TypeSafe)", "Work's suggestions and meeting sorting.", skipped))
+        }
+        if let need = facts.permissionsNeedCount {
+            rows.append(SetupRow(id: .permissions, title: "Permissions", status: need == 0 ? "All set" : need == 1 ? "1 needs you" : "\(need) need you",
+                                 unlocks: "Jump to a session from the pet, meeting alerts, open at login.",
+                                 detail: nil, done: need == 0, skipped: skipped.contains(.permissions),
+                                 action: need == 0 ? .none : .openPermissions, actionTitle: need == 0 ? nil : "Review"))
+        }
+        return rows
+    }
+
+    private static func after(_ id: SetupRowID, _ title: String, _ unlocks: String, _ skipped: Set<SetupRowID>) -> SetupRow {
+        SetupRow(id: id, title: title, status: "After Get started", unlocks: unlocks, detail: nil, done: false,
+                 afterSetup: true, skipped: skipped.contains(id))
+    }
+
+    static func ollama(_ facts: SetupFacts, skipped: Bool) -> SetupRow {
+        let status = facts.report?.status(.ollama)
+        let models = status?.models ?? []
+        let running = status?.daemon == "running"
+        var detail: String
+        if running {
+            detail = models.isEmpty ? "No local models yet. A small model that supports tools, about 3 GB, is enough; COS will offer one in a later update."
+                : "Models: " + models.prefix(4).joined(separator: ", ") + (models.count > 4 ? ", +\(models.count - 4)" : "")
+            if let pin = facts.ollamaPinnedModel { detail += ". COS uses \(pin) (Settings, Local model)." }
+            else if !models.isEmpty { detail += ". COS uses the newest one; pin a model in Settings, under Local model." }
+        } else {
+            detail = status?.installed == true ? "Installed but not running. Open the Ollama app." : "Optional. Runs AI on this Mac with no account."
+        }
+        let row = ProviderRules.row(.ollama, status, skipped: false, waiting: false)
+        return SetupRow(id: .ollama, title: "Ollama", status: status == nil ? "Checking…" : row.status,
+                        unlocks: "Local, private answers with no subscription.", detail: detail, done: running,
+                        skipped: skipped, action: running ? .none : status?.installed == true ? .openOllama : .provider(.ollama),
+                        actionTitle: running ? nil : status?.installed == true ? "Open Ollama" : "Get Ollama")
+    }
+
+    static func voice(_ facts: SetupFacts, skipped: Bool) -> SetupRow {
+        let tier = facts.voiceTier
+        var row = SetupRow(id: .voice, title: "Voice (local Whisper)", status: "Checking…",
+                           unlocks: "Meetings and dictation transcribed on this Mac, with named speakers. Nothing leaves the Mac.",
+                           detail: nil, done: false, skipped: skipped)
+        guard facts.serverRunning else { row.status = "After Get started"; row.afterSetup = true; return row }
+        guard let voice = facts.voice else { return row }
+        let lanes = [voice.previewModel.map { "\($0) live" }, voice.commitModel.map { "\($0) commit" }, voice.polishModel.map { "\($0) polish" }]
+            .compactMap { $0 }.joined(separator: " · ")
+        if voice.whisperReady && !voice.degraded, let requested = voice.requestedTier {
+            row.status = "Ready · \(VoiceTier.title(requested))"
+            row.detail = lanes.isEmpty ? nil : lanes
+            row.done = true
+            return row
+        }
+        guard voice.whisperCli && voice.whisperServer else {
+            row.status = "Needs whisper.cpp"
+            row.detail = voice.brew
+                ? "Local voice runs on whisper.cpp, which COS does not include. Install it with Homebrew in Terminal, then Check again."
+                : "Local voice runs on whisper.cpp, which COS does not include. It installs with Homebrew (brew.sh), which needs your administrator password once. Then run the command below."
+            row.action = .voiceNeedsWhisper("brew install whisper-cpp")
+            row.actionTitle = "Check again"
+            return row
+        }
+        let missing = voice.missingBytes[tier] ?? 0
+        if missing > 0 {
+            if voice.enoughDisk[tier] == false {
+                row.status = "Needs more disk space"
+                row.detail = "\(VoiceTier.title(tier)) downloads \(VoiceTier.gigabytes(missing)) and needs about \(VoiceTier.gigabytes(missing + 750_000_000)) free; \(VoiceTier.gigabytes(voice.freeBytes)) is free."
+                row.action = .none
+                return row
+            }
+            row.status = "Models not downloaded"
+            row.detail = "\(VoiceTier.title(tier)) downloads \(VoiceTier.gigabytes(missing)); \(VoiceTier.gigabytes(voice.freeBytes)) is free. Downloads resume if interrupted."
+            row.action = voice.setupAvailable ? .voiceDownload(tier) : .none
+            row.actionTitle = "Download \(VoiceTier.gigabytes(missing))"
+            return row
+        }
+        row.status = voice.degraded ? "Needs Apply" : voice.whisperReady ? "Ready" : "Not running"
+        row.detail = voice.degraded ? (voice.degradedReason ?? "The server is not on the tier you chose.") : lanes.isEmpty ? nil : lanes
+        row.action = .voiceApply(tier)
+        row.actionTitle = "Apply \(VoiceTier.title(tier))"
+        return row
+    }
+
+    /// (handled, total): handled is done or skipped. Rows that need the server first are not counted yet.
+    static func progress(_ rows: [SetupRow]) -> (handled: Int, total: Int) {
+        let counted = rows.filter { !$0.afterSetup }
+        return (counted.filter(\.handled).count, counted.count)
+    }
+
+    /// The "Finish setup" card: at the top of the panel and Activity home until every counted row is done or skipped,
+    /// or the person chose Hide setup guide.
+    static func showFinishCard(_ rows: [SetupRow], hidden: Bool) -> Bool {
+        let p = progress(rows)
+        return !hidden && p.total > 0 && p.handled < p.total
+    }
+
+    static func finishTitle(_ rows: [SetupRow]) -> String {
+        let p = progress(rows)
+        return "Finish setup · \(p.handled) of \(p.total)"
+    }
+}
+
+@MainActor
+final class SetupGuideState: ObservableObject {
+    @Published private(set) var skipped: Set<SetupRowID> = []
+    @Published private(set) var hidden = false
+    @Published var voice: VoiceFacts?
+    @Published var voiceTier = "balanced"
+    @Published private(set) var voiceRunning = false
+    @Published private(set) var voiceProgress: String?
+    @Published var voiceMessage: String?
+    private let defaults: UserDefaults
+    static let skippedKey = "cos.setupGuide.skipped"
+    static let hiddenKey = "cos.setupGuide.hidden"
+
+    /// `cos-control-helper voice-status`, the details as JSON.
+    var readVoice: @MainActor () async throws -> Data = { throw ProviderGuideError.unreadable }
+    /// `cos-control-helper voice-setup <tier>`, with each progress line; returns the final message.
+    var runVoiceSetup: @MainActor (String, @escaping @Sendable (String) -> Void) async throws -> String = { _, _ in throw ProviderGuideError.unreadable }
+    var applyTier: @MainActor (String) -> Void = { _ in }
+    private var voiceTask: Task<Void, Never>?
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        skipped = Set((defaults.stringArray(forKey: Self.skippedKey) ?? []).compactMap(SetupRowID.init(rawValue:)))
+        hidden = defaults.bool(forKey: Self.hiddenKey)
+    }
+
+    func skip(_ id: SetupRowID) { skipped.insert(id); save() }
+    func unskip(_ id: SetupRowID) { if skipped.remove(id) != nil { save() } }
+    func hide() { hidden = true; defaults.set(true, forKey: Self.hiddenKey) }
+    func show() { hidden = false; defaults.set(false, forKey: Self.hiddenKey) }
+    private func save() { defaults.set(skipped.map(\.rawValue).sorted(), forKey: Self.skippedKey) }
+
+    func refreshVoice() async {
+        guard !voiceRunning, let data = try? await readVoice(), let facts = VoiceFacts.decode(data) else { return }
+        voice = facts
+    }
+
+    /// Downloads the tier's models in the app (no Terminal), then applies the tier through the transactional restart.
+    func startVoiceSetup() {
+        guard !voiceRunning, VoiceSetupGate.canStart(voice, tier: voiceTier) else { return }
+        voiceRunning = true
+        voiceMessage = nil
+        voiceProgress = "Starting…"
+        unskip(.voice)
+        let tier = voiceTier
+        voiceTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let message = try await self.runVoiceSetup(tier) { line in
+                    Task { @MainActor [weak self] in self?.voiceProgress = line }
+                }
+                self.voiceMessage = message
+                self.voiceRunning = false
+                self.voiceProgress = nil
+                self.applyTier(tier)
+            } catch is CancellationError {
+                self.voiceRunning = false
+                self.voiceProgress = nil
+                self.voiceMessage = "Stopped. What was downloaded is kept; Download again resumes it."
+            } catch {
+                self.voiceRunning = false
+                self.voiceProgress = nil
+                self.voiceMessage = error.localizedDescription
+            }
+            await self.refreshVoice()
+        }
+    }
+
+    func cancelVoiceSetup() { voiceTask?.cancel() }
+}
+
+enum VoiceSetupGate {
+    /// The in-app download runs only with whisper.cpp present, an installed server to run it, and enough disk.
+    static func canStart(_ voice: VoiceFacts?, tier: String) -> Bool {
+        guard let voice, VoiceTier.all.contains(tier) else { return false }
+        return voice.whisperCli && voice.whisperServer && voice.setupAvailable && voice.enoughDisk[tier] != false
+    }
 }

@@ -357,3 +357,105 @@ enum ProviderStatusProbe {
         return status
     }
 }
+
+// MARK: - Voice (local Whisper) setup
+
+// What `glasses-server --setup-transcription --transcription-tier <tier> --prepare-only` installs (bin/cli.cjs, read
+// 2026-10-08 at server f72bbe5). It does NOT install whisper.cpp: it refuses to start ("Install it first: brew install
+// whisper-cpp") unless whisper-cli AND whisper-server are found, and COS Control does not bundle them. It then
+// downloads, resumably (curl --continue-at), into ~/.local/share/whisper-models:
+//   ggml-large-v3-turbo.bin  1,624,555,275 bytes  both tiers (Balanced commit, Max preview)
+//   ggml-small.en.bin          487,614,201 bytes  Balanced only (live preview)
+//   ggml-large-v3.bin        3,095,033,483 bytes  both tiers (saved-meeting polish; Max live commit)
+// plus the voiceprint model (26,485,263 bytes) into ~/.cos-glasses/models, and needs the missing bytes plus a 750 MB
+// margin free. It writes the tier to ~/.cos-glasses/.env; COS Control's Apply then restarts the server on it.
+
+struct WhisperModelFile: Sendable, Equatable {
+    var name: String
+    var label: String
+    var bytes: Int64
+    var minBytes: Int64
+    var tiers: Set<String>
+}
+
+enum VoiceSetupCore {
+    static let models: [WhisperModelFile] = [
+        WhisperModelFile(name: "ggml-large-v3-turbo.bin", label: "Large-v3-Turbo", bytes: 1_624_555_275, minBytes: 800_000_000, tiers: ["balanced", "max"]),
+        WhisperModelFile(name: "ggml-small.en.bin", label: "Small.en", bytes: 487_614_201, minBytes: 400_000_000, tiers: ["balanced"]),
+        WhisperModelFile(name: "ggml-large-v3.bin", label: "Large-v3", bytes: 3_095_033_483, minBytes: 2_800_000_000, tiers: ["balanced", "max"]),
+    ]
+    static let voiceprintFile = "3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx"
+    static let voiceprintBytes: Int64 = 26_485_263
+    static let safetyMarginBytes: Int64 = 750_000_000
+    static let whisperBinaries = ["whisper-cli", "whisper-server"]
+
+    static func modelDirectory(home: String) -> String { "\(home)/.local/share/whisper-models" }
+
+    /// The server's own search for whisper.cpp: its two Homebrew paths, then PATH.
+    static func whisperPath(_ name: String, in environment: ProviderSearchEnvironment) -> String? {
+        let known = ["/opt/homebrew/bin/\(name)", "/usr/local/bin/\(name)"]
+        let path = (environment.env["PATH"] ?? "").split(separator: ":").map { "\($0)/\(name)" }.filter { $0.hasPrefix("/") }
+        return (known + path).first { environment.isExecutable($0) }
+    }
+
+    static func normalizedTier(_ raw: String) -> String? {
+        let tier = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return ["balanced", "max"].contains(tier) ? tier : nil
+    }
+
+    /// Bytes still to download for a tier, given each file's current size (nil = absent).
+    static func missingBytes(tier: String, sizes: [String: Int64], voiceprintPresent: Bool) -> Int64 {
+        var total: Int64 = voiceprintPresent ? 0 : voiceprintBytes
+        for model in models where model.tiers.contains(tier) {
+            if (sizes[model.name] ?? 0) < model.minBytes { total += model.bytes }
+        }
+        return total
+    }
+
+    /// The server's disk rule: free space plus partial downloads it can resume must cover the missing bytes plus the margin.
+    static func enoughDisk(missing: Int64, freeBytes: Int64, partialBytes: Int64) -> Bool {
+        missing == 0 || freeBytes + partialBytes >= missing + safetyMarginBytes
+    }
+
+    /// One progress line from the setup's output. Downloads announce "Downloading ggml-large-v3 (~3.1 GB)." and curl's
+    /// progress bar redraws "####  45.3%" with carriage returns.
+    static func progress(_ chunk: String, current: String?) -> (model: String?, percent: Double?) {
+        var model = current
+        var percent: Double?
+        for piece in chunk.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+            let line = String(piece)
+            if let range = line.range(of: "Downloading ggml-") {
+                let rest = line[range.upperBound...]
+                let stem = rest.prefix { $0 != " " && $0 != "." && $0 != "(" }
+                if let file = models.first(where: { $0.name.hasPrefix("ggml-" + stem + ".") || $0.name == "ggml-" + stem + ".bin" }) {
+                    model = file.label
+                    percent = nil
+                }
+            } else if line.contains("voiceprint model") {
+                model = "Voiceprint"
+                percent = nil
+            }
+            if let match = line.range(of: #"([0-9]{1,3}(\.[0-9])?)%"#, options: .regularExpression) {
+                let value = Double(line[match].dropLast()) ?? 0
+                if value <= 100 { percent = value }
+            }
+        }
+        return (model, percent)
+    }
+
+    static func progressMessage(model: String?, percent: Double?) -> String? {
+        guard let model else { return nil }
+        let size = models.first { $0.label == model }.map { " (\(gigabytes($0.bytes)))" } ?? (model == "Voiceprint" ? " (26 MB)" : "")
+        if let percent { return "Downloading \(model)\(size): \(Int(percent))%" }
+        return "Downloading \(model)\(size)…"
+    }
+
+    static func shellQuote(_ text: String) -> String { "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+
+    static func gigabytes(_ bytes: Int64) -> String {
+        bytes >= 1_000_000_000 ? String(format: "%.1f GB", Double(bytes) / 1_000_000_000) : "\(bytes / 1_000_000) MB"
+    }
+}
+
+/// voice-setup's child process group, for the helper's SIGTERM handler (Cancel). 0 when nothing runs.
+nonisolated(unsafe) var voiceSetupChildGroup: pid_t = 0

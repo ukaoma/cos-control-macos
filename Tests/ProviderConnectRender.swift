@@ -112,6 +112,79 @@ let allIn = data(row("claude", path: "/opt/homebrew/bin/claude", version: "2.1.2
             model.petIntroVisible = true
             try renderPanel(model, appearance: appearance, out: out)
         }
+        // 7. The setup guide (Miles 2026-10-08 10:52): the Finish setup card early, mid-way and done (done draws nothing),
+        //    the whole guide in the Welcome window, and the voice row's states.
+        func readyModel(_ answer: Data, voice: VoiceFacts?, skipped: [SetupRowID] = [], configure: (ControllerModel) -> Void = { _ in }) async -> ControllerModel {
+            let m = ControllerModel(startBackgroundWork: false)
+            m.status = ServerStatus([
+                "installed": .bool(true), "serviceLoaded": .bool(true), "running": .bool(true), "managedContract": .bool(true),
+                "runtimeState": .string("managedHealthy"), "ownershipVerified": .bool(true), "version": .string("6.65.0"),
+                "claudeSessionsEnabled": .bool(false), "threadAttachSupported": .bool(true), "threadAttachEnabled": .bool(true),
+            ])
+            m.status.running = true; m.status.installed = true; m.status.ownershipVerified = true
+            m.providerGuide = await fixtureGuide(answer, apps: apps)
+            let state = SetupGuideState(defaults: UserDefaults(suiteName: "cos.setup-render.\(UUID().uuidString)")!)
+            state.voice = voice
+            for id in skipped { state.skip(id) }
+            m.setupGuide = state
+            m.permissionGuide.onboardingDone = true
+            configure(m)
+            return m
+        }
+        var needsWhisper = VoiceFacts(); needsWhisper.brew = true; needsWhisper.freeBytes = 412_000_000_000
+        var download = VoiceFacts(); download.whisperCli = true; download.whisperServer = true; download.brew = true; download.setupAvailable = true
+        download.missingBytes = ["balanced": 5_233_688_222, "max": 4_746_074_021]; download.enoughDisk = ["balanced": true, "max": true]; download.freeBytes = 412_000_000_000
+        download.terminalCommand = ["balanced": "PATH='/Users/you/Library/Application Support/COS Control/runtime/node/22.20.0/bin':\"$PATH\" '/Users/you/Library/Application Support/COS Control/runtime/node/22.20.0/bin/npx' --yes @gotcos/glasses-server@latest --setup-transcription --transcription-tier balanced --prepare-only"]
+        var ready = download; ready.missingBytes = ["balanced": 0, "max": 0]
+        let early = await readyModel(allMissing, voice: needsWhisper)
+        try render(FinishSetupCard(model: early, provider: early.providerGuide, guide: early.setupGuide, permissions: early.permissionGuide) {}.padding(16).background(COSPalette.panel),
+                   width: panelWidth + 32, height: 170, name: "finish-card-early", out: out)
+        let mid = await readyModel(mixed, voice: download, skipped: [.cursor])
+        try render(FinishSetupCard(model: mid, provider: mid.providerGuide, guide: mid.setupGuide, permissions: mid.permissionGuide) {}.padding(16).background(COSPalette.panel),
+                   width: panelWidth + 32, height: 170, name: "finish-card-mid", out: out)
+        let done = await readyModel(allIn, voice: ready) { m in
+            m.status.claudeSessionsEnabled = true; m.status.whisperReady = true; m.status.transcriptionRequestedTier = "balanced"
+            m.status.livePreviewModel = "Small.en"; m.status.liveCommitModel = "Large-v3-Turbo"; m.status.hqPolishModel = "Large-v3"
+            m.jevStatus = JevStatus(details: ["available": .bool(true), "configured": .bool(true), "source": .string("config")])
+        }
+        try render(VStack(alignment: .leading) {
+            FinishSetupCard(model: done, provider: done.providerGuide, guide: done.setupGuide, permissions: done.permissionGuide) {}
+            Text("(all done: the card is gone)").font(COSType.body(11)).foregroundStyle(.secondary)
+        }.padding(16).background(COSPalette.panel), width: panelWidth + 32, height: 80, name: "finish-card-all-done", out: out)
+        try render(ControlSetupView(model: mid), width: 560, height: 2300, name: "setup-guide-window", out: out)
+        try render(ControlSetupView(model: done), width: 560, height: 1900, name: "setup-guide-window-done", out: out)
+        // The voice row: needs whisper.cpp, ready to download, downloading.
+        for (name, voice) in [("voice-needs-whisper", needsWhisper), ("voice-download", download)] {
+            let m = await readyModel(allIn, voice: voice)
+            let row = SetupGuideRules.voice(m.setupFacts(provider: m.providerGuide, guide: m.setupGuide), skipped: false)
+            try render(SetupRowView(model: m, guide: m.setupGuide, row: row).padding(.horizontal, 16).background(COSPalette.card),
+                       width: panelWidth + 32, height: name == "voice-download" ? 330 : 260, name: name, out: out)
+        }
+        let busy = await readyModel(allIn, voice: download)
+        busy.setupGuide.runVoiceSetup = { _, progress in progress("Downloading Large-v3 (3.1 GB): 48%"); try await Task.sleep(for: .seconds(60)); return "" }
+        busy.setupGuide.startVoiceSetup()
+        try? await Task.sleep(for: .milliseconds(200))
+        let busyRow = SetupGuideRules.voice(busy.setupFacts(provider: busy.providerGuide, guide: busy.setupGuide), skipped: false)
+        try render(SetupRowView(model: busy, guide: busy.setupGuide, row: busyRow).padding(.horizontal, 16).background(COSPalette.card),
+                   width: panelWidth + 32, height: 200, name: "voice-downloading", out: out)
+        busy.setupGuide.cancelVoiceSetup()
+        // The panel with the setup guide open in place.
+        let open = await readyModel(mixed, voice: download, skipped: [.cursor])
+        open.providerGuide.panelRouteActive = true
+        try render(ScrollView { PanelConnectAIRow(guide: open.providerGuide, model: open).padding(16) }.background(COSPalette.panel),
+                   width: panelWidth + 32, height: 2100, name: "panel-setup-guide", out: out)
+        // The Dock menu is an NSMenu: it cannot be drawn offscreen, so its real items are written down instead.
+        let dock = COSAppDelegate.makeDockMenu(target: NSObject())
+        try (["Dock menu (COSAppDelegate.makeDockMenu, the menu macOS shows on a right-click of the Dock icon):"] + dock.items.map { "  " + $0.title }
+             + ["", "Pet right-click (SessionPet.spriteMenu, a SwiftUI context menu; drawn only on screen):"]
+             + PetMotion.allCases.map { "  " + $0.title } + ["  ---", "  Hide pet", "  ---", "  Settings…", "  Setup guide…"])
+            .joined(separator: "\n").write(to: out.appendingPathComponent("menus.txt"), atomically: true, encoding: .utf8)
+        // The whole panel again, with Finish setup at the top.
+        for appearance in [NSAppearance.Name.darkAqua, .aqua] {
+            let m = await readyModel(mixed, voice: download, skipped: [.cursor])
+            m.status.claudeCliReady = false; m.status.codexCliReady = true; m.status.cursorState = "notInstalled"
+            try renderPanel(m, appearance: appearance, out: out, name: "panel-whole-setup")
+        }
         print("Rendered Connect your AI (Welcome x3, panel card, waiting rows, panel rows, pet intro, whole panel) in light and dark")
     }
 
@@ -141,7 +214,7 @@ let allIn = data(row("claude", path: "/opt/homebrew/bin/claude", version: "2.1.2
         return nil
     }
 
-    static func renderPanel(_ model: ControllerModel, appearance: NSAppearance.Name, out: URL) throws {
+    static func renderPanel(_ model: ControllerModel, appearance: NSAppearance.Name, out: URL, name: String = "panel-whole") throws {
         let host = NSHostingView(rootView: ControlPanel(model: model, openActivity: { _ in }))
         let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 390, height: 640), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -156,6 +229,6 @@ let allIn = data(row("claude", path: "/opt/homebrew/bin/claude", version: "2.1.2
         guard let rep = document.bitmapImageRepForCachingDisplay(in: document.bounds) else { throw CocoaError(.fileWriteUnknown) }
         document.cacheDisplay(in: document.bounds, to: rep)
         let word = appearance == .darkAqua ? "dark" : "light"
-        try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("panel-whole-\(word).png"))
+        try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("\(name)-\(word).png"))
     }
 }
