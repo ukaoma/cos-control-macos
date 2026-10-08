@@ -11,6 +11,8 @@ import os
 /// 0.5.229. Meeting-audio alert telemetry in the open. 0.5.228 used NSLog, which the unified log
 /// redacts to <private> for this app; read it with `log show --predicate 'subsystem == "com.gotcos.control"'`.
 private let meetingAudioLog = Logger(subsystem: "com.gotcos.control", category: "meeting-audio")
+/// Onboarding P1: Sign in, Pass to, the poll limit, helper errors and voice setup, with the values that tell cases apart.
+let onboardingLog = Logger(subsystem: "com.gotcos.control", category: "onboarding")
 
 private actor MediaFetchGate {
     private var available = 2
@@ -179,6 +181,12 @@ final class ControllerModel: ObservableObject {
     var openActivity: ((ActivitySection?) -> Void)?
     var openSetup: (() -> Void)?
     private var firstRunPresented = false
+    /// The Welcome window opened for a first run in this launch (the Permissions step follows Get started only then).
+    var firstRunPresentedThisLaunch: Bool { firstRunPresented }
+    /// The first status read finished (a Dock click before it opens Welcome, not an empty Activity).
+    @Published private(set) var statusReadOnce = false
+    /// The menu-bar panel is on screen (ControlPanel's appear and disappear, not the Settings window's copy).
+    @Published var panelVisible = false
     /// 0.5.247: the one Work handoff journal and its tracker, shared with the Activity window so tracking keeps
     /// running while the window is closed. Nil in previews and checks (no background work).
     private(set) var workHandoffStore: WorkHandoffStore?
@@ -501,16 +509,29 @@ final class ControllerModel: ObservableObject {
         let helper = self.helper
         let guide = ProviderGuide(home: FileManager.default.homeDirectoryForCurrentUser.path) { arguments in
             guard inApp else { throw ProviderGuideError.unreadable }
-            let response = try await helper.run(arguments, timeout: 40)
+            let response = try await helper.run(arguments, timeout: ProviderGuide.statusTimeout)
             guard response.ok else { throw HelperClientError.commandFailed(response.message) }
             return try JSONEncoder().encode(response.details)
         }
         guard inApp else { return guide }
+        guide.log = { line in onboardingLog.info("\(line, privacy: .public)") }
+        // osascript's exit status decides: a denied Automation permission returns non-zero, and then Sign in falls
+        // back to the clipboard and Terminal itself. Waited for off the main thread.
         guide.runInTerminal = { script in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            process.arguments = ["-e", script]
-            do { try process.run() } catch { return false }
+            await Task.detached {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                process.arguments = ["-e", script]
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.nullDevice
+                do { try process.run() } catch { return false }
+                process.waitUntilExit()
+                return process.terminationStatus == 0
+            }.value
+        }
+        guide.openTerminalApp = {
+            guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else { return false }
+            NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
             return true
         }
         guide.openURL = { url in NSWorkspace.shared.open(url) }
@@ -549,12 +570,13 @@ final class ControllerModel: ObservableObject {
             return response.message
         }
         guide.applyTier = { [weak self] tier in self?.setTranscriptionTier(tier) }
+        guide.log = { line in onboardingLog.info("\(line, privacy: .public)") }
         return guide
     }
 
     /// F4: shown once, while the pet is on, to anyone who never changed a pet setting.
     func evaluatePetIntro(defaults: UserDefaults = .standard) {
-        let touched = PetIntro.touchedKeys.filter { defaults.object(forKey: $0) != nil }.count
+        let touched = PetIntro.touchedCount(defaults)
         petIntroVisible = PetIntro.shouldShow(seen: defaults.bool(forKey: PetIntro.seenKey), touchedKeys: touched, petEnabled: petEnabled)
     }
 
@@ -882,6 +904,7 @@ final class ControllerModel: ObservableObject {
             // library) hung this call forever and left every row at its decode default.
             let response = try await helper.run(["status"], timeout: 45)
             status = ServerStatus(response.details)
+            statusReadOnce = true
             if status.needsFirstRun && !firstRunPresented, let openSetup {
                 firstRunPresented = true
                 openSetup()
@@ -5153,8 +5176,9 @@ final class ControllerModel: ObservableObject {
         var seen = Set<pid_t>()
         for _ in 0..<12 {
             if !seen.insert(current).inserted { break }
+            // Onboarding P1: COS Control is a regular (Dock) app now; it is never a session's host.
             if let app = NSRunningApplication(processIdentifier: current),
-               app.activationPolicy == .regular {
+               app.activationPolicy == .regular, app.processIdentifier != ProcessInfo.processInfo.processIdentifier {
                 return app
             }
             guard let parent = parentProcessID(of: current), parent > 1 else { break }

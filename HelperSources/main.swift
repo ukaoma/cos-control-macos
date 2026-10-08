@@ -447,7 +447,7 @@ final class COSControlHelper {
                   !snapshot.serviceLoaded, snapshot.allListenerPIDs.isEmpty else {
                 throw HelperError.message("COS already has a local service or unfinished setup. Open COS Control to review or repair it.")
             }
-            guard !detectedManagedProviders().isEmpty || resolveAgentBinary() != nil else {
+            guard setupProviderPresent() else {
                 throw HelperError.message("Connect an AI app first, then try again. COS works with Claude Code, Codex or Cursor Agent.")
             }
             try install(requestedVersion: "latest", workDirectory: nil)
@@ -2443,6 +2443,16 @@ final class COSControlHelper {
         isManagedContract(maintenance) && maintenance?["contractVersion"] as? Int == leaseManagedContractVersion
     }
 
+    /// Get started's gate (onboarding P1): the same candidate lists Connect your AI's rows read
+    /// (ProviderStatusCore.setupProviderPresent), so the button and the rows agree. Before, the gate counted the
+    /// retired Codex.app and the rows did not.
+    private func setupProviderPresent() -> Bool {
+        ProviderStatusCore.setupProviderPresent(in: ProviderSearchEnvironment(
+            home: home.path, env: ProcessInfo.processInfo.environment,
+            isExecutable: { FileManager.default.isExecutableFile(atPath: $0) },
+            listDirectory: { (try? FileManager.default.contentsOfDirectory(atPath: $0)) ?? [] }))
+    }
+
     private func detectedManagedProviders() -> Set<String> {
         Set(["claude", "codex"].filter { findExecutable($0) != nil })
     }
@@ -2735,7 +2745,7 @@ final class COSControlHelper {
             "managedContract": managed,
             "maintenanceContractVersion": maintenance?["contractVersion"] ?? NSNull(),
             "runtimeState": state.rawValue,
-            "setupProviderInstalled": !detectedManagedProviders().isEmpty || resolveAgentBinary() != nil,
+            "setupProviderInstalled": setupProviderPresent(),
             "ownershipVerified": directOwner,
             "ownerConflict": state == .ownerConflict,
             "launchAgentKind": snapshot.launchAgentKind.rawValue,
@@ -5703,42 +5713,55 @@ final class COSControlHelper {
         if env["COS_OLLAMA_HOST"]?.isEmpty != false, let configured = loadedEnvironmentValue("COS_OLLAMA_HOST") {
             env["COS_OLLAMA_HOST"] = configured
         }
-        let environment = ProviderSearchEnvironment(
-            home: home.path, env: env,
-            isExecutable: { path in
-                var isDirectory: ObjCBool = false
-                return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && !isDirectory.boolValue
-                    && FileManager.default.isExecutableFile(atPath: path)
-            },
-            listDirectory: { path in (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? [] })
+        // Each provider on its own queue, under one deadline: a hung CLI answers "did not answer in time" for its own
+        // row and never blanks the others. Every probe child is registered, and any still running at the deadline is
+        // stopped before this answers, so none outlives the helper.
+        let home = self.home.path
+        let searchEnv = env
         let probeEnvironment = providerProbeEnvironment()
-        let probes = ProviderProbes(
-            run: { path, arguments in
-                // Raw output to the parser, which keeps nothing but a verdict and a version: stripping the email here
-                // first made a signed-in Cursor read as signed out (its sign-in IS the User Email line).
-                guard let result = try? self.execute(path, arguments, environment: probeEnvironment, timeout: 8) else { return nil }
-                return (result.code, result.output)
-            },
-            get: { url in
-                var request = URLRequest(url: url, timeoutInterval: 3)
-                request.httpMethod = "GET"
-                let box = HTTPResultBox()
-                let done = DispatchSemaphore(value: 0)
-                URLSession.shared.dataTask(with: request) { data, response, _ in
-                    box.store(data: data, response: response)
-                    done.signal()
-                }.resume()
-                _ = done.wait(timeout: .now() + 4)
-                let (data, response) = box.load()
-                guard let status = (response as? HTTPURLResponse)?.statusCode else { return nil }
-                return (status, data ?? Data())
-            })
-        var rows: [[String: Any]] = []
+        let results = ProviderStatusResults()
+        let group = DispatchGroup()
         for provider in wanted {
-            rows.append(ProviderStatusProbe.status(provider, environment: environment, probes: probes).json)
+            group.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                let environment = ProviderSearchEnvironment(
+                    home: home, env: searchEnv,
+                    isExecutable: { path in
+                        var isDirectory: ObjCBool = false
+                        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && !isDirectory.boolValue
+                            && FileManager.default.isExecutableFile(atPath: path)
+                    },
+                    listDirectory: { path in (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? [] })
+                let probes = ProviderProbes(
+                    // Raw output to the parser, which keeps nothing but a verdict and a version: stripping the email
+                    // first made a signed-in Cursor read as signed out (its sign-in IS the User Email line).
+                    run: { path, arguments in ProbeRunner.run(path, arguments, environment: probeEnvironment, timeout: ProviderStatusCore.commandTimeout) },
+                    get: { url in
+                        var request = URLRequest(url: url, timeoutInterval: 3)
+                        request.httpMethod = "GET"
+                        let box = HTTPResultBox()
+                        let done = DispatchSemaphore(value: 0)
+                        URLSession.shared.dataTask(with: request) { data, response, _ in
+                            box.store(data: data, response: response)
+                            done.signal()
+                        }.resume()
+                        _ = done.wait(timeout: .now() + 4)
+                        let (data, response) = box.load()
+                        guard let status = (response as? HTTPURLResponse)?.statusCode else { return nil }
+                        return (status, data ?? Data())
+                    })
+                results.set(provider, ProviderStatusProbe.status(provider, environment: environment, probes: probes).json)
+                group.leave()
+            }
         }
-        emit(ok: true, message: "Provider status", details: [
+        let complete = group.wait(timeout: .now() + ProviderStatusCore.totalDeadline) == .success
+        // Read the rows BEFORE stopping the probes: a row finished by its probes being stopped would claim "not
+        // Cursor's CLI" when the truth is "did not answer in time".
+        let rows = wanted.map { results.get($0) ?? ProviderStatusCore.timedOut($0) }
+        if !complete { ProbeRunner.stopAll() }
+        emit(ok: true, message: complete ? "Provider status" : "Provider status (some did not answer in time)", details: [
             "providers": rows,
+            "complete": complete,
             "checkedAt": ISO8601DateFormatter().string(from: Date()),
         ])
     }
@@ -5768,15 +5791,16 @@ final class COSControlHelper {
         while !fm.fileExists(atPath: probe.path), probe.path != "/" { probe.deleteLastPathComponent() }
         let free = ((try? probe.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage) ?? 0
         var missing: [String: Any] = [:], enough: [String: Any] = [:], terminal: [String: Any] = [:]
-        let npx = managedNodeExecutable("npx") ?? findExecutable("npx")
+        // The Terminal fallback runs this helper's own voice-setup (the installed server's setup, COS Control's Node,
+        // the .env snapshot and restore), never npx and never the newest npm release.
+        let helperPath = [stableBin.appendingPathComponent("cos-control-helper").path,
+                          URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.path].first { fm.isExecutableFile(atPath: $0) }
         for tier in ["balanced", "max"] {
             let bytes = VoiceSetupCore.missingBytes(tier: tier, sizes: sizes, voiceprintPresent: voiceprintPresent)
             missing[tier] = bytes
             enough[tier] = VoiceSetupCore.enoughDisk(missing: bytes, freeBytes: free, partialBytes: partial)
-            if let npx {
-                // The bundled npx by absolute path, with its own bin first on PATH: a fresh Mac has no npx in Terminal.
-                let bin = URL(fileURLWithPath: npx).deletingLastPathComponent().path
-                terminal[tier] = "PATH=\(VoiceSetupCore.shellQuote(bin)):\"$PATH\" \(VoiceSetupCore.shellQuote(npx)) --yes @gotcos/glasses-server@latest --setup-transcription --transcription-tier \(tier) --prepare-only"
+            if let helperPath, loadManifest() != nil {
+                terminal[tier] = "\(VoiceSetupCore.shellQuote(helperPath)) voice-setup \(tier)"
             }
         }
         let manifest = loadManifest()
@@ -5789,6 +5813,7 @@ final class COSControlHelper {
             "freeBytes": free, "partialBytes": partial, "missingBytes": missing, "enoughDisk": enough,
             "setupAvailable": cli.map { fm.fileExists(atPath: $0) } ?? false,
             "terminalCommand": terminal,
+            "pendingEnvRestore": fm.fileExists(atPath: voiceEnvSnapshotURL.path),
         ]
     }
 
@@ -5820,18 +5845,98 @@ final class COSControlHelper {
         }
         try ensureDirectories()
         let lockPath = support.appendingPathComponent("voice-setup.lock").path
-        let lock = open(lockPath, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        // O_CLOEXEC: the setup child must not inherit this lock, or a killed helper's orphan would hold it.
+        let lock = open(lockPath, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR)
         guard lock >= 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else { throw HelperError.message("Voice setup is already running.") }
         defer { close(lock) }
+        // The server's setup writes the tier into ~/.cos-glasses/.env before it checks or downloads anything. Snapshot
+        // those three keys first (an earlier run that was killed is put back before anything else), and put them back
+        // afterwards whatever happened: the live tier changes only through set-transcription-tier.
+        try restoreVoiceEnvSnapshotIfPresent()
+        try writeVoiceEnvSnapshot()
         let environment = nodeToolEnvironment(node: node).merging(["NO_COLOR": "1", "FORCE_COLOR": "0"]) { _, new in new }
-        let output = try spawnStreaming(node, [cli.path, "--setup-transcription", "--transcription-tier", tier, "--prepare-only"],
+        let started = Date()
+        let output: (code: Int32, text: String)
+        do {
+            output = try spawnStreaming(node, [cli.path, "--setup-transcription", "--transcription-tier", tier, "--prepare-only"],
                                         environment: environment, workingDirectory: home.path)
+        } catch {
+            try restoreVoiceEnvSnapshotIfPresent()
+            throw error
+        }
+        try restoreVoiceEnvSnapshotIfPresent()
         let tail = String(stripEmails(output.text).suffix(1500))
+        logVoiceSetup("tier=\(tier) exit=\(output.code) cancelled=\(voiceSetupCancelled != 0) seconds=\(Int(Date().timeIntervalSince(started))) env=restored")
+        if voiceSetupCancelled != 0 {
+            emit(ok: false, message: "Voice setup was cancelled. Downloads so far are kept; the next run resumes them. Your voice setting did not change.",
+                 details: ["tier": tier, "cancelled": true])
+            exit(143)
+        }
         guard output.code == 0 else {
             throw HelperError.message("Voice setup stopped before it finished. Downloads so far are kept, and the next run resumes them. " + (tail.split(separator: "\n").last.map(String.init) ?? ""))
         }
         emit(ok: true, message: "Voice models are ready. Apply \(tier == "max" ? "Max" : "Balanced") to start using them.",
              details: ["tier": tier, "log": tail])
+    }
+
+    private var voiceEnvSnapshotURL: URL { support.appendingPathComponent("voice-setup-env-snapshot.json") }
+
+    /// Records the three tier keys as ~/.cos-glasses/.env has them now (absent keys as null), under the lifecycle lock.
+    private func writeVoiceEnvSnapshot() throws {
+        try withMutationLock {
+            let values = try voiceEnvText().map(VoiceEnvFile.values) ?? Dictionary(uniqueKeysWithValues: VoiceEnvFile.keys.map { ($0, nil) })
+            var payload: [String: Any] = [:]
+            for key in VoiceEnvFile.keys { payload[key] = (values[key] ?? nil).map { $0 as Any } ?? NSNull() }
+            let data = try JSONSerialization.data(withJSONObject: ["values": payload], options: [.sortedKeys])
+            try atomicWriteData(data, to: voiceEnvSnapshotURL, permissions: 0o600)
+        }
+    }
+
+    /// Puts the snapshot's three keys back into ~/.cos-glasses/.env and deletes the snapshot. Waits up to 60 s for the
+    /// lifecycle lock (an update or restart can hold it briefly); without the lock it refuses rather than race.
+    private func restoreVoiceEnvSnapshotIfPresent() throws {
+        guard let data = try? Data(contentsOf: voiceEnvSnapshotURL) else { return }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = object["values"] as? [String: Any] else {
+            throw HelperError.message("COS could not read its saved voice setting. Nothing was changed; open Settings and Apply your voice tier.")
+        }
+        var snapshot: [String: String?] = [:]
+        for key in VoiceEnvFile.keys { snapshot[key] = raw[key] as? String }
+        let deadline = Date().addingTimeInterval(60)
+        while true {
+            do {
+                try withMutationLock {
+                    let current = try voiceEnvText() ?? ""
+                    let restored = VoiceEnvFile.restore(current, to: snapshot)
+                    if restored != current {
+                        try fm.createDirectory(at: configDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                        try atomicWriteData(Data(restored.utf8), to: envURL, permissions: 0o600)
+                    }
+                    try? fm.removeItem(at: voiceEnvSnapshotURL)
+                }
+                return
+            } catch {
+                guard Date() < deadline else { throw error }
+                Thread.sleep(forTimeInterval: 1)
+            }
+        }
+    }
+
+    /// ~/.cos-glasses/.env as text, nil when absent. A symlink or a non-file is refused: COS never writes through one.
+    private func voiceEnvText() throws -> String? {
+        guard fm.fileExists(atPath: envURL.path) else { return nil }
+        try validatePrivateRegularFile(envURL)
+        return try String(contentsOf: envURL, encoding: .utf8)
+    }
+
+    /// One line per voice-setup outcome in the Control log (~/Library/Logs/COS Glasses/control.log).
+    private func logVoiceSetup(_ line: String) {
+        try? ensureDirectories()
+        if !fm.fileExists(atPath: helperLog.path) { fm.createFile(atPath: helperLog.path, contents: nil) }
+        guard let handle = try? FileHandle(forWritingTo: helperLog) else { return }
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        try? handle.write(contentsOf: Data("\(ISO8601DateFormatter().string(from: Date())) voice-setup \(line)\n".utf8))
     }
 
     /// posix_spawn in its own process group, so Cancel (SIGTERM to this helper) stops node AND the curl it runs.
@@ -5850,7 +5955,8 @@ final class COSControlHelper {
         var attributes: posix_spawnattr_t? = nil
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP))
+        // Its own process group (Cancel stops it all), and only stdin, stdout and stderr are inherited.
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
         posix_spawnattr_setpgroup(&attributes, 0)
         let argv = ([executable] + arguments).map { strdup($0) } + [nil]
         let envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
@@ -5860,9 +5966,12 @@ final class COSControlHelper {
         close(pipeFDs[1])
         guard spawned == 0 else { close(pipeFDs[0]); throw HelperError.message("Could not start voice setup (\(spawned)).") }
         voiceSetupChildGroup = pid
+        // Cancel: stop the whole child group (node and the curl it runs) and let the read loop finish, so the .env
+        // snapshot is restored before this helper exits.
+        voiceSetupCancelled = 0
         signal(SIGTERM) { _ in
+            voiceSetupCancelled = 1
             if voiceSetupChildGroup > 0 { killpg(voiceSetupChildGroup, SIGTERM) }
-            _exit(143)
         }
         defer { voiceSetupChildGroup = 0; signal(SIGTERM, SIG_DFL) }
         var text = ""
@@ -20664,6 +20773,68 @@ final class COSControlHelper {
             }
         }
     }
+}
+
+/// provider-status's rows, written from the per-provider queues.
+final class ProviderStatusResults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var rows: [String: [String: Any]] = [:]
+    func set(_ provider: String, _ row: [String: Any]) { lock.lock(); rows[provider] = row; lock.unlock() }
+    func get(_ provider: String) -> [String: Any]? { lock.lock(); defer { lock.unlock() }; return rows[provider] }
+}
+
+/// The probe runner for provider-status: one child per command, a hard timeout, and a registry so the deadline can
+/// stop whatever is still running. Children get a dead stdin (a CLI that waits on it would hang the row).
+enum ProbeRunner {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var running: [Int32: Process] = [:]
+    /// Set at the deadline: from then on no probe starts, so a provider's queue cannot launch one after stopAll.
+    nonisolated(unsafe) private static var stopped = false
+
+    static func run(_ path: String, _ arguments: [String], environment: [String: String], timeout: TimeInterval) -> (code: Int32, output: String)? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
+        process.environment = environment
+        process.standardInput = FileHandle.nullDevice
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        let done = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in done.signal() }
+        let collected = ProbeOutput()
+        pipe.fileHandleForReading.readabilityHandler = { handle in collected.append(handle.availableData) }
+        lock.lock()
+        guard !stopped else { lock.unlock(); return nil }
+        do { try process.run() } catch { lock.unlock(); return nil }
+        running[process.processIdentifier] = process
+        lock.unlock()
+        defer { lock.lock(); running[process.processIdentifier] = nil; lock.unlock() }
+        if done.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            if done.wait(timeout: .now() + 1) == .timedOut { kill(process.processIdentifier, SIGKILL); _ = done.wait(timeout: .now() + 1) }
+            pipe.fileHandleForReading.readabilityHandler = nil
+            return nil
+        }
+        pipe.fileHandleForReading.readabilityHandler = nil
+        collected.append((try? pipe.fileHandleForReading.readToEnd()) ?? Data())
+        return (process.terminationStatus, collected.text)
+    }
+
+    /// Stops every probe still running (the deadline passed).
+    static func stopAll() {
+        lock.lock(); stopped = true; let all = Array(running.values); lock.unlock()
+        for process in all where process.isRunning { process.terminate() }
+        Thread.sleep(forTimeInterval: 0.5)
+        for process in all where process.isRunning { kill(process.processIdentifier, SIGKILL) }
+    }
+}
+
+final class ProbeOutput: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+    func append(_ chunk: Data) { lock.lock(); if data.count < 4_000_000 { data.append(chunk) }; lock.unlock() }
+    var text: String { lock.lock(); defer { lock.unlock() }; return String(decoding: data, as: UTF8.self) }
 }
 
 do {

@@ -117,6 +117,7 @@ struct ProviderConnectChecks {
         setupGuide()
         voiceRows()
         await voiceFlow()
+        await qaFixes()
         if failures > 0 {
             FileHandle.standardError.write(Data("Connect your AI checks: \(failures) failed, \(passes) passed\n".utf8))
             exit(1)
@@ -133,7 +134,7 @@ struct ProviderConnectChecks {
         let skipped = ProviderRules.row(.claude, mixed.status(.claude), skipped: true, waiting: false)
         check(skipped.status == "Skipped for now" && skipped.action == .signIn && !skipped.canSkip, "rows skipped", "a skipped row can still sign in: \(skipped)")
         let waiting = ProviderRules.row(.claude, mixed.status(.claude), skipped: false, waiting: true)
-        check(waiting.waiting && waiting.status == "Waiting for sign-in…" && waiting.detail?.contains("/login") == true, "rows waiting", "\(waiting)")
+        check(waiting.waiting && waiting.status == "Waiting for sign-in…" && waiting.detail?.contains("browser") == true, "rows waiting", "\(waiting)")
         check(ProviderRules.row(.codex, mixed.status(.codex), skipped: false, waiting: false).tone == .good, "rows signed in", "ChatGPT's codex is green")
         let key = ProviderRules.row(.claude, report(status("claude", path: "/opt/homebrew/bin/claude", signIn: "apiKey")).status(.claude), skipped: false, waiting: false)
         check(key.status == "API key" && key.tone == .good && key.detail?.contains("billed separately") == true, "rows api key", "\(key)")
@@ -166,7 +167,7 @@ struct ProviderConnectChecks {
     }
 
     static func login() {
-        check(ProviderLogin.command(.claude, binaryPath: "/opt/homebrew/bin/claude") == "claude", "login command", "on PATH: bare")
+        check(ProviderLogin.command(.claude, binaryPath: "/opt/homebrew/bin/claude") == "claude auth login", "login command", "on PATH: bare")
         check(ProviderLogin.command(.codex, binaryPath: chatgptCodex) == "'\(chatgptCodex)' login", "login command", "ChatGPT-only: the app's codex by path: \(ProviderLogin.command(.codex, binaryPath: chatgptCodex) ?? "nil")")
         check(ProviderLogin.command(.cursor, binaryPath: "/Users/a b/.local/bin/agent") == "'/Users/a b/.local/bin/agent' login", "login command", "spaces quoted")
         check(ProviderLogin.command(.cursor, binaryPath: nil) == "agent login", "login command", "no path: the documented command")
@@ -279,7 +280,7 @@ struct ProviderConnectChecks {
         let codexDone = report(status("claude", path: "/opt/homebrew/bin/claude"), status("codex", path: chatgptCodex))
         let g = guide([codexPending, codexDone], effects: effects)
         await g.refresh()
-        g.signIn(.codex)
+        await g.signIn(.codex)
         check(effects.terminal.count == 1 && effects.terminal[0].contains(#"do script "'\#(chatgptCodex)' login""#), "sign in", "Terminal runs the app's codex login: \(effects.terminal)")
         check(g.waiting[.codex] != nil && g.row(.codex).waiting, "sign in", "the row waits")
         check(effects.opened.isEmpty, "sign in", "no link is opened")
@@ -289,7 +290,7 @@ struct ProviderConnectChecks {
         let failing = Effects(); failing.terminalWorks = false
         let f = guide([codexPending], effects: failing)
         await f.refresh()
-        f.signIn(.codex)
+        await f.signIn(.codex)
         check(failing.copied == ["'\(chatgptCodex)' login"] && f.waiting.isEmpty && f.notice?.contains("clipboard") == true, "sign in fallback", "\(failing.copied)")
         // Skip persists; signing in later clears it.
         let defaults = freshDefaults()
@@ -299,7 +300,7 @@ struct ProviderConnectChecks {
         check(defaults.stringArray(forKey: ProviderGuide.skippedKey) == ["codex"] && k.signInStepDone, "skip", "remembered")
         let k2 = guide([codexPending], effects: Effects(), defaults: defaults)
         check(k2.skipped == [.codex], "skip", "a new guide reads it back")
-        k2.signIn(.codex)
+        await k2.signIn(.codex)
         check(k2.skipped.isEmpty, "skip", "Sign in clears the skip")
     }
 
@@ -347,7 +348,7 @@ struct ProviderConnectChecks {
         check(noLocal == "Not found: claude, cursor", "agent line fallback", "a failed server probe is not a sign-in problem: \(noLocal ?? "nil")")
         check(!(noLocal ?? "").contains("Not signed in"), "agent line fallback", "")
         let local = AgentCliText.detail(server: [.claude: false, .codex: true], cursorState: "notInstalled", local: mixed)
-        check(local == "Not found: cursor · Not signed in: claude (run: claude)", "agent line local", local ?? "nil")
+        check(local == "Not found: cursor · Not signed in: claude (run: claude auth login)", "agent line local", local ?? "nil")
         let serverMissed = AgentCliText.detail(server: [.claude: false, .codex: true], cursorState: "connected", local: allIn)
         check(serverMissed == "Installed, but the COS server could not run: claude", "agent line server missed", serverMissed ?? "nil")
         check(AgentCliText.detail(server: [.claude: true, .codex: true], cursorState: "connected", local: nil) == nil, "agent line", "all ready: nothing to fix")
@@ -381,7 +382,8 @@ struct ProviderConnectChecks {
         check(SetupGuideRules.showFinishCard(early, hidden: false) && SetupGuideRules.finishTitle(early) == "Finish setup · 0 of 5", "finish card early", SetupGuideRules.finishTitle(early))
         check(!SetupGuideRules.showFinishCard(early, hidden: true), "finish card hide", "Hide setup guide removes the card")
         // Mid: codex signed in, voice ready, continue on.
-        let mid = SetupGuideRules.rows(facts(mixed, voice: voiceReady()), skipped: [.cursor])
+        var midFacts = facts(mixed, voice: voiceReady()); midFacts.providerSkipped = [.cursor]
+        let mid = SetupGuideRules.rows(midFacts, skipped: [])
         let p = SetupGuideRules.progress(mid)
         check(p.total == 9 && p.handled == 4, "finish card mid", "codex, cursor (skipped), voice, continue: \(p)")
         check(mid.map(\.id) == [.claude, .codex, .cursor, .ollama, .voice, .sessions, .continueThreads, .jev, .permissions], "setup guide rows", "\(mid.map(\.id))")
@@ -390,7 +392,8 @@ struct ProviderConnectChecks {
         allDone.claudeSessionsEnabled = true; allDone.jevConfigured = true; allDone.permissionsNeedCount = 0
         let done = SetupGuideRules.rows(allDone, skipped: [])
         check(SetupGuideRules.progress(done) == (9, 9) && !SetupGuideRules.showFinishCard(done, hidden: false), "finish card done", "\(SetupGuideRules.progress(done))")
-        let skippedAll = SetupGuideRules.rows(facts(mixed, voice: voiceReady()), skipped: Set(SetupRowID.allCases))
+        var allSkipped = facts(mixed, voice: voiceReady()); allSkipped.providerSkipped = Set(AIProvider.agents)
+        let skippedAll = SetupGuideRules.rows(allSkipped, skipped: Set(SetupRowID.allCases))
         check(!SetupGuideRules.showFinishCard(skippedAll, hidden: false), "finish card skipped", "skipping every row also ends the card")
         // No Continue row on a server without it; settings rows say what they unlock.
         var old = facts(mixed); old.threadAttachSupported = false
@@ -480,5 +483,99 @@ struct ProviderConnectChecks {
         w.runVoiceSetup = { _, _ in ran = true; return "" }
         w.startVoiceSetup()
         check(!w.voiceRunning && !ran, "voice gate", "no whisper.cpp: nothing runs")
+    }
+
+    static func qaFixes() async {
+        // B1: every row that shows a button does something (Get Ollama opened nothing).
+        var everything: [SetupRow] = []
+        for r in [allMissing, mixed, allIn] {
+            for v in [nil, voiceReady()] as [VoiceFacts?] {
+                for running in [false, true] { everything += SetupGuideRules.rows(facts(r, running: running, voice: v), skipped: []) }
+            }
+        }
+        var noWhisper = voiceReady(); noWhisper.whisperReady = false; noWhisper.whisperCli = false
+        everything += SetupGuideRules.rows(facts(allIn, voice: noWhisper), skipped: [])
+        check(everything.allSatisfy { $0.actionTitle == nil || $0.action != SetupAction.none }, "every button acts", "\(everything.filter { $0.actionTitle != nil && $0.action == SetupAction.none }.map(\.id))")
+        let getOllama = SetupGuideRules.rows(facts(allMissing), skipped: []).first { $0.id == .ollama }!
+        check(getOllama.action == .download(.ollama) && getOllama.actionTitle == "Get Ollama", "get ollama", "\(getOllama.action)")
+        // W5: installed with an unreadable sign-in counts as handled; nothing counts before the facts arrive.
+        let unknown = report(status("claude", path: "/opt/homebrew/bin/claude", signIn: "unknown"))
+        check(SetupGuideRules.rows(facts(unknown), skipped: []).first { $0.id == .claude }!.done, "unknown handled", "installed, sign-in unknown is done")
+        let late = ProviderStatusReport.decode(Data(#"{"providers":[{"provider":"claude","installed":false,"binaryPath":null,"version":null,"signIn":"unknown","candidates":[],"detail":"Did not answer in time.","timedOut":true}]}"#.utf8))!
+        let lateRow = ProviderRules.row(.claude, late.status(.claude), skipped: false, waiting: false)
+        check(lateRow.status == "Could not check" && lateRow.canSkip && !SetupGuideRules.rows(facts(late), skipped: []).first { $0.id == .claude }!.done, "timed out row", "\(lateRow)")
+        var noReport = facts(mixed); noReport.report = nil
+        check(!SetupGuideRules.loaded(noReport) && !SetupGuideRules.showFinishCard(SetupGuideRules.rows(noReport, skipped: []), hidden: false, loaded: false), "finish card loading", "no card before the report")
+        var noVoice = facts(mixed); noVoice.voice = nil
+        check(!SetupGuideRules.loaded(noVoice), "finish card loading", "running COS waits for the voice facts")
+        noVoice.voiceUnavailable = true
+        check(SetupGuideRules.loaded(noVoice), "finish card loading", "or their failure")
+        noVoice.whisperReady = true; noVoice.requestedTier = "max"
+        let fallback = SetupGuideRules.voice(noVoice, skipped: false)
+        check(fallback.done && fallback.status == "Ready · Max", "voice fallback", "voice-status failed: the server's whisperReady decides: \(fallback.status)")
+        noVoice.whisperReady = false
+        check(SetupGuideRules.voice(noVoice, skipped: false).status == "Could not check", "voice fallback", "never Checking forever")
+        // W7: one skip store.
+        let state = SetupGuideState(defaults: freshDefaults())
+        state.skip(.claude)
+        check(!state.skipped.contains(.claude), "one skip store", "provider rows are skipped in ProviderGuide only")
+        // B3: a Max user opens the voice row and cancels: still Max, nothing applied.
+        let maxUser = SetupGuideState(defaults: freshDefaults())
+        maxUser.adoptServerTier("max")
+        check(maxUser.voiceTier == "max", "voice tier start", "the row starts on the server's tier")
+        var missing = voiceReady(); missing.whisperReady = false; missing.missingBytes = ["balanced": 5_000_000_000, "max": 4_700_000_000]
+        maxUser.voice = missing
+        var applied: [String] = []
+        var ranTier: String?
+        maxUser.runVoiceSetup = { tier, _ in ranTier = tier; try await Task.sleep(for: .seconds(30)); return "x" }
+        maxUser.applyTier = { applied.append($0) }
+        maxUser.startVoiceSetup()
+        try? await Task.sleep(for: .milliseconds(30))
+        maxUser.cancelVoiceSetup()
+        for _ in 0..<100 where maxUser.voiceRunning { try? await Task.sleep(for: .milliseconds(20)) }
+        check(ranTier == "max" && applied.isEmpty && maxUser.voiceTier == "max" && maxUser.voiceMessage?.contains("did not change") == true, "max user cancel", "Max stays Max: ran \(ranTier ?? "nil"), applied \(applied)")
+        let picked = SetupGuideState(defaults: freshDefaults())
+        picked.voiceTier = "max"
+        picked.adoptServerTier("balanced")
+        check(picked.voiceTier == "max", "voice tier start", "a pick in the row wins over the server's tier")
+        // W5/W6: the poll limit stops the wait and says so; a new Sign in starts its own clock.
+        let effects = Effects()
+        let pending = report(status("claude", path: "/opt/homebrew/bin/claude", signIn: "signInRequired"), status("codex", path: chatgptCodex), status("cursor", path: "/Users/x/.local/bin/agent"))
+        var logs: [String] = []
+        let g = guide([pending], effects: effects)
+        g.log = { logs.append($0) }
+        await g.refresh()
+        await g.signIn(.claude)
+        var clock = Date()
+        await g.poll(sleep: { seconds in clock = clock.addingTimeInterval(seconds); return true }, now: { clock })
+        check(g.waiting.isEmpty && g.expired == [.claude] && g.row(.claude).status == "Stopped checking", "poll limit", "the row stops waiting and says so: \(g.row(.claude).status)")
+        check(logs.contains { $0.hasPrefix("sign-in opened provider=claude") } && logs.contains { $0.hasPrefix("sign-in stopped checking provider=claude") }, "logging", "\(logs)")
+        await g.checkAgain(.claude)
+        check(!g.expired.contains(.claude), "poll limit", "Check again clears it")
+        // W6: osascript failed but Terminal opened: the command is on the clipboard and the row waits.
+        let denied = Effects(); denied.terminalWorks = false
+        let d = guide([pending], effects: denied)
+        d.openTerminalApp = { true }
+        await d.refresh()
+        await d.signIn(.claude)
+        check(denied.copied == ["claude auth login"] && d.waiting[.claude] != nil && d.notice?.contains("Automation") == true, "sign in fallback", "\(denied.copied) \(d.notice ?? "")")
+        // Dock and Settings decisions.
+        check(DockPresence.reopenTarget(needsFirstRun: false, activityAvailable: true, statusRead: false) == .setup, "dock click", "before the first status: Welcome")
+        check(DockPresence.showUpgradeNotice(stored: nil, seen: false, firstRun: false) && !DockPresence.showUpgradeNotice(stored: "dock", seen: false, firstRun: false)
+              && !DockPresence.showUpgradeNotice(stored: nil, seen: true, firstRun: false) && !DockPresence.showUpgradeNotice(stored: nil, seen: false, firstRun: true), "dock notice", "once, for upgraders who never chose")
+        check(DockPresence.openActivityOnActivate(mode: .dock, visibleWindows: 0, panelVisible: false)
+              && !DockPresence.openActivityOnActivate(mode: .dock, visibleWindows: 0, panelVisible: true)
+              && !DockPresence.openActivityOnActivate(mode: .menuBarOnly, visibleWindows: 0, panelVisible: false)
+              && !DockPresence.openActivityOnActivate(mode: .dock, visibleWindows: 1, panelVisible: false), "cmd-tab", "Activity only when nothing is showing")
+        let shown = SettingsRoute.StatusItem(visible: true, onScreen: true, underNotch: false)
+        check(SettingsRoute.decide(panelOpen: true, item: shown) == .scrollOpenPanel, "settings route", "an open panel is never clicked closed")
+        check(SettingsRoute.decide(panelOpen: false, item: shown) == .clickStatusItem, "settings route", "a visible icon opens the panel")
+        check(SettingsRoute.decide(panelOpen: false, item: SettingsRoute.StatusItem(visible: true, onScreen: true, underNotch: true)) == .window
+              && SettingsRoute.decide(panelOpen: false, item: SettingsRoute.StatusItem(visible: false, onScreen: true, underNotch: false)) == .window
+              && SettingsRoute.decide(panelOpen: false, item: SettingsRoute.StatusItem(visible: true, onScreen: false, underNotch: false)) == .window
+              && SettingsRoute.decide(panelOpen: false, item: nil) == .window, "settings route", "a hidden icon gets the Settings window")
+        check(ProviderGuide.statusTimeout == 35, "status timeout", "25 s deadline plus 10 s")
+        check(ProviderPass.prompt(setUp: .codex, tag: "abcd1234ef")!.contains("~/Applications/ChatGPT.app") && ProviderPass.prompt(setUp: .claude, tag: "abcd1234ef")!.contains("/opt/homebrew/bin/claude"), "pass prompts", "COS's own paths")
+        check(PetIntro.touchedKeys.allSatisfy { $0 != "cos.sessionPetCharacterPercent" }, "pet intro", "the migration's key is not a sign of a person")
     }
 }
