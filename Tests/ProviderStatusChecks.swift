@@ -69,6 +69,7 @@ struct ProviderStatusChecks {
         claudeDesktopOnly()
         json()
         voice()
+        qaFixes()
         if failures > 0 {
             FileHandle.standardError.write(Data("provider-status checks: \(failures) failed, \(passes) passed\n".utf8))
             exit(1)
@@ -157,7 +158,7 @@ struct ProviderStatusChecks {
     static func cursorIdentity() {
         let local = "\(home)/.local/bin/agent"
         let other = "\(home)/.local/bin/agent"
-        let real = "/opt/cursor/bin/cursor-agent"
+        let real = "/opt/cursor/bin/agent"
         // Another program called `agent` first in line is skipped: only one whose `about` prints CLI Version is Cursor's.
         let calls = Calls()
         let status = ProviderStatusProbe.status("cursor", environment: mac([other, real], path: "/opt/cursor/bin"),
@@ -166,7 +167,7 @@ struct ProviderStatusChecks {
                 "\(real) about": (0, aboutSignedIn),
             ], calls: calls))
         check(calls.list.first == "\(other) about", "cursor identity", "the first candidate is tried first: \(calls.list)")
-        check(status.installed && status.binaryPath == real, "cursor identity", "cursor-agent accepted, the foreign agent skipped: \(status.binaryPath ?? "nil")")
+        check(status.installed && status.binaryPath == real, "cursor identity", "Cursor's agent accepted, the foreign agent skipped: \(status.binaryPath ?? "nil")")
         check(status.candidates.first { $0.path == other }?.note?.contains("CLI Version") == true, "cursor identity", "the skipped binary says why")
         check(status.signIn == .signedIn && status.version == "2026.10.01-e373342", "cursor sign-in", "\(status.signIn) \(status.version ?? "nil")")
         check(!calls.list.contains { $0.contains("login") }, "no login", "never runs a login")
@@ -241,5 +242,44 @@ struct ProviderStatusChecks {
         let brew = mac(["/opt/homebrew/bin/whisper-cli"])
         check(VoiceSetupCore.whisperPath("whisper-cli", in: brew) == "/opt/homebrew/bin/whisper-cli" && VoiceSetupCore.whisperPath("whisper-server", in: brew) == nil, "voice whisper.cpp", "found only where the server looks")
         check(VoiceSetupCore.shellQuote("/a b/it's") == "'/a b/it'\\''s'", "voice terminal", VoiceSetupCore.shellQuote("/a b/it's"))
+    }
+
+    static func qaFixes() {
+        // Cursor without a CLI Version line: `status --format json` proves it; a date-hash --version proves it too.
+        let agent = "\(home)/.local/bin/agent"
+        let json = ProviderStatusProbe.status("cursor", environment: mac([agent]), probes: probes([
+            "\(agent) about": (0, "Not logged in"), "\(agent) status --format json": (0, #"{"status":"unauthenticated","isAuthenticated":false}"#),
+            "\(agent) --version": (0, "2026.10.01-e373342\n")]))
+        check(json.installed && json.signIn == .signInRequired && json.version == "2026.10.01-e373342", "cursor fallback", "status json: \(json.signIn) \(json.version ?? "nil")")
+        let version = ProviderStatusProbe.status("cursor", environment: mac([agent]), probes: probes([
+            "\(agent) about": (1, ""), "\(agent) --version": (0, "2026.10.01-e373342\n")]))
+        check(version.installed && version.signIn == .unknown, "cursor fallback", "a proven Cursor with unclear sign-in reads installed, unknown: \(version.installed) \(version.signIn)")
+        check(ProviderStatusCore.cursorVersionToken("1.2.3") == nil && ProviderStatusCore.cursorStatusJSON("{}") == nil, "cursor fallback", "anything else is not proof")
+        // Only cursor-agent: Cursor's, but the server runs `agent`.
+        let onlyLong = "\(home)/.local/bin/cursor-agent"
+        let long = ProviderStatusProbe.status("cursor", environment: mac([onlyLong]), probes: probes(["\(onlyLong) about": (0, aboutSignedIn)]))
+        check(!long.installed && long.detail?.contains("agent") == true && !long.candidates.contains(where: \.chosen), "cursor-agent only", "not ready, and says why: \(long.detail ?? "nil")")
+        // The gate reads the same lists as the rows.
+        check(ProviderStatusCore.setupProviderPresent(in: mac([chatgptCodex])), "gate agrees", "ChatGPT-only codex")
+        check(!ProviderStatusCore.setupProviderPresent(in: mac(["/Applications/Codex.app/Contents/Resources/codex"], path: "/Applications/Codex.app/Contents/Resources")), "gate agrees", "the retired Codex.app is not a CLI")
+        check(!ProviderStatusCore.setupProviderPresent(in: mac([onlyLong])), "gate agrees", "cursor-agent alone is not runnable by the server")
+        check(ProviderStatusCore.setupProviderPresent(in: mac([agent])), "gate agrees", "agent is")
+        let desktopRoot = "\(home)/Library/Application Support/Claude/claude-code"
+        check(!ProviderStatusCore.setupProviderPresent(in: mac(["\(desktopRoot)/2.1.293/h/claude.app/Contents/MacOS/claude"], dirs: [desktopRoot: ["2.1.293"], "\(desktopRoot)/2.1.293": ["h"]])), "gate agrees", "Claude Desktop's copy is not a CLI")
+        check(ProviderStatusCore.totalDeadline == 25 && ProviderStatusCore.commandTimeout * Double(ProviderStatusCore.cursorAttempts) <= ProviderStatusCore.totalDeadline, "deadline", "three Cursor tries fit")
+        check(ProviderStatusCore.timedOut("claude")["timedOut"] as? Bool == true && ProviderStatusCore.timedOut("claude")["signIn"] as? String == "unknown", "deadline", "a late row says so")
+        // .env: the snapshot of the three keys, and putting them back.
+        let maxEnv = "COS_API_TOKEN=x\nCOS_WHISPER_TRANSCRIPTION_TIER=max\nCOS_WHISPER_PREVIEW_MODEL=turbo\nCOS_WHISPER_COMMIT_MODEL=large-v3\nOTHER=1\n"
+        let snapshot = VoiceEnvFile.values(maxEnv)
+        check(snapshot["COS_WHISPER_TRANSCRIPTION_TIER"] == "max" && snapshot["COS_WHISPER_COMMIT_MODEL"] == "large-v3", "env snapshot", "\(snapshot)")
+        let flipped = "COS_API_TOKEN=x\nOTHER=1\nCOS_WHISPER_TRANSCRIPTION_TIER=balanced\nCOS_WHISPER_PREVIEW_MODEL=small.en\nCOS_WHISPER_COMMIT_MODEL=turbo\n"
+        let back = VoiceEnvFile.restore(flipped, to: snapshot)
+        check(VoiceEnvFile.values(back)["COS_WHISPER_TRANSCRIPTION_TIER"] == "max" && back.contains("COS_API_TOKEN=x\n") && back.contains("OTHER=1\n") && back.hasSuffix("\n"), "env restore", back)
+        let none = VoiceEnvFile.values("OTHER=1\n")
+        let removed = VoiceEnvFile.restore(flipped, to: none)
+        check(!removed.contains("COS_WHISPER_") && removed.contains("OTHER=1"), "env restore", "keys the user never had are removed again: \(removed)")
+        check(VoiceEnvFile.restore(maxEnv, to: snapshot) == maxEnv, "env restore", "an unchanged file is left byte for byte")
+        let dup = VoiceEnvFile.restore("COS_WHISPER_TRANSCRIPTION_TIER=a\nCOS_WHISPER_TRANSCRIPTION_TIER=b\n", to: snapshot)
+        check(dup.components(separatedBy: "COS_WHISPER_TRANSCRIPTION_TIER=").count == 2, "env restore", "duplicates collapse to one: \(dup)")
     }
 }

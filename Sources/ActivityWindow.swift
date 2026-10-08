@@ -1239,6 +1239,9 @@ struct ActivityWindow: View {
                             // tile and black-on-black on the espresso panel in dark mode.
                             .foregroundStyle(.primary)
                         Spacer()
+                        // Settings and the setup guide are reachable from here too (menu bar only, icon hidden).
+                        Button("Setup guide") { model.showSetupGuide?() }.buttonStyle(COSTextButtonStyle())
+                        Button("Settings…") { model.showSettings?() }.buttonStyle(COSTextButtonStyle())
                         COSGotcosCaption(size: 12)
                     }
                     VStack(alignment: .leading, spacing: 5) {

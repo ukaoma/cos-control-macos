@@ -56,7 +56,7 @@ MUTANTS = [
     ("menu bar only by default", M, "Mode(rawValue: stored ?? \"\") ?? .dock", "Mode(rawValue: stored ?? \"\") ?? .menuBarOnly", "[dock default]", "model"),
     ("pet intro for people who changed settings", M, "!seen && touchedKeys == 0 && petEnabled", "!seen && petEnabled", "[pet intro]", "model"),
     ("two passes at once", M, "        if passes[provider] != nil, waiting[provider] != nil {", "        if false {", "[pass one at a time]", "model"),
-    ("Terminal failure loses the command", M, "            copy(command)\n            notice = \"Terminal could not be opened.", "            notice = \"Terminal could not be opened.", "[sign in fallback]", "model"),
+    ("Terminal failure loses the command", M, "            copy(command)\n            let opened = openTerminalApp()", "            let opened = openTerminalApp()", "[sign in fallback]", "model"),
     ("a signed-in row keeps waiting", M, "where report?.status(provider)?.signedIn == true {", "where false {", "[sign in]", "model"),
     # The setup guide and voice (Miles 2026-10-08 10:52 and 10:59).
     ("missing bytes ignore truncated files", K, "            if (sizes[model.name] ?? 0) < model.minBytes { total += model.bytes }", "            if sizes[model.name] == nil { total += model.bytes }", "[voice sizes]", "core"),
@@ -74,14 +74,31 @@ MUTANTS = [
     ("pet loses Settings", "Sources/SessionPet.swift", '        Button("Settings…") { model.showSettings?() }\n', "", "[pet menu]", "pins"),
     ("Dock menu loses the guide", W, '["Open Activity", "Setup guide…", "Settings…"]', '["Open Activity", "Settings…"]', "[dock menu]", "pins"),
     ("Guided Setup back to bare npx", C, "        let command = setupGuide.voice?.terminalCommand[normalized]\n            ?? ", "        let command = ", "[guided setup]", "pins"),
-    ("voice setup without its own process group", H, "posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP))", "posix_spawnattr_setflags(&attributes, 0)", "[voice cancel]", "pins"),
+    ("voice setup without its own process group", H, "posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))", "posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))", "[voice cancel]", "pins"),
+    # QA 2026-10-08 fixes.
+    ("Get Ollama does nothing", M, "status?.installed == true ? .openOllama : .download(.ollama),", "status?.installed == true ? .openOllama : .none,", "[every button acts]", "model"),
+    ("an unknown sign-in is not handled", M, "done: status?.signedIn == true || unknown,", "done: status?.signedIn == true,", "[unknown handled]", "model"),
+    ("the card shows before the facts", M, "return loaded && !hidden && p.total > 0", "return !hidden && p.total > 0", "[finish card loading]", "model"),
+    ("the voice row ignores the server's tier", M, "guard !voiceTierChosen, let tier = requested", "guard false, let tier = requested", "[voice tier start]", "model"),
+    ("a wait never stops", M, "for (provider, started) in waiting where at.timeIntervalSince(started) >= ProviderPollSchedule.limit {", "for (provider, started) in waiting where false {", "[poll limit]", "model"),
+    ("no Terminal when the script fails", M, "            let opened = openTerminalApp()", "            let opened = false", "[sign in fallback]", "model"),
+    ("the migration's key hides the pet intro", M, '"cos.sessionPetSize", "cos.sessionPetSizePixels"]', '"cos.sessionPetSize", "cos.sessionPetSizePixels", "cos.sessionPetCharacterPercent"]', "[pet intro]", "model"),
+    ("Settings clicks an open panel closed", M, "        if panelOpen { return .scrollOpenPanel }\n", "", "[settings route]", "model"),
+    ("provider skips in two stores", M, "guard !SetupGuideState.providerRows.contains(id) else { return }; ", "", "[one skip store]", "model"),
+    ("no status json fallback for Cursor", K, "if !proven || status.signIn == .unknown, let json = probes.run(", "if false, let json = probes.run(", "[cursor fallback]", "core"),
+    ("cursor-agent read as runnable", K, '        candidate.source == "env" || URL(fileURLWithPath: candidate.path).lastPathComponent == "agent"', "        true", "[cursor-agent only]", "core"),
+    ("the gate counts Claude Desktop", K, 'contains(where: { $0.executable && $0.source != "claudeDesktop" })', "contains(where: { $0.executable })", "[gate agrees]", "core"),
+    ("restore keeps the setup's keys", K, "            guard let value = snapshot[key] ?? nil, !written.contains(key) else { return nil }", "            guard let value = snapshot[key] ?? nil, !written.contains(key) else { return line }", "[env restore]", "core"),
+    ("Cancel exits before the restore", H, "            voiceSetupCancelled = 1\n", "            voiceSetupCancelled = 1\n            _exit(143)\n", "[voice env]", "pins"),
+    ("no restore after the setup", H, "        try restoreVoiceEnvSnapshotIfPresent()\n        let tail = String(stripEmails(output.text).suffix(1500))", "        let tail = String(stripEmails(output.text).suffix(1500))", "[voice env]", "pins"),
     # Wiring.
     ("no panel row", V, "                PanelConnectAIRow(guide: model.providerGuide, model: model)\n", "", "[panel row]", "pins"),
     ("Get started runs nothing", S, 'getStarted: { model.perform("setup") })', "getStarted: { })", "[welcome]", "pins"),
     ("sign-in gates Get started", W, "                        .buttonStyle(COSPrimaryButtonStyle())\n                        .disabled(!ProviderGate.getStartedEnabled(setupProviderInstalled: setupProviderInstalled, busy: busy))",
      "                        .buttonStyle(COSPrimaryButtonStyle())\n                        .disabled(!guide.signInStepDone || !setupProviderInstalled)", "[gate unchanged]", "pins"),
-    ("the guide is live in checks", C, "        guard inApp else { return guide }\n        guide.runInTerminal", "        guide.runInTerminal", "[inert in checks]", "pins"),
-    ("emails stripped before parsing", H, "                return (result.code, result.output)", "                return (result.code, self.stripEmails(result.output))", "[cursor sign-in]", "pins"),
+    ("the guide is live in checks", C, "        guard inApp else { return guide }\n        guide.log = { line in onboardingLog", "        guide.log = { line in onboardingLog", "[inert in checks]", "pins"),
+    ("probes stopped before the rows are read", H, "        let rows = wanted.map { results.get($0) ?? ProviderStatusCore.timedOut($0) }\n        if !complete { ProbeRunner.stopAll() }",
+     "        if !complete { ProbeRunner.stopAll() }\n        let rows = wanted.map { results.get($0) ?? ProviderStatusCore.timedOut($0) }", "[deadline]", "pins"),
     ("a login run as a probe", K, 'probes.run(path, ["auth", "status", "--json"])', 'probes.run(path, ["auth", "login"])', "[read-only probes]", "pins"),
     ("the card opens on a need", W, "            if guide.panelRouteActive {\n                ProviderConnectCard", "            if guide.panelRouteActive || guide.needCount > 0 {\n                ProviderConnectCard", "[route flag]", "pins"),
     ("the collapsed row polls", W, ".task { if guide.report == nil { await guide.refresh() } }", ".task { await guide.poll() }", "[polling]", "pins"),
@@ -165,9 +182,12 @@ def main():
         elif words in out:
             results.append(f"killed  {name}  ({words}, {took:.0f}s)")
         elif "error:" in out:
-            results.append(f"killed by the compiler  {name}")
+            # A mutant the compiler refuses never ran: it says nothing about the checks (QA 2026-10-08 W3).
+            results.append(f"WEAK (compile error) {name}")
+            survived.append(name)
         else:
-            results.append(f"killed by another check  {name}: {out.strip().splitlines()[-1][:160]}")
+            results.append(f"WEAK (another check) {name}: {out.strip().splitlines()[-1][:160] if out.strip() else ''}")
+            survived.append(name)
         print(results[-1], flush=True)
     print(f"{len(results) - len(survived)} of {len(results)} killed")
     sys.exit(1 if survived else 0)
