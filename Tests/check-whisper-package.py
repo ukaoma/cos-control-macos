@@ -44,7 +44,7 @@ with tempfile.TemporaryDirectory(prefix='cos-whisper-package-', dir='/tmp') as s
     receipt = json.loads((runtime.parent/'voice-benchmark.json').read_text())
     assert receipt['setupComplete'] and receipt['preparedTier']==receipt['recommendedTier'], receipt
     settings = (config/'.env').read_text() if (config/'.env').exists() else ''
-    assert 'COS_WHISPER_TRANSCRIPTION_TIER=' not in settings
+    assert not any(line.strip().startswith('COS_WHISPER_TRANSCRIPTION_TIER=') for line in settings.splitlines())
     print('PASS: real npm candidate prepares new-user recommendation using bundled Node, provider fixture, and no global package tools')
     print('METRICS:',json.dumps({k:receipt[k] for k in ['chip','memoryBytes','engineSeconds','elapsedSeconds','realTimeFactor','recommendedTier','metal']},sort_keys=True))
     # Check the daemon, not just the CLI: same local HTTP contract COS uses.

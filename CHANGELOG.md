@@ -1,3 +1,10 @@
+## 0.5.272 candidate — 2026-10-08 — Voice setup without Homebrew
+
+- Download verified, Developer ID signed and notarized whisper.cpp 1.9.1 tools during voice setup using COS's bundled Node.
+- Prepare Turbo, measure 30 seconds of speech on the device, recommend Balanced or Max, and preserve saved choices. The initial speed threshold remains provisional pending smaller-Mac testing.
+- Retain onboarding P1 fixes; recover interrupted older voice setup, keep cancellation free of tier changes, and show low disk space before starting.
+- Requires the matching server 6.66.0 candidate and versioned runtime asset. See `docs/qa/voice-runtime-2026-10-08.md` for acceptance gates and distribution status.
+
 ## 0.5.270 (build 323), test candidate
 
 - **Permissions guide.** COS now walks you through each macOS permission instead of leaving a line of text. Allow opens the exact page in System Settings, and a small bar under the window holds COS Control's real icon: drag it into the list (or click + and choose COS Control). COS notices the grant within a second or two, says Allowed, and brings you back. The feature that asked, such as jumping to your session from the pet, then carries on by itself.

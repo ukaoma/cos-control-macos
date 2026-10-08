@@ -16,8 +16,15 @@ supported, but customers no longer need to install it. Setup downloads the COS
 server from npm and verifies it through the existing managed lifecycle. An
 internet connection and one installed AI command line are required to start; the Welcome
 window's Connect your AI step then signs each one in (Sign in opens Terminal on the exact
-command, or Skip for now). Local voice also needs whisper.cpp (`brew install whisper-cpp`),
-which COS does not bundle.
+command, or Skip for now).
+
+The 0.5.272 voice candidate downloads COS-owned, signed and notarized whisper.cpp
+1.9.1 tools during setup, checks their pinned hash, and uses the bundled Node to
+prepare models. It needs no Homebrew or global npm/npx. A 30-second speech test
+recommends a tier for new users; existing voice choices remain unchanged. The
+recommendation threshold is provisional pending smaller-Mac testing. This flow
+requires server 6.66.0 and the versioned runtime asset to be published before
+public promotion; see [candidate QA and acceptance](docs/qa/voice-runtime-2026-10-08.md).
 
 ## First run and the setup guide (onboarding P1, unreleased)
 
