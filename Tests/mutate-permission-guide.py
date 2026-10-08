@@ -39,7 +39,7 @@ MUTANTS = [
     ("plist backups read as jobs", M, 'name.hasPrefix("com.cos.") && name.hasSuffix(".plist")', 'name.hasPrefix("com.cos.") && name.contains(".plist")', "[agent files]", "logic"),
     ("nested launchd state read", M, 'guard raw.hasPrefix("\\t"), !raw.hasPrefix("\\t\\t") else { continue }', 'guard raw.hasPrefix("\\t") else { continue }', "[launchctl print]", "logic"),
     ("a calendar refusal skipped", M, 'case "swift_permission_or_calendar_error": return .denied', 'case "swift_permission_or_calendar_error": continue', "[calendar log]", "logic"),
-    ("reset keeps the old build", M, "        defaults.removeObject(forKey: Self.lastTrustedBuildKey)\n        startDragFlow?(request)", "        startDragFlow?(request)", "[reset and add again]", "logic"),
+    ("reset keeps the old build", M, "        defaults.removeObject(forKey: Self.lastTrustedBuildKey)\n        if let reset = resetOwnAccessibility {", "        if let reset = resetOwnAccessibility {", "[reset and add again]", "logic"),
     ("drag source hardcoded", M, "        let source = PermissionDragSource(path: appPath, name: appName)\n        var row = PermissionRow(\n            id: \"accessibility\"",
      "        let source = PermissionDragSource(path: \"/Applications/COS Control.app\", name: appName)\n        var row = PermissionRow(\n            id: \"accessibility\"", "[drag source]", "logic"),
     # Wiring.

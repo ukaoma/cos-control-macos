@@ -36,7 +36,7 @@ pin('need(.backgroundJobs, for: "Your scheduled COS jobs", interactive: false)' 
 pin("stopped != self.backgroundJobsNeedSignature" in watch, "background jobs hook", "only a NEW set of stopped jobs reopens the card")
 meeting = body(model, "private func loadMeetingAlertPermission() async {", "\n    func ")
 pin('permissionGuide.need(.notifications, for: "Meeting alerts", interactive: false)' in meeting, "meeting alerts hook", "a live meeting with alerts off opens the guide on Notifications")
-pin(meeting.index("if off != meetingAlertsOff {") < meeting.index('for: "Meeting alerts"'), "meeting alerts hook", "only when alerts turn off, not every check")
+pin('for: "Meeting alerts"' in meeting and meeting.index("if off != meetingAlertsOff {") < meeting.index('for: "Meeting alerts"'), "meeting alerts hook", "only when alerts turn off, not every check")
 work = body(model, "    private func postWorkNotice(", "    func openWorkItem(")
 pin('for: "Work updates"' in work and "guard !workNotificationPermissionChecked else { return }" in work, "work notifications hook", "the first Work notice checks Notifications once per launch")
 pin(work.index("meetingAudioNotifier.postWork(notice)") < work.index("workNotificationPermissionChecked = true"), "work notifications hook", "the notice is posted first; the check never delays it")
