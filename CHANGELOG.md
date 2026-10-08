@@ -1,4 +1,4 @@
-## Unreleased
+## 0.5.270 (build 323), test candidate
 
 - **Permissions guide.** COS now walks you through each macOS permission instead of leaving a line of text. Allow opens the exact page in System Settings, and a small bar under the window holds COS Control's real icon: drag it into the list (or click + and choose COS Control). COS notices the grant within a second or two, says Allowed, and brings you back. The feature that asked, such as jumping to your session from the pet, then carries on by itself.
 - **Where it shows up.** A new Permissions step in the Welcome window after Connect your AI (skip it with Not now). A Permissions line in the menu-bar panel that reads All set or 1 needs you and opens the list in place. And just in time: the first pet jump, a meeting starting with alerts off, the first Work notification, or a background job that macOS stopped.
