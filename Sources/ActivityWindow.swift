@@ -477,6 +477,7 @@ struct ActivityWindow: View {
     @State private var chatQuery = ""
     @State private var chatMatchCursor = 0
     @State private var section: ActivitySection?
+    @State private var showingSettings = false
     @State private var workSubview: ActivityWorkSubview = .tasks
     @State private var selectedTurnID: String?
     /// The archive drill-through: a date, then a chat index inside that date.
@@ -550,6 +551,14 @@ struct ActivityWindow: View {
         var view = ActivityWindow(model: model)
         view._section = State(initialValue: .speakers)
         view._speakerSubview = State(initialValue: .samples)
+        return view
+    }
+
+    /// Full Activity shell for the offscreen settings regression fixture.
+    static func settingsFixture(model: ControllerModel) -> ActivityWindow {
+        precondition(!model.backgroundWorkEnabled)
+        var view = ActivityWindow(model: model)
+        view._showingSettings = State(initialValue: true)
         return view
     }
 
@@ -663,7 +672,7 @@ struct ActivityWindow: View {
         }
     }
 
-    private var canGoBack: Bool { section != nil || hasDetail }
+    private var canGoBack: Bool { showingSettings || section != nil || hasDetail }
 
     private var activityFrame: some View {
         VStack(spacing: 0) {
@@ -680,7 +689,12 @@ struct ActivityWindow: View {
             lensRail
             Divider()
             Group {
-                if section == .sessions && (isolatedWorkPreview || showingLinkedSession) {
+                if showingSettings {
+                    ControlPanel(model: model, openActivity: { destination in
+                        if let destination { select(destination) } else { goHome() }
+                    }, hostedInWindow: true, hostedInActivity: true)
+                        .frame(maxWidth: 780, maxHeight: .infinity)
+                } else if section == .sessions && (isolatedWorkPreview || showingLinkedSession) {
                     WorkSessionsView(store: handoffStore, isPreview: isolatedWorkPreview, onOpenWork: openHandoffWork, onOpenFullSession: openFullHandoffSession)
                 } else if isolatedWorkPreview, let selected = section, selected != .work, !(selected == .meetings && selectedLibraryRecordID != nil) {
                     previewOnlySection(selected)
@@ -914,8 +928,14 @@ struct ActivityWindow: View {
             .keyboardShortcut(.leftArrow, modifiers: .command)
             .help("Go back one step")
 
-            breadcrumb
+            if showingSettings {
+                Text("COS Control › Settings").font(COSType.body(12, weight: .semibold))
+            } else { breadcrumb }
             Spacer()
+            Button(action: openActivitySettings) { Label("Settings", systemImage: "gearshape") }
+                .buttonStyle(COSQuietButtonStyle())
+                .accessibilityLabel("Open Activity settings")
+                .disabled(isolatedWorkPreview)
             HStack(spacing: 6) {
                 Circle()
                     .fill(isolatedWorkPreview ? COSPalette.gold : (model.status.running ? COSPalette.green : COSPalette.amber))
@@ -1022,14 +1042,14 @@ struct ActivityWindow: View {
                                 .frame(width: 13, height: 13)
                             Text(item.title)
                         }
-                        .font(COSType.body(11.5, weight: section == item ? .semibold : .medium))
-                        .foregroundStyle(section == item ? .primary : .secondary)
+                        .font(COSType.body(11.5, weight: !showingSettings && section == item ? .semibold : .medium))
+                        .foregroundStyle(!showingSettings && section == item ? .primary : .secondary)
                         // The indicator is ONE view that moves between tabs, not six that
                         // toggle. `matchedGeometryEffect` interpolates its frame across the
                         // change, so switching reads as travel rather than a hard cut.
                         ZStack {
                             Capsule().fill(Color.clear).frame(height: 3)
-                            if section == item {
+                            if !showingSettings && section == item {
                                 Capsule()
                                     .fill(COSPalette.gold)
                                     .frame(height: 2.5)
@@ -1044,8 +1064,8 @@ struct ActivityWindow: View {
                 .buttonStyle(.plain)
                 .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
                 .accessibilityLabel("Open \(item.title)")
-                .accessibilityValue(section == item ? "Selected" : "Not selected")
-                .accessibilityAddTraits(section == item ? .isSelected : [])
+                .accessibilityValue(!showingSettings && section == item ? "Selected" : "Not selected")
+                .accessibilityAddTraits(!showingSettings && section == item ? .isSelected : [])
             }
             Spacer()
         }
@@ -1053,7 +1073,14 @@ struct ActivityWindow: View {
         .background(COSPalette.card.opacity(0.50))
     }
 
+    private func openActivitySettings() {
+        guard !isolatedWorkPreview else { return }
+        if taskDetail != nil { requestCloseTaskDetail(); return }
+        showingSettings = true
+    }
+
     private func select(_ requested: ActivitySection) {
+        showingSettings = false
         if taskDetail != nil { requestCloseTaskDetail(); return }
         memoriesOpenView = nil
         if !isolatedWorkPreview { showingLinkedSession = false; historicalWorkID = nil }
@@ -1070,6 +1097,7 @@ struct ActivityWindow: View {
     }
 
     private func goHome() {
+        showingSettings = false
         // A send being handed over keeps its overlay; it shows the result when you come back to Work.
         if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }
         if taskDetail != nil { requestCloseTaskDetail(); return }
@@ -1081,6 +1109,7 @@ struct ActivityWindow: View {
     /// Escape reaches these window-owned routes before TextEditor/ScrollView can
     /// consume it. Other child panes retain their own cancellation semantics.
     private func handleActivityEscape() -> Bool {
+        if showingSettings { showingSettings = false; return true }
         // 0.5.244: Work's Start work overlay sits above everything in Work; Escape closes it first (not mid-send).
         if workWorkspaceState.startItemID != nil {
             if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }
@@ -1101,6 +1130,7 @@ struct ActivityWindow: View {
     }
 
     private func goBack() {
+        if showingSettings { showingSettings = false; return }
         // A send being handed over keeps its overlay; it shows the result when you come back to Work.
         if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }
         // The linked receipt reader is a child of Work in both the integrated
@@ -1241,7 +1271,7 @@ struct ActivityWindow: View {
                         Spacer()
                         // Settings and the setup guide are reachable from here too (menu bar only, icon hidden).
                         Button("Setup guide") { model.showSetupGuide?() }.buttonStyle(COSTextButtonStyle())
-                        Button("Settings…") { model.showSettings?() }.buttonStyle(COSTextButtonStyle())
+                        Button("Settings…", action: openActivitySettings).buttonStyle(COSTextButtonStyle())
                         COSGotcosCaption(size: 12)
                     }
                     VStack(alignment: .leading, spacing: 5) {

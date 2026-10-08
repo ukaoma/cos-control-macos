@@ -136,7 +136,13 @@ pin("Sign in" in read("Resources/Info.plist"), "sign in", "the Apple Events reas
 pin('case .claude: "claude auth login"' in connect, "sign in", "claude auth login, no folder-trust question")
 pin("hostedInWindow: true" in connect_views and "if !hostedInWindow { model.panelVisible = true }" in views, "settings window", "a real Settings window hosts the panel, and does not claim to be it")
 pin("SettingsRoute.decide(panelOpen: model.panelVisible, item: MenuBarPanelOpener.statusItemFacts())" in connect_views and "performClick" in body(connect_views, "    static func clickStatusItem() -> Bool {", "\n    }\n"), "settings route", "a click only when the icon is really there and the panel is closed")
-pin('Button("Settings…") { model.showSettings?() }' in activity, "settings route", "Activity reaches Settings too (menu bar only, icon hidden)")
+pin('Button("Settings…", action: openActivitySettings)' in activity
+    and 'Button(action: openActivitySettings)' in activity
+    and 'showingSettings = true' in body(activity, '    private func openActivitySettings() {', '\n    private func select(')
+    and 'hostedInWindow: true, hostedInActivity: true' in activity,
+    "settings route", "Activity opens the shared panel in its own window even with the menu-bar icon hidden")
+pin('if showingSettings { showingSettings = false; return }' in body(activity, '    private func goBack() {', '\n    private func clearDetail('),
+    "settings return", "Back exits Settings before clearing the previous Activity route")
 pin("adoptServerTier(guide.voice?.explicitTier)" in connect_views, "voice tier start", "the voice row adopts only an explicitly saved tier")
 pin("try restoreVoiceEnvSnapshotIfPresent()" in vs and "--preserve-voice-settings" in vs and "--voice-benchmark-prepare" in vs, "voice env", "recover a legacy snapshot, then prepare without writing tier settings")
 pin("O_CLOEXEC" in vs and "POSIX_SPAWN_CLOEXEC_DEFAULT" in helper, "voice env", "the child inherits no lock")

@@ -55,6 +55,13 @@ let allIn = data(row("claude", path: "/opt/homebrew/bin/claude", version: "2.1.2
         try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
         let apps: Set<String> = ["claude", "codex"]
 
+        let settingsModel = ControllerModel(startBackgroundWork: false)
+        settingsModel.providerGuide = await fixtureGuide(allIn, apps: apps)
+        try render(ActivityWindow.settingsFixture(model: settingsModel), width: 1000, height: 760,
+                   name: "activity-settings", out: out)
+        try render(ActivityWindow.settingsFixture(model: settingsModel), width: 760, height: 560,
+                   name: "activity-settings-minimum", out: out)
+
         // 1. Welcome, Connect your AI: nothing installed, a mixed Mac, everything signed in.
         try render(ControlSetupView(model: firstRunModel(await fixtureGuide(allMissing, apps: apps), installed: false)),
                    width: 540, height: 1080, name: "welcome-all-missing", out: out)

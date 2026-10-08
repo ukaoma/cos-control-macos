@@ -119,6 +119,8 @@ struct ControlPanel: View {
     /// Onboarding P1: the same panel hosted in the Settings window (SettingsWindowPresenter), which must not claim
     /// to be the menu-bar panel being open.
     var hostedInWindow = false
+    /// Activity supplies its own size; settings and actions still use this shared panel.
+    var hostedInActivity = false
     @State private var confirmLegacyRestart = false
     @State private var confirmInstallManaged = false
     @State private var confirmInstallAppUpdate = false
@@ -188,7 +190,7 @@ struct ControlPanel: View {
 
     private var syncedPanel: some View {
         mainPanel
-        .frame(width: 390, height: 640)
+        .frame(width: hostedInActivity ? nil : 390, height: hostedInActivity ? nil : 640)
         .font(COSType.body(13))
         .background(COSPalette.panel)
         .background(WindowOpaquer())
@@ -1333,7 +1335,13 @@ struct ControlPanel: View {
         ScrollViewReader { reader in
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                header
+                if hostedInActivity {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Settings").font(COSType.body(28, weight: .semibold))
+                        Text("Manage your Mac companion, voice, connected AI and preferences.")
+                            .font(COSType.body(13)).foregroundStyle(.secondary)
+                    }
+                } else { header }
                 // Upgraders, once: COS Control is in the Dock now (Menu bar only / Keep).
                 DockNoticeLine(model: model)
                 // Early users: Finish setup at the top until every row is done or skipped, or Hide setup guide.
@@ -1347,7 +1355,7 @@ struct ControlPanel: View {
                     Button("Get started with COS") { model.openSetup?() }
                         .buttonStyle(COSPrimaryButtonStyle())
                 }
-                activityLauncher
+                if !hostedInActivity { activityLauncher }
                 if model.workYourMoveAvailable && !model.workYourMove.isEmpty {
                     Button { openActivity(.work) } label: {
                         HStack {
