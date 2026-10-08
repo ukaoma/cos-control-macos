@@ -11,8 +11,9 @@ DIR="$(mktemp -d /tmp/cos-controls-contract.XXXXXX)"
 trap 'rm -rf "$DIR"' EXIT
 SOURCES=("$ROOT"/Sources/*.swift)
 SOURCES=("${(@)SOURCES:#*/COSControlApp.swift}")
-VERSION="$(sed -n '1s/^## \([0-9][0-9.]*\) (build [0-9]*).*/\1/p' "$ROOT/CHANGELOG.md")"
-[[ -n "$VERSION" ]] || { print -u2 "run-controls: no version on the first line of CHANGELOG.md"; exit 1 }
+# The first release heading; an "## Unreleased" entry above it is notes for the next build.
+VERSION="$(sed -n 's/^## \([0-9][0-9.]*\) (build [0-9]*).*/\1/p' "$ROOT/CHANGELOG.md" | head -1)"
+[[ -n "$VERSION" ]] || { print -u2 "run-controls: no release heading in CHANGELOG.md"; exit 1 }
 cat > "$DIR/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
