@@ -4201,10 +4201,11 @@ struct UpdateRowView: View {
         switch state {
         case .current:
             standing(icon: "checkmark.circle", tint: COSPalette.green,
-                     text: "COS Control \(controlVersion)" + (serverVersion.map { "  \u{00B7}  Server \($0)" } ?? ""), detail: "Both up to date")
+                     text: "COS Control \(controlVersion)" + (serverVersion.map { "  \u{00B7}  Server \($0)" } ?? ""), detail: "Both up to date",
+                     action: "Check for updates")
         case .unknown(let control, let server):
             standing(icon: "exclamationmark.circle", tint: COSPalette.amber, text: UpdateRow.unknownText(control: control, server: server),
-                     detail: "COS Control \(controlVersion)" + (serverVersion.map { "  \u{00B7}  Server \($0)" } ?? ""))
+                     detail: "COS Control \(controlVersion)" + (serverVersion.map { "  \u{00B7}  Server \($0)" } ?? ""), action: "Check again")
         case .controlBehind(let latest):
             offer(title: "COS Control \(latest) is available", detail: notes, control: true, server: false)
         case .serverBehind(let installed, let latest):
@@ -4214,19 +4215,24 @@ struct UpdateRowView: View {
         }
     }
 
-    private func standing(icon: String, tint: Color, text: String, detail: String) -> some View {
+    private func standing(icon: String, tint: Color, text: String, detail: String, action: String) -> some View {
         HStack(spacing: 8) {
             Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(tint)
             VStack(alignment: .leading, spacing: 1) {
-                Text(text).font(COSType.mono(10, weight: .bold)).lineLimit(1)
-                Text(detail).font(COSType.mono(9.5)).foregroundStyle(.secondary).lineLimit(1)
+                Text(text).font(COSType.mono(10, weight: .bold)).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                Text(detail).font(COSType.mono(9.5)).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
             if checking {
                 Text("Checking\u{2026}").font(COSType.mono(10)).foregroundStyle(.secondary)
             } else {
-                Button("Check for updates", systemImage: "arrow.triangle.2.circlepath") { onCheck() }
-                    .buttonStyle(COSQuietButtonStyle()).disabled(busy)
+                if action == "Check again" {
+                    Button("Check again", systemImage: "arrow.triangle.2.circlepath") { onCheck() }
+                        .buttonStyle(COSQuietButtonStyle()).disabled(busy).layoutPriority(1)
+                } else {
+                    Button("Check for updates", systemImage: "arrow.triangle.2.circlepath") { onCheck() }
+                        .buttonStyle(COSQuietButtonStyle()).disabled(busy).layoutPriority(1)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
