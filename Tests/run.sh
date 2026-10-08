@@ -586,12 +586,45 @@ for zf in sorted((root / "dist").glob(f"COS-Control-macOS-arm64-{_v}.zip")):
              f"{zf.name} is AD-HOC signed (designated requirement is a per-build "
              "cdhash). Installing it strands the user's Accessibility grant. "
              "Rebuild with the stable identity.")
-        need(STABLE_ROOT in req,
-             f"{zf.name} is not signed by the stable 'COS Control Local' root; "
+        # 0.5.261+: a public build is Developer ID (team NV3X46LLCR); that requirement is certificate-based too.
+        need(STABLE_ROOT in req or "subject.OU] = NV3X46LLCR" in req,
+             f"{zf.name} is signed by neither the stable 'COS Control Local' root nor the Developer ID team; "
              "TCC grants will not survive the update")
+        # 0.5.267: and it can send Apple Events (entitlement + usage string); the helper carries none.
+        ent = subprocess.run(["/usr/bin/python3", str(root / "Tests/check-release-entitlements.py"), str(app)],
+                             capture_output=True, text=True)
+        need(ent.returncode == 0, f"{zf.name}: " + (ent.stderr.strip() or ent.stdout.strip()))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 SIGNCHK
+
+# --- 0.5.267: Apple Events under the hardened runtime -------------------------
+# The notarized 0.5.266 had hardened runtime, no entitlements and no NSAppleEventsUsageDescription, so the
+# jump-to-session reopen (NSAppleScript) and Guided Setup's Terminal script (osascript child) were refused without a
+# prompt. The checker reads real signatures; its self-test signs throwaway bundles and proves each rule can fail.
+/usr/bin/python3 "$ROOT/Tests/check-release-entitlements.py" --selftest "$(mktemp -d "$TMP/entitlements.XXXXXX")" "$TMP/cos-control-helper"
+/usr/bin/python3 - "$ROOT" <<'ENTCHK'
+import plistlib, re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+def need(c, m):
+    if not c: sys.exit(f"entitlements: {m}")
+rel = (root / "scripts/build-release.sh").read_text()
+for target in ('"$APP/Contents/MacOS/COS Control"', '"$APP"'):
+    need(re.search(r'--options runtime --timestamp --entitlements "\$APP_ENTITLEMENTS" --sign "\$SIGN_ID" '
+                   + re.escape(target) + r'\n', rel),
+         f"the Developer ID path no longer signs {target} with COSControl.entitlements")
+need('APP_ENTITLEMENTS="$ROOT/Resources/COSControl.entitlements"' in rel, "build-release.sh lost APP_ENTITLEMENTS")
+need(re.search(r'--options runtime --timestamp --sign "\$SIGN_ID" "\$APP/Contents/Resources/cos-control-helper"', rel),
+     "the helper must stay signed WITHOUT entitlements")
+need('check-release-entitlements.py" "$VERIFY_DIR/COS Control.app"' in rel,
+     "build-release.sh no longer checks the extracted app's entitlements")
+info = plistlib.loads((root / "Resources/Info.plist").read_bytes())
+need(str(info.get("NSAppleEventsUsageDescription", "")).strip(), "Info.plist lost NSAppleEventsUsageDescription")
+ents = plistlib.loads((root / "Resources/COSControl.entitlements").read_bytes())
+need(ents == {"com.apple.security.automation.apple-events": True},
+     f"COSControl.entitlements must be exactly Apple Events, found {ents!r}")
+print("PASS: 0.5.267 Apple Events signing pins (Developer ID app + executable, helper bare, usage string)")
+ENTCHK
 
 # --- 0.3.0 meeting sync status ----------------------------------------------
 /usr/bin/grep -q 'Meeting sync' "$ROOT/Sources/Views.swift"
