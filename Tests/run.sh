@@ -3228,10 +3228,19 @@ need('cursorFrontmostVerified' in model,
 need('Could not bring the Agents window forward' in model,
      "a failed raise has no honest notice")
 need('AXIsProcessTrusted()' in model, "Cursor miss notice does not record Accessibility trust")
-need('Toggle it off and on' in model,
-     "an untrusted AX jump does not say to re-key the stale grant")
-need(model.count('Toggle it off and on') == 1,
-     "the Accessibility repair notice must live in exactly one shared gate")
+# 0.5.267: the stale-grant repair is a real action (remove the entry, ask again), not "toggle it off and on".
+need('off and on' not in model, "the toggle-it-off-and-on advice is back; Reset and add again replaces it")
+need(model.count('static let accessibilityRepairHint = "Already on? Use Reset and add again') == 1,
+     "the Accessibility repair notice must live in exactly one shared sentence")
+need(model.count('accessibilityRepairHint)') >= 4,
+     "the gate, the Claude sidebar and window misses and the untrusted Cursor miss must all name the repair")
+_reset = model.split("func resetAccessibilityAndAddAgain()")[1].split("\n    }\n")[0]
+need('"/usr/bin/tccutil"' in _reset and '["reset", "Accessibility", bundleID]' in _reset,
+     "Reset and add again does not remove this app's Accessibility entry")
+need('AXIsProcessTrustedWithOptions' in _reset and 'openAccessibilitySettings()' in _reset,
+     "Reset and add again does not ask again and open the pane")
+need('Button("Reset and add again") { model.resetAccessibilityAndAddAgain() }' in (root / "Sources/Views.swift").read_text(),
+     "Settings has no Reset and add again action")
 need('Privacy_Accessibility' in model,
      "an untrusted AX jump does not open the Accessibility pane")
 need('Quit COS Control and open it again' not in model,
@@ -3248,9 +3257,14 @@ _chat_branch_src = _chat_branch_src[:_chat_branch_src.index('if openMode ==', 20
 # an ambiguity check was added around it; the rule was intact throughout.
 need('session.name' in _chat_branch_src and 'session.title' not in _chat_branch_src,
      "Cursor tab match must use the session name, not the workspace fallback title")
-need('Agents miss' in model, "Cursor miss is not named on the pet")
-need('did not open the folder' in model, "a missing Cursor.app path still opens the IDE folder")
-need('no spawn' in model, "the running-Cursor miss notice does not say no spawn")
+# 0.5.267: the miss detail goes to the log; the bubble says what to do in plain words.
+need('NSLog("COSControl cursor-jump: Agents miss' in model, "the Cursor miss detail is no longer logged")
+need('return "Agents miss' not in model and 'petNotice = "Agents miss' not in model,
+     "the debug-looking Cursor miss string is back on the pet")
+need('could not find this chat in its Agents window' in model, "Cursor miss is not named on the pet")
+need('so this chat was not opened' in model and 'did not open the folder' in model,
+     "a missing Cursor.app path still opens the IDE folder")
+need('no spawn' in model, "the running-Cursor miss log does not say no spawn")
 reveal = model.split("func revealCursorAgentsWindow")[1].split("func cursorWindowTitles")[0]
 running_branch = reveal.split("if let running = runningCursor()")[1].split("spawnCursorAgentsWindow")[0]
 need('activateRunningApp(running)' not in running_branch,

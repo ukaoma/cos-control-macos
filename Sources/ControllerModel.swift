@@ -4109,7 +4109,8 @@ final class ControllerModel: ObservableObject {
         let appURL = appPath.flatMap { FileManager.default.fileExists(atPath: $0) ? URL(fileURLWithPath: $0) : nil }
         if openMode == "chat" {
             guard let appURL else {
-                petNotice = "Agents miss (no Cursor.app path; did not open the folder)."
+                NSLog("COSControl cursor-jump: no Cursor.app path; did not open the folder")
+                petNotice = "Could not find Cursor on this Mac, so this chat was not opened."
                 return
             }
             // Pressing by NAME is only safe while the name identifies ONE agent.
@@ -4321,7 +4322,7 @@ final class ControllerModel: ObservableObject {
         // report from another machine told us nothing.
         if !firstCodeTab && !secondCodeTab && scan.windows > 0 && scan.rowsSeen == 0 {
             NSLog("COSControl claude-jump: no Code radio and no rows; sidebar likely not exposed")
-            petNotice = "Opened Claude but could not read its sidebar. Toggle COS Control off and on under Accessibility, then reopen Claude."
+            petNotice = "Opened Claude but could not read its sidebar. \(Self.accessibilityRepairHint)"
             return
         }
         petNotice = scan.notice(want: sessionName.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -4334,8 +4335,10 @@ final class ControllerModel: ObservableObject {
 
     /// macOS keys the Accessibility grant to this build's code signature, so
     /// after an update the Settings row can read ON while this process stays
-    /// untrusted. Relaunching cannot repair that state; only toggling the row
-    /// off and on re-keys the grant. Say that, and open the pane it names.
+    /// untrusted. Relaunching cannot repair that state, and toggling the row
+    /// often does not either (0.5.267: the Developer ID switch re-keyed every
+    /// grant). The repair that works is removing the entry and adding it again,
+    /// which Settings > Session pet does in one click.
     private func ensureAccessibilityTrust() -> Bool {
         var trusted = AXIsProcessTrusted()
         if !trusted {
@@ -4344,10 +4347,45 @@ final class ControllerModel: ObservableObject {
         }
         petJumpTrusted = trusted
         if !trusted {
-            petNotice = "Enable COS Control under Accessibility. Already on? Toggle it off and on, then reopen COS Control."
+            petNotice = "Turn on COS Control in the Accessibility list that just opened. \(Self.accessibilityRepairHint)"
             openAccessibilitySettings()
         }
         return trusted
+    }
+
+    /// One sentence for every place a stale Accessibility grant shows up.
+    nonisolated static let accessibilityRepairHint = "Already on? Use Reset and add again in COS Control Settings, under Session pet."
+
+    /// 0.5.267: the repair for a grant that reads ON in System Settings while this build is untrusted. Removes COS
+    /// Control's Accessibility entry (`tccutil reset Accessibility <bundle id>`, which touches only this app), asks
+    /// macOS to add it again, and opens the pane so the person can turn the new entry on.
+    func resetAccessibilityAndAddAgain() {
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.gotcos.control"
+        Task { [weak self] in
+            let status: Int32 = await Task.detached {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+                process.arguments = ["reset", "Accessibility", bundleID]
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.nullDevice
+                do { try process.run() } catch { return -1 }
+                process.waitUntilExit()
+                return process.terminationStatus
+            }.value
+            guard let self else { return }
+            if status != 0 {
+                NSLog("COSControl accessibility-reset: tccutil exited \(status) for \(bundleID)")
+                self.notice = "Could not remove the old Accessibility entry. In the list that just opened, select COS Control, remove it with the minus button, then add it again with the plus button."
+                self.openAccessibilitySettings()
+                return
+            }
+            _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+            self.refreshPetJumpTrust()
+            self.openAccessibilitySettings()
+            self.notice = self.petJumpTrusted
+                ? "Accessibility is on again. Jump to session works."
+                : "Removed COS Control's old Accessibility entry. Turn COS Control on in the list that just opened."
+        }
     }
 
     private func openAccessibilitySettings() {
@@ -4419,7 +4457,7 @@ final class ControllerModel: ObservableObject {
                 return "\"\(want)\" is under the \(CursorAgentTabMatch.minimumCount)-character floor the matcher needs."
             }
             if windows == 0 {
-                return "Claude returned no windows. Toggle COS Control off and on under Accessibility, then reopen Claude."
+                return "Claude returned no windows. \(ControllerModel.accessibilityRepairHint)"
             }
             if pressRefused {
                 return "Found that session but Claude refused the click."
@@ -4646,10 +4684,15 @@ final class ControllerModel: ObservableObject {
         branch: String,
         spawned: Bool
     ) -> String {
+        // The detail is for a report, not for the person: it goes to the log, and the bubble says what to do.
         let ax = trusted ? "AX on" : "AX off"
         let titleBit = titles.isEmpty ? "no titles" : titles.joined(separator: " | ")
         let spawnBit = spawned ? "spawned" : "no spawn"
-        return "Agents miss (\(branch); \(ax); \(titleBit); \(spawnBit))"
+        NSLog("COSControl cursor-jump: Agents miss (\(branch); \(ax); \(titleBit); \(spawnBit))")
+        if !trusted {
+            return "Opened Cursor, but COS Control needs Accessibility to find this chat. \(Self.accessibilityRepairHint)"
+        }
+        return "Opened Cursor, but could not find this chat in its Agents window. Pick it from the Agents list in Cursor."
     }
 
     private func spawnCursorAgentsWindow(appURL: URL) {

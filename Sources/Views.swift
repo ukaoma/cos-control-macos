@@ -689,6 +689,13 @@ struct ControlPanel: View {
                                 Text("Everything else about the pet works without it.")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
+                                // 0.5.267: a grant that reads ON in System Settings but no longer matches this build.
+                                Text("Already on? Reset and add again removes the old entry and asks macOS again.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Button("Reset and add again") { model.resetAccessibilityAndAddAgain() }
+                                    .buttonStyle(COSTextButtonStyle())
                             }
                             Spacer(minLength: 0)
                             Button("Grant") { model.requestPetJumpAccessibility() }
