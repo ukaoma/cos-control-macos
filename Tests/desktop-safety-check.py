@@ -41,6 +41,11 @@ RULES = (
     (r"(?<![A-Za-z0-9_])(NSSound|NSBeep|AudioServicesPlaySystemSound|AudioServicesPlayAlertSound)(?![A-Za-z0-9_])", "plays a sound"),
     # 0.5.254: the Files section's Add files… and Quick Look are never opened by a test: intake is called with URLs.
     (r"(?<![A-Za-z0-9_])(NSOpenPanel|NSSavePanel|QLPreviewPanel)(?![A-Za-z0-9_])|\.\s*quickLookPreview\s*\(", "opens a file panel or Quick Look"),
+    # Onboarding P1 (2026-10-08): Sign in opens Terminal and Pass to opens Claude, ChatGPT or Cursor. A test hands the
+    # guide a stand-in opener and asserts the URL or script; it never opens an app, a link, Terminal or System Settings.
+    (r"NSWorkspace\s*\.\s*shared\s*\.\s*(open|openApplication|openURLs|launchApplication|activateFileViewerSelecting)\s*\(|(?<![A-Za-z0-9_])LSOpen[A-Za-z]*\s*\(",
+     "opens an app, a link or a file through NSWorkspace or Launch Services"),
+    (r"\"/usr/bin/(open|osascript)\"|(?<![A-Za-z0-9_])NSAppleScript\s*\(", "runs open or AppleScript (Terminal, System Settings, another app)"),
 )
 
 def code_lines(text):
@@ -114,6 +119,12 @@ def selftest(root):
         "an open panel": (S, "import AppKit\n@MainActor func z() { _ = NSOpenPanel().runModal() }\n"),
         "a Quick Look panel": (S, "import Quartz\n@MainActor func z() { QLPreviewPanel.shared()?.reloadData() }\n"),
         "a Quick Look preview": (S, "import SwiftUI\nimport QuickLook\nstruct Z: View { @State var u: URL?; var body: some View { Text(\"x\").quickLookPreview($u) } }\n"),
+        "an NSWorkspace open of a link": (S, "import AppKit\n@MainActor func z() { NSWorkspace.shared.open(URL(string: \"claude://code/new\")!) }\n"),
+        "an NSWorkspace app launch": (S, "import AppKit\n@MainActor func z(u: URL) { NSWorkspace.shared.openApplication(at: u, configuration: .init()) }\n"),
+        "a Launch Services open": (S, "import CoreServices\nfunc z(u: CFURL) { _ = LSOpenCFURLRef(u, nil) }\n"),
+        "a Terminal script through osascript": (S, "import Foundation\nfunc z() { let p = Process(); p.executableURL = URL(fileURLWithPath: \"/usr/bin/osascript\") }\n"),
+        "an open of a link through /usr/bin/open": (S, "import Foundation\nfunc z() { let p = Process(); p.executableURL = URL(fileURLWithPath: \"/usr/bin/open\") }\n"),
+        "an NSAppleScript": (S, "import Foundation\nfunc z() { _ = NSAppleScript(source: \"tell application \\\"Terminal\\\" to activate\") }\n"),
         "a status item": (S, "import AppKit\n@MainActor func z() { _ = NSStatusBar.system.statusItem(withLength: 20) }\n"),
         "an app window": (S, "import SwiftUI\nstruct Z: App { var body: some Scene { WindowGroup { Text(\"x\") } } }\n"),
         "a gate that sets the opt-in": ("Tests/zz-gate.sh", "#!/bin/zsh\nCOS_DESKTOP_CANARY=1 ./x\n"),
@@ -128,6 +139,8 @@ def selftest(root):
         "a window taken off screen": (S, "import AppKit\n@MainActor func z(w: NSWindow) { w.orderOut(nil); w.close() }\n"),
         "a view drawn to a bitmap": (S,
             "import AppKit\n@MainActor func z(v: NSView) { let r = v.bitmapImageRepForCachingDisplay(in: v.bounds)!; v.cacheDisplay(in: v.bounds, to: r) }\n"),
+        "a stand-in opener that records the URL": (S,
+            "import Foundation\n@MainActor final class G { var openURL: (URL) -> Bool = { _ in false } }\n@MainActor func z(g: G) { var opened: [URL] = []; g.openURL = { opened.append($0); return true } }\n"),
         "a deactivate and a sendEvents name": (S, "import AppKit\n@MainActor func z(x: NSObject) { _ = x.responds(to: Selector((\"deactivate\"))); let sendEvents = 1; _ = sendEvents }\n"),
     }
     failures = []
@@ -155,4 +168,4 @@ if __name__ == "__main__":
         hits = check(root)
         if hits:
             sys.exit("a test can touch the desktop of whoever is using the Mac, or drive its UI:\n" + "\n".join(hits))
-        print("COS Control: no test activates an app, puts a window on screen, sends or posts an event, plays a sound or adds a status item (0.5.253)")
+        print("COS Control: no test activates an app, puts a window on screen, sends or posts an event, plays a sound, adds a status item, or opens an app, a link or Terminal (0.5.253, onboarding P1)")

@@ -2,6 +2,8 @@ import SwiftUI
 
 @main
 struct COSControlApp: App {
+    /// F3: the Dock icon and its click (ProviderConnectViews.swift).
+    @NSApplicationDelegateAdaptor(COSAppDelegate.self) private var appDelegate
     @StateObject private var model: ControllerModel
     @StateObject private var activityWindow: ActivityWindowPresenter
     @StateObject private var sessionPet: SessionPetPresenter
@@ -21,6 +23,13 @@ struct COSControlApp: App {
         HotKeyCenter.shared.register(model.activityHotKey)
         model.openActivity = { section in activityWindow.show(model: model, section: section) }
         model.openSetup = { setupWindow.show(model: model) }
+        // A Dock click opens Welcome while COS is not set up, else Activity.
+        COSAppDelegate.onReopen = {
+            switch DockPresence.reopenTarget(needsFirstRun: model.status.needsFirstRun, activityAvailable: model.openActivity != nil) {
+            case .setup: setupWindow.show(model: model)
+            case .activity: activityWindow.show(model: model, section: nil)
+            }
+        }
         _model = StateObject(wrappedValue: model)
         _activityWindow = StateObject(wrappedValue: activityWindow)
         _sessionPet = StateObject(wrappedValue: sessionPet)

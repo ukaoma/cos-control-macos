@@ -567,6 +567,7 @@ final class COSControlHelper {
             try setOllamaModel(value)
         }
         case "ollama-tags": try emitOllamaTags()
+        case "provider-status": try emitProviderStatus(args: args)
         case "set-thread-attach": try withMutationLock {
             guard let value = args.dropFirst().first else { throw HelperError.message("missing Continue agent threads setting") }
             try setThreadAttach(value)
@@ -5681,6 +5682,73 @@ final class COSControlHelper {
             throw HelperError.message("Install the managed server or choose Manage in place first.")
         }
         try applyInPlaceProviderEnvironment(values, removingKeys: removing, operationLabel: operationLabel)
+    }
+
+    /// Connect your AI (onboarding P1): where each provider's CLI is, its version, and what its own status command
+    /// says about sign-in. Cheap and read-only: `--version`, `claude auth status --json`, `codex login status`,
+    /// `agent about` and Ollama's /api/tags. No server, no model turn, no login, no token file. `--only claude,codex`
+    /// limits it to the rows still waiting. The candidate order and every parse live in ProviderStatusCore.swift.
+    private func emitProviderStatus(args: [String]) throws {
+        var wanted = ProviderStatusCore.providers
+        if let only = option("--only", in: args) {
+            let picked = only.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
+            guard !picked.isEmpty, picked.allSatisfy({ ProviderStatusCore.providers.contains($0) }) else {
+                throw HelperError.message("--only takes claude, codex, cursor or ollama")
+            }
+            wanted = ProviderStatusCore.providers.filter { picked.contains($0) }
+        }
+        var env = ProcessInfo.processInfo.environment
+        if env["COS_OLLAMA_HOST"]?.isEmpty != false, let configured = loadedEnvironmentValue("COS_OLLAMA_HOST") {
+            env["COS_OLLAMA_HOST"] = configured
+        }
+        let environment = ProviderSearchEnvironment(
+            home: home.path, env: env,
+            isExecutable: { path in
+                var isDirectory: ObjCBool = false
+                return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && !isDirectory.boolValue
+                    && FileManager.default.isExecutableFile(atPath: path)
+            },
+            listDirectory: { path in (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? [] })
+        let probeEnvironment = providerProbeEnvironment()
+        let probes = ProviderProbes(
+            run: { path, arguments in
+                // Raw output to the parser, which keeps nothing but a verdict and a version: stripping the email here
+                // first made a signed-in Cursor read as signed out (its sign-in IS the User Email line).
+                guard let result = try? self.execute(path, arguments, environment: probeEnvironment, timeout: 8) else { return nil }
+                return (result.code, result.output)
+            },
+            get: { url in
+                var request = URLRequest(url: url, timeoutInterval: 3)
+                request.httpMethod = "GET"
+                let box = HTTPResultBox()
+                let done = DispatchSemaphore(value: 0)
+                URLSession.shared.dataTask(with: request) { data, response, _ in
+                    box.store(data: data, response: response)
+                    done.signal()
+                }.resume()
+                _ = done.wait(timeout: .now() + 4)
+                let (data, response) = box.load()
+                guard let status = (response as? HTTPURLResponse)?.statusCode else { return nil }
+                return (status, data ?? Data())
+            })
+        var rows: [[String: Any]] = []
+        for provider in wanted {
+            rows.append(ProviderStatusProbe.status(provider, environment: environment, probes: probes).json)
+        }
+        emit(ok: true, message: "Provider status", details: [
+            "providers": rows,
+            "checkedAt": ISO8601DateFormatter().string(from: Date()),
+        ])
+    }
+
+    /// A probe child gets the PATH the managed server would get, so a launcher script (codex-cli's `sh` wrapper, an
+    /// npm-installed `claude`) finds its interpreter even when COS Control was opened from Finder.
+    private func providerProbeEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        let node = managedNodeExecutable("node") ?? findExecutable("node") ?? "/usr/bin/true"
+        environment["PATH"] = launchPathDirectories(node: node).joined(separator: ":")
+        environment["NO_COLOR"] = "1"
+        return environment
     }
 
     /// The daemon's own tag list, straight from Ollama on loopback. The

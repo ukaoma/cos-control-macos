@@ -1123,14 +1123,9 @@ struct ControlPanel: View {
             // its own detailed row below because the helper probes it locally
             // (sign-in state, not just presence) — richer than health's flag.
             statusRow("Agent CLIs", value: agentCliSummary, good: agentCliAllReady)
-            if let detail = agentCliDetail {
-                Text(detail)
-                    .font(.caption2)
-                    .foregroundStyle(agentCliAllReady ? .secondary : COSPalette.amber)
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .textSelection(.enabled)
-            }
+            // Onboarding P1: "Not found" vs "Not signed in" comes from the helper's provider-status (a failed server
+            // `--version` was labelled "Not signed in" before); the server's flags are the fallback.
+            AgentCliDetailLine(guide: model.providerGuide, model: model, allReady: agentCliAllReady)
             statusRow("Cursor CLI", value: cursorLabel, good: model.status.cursorReady)
             // Hide-unless-ready, and never `good: ollamaReady ?? false` -- that
             // would paint a red mark on every pre-6.39.0 server and on this Mac
@@ -1351,6 +1346,10 @@ struct ControlPanel: View {
                 }
                 statusCard
                 controls
+                // F4: the session pet introduced once, with Keep, Calm and Hide.
+                PetIntroLine(model: model)
+                // Connect your AI: one line ("2 connected", "1 needs you") that opens its card in place.
+                PanelConnectAIRow(guide: model.providerGuide, model: model)
                 // Permissions: one line ("All set", "1 needs you") that opens the guide card in place.
                 PanelPermissionsRow(guide: model.permissionGuide)
                 if model.status.morningBriefSupported { morningBriefCard }
@@ -2202,6 +2201,10 @@ struct ControlPanel: View {
             Divider()
             Toggle("Launch COS Control at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
                 .toggleStyle(COSSwitchStyle())
+            // F3: in the Dock by default; the menu-bar icon stays either way, so menu bar only never strands anyone.
+            Toggle("Show in menu bar only", isOn: Binding(get: { !model.showInDock }, set: { model.setShowInDock(!$0) }))
+                .toggleStyle(COSSwitchStyle())
+                .help("Hide COS Control from the Dock. The menu-bar icon stays, and opening COS Control from Finder opens Activity")
             HotKeyRecorderRow(model: model)
             sessionPetSettings
             jevSettings
@@ -2394,28 +2397,6 @@ struct ControlPanel: View {
         (model.status.claudeCliReady ?? false)
             && (model.status.codexCliReady ?? false)
             && model.status.cursorReady
-    }
-
-    /// When everything is ready, show versions (the "which build am I on"
-    /// glance). When something is not, name what to fix instead — the
-    /// actionable line beats a version list.
-    private var agentCliDetail: String? {
-        var missing: [String] = []
-        if model.status.claudeCliReady == false { missing.append("claude (run: claude auth login)") }
-        if model.status.codexCliReady == false { missing.append("codex (run: codex login)") }
-        if !model.status.cursorReady { missing.append("cursor (run: agent login)") }
-        if !missing.isEmpty { return "Not signed in: " + missing.joined(separator: ", ") }
-
-        var unknown: [String] = []
-        if model.status.claudeCliReady == nil { unknown.append("Claude") }
-        if model.status.codexCliReady == nil { unknown.append("Codex") }
-        if !unknown.isEmpty { return "Unreported by this server: " + unknown.joined(separator: ", ") }
-
-        var versions: [String] = []
-        if let v = model.status.claudeCliVersion { versions.append("Claude \(v)") }
-        if let v = model.status.codexCliVersion { versions.append("Codex \(v)") }
-        if let v = model.status.cursorCliVersion { versions.append("Cursor \(v)") }
-        return versions.isEmpty ? nil : versions.joined(separator: " · ")
     }
 
     private var cursorLabel: String {

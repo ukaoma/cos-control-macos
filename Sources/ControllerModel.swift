@@ -431,6 +431,14 @@ final class ControllerModel: ObservableObject {
     lazy var permissionGuide: PermissionGuide = makePermissionGuide()
     /// The drag flow under System Settings (Sources/PermissionDragFlow.swift).
     let permissionDragFlow = PermissionDragFlow()
+    /// Connect your AI (Sources/ProviderConnectModel.swift): per-provider install and sign-in from the helper's
+    /// `provider-status`, the Welcome step, the panel card and Pass to an AI app. Inert in a model built by a check:
+    /// it runs no helper, opens no Terminal and no link.
+    lazy var providerGuide: ProviderGuide = makeProviderGuide()
+    /// F4: the one-line session pet introduction, once, for anyone who never touched the pet settings.
+    @Published var petIntroVisible = false
+    /// F3: COS Control shows in the Dock unless "Show in menu bar only" is on (DockPresence in ProviderConnectModel).
+    @Published var showInDock = DockPresence.mode(stored: UserDefaults.standard.string(forKey: DockPresence.modeKey)) == .dock
     private var backgroundJobsNeedSignature = ""
     private var workNotificationPermissionChecked = false
     private var mediaPreviewTask: Task<Void, Never>?
@@ -472,10 +480,74 @@ final class ControllerModel: ObservableObject {
         loadScheduledJobRuns()
         loadPetSprite()
         hydrateClaudeSessionsFromCache()
+        evaluatePetIntro()
         // Ask for notification permission when a live meeting needs alerts,
         // not before a fresh install has even shown its welcome window.
         startWorkTracking()
         startPermissionWatch()
+    }
+
+    private func makeProviderGuide() -> ProviderGuide {
+        let bundleURL = Bundle.main.bundleURL.standardizedFileURL
+        let inApp = bundleURL.pathExtension == "app" && Bundle.main.bundleIdentifier != nil && backgroundWorkEnabled
+        let helper = self.helper
+        let guide = ProviderGuide(home: FileManager.default.homeDirectoryForCurrentUser.path) { arguments in
+            guard inApp else { throw ProviderGuideError.unreadable }
+            let response = try await helper.run(arguments, timeout: 40)
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            return try JSONEncoder().encode(response.details)
+        }
+        guard inApp else { return guide }
+        guide.runInTerminal = { script in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            process.arguments = ["-e", script]
+            do { try process.run() } catch { return false }
+            return true
+        }
+        guide.openURL = { url in NSWorkspace.shared.open(url) }
+        guide.copy = { text in
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        }
+        guide.appInstalled = { scheme in
+            guard let url = URL(string: "\(scheme)://") else { return false }
+            return NSWorkspace.shared.urlForApplication(toOpen: url) != nil
+        }
+        guide.makeFolder = { path in
+            do {
+                try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])
+                return (try? FileManager.default.contentsOfDirectory(atPath: path))?.isEmpty == true
+            } catch { return false }
+        }
+        return guide
+    }
+
+    /// F4: shown once, while the pet is on, to anyone who never changed a pet setting.
+    func evaluatePetIntro(defaults: UserDefaults = .standard) {
+        let touched = PetIntro.touchedKeys.filter { defaults.object(forKey: $0) != nil }.count
+        petIntroVisible = PetIntro.shouldShow(seen: defaults.bool(forKey: PetIntro.seenKey), touchedKeys: touched, petEnabled: petEnabled)
+    }
+
+    enum PetIntroAnswer { case keep, calm, hide }
+
+    func answerPetIntro(_ answer: PetIntroAnswer) {
+        UserDefaults.standard.set(true, forKey: PetIntro.seenKey)
+        petIntroVisible = false
+        switch answer {
+        case .keep: break
+        case .calm: setPetCalmMotion(true)
+        case .hide: setPetEnabled(false)
+        }
+    }
+
+    /// F3: Dock or menu bar only, applied now and remembered.
+    func setShowInDock(_ show: Bool) {
+        showInDock = show
+        UserDefaults.standard.set(show ? DockPresence.Mode.dock.rawValue : DockPresence.Mode.menuBarOnly.rawValue,
+                                  forKey: DockPresence.modeKey)
+        DockPresence.apply(show ? .dock : .menuBarOnly)
     }
 
     private func makePermissionGuide() -> PermissionGuide {

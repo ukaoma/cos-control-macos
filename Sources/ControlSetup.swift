@@ -62,21 +62,25 @@ struct ControlSetupView: View {
                 } else if ready {
                     Button("Open Sessions") { model.openActivity?(.sessions) }
                         .buttonStyle(COSPrimaryButtonStyle())
+                    PetIntroLine(model: model)
                     Text("Connect your meeting sources and glasses when you’re ready. Voice features have additional downloads.")
                         .font(COSType.body(13)).foregroundStyle(.secondary)
-                } else if model.status.needsFirstRun {
-                    if !model.status.setupProviderInstalled {
-                        Text("Connect your AI").font(COSType.body(18, weight: .semibold))
-                        Text("Install and sign in to Codex, Claude Code or Cursor Agent. COS uses your existing AI account. Then come back here.")
-                        Link("Get Codex for Mac", destination: URL(string: "https://developers.openai.com/codex/app/")!)
-                        Button("Check again") { Task { await model.refresh() } }
-                            .disabled(model.busy)
-                    } else {
-                        Label("AI app found", systemImage: "checkmark.circle")
-                        Text("Keep your AI app signed in. Get started downloads the COS components and starts them automatically. No Terminal or separate server setup.")
-                        Button(model.error == nil ? "Get started" : "Try again") { model.perform("setup") }
-                            .buttonStyle(COSPrimaryButtonStyle()).disabled(model.busy)
+                    VStack(alignment: .leading, spacing: 0) {
+                        JevGuideRow(model: model)
+                        Divider()
+                        GlassesGuideRow(openURL: { NSWorkspace.shared.open($0) })
                     }
+                    .padding(.horizontal, 14)
+                    .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
+                } else if model.status.needsFirstRun {
+                    // Connect your AI (onboarding P1): per provider, installed and signed in, with Sign in, Skip for now
+                    // and Pass to an AI app. Get started's hard gate is unchanged from 0.5.267 (installed).
+                    ConnectYourAIStep(guide: model.providerGuide,
+                                      setupProviderInstalled: model.status.setupProviderInstalled,
+                                      busy: model.busy, failed: model.error != nil,
+                                      recheckGate: { if !model.busy { Task { await model.refresh(quiet: true) } } },
+                                      getStarted: { model.perform("setup") })
                 } else if !model.busy {
                     Text("Your Mac has an existing COS setup. Review its status before making changes.")
                     Button("Refresh status") { Task { await model.refresh() } }
