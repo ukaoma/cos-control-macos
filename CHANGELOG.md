@@ -6,6 +6,16 @@
 - **Repair.** Already on but not working after an update? Reset and add again clears COS Control's old entry and opens the drag bar on a clean list. Clean up old COS test builds lists old COS builds found on this Mac and removes each one's Accessibility entry only when you click it.
 - The drag bar adapts code from PermissionFlow by jaywcjlove (MIT, commit cb96db4b); the license ships in the app under Resources/ThirdParty.
 
+## 0.5.269 (build 322)
+
+- The Mac download opens again. Since 0.5.263, opening the downloaded zip with a double-click (Archive Utility) added three small files inside the app, and macOS then said COS Control "is damaged and can't be opened". The download is now packed so nothing is added when it is opened. Updates from inside COS Control were not affected.
+- For developers: the release build refuses an archive that would do this.
+
+## 0.5.268 (build 321)
+
+- COS Control now finds Codex on a Mac that has only the ChatGPT app. The ChatGPT app moved its built-in Codex to a new folder on September 27, and COS Control still looked in the old Codex app, so Get started said "Connect an AI app first" even though Codex was installed. COS Control now looks in the same places as the COS server, in the same order, including a ChatGPT app installed in your own Applications folder.
+- The server COS Control starts can find that Codex too.
+
 ## 0.5.267 (build 320)
 
 - Jump to session can again ask Claude, Cursor or Terminal to reopen and come to the front, like clicking it in the Dock. The notarized 0.5.266 was signed without permission to send Apple Events, so macOS blocked those requests without asking. This build carries that permission and says why it needs it; macOS asks once for each app, the first time you jump to it.
