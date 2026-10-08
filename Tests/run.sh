@@ -1305,7 +1305,7 @@ assert '["work-request-claim", "--id", id] + (body == nil ? [] : ["--again"]), b
 claim = body(helper, "    private func emitWorkRequestClaim(args: [String]) throws {", "    private func emitWorkRequestResult(args: [String]) throws {")
 assert 'if args.contains("--claim-token") {' in claim and 'Self.workRequestClaimToken(try readBoundedStdin(256))' in claim and "print(" not in claim, "the helper reads it from stdin and never prints it"
 assert 'reason == "unreachable" || status == 401 || status == 403 || status == 429 || status >= 500' in store, "401 and 403 are retried"
-assert "readFresh: { [weak self] in await self?.reloadWorkTasksFresh() ?? false })" in model and "return workBoardReads.readOK(since: mark)" in model
+assert "readFresh: { [weak self] in await self?.reloadWorkTasksFresh() ?? false }," in model and "return workBoardReads.readOK(since: mark)" in model
 load = body(model, "    private func performLoadWorkTasks(generation: Int) async {", "    @Published var workIntake:")
 assert load.count("guard workBoardReads.current(generation) else { return }") == 2 and "workBoardReads.record(generation, ok: true)" in load and "workBoardReads.record(generation, ok: false)" in load
 assert ".onChange(of: COSDropdownRules.signature(options)) { _, _ in refreshOpenList() }" in brand, "an open list follows its options"

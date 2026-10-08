@@ -854,7 +854,8 @@ import SwiftUI
               "journal stage change", "Keep to planned from QA pauses the card's follows")
         try write("work-tasks", ["tasks": [row], "count": 1, "total": 1, "complete": true, "capabilities": ["version": 1, "writable": true, "workBatch": 1]])
         await model.loadWorkTasks(force: true)
-        check(await model.changeWorkCard(card, action: "delegate", fields: ["owner": "Gina", "checkIn": "2026-10-13"]) && model.workActivity.moves[card.workSourceID] == second,
+        let afterKeep = model.workActivity.moves[card.workSourceID]
+        check(await model.changeWorkCard(card, action: "delegate", fields: ["owner": "Gina", "checkIn": "2026-10-13"]) && model.workActivity.moves[card.workSourceID] == afterKeep,
               "journal stage change", "a change that is not a stage is no move")
         // A refused write notes nothing.
         try JSONSerialization.data(withJSONObject: ["ok": false, "message": "Refused", "details": [:]]).write(to: fixtures.appendingPathComponent("work-set-stage.json"))

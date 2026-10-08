@@ -132,7 +132,9 @@ need(mutate.index("guard response.ok else") < mutate.index("saved?()") < mutate.
      "a move is noted only once the write is accepted, before the board is read again")
 change = body(model, "    func changeWorkCard(", "    @Published var workUndoBatch")
 success = change[change.index('if await workLoop("batch"'):change.index("return true")]
-need('if let stage = fields["workStage"] { workActivity.recordStageChange(current, to: stage) }' in success, "Intake and Waiting on stage changes are noted")
+need('if let stage = fields["workStage"] {' in success and "workActivity.recordStageChange(current, to: stage)" in success, "Intake and Waiting on stage changes are noted")
+# Next release (follows QA W1): the same success path logs your move, so a move back pauses the card's follows.
+need("workHandoffStore?.recordStageMove(" in success and "move: .you)" in success, "Intake and Waiting on stage changes are in the move log")
 tracker = body(model, "        let tracker = WorkProgressTracker(store: store, board: .init(", "notify:")
 need("try await self.setWorkStage(task, stage: stage, move: move)" in tracker, "the tracker moves cards through setWorkStage, so its moves are noted")
 need('do { try Self.encode(moves).write(to: url, options: .atomic) }' in logic and "moves = Self.bounded(next, limit: Self.limit)" in logic

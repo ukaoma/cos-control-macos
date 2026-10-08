@@ -101,7 +101,7 @@ try:
           'clauses': ['https://bottlepos.com/october-switch-offer page is live', 'Facebook ads are running against it']}
     r = run(['work-evidence-check'], json.dumps(ev).encode())
     assert r['ok'] and r['details']['provider'] == 'jev' and calls[-1] == ('POST', '/api/work-board/evidence-check', ev), (r, calls[-1])
-    big = dict(ev, clauses=['x' * 300] * 6, follows=[{'provider': 'claude', 'sessionId': f'0f3c9a2e-1111-4222-8333-94445555666{n}', 'cursor': 'c' * 2048} for n in range(4)])
+    big = dict(ev, clauses=['x' * 300] * 6, follows=[{'provider': 'claude', 'sessionId': f'0f3c9a2e-1111-4222-8333-94445555666{n}', 'cursor': 'c' * 512} for n in range(4)])
     rb = run(['work-evidence-check'], json.dumps(big).encode()); assert len(json.dumps(big)) > 4096 and rb['ok'], ('a full body is over 4 KB and still goes', rb)
     for status, body, reason in ((404, {}, 'server_too_old'), (404, {'error': {'code': 'task_not_found'}}, 'task_not_found'), (500, {}, 'http_500')):
         state['check'], state['checkBody'] = status, body
@@ -112,9 +112,13 @@ try:
     for bad in (dict(ev, extra=1), {k: v for k, v in ev.items() if k != 'since'}, dict(ev, clauses=['a'] * 7), dict(ev, clauses=['x' * 301]),
                 dict(ev, clauses=['']), dict(ev, follows=[dict(ev['follows'][0], sessionId=f'0f3c9a2e-1111-4222-8333-94445555666{n}') for n in range(5)]), dict(ev, follows=[ev['follows'][0]] * 2), dict(ev, follows=[dict(ev['follows'][0], sessionId='../../etc')]),
                 dict(ev, follows=[{'provider': 'claude', 'sessionId': SESSION}]), dict(ev, follows=[dict(ev['follows'][0], cursor=7)]),
-                dict(ev, id='nope'), dict(ev, since='yesterday'), dict(ev, domain='../x')):
+                dict(ev, id='nope'), dict(ev, since='yesterday'), dict(ev, domain='../x'),
+                # Contract v2 limits: a cursor of 513 characters, and a clause of 151 emoji (302 UTF-16 units).
+                dict(ev, follows=[dict(ev['follows'][0], cursor='c' * 513)]), dict(ev, clauses=['\U0001F680' * 151])):
         assert not run(['work-evidence-check'], json.dumps(bad).encode())['ok'], bad
     assert not run(['work-evidence-check'], b' ' * 16385)['ok'] and len(calls) == before, 'No invalid evidence check reaches the server'
+    emoji = run(['work-evidence-check'], json.dumps(dict(ev, clauses=['\U0001F680' * 150])).encode())
+    assert emoji['ok'] and calls[-1][2]['clauses'] == ['\U0001F680' * 150], ('150 emoji are 300 UTF-16 units and go', emoji)
     # 0.5.253: Cursor runs nothing in the background, so the 0.5.249 Cursor chat finder is gone: the command is unknown, and
     # nothing reaches the server.
     before = len(calls)
