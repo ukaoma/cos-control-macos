@@ -277,7 +277,7 @@ struct PermissionHelperBarContent: View {
                     Spacer(minLength: 0)
                 }
             } else {
-                HStack(alignment: .top, spacing: 8) {
+                HStack(alignment: .center, spacing: 8) {
                     Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).foregroundStyle(COSPalette.accent)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(PermissionHelperCopy.instruction(name: name, pane: pane))
