@@ -48,29 +48,26 @@ struct ControlSetupView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                let firstRun = model.status.needsFirstRun
+                // The Permissions step belongs to the first-run sequence (Get started, then this). Upgraders and anyone
+                // reopening the guide get the guide, which has a Permissions row (QA 2026-10-08 W6).
+                let permissionsStep = ready && !model.permissionGuide.onboardingDone && model.firstRunPresentedThisLaunch
                 Image(systemName: ready ? "checkmark.circle" : "sparkles")
                     .font(.system(size: 32)).foregroundStyle(COSPalette.accent)
-                Text(ready ? "COS is ready on this Mac" : "Your work, with you.")
+                Text(firstRun ? "Your work, with you." : ready ? "COS is ready on this Mac" : "COS setup guide")
                     .font(COSType.body(28, weight: .semibold))
-                Text(ready && !model.permissionGuide.onboardingDone
+                Text(permissionsStep
                      ? "COS is running. Before you start, choose what it can do on this Mac."
+                     : firstRun
+                     ? "COS brings your AI sessions, meetings and work together. We’ll prepare what it needs on this Mac."
                      : ready
                      ? "Start with a task in your AI app. Open Sessions in COS to follow its progress and continue the conversation."
-                     : "COS brings your AI sessions, meetings and work together. We’ll prepare what it needs on this Mac.")
+                     : "Everything COS can use on this Mac, one row each. COS is not running right now; its status is in the menu-bar panel.")
                     .foregroundStyle(.secondary)
-                if ready && !model.permissionGuide.onboardingDone {
+                if permissionsStep {
                     // After Connect your AI and Get started: what this Mac can allow. Skippable.
                     OnboardingPermissionsStep(guide: model.permissionGuide) { model.objectWillChange.send() }
-                } else if ready {
-                    Button("Open Sessions") { model.openActivity?(.sessions) }
-                        .buttonStyle(COSPrimaryButtonStyle())
-                    PetIntroLine(model: model)
-                    // The setup guide: every AI and the settings that go with it, each skippable and resumable here.
-                    Text("Finish setting up").font(COSType.body(18, weight: .semibold))
-                    Text("Skip anything for now. This guide stays in the Dock menu, Help, the menu-bar panel and the pet's menu.")
-                        .font(COSType.body(13)).foregroundStyle(.secondary)
-                    SetupGuideView(model: model, provider: model.providerGuide, guide: model.setupGuide, permissions: model.permissionGuide)
-                } else if model.status.needsFirstRun {
+                } else if firstRun {
                     // Connect your AI (onboarding P1): per provider, installed and signed in, with Sign in, Skip for now
                     // and Pass to an AI app. Get started's hard gate is unchanged from 0.5.267 (installed).
                     ConnectYourAIStep(guide: model.providerGuide,
@@ -78,12 +75,27 @@ struct ControlSetupView: View {
                                       busy: model.busy, failed: model.error != nil,
                                       recheckGate: { if !model.busy { Task { await model.refresh(quiet: true) } } },
                                       getStarted: { model.perform("setup") })
-                } else if !model.busy {
-                    Text("Your Mac has an existing COS setup. Review its status before making changes.")
-                    Button("Refresh status") { Task { await model.refresh() } }
-                    if model.status.transactionPending {
-                        Button("Repair setup") { model.perform("repair") }
+                } else {
+                    HStack(spacing: 14) {
+                        if ready {
+                            Button("Open Sessions") { model.openActivity?(.sessions) }
+                                .buttonStyle(COSPrimaryButtonStyle())
+                        }
+                        if model.status.transactionPending && !model.busy {
+                            Button("Repair setup") { model.perform("repair") }
+                        }
+                        if !ready && !model.busy {
+                            Button("Refresh status") { Task { await model.refresh() } }
+                        }
+                        Button("Open settings") { model.showSettings?() }
+                            .buttonStyle(COSTextButtonStyle())
                     }
+                    PetIntroLine(model: model)
+                    // The setup guide: every AI and the settings that go with it, each skippable and resumable here.
+                    Text("Finish setting up").font(COSType.body(18, weight: .semibold))
+                    Text("Skip anything for now. This guide stays in the Dock menu, Help, the menu-bar panel and the pet's menu.")
+                        .font(COSType.body(13)).foregroundStyle(.secondary)
+                    SetupGuideView(model: model, provider: model.providerGuide, guide: model.setupGuide, permissions: model.permissionGuide)
                 }
                 if model.busy {
                     HStack(spacing: 12) {
@@ -96,7 +108,7 @@ struct ControlSetupView: View {
                 if let error = model.error {
                     Text(error).foregroundStyle(COSPalette.danger).textSelection(.enabled)
                 }
-                if !ready {
+                if model.status.needsFirstRun {
                     Text("An internet connection is needed for setup. macOS asks for access when you use a feature that needs it.")
                         .font(COSType.body(12)).foregroundStyle(.secondary)
                 }

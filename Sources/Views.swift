@@ -116,6 +116,9 @@ private enum CharacterGallery {
 struct ControlPanel: View {
     @ObservedObject var model: ControllerModel
     let openActivity: (ActivitySection?) -> Void
+    /// Onboarding P1: the same panel hosted in the Settings window (SettingsWindowPresenter), which must not claim
+    /// to be the menu-bar panel being open.
+    var hostedInWindow = false
     @State private var confirmLegacyRestart = false
     @State private var confirmInstallManaged = false
     @State private var confirmInstallAppUpdate = false
@@ -197,6 +200,8 @@ struct ControlPanel: View {
         // (Release never ran, the panel closed), so it observes this panel's failure mode. If the child panel ever
         // dismisses this one, `.environment(\.cosDropdownInline, true)` here drops every list inline instead.
         .cosControlTheme()
+        .onDisappear { if !hostedInWindow { model.panelVisible = false } }
+        .onAppear { if !hostedInWindow { model.panelVisible = true } }
         .onAppear {
             // Fences are rare and urgent, and the card only renders when there is
             // one — so something has to look. Opening the panel is the right
@@ -1329,6 +1334,8 @@ struct ControlPanel: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header
+                // Upgraders, once: COS Control is in the Dock now (Menu bar only / Keep).
+                DockNoticeLine(model: model)
                 // Early users: Finish setup at the top until every row is done or skipped, or Hide setup guide.
                 FinishSetupCard(model: model, provider: model.providerGuide, guide: model.setupGuide, permissions: model.permissionGuide) {
                     model.providerGuide.openInPanel()

@@ -8,12 +8,14 @@ struct COSControlApp: App {
     @StateObject private var activityWindow: ActivityWindowPresenter
     @StateObject private var sessionPet: SessionPetPresenter
     @StateObject private var setupWindow: SetupWindowPresenter
+    @StateObject private var settingsWindow: SettingsWindowPresenter
 
     init() {
         let model = ControllerModel()
         let activityWindow = ActivityWindowPresenter()
         let sessionPet = SessionPetPresenter()
         let setupWindow = SetupWindowPresenter()
+        let settingsWindow = SettingsWindowPresenter()
         sessionPet.bindIfNeeded(model: model) { section in
             activityWindow.show(model: model, section: section)
         }
@@ -25,17 +27,19 @@ struct COSControlApp: App {
         model.openSetup = { setupWindow.show(model: model) }
         // The setup guide and Settings, from the Dock menu, Help, the panel and the pet (Miles 2026-10-08 10:52).
         model.showSetupGuide = { setupWindow.show(model: model) }
+        // Settings…: the open panel scrolls, a visible menu-bar icon opens the panel, anything else (a hidden icon,
+        // the notch, menu bar only) gets the real Settings window.
         model.showSettings = {
-            model.panelScrollTarget = "settings"
-            // The menu-bar panel scrolls to its settings when it opens; without a panel to open, the setup guide.
-            if !MenuBarPanelOpener.open() { setupWindow.show(model: model) }
+            SettingsOpener.open(model: model, window: settingsWindow) { section in activityWindow.show(model: model, section: section) }
         }
+        COSAppDelegate.panelVisible = { model.panelVisible }
         COSAppDelegate.onOpenActivity = { activityWindow.show(model: model, section: nil) }
         COSAppDelegate.onSetupGuide = { setupWindow.show(model: model) }
         COSAppDelegate.onSettings = { model.showSettings?() }
         // A Dock click opens Welcome while COS is not set up, else Activity.
         COSAppDelegate.onReopen = {
-            switch DockPresence.reopenTarget(needsFirstRun: model.status.needsFirstRun, activityAvailable: model.openActivity != nil) {
+            switch DockPresence.reopenTarget(needsFirstRun: model.status.needsFirstRun, activityAvailable: model.openActivity != nil,
+                                             statusRead: model.statusReadOnce) {
             case .setup: setupWindow.show(model: model)
             case .activity: activityWindow.show(model: model, section: nil)
             }
@@ -44,6 +48,7 @@ struct COSControlApp: App {
         _activityWindow = StateObject(wrappedValue: activityWindow)
         _sessionPet = StateObject(wrappedValue: sessionPet)
         _setupWindow = StateObject(wrappedValue: setupWindow)
+        _settingsWindow = StateObject(wrappedValue: settingsWindow)
         // Reproducible native QA without competing for the live menu-bar
         // hotkey. This opens the same presenter and WebView as the UI chips.
         let environment = ProcessInfo.processInfo.environment

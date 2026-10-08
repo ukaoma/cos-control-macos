@@ -59,12 +59,13 @@ enum AIProvider: String, CaseIterable, Identifiable, Sendable, Codable {
     }
     /// The login, as the person runs it in Terminal.
     var loginCommand: String? {
-        switch self { case .claude: "claude"; case .codex: "codex login"; case .cursor: "agent login"; case .ollama: nil }
+        // `claude auth login` (Claude Code 2.1): one step, no folder-trust question in the home folder.
+        switch self { case .claude: "claude auth login"; case .codex: "codex login"; case .cursor: "agent login"; case .ollama: nil }
     }
     /// What happens after the command, in one line.
     var loginHint: String {
         switch self {
-        case .claude: "Claude Code opens. Type /login, then sign in with your Claude account in the browser."
+        case .claude: "Your browser opens. Sign in with your Claude account."
         case .codex: "Your browser opens. Sign in with ChatGPT."
         case .cursor: "Your browser opens. Sign in to Cursor."
         case .ollama: "No sign-in."
@@ -96,6 +97,8 @@ struct ProviderLocalStatus: Decodable, Equatable, Sendable {
     var daemon: String?
     var models: [String]?
     var host: String?
+    /// provider-status's deadline passed before this provider answered.
+    var timedOut: Bool?
 
     var kind: AIProvider? { AIProvider(rawValue: provider) }
     var signedIn: Bool { signIn == "signedIn" || signIn == "apiKey" }
@@ -143,10 +146,15 @@ struct ProviderRowModel: Identifiable, Sendable, Equatable {
 
 enum ProviderRules {
     /// The row a status draws. `nil` status = still checking.
-    static func row(_ provider: AIProvider, _ status: ProviderLocalStatus?, skipped: Bool, waiting: Bool) -> ProviderRowModel {
+    static func row(_ provider: AIProvider, _ status: ProviderLocalStatus?, skipped: Bool, waiting: Bool, expired: Bool = false) -> ProviderRowModel {
         guard let status else {
             return ProviderRowModel(provider: provider, status: "Checking…", detail: nil, tone: .neutral, action: .none,
                                     canSkip: false, waiting: false)
+        }
+        if status.timedOut == true {
+            return ProviderRowModel(provider: provider, status: skipped ? "Skipped for now" : "Could not check",
+                                    detail: "It did not answer in time. Check again in a moment.", tone: .neutral,
+                                    action: .none, canSkip: !skipped, waiting: false)
         }
         if provider == .ollama {
             if status.daemon == "running" {
@@ -177,6 +185,11 @@ enum ProviderRules {
             return ProviderRowModel(provider: provider, status: "API key", detail: "Signed in with an API key, billed separately from a subscription.",
                                     tone: .good, action: .none, canSkip: false, waiting: false)
         case "signInRequired":
+            if expired && !waiting {
+                return ProviderRowModel(provider: provider, status: "Stopped checking",
+                                        detail: "COS stopped checking after 15 minutes. Signed in? Check again.",
+                                        tone: .needsYou, action: .signIn, canSkip: true, waiting: false)
+            }
             if skipped && !waiting {
                 return ProviderRowModel(provider: provider, status: "Skipped for now", detail: "Installed, not signed in.",
                                         tone: .neutral, action: .signIn, canSkip: false, waiting: false)
@@ -296,21 +309,21 @@ enum ProviderPass {
         switch provider {
         case .claude:
             steps = """
-            1. Run `claude --version`. If it prints a version, Claude Code is installed: go to step 3.
+            1. Run `claude --version`. If that is not found, try `/opt/homebrew/bin/claude --version`, `/usr/local/bin/claude --version` and `~/.local/bin/claude --version` (COS looks in those places too). If one prints a version, Claude Code is installed: use that path below and go to step 3.
             2. If `claude` is not found, install it with exactly this command, which installs into ~/.local/bin and needs no administrator password:
                curl -fsSL https://claude.ai/install.sh | bash
                Then run `~/.local/bin/claude --version`.
-            3. Run `claude auth status --text` (or `~/.local/bin/claude auth status --text`). Do not print or repeat the email address it shows.
-            4. If it says I am not logged in, do not try to log in for me. Tell me to open Terminal and run this one command (or `~/.local/bin/claude` if Terminal says command not found), then type /login when Claude Code opens and sign in with my Claude account in the browser:
-               claude
+            3. Run `claude auth status --text` with that path. Do not print or repeat the email address it shows.
+            4. If it says I am not logged in, do not try to log in for me. Tell me to open Terminal and run this one command (with the full path if Terminal says command not found), then sign in with my Claude account in the browser:
+               claude auth login
             """
         case .codex:
             steps = """
-            1. Codex comes with the ChatGPT app for Mac. Run `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex --version`.
-            2. If that file does not exist, do not install Codex with npm or Homebrew. Tell me to install or update the ChatGPT app from https://openai.com/chatgpt/download/ and stop.
-            3. Run `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex login status`.
-            4. If it says Not logged in, do not try to log in for me. Tell me to open Terminal and run this one command, then sign in with ChatGPT in the browser:
-               /Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex login
+            1. Codex comes with the ChatGPT app for Mac. Run `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex --version`; if that file does not exist, try `~/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex --version` (an app installed for one user). Use the path that works below.
+            2. If neither exists, do not install Codex with npm or Homebrew. Tell me to install or update the ChatGPT app from https://openai.com/chatgpt/download/ and stop.
+            3. Run `<that path> login status`.
+            4. If it says Not logged in, do not try to log in for me. Tell me to open Terminal and run this one command with that path, then sign in with ChatGPT in the browser:
+               <that path> login
             """
         case .cursor:
             steps = """
@@ -380,9 +393,13 @@ enum ProviderPass {
 
 /// Poll a waiting row every 3 s, backing off to 15 s, only while the card is on screen, and never past 15 minutes.
 enum ProviderPollSchedule {
+    /// A browser sign-in usually lands within half a minute, so the first 30 s answer within 3 s of it.
     static let fast: TimeInterval = 3
+    /// After that a slower check is enough: one provider-status costs about 1 s of CLI time (measured 2026-10-08).
     static let slow: TimeInterval = 15
+    /// Ten fast checks, the first 30 s.
     static let fastPolls = 10
+    /// A sign-in left unfinished for 15 minutes is abandoned; the row then says "Stopped checking" with Check again.
     static let limit: TimeInterval = 15 * 60
 
     /// The wait before poll number `attempt` (0-based), or nil once `elapsed` has reached the limit.
@@ -406,9 +423,36 @@ enum DockPresence {
     static func mode(stored: String?) -> Mode { Mode(rawValue: stored ?? "") ?? .dock }
 
     enum ReopenTarget: Sendable, Equatable { case setup, activity }
-    /// A Dock click (or opening the running app again): Welcome while COS is not set up, else Activity.
-    static func reopenTarget(needsFirstRun: Bool, activityAvailable: Bool) -> ReopenTarget {
-        needsFirstRun || !activityAvailable ? .setup : .activity
+    /// A Dock click (or opening the running app again): Welcome while COS is not set up, or before the first status
+    /// read says whether it is (a fresh Mac must not land on an empty Activity), else Activity.
+    static func reopenTarget(needsFirstRun: Bool, activityAvailable: Bool, statusRead: Bool = true) -> ReopenTarget {
+        needsFirstRun || !activityAvailable || !statusRead ? .setup : .activity
+    }
+
+    static let noticeSeenKey = "cos.dock.noticeSeen"
+    /// Once, for someone who used COS Control before it was in the Dock and never chose: "Now in the Dock".
+    static func showUpgradeNotice(stored: String?, seen: Bool, firstRun: Bool) -> Bool { stored == nil && !seen && !firstRun }
+
+    /// Cmd-Tab (or any activation) with nothing on screen: open Activity, as a Dock click does. Not in menu-bar-only
+    /// mode, and never when the activation came from the menu-bar panel opening.
+    static func openActivityOnActivate(mode: Mode, visibleWindows: Int, panelVisible: Bool) -> Bool {
+        mode == .dock && visibleWindows == 0 && !panelVisible
+    }
+}
+
+/// Where Settings… goes (the Dock menu, the pet, ⌘,). Never a click that would CLOSE an open panel, never a click on
+/// an icon macOS has hidden (a full menu bar or the notch, QA 2026-10-08 W2): then a real Settings window.
+enum SettingsRoute {
+    enum Target: Sendable, Equatable { case scrollOpenPanel, clickStatusItem, window }
+    struct StatusItem: Sendable, Equatable {
+        var visible: Bool          // its window is on screen and not occluded
+        var onScreen: Bool         // its frame sits inside a screen
+        var underNotch: Bool       // its frame falls in the camera housing between the menu bar's two safe areas
+    }
+    static func decide(panelOpen: Bool, item: StatusItem?) -> Target {
+        if panelOpen { return .scrollOpenPanel }
+        guard let item, item.visible, item.onScreen, !item.underNotch else { return .window }
+        return .clickStatusItem
     }
 }
 
@@ -416,9 +460,12 @@ enum DockPresence {
 
 enum PetIntro {
     static let seenKey = "cos.petIntro.seen"
-    /// The pet settings a person can change. Touching any of them means they already met the pet.
+    /// The pet settings only a person writes. Touching any of them means they already met the pet.
+    /// NOT cos.sessionPetCharacterPercent: the character-scale migration writes it on every first launch
+    /// (PetCharacterScale.loadPersistedPercent), so it would hide the introduction from everyone (QA 2026-10-08 B1).
     static let touchedKeys = ["cos.sessionPetEnabled", "cos.sessionPetCalmMotion", "cos.sessionPetNoMotion",
-                              "cos.sessionPetSize", "cos.sessionPetSizePixels", "cos.sessionPetCharacterPercent"]
+                              "cos.sessionPetSize", "cos.sessionPetSizePixels"]
+    static func touchedCount(_ defaults: UserDefaults) -> Int { touchedKeys.filter { defaults.object(forKey: $0) != nil }.count }
     /// Once, on first run and for anyone who never touched pet settings, while the pet is on.
     static func shouldShow(seen: Bool, touchedKeys: Int, petEnabled: Bool) -> Bool { !seen && touchedKeys == 0 && petEnabled }
 }
@@ -466,24 +513,36 @@ enum GuideExtras {
 final class ProviderGuide: ObservableObject {
     @Published private(set) var report: ProviderStatusReport?
     @Published private(set) var error: String?
-    /// Rows waiting on a sign-in the person started (Sign in or Pass): provider -> when.
+    /// Rows waiting on a sign-in the person started (Sign in or Pass): provider -> when it started.
     @Published private(set) var waiting: [AIProvider: Date] = [:]
+    /// Rows whose wait passed ProviderPollSchedule.limit: they say "Stopped checking" with Check again.
+    @Published private(set) var expired: Set<AIProvider> = []
     /// The pass in flight per provider (one at a time): provider -> tag.
     @Published private(set) var passes: [AIProvider: String] = [:]
+    /// The ONE store of provider skips (the setup guide reads it too; QA 2026-10-08 W7).
     @Published private(set) var skipped: Set<AIProvider> = []
     @Published private(set) var installedApps: Set<AIProvider> = []
-    /// The panel shows the Connect your AI card while this is true. Only the opener writes it.
+    /// The panel shows the setup guide card while this is true. Only the opener writes it.
     @Published var panelRouteActive = false
     @Published var notice: String?
 
+    /// provider-status answers within ProviderStatusCore.totalDeadline (25 s); the app waits 10 s more for the
+    /// helper itself to start and print, then gives up.
+    static let statusTimeout: TimeInterval = 35
+
     /// `cos-control-helper provider-status [--only …]`, returning the `details` object as JSON.
     var runStatus: @MainActor ([String]) async throws -> Data
-    var runInTerminal: @MainActor (String) -> Bool = { _ in false }
+    /// Runs an AppleScript and returns whether osascript exited 0 (it waits, off the main thread).
+    var runInTerminal: @MainActor (String) async -> Bool = { _ in false }
+    /// Opens Terminal itself, for when the script could not (Automation denied): the command is then on the clipboard.
+    var openTerminalApp: @MainActor () -> Bool = { false }
     var openURL: @MainActor (URL) -> Bool = { _ in false }
     var copy: @MainActor (String) -> Void = { _ in }
     /// Whether an app handles a URL scheme (LaunchServices).
     var appInstalled: @MainActor (String) -> Bool = { _ in false }
     var makeFolder: @MainActor (String) -> Bool = { _ in false }
+    /// One line per sign-in, pass, poll limit and helper error, with the values that tell cases apart.
+    var log: @MainActor (String) -> Void = { _ in }
     var home: String
     private let defaults: UserDefaults
     private(set) var pollCount = 0
@@ -504,7 +563,8 @@ final class ProviderGuide: ObservableObject {
     var signInStepDone: Bool { ProviderGate.signInStepDone(report, skipped: skipped) }
 
     func row(_ provider: AIProvider) -> ProviderRowModel {
-        ProviderRules.row(provider, report?.status(provider), skipped: skipped.contains(provider), waiting: waiting[provider] != nil)
+        ProviderRules.row(provider, report?.status(provider), skipped: skipped.contains(provider),
+                          waiting: waiting[provider] != nil, expired: expired.contains(provider))
     }
 
     func refreshApps() {
@@ -523,38 +583,53 @@ final class ProviderGuide: ObservableObject {
             guard let next = ProviderStatusReport.decode(data) else { throw ProviderGuideError.unreadable }
             report = (only == nil || report == nil) ? next : report!.merging(next)
             error = nil
+            let late = next.providers.filter { $0.timedOut == true }.map(\.provider)
+            if !late.isEmpty { log("provider-status late=\(late.joined(separator: ","))") }
         } catch {
             self.error = "COS could not check your AI apps: \(error.localizedDescription)"
+            log("provider-status failed args=\(arguments.dropFirst().joined(separator: " ")) error=\(error.localizedDescription)")
         }
         for provider in Array(waiting.keys) where report?.status(provider)?.signedIn == true {
             waiting[provider] = nil
             passes[provider] = nil
             notice = "\(provider.title) is connected."
+            log("sign-in done provider=\(provider.rawValue) signIn=\(report?.status(provider)?.signIn ?? "?")")
         }
     }
 
     /// Providers a poll should re-read: waiting rows, and installed rows that still need signing in.
     var pollTargets: [AIProvider] {
         AIProvider.agents.filter { provider in
+            if expired.contains(provider) { return false }
             if waiting[provider] != nil { return true }
             guard let status = report?.status(provider) else { return true }
-            return !status.installed || status.signIn == "signInRequired"
+            return !status.installed || status.signIn == "signInRequired" || status.timedOut == true
         }
     }
 
-    /// The poll loop for a visible card. Runs on the view's task, so it ends when the card goes away; stops on its
-    /// own after 15 minutes or once nothing is left to wait for. `sleep` is injected for checks.
+    /// The poll loop for a visible card. Runs on the view's task, so it ends when the card goes away (the panel
+    /// closing included). The clock starts at the newest sign-in, not at the mount, so a new Sign in polls fast
+    /// again; a wait older than the limit stops on its own and says so. `sleep` and `now` are injected for checks.
     func poll(sleep: @escaping @MainActor (TimeInterval) async -> Bool = { seconds in
         (try? await Task.sleep(for: .seconds(seconds))) != nil
     }, now: @escaping @MainActor () -> Date = Date.init) async {
-        let started = now()
+        let mounted = now()
         var attempt = 0
+        var anchor = mounted
         pollCount = 0
         if report == nil { await refresh() }
         while !Task.isCancelled {
+            if let newest = waiting.values.max(), newest > anchor { anchor = newest; attempt = 0 }
+            let at = now()
+            for (provider, started) in waiting where at.timeIntervalSince(started) >= ProviderPollSchedule.limit {
+                waiting[provider] = nil
+                passes[provider] = nil
+                expired.insert(provider)
+                log("sign-in stopped checking provider=\(provider.rawValue) after=\(Int(at.timeIntervalSince(started)))s")
+            }
             let targets = pollTargets
             guard !targets.isEmpty,
-                  let wait = ProviderPollSchedule.delay(attempt: attempt, elapsed: now().timeIntervalSince(started)),
+                  let wait = ProviderPollSchedule.delay(attempt: attempt, elapsed: at.timeIntervalSince(anchor)),
                   wait > 0 else { return }
             guard await sleep(wait) else { return }
             await refresh(only: targets)
@@ -563,16 +638,31 @@ final class ProviderGuide: ObservableObject {
         }
     }
 
-    /// Sign in: Terminal opens on the exact command; the row waits and turns green when the CLI says signed in.
-    func signIn(_ provider: AIProvider) {
+    /// Check again on a row that stopped checking.
+    func checkAgain(_ provider: AIProvider) async {
+        expired.remove(provider)
+        await refresh(only: [provider])
+    }
+
+    /// Sign in: Terminal opens on the exact command and the row waits, turning green when the CLI says signed in.
+    /// When osascript fails (Automation denied, Terminal missing), the command goes on the clipboard, Terminal is
+    /// opened directly, and the row says so instead of waiting on a window that never opened.
+    func signIn(_ provider: AIProvider) async {
         guard let command = ProviderLogin.command(provider, binaryPath: report?.status(provider)?.binaryPath) else { return }
-        if runInTerminal(ProviderLogin.terminalScript(command)) {
+        expired.remove(provider)
+        if await runInTerminal(ProviderLogin.terminalScript(command)) {
             waiting[provider] = Date()
             unskip(provider)
             notice = nil
+            log("sign-in opened provider=\(provider.rawValue) via=script")
         } else {
             copy(command)
-            notice = "Terminal could not be opened. The command is on the clipboard: paste it into Terminal."
+            let opened = openTerminalApp()
+            notice = opened
+                ? "COS could not type the command into Terminal (macOS may ask to allow COS Control under Privacy & Security, Automation). It is on the clipboard: paste it into the Terminal window that just opened."
+                : "Terminal could not be opened. The command is on the clipboard: paste it into Terminal."
+            if opened { waiting[provider] = Date(); unskip(provider) }
+            log("sign-in fallback provider=\(provider.rawValue) script=failed terminalOpened=\(opened)")
         }
     }
 
@@ -585,6 +675,8 @@ final class ProviderGuide: ObservableObject {
     func skip(_ provider: AIProvider) {
         skipped.insert(provider)
         waiting[provider] = nil
+        passes[provider] = nil
+        expired.remove(provider)
         defaults.set(skipped.map(\.rawValue).sorted(), forKey: Self.skippedKey)
     }
 
@@ -604,16 +696,20 @@ final class ProviderGuide: ObservableObject {
               let folder = ProviderPass.setupFolder(home: home, tag: tag), makeFolder(folder),
               let url = ProviderPass.link(app: app, prompt: prompt, folder: folder) else {
             notice = "\(app.appName) could not be opened. Use the steps below instead."
+            log("pass refused provider=\(provider.rawValue) app=\(app.rawValue) reason=prepare")
             return false
         }
         guard openURL(url) else {
             notice = "\(app.appName) could not be opened. Use the steps below instead."
+            log("pass refused provider=\(provider.rawValue) app=\(app.rawValue) reason=open")
             return false
         }
         passes[provider] = tag
         waiting[provider] = Date()
+        expired.remove(provider)
         unskip(provider)
         notice = "Opened \(app.appName) with the setup filled in. Read it, then press Send there. This row turns green when \(provider.cliName) is signed in."
+        log("pass opened provider=\(provider.rawValue) app=\(app.rawValue) tag=\(tag) prompt=\(prompt.utf16.count)")
         return true
     }
 
@@ -700,7 +796,8 @@ enum SetupRowID: String, CaseIterable, Sendable {
 }
 
 enum SetupAction: Sendable, Equatable {
-    case provider(AIProvider)          // the provider row's own Sign in / install steps
+    case provider(AIProvider)          // the provider row's own Sign in / install steps (rendered by ProviderRowView)
+    case download(AIProvider)          // open the official download page (Get Ollama)
     case openOllama                    // open the Ollama app
     case voiceNeedsWhisper(String)     // the exact install command for whisper.cpp
     case voiceDownload(String)         // tier
@@ -740,6 +837,10 @@ struct SetupFacts: Sendable, Equatable {
     var jevConfigured: Bool?
     var permissionsNeedCount: Int?
     var ollamaPinnedModel: String?
+    /// voice-status failed: the voice row falls back to the server's own whisperReady.
+    var voiceUnavailable = false
+    var whisperReady = false
+    var requestedTier: String?
 }
 
 enum SetupGuideRules {
@@ -749,10 +850,13 @@ enum SetupGuideRules {
             let status = facts.report?.status(provider)
             let row = ProviderRules.row(provider, status, skipped: facts.providerSkipped.contains(provider), waiting: false)
             let id = SetupRowID(rawValue: provider.rawValue)!
+            // Installed with a sign-in this build cannot read counts as done: there is nothing more the guide can ask
+            // for (QA 2026-10-08 W5). Skips for these rows live only in ProviderGuide.
+            let unknown = status?.installed == true && status?.signIn == "unknown" && status?.timedOut != true
             rows.append(SetupRow(id: id, title: provider.title, status: row.status,
                                  unlocks: "Sessions, Continue and Work in \(provider.title).",
-                                 detail: nil, done: status?.signedIn == true,
-                                 skipped: facts.providerSkipped.contains(provider) || skipped.contains(id),
+                                 detail: nil, done: status?.signedIn == true || unknown,
+                                 skipped: facts.providerSkipped.contains(provider),
                                  action: .provider(provider)))
         }
         rows.append(ollama(facts, skipped: skipped.contains(.ollama)))
@@ -813,7 +917,7 @@ enum SetupGuideRules {
         let row = ProviderRules.row(.ollama, status, skipped: false, waiting: false)
         return SetupRow(id: .ollama, title: "Ollama", status: status == nil ? "Checking…" : row.status,
                         unlocks: "Local, private answers with no subscription.", detail: detail, done: running,
-                        skipped: skipped, action: running ? .none : status?.installed == true ? .openOllama : .provider(.ollama),
+                        skipped: skipped, action: running ? .none : status?.installed == true ? .openOllama : .download(.ollama),
                         actionTitle: running ? nil : status?.installed == true ? "Open Ollama" : "Get Ollama")
     }
 
@@ -823,7 +927,18 @@ enum SetupGuideRules {
                            unlocks: "Meetings and dictation transcribed on this Mac, with named speakers.",
                            detail: nil, done: false, skipped: skipped)
         guard facts.serverRunning else { row.status = "After Get started"; row.afterSetup = true; return row }
-        guard let voice = facts.voice else { return row }
+        guard let voice = facts.voice else {
+            // voice-status did not answer: the server's own reading still decides done (QA 2026-10-08 note).
+            guard facts.voiceUnavailable else { return row }
+            if facts.whisperReady, let tier = facts.requestedTier {
+                row.status = "Ready · \(VoiceTier.title(tier))"
+                row.done = true
+            } else {
+                row.status = "Could not check"
+                row.detail = "COS could not read the voice setup. Check again from here later."
+            }
+            return row
+        }
         let lanes = [voice.previewModel.map { "\($0) live" }, voice.commitModel.map { "\($0) commit" }, voice.polishModel.map { "\($0) polish" }]
             .compactMap { $0 }.joined(separator: " · ")
         if voice.whisperReady && !voice.degraded, let requested = voice.requestedTier {
@@ -873,9 +988,15 @@ enum SetupGuideRules {
 
     /// The "Finish setup" card: at the top of the panel and Activity home until every counted row is done or skipped,
     /// or the person chose Hide setup guide.
-    static func showFinishCard(_ rows: [SetupRow], hidden: Bool) -> Bool {
+    static func showFinishCard(_ rows: [SetupRow], hidden: Bool, loaded: Bool = true) -> Bool {
         let p = progress(rows)
-        return !hidden && p.total > 0 && p.handled < p.total
+        return loaded && !hidden && p.total > 0 && p.handled < p.total
+    }
+
+    /// The card and its "Next:" wait for the provider report and, once COS is running, the voice facts (or their
+    /// failure): before that every row reads "Checking…" and the count would be wrong.
+    static func loaded(_ facts: SetupFacts) -> Bool {
+        facts.report != nil && (!facts.serverRunning || facts.voice != nil || facts.voiceUnavailable)
     }
 
     static func finishTitle(_ rows: [SetupRow]) -> String {
@@ -889,7 +1010,12 @@ final class SetupGuideState: ObservableObject {
     @Published private(set) var skipped: Set<SetupRowID> = []
     @Published private(set) var hidden = false
     @Published var voice: VoiceFacts?
-    @Published var voiceTier = "auto"
+    /// The tier the voice row offers. It starts as the server's own tier (adoptServerTier) so a Max user is never
+    /// offered Balanced by default; a pick in the row wins from then on.
+    @Published var voiceTier = "auto" { didSet { if voiceTier != oldValue && !adopting { voiceTierChosen = true } } }
+    private(set) var voiceTierChosen = false
+    private var adopting = false
+    @Published private(set) var voiceReadFailed = false
     @Published private(set) var voiceRunning = false
     @Published private(set) var voiceProgress: String?
     @Published var voiceMessage: String?
@@ -903,6 +1029,7 @@ final class SetupGuideState: ObservableObject {
     var runVoiceSetup: @MainActor (String, @escaping @Sendable (String) -> Void) async throws -> String = { _, _ in throw ProviderGuideError.unreadable }
     var applyTier: @MainActor (String) -> Void = { _ in }
     var applyRecommendation: @MainActor () async throws -> Void = {}
+    var log: @MainActor (String) -> Void = { _ in }
     private var voiceTask: Task<Void, Never>?
 
     init(defaults: UserDefaults = .standard) {
@@ -911,18 +1038,36 @@ final class SetupGuideState: ObservableObject {
         hidden = defaults.bool(forKey: Self.hiddenKey)
     }
 
-    func skip(_ id: SetupRowID) { skipped.insert(id); save() }
+    /// Provider rows (claude, codex, cursor) are skipped in ProviderGuide, the one provider skip store.
+    func skip(_ id: SetupRowID) { guard !SetupGuideState.providerRows.contains(id) else { return }; skipped.insert(id); save() }
+    static let providerRows: Set<SetupRowID> = [.claude, .codex, .cursor]
+
+    /// Takes the server's tier as the row's starting point until the person picks one.
+    func adoptServerTier(_ requested: String?) {
+        guard !voiceTierChosen, let tier = requested.flatMap({ VoiceTier.all.contains($0) ? $0 : nil }), tier != voiceTier else { return }
+        adopting = true
+        voiceTier = tier
+        adopting = false
+    }
     func unskip(_ id: SetupRowID) { if skipped.remove(id) != nil { save() } }
     func hide() { hidden = true; defaults.set(true, forKey: Self.hiddenKey) }
     func show() { hidden = false; defaults.set(false, forKey: Self.hiddenKey) }
     private func save() { defaults.set(skipped.map(\.rawValue).sorted(), forKey: Self.skippedKey) }
 
     func refreshVoice() async {
-        guard !voiceRunning, let data = try? await readVoice(), let facts = VoiceFacts.decode(data) else { return }
-        voice = facts
+        guard !voiceRunning else { return }
+        do {
+            guard let facts = VoiceFacts.decode(try await readVoice()) else { throw ProviderGuideError.unreadable }
+            voice = facts
+            adoptServerTier(facts.explicitTier)
+            voiceReadFailed = false
+        } catch {
+            voiceReadFailed = true
+            log("voice-status failed error=\(error.localizedDescription)")
+        }
     }
 
-    /// Downloads the tier's models in the app (no Terminal), then applies the tier through the transactional restart.
+    /// Prepares and measures voice. Only Automatic may apply a recommendation; saved choices win.
     func startVoiceSetup() {
         guard !voiceRunning, VoiceSetupGate.canStart(voice, tier: voiceTier) else { return }
         voiceRunning = true
@@ -944,14 +1089,17 @@ final class SetupGuideState: ObservableObject {
                 if tier == "auto" { try await self.applyRecommendation() }
                 self.voiceRunning = false
                 self.voiceProgress = nil
+                self.log("voice-setup done tier=\(tier)")
             } catch is CancellationError {
                 self.voiceRunning = false
                 self.voiceProgress = nil
-                self.voiceMessage = "Stopped. What was downloaded is kept; Download again resumes it."
+                self.voiceMessage = "Stopped. Your voice setting did not change. What was downloaded is kept; Download again resumes it."
+                self.log("voice-setup cancelled tier=\(tier)")
             } catch {
                 self.voiceRunning = false
                 self.voiceProgress = nil
                 self.voiceMessage = error.localizedDescription
+                self.log("voice-setup failed tier=\(tier) error=\(error.localizedDescription)")
             }
             await self.refreshVoice()
         }

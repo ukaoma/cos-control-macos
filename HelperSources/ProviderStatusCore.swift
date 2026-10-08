@@ -222,6 +222,50 @@ enum ProviderStatusCore {
         return (true, version, .signInRequired)
     }
 
+    /// Three tries at most, with 6 s per command (`ProviderStatusCore.commandTimeout`), so Cursor fits the deadline.
+    static let cursorAttempts = 3
+    /// Each probe command stops after this many seconds: the slowest seen here was `agent about` at 0.55 s.
+    static let commandTimeout: TimeInterval = 6
+    /// The whole report stops after this many seconds and answers with what it has: one hung CLI can never blank the
+    /// others (the app waits `totalDeadline + 10`, ProviderGuide.statusTimeout).
+    static let totalDeadline: TimeInterval = 25
+
+    /// `agent status --format json`: its isAuthenticated field, or nil when it is not Cursor's answer.
+    static func cursorStatusJSON(_ output: String) -> Bool? {
+        guard let start = output.firstIndex(of: "{"), let end = output.lastIndex(of: "}"), start < end,
+              let data = String(output[start...end]).data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let authenticated = object["isAuthenticated"] as? Bool else { return nil }
+        return authenticated
+    }
+
+    /// Cursor's `--version` is a date and a commit ("2026.10.01-e373342"); anything else is not proof.
+    static func cursorVersionToken(_ output: String) -> String? {
+        let line = output.split(separator: "\n").first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? ""
+        return line.range(of: #"^\d{4}\.\d{2}\.\d{2}-[0-9a-f]{6,}$"#, options: .regularExpression) != nil ? line : nil
+    }
+
+    /// Whether the COS server can run this Cursor candidate: it looks for `agent` (or the path an env override names).
+    static func serverRunnableCursor(_ candidate: ProviderCandidate) -> Bool {
+        candidate.source == "env" || URL(fileURLWithPath: candidate.path).lastPathComponent == "agent"
+    }
+
+    /// Get started's gate, from the same candidate lists the rows use, with no probe run: Claude Code or Codex that
+    /// the server can run (never Claude Desktop's copy or the retired Codex.app), or Cursor's `agent`.
+    static func setupProviderPresent(in environment: ProviderSearchEnvironment) -> Bool {
+        for provider in ["claude", "codex"] where candidates(provider, in: environment).contains(where: { $0.executable && $0.source != "claudeDesktop" }) {
+            return true
+        }
+        return candidates("cursor", in: environment).contains { $0.executable && serverRunnableCursor($0) }
+    }
+
+    /// A row for a provider whose probes did not finish inside the deadline.
+    static func timedOut(_ provider: String) -> [String: Any] {
+        ["provider": provider, "installed": false, "binaryPath": NSNull(), "version": NSNull(), "signIn": "unknown",
+         "detail": "Did not answer in time. Check again.", "candidates": [[String: Any]](), "timedOut": true,
+         "daemon": NSNull(), "models": [String](), "host": NSNull()]
+    }
+
     /// Ollama's /api/tags body. nil when it is not Ollama's answer.
     static func ollamaModels(_ data: Data) -> [String]? {
         guard let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -296,20 +340,45 @@ enum ProviderStatusProbe {
         }
         switch provider {
         case "cursor":
-            // Only a binary whose `about` prints a "CLI Version" line is Cursor's: another `agent` on PATH is skipped.
-            for index in candidates.indices where candidates[index].executable {
-                guard let about = probes.run(candidates[index].path, ["about"]) else {
-                    candidates[index].note = "Did not answer `about`."
+            // Cursor's CLI is proven by `about` (a "CLI Version" line), else by `status --format json` (its own
+            // isAuthenticated field), else by a `--version` in its date-hash form. Another `agent` on PATH is skipped.
+            // At most three candidates are tried, so a Mac with several stray `agent` files stays inside the deadline.
+            var tried = 0
+            for index in candidates.indices where candidates[index].executable && tried < ProviderStatusCore.cursorAttempts {
+                tried += 1
+                let path = candidates[index].path
+                var proven = false
+                if let about = probes.run(path, ["about"]) {
+                    let parsed = ProviderStatusCore.cursorAbout(output: about.output)
+                    if parsed.isCursor { proven = true; status.version = parsed.version; status.signIn = parsed.signIn }
+                }
+                if !proven || status.signIn == .unknown, let json = probes.run(path, ["status", "--format", "json"]),
+                   let authenticated = ProviderStatusCore.cursorStatusJSON(json.output) {
+                    proven = true
+                    status.signIn = authenticated ? .signedIn : .signInRequired
+                }
+                if !proven, let version = probes.run(path, ["--version"]), version.code == 0,
+                   let token = ProviderStatusCore.cursorVersionToken(version.output) {
+                    proven = true
+                    status.version = token
+                    status.signIn = .unknown
+                }
+                guard proven else {
+                    candidates[index].note = "Not Cursor's CLI (no CLI Version line, status or version)."
                     continue
                 }
-                let parsed = ProviderStatusCore.cursorAbout(output: about.output)
-                guard parsed.isCursor else {
-                    candidates[index].note = "Not Cursor's CLI (no CLI Version line)."
-                    continue
+                if status.version == nil, let version = probes.run(path, ["--version"]) {
+                    status.version = ProviderStatusCore.cursorVersionToken(version.output)
                 }
                 choose(index)
-                status.version = parsed.version
-                status.signIn = parsed.signIn
+                // The COS server runs Cursor as `agent` (server/lib/provider-binary.ts). A copy reachable only as
+                // `cursor-agent` is Cursor's, but COS cannot run it: say so instead of reading it as ready.
+                if !ProviderStatusCore.serverRunnableCursor(candidates[index]) {
+                    status.installed = false
+                    status.binaryPath = nil
+                    candidates[index].chosen = false
+                    status.detail = "Cursor Agent is installed only as cursor-agent. COS runs it as agent: run the Cursor installer again to add that name."
+                }
                 break
             }
         case "ollama":
@@ -480,3 +549,46 @@ struct VoiceBenchmarkPolicy {
         return existing.flatMap(VoiceSetupCore.normalizedTier) ?? recommendation
     }
 }
+
+/// The three keys `--setup-transcription` writes into ~/.cos-glasses/.env (bin/cli.cjs:544-551) before it checks
+/// anything. voice-setup snapshots them first and puts them back afterwards, whatever happened: the live tier only
+/// ever changes through the transactional set-transcription-tier.
+enum VoiceEnvFile {
+    static let keys = ["COS_WHISPER_TRANSCRIPTION_TIER", "COS_WHISPER_PREVIEW_MODEL", "COS_WHISPER_COMMIT_MODEL"]
+
+    /// Each key's value, or nil when the file does not set it. The last assignment wins, as dotenv reads it.
+    static func values(_ text: String) -> [String: String?] {
+        var out: [String: String?] = Dictionary(uniqueKeysWithValues: keys.map { ($0, nil) })
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            for key in keys where line.hasPrefix(key + "=") {
+                out[key] = String(line.dropFirst(key.count + 1))
+            }
+        }
+        return out
+    }
+
+    /// `text` with the three keys set back to `snapshot` (removed where the snapshot had none). Every other line,
+    /// its order and the trailing newline are kept.
+    static func restore(_ text: String, to snapshot: [String: String?]) -> String {
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let hadNewline = text.hasSuffix("\n")
+        if hadNewline { lines.removeLast() }
+        var written = Set<String>()
+        lines = lines.compactMap { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard let key = keys.first(where: { trimmed.hasPrefix($0 + "=") }) else { return line }
+            guard let value = snapshot[key] ?? nil, !written.contains(key) else { return nil }
+            written.insert(key)
+            return "\(key)=\(value)"
+        }
+        for key in keys where !written.contains(key) {
+            if let value = snapshot[key] ?? nil { lines.append("\(key)=\(value)") }
+        }
+        let body = lines.joined(separator: "\n")
+        return body.isEmpty ? "" : body + (hadNewline || !text.isEmpty ? "\n" : "\n")
+    }
+}
+
+/// voice-setup's Cancel: the SIGTERM handler kills the child group and sets this; the helper then restores the
+/// .env snapshot before it exits.

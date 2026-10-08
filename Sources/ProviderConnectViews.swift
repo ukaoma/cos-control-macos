@@ -36,6 +36,24 @@ final class COSAppDelegate: NSObject, NSApplicationDelegate {
         Self.onReopen?()
         return false
     }
+
+    /// Cmd-Tab into COS Control with nothing on screen opens Activity, as a Dock click does. Checked a moment later,
+    /// so the menu-bar panel opening (which also activates the app) is never mistaken for it.
+    static var panelVisible: (@MainActor () -> Bool)?
+    func applicationDidBecomeActive(_ notification: Notification) {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            let visible = NSApp.windows.filter { window in
+                let name = String(describing: type(of: window))
+                return window.isVisible && !(window is NSPanel) && window.level == .normal
+                    && !name.contains("StatusBar") && !name.contains("MenuBarExtra")
+            }.count
+            let mode = DockPresence.mode(stored: UserDefaults.standard.string(forKey: DockPresence.modeKey))
+            if DockPresence.openActivityOnActivate(mode: mode, visibleWindows: visible, panelVisible: Self.panelVisible?() ?? false) {
+                Self.onReopen?()
+            }
+        }
+    }
 }
 
 private func toneColor(_ tone: ProviderTone) -> Color {
@@ -149,8 +167,7 @@ struct ProviderRowView: View {
     @ViewBuilder private func signInSteps(_ status: ProviderLocalStatus?, row: ProviderRowModel) -> some View {
         if let command = ProviderLogin.command(provider, binaryPath: status?.binaryPath) {
             if !row.waiting {
-                Text(provider == .claude ? "Sign in so Sessions and Continue work. In Terminal, run this, then type /login:"
-                     : "Sign in so Sessions and Continue work. In Terminal, run:")
+                Text("Sign in so Sessions and Continue work. In Terminal, run:")
                     .font(COSType.body(11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -158,10 +175,14 @@ struct ProviderRowView: View {
         }
         HStack(spacing: 12) {
             if row.waiting {
-                Button("Open Terminal again") { guide.signIn(provider) }.buttonStyle(COSQuietButtonStyle())
+                Button("Open Terminal again") { Task { await guide.signIn(provider) } }.buttonStyle(COSQuietButtonStyle())
                 Button("Stop waiting") { guide.stopWaiting(provider) }.buttonStyle(COSTextButtonStyle())
+            } else if guide.expired.contains(provider) {
+                Button("Check again") { Task { await guide.checkAgain(provider) } }.buttonStyle(COSPrimaryButtonStyle())
+                Button("Sign in") { Task { await guide.signIn(provider) } }.buttonStyle(COSQuietButtonStyle())
+                Button("Skip for now") { guide.skip(provider) }.buttonStyle(COSTextButtonStyle())
             } else {
-                Button("Sign in") { guide.signIn(provider) }.buttonStyle(COSPrimaryButtonStyle())
+                Button("Sign in") { Task { await guide.signIn(provider) } }.buttonStyle(COSPrimaryButtonStyle())
                 if row.canSkip {
                     Button("Skip for now") { guide.skip(provider) }.buttonStyle(COSTextButtonStyle())
                 }
@@ -274,9 +295,9 @@ struct ConnectYourAIStep: View {
             }
         }
         .providerPolling(guide)
-        .onChange(of: guide.report) { _, report in
-            let anyInstalled = AIProvider.agents.contains { report?.status($0)?.installed == true }
-            if anyInstalled && !setupProviderInstalled { recheckGate() }
+        // Re-read Get started's gate only when the set of installed CLIs changes, never on every poll.
+        .onChange(of: Set(AIProvider.agents.filter { guide.report?.status($0)?.installed == true })) { _, installed in
+            if !installed.isEmpty && !setupProviderInstalled { recheckGate() }
         }
     }
 }
@@ -445,6 +466,9 @@ extension ControllerModel {
             facts.voice = voice
         }
         facts.voiceTier = guide.voiceTier
+        facts.voiceUnavailable = guide.voice == nil && guide.voiceReadFailed
+        facts.whisperReady = status.whisperReady && !status.transcriptionTierDegraded
+        facts.requestedTier = status.transcriptionRequestedTier
         facts.claudeSessionsEnabled = status.claudeSessionsEnabled
         facts.threadAttachSupported = status.threadAttachSupported
         facts.threadAttachEnabled = status.threadAttachEnabled
@@ -525,25 +549,28 @@ struct SetupRowView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 if let command = guide.voice?.terminalCommand[guide.voiceTier == "auto" ? "balanced" : guide.voiceTier] {
                     Button("Or run it in Terminal") {
-                        if !runInTerminal(command) { copyText(command) }
+                        let guideRef = model.providerGuide
+                        Task {
+                            if !(await guideRef.runInTerminal(ProviderLogin.terminalScript(command))) {
+                                guideRef.copy(command)
+                                _ = guideRef.openTerminalApp()
+                                guide.voiceMessage = "COS could not type into Terminal. The command is on the clipboard: paste it into Terminal."
+                            }
+                        }
                     }
                     .buttonStyle(COSTextButtonStyle())
-                    .help("Runs the same setup in Terminal with COS Control's own Node, for when you want to watch it")
+                    .disabled(guide.voiceRunning)
+                    .help("Runs the same setup in Terminal (COS Control's helper, the installed server's own setup), for when you want to watch it")
                 }
             }
         }
     }
 
-    private func copyText(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
-
-    private func runInTerminal(_ command: String) -> Bool { model.providerGuide.runInTerminal(ProviderLogin.terminalScript(command)) }
-
+    /// Every action a row can carry does something; `.none` rows show no button (QA 2026-10-08 B1: Get Ollama did not).
     private func perform(_ action: SetupAction) {
         switch action {
-        case .provider, .none: break
+        case .none: break
+        case .provider(let provider), .download(let provider): _ = model.providerGuide.openURL(provider.downloadURL)
         case .openOllama:
             if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.electron.ollama") {
                 NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
@@ -574,7 +601,8 @@ struct SetupGuideView: View {
                 ForEach(Array(AIProvider.agents.enumerated()), id: \.element.id) { index, p in
                     if index > 0 { Divider() }
                     ProviderRowView(guide: provider, provider: p)
-                    if let row = rows.first(where: { $0.id.rawValue == p.rawValue }), !row.done, provider.row(p).action == .install {
+                    // Skip for now on every row that is not done and has no Skip of its own (not installed, could not check).
+                    if let row = rows.first(where: { $0.id.rawValue == p.rawValue }), !row.done, provider.row(p).action != .signIn {
                         Button(row.skipped ? "Set up now" : "Skip for now") {
                             row.skipped ? provider.unskip(p) : provider.skip(p)
                         }
@@ -610,7 +638,12 @@ struct SetupGuideView: View {
             }
         }
         .providerPolling(provider)
-        .task { await guide.refreshVoice(); if model.jevStatus == nil, model.status.running { await model.loadJevStatus() } }
+        .task {
+            guide.adoptServerTier(guide.voice?.explicitTier)
+            await guide.refreshVoice()
+            if model.jevStatus == nil, model.status.running { await model.loadJevStatus() }
+        }
+        .onChange(of: guide.voice?.explicitTier) { _, tier in guide.adoptServerTier(tier) }
     }
 
     @ViewBuilder private func section<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
@@ -633,8 +666,19 @@ struct FinishSetupCard: View {
     let open: () -> Void
 
     var body: some View {
-        let rows = SetupGuideRules.rows(model.setupFacts(provider: provider, guide: guide), skipped: guide.skipped)
-        if SetupGuideRules.showFinishCard(rows, hidden: guide.hidden) {
+        // The facts load even while the card is hidden (it waits for them), so the load sits on a container that is
+        // always there, not on the card.
+        VStack(alignment: .leading, spacing: 0) { card }
+            .task {
+                if provider.report == nil { await provider.refresh() }
+                if model.status.running, guide.voice == nil { await guide.refreshVoice() }
+            }
+    }
+
+    @ViewBuilder private var card: some View {
+        let facts = model.setupFacts(provider: provider, guide: guide)
+        let rows = SetupGuideRules.rows(facts, skipped: guide.skipped)
+        if SetupGuideRules.showFinishCard(rows, hidden: guide.hidden, loaded: SetupGuideRules.loaded(facts)) {
             let next = rows.first { !$0.handled && !$0.afterSetup }
             let p = SetupGuideRules.progress(rows)
             VStack(alignment: .leading, spacing: 8) {
@@ -661,23 +705,33 @@ struct FinishSetupCard: View {
             .padding(13)
             .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.accent.opacity(0.55), lineWidth: 1))
-            .task { if provider.report == nil { await provider.refresh() }; if guide.voice == nil { await guide.refreshVoice() } }
         }
     }
 }
 
-/// Opens the menu-bar panel from elsewhere (the pet's and the Dock's Settings…): a click on COS Control's own menu-bar
-/// button, found in the app's status bar window. Returns false when it cannot be found; the caller then opens the
-/// setup guide window instead.
+/// The menu-bar icon, as macOS shows it now: Settings… clicks it only when it is really there (QA 2026-10-08 W2:
+/// a full menu bar or the notch hides it, and a click on an open panel would close it).
 @MainActor enum MenuBarPanelOpener {
-    static func open() -> Bool {
-        for window in NSApp.windows where String(describing: type(of: window)).contains("StatusBarWindow") {
-            if let button = firstButton(in: window.contentView) {
-                button.performClick(nil)
-                return true
-            }
+    static func statusWindow() -> NSWindow? {
+        NSApp.windows.first { String(describing: type(of: $0)).contains("StatusBarWindow") }
+    }
+
+    static func statusItemFacts() -> SettingsRoute.StatusItem? {
+        guard let window = statusWindow(), firstButton(in: window.contentView) != nil else { return nil }
+        let frame = window.frame
+        let screen = NSScreen.screens.first { $0.frame.intersects(frame) }
+        var underNotch = false
+        if let screen, screen.safeAreaInsets.top > 0, let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
+            underNotch = frame.maxX > left.maxX && frame.minX < right.minX
         }
-        return false
+        return SettingsRoute.StatusItem(visible: window.isVisible && window.occlusionState.contains(.visible),
+                                        onScreen: screen != nil && frame.width > 0, underNotch: underNotch)
+    }
+
+    static func clickStatusItem() -> Bool {
+        guard let button = firstButton(in: statusWindow()?.contentView) else { return false }
+        button.performClick(nil)
+        return true
     }
 
     private static func firstButton(in view: NSView?) -> NSButton? {
@@ -685,6 +739,68 @@ struct FinishSetupCard: View {
         if let button = view as? NSButton { return button }
         for sub in view.subviews { if let found = firstButton(in: sub) { return found } }
         return nil
+    }
+}
+
+/// A real Settings window: the menu-bar panel itself, hosted in an ordinary window and scrolled to its settings, so
+/// "Show in menu bar only", the Jev key and every other setting are reachable with the menu-bar icon hidden.
+@MainActor
+final class SettingsWindowPresenter: ObservableObject {
+    private var controller: NSWindowController?
+
+    func show(model: ControllerModel, openActivity: @escaping (ActivitySection?) -> Void) {
+        model.panelScrollTarget = "settings"
+        if controller == nil {
+            let host = NSHostingController(rootView: ControlPanel(model: model, openActivity: openActivity, hostedInWindow: true))
+            let window = NSWindow(contentViewController: host)
+            window.title = "COS Control Settings"
+            window.styleMask = [.titled, .closable, .miniaturizable]
+            window.isReleasedWhenClosed = false
+            window.center()
+            controller = NSWindowController(window: window)
+        }
+        controller?.showWindow(nil)
+        controller?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+/// Settings… from the Dock menu, ⌘, and the pet: the open panel scrolls, a visible icon opens the panel, anything
+/// else gets the Settings window.
+@MainActor enum SettingsOpener {
+    static func open(model: ControllerModel, window: SettingsWindowPresenter, openActivity: @escaping (ActivitySection?) -> Void) {
+        let target = SettingsRoute.decide(panelOpen: model.panelVisible, item: MenuBarPanelOpener.statusItemFacts())
+        onboardingLog.info("settings opened target=\(String(describing: target), privacy: .public)")
+        switch target {
+        case .scrollOpenPanel: model.panelScrollTarget = "settings"
+        case .clickStatusItem:
+            model.panelScrollTarget = "settings"
+            if !MenuBarPanelOpener.clickStatusItem() { window.show(model: model, openActivity: openActivity) }
+        case .window: window.show(model: model, openActivity: openActivity)
+        }
+    }
+}
+
+/// F3 for upgraders: one line, once, saying COS Control is in the Dock now, with Menu bar only one click away.
+struct DockNoticeLine: View {
+    @ObservedObject var model: ControllerModel
+    @State private var seen = UserDefaults.standard.bool(forKey: DockPresence.noticeSeenKey)
+
+    var body: some View {
+        if !seen, DockPresence.showUpgradeNotice(stored: UserDefaults.standard.string(forKey: DockPresence.modeKey),
+                                                  seen: seen, firstRun: model.status.needsFirstRun || !model.statusReadOnce) {
+            HStack(spacing: 10) {
+                Text("COS Control is in the Dock now.").font(COSType.body(11.5)).foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                Button("Menu bar only") { model.setShowInDock(false); dismiss() }.buttonStyle(COSTextButtonStyle())
+                Button("Keep") { model.setShowInDock(true); dismiss() }.buttonStyle(COSTextButtonStyle())
+            }
+        }
+    }
+
+    private func dismiss() {
+        UserDefaults.standard.set(true, forKey: DockPresence.noticeSeenKey)
+        seen = true
     }
 }
 

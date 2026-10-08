@@ -1,6 +1,7 @@
 # COS Control for macOS
 
-COS Control is the native menu bar controller for the local COS Glasses server.
+COS Control is the native Mac app (in the Dock and the menu bar; Settings has Show in menu bar only) for the local
+COS Glasses server.
 It starts, stops, updates, diagnoses, and safely rolls back the public
 `@gotcos/glasses-server` runtime without replacing the existing CLI workflow.
 
@@ -13,16 +14,23 @@ It starts, stops, updates, diagnoses, and safely rolls back the public
 New builds bundle Node/npm privately. A working system Node installation remains
 supported, but customers no longer need to install it. Setup downloads the COS
 server from npm and verifies it through the existing managed lifecycle. An
-internet connection and a signed-in supported AI provider are still required.
+internet connection and one installed AI command line are required to start; the Welcome
+window's Connect your AI step then signs each one in (Sign in opens Terminal on the exact
+command, or Skip for now). Local voice also needs whisper.cpp (`brew install whisper-cpp`),
+which COS does not bundle.
 
-## First run (0.5.265 candidate, not yet published)
+## First run and the setup guide (onboarding P1, unreleased)
 
 The app opens a persistent welcome window only after proving there is no existing
 service, owner conflict, or unfinished transaction. Get started prepares Node if
 needed and installs/starts COS in the app. Closing the window does not cancel
-setup; the menu-bar panel offers Get started again. Existing installations keep
-their current controls. Notification permission is deferred until a live meeting
-needs alerts. Voice model provisioning remains separate.
+setup; the menu-bar panel offers Get started again. Before Get started, Connect your AI
+shows each AI's command line (installed, signed in) from `cos-control-helper provider-status`.
+After it, the same window is the setup guide: every AI, Ollama, local voice (the Whisper
+models download in the app, with progress and Cancel) and the settings that go with them,
+each skippable and resumable. "Finish setup · N of M" sits at the top of the panel and
+Activity until every row is done or skipped, or Hide setup guide. Notification permission
+is deferred until a live meeting needs alerts.
 
 New users start with the bundled Cloud Puff beside the session status
 ledger. It requires no first-launch sprite download. Existing pet selections are preserved;
@@ -57,8 +65,8 @@ first installation may require the documented macOS Open Anyway flow. Ad-hoc
 signing is reserved for throwaway QA on a machine without a stable identity.
 
 Entitlements (0.5.267): the app and its main executable carry only
-`com.apple.security.automation.apple-events` (Resources/COSControl.entitlements; the jump-to-session reopen and
-Guided Setup's Terminal script), with `NSAppleEventsUsageDescription` in Info.plist. The helper carries none. Bundled
+`com.apple.security.automation.apple-events` (Resources/COSControl.entitlements; the jump-to-session reopen, and the
+Terminal scripts for Sign in, Run in Terminal and Guided Setup), with `NSAppleEventsUsageDescription` in Info.plist. The helper carries none. Bundled
 node carries `allow-jit` and `disable-library-validation` (Resources/Node.entitlements): it already runs the
 server's scripts from the user's install, so library validation adds little there, and npm native add-ons
 (sherpa-onnx speaker ID, fsevents) are ad-hoc signed and cannot load without it. `Tests/check-release-entitlements.py`

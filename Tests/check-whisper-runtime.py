@@ -34,12 +34,17 @@ with tempfile.TemporaryDirectory(prefix='cos-whisper-check-',dir='/tmp') as scra
         config=home/'.cos-glasses/.env';config.parent.mkdir(exist_ok=True)
         settings='COS_WHISPER_TRANSCRIPTION_TIER=max\nCOS_WHISPER_PREVIEW_MODEL=turbo\nCOS_WHISPER_COMMIT_MODEL=large-v3\nOTHER=kept\n'
         config.write_text(settings);config.chmod(0o600)
+        # Recover an interrupted older onboarding helper's snapshot before preparation.
+        snapshot = runtime.parent/'voice-setup-env-snapshot.json'
+        snapshot.write_text(json.dumps({'values':dict(line.split('=',1) for line in settings.splitlines() if line.startswith('COS_WHISPER_'))}))
+        config.write_text(settings.replace('=max','=balanced').replace('=large-v3','=turbo'))
         env['COS_CONTROL_TEST_API_PORT']='49197'
         result=subprocess.run([str(resources/'cos-control-helper'),'voice-setup','auto'],env=env,text=True,capture_output=True,timeout=240)
         assert result.returncode==0,result.stdout+result.stderr
         receipt=json.loads((runtime.parent/'voice-benchmark.json').read_text())
         assert receipt['preparedTier']=='max' and receipt['setupComplete'] and receipt['realTimeFactor']>0
-        assert config.read_text()==settings
+        assert config.read_text()==settings and not snapshot.exists()
+        print('PASS: interrupted older setup snapshot restores Max before preparation')
         kept=subprocess.run([str(resources/'cos-control-helper'),'voice-apply-recommendation'],env=env,text=True,capture_output=True,timeout=30)
         assert kept.returncode==0 and 'kept' in kept.stdout,kept.stdout+kept.stderr
         assert config.read_text()==settings

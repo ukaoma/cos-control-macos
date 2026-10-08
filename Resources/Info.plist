@@ -21,15 +21,15 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.5.270</string>
+	<string>0.5.272</string>
 	<key>CFBundleVersion</key>
-	<string>323</string>
+	<string>325</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>COS Control brings your Claude, Cursor or Terminal session to the front when you jump to it.</string>
+	<string>COS Control brings your Claude, Cursor or Terminal session to the front when you jump to it, and opens Terminal on the exact command when you choose Sign in or Run in Terminal during setup.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>UTExportedTypeDeclarations</key>

@@ -125,16 +125,19 @@ let allIn = data(row("claude", path: "/opt/homebrew/bin/claude", version: "2.1.2
             m.providerGuide = await fixtureGuide(answer, apps: apps)
             let state = SetupGuideState(defaults: UserDefaults(suiteName: "cos.setup-render.\(UUID().uuidString)")!)
             state.voice = voice
-            for id in skipped { state.skip(id) }
+            // Provider skips live in ProviderGuide, the one store (QA 2026-10-08 W7).
+            for id in skipped {
+                if let provider = AIProvider(rawValue: id.rawValue) { m.providerGuide.skip(provider) } else { state.skip(id) }
+            }
             m.setupGuide = state
             m.permissionGuide.onboardingDone = true
             configure(m)
             return m
         }
-        var needsWhisper = VoiceFacts(); needsWhisper.brew = true; needsWhisper.freeBytes = 412_000_000_000
+        var needsWhisper = VoiceFacts(); needsWhisper.runtimeDownloadAvailable = true; needsWhisper.setupAvailable = true; needsWhisper.freeBytes = 412_000_000_000
         var download = VoiceFacts(); download.whisperCli = true; download.whisperServer = true; download.brew = true; download.setupAvailable = true
         download.missingBytes = ["balanced": 5_233_688_222, "max": 4_746_074_021]; download.enoughDisk = ["balanced": true, "max": true]; download.freeBytes = 412_000_000_000
-        download.terminalCommand = ["balanced": "PATH='/Users/you/Library/Application Support/COS Control/runtime/node/22.20.0/bin':\"$PATH\" '/Users/you/Library/Application Support/COS Control/runtime/node/22.20.0/bin/npx' --yes @gotcos/glasses-server@latest --setup-transcription --transcription-tier balanced --prepare-only"]
+        download.terminalCommand = ["balanced": "'/Users/you/Library/Application Support/COS Control/bin/cos-control-helper' voice-setup balanced"]
         var ready = download; ready.missingBytes = ["balanced": 0, "max": 0]
         let early = await readyModel(allMissing, voice: needsWhisper)
         try render(FinishSetupCard(model: early, provider: early.providerGuide, guide: early.setupGuide, permissions: early.permissionGuide) {}.padding(16).background(COSPalette.panel),
@@ -173,6 +176,26 @@ let allIn = data(row("claude", path: "/opt/homebrew/bin/claude", version: "2.1.2
         open.providerGuide.panelRouteActive = true
         try render(ScrollView { PanelConnectAIRow(guide: open.providerGuide, model: open).padding(16) }.background(COSPalette.panel),
                    width: panelWidth + 32, height: 2100, name: "panel-setup-guide", out: out)
+        // QA fixes: the Get Ollama row, the Finish setup card while its facts load, and the voice row for a Max user.
+        let ollamaMissing = await readyModel(allMissing, voice: download)
+        let ollamaRow = SetupGuideRules.rows(ollamaMissing.setupFacts(provider: ollamaMissing.providerGuide, guide: ollamaMissing.setupGuide), skipped: []).first { $0.id == .ollama }!
+        try render(SetupRowView(model: ollamaMissing, guide: ollamaMissing.setupGuide, row: ollamaRow).padding(.horizontal, 16).background(COSPalette.card),
+                   width: panelWidth + 32, height: 150, name: "setup-row-get-ollama", out: out)
+        let loading = ControllerModel(startBackgroundWork: false)
+        loading.status.running = true
+        loading.providerGuide = ProviderGuide(home: "/Users/you", defaults: UserDefaults(suiteName: "cos.render.loading.\(UUID().uuidString)")!) { _ in
+            try await Task.sleep(for: .seconds(60)); return Data()
+        }
+        loading.setupGuide = SetupGuideState(defaults: UserDefaults(suiteName: "cos.render.loading2.\(UUID().uuidString)")!)
+        try render(VStack(alignment: .leading, spacing: 8) {
+            FinishSetupCard(model: loading, provider: loading.providerGuide, guide: loading.setupGuide, permissions: loading.permissionGuide) {}
+            Text("(while the provider report and voice facts load, no card and no Next: line)").font(COSType.body(11)).foregroundStyle(.secondary)
+        }.padding(16).background(COSPalette.panel), width: panelWidth + 32, height: 80, name: "finish-card-loading", out: out)
+        let maxUser = await readyModel(allIn, voice: download) { m in m.status.transcriptionRequestedTier = "max" }
+        maxUser.setupGuide.adoptServerTier("max")
+        let maxRow = SetupGuideRules.voice(maxUser.setupFacts(provider: maxUser.providerGuide, guide: maxUser.setupGuide), skipped: false)
+        try render(SetupRowView(model: maxUser, guide: maxUser.setupGuide, row: maxRow).padding(.horizontal, 16).background(COSPalette.card),
+                   width: panelWidth + 32, height: 330, name: "voice-max-user", out: out)
         // The Dock menu is an NSMenu: it cannot be drawn offscreen, so its real items are written down instead.
         let dock = COSAppDelegate.makeDockMenu(target: NSObject())
         try (["Dock menu (COSAppDelegate.makeDockMenu, the menu macOS shows on a right-click of the Dock icon):"] + dock.items.map { "  " + $0.title }
