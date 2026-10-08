@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
-"""0.5.262 mutation lane for the Work follows and evidence guards. Run by hand, never by a gate (each mutant compiles).
+"""Mutation lane for the Work follows and evidence guards (next release). Run by hand, never by a gate.
 
-    python3 Tests/mutate-work-follows.py <worktree> <scratch dir> [--workers N] [name ...]
+    python3 Tests/mutate-work-follows.py <worktree> <scratch dir> [--workers 1|2] [name ...]
 
-Proves the UNMUTATED copy green first (Tests/run-work-progress.sh, and the compiled helper's
-Tests/work-progress-helper-checks.py), then runs each mutant in its own copy: the target text must appear exactly once,
-and the mutant must make a check fail. A mutant that lands and survives is a finding. Swift mutants run the Work tracking
-checks; helper mutants compile the helper and run its self-test-work and the loopback helper checks.
+RESOURCE SAFETY (2026-10-07, two kernel panics on a 96 GB Mac): one compile of Sources + Tests/WorkProgressChecks.swift
+peaked near 39 GB before that file was split (now about 3 GB), and this lane once ran 10 at once. So:
+- one worker by default, never more than 2;
+- every compile goes through Tests/compile-guard.sh (one guarded compile machine-wide, a free-memory floor, and a
+  watchdog that kills a runaway swift-frontend); a guard stop (exit 137) or a refused start (75) stops the whole lane;
+- every step has a timeout.
+
+Verdicts. The unmutated copy must be green first (Swift lane and helper lane), or nothing runs.
+- killed:   the mutant compiled, landed exactly once, and a NAMED check failed (a "check failed at line N" line, a
+            Precondition with its message, a helper self-test failure, or a Python AssertionError with its line).
+- SURVIVED: it compiled, landed, and every check passed. A finding.
+- INVALID:  the target text was not found exactly once, or the mutant did not compile. Never counted as killed.
+- UNNAMED:  it failed with no named check (a crash, a timeout). Reported, never counted as killed.
 """
-import os, pathlib, shutil, subprocess, sys
+import os, pathlib, re, shutil, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
-S, T, H = "Sources/WorkProgress.swift", "Sources/WorkProgressTracker.swift", "Sources/WorkHandoffStore.swift"
-HELPER = "HelperSources/main.swift"
 MUTANTS = [
     ("only fact counts (clauses)", S, 'verdict == "met" && kind == "fact" && evidence != nil && (confidence >= threshold || deterministic)', 'verdict == "met" && evidence != nil && (confidence >= threshold || deterministic)'),
     ("title bar 0.90", S, "clause.confidence >= Self.titleBar,", "clause.confidence >= 0.80,"),
@@ -60,53 +67,96 @@ MUTANTS = [
      "let data = try readBoundedStdin(4_096)\n        guard let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any], Self.evidenceCheckBodyValid(body)"),
 ]
 
+GUARD_STOP = 137
+STEP_TIMEOUT = 2_400   # a guarded compile can wait up to 30 min for the machine-wide lock
+SWIFT_FLAGS = ["-target", "arm64-apple-macosx14.0", "-swift-version", "6", "-strict-concurrency=complete"]
+NAMED = re.compile(r"(check failed at line \d+.*|Precondition failed.*\S.*|Fatal error: .*check failed.*|"
+                   r"self-test failed.*|AssertionError.*)")
+
+class Stop(Exception): pass
+
+def guarded(work, argv):
+    """One compile through the guard. Returns (ok, log). Raises Stop when the guard stopped or refused it."""
+    try:
+        r = subprocess.run(["zsh", str(work / "Tests/compile-guard.sh")] + argv, cwd=work, capture_output=True, text=True, timeout=STEP_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise Stop("a guarded compile ran past %d s" % STEP_TIMEOUT)
+    if r.returncode in (GUARD_STOP, 75) and "compile-guard:" in r.stderr:
+        raise Stop(r.stderr.strip().splitlines()[-1])
+    return r.returncode == 0, r.stdout + r.stderr
+
+def run_step(argv, **kw):
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=600, **kw)
+        return r.returncode, r.stdout + r.stderr
+    except subprocess.TimeoutExpired as e:
+        return None, "TIMEOUT after 600 s\n" + str(e.stdout or "")
+
 def lane(work, helper):
+    """(compiled, passed, log)."""
     if not helper:
-        r = subprocess.run(["zsh", "Tests/run-work-progress.sh"], cwd=work, capture_output=True, text=True)
-        return r.returncode == 0, r.stdout + r.stderr
+        sources = sorted(str(p) for p in (work / "Sources").glob("*.swift") if p.name != "COSControlApp.swift")
+        binary = work / "work-progress-checks"
+        ok, log = guarded(work, ["swiftc"] + SWIFT_FLAGS + ["-parse-as-library"] + sources + [str(work / "Tests/WorkProgressChecks.swift"),
+                         "-framework", "SwiftUI", "-framework", "AppKit", "-framework", "ServiceManagement", "-o", str(binary)])
+        if not ok: return False, False, log
+        home = work / "home"; home.mkdir(exist_ok=True)
+        code, out = run_step([str(binary)], env=dict(os.environ, COS_CONTROL_TEST_HOME=str(home)))
+        return True, code == 0, out
     binary = work / "cos-control-helper"
-    r = subprocess.run(["swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6", "-strict-concurrency=complete",
-                        str(work / HELPER), "-framework", "Security", "-framework", "AppKit", "-o", str(binary)], capture_output=True, text=True)
-    if r.returncode != 0: return False, "helper did not compile\n" + r.stderr
+    ok, log = guarded(work, ["swiftc"] + SWIFT_FLAGS + [str(work / HELPER), "-framework", "Security", "-framework", "AppKit", "-o", str(binary)])
+    if not ok: return False, False, log
     home = work / "home"; home.mkdir(exist_ok=True)
-    st = subprocess.run([str(binary), "self-test-work"], env=dict(os.environ, COS_CONTROL_TEST_HOME=str(home)), capture_output=True, text=True)
-    py = subprocess.run(["python3", str(work / "Tests/work-progress-helper-checks.py"), str(binary)], capture_output=True, text=True)
-    ok = '"ok":true' in st.stdout and py.returncode == 0
-    return ok, st.stdout + py.stdout + py.stderr
+    c1, st = run_step([str(binary), "self-test-work"], env=dict(os.environ, COS_CONTROL_TEST_HOME=str(home)))
+    c2, py = run_step(["python3", str(work / "Tests/work-progress-helper-checks.py"), str(binary)])
+    if '"ok":true' not in st and "self-test failed" not in st: st += "\n(helper self-test-work did not report ok)"
+    return True, c1 == 0 and '"ok":true' in st and c2 == 0, st + py
 
 def run(src, scratch, mutant):
     name, path, old, new = mutant
     work = scratch / ("m-" + "".join(c if c.isalnum() else "-" for c in name))
     shutil.rmtree(work, ignore_errors=True)
-    shutil.copytree(src, work, ignore=shutil.ignore_patterns(".git"))
-    if path:
-        text = (work / path).read_text()
-        if text.count(old) != 1: return name, "BAD TARGET (found %d times)" % text.count(old)
-        (work / path).write_text(text.replace(old, new))
-    ok, log = lane(work, path == HELPER)
-    (scratch / (work.name + ".log")).write_text(log)
-    shutil.rmtree(work, ignore_errors=True)
-    lines = [l for l in log.splitlines() if "check failed" in l or "Precondition failed" in l or "error:" in l or "AssertionError" in l or "FAILED" in l]
-    return name, "passed" if ok else "failed: " + (lines[0].strip()[:200] if lines else "non-zero exit")
+    shutil.copytree(src, work, ignore=shutil.ignore_patterns(".git", "build", "*.app"))
+    try:
+        if old is not None:
+            text = (work / path).read_text()
+            if text.count(old) != 1: return name, "INVALID", "target found %d times" % text.count(old)
+            (work / path).write_text(text.replace(old, new))
+        compiled, passed, log = lane(work, path == HELPER)
+        (scratch / (work.name + ".log")).write_text(log)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    if not compiled: return name, "INVALID", "did not compile: " + next((l.strip()[:160] for l in log.splitlines() if "error:" in l), "no error line")
+    if passed: return name, "SURVIVED", ""
+    named = [m.group(0).strip()[:200] for m in map(NAMED.search, log.splitlines()) if m]
+    if not named: return name, "UNNAMED", (log.strip().splitlines() or ["no output"])[-1][:200]
+    return name, "killed", named[0]
 
 def main():
     args = sys.argv[1:]
-    workers = 8
+    workers = 1
     if "--workers" in args:
         i = args.index("--workers"); workers = int(args[i + 1]); del args[i:i + 2]
+    if not 1 <= workers <= 2: sys.exit("--workers is 1 or 2: each worker is a full COS Control compile (two panics, 2026-10-07)")
     src, scratch = pathlib.Path(args[0]), pathlib.Path(args[1])
+    if not (src / "Tests/compile-guard.sh").exists(): sys.exit("Tests/compile-guard.sh is missing: refusing to compile unguarded")
     scratch.mkdir(parents=True, exist_ok=True)
     chosen = [m for m in MUTANTS if not args[2:] or m[0] in args[2:]]
-    for base in (("baseline (Swift)", None, None, None), ("baseline (helper)", HELPER, "static func evidenceCheckBodyValid(", "static func evidenceCheckBodyValid(")):
-        name, verdict = run(src, scratch, base)
-        print(name, verdict, flush=True)
-        if verdict != "passed": sys.exit("the unmutated copy is not green; no mutant result means anything")
-    survivors = 0
-    with ThreadPoolExecutor(workers) as pool:
-        for name, verdict in pool.map(lambda m: run(src, scratch, m), chosen):
-            if verdict == "passed": survivors += 1
-            print(("SURVIVED " if verdict == "passed" else "killed   ") + name + " :: " + verdict, flush=True)
-    print(f"{len(chosen) - survivors} of {len(chosen)} killed, {survivors} survived")
-    sys.exit(1 if survivors else 0)
+    unknown = set(args[2:]) - {m[0] for m in MUTANTS}
+    if unknown: sys.exit("unknown mutant: " + ", ".join(sorted(unknown)))
+    try:
+        for base in (("baseline (Swift)", S, None, None), ("baseline (helper)", HELPER, None, None)):
+            name, verdict, why = run(src, scratch, base)
+            print(name, "green" if verdict == "SURVIVED" else verdict + " " + why, flush=True)
+            if verdict != "SURVIVED": sys.exit("the unmutated copy is not green; no mutant result means anything")
+        tally = {"killed": 0, "SURVIVED": 0, "INVALID": 0, "UNNAMED": 0}
+        with ThreadPoolExecutor(workers) as pool:
+            for name, verdict, why in pool.map(lambda m: run(src, scratch, m), chosen):
+                tally[verdict] += 1
+                print("%-9s %s :: %s" % (verdict, name, why), flush=True)
+    except Stop as stop:
+        sys.exit("STOPPED by the compile guard: %s. Nothing was retried." % stop)
+    print("%(killed)d killed, %(SURVIVED)d survived, %(INVALID)d invalid, %(UNNAMED)d unnamed" % tally + " of %d" % len(chosen))
+    sys.exit(1 if tally["SURVIVED"] or tally["INVALID"] or tally["UNNAMED"] else 0)
 
 main()
