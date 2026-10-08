@@ -7,7 +7,10 @@ refused without a prompt. A signed build passes only when:
   - the bundle and its main executable carry exactly com.apple.security.automation.apple-events = true;
   - Info.plist names why (NSAppleEventsUsageDescription, non-empty);
   - the helper carries no entitlements at all;
-  - bundled node, when present, carries only com.apple.security.cs.allow-jit.
+  - bundled node, when present, carries exactly allow-jit and disable-library-validation. 0.5.266's node had only
+    allow-jit, so library validation refused every npm native addon (sherpa-onnx.node, fsevents.node: ad-hoc signed,
+    no team): measured 2026-10-07, the shipped node failed to dlopen both and a re-signed copy with
+    disable-library-validation loaded both.
 --selftest builds throwaway bundles from a copy of a binary (ad-hoc signed) and proves each rule can fail.
 """
 import plistlib
@@ -18,7 +21,7 @@ from pathlib import Path
 
 APPLE_EVENTS = "com.apple.security.automation.apple-events"
 APP_WANT = {APPLE_EVENTS: True}
-NODE_WANT = {"com.apple.security.cs.allow-jit": True}
+NODE_WANT = {"com.apple.security.cs.allow-jit": True, "com.apple.security.cs.disable-library-validation": True}
 
 
 def entitlements(path: Path) -> dict:
@@ -107,6 +110,8 @@ def selftest(scratch: Path, binary: Path) -> int:
             bad.append(f"{name}: expected {'a failure' if want else 'a pass'}")
     if not ents.exists() or plistlib.loads(ents.read_bytes()) != APP_WANT:
         bad.append("Resources/COSControl.entitlements is not exactly the Apple Events entitlement")
+    if plistlib.loads((repo / "Resources/Node.entitlements").read_bytes()) != NODE_WANT:
+        bad.append("Resources/Node.entitlements is not exactly allow-jit + disable-library-validation")
     for line in bad:
         print("FAIL: release entitlements self-test:", line, file=sys.stderr)
     if not bad:
