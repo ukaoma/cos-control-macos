@@ -495,6 +495,8 @@ final class ControllerModel: ObservableObject {
             NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: path), configuration: configuration, completionHandler: nil)
         }
         guide.startDragFlow = { [weak self] request in self?.permissionDragFlow.start(request) }
+        // The 0.5.267 repair (tccutil reset for this bundle id, then the pane, which opens the drag flow).
+        guide.resetOwnAccessibility = { [weak self] in self?.resetAccessibilityAndAddAgain() }
         permissionDragFlow.guide = guide
         return guide
     }
@@ -4359,6 +4361,9 @@ final class ControllerModel: ObservableObject {
             petNotice = "Could not open Claude."
             return
         }
+        accessibilityResume = { [weak self] in
+            Task { await self?.revealClaudeSession(appURL: appURL, bundleId: bundleId, sessionName: sessionName) }
+        }
         guard ensureAccessibilityTrust() else { return }
         enableClaudeSidebarAccess(of: running)
         raiseFirstWindow(of: running)
@@ -4404,18 +4409,31 @@ final class ControllerModel: ObservableObject {
     /// often does not either (0.5.267: the Developer ID switch re-keyed every
     /// grant). The repair that works is removing the entry and adding it again,
     /// which Settings > Session pet does in one click.
+    ///
+    /// Permission guide: in the app, the gate does not raise the system prompt; it hands the row to the guide, whose
+    /// drag flow opens the pane with the floating bar, and the jump that asked (`accessibilityResume`, set by the caller
+    /// just before the gate) runs again on its own once the grant is confirmed.
     private func ensureAccessibilityTrust() -> Bool {
         var trusted = AXIsProcessTrusted()
-        if !trusted {
+        if !trusted && !permissionGuideLive {
             _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
             trusted = AXIsProcessTrusted()
         }
         petJumpTrusted = trusted
         if !trusted {
-            petNotice = "Turn on COS Control in the Accessibility list that just opened. \(Self.accessibilityRepairHint)"
+            petNotice = "Drag COS Control into the Accessibility list that just opened. \(Self.accessibilityRepairHint)"
             openAccessibilitySettings()
+        } else {
+            accessibilityResume = nil
         }
         return trusted
+    }
+
+    /// The jump waiting on Accessibility, run again when the guide sees the grant.
+    private var accessibilityResume: (@MainActor () -> Void)?
+    /// The guide's live probes and drag flow exist only in the app, with background work on.
+    private var permissionGuideLive: Bool {
+        backgroundWorkEnabled && Bundle.main.bundleURL.pathExtension == "app" && Bundle.main.bundleIdentifier != nil
     }
 
     /// One sentence for every place a stale Accessibility grant shows up.
@@ -4453,7 +4471,14 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    /// Every "open the Accessibility pane" goes through the permission guide in the app: the exact pane plus the
+    /// floating bar holding this copy's icon. A bare link only where the guide cannot run, or when already trusted.
     private func openAccessibilitySettings() {
+        if permissionGuideLive {
+            let resume = accessibilityResume
+            accessibilityResume = nil
+            if !permissionGuide.need(.accessibility, for: "Jump to your session", resume: resume) { return }
+        }
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
         NSWorkspace.shared.open(url)
     }
@@ -4652,6 +4677,9 @@ final class ControllerModel: ObservableObject {
             }
         }
         if let running = runningCursor() {
+            accessibilityResume = { [weak self] in
+                Task { await self?.revealCursorAgentsWindow(appURL: appURL, bundleId: bundleId, agentTab: agentTab, clashHint: clashHint) }
+            }
             guard ensureAccessibilityTrust() else { return }
             // Window EXISTENCE and activation success are different facts.
             // raiseCursorAgentsWindow returns activate()'s result, and

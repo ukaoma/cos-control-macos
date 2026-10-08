@@ -340,8 +340,19 @@ struct PermissionGuideChecks {
         updated.resetOwnAccessibility = { resets += 1 }
         updated.startDragFlow = { flows.append($0) }
         updated.perform(row!)
-        check(resets == 1 && flows.count == 1 && flows.first?.pane == .accessibility, "reset and add again", "resets the own grant, then the drag flow on a clean list")
+        check(resets == 1 && flows.isEmpty, "reset and add again", "the app's own reset runs (its pane opening starts the flow), once")
         check(defaults.object(forKey: PermissionGuide.lastTrustedBuildKey) == nil, "reset and add again", "the old build is forgotten")
+
+        // Without the app's reset: the probe resets this bundle id, then the drag flow opens on a clean list.
+        let resetIDs = Box<[String]>([])
+        var probes2 = PermissionProbes.inert
+        probes2.resetAccessibility = { id in resetIDs.value.append(id); return true }
+        let bare = guide(probes2)
+        var bareFlows: [PermissionDragRequest] = []
+        bare.startDragFlow = { bareFlows.append($0) }
+        bare.resetAndAddAgain(feature: "Jump to your session")
+        for _ in 0..<50 where bareFlows.isEmpty { try? await Task.sleep(for: .milliseconds(20)) }
+        check(resetIDs.value == ["com.gotcos.control"] && bareFlows.count == 1 && bareFlows.first?.feature == "Jump to your session", "reset and add again", "resets only this bundle id, then the flow: \(resetIDs.value) \(bareFlows)")
     }
 
     static func staleReset() async {

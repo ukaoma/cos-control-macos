@@ -41,6 +41,19 @@ work = body(model, "    private func postWorkNotice(", "    func openWorkItem(")
 pin('for: "Work updates"' in work and "guard !workNotificationPermissionChecked else { return }" in work, "work notifications hook", "the first Work notice checks Notifications once per launch")
 pin(work.index("meetingAudioNotifier.postWork(notice)") < work.index("workNotificationPermissionChecked = true"), "work notifications hook", "the notice is posted first; the check never delays it")
 
+# The pet jump: the gate hands the row to the guide, and the jump that asked runs again after the grant.
+opener = body(model, "    private func openAccessibilitySettings() {", "\n    }\n")
+pin('permissionGuide.need(.accessibility, for: "Jump to your session", resume: resume)' in opener, "pet jump hook", "opening the Accessibility pane is the guide's drag flow")
+pin("let resume = accessibilityResume" in opener and "accessibilityResume = nil" in opener, "pet jump hook", "the waiting jump is handed to the guide once")
+pin(opener.index("if permissionGuideLive {") < opener.index("NSWorkspace.shared.open(url)"), "pet jump hook", "a bare link only where the guide cannot run")
+for head, call in (("    private func revealClaudeSession(", "await self?.revealClaudeSession("), ("    private func revealCursorAgentsWindow(", "await self?.revealCursorAgentsWindow(")):
+    fn = model[model.index(head):]
+    fn = fn[:fn.index("guard ensureAccessibilityTrust() else { return }") + 10]
+    pin("accessibilityResume = { [weak self] in" in fn and call in fn, "pet jump resume", f"{head.strip()} sets its resume before the gate")
+gate = body(model, "    private func ensureAccessibilityTrust() -> Bool {", "\n    }\n")
+pin("if !trusted && !permissionGuideLive {" in gate, "pet jump hook", "in the app the guide asks, not a second system prompt")
+pin('guide.resetOwnAccessibility = { [weak self] in self?.resetAccessibilityAndAddAgain() }' in make, "repair wiring", "Reset and add again reuses the 0.5.267 repair")
+
 # Entry points.
 main_panel = body(views, "    private var mainPanel: some View {", "    private var activityLauncher")
 pin("PanelPermissionsRow(guide: model.permissionGuide)" in main_panel, "panel row", "the panel has a Permissions row")

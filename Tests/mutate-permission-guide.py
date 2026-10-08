@@ -43,6 +43,7 @@ MUTANTS = [
     ("drag source hardcoded", M, "        let source = PermissionDragSource(path: appPath, name: appName)\n        var row = PermissionRow(\n            id: \"accessibility\"",
      "        let source = PermissionDragSource(path: \"/Applications/COS Control.app\", name: appName)\n        var row = PermissionRow(\n            id: \"accessibility\"", "[drag source]", "logic"),
     # Wiring.
+    ("jump resume dropped", C, "            let resume = accessibilityResume\n            accessibilityResume = nil\n", "            let resume: (@MainActor () -> Void)? = nil\n", "[pet jump hook]", "pins"),
     ("no panel row", V, "                PanelPermissionsRow(guide: model.permissionGuide)\n", "", "[panel row]", "pins"),
     ("live probes in checks", C, "probes: inApp ? .live() : .inert", "probes: .live()", "[live probes]", "pins"),
     ("meeting hook gone", C, '                permissionGuide.need(.notifications, for: "Meeting alerts", interactive: false)\n', "", "[meeting alerts hook]", "pins"),

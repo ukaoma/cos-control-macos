@@ -791,14 +791,18 @@ final class PermissionGuide: ObservableObject {
         let request = PermissionDragRequest(rowID: "accessibility", pane: .accessibility, source: source,
                                             feature: feature ?? waitingFeature["accessibility"])
         lastDragRequest = request
+        waitingFeature["accessibility"] = request.feature ?? waitingFeature["accessibility"]
+        defaults.removeObject(forKey: Self.lastTrustedBuildKey)
         if let reset = resetOwnAccessibility {
+            // The app's reset ends by opening the pane, which comes back here as a need and starts the flow.
             reset()
         } else {
             let id = bundleID
-            Task { _ = await probes.resetAccessibility(id) }
+            Task {
+                _ = await probes.resetAccessibility(id)
+                startDragFlow?(request)
+            }
         }
-        defaults.removeObject(forKey: Self.lastTrustedBuildKey)
-        startDragFlow?(request)
     }
 
     /// The drag flow saw the grant (Accessibility), or a fresh run of a stopped job worked (background jobs).
