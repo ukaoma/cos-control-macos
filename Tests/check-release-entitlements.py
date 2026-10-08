@@ -42,6 +42,9 @@ def problems(app: Path) -> list:
         got = entitlements(path)
         if got != APP_WANT:
             found.append(f"{label} entitlements are {got!r}, want exactly {APP_WANT!r}")
+    for label, path in (("the app bundle", app), ("the main executable", main), ("the helper", helper)):
+        if "com.apple.security.cs.disable-library-validation" in entitlements(path):
+            found.append(f"{label} must not disable library validation (only bundled node may)")
     got = entitlements(helper)
     if got:
         found.append(f"the helper carries entitlements it does not need: {got!r}")
@@ -70,7 +73,10 @@ def selftest(scratch: Path, binary: Path) -> int:
     ents = repo / "Resources/COSControl.entitlements"
     source_info = plistlib.loads((repo / "Resources/Info.plist").read_bytes())
 
-    def make(name, app_ents=True, exe_ents=True, helper_ents=False, usage=True) -> Path:
+    dlv = scratch / "app-with-dlv.entitlements"
+    dlv.write_bytes(plistlib.dumps({APPLE_EVENTS: True, "com.apple.security.cs.disable-library-validation": True}))
+
+    def make(name, app_ents=True, exe_ents=True, helper_ents=False, usage=True, app_dlv=False) -> Path:
         app = scratch / name / "COS Control.app"
         (app / "Contents/MacOS").mkdir(parents=True)
         (app / "Contents/Resources").mkdir(parents=True)
@@ -91,7 +97,11 @@ def selftest(scratch: Path, binary: Path) -> int:
 
         sign(helper, helper_ents)
         sign(main, exe_ents)
-        sign(app, app_ents)
+        if app_dlv:
+            subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--entitlements", str(dlv), str(app)],
+                           check=True, capture_output=True)
+        else:
+            sign(app, app_ents)
         return app
 
     cases = [
@@ -102,6 +112,7 @@ def selftest(scratch: Path, binary: Path) -> int:
         ("exe-only", {"app_ents": False, "exe_ents": True}, 1),
         ("helper-has-some", {"helper_ents": True}, 1),
         ("no-usage-string", {"usage": False}, 1),
+        ("app-disables-library-validation", {"app_dlv": True}, 1),
     ]
     bad = []
     for name, kwargs, want in cases:

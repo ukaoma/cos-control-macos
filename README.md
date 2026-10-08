@@ -56,6 +56,14 @@ requirement and Accessibility grants across updates. They are not Apple-notarize
 first installation may require the documented macOS Open Anyway flow. Ad-hoc
 signing is reserved for throwaway QA on a machine without a stable identity.
 
+Entitlements (0.5.267): the app and its main executable carry only
+`com.apple.security.automation.apple-events` (Resources/COSControl.entitlements; the jump-to-session reopen and
+Guided Setup's Terminal script), with `NSAppleEventsUsageDescription` in Info.plist. The helper carries none. Bundled
+node carries `allow-jit` and `disable-library-validation` (Resources/Node.entitlements): it already runs the
+server's scripts from the user's install, so library validation adds little there, and npm native add-ons
+(sherpa-onnx speaker ID, fsevents) are ad-hoc signed and cannot load without it. `Tests/check-release-entitlements.py`
+enforces all of this on the built app.
+
 `build-public-release.sh` requires an available Developer ID Application identity
 and a notarytool Keychain profile before compiling, and writes to `dist/public`.
 `build-release.sh` remains available for local QA with the stable local identity.
