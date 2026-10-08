@@ -698,8 +698,6 @@ struct WorkCardFollowState: Codable, Equatable, Sendable {
     /// The done reports (reply digests) this card was already moved on, at most 8: one report moves a card once
     /// (QA blocker: a card moved back outside Control was moved to QA again every pass).
     var actedDone: [String]? = nil
-    /// The COS move this card was found moved back from (on the board, outside Control). Paused for once, never again.
-    var backwardFrom: String? = nil
     /// The newest decision, for the card and the shadow week: "moved", "would move", "partial", "hold: truncated" …
     var lastDecision: String? = nil
     var paused: Bool { pausedAt != nil }

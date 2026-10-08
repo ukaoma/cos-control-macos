@@ -684,7 +684,8 @@ struct WorkBoardReads: Equatable, Sendable {
     /// moved it back somewhere Control did not see. The board is read again first, so a stale read never pauses a card.
     private func pauseIfMovedBack(_ task: TaskRow, at: Double) async {
         let workID = task.workSourceID, follows = store.follows
-        guard let latest = store.moves.latestCOSMove(workID: workID), let to = latest.line.to, follows.card(workID).backwardFrom != latest.id,
+        // Once per move: the pause below is logged, and a logged pause after the move is something Control saw.
+        guard let latest = store.moves.latestCOSMove(workID: workID), let to = latest.line.to,
               Self.movedBack(current: task.checked ? "complete" : task.workStage, cosMovedTo: to),
               !store.moves.seenSince(workID: workID, at: latest.line.at, except: latest.id) else { return }
         guard await board.readFresh(), let identity = WorkProgress.boardTask(workID),
@@ -692,7 +693,7 @@ struct WorkBoardReads: Equatable, Sendable {
         boardReadAt = now()
         let current = fresh.checked ? "complete" : fresh.workStage
         guard Self.movedBack(current: current, cosMovedTo: to) else { return }
-        follows.setCard(workID) { $0.backwardFrom = latest.id; $0.pending = nil }
+        follows.setCard(workID) { $0.pending = nil }
         if !follows.isPaused(workID) {
             store.pauseCard(workID: workID, stage: current, why: "You moved it back to \(WorkProgress.stageTitle(current)).", at: at)
         }

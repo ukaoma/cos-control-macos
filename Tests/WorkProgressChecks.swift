@@ -3285,6 +3285,7 @@ extension WorkProgressChecks {
         try await suite.f17()
         try await suite.f18()
         try await suite.f19()
+        try await suite.f20()
     }
 }
 
@@ -3885,6 +3886,27 @@ extension FollowSuite {
         fcheck(store.follows.follows(for: cardB).count == 1, "a partial read prunes nothing")
         store.pruneFollows(board: board.board.tasks(), complete: true)
         fcheck(store.follows.follows(for: cardB).isEmpty && store.follows.follows(for: cardA).count == 1, "the complete card's follow goes")
+    }
+
+
+    // 20. A no_evidence answer read the sessions (contract v2): its cursors are kept and the card is not asked again until
+    //     something changes; the refusals carry none, and the old cursor stays.
+    func f20() async throws {
+        let (store, transport, _, clock, tracker, _) = try setUp("no-evidence", shadow: true)
+        fcheck(store.confirmSessionCard(sessionID: s1, source: source(idA)))
+        let native = "0f3c9a2e-1111-4222-8333-944455556666"
+        await transport.setEvidence(["provider": .string("none"), "reason": .string("no_evidence"), "truncated": .bool(false),
+                                     "cursors": .array([.object(["provider": .string("claude"), "sessionId": .string(native), "cursor": .string("read-to-here")])])])
+        clock.offset = 60
+        await idleRead(transport, clock: clock)
+        await tracker.tick()
+        fcheck(store.follows.follows(for: cardA).first?.cursor == "read-to-here", "a no_evidence answer's cursor is kept")
+        fcheck(store.follows.card(cardA).lastDecision == "no answer: no_evidence")
+        await transport.setEvidence(["provider": .string("none"), "reason": .string("jev_breaker"), "retryAt": .string(WorkProgress.stamp(clock.now().timeIntervalSince1970 + 60))])
+        clock.offset += 601
+        await idleRead(transport, [("New reply.", nil)], clock: clock)
+        await tracker.tick()
+        fcheck(await transport.count("work-evidence-check") == 2 && store.follows.follows(for: cardA).first?.cursor == "read-to-here", "a refusal keeps the old cursor")
     }
 
 }
