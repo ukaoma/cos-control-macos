@@ -31,6 +31,8 @@ func fixtureGuide(_ facts: PermissionFacts, stale: [StaleBuild] = [], build: Int
     let guide = PermissionGuide(probes: fixtureProbes(facts, stale: stale), appName: "COS Control",
                                 appPath: "/Applications/COS Control.app", bundleID: "com.gotcos.control",
                                 currentBuild: build, defaults: defaults)
+    let wanted = facts.accessibilityWanted
+    guide.accessibilityWanted = { wanted }
     await guide.refresh()
     return guide
 }
@@ -97,7 +99,7 @@ func pipelineFacts(stopped: Bool) -> PermissionFacts {
         let appURL = URL(fileURLWithPath: app.path)
         for (name, phase) in [("bar-waiting", HelperBarStep.Phase.waiting), ("bar-allowed", .allowed), ("bar-trouble", .trouble)] {
             try render(PermissionHelperBarContent(state: PermissionHelperBarState(request: ax, phase: phase, sourceURL: appURL)).padding(12),
-                       width: 520, height: name == "bar-trouble" ? 250 : 190, name: name, out: out)
+                       width: 520, height: name == "bar-trouble" ? 300 : 190, name: name, out: out)
         }
         let fda = PermissionDragRequest(rowID: "backgroundJobs:" + python, pane: .fullDiskAccess,
                                         source: PermissionDragSource(path: python, name: "COS background helper (Python)"), feature: "Your scheduled COS jobs")

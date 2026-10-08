@@ -304,18 +304,22 @@ struct PermissionHelperBarContent: View {
                                 .buttonStyle(COSQuietButtonStyle()).disabled(state.checking)
                             Button("Reveal in Finder", action: onReveal).buttonStyle(COSTextButtonStyle())
                         }
-                        if state.phase == .trouble {
-                            Button("Having trouble?", action: onTrouble).buttonStyle(COSTextButtonStyle())
-                        }
                         Spacer(minLength: 0)
                     }
                     if let message = state.checkMessage {
                         Text(message).font(COSType.body(11)).foregroundStyle(COSPalette.amber)
                     }
                     if state.phase == .trouble {
-                        Text(PermissionHelperCopy.trouble(pane: pane))
-                            .font(COSType.body(11)).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Having trouble?").font(COSType.body(12, weight: .semibold))
+                            Text(PermissionHelperCopy.trouble(pane: pane))
+                                .font(COSType.body(11)).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if pane == .accessibility {
+                                Button("Reset and add again", action: onTrouble).buttonStyle(COSQuietButtonStyle())
+                                    .padding(.top, 2)
+                            }
+                        }
                     }
                 }
             }
@@ -368,6 +372,6 @@ enum PermissionHelperCopy {
     static func trouble(pane: PermissionPane) -> String {
         pane == .fullDiskAccess
             ? "Reveal in Finder shows the file to add. After adding it, Check now runs one stopped job to confirm."
-            : "If COS Control is already in the list and switched on, it may be an entry for an older build. Having trouble? resets it so you can add this one."
+            : "If COS Control is already in the list and switched on, that entry may belong to an older build. Reset and add again removes it so you can add this one."
     }
 }
