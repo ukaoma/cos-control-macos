@@ -6,6 +6,15 @@
 - **Repair.** Already on but not working after an update? Reset and add again clears COS Control's old entry and opens the drag bar on a clean list. Clean up old COS test builds lists old COS builds found on this Mac and removes each one's Accessibility entry only when you click it.
 - The drag bar adapts code from PermissionFlow by jaywcjlove (MIT, commit cb96db4b); the license ships in the app under Resources/ThirdParty.
 
+## 0.5.267 (build 320)
+
+- Jump to session can again ask Claude, Cursor or Terminal to reopen and come to the front, like clicking it in the Dock. The notarized 0.5.266 was signed without permission to send Apple Events, so macOS blocked those requests without asking. This build carries that permission and says why it needs it; macOS asks once for each app, the first time you jump to it.
+- Guided Setup can open Terminal again, for the same reason.
+- Speaker ID now works on Macs that use COS Control's built-in Node. That Node could not load the speaker-ID add-on (or any other npm native add-on), so new Macs set up from the app lost speaker identification. Only the built-in Node gets this permission; it already runs the server's own scripts, and native add-ons need it.
+- If Jump to session needs Accessibility while System Settings already shows COS Control turned on, Settings > Session pet now has **Reset and add again**. It removes COS Control's old entry, asks macOS again and opens the list so you can turn the new entry on. This replaces the advice to toggle it off and on.
+- A Cursor chat that cannot be found now says what to do instead of showing diagnostic codes.
+- For developers: every test compile runs one at a time through a memory guard that scales with the Mac, and the largest test file compiles in about 3 GB instead of 39 GB.
+
 ## 0.5.266 (build 319)
 
 - Apply the GOTCOS checkbox style to Include completed tasks and center task-row selection icons in the meeting-to-task picker. Includes the 0.5.265 meeting linking and prior onboarding improvements.

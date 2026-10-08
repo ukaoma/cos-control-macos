@@ -66,6 +66,9 @@ MUTANTS = [
 def run(cmd, cwd):
     started = time.time()
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    # 0.5.267: every compile in the lane runs through Tests/compile-guard.sh; a guard stop ends the lane (it is not a kill).
+    if "compile-guard: STOPPED" in proc.stdout + proc.stderr:
+        sys.exit("compile-guard stopped a compile (memory); ending the mutation lane. " + (proc.stderr or "")[-400:])
     return proc.returncode, proc.stdout + proc.stderr, time.time() - started
 
 def suite(copy):

@@ -14,7 +14,7 @@ git -C "$ROOT" show be3bb89:Sources/WorkHandoffStore.swift | \
 # Exercise the shipping types and store; only the production @main is replaced.
 SOURCES=("$ROOT"/Sources/*.swift)
 SOURCES=("${(@)SOURCES:#*/COSControlApp.swift}")
-swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "${SOURCES[@]}" "$LEGACY_DIR/LegacyWorkHandoffStore.swift" "$ROOT/Tests/WorkHandoffTests.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement -o "$BIN"
 "$BIN"

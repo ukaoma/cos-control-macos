@@ -6,6 +6,6 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 BIN="$(mktemp /tmp/cos-activity-home.XXXXXX)"
 trap 'rm -f "$BIN"' EXIT
-swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/ActivityHomeChecks.swift" -framework AppKit -o "$BIN"
 TZ=America/Chicago "$BIN"

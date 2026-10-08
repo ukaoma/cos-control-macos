@@ -35,7 +35,7 @@ node "$ROOT/Tests/MemoryOwnerRaces.cjs"
 node "$ROOT/Tests/MemoriesAppliedCanary.cjs"
 node "$ROOT/Tests/MemoriesQuarantineCanary.cjs"
 
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/HelperSources/main.swift" \
   -framework Security -framework AppKit \
   -o "$TMP/cos-control-helper"
@@ -98,7 +98,7 @@ python3 "$ROOT/Tests/HeldNamingGuardMutations.py"
 # Views.swift and ControllerModel.swift -- so every UI and model change shipped
 # without ever being type-checked here, and "builds passed" meant something much
 # narrower than it read. Same source list as scripts/build-release.sh.
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/HelperClient.swift" \
   "$ROOT/Sources/ControllerModel.swift" \
@@ -116,12 +116,12 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
   -o "$TMP/COS Control"
 
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Tests/ModelsContract.swift" \
   -framework AppKit \
   -o "$TMP/models-contract"
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Tests/HelperTransportContract.swift" \
   -framework AppKit -o "$TMP/helper-transport-contract"
 "$TMP/helper-transport-contract"
@@ -131,25 +131,25 @@ zsh "$ROOT/Tests/run-session-open-recovery.sh"
 zsh "$ROOT/Tests/run-meeting-task-link.sh"
 # 0.5.232: the Markdown parser is pure Foundation and pinned by an EXECUTED contract
 # (the scribe's meeting, lists, tasks, tables, code, quotes, details, speaker lines).
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Tests/MarkdownContract.swift" \
   -o "$TMP/markdown-contract"
 "$TMP/markdown-contract"
 # 0.5.233: the live feed reducer is pure Foundation and pinned by an EXECUTED contract
 # over recorded 6.48.2 stream frames (reseed, gap, prompt window, state line, elapsed).
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Tests/SessionLiveFeedContract.swift" \
   -o "$TMP/session-live-feed-contract"
 "$TMP/session-live-feed-contract" "$ROOT"
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediUpgradeContract.swift" \
   -framework AppKit -o "$TMP/jedi-upgrade-contract"
 "$TMP/jedi-upgrade-contract" "$ROOT"
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediGalleryContract.swift" \
   -framework AppKit -o "$TMP/jedi-gallery-contract"
 "$TMP/jedi-gallery-contract" "$ROOT/Resources"
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \
@@ -587,12 +587,45 @@ for zf in sorted((root / "dist").glob(f"COS-Control-macOS-arm64-{_v}.zip")):
              f"{zf.name} is AD-HOC signed (designated requirement is a per-build "
              "cdhash). Installing it strands the user's Accessibility grant. "
              "Rebuild with the stable identity.")
-        need(STABLE_ROOT in req,
-             f"{zf.name} is not signed by the stable 'COS Control Local' root; "
+        # 0.5.261+: a public build is Developer ID (team NV3X46LLCR); that requirement is certificate-based too.
+        need(STABLE_ROOT in req or "subject.OU] = NV3X46LLCR" in req,
+             f"{zf.name} is signed by neither the stable 'COS Control Local' root nor the Developer ID team; "
              "TCC grants will not survive the update")
+        # 0.5.267: and it can send Apple Events (entitlement + usage string); the helper carries none.
+        ent = subprocess.run(["/usr/bin/python3", str(root / "Tests/check-release-entitlements.py"), str(app)],
+                             capture_output=True, text=True)
+        need(ent.returncode == 0, f"{zf.name}: " + (ent.stderr.strip() or ent.stdout.strip()))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 SIGNCHK
+
+# --- 0.5.267: Apple Events under the hardened runtime -------------------------
+# The notarized 0.5.266 had hardened runtime, no entitlements and no NSAppleEventsUsageDescription, so the
+# jump-to-session reopen (NSAppleScript) and Guided Setup's Terminal script (osascript child) were refused without a
+# prompt. The checker reads real signatures; its self-test signs throwaway bundles and proves each rule can fail.
+/usr/bin/python3 "$ROOT/Tests/check-release-entitlements.py" --selftest "$(mktemp -d "$TMP/entitlements.XXXXXX")" "$TMP/cos-control-helper"
+/usr/bin/python3 - "$ROOT" <<'ENTCHK'
+import plistlib, re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+def need(c, m):
+    if not c: sys.exit(f"entitlements: {m}")
+rel = (root / "scripts/build-release.sh").read_text()
+for target in ('"$APP/Contents/MacOS/COS Control"', '"$APP"'):
+    need(re.search(r'--options runtime --timestamp --entitlements "\$APP_ENTITLEMENTS" --sign "\$SIGN_ID" '
+                   + re.escape(target) + r'\n', rel),
+         f"the Developer ID path no longer signs {target} with COSControl.entitlements")
+need('APP_ENTITLEMENTS="$ROOT/Resources/COSControl.entitlements"' in rel, "build-release.sh lost APP_ENTITLEMENTS")
+need(re.search(r'--options runtime --timestamp --sign "\$SIGN_ID" "\$APP/Contents/Resources/cos-control-helper"', rel),
+     "the helper must stay signed WITHOUT entitlements")
+need('check-release-entitlements.py" "$VERIFY_DIR/COS Control.app"' in rel,
+     "build-release.sh no longer checks the extracted app's entitlements")
+info = plistlib.loads((root / "Resources/Info.plist").read_bytes())
+need(str(info.get("NSAppleEventsUsageDescription", "")).strip(), "Info.plist lost NSAppleEventsUsageDescription")
+ents = plistlib.loads((root / "Resources/COSControl.entitlements").read_bytes())
+need(ents == {"com.apple.security.automation.apple-events": True},
+     f"COSControl.entitlements must be exactly Apple Events, found {ents!r}")
+print("PASS: 0.5.267 Apple Events signing pins (Developer ID app + executable, helper bare, usage string)")
+ENTCHK
 
 # --- 0.3.0 meeting sync status ----------------------------------------------
 /usr/bin/grep -q 'Meeting sync' "$ROOT/Sources/Views.swift"
@@ -2519,7 +2552,7 @@ if /usr/bin/grep -RE 'details\["token"\]|"token"[[:space:]]*:[[:space:]]*try rea
   exit 1
 fi
 
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/HelperClient.swift" \
   "$ROOT/Sources/ControllerModel.swift" \
@@ -3196,10 +3229,19 @@ need('cursorFrontmostVerified' in model,
 need('Could not bring the Agents window forward' in model,
      "a failed raise has no honest notice")
 need('AXIsProcessTrusted()' in model, "Cursor miss notice does not record Accessibility trust")
-need('Toggle it off and on' in model,
-     "an untrusted AX jump does not say to re-key the stale grant")
-need(model.count('Toggle it off and on') == 1,
-     "the Accessibility repair notice must live in exactly one shared gate")
+# 0.5.267: the stale-grant repair is a real action (remove the entry, ask again), not "toggle it off and on".
+need('off and on' not in model, "the toggle-it-off-and-on advice is back; Reset and add again replaces it")
+need(model.count('static let accessibilityRepairHint = "Already on? Use Reset and add again') == 1,
+     "the Accessibility repair notice must live in exactly one shared sentence")
+need(model.count('accessibilityRepairHint)') >= 4,
+     "the gate, the Claude sidebar and window misses and the untrusted Cursor miss must all name the repair")
+_reset = model.split("func resetAccessibilityAndAddAgain()")[1].split("\n    }\n")[0]
+need('"/usr/bin/tccutil"' in _reset and '["reset", "Accessibility", bundleID]' in _reset,
+     "Reset and add again does not remove this app's Accessibility entry")
+need('AXIsProcessTrustedWithOptions' in _reset and 'openAccessibilitySettings()' in _reset,
+     "Reset and add again does not ask again and open the pane")
+need('Button("Reset and add again") { model.resetAccessibilityAndAddAgain() }' in (root / "Sources/Views.swift").read_text(),
+     "Settings has no Reset and add again action")
 need('Privacy_Accessibility' in model,
      "an untrusted AX jump does not open the Accessibility pane")
 need('Quit COS Control and open it again' not in model,
@@ -3216,9 +3258,14 @@ _chat_branch_src = _chat_branch_src[:_chat_branch_src.index('if openMode ==', 20
 # an ambiguity check was added around it; the rule was intact throughout.
 need('session.name' in _chat_branch_src and 'session.title' not in _chat_branch_src,
      "Cursor tab match must use the session name, not the workspace fallback title")
-need('Agents miss' in model, "Cursor miss is not named on the pet")
-need('did not open the folder' in model, "a missing Cursor.app path still opens the IDE folder")
-need('no spawn' in model, "the running-Cursor miss notice does not say no spawn")
+# 0.5.267: the miss detail goes to the log; the bubble says what to do in plain words.
+need('NSLog("COSControl cursor-jump: Agents miss' in model, "the Cursor miss detail is no longer logged")
+need('return "Agents miss' not in model and 'petNotice = "Agents miss' not in model,
+     "the debug-looking Cursor miss string is back on the pet")
+need('could not find this chat in its Agents window' in model, "Cursor miss is not named on the pet")
+need('so this chat was not opened' in model and 'did not open the folder' in model,
+     "a missing Cursor.app path still opens the IDE folder")
+need('no spawn' in model, "the running-Cursor miss log does not say no spawn")
 reveal = model.split("func revealCursorAgentsWindow")[1].split("func cursorWindowTitles")[0]
 running_branch = reveal.split("if let running = runningCursor()")[1].split("spawnCursorAgentsWindow")[0]
 need('activateRunningApp(running)' not in running_branch,

@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 TMP="$(mktemp -d /tmp/cos-onboarding-checks.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
-swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/OnboardingChecks.swift" -framework AppKit -o "$TMP/checks"
 "$TMP/checks"
 # A normal build may use a stable local identity. The public entry point may not.

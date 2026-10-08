@@ -6,10 +6,10 @@ LAB_VERSION="${COS_FOUNDATION_VERSION:-0.1.9}"; LAB_BUILD="${COS_FOUNDATION_BUIL
 LAB_NAME="${COS_FOUNDATION_NAME:-COS Control Work Preview $LAB_VERSION}"; LAB_ID="${COS_FOUNDATION_BUNDLE_ID:-com.gotcos.COSControl.WorkPreview019}"
 APP="${COS_FOUNDATION_APP_DIR:-$HOME/Library/Caches/COS Control Work Preview 0.1.9}/COS Control Foundation Lab.app"
 mkdir -p "$OUT" "$APP/Contents/MacOS" "$APP/Contents/Resources"
-swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete \
+"$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete \
   "$ROOT/HelperSources/main.swift" -framework Security -framework AppKit \
   -o "$APP/Contents/Resources/cos-control-helper"
-swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" \
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" \

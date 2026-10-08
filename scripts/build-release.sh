@@ -28,12 +28,12 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 rm -rf "$ZIP" "$ZIP.sha256"
 mkdir -p "$BUILD_DIR" "$APP/Contents/MacOS" "$APP/Contents/Resources" "$DIST_DIR"
 
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/HelperSources/main.swift" \
   -framework Security -framework AppKit \
   -o "$APP/Contents/Resources/cos-control-helper"
 
-swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" \
   "$ROOT/Sources/HelperClient.swift" \
   "$ROOT/Sources/ControllerModel.swift" \
@@ -125,11 +125,16 @@ if [ -n "$SIGN_ID" ] && [ -z "$NOTARY_PROFILE" ]; then
   echo "Developer ID release requires COS_NOTARY_PROFILE for notarization." >&2
   exit 67
 fi
+APP_ENTITLEMENTS="$ROOT/Resources/COSControl.entitlements"
+/usr/bin/plutil -lint "$APP_ENTITLEMENTS" >/dev/null
 if [ -n "$SIGN_ID" ]; then
   /usr/bin/codesign --force --options runtime --timestamp --entitlements "$ROOT/Resources/Node.entitlements" --sign "$SIGN_ID" "$APP/Contents/Resources/BundledNode/bin/node"
   /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP/Contents/Resources/cos-control-helper"
-  /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP/Contents/MacOS/COS Control"
-  /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP"
+  # 0.5.267: the main executable and the bundle carry COSControl.entitlements (Apple Events only). Hardened runtime
+  # without com.apple.security.automation.apple-events silently refuses every Apple Event, so 0.5.266's jump-to-session
+  # reopen (NSAppleScript) and Guided Setup's Terminal script (osascript child) could not work. The helper gets none.
+  /usr/bin/codesign --force --options runtime --timestamp --entitlements "$APP_ENTITLEMENTS" --sign "$SIGN_ID" "$APP/Contents/MacOS/COS Control"
+  /usr/bin/codesign --force --options runtime --timestamp --entitlements "$APP_ENTITLEMENTS" --sign "$SIGN_ID" "$APP"
 elif [ -n "$LOCAL_SIGN_ID" ]; then
   /usr/bin/codesign --force --sign "$LOCAL_SIGN_ID" "$APP/Contents/Resources/BundledNode/bin/node"
   # 0.5.217: sign the helper with an explicit identity-based designated requirement.
@@ -143,8 +148,8 @@ elif [ -n "$LOCAL_SIGN_ID" ]; then
   /usr/bin/csreq -r "$HELPER_REQ" -t >/dev/null || { echo "helper requirement did not parse" >&2; exit 70; }
   /usr/bin/codesign --force --sign "$LOCAL_SIGN_ID" -r "$HELPER_REQ" "$APP/Contents/Resources/cos-control-helper"
   rm -f "$HELPER_REQ"
-  /usr/bin/codesign --force --sign "$LOCAL_SIGN_ID" "$APP/Contents/MacOS/COS Control"
-  /usr/bin/codesign --force --sign "$LOCAL_SIGN_ID" "$APP"
+  /usr/bin/codesign --force --entitlements "$APP_ENTITLEMENTS" --sign "$LOCAL_SIGN_ID" "$APP/Contents/MacOS/COS Control"
+  /usr/bin/codesign --force --entitlements "$APP_ENTITLEMENTS" --sign "$LOCAL_SIGN_ID" "$APP"
   if /usr/bin/codesign -d -r- "$APP/Contents/Resources/cos-control-helper" 2>&1 | /usr/bin/grep -q 'designated => cdhash'; then
     echo "helper designated requirement fell back to cdhash; Documents access would re-prompt on every update" >&2; exit 69
   fi
@@ -186,6 +191,11 @@ python3 "$ROOT/Tests/check-bundled-runtime.py" "$VERIFY_DIR/COS Control.app/Cont
 if [ -n "$SIGN_ID" ]; then
   /usr/bin/xcrun stapler validate "$VERIFY_DIR/COS Control.app"
   /usr/sbin/spctl -a -vv --type execute "$VERIFY_DIR/COS Control.app"
+fi
+# 0.5.267: the shipped app must be able to send Apple Events (entitlement + usage string), and the helper must carry no
+# entitlements at all. Checked on the app extracted from the final ZIP.
+if [ -n "$SIGN_ID" ] || [ -n "$LOCAL_SIGN_ID" ]; then
+  python3 "$ROOT/Tests/check-release-entitlements.py" "$VERIFY_DIR/COS Control.app"
 fi
 # Isolate self-test from the caller's COS_* / provider env so live harness
 # variables (e.g. COS_HARNESS=foreground) cannot pollute allowlist assertions.

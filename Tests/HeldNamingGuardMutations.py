@@ -47,7 +47,7 @@ with tempfile.TemporaryDirectory(prefix='cos-naming-mutations-',dir='/tmp') as f
             text=text.replace(before,after,1)
         (path/'Models.swift').write_text(text)
         (path/'Probe.swift').write_text(tests)
-        compiled=subprocess.run(['swiftc','-swift-version','6','-parse-as-library',str(path/'Models.swift'),str(path/'Probe.swift'),'-o',str(path/'probe')],capture_output=True,text=True)
+        compiled=subprocess.run(['zsh',str(Path(__file__).resolve().parent/'compile-guard.sh'),'swiftc','-swift-version','6','-parse-as-library',str(path/'Models.swift'),str(path/'Probe.swift'),'-o',str(path/'probe')],capture_output=True,text=True)
         assert compiled.returncode==0,(name,'invalid mutation',compiled.stderr)
         result=subprocess.run([str(path/'probe')],capture_output=True,text=True)
         if pair: assert result.returncode!=0,(name,'guard mutation survived')

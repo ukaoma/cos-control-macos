@@ -56,6 +56,14 @@ requirement and Accessibility grants across updates. They are not Apple-notarize
 first installation may require the documented macOS Open Anyway flow. Ad-hoc
 signing is reserved for throwaway QA on a machine without a stable identity.
 
+Entitlements (0.5.267): the app and its main executable carry only
+`com.apple.security.automation.apple-events` (Resources/COSControl.entitlements; the jump-to-session reopen and
+Guided Setup's Terminal script), with `NSAppleEventsUsageDescription` in Info.plist. The helper carries none. Bundled
+node carries `allow-jit` and `disable-library-validation` (Resources/Node.entitlements): it already runs the
+server's scripts from the user's install, so library validation adds little there, and npm native add-ons
+(sherpa-onnx speaker ID, fsevents) are ad-hoc signed and cannot load without it. `Tests/check-release-entitlements.py`
+enforces all of this on the built app.
+
 `build-public-release.sh` requires an available Developer ID Application identity
 and a notarytool Keychain profile before compiling, and writes to `dist/public`.
 `build-release.sh` remains available for local QA with the stable local identity.
@@ -75,6 +83,27 @@ one LaunchAgent, `com.cos.glasses-server`, as the sole server owner.
 
 Existing data remains under the standard COS Glasses locations. The existing
 `npx @gotcos/glasses-server` foreground workflow remains supported.
+
+## Running tests
+
+```bash
+./Tests/run.sh                 # the full gate; every compile in it is serialized
+./Tests/run-work-progress.sh   # one suite
+```
+
+Every `swiftc` in `Tests/` and `scripts/` runs through `Tests/compile-guard.sh`. A full test compile of the app
+sources plus one check file is memory-hungry (one used to peak near 39 GB before its 2,000-line check function was
+split; about 3 GB now), and on 2026-10-07 ten parallel mutation compiles exhausted a 96 GB Mac. The guard:
+
+- runs one compile at a time machine-wide (a `lockf` lock on `/tmp/cos-control-compile.lock`; other runs wait);
+- starts a compile only when enough memory is free: `min(40 GB, 60% of RAM)` by default;
+- stops a run if one `swift-frontend` passes `min(48 GB, 75% of RAM)` or all of them pass `min(60 GB, 85% of RAM)`,
+  exiting 137 with the reason on stderr.
+
+Override with `COS_COMPILE_MIN_FREE_GB`, `COS_COMPILE_MAX_FRONTEND_GB` and `COS_COMPILE_MAX_TOTAL_GB`. Waiting on the
+lock is expected when another build or test run is compiling. Do not run suites in parallel. The hand-run mutation
+lanes (`Tests/mutate-*.py`) use one worker by default and end on a guard stop. Keep any one check function short:
+a single very long async test function is what made one compile need tens of gigabytes.
 
 ## 0.5.14 Memory and Threads setup
 

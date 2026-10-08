@@ -3,6 +3,10 @@
 
     python3 Tests/mutate-work-search.py <worktree> <scratch dir> [--workers N] [name ...]
 
+0.5.267: one worker by default and never more than 2. One Control test compile can peak above 30 GB; three lanes at
+once (the old default) asked for most of a 96 GB Mac. Every compile runs through Tests/compile-guard.sh, which also
+serializes them machine-wide, and a guard stop ends the lane.
+
 It copies the worktree once per worker to <scratch dir>/copy-<n>, proves each UNMUTATED copy green first (the Swift checks
 Tests/run-work-search.sh, the pins Tests/work-search-pins.py, and the compiled helper's Tests/work-search-helper-checks.py),
 then applies one mutant at a time: the target text must appear exactly once, the mutant must make a check fail, and the
@@ -183,11 +187,14 @@ MUTANTS = [
 def run(cmd, cwd, timeout=1800):
     started = time.time()
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    # 0.5.267: every compile in the lane runs through Tests/compile-guard.sh; a guard stop ends the lane (it is not a kill).
+    if "compile-guard: STOPPED" in proc.stdout + proc.stderr:
+        sys.exit("compile-guard stopped a compile (memory); ending the mutation lane. " + (proc.stderr or "")[-400:])
     return proc.returncode, proc.stdout + proc.stderr, time.time() - started
 
 def helper_lane(copy):
     out = copy / "helper-bin"
-    code, text, s1 = run(["swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6", "-strict-concurrency=complete",
+    code, text, s1 = run(["zsh", "Tests/compile-guard.sh", "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6", "-strict-concurrency=complete",
                           "HelperSources/main.swift", "-framework", "Security", "-framework", "AppKit", "-o", str(out)], copy)
     if code != 0:
         return code, text, s1
@@ -250,9 +257,11 @@ def worker(n, src, scratch, mutants):
 
 def main():
     args = sys.argv[1:]
-    workers = 3
+    workers = 1
     if "--workers" in args:
         i = args.index("--workers"); workers = int(args[i + 1]); del args[i:i + 2]
+    if not 1 <= workers <= 2:
+        sys.exit("--workers must be 1 or 2: each worker compiles the whole app (see the note at the top)")
     src, scratch = pathlib.Path(args[0]).resolve(), pathlib.Path(args[1]).resolve()
     only = set(args[2:])
     chosen = [m for m in MUTANTS if not only or m[0] in only]
