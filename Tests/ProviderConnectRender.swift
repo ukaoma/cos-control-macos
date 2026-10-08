@@ -74,7 +74,7 @@ let allIn = data(row("claude", path: "/opt/homebrew/bin/claude", version: "2.1.2
 
         // 3. A row waiting on Sign in (Terminal opened on `claude`).
         let waiting = await fixtureGuide(mixed, apps: apps)
-        waiting.signIn(.claude)
+        await waiting.signIn(.claude)
         try render(ProviderRowView(guide: waiting, provider: .claude).padding(.horizontal, 16).background(COSPalette.card),
                    width: panelWidth + 32, height: 210, name: "sign-in-waiting", out: out)
         // And after Pass to Claude for Cursor (one pass at a time; the row waits on provider-status, never the chat).
