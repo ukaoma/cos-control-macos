@@ -47,7 +47,7 @@ MUTANTS = [
     ("no panel row", V, "                PanelPermissionsRow(guide: model.permissionGuide)\n", "", "[panel row]", "pins"),
     ("live probes in checks", C, "probes: inApp ? .live() : .inert", "probes: .live()", "[live probes]", "pins"),
     ("meeting hook gone", C, '                permissionGuide.need(.notifications, for: "Meeting alerts", interactive: false)\n', "", "[meeting alerts hook]", "pins"),
-    ("background hook opens a window", C, 'need(.backgroundJobs, for: "Background jobs", interactive: false)', 'need(.backgroundJobs, for: "Background jobs", interactive: true)', "[background jobs hook]", "pins"),
+    ("background hook opens a window", C, 'need(.backgroundJobs, for: "Your scheduled COS jobs", interactive: false)', 'need(.backgroundJobs, for: "Your scheduled COS jobs", interactive: true)', "[background jobs hook]", "pins"),
     ("poll every five seconds", F, "withTimeInterval: 1, repeats: true", "withTimeInterval: 5, repeats: true", "[detection poll]", "pins"),
     ("the API alone says Allowed", F, "AXIsProcessTrusted() && Self.accessibilityReadWorks()", "AXIsProcessTrusted()", "[detection confirm]", "pins"),
     ("license left out of the app", R, 'cp -R "$ROOT/Resources/ThirdParty/." "$APP/Contents/Resources/ThirdParty/"\n', "", "[license]", "pins"),
@@ -56,11 +56,16 @@ MUTANTS = [
 
 def run(lane, copy):
     if lane == "logic":
-        cmd = [str(copy / "Tests/compile-guard.sh"), str(copy / "Tests/run-permission-guide.sh")]
+        cmd = ["/bin/zsh", str(copy / "Tests/run-permission-guide.sh")]  # its one compile goes through the guard
     else:
         cmd = ["/usr/bin/python3", str(copy / "Tests/permission-guide-pins.py"), str(copy)]
-    p = subprocess.run(cmd, capture_output=True, text=True)
-    return p.returncode, p.stdout + p.stderr
+    while True:
+        p = subprocess.run(cmd, capture_output=True, text=True)
+        # 75: the guard's lock wait timed out (another agent compiling). Contention, not a verdict: wait and retry.
+        if p.returncode == 75:
+            time.sleep(30)
+            continue
+        return p.returncode, p.stdout + p.stderr
 
 
 def main():

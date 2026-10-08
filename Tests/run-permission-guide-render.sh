@@ -1,7 +1,6 @@
 #!/bin/zsh
 # Render the permission guide (Tests/PermissionGuideRender.swift) offscreen, light and dark, from fixture facts: no
-# window is shown, nothing reads TCC or opens System Settings. One full app compile: run it through the guard,
-#   Tests/compile-guard.sh Tests/run-permission-guide-render.sh <folder for the PNGs>
+# window is shown, nothing reads TCC or opens System Settings. The one full app compile goes through the guard.
 set -euo pipefail
 ROOT="${0:A:h:h}"
 OUT="${1:?usage: run-permission-guide-render.sh <folder for the PNGs>}"
@@ -10,7 +9,7 @@ DIR="$(mktemp -d /tmp/cos-home-render.XXXXXX)"
 trap 'rm -rf "$DIR"' EXIT
 SOURCES=("$ROOT"/Sources/*.swift)
 SOURCES=("${(@)SOURCES:#*/COSControlApp.swift}")
-swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+"$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "${SOURCES[@]}" "$ROOT/Tests/PermissionGuideRender.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement -framework WebKit -o "$DIR/permission-render"
 HOME_DIR="$DIR/cos-home-render home.ü"

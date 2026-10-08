@@ -514,7 +514,7 @@ final class ControllerModel: ObservableObject {
                 if stopped != self.backgroundJobsNeedSignature {
                     self.backgroundJobsNeedSignature = stopped
                     if !stopped.isEmpty {
-                        self.permissionGuide.need(.backgroundJobs, for: "Background jobs", interactive: false)
+                        self.permissionGuide.need(.backgroundJobs, for: "Your scheduled COS jobs", interactive: false)
                     }
                 }
                 try? await Task.sleep(for: .seconds(600))

@@ -45,7 +45,7 @@ struct PermissionRowView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let feature = guide.waitingFeature[row.id] {
-                Text("\(feature) is waiting for this.")
+                Text("Needed for: \(feature)")
                     .font(COSType.body(11, weight: .medium))
                     .foregroundStyle(COSPalette.accent)
             }
@@ -79,7 +79,7 @@ struct PermissionRowView: View {
 
     /// "It's already on": the switch shows on in Settings while this build is not trusted.
     private var alreadyOnRepair: Bool {
-        row.kind == .accessibility && row.status != .allowed && row.action != .resetAndAddAgain
+        row.kind == .accessibility && row.status == .needsYou && row.action != .resetAndAddAgain
     }
 }
 
@@ -284,7 +284,7 @@ struct PermissionHelperBarContent: View {
                             .font(COSType.body(13.5))
                             .fixedSize(horizontal: false, vertical: true)
                         if let feature = state.request.feature {
-                            Text("\(feature) needs this.").font(COSType.body(11.5)).foregroundStyle(.secondary)
+                            Text("Needed for: \(feature)").font(COSType.body(11.5)).foregroundStyle(.secondary)
                         }
                     }
                     Spacer(minLength: 4)

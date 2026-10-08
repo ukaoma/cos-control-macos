@@ -32,7 +32,7 @@ pin("permissionDragFlow.guide = guide" in make, "drag flow wiring", "the flow re
 init = body(model, "    init(startBackgroundWork: Bool = true", "\n    }\n")
 pin(init.index("guard startBackgroundWork else { return }") < init.index("startPermissionWatch()"), "background jobs hook", "the watch runs only with background work")
 watch = body(model, "    private func startPermissionWatch() {", "\n    }\n")
-pin('need(.backgroundJobs, for: "Background jobs", interactive: false)' in watch, "background jobs hook", "exit 78 opens the guide in the panel, never a window")
+pin('need(.backgroundJobs, for: "Your scheduled COS jobs", interactive: false)' in watch, "background jobs hook", "exit 78 opens the guide in the panel, never a window")
 pin("stopped != self.backgroundJobsNeedSignature" in watch, "background jobs hook", "only a NEW set of stopped jobs reopens the card")
 meeting = body(model, "private func loadMeetingAlertPermission() async {", "\n    func ")
 pin('permissionGuide.need(.notifications, for: "Meeting alerts", interactive: false)' in meeting, "meeting alerts hook", "a live meeting with alerts off opens the guide on Notifications")

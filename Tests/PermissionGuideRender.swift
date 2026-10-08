@@ -87,7 +87,7 @@ func pipelineFacts(stopped: Bool) -> PermissionFacts {
 
         // 3. The guide card in the panel, opened just in time by a stopped background job.
         let card = await fixtureGuide(pipelineFacts(stopped: true))
-        card.need(.backgroundJobs, for: "Background jobs", interactive: false)
+        card.need(.backgroundJobs, for: "Your scheduled COS jobs", interactive: false)
         try render(ScrollView { PermissionGuideCard(guide: card).padding(16) }.background(COSPalette.panel),
                    width: panelWidth + 32, height: 1180, name: "guide-card", out: out)
 
@@ -100,7 +100,7 @@ func pipelineFacts(stopped: Bool) -> PermissionFacts {
                        width: 520, height: name == "bar-trouble" ? 250 : 190, name: name, out: out)
         }
         let fda = PermissionDragRequest(rowID: "backgroundJobs:" + python, pane: .fullDiskAccess,
-                                        source: PermissionDragSource(path: python, name: "COS background helper (Python)"), feature: "Background jobs")
+                                        source: PermissionDragSource(path: python, name: "COS background helper (Python)"), feature: "Your scheduled COS jobs")
         try render(PermissionHelperBarContent(state: PermissionHelperBarState(
                     request: fda, phase: .waiting, sourceURL: URL(fileURLWithPath: "/opt/homebrew/bin/python3"),
                     checkMessage: "Still stopped. Make sure the switch beside it is on, then check again.")).padding(12),
