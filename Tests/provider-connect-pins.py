@@ -108,9 +108,9 @@ pin("SetupGuideView(model: model" in setup, "welcome guide", "the Welcome window
 vs = body(helper, "    private func runVoiceSetup(args: [String]) throws {", "\n    /// posix_spawn")
 pin('"--setup-transcription", "--transcription-tier", tier, "--prepare-only"' in vs and "bin/cli.cjs" in vs and "nodeToolEnvironment(node: node)" in vs, "voice setup", "runs the installed server's setup with COS Control's Node")
 pin("brew\"" not in vs and not re.search(r'execute\([^)]*brew', helper), "voice setup", "never runs Homebrew")
-pin("POSIX_SPAWN_SETPGROUP" in helper and "killpg(voiceSetupChildGroup, SIGTERM)" in helper, "voice cancel", "Cancel stops the whole child group")
+pin("posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP))" in helper and "posix_spawnattr_setpgroup(&attributes, 0)" in helper and "killpg(voiceSetupChildGroup, SIGTERM)" in helper, "voice cancel", "Cancel stops the whole child group")
 guided = body(model, "    func runGuidedSetup(tier: String) {", "\n    }\n")
-pin(guided.index("setupGuide.voice?.terminalCommand[normalized]") < guided.index('"npx --yes'), "guided setup", "Terminal uses COS Control's npx by path; bare npx only as the last resort")
+pin("setupGuide.voice?.terminalCommand[normalized]" in guided and guided.index("setupGuide.voice?.terminalCommand[normalized]") < guided.index('"npx --yes'), "guided setup", "Terminal uses COS Control's npx by path; bare npx only as the last resort")
 pin('case "voice-status": emitVoiceStatus()' in helper and "withMutationLock" not in body(helper, "    private func voiceSetupFacts() -> [String: Any] {", "\n    private func emitVoiceStatus"), "voice status", "read-only")
 
 # Source lists: every app compile has the new files; every helper compile has the core.

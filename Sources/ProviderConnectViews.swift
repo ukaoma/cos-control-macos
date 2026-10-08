@@ -469,7 +469,7 @@ struct SetupRowView: View {
                 HStack(spacing: 5) {
                     if row.id == .voice && guide.voiceRunning { ProgressView().controlSize(.mini) }
                     else { Circle().fill(row.done ? COSPalette.green : row.skipped || row.afterSetup ? COSPalette.muted : COSPalette.amber).frame(width: 7, height: 7) }
-                    Text(row.skipped && !row.done ? "Skipped for now" : row.status)
+                    Text(row.id == .voice && guide.voiceRunning ? "Downloading…" : row.skipped && !row.done ? "Skipped for now" : row.status)
                         .font(COSType.body(11, weight: row.done || row.skipped || row.afterSetup ? .regular : .semibold))
                         .foregroundStyle(row.done ? COSPalette.green : row.skipped || row.afterSetup ? COSPalette.muted : COSPalette.amber)
                 }.fixedSize()
