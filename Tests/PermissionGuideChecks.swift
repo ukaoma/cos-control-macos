@@ -4,6 +4,9 @@ import Foundation
 // which rows a Mac gets, the floating bar's steps, the words, the just-in-time hook, old-build discovery, the drag
 // source, and the launchd and CalendarFetch readers. Nothing here reads TCC, opens System Settings or shows a window.
 
+/// A value the stand-in probes read while a check changes it.
+final class Box<T>: @unchecked Sendable { var value: T; init(_ value: T) { self.value = value } }
+
 nonisolated(unsafe) var failures = 0
 nonisolated(unsafe) var passes = 0
 
@@ -131,7 +134,7 @@ struct PermissionGuideChecks {
         let bg = rows(facts).filter { $0.kind == .backgroundJobs }
         check(bg.count == 2, "row relevance", "one row per interpreter of a protected-folder job, got \(bg.map(\.id))")
         check(bg.first?.id == "backgroundJobs:/u/venv/bin/python" && bg.first?.status == .needsYou, "row relevance", "python row needs you")
-        check(bg.last?.title == "Glasses server (Node)" && bg.last?.status == .allowed && bg.last?.action == .none, "row relevance", "node row is the glasses server, allowed: \(String(describing: bg.last))")
+        check(bg.last?.title == "Glasses server (Node)" && bg.last?.status == .allowed && bg.last?.action == PermissionAction.none, "row relevance", "node row is the glasses server, allowed: \(String(describing: bg.last))")
         check(!bg.contains { $0.id.contains("cos-control-helper") }, "row relevance", "a job outside protected folders has no row")
         facts.jobs = [job("com.cos.qdrant-server", "/Applications/Docker.app/Contents/Resources/bin/docker", protected: false)]
         check(rows(facts).filter { $0.kind == .backgroundJobs }.isEmpty, "row relevance", "no protected-folder job, no row")
@@ -259,9 +262,9 @@ struct PermissionGuideChecks {
     // MARK: Just in time
 
     static func justInTime() async {
-        nonisolated(unsafe) var trusted = false
+        let trusted = Box(false)
         var probes = PermissionProbes.inert
-        probes.accessibilityTrusted = { trusted }
+        probes.accessibilityTrusted = { trusted.value }
         let g = guide(probes)
         var requests: [PermissionDragRequest] = []
         g.startDragFlow = { requests.append($0) }
@@ -272,7 +275,7 @@ struct PermissionGuideChecks {
         check(g.focusedRowID == "accessibility" && g.waitingFeature["accessibility"] == "Jump to your session", "just in time", "the guide opens on that row")
         check(g.row(kind: .accessibility)?.status == .needsYou, "just in time", "a feature that asked makes it Needs you")
         check(resumed == 0, "just in time", "nothing resumes before the grant")
-        trusted = true
+        trusted.value = true
         g.granted(rowID: "accessibility")
         check(resumed == 1 && g.waitingFeature["accessibility"] == nil && g.focusedRowID == nil, "just in time resume", "the feature that asked continues once")
         await g.refresh()
@@ -293,10 +296,10 @@ struct PermissionGuideChecks {
         check(n.need(.backgroundJobs, for: "Background jobs", interactive: false), "just in time background", "a kind with no row on this Mac goes ahead")
 
         // A refresh that finds the row Allowed resumes what waited.
-        nonisolated(unsafe) var allowed = false
+        let allowed = Box(false)
         var probes3 = PermissionProbes.inert
-        probes3.notifications = { allowed ? .allowed(alertsOn: true) : .notDetermined }
-        probes3.requestNotifications = { allowed = true; return true }
+        probes3.notifications = { allowed.value ? .allowed(alertsOn: true) : .notDetermined }
+        probes3.requestNotifications = { allowed.value = true; return true }
         let w = guide(probes3)
         await w.refresh()
         var workResumed = false
@@ -318,13 +321,13 @@ struct PermissionGuideChecks {
 
     static func staleGrant() async {
         let defaults = freshDefaults()
-        nonisolated(unsafe) var trusted = true
+        let trusted = Box(true)
         var probes = PermissionProbes.inert
-        probes.accessibilityTrusted = { trusted }
+        probes.accessibilityTrusted = { trusted.value }
         let first = guide(probes, build: 300, defaults: defaults)
         await first.refresh()
         check(defaults.integer(forKey: PermissionGuide.lastTrustedBuildKey) == 300, "stale grant", "the trusted build is remembered")
-        trusted = false
+        trusted.value = false
         let updated = guide(probes, build: 301, defaults: defaults)
         await updated.refresh()
         let row = updated.row(kind: .accessibility)
@@ -342,19 +345,19 @@ struct PermissionGuideChecks {
     }
 
     static func staleReset() async {
-        nonisolated(unsafe) var reset: [String] = []
+        let reset = Box<[String]>([])
         var probes = PermissionProbes.inert
         probes.staleBuilds = { _ in [StaleBuild(bundleID: "com.gotcos.COSControl.FoundationLab", copies: 1)] }
-        probes.resetAccessibility = { id in reset.append(id); return true }
+        probes.resetAccessibility = { id in reset.value.append(id); return true }
         let g = guide(probes)
         await g.resetStaleBuild("com.gotcos.COSControl.FoundationLab")
-        check(reset.isEmpty, "stale reset", "nothing is reset before it was found and listed")
+        check(reset.value.isEmpty, "stale reset", "nothing is reset before it was found and listed")
         await g.findStaleBuilds()
-        check(reset.isEmpty, "stale reset", "finding resets nothing")
+        check(reset.value.isEmpty, "stale reset", "finding resets nothing")
         await g.resetStaleBuild("com.gotcos.control")
         await g.resetStaleBuild("com.gotcos.unlisted")
-        check(reset.isEmpty, "stale reset", "never the running build, never an unlisted id")
+        check(reset.value.isEmpty, "stale reset", "never the running build, never an unlisted id")
         await g.resetStaleBuild("com.gotcos.COSControl.FoundationLab")
-        check(reset == ["com.gotcos.COSControl.FoundationLab"] && g.staleResults["com.gotcos.COSControl.FoundationLab"] == "Removed from Accessibility", "stale reset", "a click resets that one")
+        check(reset.value == ["com.gotcos.COSControl.FoundationLab"] && g.staleResults["com.gotcos.COSControl.FoundationLab"] == "Removed from Accessibility", "stale reset", "a click resets that one")
     }
 }
