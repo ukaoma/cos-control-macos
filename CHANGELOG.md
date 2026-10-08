@@ -1,3 +1,11 @@
+## Unreleased
+
+- **Permissions guide.** COS now walks you through each macOS permission instead of leaving a line of text. Allow opens the exact page in System Settings, and a small bar under the window holds COS Control's real icon: drag it into the list (or click + and choose COS Control). COS notices the grant within a second or two, says Allowed, and brings you back. The feature that asked, such as jumping to your session from the pet, then carries on by itself.
+- **Where it shows up.** A new Permissions step in the Welcome window after Connect your AI (skip it with Not now). A Permissions line in the menu-bar panel that reads All set or 1 needs you and opens the list in place. And just in time: the first pet jump, a meeting starting with alerts off, the first Work notification, or a background job that macOS stopped.
+- **Each row says what it unlocks** and shows Allowed, Needs you or Not needed yet: Accessibility, Notifications, Open at login, and on a Mac with the COS pipeline, background jobs (Full Disk Access for the Python and Node programs the jobs actually run, with Check now to confirm on a fresh run), Automation for Claude, Cursor, Terminal and iTerm (Test asks macOS), and Calendar for CalendarFetch.
+- **Repair.** Already on but not working after an update? Reset and add again clears COS Control's old entry and opens the drag bar on a clean list. Clean up old COS test builds lists old COS builds found on this Mac and removes each one's Accessibility entry only when you click it.
+- The drag bar adapts code from PermissionFlow by jaywcjlove (MIT, commit cb96db4b); the license ships in the app under Resources/ThirdParty.
+
 ## 0.5.266 (build 319)
 
 - Apply the GOTCOS checkbox style to Include completed tasks and center task-row selection icons in the meeting-to-task picker. Includes the 0.5.265 meeting linking and prior onboarding improvements.

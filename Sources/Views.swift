@@ -1344,6 +1344,8 @@ struct ControlPanel: View {
                 }
                 statusCard
                 controls
+                // Permissions: one line ("All set", "1 needs you") that opens the guide card in place.
+                PanelPermissionsRow(guide: model.permissionGuide)
                 if model.status.morningBriefSupported { morningBriefCard }
                 if model.status.tasksGate != nil { domainsCard }
                 if !model.fenceRecords.isEmpty { fencesCard }

@@ -50,11 +50,16 @@ struct ControlSetupView: View {
                     .font(.system(size: 32)).foregroundStyle(COSPalette.accent)
                 Text(ready ? "COS is ready on this Mac" : "Your work, with you.")
                     .font(COSType.body(28, weight: .semibold))
-                Text(ready
+                Text(ready && !model.permissionGuide.onboardingDone
+                     ? "COS is running. Before you start, choose what it can do on this Mac."
+                     : ready
                      ? "Start with a task in your AI app. Open Sessions in COS to follow its progress and continue the conversation."
                      : "COS brings your AI sessions, meetings and work together. We’ll prepare what it needs on this Mac.")
                     .foregroundStyle(.secondary)
-                if ready {
+                if ready && !model.permissionGuide.onboardingDone {
+                    // After Connect your AI and Get started: what this Mac can allow. Skippable.
+                    OnboardingPermissionsStep(guide: model.permissionGuide) { model.objectWillChange.send() }
+                } else if ready {
                     Button("Open Sessions") { model.openActivity?(.sessions) }
                         .buttonStyle(COSPrimaryButtonStyle())
                     Text("Connect your meeting sources and glasses when you’re ready. Voice features have additional downloads.")

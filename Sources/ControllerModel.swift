@@ -425,6 +425,14 @@ final class ControllerModel: ObservableObject {
     /// 0.5.228. macOS is not showing COS Control's alerts: denied, or alerts switched off.
     @Published var meetingAlertsOff = false
     private let meetingAudioNotifier = MeetingAudioNotifier()
+    /// The permission guide (Sources/PermissionGuideModel.swift): every row, the panel card, the Welcome step and the
+    /// just-in-time hook `permissionGuide.need(_:for:)`. Live probes only inside an app bundle; a model built by a check
+    /// reads nothing from macOS. Settable so a render can hand it fixture facts.
+    lazy var permissionGuide: PermissionGuide = makePermissionGuide()
+    /// The drag flow under System Settings (Sources/PermissionDragFlow.swift).
+    let permissionDragFlow = PermissionDragFlow()
+    private var backgroundJobsNeedSignature = ""
+    private var workNotificationPermissionChecked = false
     private var mediaPreviewTask: Task<Void, Never>?
     private var thumbnailTasks: [String: Task<Void, Never>] = [:]
     private var thumbnailLoadIDs: [String: UUID] = [:]
@@ -467,6 +475,49 @@ final class ControllerModel: ObservableObject {
         // Ask for notification permission when a live meeting needs alerts,
         // not before a fresh install has even shown its welcome window.
         startWorkTracking()
+        startPermissionWatch()
+    }
+
+    private func makePermissionGuide() -> PermissionGuide {
+        let bundleURL = Bundle.main.bundleURL.standardizedFileURL
+        let inApp = bundleURL.pathExtension == "app" && Bundle.main.bundleIdentifier != nil && backgroundWorkEnabled
+        // The drag source is the RUNNING bundle, so the copy that asked is the copy macOS adds.
+        let guide = PermissionGuide(
+            probes: inApp ? .live() : .inert, appName: "COS Control", appPath: bundleURL.path,
+            bundleID: Bundle.main.bundleIdentifier ?? "com.gotcos.control", currentBuild: Self.currentBuild)
+        guide.accessibilityWanted = { [weak self] in self?.petEnabled ?? false }
+        guide.turnOnLoginItem = { [weak self] in self?.setLaunchAtLogin(true) }
+        guide.openLoginItems = { SMAppService.openSystemSettingsLoginItems() }
+        guide.openURL = { url in NSWorkspace.shared.open(url) }
+        guide.launchApp = { path in
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = false
+            NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: path), configuration: configuration, completionHandler: nil)
+        }
+        guide.startDragFlow = { [weak self] request in self?.permissionDragFlow.start(request) }
+        permissionDragFlow.guide = guide
+        return guide
+    }
+
+    /// Background jobs cannot ask macOS for anything: launchd stops them with exit 78 instead. Read their records at
+    /// launch and every ten minutes, and open the guide on that row (in the panel, never a window) when a new set stops.
+    private func startPermissionWatch() {
+        Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.permissionGuide.refresh()
+                let stopped = self.permissionGuide.rows
+                    .filter { $0.kind == .backgroundJobs && $0.status == .needsYou }
+                    .map { $0.id + "|" + ($0.detail ?? "") }.joined(separator: ";")
+                if stopped != self.backgroundJobsNeedSignature {
+                    self.backgroundJobsNeedSignature = stopped
+                    if !stopped.isEmpty {
+                        self.permissionGuide.need(.backgroundJobs, for: "Background jobs", interactive: false)
+                    }
+                }
+                try? await Task.sleep(for: .seconds(600))
+            }
+        }
     }
 
     private func startWorkTracking() {
@@ -563,6 +614,15 @@ final class ControllerModel: ObservableObject {
     private func postWorkNotice(_ notice: WorkProgressNotice) {
         guard workNotificationsEnabled else { return }
         meetingAudioNotifier.postWork(notice)
+        // Just in time, once per launch: the first Work notice asks macOS (a Mac with no answer) or opens the guide on
+        // Notifications in the panel (alerts refused or switched off).
+        guard !workNotificationPermissionChecked else { return }
+        workNotificationPermissionChecked = true
+        Task {
+            await permissionGuide.refresh()
+            guard let row = permissionGuide.row(kind: .notifications), row.status != .allowed else { return }
+            permissionGuide.need(.notifications, for: "Work updates", interactive: row.action == .askNotifications)
+        }
     }
     func openWorkItem(_ workID: String) {
         activityOpenWorkID = workID
@@ -2644,6 +2704,11 @@ final class ControllerModel: ObservableObject {
             let alertsOn = allowed.alertsOn
             meetingAudioLog.notice("alerts \(word, privacy: .public) authorization=\(authorization, privacy: .public) alertsOn=\(alertsOn, privacy: .public)")
             meetingAlertsOff = off
+            // Just in time: a live meeting with alerts off opens the guide on Notifications in the panel.
+            if off {
+                await permissionGuide.refresh()
+                permissionGuide.need(.notifications, for: "Meeting alerts", interactive: false)
+            }
         }
     }
 

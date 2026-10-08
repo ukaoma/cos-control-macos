@@ -46,7 +46,7 @@ swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" \
   "$ROOT/Sources/SessionPet.swift" \
-  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" \
+  "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" \
   "$ROOT/Sources/ControlSetup.swift" \
   "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
@@ -59,6 +59,10 @@ cp "$ROOT/Resources/COSMark.svg" "$APP/Contents/Resources/COSMark.svg"
 # the contract loads and rasterizes each one.
 cp "$ROOT/Resources/mark-"*.svg "$APP/Contents/Resources/"
 cp "$ROOT/Resources/COSLockup.svg" "$APP/Contents/Resources/COSLockup.svg"
+# Third-party licenses (PermissionFlow, MIT) travel with the code that uses them.
+mkdir -p "$APP/Contents/Resources/ThirdParty"
+cp -R "$ROOT/Resources/ThirdParty/." "$APP/Contents/Resources/ThirdParty/"
+cp "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/ThirdParty/THIRD_PARTY_NOTICES.md"
 mkdir -p "$APP/Contents/Resources/Fonts"
 cp "$ROOT/Resources/Fonts/"*.ttf "$APP/Contents/Resources/Fonts/"
 # The shipped character, already processed. A fresh install seeds it once.
