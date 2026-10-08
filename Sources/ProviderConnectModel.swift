@@ -165,7 +165,7 @@ enum ProviderRules {
                 : status.desktopOnly
                 ? "Claude Desktop has its own copy of Claude Code. COS needs the Claude Code command line too."
                 : nil
-            return ProviderRowModel(provider: provider, status: waiting ? "Waiting for setup…" : "Not installed", detail: detail,
+            return ProviderRowModel(provider: provider, status: waiting ? "Waiting for setup…" : skipped ? "Skipped for now" : "Not installed", detail: detail,
                                     tone: .neutral, action: .install, canSkip: false, waiting: waiting)
         }
         let version = status.version.map { " \($0)" } ?? ""
@@ -809,7 +809,7 @@ enum SetupGuideRules {
     static func voice(_ facts: SetupFacts, skipped: Bool) -> SetupRow {
         let tier = facts.voiceTier
         var row = SetupRow(id: .voice, title: "Voice (local Whisper)", status: "Checking…",
-                           unlocks: "Meetings and dictation transcribed on this Mac, with named speakers. Nothing leaves the Mac.",
+                           unlocks: "Meetings and dictation transcribed on this Mac, with named speakers.",
                            detail: nil, done: false, skipped: skipped)
         guard facts.serverRunning else { row.status = "After Get started"; row.afterSetup = true; return row }
         guard let voice = facts.voice else { return row }
