@@ -59,8 +59,8 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 774:
-    sys.exit(f"helper self-test ran only {count} checks; expected at least 774 (774 at 0.5.250: the Work session name, transcript titles and named rows that are never warm-ups; 727 at 0.5.238)")
+if count < 784:
+    sys.exit(f"helper self-test ran only {count} checks; expected at least 784 (784 at 0.5.268: Codex inside the ChatGPT app; 774 at 0.5.250: the Work session name, transcript titles and named rows that are never warm-ups; 727 at 0.5.238)")
 ' "$SELF_TEST"
 # The Work contract self-test (the model catalog, admission, and from 0.5.249 the Cursor chat finder) is its own command,
 # and nothing ran it: a mutation of the tab folder rules survived because of it (2026-09-29).

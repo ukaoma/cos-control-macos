@@ -789,10 +789,7 @@ final class COSControlHelper {
     private func executableCandidates(_ name: String) -> [String] {
         var candidates: [String] = []
         if let managed = managedNodeExecutable(name) { candidates.append(managed) }
-        if name == "codex" {
-            candidates.append("/Applications/Codex.app/Contents/Resources/codex")
-            candidates.append(home.appendingPathComponent("Applications/Codex.app/Contents/Resources/codex").path)
-        }
+        if name == "codex" { candidates += codexAppCandidates() }
         if let path = ProcessInfo.processInfo.environment["PATH"] {
             candidates += path.split(separator: ":").map { "\($0)/\(name)" }
         }
@@ -925,6 +922,24 @@ final class COSControlHelper {
             guard !value.isEmpty, seen.insert(value).inserted else { return nil }
             return value
         }
+    }
+
+    /// 0.5.268: the Codex CLI that ships inside the ChatGPT app, in the server's order
+    /// (server/lib/provider-binary.ts, 6.56.1). ChatGPT.app 26.924 (2026-09-27) moved it to
+    /// Resources/codex-cli/bin; Codex.app no longer exists. With only the old Codex.app path
+    /// listed, a Mac with just the ChatGPT app was refused at Get started ("Connect an AI app
+    /// first") while the server would have found the CLI. ~/Applications is checked for each
+    /// bundle too, so an app installed per user is found (and the self-test can stage one).
+    private func codexAppCandidates() -> [String] {
+        let roots = ["/Applications", home.appendingPathComponent("Applications").path]
+        var candidates: [String] = []
+        for relative in ["ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+                         "ChatGPT.app/Contents/Resources/codex"] {
+            candidates += roots.map { "\($0)/\(relative)" }
+        }
+        candidates.append(home.appendingPathComponent(".codex/bin/codex").path)
+        candidates += roots.map { "\($0)/Codex.app/Contents/Resources/codex" }
+        return candidates
     }
 
     /// Finder-launched apps inherit a minimal PATH. Homebrew's npm executable
@@ -20386,6 +20401,30 @@ final class COSControlHelper {
                    "neither must an action that is gone")
         try expect(!isRouteAbsent((status: 409, body: nil)) && !isRouteAbsent((status: 200, body: [:])),
                    "only a 404 can be a missing route")
+
+        // 0.5.268: a Mac with only the ChatGPT app has Codex. Stage the app's CLI in the test home's
+        // ~/Applications (the real /Applications is never touched) and resolve it through the real lookup.
+        do {
+            let codexCandidates = executableCandidates("codex")
+            let appCLI = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
+            let legacy = "/Applications/Codex.app/Contents/Resources/codex"
+            try expect(codexCandidates.contains(appCLI), "codex lookup lists the ChatGPT app's bundled CLI")
+            if let a = codexCandidates.firstIndex(of: appCLI), let b = codexCandidates.firstIndex(of: legacy) {
+                try expect(a < b, "the ChatGPT app's CLI comes before the retired Codex.app path")
+            } else { try expect(false, "both the ChatGPT CLI and the legacy Codex.app path are listed") }
+            let staged = home.appendingPathComponent("Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex")
+            try fm.createDirectory(at: staged.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try "#!/bin/sh\necho codex-cli 0.0.0\n".write(to: staged, atomically: true, encoding: .utf8)
+            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: staged.path)
+            try expect(codexCandidates.contains(staged.path), "a per-user ChatGPT app in ~/Applications is checked too")
+            let found = findExecutable("codex") ?? ""
+            try expect(found.hasSuffix("ChatGPT.app/Contents/Resources/codex-cli/bin/codex"),
+                       "with only the ChatGPT app's CLI on disk, codex resolves to it (found \(found))")
+            // The launch PATH adds the folder of whichever codex the lookup resolved (no fixed entry needed).
+            try expect(launchPathDirectories(node: "/usr/bin/true").contains(URL(fileURLWithPath: found).deletingLastPathComponent().path),
+                       "the server's launch PATH includes the folder of the codex COS found")
+            try? fm.removeItem(at: home.appendingPathComponent("Applications/ChatGPT.app"))
+        }
 
         emit(ok: true, message: "\(passed) deterministic helper tests passed", details: ["tests": passed])
     }
