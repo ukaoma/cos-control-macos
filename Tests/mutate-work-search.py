@@ -195,7 +195,7 @@ def run(cmd, cwd, timeout=1800):
 def helper_lane(copy):
     out = copy / "helper-bin"
     code, text, s1 = run(["zsh", "Tests/compile-guard.sh", "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6", "-strict-concurrency=complete",
-                          "HelperSources/main.swift", "HelperSources/ProviderStatusCore.swift", "-framework", "Security", "-framework", "AppKit", "-o", str(out)], copy)
+                          "HelperSources/main.swift", "HelperSources/ProviderStatusCore.swift", "HelperSources/PairingCore.swift", "-framework", "Security", "-framework", "AppKit", "-o", str(out)], copy)
     if code != 0:
         return code, text, s1
     code, text2, s2 = run(["python3", "Tests/work-search-helper-checks.py", str(out)], copy)

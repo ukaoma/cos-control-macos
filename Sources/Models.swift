@@ -201,6 +201,8 @@ struct ServerStatus: Sendable {
     var morningBriefGate: String?
     var tasksGate: String?
     var threadAttachSupported = false
+    /// Server 6.67.0+: /api/health carries capabilities.pairing (the Glasses section of the setup guide).
+    var pairingSupported = false
     var threadAttachEnabled: Bool?
     /// Optional on purpose: absent means a server too old to report it, and the
     /// panel must then leave the toggle where it is rather than force it off.
@@ -411,6 +413,7 @@ struct ServerStatus: Sendable {
         morningBriefGate = details["morningBriefGate"]?.string
         tasksGate = details["tasksGate"]?.string
         threadAttachSupported = details["threadAttachSupported"]?.bool ?? false
+        pairingSupported = details["pairingSupported"]?.bool ?? false
         threadAttachEnabled = details["threadAttachEnabled"]?.bool
         claudeSessionsEnabled = details["claudeSessionsEnabled"]?.bool
         threadAttachProviders = (details["threadAttachProviders"]?.array ?? []).compactMap(\.string)

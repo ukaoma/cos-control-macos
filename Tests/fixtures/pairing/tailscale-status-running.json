@@ -1,0 +1,76 @@
+{
+ "AuthURL": "",
+ "BackendState": "Running",
+ "CurrentTailnet": {
+  "MagicDNSEnabled": true,
+  "MagicDNSSuffix": "tail00000a.ts.net",
+  "Name": "tail00000a.ts.net"
+ },
+ "HaveNodeKey": true,
+ "MagicDNSSuffix": "tail00000a.ts.net",
+ "Peer": {
+  "nodekey:0101010101010101010101010101010101010101010101010101010101010101": {
+   "Active": true,
+   "DNSName": "example-iphone.tail00000a.ts.net.",
+   "ExitNode": false,
+   "HostName": "localhost",
+   "ID": "n1",
+   "LastSeen": "0001-01-01T00:00:00Z",
+   "OS": "iOS",
+   "Online": true,
+   "PublicKey": "nodekey:0101010101010101010101010101010101010101010101010101010101010101",
+   "Relay": "xyz",
+   "TailscaleIPs": [
+    "100.64.0.11",
+    "fd7a:115c:a1e0::b"
+   ],
+   "UserID": 1001
+  },
+  "nodekey:0202020202020202020202020202020202020202020202020202020202020202": {
+   "Active": false,
+   "DNSName": "example-laptop.tail00000a.ts.net.",
+   "ExitNode": false,
+   "HostName": "Example Laptop",
+   "ID": "n2",
+   "LastSeen": "2026-01-01T00:00:00Z",
+   "OS": "macOS",
+   "Online": false,
+   "PublicKey": "nodekey:0202020202020202020202020202020202020202020202020202020202020202",
+   "Relay": "xyz",
+   "TailscaleIPs": [
+    "100.64.0.12",
+    "fd7a:115c:a1e0::c"
+   ],
+   "UserID": 1001
+  }
+ },
+ "Self": {
+  "Active": false,
+  "DNSName": "example-mac.tail00000a.ts.net.",
+  "ExitNode": false,
+  "HostName": "Example Mac",
+  "ID": "n0",
+  "LastSeen": "0001-01-01T00:00:00Z",
+  "OS": "macOS",
+  "Online": true,
+  "PublicKey": "nodekey:0000000000000000000000000000000000000000000000000000000000000000",
+  "Relay": "xyz",
+  "TailscaleIPs": [
+   "100.64.0.10",
+   "fd7a:115c:a1e0::a"
+  ],
+  "UserID": 1001
+ },
+ "TUN": true,
+ "TailscaleIPs": [
+  "100.64.0.10",
+  "fd7a:115c:a1e0::a"
+ ],
+ "User": {
+  "1001": {
+   "DisplayName": "Alex Example",
+   "ID": 1001
+  }
+ },
+ "Version": "1.102.2-t6cac91817-g6ff0ddc72"
+}

@@ -118,6 +118,11 @@ struct ProviderConnectChecks {
         voiceRows()
         await voiceFlow()
         await qaFixes()
+        glassesDecoding()
+        glassesRows()
+        glassesProgress()
+        await glassesFlow()
+        await glassesQA()
         if failures > 0 {
             FileHandle.standardError.write(Data("Connect your AI checks: \(failures) failed, \(passes) passed\n".utf8))
             exit(1)
@@ -377,7 +382,8 @@ struct ProviderConnectChecks {
     static func setupGuide() {
         // Early user before Get started: server rows wait and are not counted.
         let early = SetupGuideRules.rows(facts(allMissing, running: false), skipped: [])
-        check(early.filter(\.afterSetup).map(\.id) == [.voice, .sessions, .jev], "setup guide early", "\(early.filter(\.afterSetup).map(\.id))")
+        check(early.filter { $0.afterSetup && $0.counted }.map(\.id) == [.voice, .sessions, .jev], "setup guide early", "\(early.filter(\.afterSetup).map(\.id))")
+        check(early.filter { $0.afterSetup && !$0.counted }.map(\.id) == [.glassesPair], "setup guide early", "the glasses code waits for the server too, uncounted")
         check(SetupGuideRules.progress(early) == (0, 5), "setup guide early", "counts claude, codex, cursor, ollama, permissions: \(SetupGuideRules.progress(early))")
         check(SetupGuideRules.showFinishCard(early, hidden: false) && SetupGuideRules.finishTitle(early) == "Finish setup · 0 of 5", "finish card early", SetupGuideRules.finishTitle(early))
         check(!SetupGuideRules.showFinishCard(early, hidden: true), "finish card hide", "Hide setup guide removes the card")
@@ -386,7 +392,9 @@ struct ProviderConnectChecks {
         let mid = SetupGuideRules.rows(midFacts, skipped: [])
         let p = SetupGuideRules.progress(mid)
         check(p.total == 9 && p.handled == 4, "finish card mid", "codex, cursor (skipped), voice, continue: \(p)")
-        check(mid.map(\.id) == [.claude, .codex, .cursor, .ollama, .voice, .sessions, .continueThreads, .jev, .permissions], "setup guide rows", "\(mid.map(\.id))")
+        // 2026-10-09: the three Glasses rows come last and are never counted (the totals above are unchanged).
+        check(mid.map(\.id) == [.claude, .codex, .cursor, .ollama, .voice, .sessions, .continueThreads, .jev, .permissions, .tailscaleMac, .tailscalePhone, .glassesPair], "setup guide rows", "\(mid.map(\.id))")
+        check(SetupRowID.allCases.count == 12 && mid.filter { !$0.counted }.map(\.id) == [.tailscaleMac, .tailscalePhone, .glassesPair], "glasses uncounted", "\(mid.filter { !$0.counted }.map(\.id))")
         // Done: everything done or skipped.
         var allDone = facts(allIn, voice: voiceReady())
         allDone.claudeSessionsEnabled = true; allDone.jevConfigured = true; allDone.permissionsNeedCount = 0
@@ -593,5 +601,466 @@ struct ProviderConnectChecks {
         check(ProviderGuide.statusTimeout == 35, "status timeout", "25 s deadline plus 10 s")
         check(ProviderPass.prompt(setUp: .codex, tag: "abcd1234ef")!.contains("~/Applications/ChatGPT.app") && ProviderPass.prompt(setUp: .claude, tag: "abcd1234ef")!.contains("/opt/homebrew/bin/claude"), "pass prompts", "COS's own paths")
         check(PetIntro.touchedKeys.allSatisfy { $0 != "cos.sessionPetCharacterPercent" }, "pet intro", "the migration's key is not a sign of a person")
+    }
+}
+
+// MARK: - Glasses pairing (contract 2026-10-09)
+
+/// `tailscale-status` details as the helper prints them (HelperSources/PairingCore.swift), from this Mac's real shape.
+func tailscaleDetails(installed: Bool = true, running: Bool = true, backend: String? = "Running", phoneOnline: Bool = true,
+                      phoneSameUser: Bool = true, error: String? = nil) -> String {
+    let peers = installed && backend != nil ? """
+    [{"os":"iOS","dns":"example-iphone.tail00000a.ts.net","ipv4":"100.64.0.11","online":\(phoneOnline),"sameUser":\(phoneSameUser)},
+     {"os":"macOS","dns":"example-laptop.tail00000a.ts.net","ipv4":"100.64.0.12","online":false,"sameUser":true}]
+    """ : "[]"
+    return """
+    {"installed":\(installed),"running":\(running),"backendState":\(backend.map { "\"\($0)\"" } ?? "null"),
+     "selfIPv4":\(running ? "\"100.64.0.10\"" : "null"),"selfDNS":\(running ? "\"example-mac.tail00000a.ts.net\"" : "null"),
+     "peers":\(peers),"bundle":"standalone","error":\(error.map { "\"\($0)\"" } ?? "null")}
+    """
+}
+
+let pairingBase = Date(timeIntervalSince1970: 1_791_000_000)
+func iso(_ date: Date) -> String {
+    let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f.string(from: date)
+}
+func codeDetails(boot: String = "boot-1", expires: Date, qr: Bool = true, lanUntil: Date? = nil) -> String {
+    """
+    {"code":"K7Q2M9XD","display":"K7Q2-M9XD","qr":\(qr ? "\"COS1/MAC/K7Q2M9XD/100.64.0.10:3141/T3ABCD\"" : "null"),"expiresAt":"\(iso(expires))",
+     "bootId":"\(boot)","hosts":\(qr ? #"[{"host":"100.64.0.10","port":3141,"kind":"tailscale"}]"# : "[]"),"lanArmedUntil":\(lanUntil.map { "\"\(iso($0))\"" } ?? "null"),"reason":null,"httpStatus":200}
+    """
+}
+func statusDetails(boot: String = "boot-1", code: String? = "active", expires: Date? = nil, pending: String? = nil,
+                   claim: (ip: String, at: Date, allowed: Bool)? = nil, firstAuth: Date? = nil, lanUntil: Date? = nil) -> String {
+    let codeJSON = code.map { #"{"display":"K7Q2-M9XD","expiresAt":"\#(iso(expires ?? pairingBase.addingTimeInterval(300)))","state":"\#($0)"}"# } ?? "null"
+    let pendingJSON = pending.map { #"{"nonce":"nonce-abcdefghijklmnop","ip":"\#($0)","at":"\#(iso(pairingBase))"}"# } ?? "null"
+    let claimJSON = claim.map { #"{"ip":"\#($0.ip)","at":"\#(iso($0.at))","allowed":\#($0.allowed)}"# } ?? "null"
+    return """
+    {"code":\(codeJSON),"pending":\(pendingJSON),"lastClaim":\(claimJSON),"firstAuthAfterClaimAt":\(firstAuth.map { "\"\(iso($0))\"" } ?? "null"),
+     "lanArmedUntil":\(lanUntil.map { "\"\(iso($0))\"" } ?? "null"),"bootId":"\(boot)","reason":null,"httpStatus":200}
+    """
+}
+let whoisPhone = #"{"found":true,"node":"example-iphone","os":"iOS","user":"Alex Example","sameUser":true}"#
+
+@MainActor final class SleepCounts { var a = 0; var b = 0 }
+
+@MainActor final class FakePairingHelper {
+    var calls: [[String]] = []
+    var answers: [String: String] = [:]
+    var throwsFor: Set<String> = []
+    func run(_ arguments: [String]) throws -> PairingHelperAnswer {
+        calls.append(arguments)
+        if throwsFor.contains(arguments[0]) { throw ProviderGuideError.unreadable }
+        let key = arguments[0] == "tailscale-whois" ? "tailscale-whois \(arguments[1])" : arguments[0]
+        return PairingHelperAnswer(ok: true, message: "", details: Data((answers[key] ?? answers[arguments[0]] ?? "{}").utf8))
+    }
+    func count(_ verb: String) -> Int { calls.filter { $0.first == verb }.count }
+}
+
+extension ProviderConnectChecks {
+    static func gfacts(code: PairingCode? = nil, status: String? = nil, tailscale: String? = tailscaleDetails(), running: Bool = true,
+                       supported: Bool = true, whois: [String: WhoisFacts] = [:], now: Date = pairingBase) -> GlassesFacts {
+        GlassesFacts(serverRunning: running, pairingSupported: supported, tailscale: tailscale.flatMap { TailscaleFacts.decode(Data($0.utf8)) },
+                     code: code, status: status.map { PairingStatusFacts.decode(PairingJSON.object(Data($0.utf8))!) }, whois: whois, now: now)
+    }
+    static func code(boot: String = "boot-1", expires: Date = pairingBase.addingTimeInterval(300), qr: Bool = true) -> PairingCode {
+        PairingCode.decode(PairingJSON.object(Data(codeDetails(boot: boot, expires: expires, qr: qr).utf8))!)!
+    }
+
+    static func glassesDecoding() {
+        let ms = PairingJSON.date("2026-10-09T12:40:00.000Z"), plain = PairingJSON.date("2026-10-09T12:40:00Z")
+        check(ms != nil && ms == plain && PairingJSON.date(1_791_000_000) == Date(timeIntervalSince1970: 1_791_000_000)
+              && PairingJSON.date(1_791_000_000_000) == Date(timeIntervalSince1970: 1_791_000_000) && PairingJSON.date(NSNull()) == nil
+              && PairingJSON.date(true) == nil && PairingJSON.date("soon") == nil, "pairing dates", "ISO with and without ms, seconds, ms")
+        let ts = TailscaleFacts.decode(Data(tailscaleDetails().utf8))!
+        check(ts.running && ts.selfIPv4 == "100.64.0.10" && ts.phone?.name == "example-iphone", "tailscale facts", "\(ts)")
+        check(TailscaleFacts.decode(Data(tailscaleDetails(phoneOnline: false).utf8))!.phone == nil, "phone online", "an offline phone is not on your tailnet")
+        check(TailscaleFacts.decode(Data(tailscaleDetails(phoneSameUser: false).utf8))!.phone == nil, "phone same user", "someone else's phone never counts")
+        check(ts.peers.first { $0.os == "macOS" }?.online == false, "offline mac peer", "kept, not the phone")
+        let c = code()
+        check(c.display == "K7Q2-M9XD" && c.qr?.hasPrefix("COS1/MAC/") == true && c.hosts.first?.text == "100.64.0.10:3141" && c.bootId == "boot-1"
+              && c.expiresAt == pairingBase.addingTimeInterval(300), "pairing code", "\(c)")
+        let noHost = code(qr: false)
+        check(noHost.qr == nil && noHost.hosts.isEmpty, "pairing code no host", "qr null, hosts []")
+        check(PairingCode.decode(["display": "X", "bootId": "b"]) == nil, "pairing code", "no expiry, no code")
+        let st = PairingStatusFacts.decode(PairingJSON.object(Data(statusDetails(pending: "100.64.0.11", claim: ("100.64.0.11", pairingBase, true), firstAuth: pairingBase.addingTimeInterval(5)).utf8))!)
+        check(st.pending?.nonce == "nonce-abcdefghijklmnop" && st.pending?.ip == "100.64.0.11" && st.lastClaim?.allowed == true
+              && st.firstAuthAfterClaimAt == pairingBase.addingTimeInterval(5) && st.codeState == "active" && st.bootId == "boot-1", "pairing status", "\(st)")
+        let empty = PairingStatusFacts.decode(PairingJSON.object(Data(statusDetails(code: nil).utf8))!)
+        check(empty.codeDisplay == nil && empty.pending == nil && empty.lastClaim == nil && empty.firstAuthAfterClaimAt == nil, "pairing status empty", "\(empty)")
+        let w = WhoisFacts.decode(Data(whoisPhone.utf8))!
+        check(w.found && w.node == "example-iphone" && w.user == "Alex Example", "whois facts", "\(w)")
+    }
+
+    static func glassesRows() {
+        // Tailscale on this Mac.
+        check(GlassesRules.macRow(gfacts(tailscale: nil)).status == "Checking…", "mac row", "before the first read")
+        let missing = GlassesRules.macRow(gfacts(tailscale: tailscaleDetails(installed: false, running: false, backend: nil)))
+        check(missing.action == .getTailscale && missing.actionTitle == "Get Tailscale" && !missing.done, "mac row missing", "\(missing)")
+        check(GlassesRules.tailscaleDownload.absoluteString == "https://tailscale.com/download/mac", "mac row missing", "the Mac download")
+        let signedOut = GlassesRules.macRow(gfacts(tailscale: tailscaleDetails(running: false, backend: "NeedsLogin")))
+        check(signedOut.status == "Signed out" && signedOut.action == .openTailscale && signedOut.actionTitle == "Open Tailscale", "mac row signed out", "\(signedOut)")
+        let stopped = GlassesRules.macRow(gfacts(tailscale: tailscaleDetails(running: false, backend: nil, error: "Tailscale could not be read. Open the Tailscale app once, then check again.")))
+        check(stopped.action == .openTailscale && stopped.detail?.contains("Open the Tailscale app") == true, "mac row unreadable", "\(stopped)")
+        let on = GlassesRules.macRow(gfacts())
+        check(on.done && on.status == "Running" && on.detail?.contains("100.64.0.10") == true && on.action == .none, "mac row running", "\(on)")
+        // Tailscale on your iPhone.
+        let phone = GlassesRules.phoneRow(gfacts())
+        check(phone.done && phone.detail == "example-iphone is on your tailnet" && phone.unlocks == "Sign in with the same account as this Mac", "phone row", "\(phone)")
+        check(!GlassesRules.phoneRow(gfacts(tailscale: tailscaleDetails(phoneOnline: false))).done, "phone row", "offline phone")
+        check(!GlassesRules.phoneRow(gfacts(tailscale: tailscaleDetails(phoneSameUser: false))).done, "phone row", "another user's phone")
+        check(GlassesRules.tailscaleAppStore == "https://apps.apple.com/app/tailscale/id1470499037", "phone row", "the App Store link")
+        // Connect your glasses: every stage.
+        let now = pairingBase
+        check(GlassesRules.stage(gfacts(running: false)) == .serverOff && GlassesRules.connectRow(gfacts(running: false)).afterSetup, "connect row", "server off")
+        let old = GlassesRules.connectRow(gfacts(code: code(), supported: false))
+        check(GlassesRules.stage(gfacts(code: code(), supported: false)) == .updateServer && old.status == "Update the server", "capability gate", "no capabilities.pairing: \(old.status)")
+        check(GlassesRules.stage(gfacts()) == .checking, "connect row", "no code yet")
+        check(GlassesRules.stage(gfacts(code: code(), status: statusDetails())) == .code, "connect row", "ready to scan")
+        check(GlassesRules.stage(gfacts(code: code(qr: false), status: statusDetails())) == .noHosts
+              && GlassesRules.connectRow(gfacts(code: code(qr: false))).detail == "Turn on Tailscale or allow pairing on this Wi-Fi.", "connect row no host", "")
+        check(GlassesRules.stage(gfacts(code: code(expires: now.addingTimeInterval(-1)))) == .checking, "connect row", "an expired code is never shown")
+        var failed = gfacts(); failed.failure = "COS could not reach pairing."
+        check(GlassesRules.stage(failed) == .failed("COS could not reach pairing."), "connect row", "a failure says so")
+        let pend = gfacts(code: code(), status: statusDetails(pending: "100.64.0.11"), whois: ["100.64.0.11": WhoisFacts.decode(Data(whoisPhone.utf8))!])
+        check(GlassesRules.stage(pend) == .pending && GlassesRules.requester(ip: "100.64.0.11", whois: pend.whois["100.64.0.11"]) == "example-iphone (Alex Example)", "allow card", "named by whois")
+        check(GlassesRules.requester(ip: "192.168.1.20", whois: nil) == "Device on Wi-Fi 192.168.1.20", "allow card", "a LAN address")
+        check(GlassesRules.requester(ip: "192.168.1.20", whois: WhoisFacts(found: true, node: "spoof", user: "x")) == "Device on Wi-Fi 192.168.1.20", "allow card", "a LAN address is never named")
+        check(GlassesRules.requester(ip: "100.70.0.9", whois: WhoisFacts(found: false)) == "Tailnet device 100.70.0.9", "allow card", "peer not found")
+        let allowed = gfacts(code: code(), status: statusDetails(code: "used", claim: ("100.64.0.11", now.addingTimeInterval(-10), true)))
+        check(GlassesRules.stage(allowed) == .allowedWaiting && !GlassesRules.needsCode(allowed), "allowed", "waits for the phone, no new code")
+        let stale = gfacts(code: code(), status: statusDetails(code: "used", claim: ("100.64.0.11", now.addingTimeInterval(-200), true)))
+        check(GlassesRules.stage(stale) != .allowedWaiting && GlassesRules.needsCode(stale), "allowed", "after 3 min a new code")
+        let paired = gfacts(code: code(), status: statusDetails(code: nil, claim: ("100.64.0.11", now.addingTimeInterval(-60), true), firstAuth: now.addingTimeInterval(-50)),
+                            whois: ["100.64.0.11": WhoisFacts.decode(Data(whoisPhone.utf8))!])
+        let pairedRow = GlassesRules.connectRow(paired)
+        check(GlassesRules.stage(paired) == .paired && pairedRow.done && pairedRow.detail?.hasPrefix("Paired: example-iphone, ") == true, "paired", pairedRow.detail ?? "nil")
+        check(!GlassesRules.needsCode(paired), "paired", "no code once paired")
+        let denied = gfacts(code: code(), status: statusDetails(code: nil, claim: ("100.64.0.11", now, false), firstAuth: now))
+        check(GlassesRules.stage(denied) != .paired, "paired", "only an allowed claim turns green")
+        var again = paired; again.pairAnotherSince = now
+        check(GlassesRules.stage(again) != .paired, "pair another", "an older pairing no longer turns it green")
+        // needsCode.
+        check(GlassesRules.needsCode(gfacts()), "needs code", "none yet")
+        check(!GlassesRules.needsCode(gfacts(code: code(), status: statusDetails())), "needs code", "a fresh code stays")
+        // QA 2026-10-09 W10: never in a code's last seconds (a scan may be in flight); at expiry, yes.
+        check(!GlassesRules.needsCode(gfacts(code: code(expires: now.addingTimeInterval(1)), status: statusDetails())), "mint at expiry", "1 s left: keep it")
+        check(GlassesRules.needsCode(gfacts(code: code(expires: now), status: statusDetails())), "mint at expiry", "expired: a new one")
+        check(GlassesRules.needsCode(gfacts(code: code(), status: statusDetails(boot: "boot-2"))), "needs code", "the server restarted (bootId)")
+        check(GlassesRules.needsCode(gfacts(code: code(), status: statusDetails(code: nil))), "needs code", "the server has no code")
+        check(GlassesRules.needsCode(gfacts(code: code(), status: statusDetails(code: "locked"))), "needs code", "locked")
+        check(!GlassesRules.needsCode(pend), "needs code", "never while a claim waits")
+        // Server /qa 2026-10-09: a no-host code is made again once Tailscale comes up (only once), and a QR the server
+        // already replaced is never kept on screen.
+        var downThenUp = gfacts(code: code(qr: false), status: statusDetails()); downThenUp.codeMintedWithTailscale = false
+        check(GlassesRules.needsCode(downThenUp), "re-mint when tailscale comes up", "no host, Tailscale now running with an address")
+        var upAlready = downThenUp; upAlready.codeMintedWithTailscale = true
+        check(!GlassesRules.needsCode(upAlready), "re-mint when tailscale comes up", "made with Tailscale up: no loop")
+        var stillDown = gfacts(code: code(qr: false), status: statusDetails(), tailscale: tailscaleDetails(running: false, backend: "NeedsLogin"))
+        stillDown.codeMintedWithTailscale = false
+        check(!GlassesRules.needsCode(stillDown), "re-mint when tailscale comes up", "Tailscale still down: wait")
+        let replaced = statusDetails().replacingOccurrences(of: #""display":"K7Q2-M9XD""#, with: #""display":"ABCD-EFGH""#)
+        check(GlassesRules.needsCode(gfacts(code: code(), status: replaced)), "stale qr", "the server shows another code: ours was cancelled")
+        check(!GlassesRules.needsCode(gfacts(code: nil, supported: false)) && !GlassesRules.needsCode(gfacts(running: false)), "capability gate", "no code on an old or stopped server")
+        // Copy: no em dash anywhere in the section (Miles's rule for UI copy).
+        var all: [SetupRow] = []
+        for f in [gfacts(), gfacts(tailscale: nil), gfacts(tailscale: tailscaleDetails(installed: false, running: false, backend: nil)), pend, paired, allowed, failed,
+                  gfacts(code: code(qr: false)), gfacts(supported: false), gfacts(running: false)] { all += GlassesRules.rows(f) }
+        check(all.allSatisfy { !"\($0.title)\($0.status)\($0.unlocks)\($0.detail ?? "")".contains("—") }, "glasses copy", "no em dashes")
+        check(all.allSatisfy { !$0.counted }, "glasses uncounted", "every Glasses row in every state")
+        check(all.allSatisfy { $0.actionTitle == nil || $0.action != SetupAction.none }, "glasses buttons act", "")
+    }
+
+    static func glassesProgress() {
+        // Finish setup is the same whatever the Glasses section shows.
+        let base = facts(mixed, voice: voiceReady())
+        let without = SetupGuideRules.progress(SetupGuideRules.rows(base, skipped: []))
+        for g in [gfacts(), gfacts(running: false), gfacts(tailscale: tailscaleDetails(installed: false, running: false, backend: nil)),
+                  gfacts(code: code(), status: statusDetails(code: nil, claim: ("100.64.0.11", pairingBase, true), firstAuth: pairingBase))] {
+            var f = base; f.glasses = g
+            let rows = SetupGuideRules.rows(f, skipped: [])
+            check(SetupGuideRules.progress(rows) == without, "glasses uncounted", "\(SetupGuideRules.progress(rows)) vs \(without)")
+            check(SetupGuideRules.next(rows).map { $0.counted } != false, "glasses never next", "\(SetupGuideRules.next(rows)?.id.rawValue ?? "nil")")
+        }
+        // Everything else done: the card ends even though Tailscale is missing and nothing is paired.
+        var allDone = facts(allIn, voice: voiceReady())
+        allDone.claudeSessionsEnabled = true; allDone.jevConfigured = true; allDone.permissionsNeedCount = 0
+        allDone.glasses = gfacts(tailscale: tailscaleDetails(installed: false, running: false, backend: nil))
+        let done = SetupGuideRules.rows(allDone, skipped: [])
+        check(SetupGuideRules.progress(done) == (9, 9) && !SetupGuideRules.showFinishCard(done, hidden: false) && SetupGuideRules.next(done) == nil,
+              "glasses uncounted", "Finish setup ends without the glasses: \(SetupGuideRules.progress(done))")
+    }
+
+    static func glassesFlow() async {
+        let fake = FakePairingHelper()
+        var clock = pairingBase
+        let state = GlassesPairingState()
+        state.runHelper = { args in try fake.run(args) }
+        state.now = { clock }
+        fake.answers = ["tailscale-status": tailscaleDetails(), "pairing-status": statusDetails(code: nil), "pairing-code": codeDetails(expires: pairingBase.addingTimeInterval(300)),
+                        "pairing-decision": #"{"ok":true,"reason":null,"httpStatus":200}"#, "tailscale-whois 100.64.0.11": whoisPhone]
+        // The capability gate: an old or stopped server gets no pairing call at all, only the Tailscale read.
+        await state.tick(index: 0, serverRunning: true, pairingSupported: false)
+        await state.tick(index: 1, serverRunning: false, pairingSupported: true)
+        check(fake.calls == [["tailscale-status"]], "capability gate", "\(fake.calls)")
+        fake.calls = []
+        // First visible poll: Tailscale, status, then a code.
+        await state.tick(index: 0, serverRunning: true, pairingSupported: true)
+        check(fake.calls == [["tailscale-status"], ["pairing-status"], ["pairing-code"]], "first poll", "\(fake.calls)")
+        check(state.code?.display == "K7Q2-M9XD" && state.tailscale?.phone?.name == "example-iphone", "first poll", "")
+        // The server now lists the code: polls 1 and 2 read status only (Tailscale every third poll).
+        fake.answers["pairing-status"] = statusDetails()
+        fake.calls = []
+        await state.tick(index: 1, serverRunning: true, pairingSupported: true)
+        await state.tick(index: 2, serverRunning: true, pairingSupported: true)
+        check(fake.calls == [["pairing-status"], ["pairing-status"]], "steady poll", "no new code, no Tailscale: \(fake.calls)")
+        // Expiry makes a new one (at expiry, after the backoff).
+        clock = pairingBase.addingTimeInterval(299)
+        fake.calls = []
+        await state.tick(index: 4, serverRunning: true, pairingSupported: true)
+        check(fake.count("pairing-code") == 0, "mint at expiry", "1 s before expiry: no new code \(fake.calls)")
+        clock = pairingBase.addingTimeInterval(300)
+        fake.calls = []
+        await state.tick(index: 4, serverRunning: true, pairingSupported: true)
+        check(fake.count("pairing-code") == 1, "re-mint on expiry", "\(fake.calls)")
+        fake.answers["pairing-code"] = codeDetails(expires: clock.addingTimeInterval(300))
+        await state.showNewCode()
+        // A restart (new bootId) makes a new one.
+        fake.answers["pairing-status"] = statusDetails(boot: "boot-2", expires: clock.addingTimeInterval(300))
+        fake.answers["pairing-code"] = codeDetails(boot: "boot-2", expires: clock.addingTimeInterval(300))
+        clock = clock.addingTimeInterval(11)
+        fake.calls = []
+        await state.tick(index: 5, serverRunning: true, pairingSupported: true)
+        check(fake.count("pairing-code") == 1 && state.code?.bootId == "boot-2", "re-mint on restart", "\(fake.calls)")
+        // A claim waits: whois names it once, no new code.
+        fake.answers["pairing-status"] = statusDetails(boot: "boot-2", expires: clock.addingTimeInterval(300), pending: "100.64.0.11")
+        fake.calls = []
+        await state.tick(index: 7, serverRunning: true, pairingSupported: true)
+        await state.tick(index: 8, serverRunning: true, pairingSupported: true)
+        check(fake.count("tailscale-whois") == 1 && fake.count("pairing-code") == 0 && state.whois["100.64.0.11"]?.node == "example-iphone", "pending", "\(fake.calls)")
+        // Allow sends the nonce and allow; Deny sends deny and shows a new code.
+        fake.calls = []
+        await state.decide(allow: true)
+        check(fake.calls.first == ["pairing-decision", "nonce-abcdefghijklmnop", "allow"], "allow", "\(fake.calls)")
+        fake.calls = []
+        await state.decide(allow: false)
+        check(fake.calls.first == ["pairing-decision", "nonce-abcdefghijklmnop", "deny"] && fake.calls.last == ["pairing-code"], "deny", "\(fake.calls)")
+        // Server /qa fix 1 through the state: a no-host code made while Tailscale was off is made again on the next
+        // Tailscale read that says it is up, and only once.
+        let up = GlassesPairingState(); let uf = FakePairingHelper()
+        up.runHelper = { args in try uf.run(args) }; up.now = { clock }
+        uf.answers = ["tailscale-status": tailscaleDetails(installed: true, running: false, backend: "NeedsLogin"), "pairing-status": statusDetails(code: nil),
+                      "pairing-code": codeDetails(expires: clock.addingTimeInterval(300), qr: false)]
+        await up.tick(index: 0, serverRunning: true, pairingSupported: true)
+        uf.answers["pairing-status"] = statusDetails(expires: clock.addingTimeInterval(300))
+        uf.answers["tailscale-status"] = tailscaleDetails()
+        uf.answers["pairing-code"] = codeDetails(expires: clock.addingTimeInterval(300))
+        clock = clock.addingTimeInterval(10)
+        await up.tick(index: 3, serverRunning: true, pairingSupported: true)
+        check(uf.count("pairing-code") == 2 && up.code?.qr != nil, "re-mint when tailscale comes up", "\(uf.calls)")
+        clock = clock.addingTimeInterval(10)
+        await up.tick(index: 6, serverRunning: true, pairingSupported: true)
+        check(uf.count("pairing-code") == 2, "re-mint when tailscale comes up", "no further codes once it has a host")
+        // A LAN address is never looked up.
+        fake.answers["pairing-status"] = statusDetails(boot: "boot-2", expires: clock.addingTimeInterval(300), pending: "192.168.1.20")
+        fake.calls = []
+        await state.tick(index: 10, serverRunning: true, pairingSupported: true)
+        check(fake.count("tailscale-whois") == 0, "whois tailnet only", "\(fake.calls)")
+        // The Wi-Fi toggle mints with --allow-lan; what it SHOWS is the server's lanArmedUntil (QA 2026-10-09 W7).
+        fake.answers["pairing-status"] = statusDetails(boot: "boot-2", expires: clock.addingTimeInterval(300), lanUntil: clock.addingTimeInterval(600))
+        fake.answers["pairing-code"] = codeDetails(boot: "boot-2", expires: clock.addingTimeInterval(300), lanUntil: clock.addingTimeInterval(600))
+        fake.calls = []
+        await state.setAllowLan(true)
+        check(state.lanToggleOn && state.lanArmed && fake.calls == [["pairing-code", "--allow-lan"]], "lan toggle", "\(fake.calls)")
+        await state.refreshStatus()
+        check(state.lanToggleOn, "lan toggle", "stays on while the server says armed")
+        clock = clock.addingTimeInterval(601)
+        fake.answers["pairing-status"] = statusDetails(boot: "boot-2", expires: clock.addingTimeInterval(300), lanUntil: nil)
+        await state.refreshStatus()
+        check(!state.lanToggleOn, "lan toggle", "the server's 10 minutes ended: off")
+        // A refused toggle code snaps back to the server's state instead of showing on.
+        let lanRefused = GlassesPairingState(); let lr = FakePairingHelper()
+        lanRefused.runHelper = { args in try lr.run(args) }; lanRefused.now = { clock }
+        lr.answers = ["pairing-code": #"{"reason":"draining","httpStatus":503,"message":"Your Mac is updating."}"#]
+        await lanRefused.setAllowLan(true)
+        check(!lanRefused.lanToggleOn && lr.calls == [["pairing-code", "--allow-lan"]], "lan toggle", "refused: shows off")
+        // When the server's window ends with no status read in between, the toggle still shows off (the server's time).
+        let lanClock = GlassesPairingState(); let lc = FakePairingHelper()
+        var lanNow = clock
+        lanClock.runHelper = { args in try lc.run(args) }; lanClock.now = { lanNow }
+        lc.answers = ["pairing-code": codeDetails(expires: lanNow.addingTimeInterval(300), lanUntil: lanNow.addingTimeInterval(600))]
+        await lanClock.setAllowLan(true)
+        check(lanClock.lanToggleOn, "lan toggle", "armed")
+        lanNow = lanNow.addingTimeInterval(601)
+        check(!lanClock.lanToggleOn, "lan toggle", "the server's lanArmedUntil passed: off, even before the next status read")
+        // The toggle during a code in flight is queued, never dropped; a status read that began before a code is dropped.
+        let raced = GlassesPairingState(); let rf = FakePairingHelper()
+        var hook: (@MainActor () async -> Void)?
+        raced.runHelper = { args in
+            if let h = hook { hook = nil; await h() }
+            return try rf.run(args)
+        }
+        raced.now = { clock }
+        rf.answers = ["pairing-status": statusDetails(expires: clock.addingTimeInterval(300)), "pairing-code": codeDetails(expires: clock.addingTimeInterval(300), lanUntil: clock.addingTimeInterval(600))]
+        hook = { await raced.setAllowLan(true) }
+        await raced.mint()
+        check(rf.calls == [["pairing-code"], ["pairing-code", "--allow-lan"]] && raced.lanToggleOn, "lan queue", "the toggle's code ran after the one in flight: \(rf.calls)")
+        hook = { await raced.showNewCode() }
+        let generation = raced.mintGeneration
+        await raced.refreshStatus()
+        check(raced.droppedStatusReplies == 1 && raced.mintGeneration > generation && raced.status == nil, "stale status", "a status read older than the last code is dropped")
+        await raced.refreshStatus()
+        check(raced.status != nil && raced.droppedStatusReplies == 1, "stale status", "the next one is kept")
+        // A failed mint waits out the backoff instead of retrying every 2 s.
+        let quiet = GlassesPairingState(); let qf = FakePairingHelper()
+        quiet.runHelper = { args in try qf.run(args) }; quiet.now = { clock }
+        qf.answers = ["tailscale-status": tailscaleDetails(), "pairing-status": statusDetails(code: nil), "pairing-code": #"{"reason":"draining","httpStatus":503,"message":"The server is restarting. Try again in a moment."}"#]
+        await quiet.tick(index: 0, serverRunning: true, pairingSupported: true)
+        await quiet.tick(index: 1, serverRunning: true, pairingSupported: true)
+        check(qf.count("pairing-code") == 1 && quiet.failure == "The server is restarting. Try again in a moment.", "mint backoff", "\(qf.calls) \(quiet.failure ?? "nil")")
+        clock = clock.addingTimeInterval(10)
+        await quiet.tick(index: 2, serverRunning: true, pairingSupported: true)
+        check(qf.count("pairing-code") == 2, "mint backoff", "retries after 10 s")
+        // A helper answer of server_too_old closes the gate whatever health said.
+        let oldServer = GlassesPairingState(); let of = FakePairingHelper()
+        oldServer.runHelper = { args in try of.run(args) }; oldServer.now = { clock }
+        of.answers = ["tailscale-status": tailscaleDetails(), "pairing-status": #"{"reason":"server_too_old","httpStatus":404,"message":"Pairing needs server 6.67 or newer. Update the server."}"#]
+        await oldServer.tick(index: 0, serverRunning: true, pairingSupported: true)
+        await oldServer.tick(index: 1, serverRunning: true, pairingSupported: true)
+        check(oldServer.serverTooOld && of.count("pairing-code") == 0 && of.count("pairing-status") == 1, "capability gate", "\(of.calls)")
+        check(GlassesRules.stage(oldServer.facts(serverRunning: true, pairingSupported: true)) == .updateServer, "capability gate", "Update the server")
+        // A helper that fails: the rows still say something, and nothing is minted in a loop.
+        let broken = GlassesPairingState(); let bf = FakePairingHelper()
+        broken.runHelper = { args in try bf.run(args) }; broken.now = { clock }
+        bf.throwsFor = ["tailscale-status", "pairing-status", "pairing-code"]
+        await broken.tick(index: 0, serverRunning: true, pairingSupported: true)
+        check(broken.tailscale?.error?.contains("could not read Tailscale") == true && broken.failure != nil, "helper failure", "\(String(describing: broken.tailscale))")
+        // The poll loop ends with its view (sleep false), and polls only while visible (QA 2026-10-09 W3).
+        let looped = GlassesPairingState(); let lf = FakePairingHelper()
+        looped.runHelper = { args in try lf.run(args) }; looped.now = { clock }
+        var upClock: TimeInterval = 0
+        looped.uptime = { upClock }
+        lf.answers = fake.answers
+        var sleeps = 0
+        await looped.run(gate: { GlassesGate(serverRunning: true, pairingSupported: true, visible: false) }, sleep: { _ in sleeps += 1; upClock += 2; return sleeps < 3 })
+        check(sleeps == 3 && lf.calls.isEmpty, "visibility gate", "hidden, minimized or covered: no call at all \(lf.calls)")
+        sleeps = 0
+        await looped.run(gate: { GlassesGate(serverRunning: true, pairingSupported: true) }, sleep: { _ in sleeps += 1; upClock += 2; return sleeps < 6 })
+        // Calls per tick: status on every poll, Tailscale on polls 0 and 3 only.
+        check(sleeps == 6 && lf.count("pairing-status") == 6 && lf.count("tailscale-status") == 2, "calls per tick", "\(lf.calls)")
+        // A later "too old" answer is cleared when the server changes (QA 2026-10-09 W2).
+        await oldServer.tick(index: 2, serverRunning: true, pairingSupported: true, serverVersion: "6.67.0")
+        await oldServer.tick(index: 3, serverRunning: true, pairingSupported: true, serverVersion: "6.67.1")
+        check(!oldServer.serverTooOld, "too old clears", "a new server version reopens the gate")
+        // Two copies of the section at once: one status read per interval, and the other takes over when one ends
+        // (QA 2026-10-09 W5). Real short sleeps; the counts allow scheduling slack, never double polling.
+        let two = GlassesPairingState(); let tf = FakePairingHelper()
+        two.runHelper = { args in try tf.run(args) }; two.now = { clock }
+        two.pollInterval = 0.05
+        tf.answers = fake.answers
+        let slept = SleepCounts()
+        let gate: @MainActor @Sendable () -> GlassesGate = { GlassesGate(serverRunning: true, pairingSupported: true) }
+        let a = Task { @MainActor in await two.run(gate: gate, sleep: { s in try? await Task.sleep(for: .seconds(s)); slept.a += 1; return !Task.isCancelled }) }
+        let b = Task { @MainActor in await two.run(gate: gate, sleep: { s in try? await Task.sleep(for: .seconds(s)); slept.b += 1; return !Task.isCancelled }) }
+        try? await Task.sleep(for: .seconds(0.6))
+        let together = tf.count("pairing-status")
+        check(slept.a >= 5 && slept.b >= 5 && together <= max(slept.a, slept.b) + 2 && together < slept.a + slept.b - 3, "two pollers", "status \(together), A slept \(slept.a), B slept \(slept.b)")
+        a.cancel()
+        try? await Task.sleep(for: .seconds(0.4))
+        let after = tf.count("pairing-status")
+        check(after >= together + 4, "two pollers", "the other copy takes over: \(together) then \(after)")
+        b.cancel()
+        _ = await (a.value, b.value)
+        try? await Task.sleep(for: .seconds(0.2))
+        let stopped = tf.count("pairing-status")
+        try? await Task.sleep(for: .seconds(0.2))
+        check(tf.count("pairing-status") == stopped, "two pollers", "no copy left: no more calls")
+    }
+
+    /// QA round 1 (2026-10-09): ping-pong, account warning, names, error messages, whois and status backoff.
+    static func glassesQA() async {
+        var clock = pairingBase
+        // W8: one re-mint after our code is replaced, then stop and say so; Show a new code starts again.
+        let pp = GlassesPairingState(); let pf = FakePairingHelper()
+        pp.runHelper = { args in try pf.run(args) }; pp.now = { clock }
+        let elsewhere = statusDetails(expires: clock.addingTimeInterval(300)).replacingOccurrences(of: #""display":"K7Q2-M9XD""#, with: #""display":"ABCD-EFGH""#)
+        pf.answers = ["tailscale-status": tailscaleDetails(), "pairing-status": statusDetails(code: nil), "pairing-code": codeDetails(expires: clock.addingTimeInterval(300))]
+        await pp.tick(index: 1, serverRunning: true, pairingSupported: true)
+        pf.answers["pairing-status"] = elsewhere
+        clock = clock.addingTimeInterval(11)
+        await pp.tick(index: 2, serverRunning: true, pairingSupported: true)
+        check(pf.count("pairing-code") == 2 && !pp.madeElsewhere, "ping-pong", "one re-mint after a replacement: \(pf.calls)")
+        clock = clock.addingTimeInterval(11)
+        await pp.tick(index: 4, serverRunning: true, pairingSupported: true)
+        clock = clock.addingTimeInterval(11)
+        await pp.tick(index: 5, serverRunning: true, pairingSupported: true)
+        let f = pp.facts(serverRunning: true, pairingSupported: true)
+        check(pf.count("pairing-code") == 2 && pp.madeElsewhere && GlassesRules.stage(f) == .madeElsewhere
+              && GlassesRules.connectRow(f).status == "Code made elsewhere", "ping-pong", "then it stops: \(pf.calls)")
+        await pp.showNewCode()
+        check(pf.count("pairing-code") == 3 && !pp.madeElsewhere, "ping-pong", "Show a new code starts again")
+        // W9: a device on another Tailscale account is flagged; one Tailscale cannot name is too; a LAN address is plain.
+        let mine = WhoisFacts(found: true, node: "example-iphone", os: "iOS", user: "Alex Example", sameUser: true)
+        let theirs = WhoisFacts(found: true, node: "guest-iphone", os: "iOS", user: "Someone Else", sameUser: false)
+        check(GlassesRules.accountWarning(ip: "100.64.0.11", whois: mine) == nil, "account warning", "your own phone")
+        check(GlassesRules.accountWarning(ip: "100.64.0.13", whois: theirs) == "Not your Tailscale account", "account warning", "another account")
+        check(GlassesRules.accountWarning(ip: "100.64.0.13", whois: WhoisFacts(found: false)) != nil, "account warning", "unnamed tailnet device")
+        check(GlassesRules.accountWarning(ip: "192.168.1.20", whois: theirs) == nil, "account warning", "LAN: the Wi-Fi line says it")
+        check(WhoisFacts.decode(Data(#"{"found":true,"node":"x"}"#.utf8))?.sameUser == false, "account warning", "unknown account is never yours")
+        // Names: control and format characters removed, 40 at most.
+        check(GlassesRules.clean("evil\nphone\u{202E}\u{7}") == "evil phone", "names", GlassesRules.clean("evil\nphone\u{202E}\u{7}"))
+        check(GlassesRules.clean("ab\u{200B}cd\u{2066}ef") == "abcdef", "names", "zero-width and isolate marks are removed, not spaced: \(GlassesRules.clean("ab\u{200B}cd\u{2066}ef"))")
+        let long = GlassesRules.clean(String(repeating: "a", count: 80))
+        check(long.count == 40 && long.hasSuffix("…"), "names", "\(long.count)")
+        let spoof = WhoisFacts(found: true, node: "line1\nline2" + String(repeating: "x", count: 60), user: "u\r\n", sameUser: true)
+        let shown = GlassesRules.requester(ip: "100.64.0.11", whois: spoof)
+        check(!shown.contains("\n") && !shown.contains("\r") && shown.count <= 2 * GlassesRules.nameLimit + 3, "names", shown)
+        for bad in ["100.64.0.256", "100.64.00.1", "100.64.0", "100.64.0.1.2", "١٠٠.64.0.1", "100.064.0.1"] { check(!GlassesRules.isTailnet(bad), "isTailnet", bad) }
+        check(GlassesRules.isTailnet("100.64.0.11") && GlassesRules.isTailnet("100.127.255.255") && !GlassesRules.isTailnet("100.128.0.1"), "isTailnet", "")
+        // W6: the helper's own message reaches the row, never a generic "unreadable".
+        let msg = GlassesPairingState()
+        msg.runHelper = { _ in PairingHelperAnswer(ok: false, message: "No pairing token is configured.", details: Data()) }
+        msg.now = { clock }
+        await msg.mint()
+        await msg.refreshTailscale()
+        check(msg.failure?.contains("No pairing token is configured.") == true && msg.tailscale?.error?.contains("No pairing token is configured.") == true,
+              "helper message", "\(msg.failure ?? "nil")")
+        // Stage changes are logged by name, with no code, nonce, address or name in the line.
+        var lines: [String] = []
+        let logged = GlassesPairingState(); let lg = FakePairingHelper()
+        logged.runHelper = { args in try lg.run(args) }; logged.now = { clock }; logged.log = { lines.append($0) }
+        lg.answers = ["tailscale-status": tailscaleDetails(), "pairing-status": statusDetails(expires: clock.addingTimeInterval(300), pending: "100.64.0.11"),
+                      "pairing-code": codeDetails(expires: clock.addingTimeInterval(300)), "tailscale-whois 100.64.0.11": whoisPhone]
+        await logged.tick(index: 0, serverRunning: true, pairingSupported: true)
+        lg.answers["pairing-status"] = statusDetails(code: nil, claim: ("100.64.0.11", clock, true), firstAuth: clock.addingTimeInterval(2))
+        await logged.tick(index: 1, serverRunning: true, pairingSupported: true)
+        check(lines.contains("pairing stage start -> pending") && lines.contains("pairing stage pending -> paired"), "stage log", "\(lines)")
+        check(!lines.joined().contains("K7Q2") && !lines.joined().contains("nonce-") && !lines.joined().contains("100.64.0.11") && !lines.joined().contains("example-iphone"),
+              "stage log", "no secrets or names: \(lines)")
+        // A failed whois is asked again only after a minute; status errors back off.
+        let wf = GlassesPairingState(); let wfh = FakePairingHelper()
+        wf.runHelper = { args in try wfh.run(args) }; wf.now = { clock }
+        wfh.answers = ["tailscale-status": tailscaleDetails(), "pairing-status": statusDetails(expires: clock.addingTimeInterval(300), pending: "100.64.0.11")]
+        wfh.throwsFor = ["tailscale-whois"]
+        await wf.tick(index: 1, serverRunning: true, pairingSupported: true)
+        await wf.tick(index: 2, serverRunning: true, pairingSupported: true)
+        check(wfh.count("tailscale-whois") == 1, "whois retry", "\(wfh.calls)")
+        clock = clock.addingTimeInterval(61)
+        await wf.tick(index: 4, serverRunning: true, pairingSupported: true)
+        check(wfh.count("tailscale-whois") == 2, "whois retry", "asked again after 60 s")
+        let sb = GlassesPairingState(); let sbf = FakePairingHelper()
+        sb.runHelper = { args in try sbf.run(args) }; sb.now = { clock }
+        sbf.throwsFor = ["pairing-status", "pairing-code"]; sbf.answers = ["tailscale-status": tailscaleDetails()]
+        await sb.refreshStatus(); await sb.refreshStatus()
+        check(sbf.count("pairing-status") == 1, "status backoff", "a failed status is not asked again at once")
+        clock = clock.addingTimeInterval(2.1)
+        await sb.refreshStatus(); await sb.refreshStatus()
+        check(sbf.count("pairing-status") == 2, "status backoff", "then after 2 s, then longer: \(sbf.calls.count)")
+        clock = clock.addingTimeInterval(3)
+        await sb.refreshStatus()
+        check(sbf.count("pairing-status") == 2, "status backoff", "the second wait is 4 s")
+        clock = clock.addingTimeInterval(60)
+        for _ in 0..<6 { await sb.refreshStatus(); clock = clock.addingTimeInterval(10.1) }
+        check(sbf.count("pairing-status") == 8, "status backoff", "never longer than 10 s: \(sbf.count("pairing-status"))")
     }
 }

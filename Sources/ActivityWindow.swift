@@ -1098,8 +1098,7 @@ struct ActivityWindow: View {
 
     private func goHome() {
         showingSettings = false
-        // A send being handed over keeps its overlay; it shows the result when you come back to Work.
-        if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }
+        if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil } // A send being handed over keeps its overlay; it shows the result back in Work.
         if taskDetail != nil { requestCloseTaskDetail(); return }
         if isolatedWorkPreview { withOptionalAnimation { section = nil }; return }
         clearDetail()
@@ -1131,8 +1130,7 @@ struct ActivityWindow: View {
 
     private func goBack() {
         if showingSettings { showingSettings = false; return }
-        // A send being handed over keeps its overlay; it shows the result when you come back to Work.
-        if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }
+        if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil } // A send being handed over keeps its overlay; it shows the result back in Work.
         // The linked receipt reader is a child of Work in both the integrated
         // candidate and production. Header Back and Escape keep that context.
         if section == .sessions, showingLinkedSession {

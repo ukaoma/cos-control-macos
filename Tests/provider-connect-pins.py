@@ -44,7 +44,7 @@ pin(not re.search(r"NSWorkspace|NSPasteboard|Process\(|osascript|import AppKit|i
 pin(not re.search(r"Process\(|NSWorkspace|URLSession|FileManager", core), "pure core", "ProviderStatusCore.swift spawns, reads and fetches nothing")
 
 # Route flag: the card renders exactly under its own flag, and only the opener and Done write it.
-row = body(connect_views, "struct PanelConnectAIRow: View {", "\n/// F5")
+row = body(connect_views, "struct PanelConnectAIRow: View {", "\n@MainActor enum QRImage {")
 pin(re.search(r"if guide\.panelRouteActive \{\s*ProviderConnectCard\(guide: guide, model: model\)", row) is not None, "route flag", "the card mounts on `if guide.panelRouteActive` alone")
 pin("guide.openInPanel()" in row, "route flag", "the row's click is the opener")
 writes = re.findall(r"(?<!var )panelRouteActive = (true|false)", connect + connect_views + model + views + setup)
@@ -103,7 +103,24 @@ init = body(model, "    init(startBackgroundWork: Bool = true", "\n    }\n")
 pin(before(init, "guard startBackgroundWork else { return }", "evaluatePetIntro()"), "pet intro", "evaluated only in the running app")
 pin("case .addJevKey: model.showSettings?()" in connect_views and 'rows.append(SetupRow(id: .jev' in connect, "jev row", "the guide shows Jev and sends the key to Settings")
 pin("jevKey" not in connect_views, "jev row", "the guide never touches the key")
-pin("GlassesGuideRow(" in connect_views and "gotcos.com/wizard/#glasses-setup" in connect, "glasses row", "links the existing wizard steps")
+# Glasses section (contract 2026-10-09): replaces GlassesGuideRow, polls only as its own view task, never counted.
+pin("GlassesGuideRow" not in connect_views and "gotcos.com/wizard/#glasses-setup" in connect and "GuideExtras.glassesWizardURL" in connect_views, "glasses row", "the section replaces the link-only row and keeps the wizard link")
+guide_view = body(connect_views, "struct SetupGuideView: View {", "\n/// \"Finish setup")
+pin('section("Glasses") {' in guide_view and "GlassesSetupRows(model: model, pairing: pairing" in guide_view, "glasses section", "the setup guide shows the Glasses section")
+pin(connect_views.count("await pairing.run(") == 1 and "await pairing.run(" in body(connect_views, "struct GlassesSetupRows: View {", "\n/// One Glasses row"), "glasses polling", "one polling site: the section's own task")
+pin('filter.correctionLevel = "Q"' in connect_views and "CIFilter.qrCodeGenerator()" in connect_views and ".interpolation(.none)" in connect_views, "glasses qr", "CoreImage, correction Q, crisp")
+qr_side = re.search(r"QRCodeView\(text: qr, side: (\d+)", connect_views)
+pin(qr_side is not None and int(qr_side.group(1)) >= 220, "glasses qr", "the pairing QR is at least 220 pt")
+glasses_rows = body(connect_views, "struct GlassesSetupRows: View {", "\n/// One Glasses row")
+pin('Button("Update Server") { model.perform("update") }' in glasses_rows and "checkForAppUpdateManually" not in glasses_rows
+    and "model.status.installed && model.status.managedContract && model.status.ownershipVerified" in glasses_rows, "glasses update", "the real server update with the panel's gates (QA 2026-10-09 W1)")
+pin("visible: windowHolder.onScreen(panelVisible: model.panelVisible)" in glasses_rows and "window.occlusionState.contains(.visible)" in connect_views
+    and "!window.isMiniaturized" in connect_views, "glasses visibility", "polls only while its window is on screen (QA 2026-10-09 W3)")
+pin('label: "Pairing code \\(code.display)"' in glasses_rows and 'label: "Tailscale App Store link"' in glasses_rows, "glasses voiceover", "the QRs say what they are")
+
+pin("let next = SetupGuideRules.next(rows)" in connect_views and "$0.counted }" in body(connect, "    static func progress(", "\n    }\n"), "glasses uncounted", "progress and Next skip uncounted rows")
+pin('"Hold your phone so the code fills the screen"' in connect_views and '"Allow pairing on this Wi-Fi (home only)"' in connect_views, "glasses copy", "contract copy")
+pin("facts.glasses = glassesPairing.facts(serverRunning: status.running, pairingSupported: status.pairingSupported)" in connect_views, "capability gate", "rows read the server's pairing capability")
 
 # The setup guide (Miles 2026-10-08 10:52): prominent, skippable, reachable from everywhere.
 pet = read("Sources/SessionPet.swift"); activity = read("Sources/ActivityWindow.swift")
@@ -170,6 +187,7 @@ for script in list((root / "Tests").glob("*.sh")) + list((root / "scripts").glob
     for line in text.splitlines():
         if "HelperSources/main.swift" in line and ("swiftc" in line or line.strip().startswith('"$ROOT/HelperSources/main.swift"') or '"HelperSources/main.swift", "-framework"' in line or '"HelperSources/main.swift", "HelperSources' in line):
             pin("ProviderStatusCore.swift" in line, "source lists", f"{script.name} compiles the helper without ProviderStatusCore.swift")
+            pin("PairingCore.swift" in line, "source lists", f"{script.name} compiles the helper without PairingCore.swift")
 
 if failed:
     print("\n".join(failed), file=sys.stderr)
