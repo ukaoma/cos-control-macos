@@ -1,3 +1,9 @@
+## 0.5.275 (build 328)
+
+- **What's New before you update.** Update in the menu-bar panel, or Check for updates when one is waiting, now opens a What's New window with the release, a summary and what changed. Download and install is the confirmation, and the window shows Downloading, Checking and Installing as they happen. COS Control quits and reopens by itself; the glasses server keeps running.
+- Release notes come from the appcast; older versions keep showing the plain notes.
+- First release where the gold menu-bar glasses and the Update available banner from 0.5.274 appear for an update.
+
 ## 0.5.274 (build 327)
 
 - **Connect your glasses in one scan.** The Setup guide has a new Glasses section. It checks Tailscale on this Mac and on your iPhone (with an App Store code for the phone), then shows a pairing code. Scan it with COS Glasses 6.10.621 (Scan code on your Mac), tap Allow here, and the phone is connected. Codes last 5 minutes and work once; Allow names the device, and warns when it is not on your Tailscale account. Pairing on home Wi-Fi is an opt-in 10-minute switch.
