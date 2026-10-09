@@ -12,11 +12,13 @@ import SwiftUI
 /// Nothing contacts the helper, the appcast or the server: the model is made with no background work and the binary
 /// runs with a scratch home. Windows are never ordered in, the process can never become active, and no event is sent.
 @main @MainActor struct AppUpdateBadgeRender {
-    static func main() throws {
+    static func main() async throws {
         NSApplication.shared.setActivationPolicy(.prohibited)
         let args = Array(CommandLine.arguments.dropFirst())
         switch args.first {
-        case "check": checkWiring()
+        case "check":
+            checkWiring()
+            if args.count > 1 { await manualDuringBackground(helper: URL(fileURLWithPath: args[1])) }
         case "render":
             guard args.count > 1 else { fatalError("usage: render <dir>") }
             let out = URL(fileURLWithPath: args[1], isDirectory: true)
@@ -74,6 +76,38 @@ import SwiftUI
             if !same { fail("icon tint token", "\(name.rawValue): menu-bar gold \(a) is not COSPalette.accent \(b)") }
         }
         print("PASS: update-ready badge wiring (appUpdate moves the flow, the icon follows, no test check, gold = accent token)")
+    }
+
+    /// QA 2026-10-09 (main-actor spin): a background check is held open by a stand-in helper while Check for updates
+    /// starts. The manual check must wait for it (no second helper call while the first runs), then run once, report,
+    /// and leave the slot free: exactly two helper calls, then a third check may run. A spin on the main actor hangs
+    /// the process, so a watchdog off the main actor turns a hang into a failure.
+    static func manualDuringBackground(helper: URL) async {
+        let dir = helper.deletingLastPathComponent()
+        let calls = dir.appendingPathComponent("calls.log"), release = dir.appendingPathComponent("release")
+        func count() -> Int {
+            ((try? String(contentsOf: calls, encoding: .utf8)) ?? "").split(separator: "\n").filter { $0 == "check-app-update" }.count
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 30) {
+            print("check failed [manual check spin]: Check for updates did not finish within 30 s of a held background check")
+            exit(1)
+        }
+        let model = ControllerModel(startBackgroundWork: false, helper: HelperClient(executableOverride: helper))
+        let background = Task { await model.runScheduledAppUpdateCheck(.launch) }
+        while count() < 1 { try? await Task.sleep(for: .milliseconds(20)) }
+        let manual = Task { await model.checkForAppUpdateManually() }
+        try? await Task.sleep(for: .milliseconds(400))
+        if count() != 1 { fail("no overlap", "Check for updates called the helper while a background check was running (\(count()) calls)") }
+        if !model.updateCheckInFlight { fail("no overlap", "Check for updates must show Checking while it waits") }
+        FileManager.default.createFile(atPath: release.path, contents: Data())
+        await background.value
+        await manual.value
+        if count() != 2 { fail("manual check spin", "expected exactly 2 helper calls (background, then manual), got \(count())") }
+        if model.updateCheckInFlight { fail("manual check spin", "Check for updates finished but still shows Checking") }
+        if !(model.notice ?? "").contains("is the latest version") { fail("manual check spin", "the manual check must report its answer, got \(model.notice ?? "nil") / \(model.error ?? "nil")") }
+        await model.runScheduledAppUpdateCheck(.launch)
+        if count() != 3 { fail("slot freed in task", "after both checks the slot must be free for the next one (\(count()) calls)") }
+        print("PASS: Check for updates during a held background check: waits, runs once, reports, frees the slot (3 helper calls)")
     }
 
     // MARK: render

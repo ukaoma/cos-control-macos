@@ -792,13 +792,17 @@ final class ControllerModel: ObservableObject {
     /// it is not due; silent either way, so a failed check never tints the icon and never raises anything.
     func runScheduledAppUpdateCheck(_ trigger: AppUpdateCheckSchedule.Trigger) async {
         guard appUpdateSchedule.begin(trigger, now: Date()) else { return }
+        // The task frees its own slot before its value resolves (QA 2026-10-09). Freed after `await check.value`
+        // instead, a Check for updates waiting on that value could find the task done and the slot still held, and
+        // spin on the main actor without ever letting this continuation run.
         let check = Task { @MainActor [weak self] () -> Void in
             await self?.checkForAppUpdate()
+            self?.appUpdateCheckRunning = nil
+            self?.appUpdateSchedule.finish()
         }
+        // No suspension between the Task above and this line, so the task cannot have finished yet.
         appUpdateCheckRunning = check
         await check.value
-        appUpdateCheckRunning = nil
-        appUpdateSchedule.finish()
     }
 
     /// The panel (or the Settings window) opened. Checks again only when the last check is older than 15 minutes, and
@@ -828,11 +832,15 @@ final class ControllerModel: ObservableObject {
         notice = nil
         error = nil
         defer { updateCheckInFlight = false }
-        // Never two checks at once: a background check in flight finishes first, then this one asks for itself.
-        while !appUpdateSchedule.begin(.manual, now: Date()) {
-            if let running = appUpdateCheckRunning { await running.value } else { await Task.yield() }
+        // Never two checks at once: a background check in flight finishes first (it frees the slot itself), then this
+        // one asks for the slot again. Bounded: two attempts, then it runs anyway rather than leave the button waiting,
+        // and frees only a slot it holds.
+        var holdsSlot = appUpdateSchedule.begin(.manual, now: Date())
+        if !holdsSlot, let running = appUpdateCheckRunning {
+            await running.value
+            holdsSlot = appUpdateSchedule.begin(.manual, now: Date())
         }
-        defer { appUpdateSchedule.finish() }
+        defer { if holdsSlot { appUpdateSchedule.finish() } }
         do {
             let response = try await helper.run([
                 "check-app-update",

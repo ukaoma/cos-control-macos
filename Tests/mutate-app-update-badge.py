@@ -61,7 +61,34 @@ MUTANTS = [
     ("no check on panel open", V, "        .onAppear { model.panelOpenedForUpdates() }\n", "", "[panel open check]", "pins"),
     ("periodic loop bypasses the schedule", C, "                await self?.runScheduledAppUpdateCheck(.periodic)", "                await self?.checkForAppUpdate()", "[background checks]", "pins"),
     ("install without phases", C, "        guard !busy, appUpdateFlow.beginInstall() else { return }", "        guard !busy else { return }", "[install phases]", "pins"),
-    ("manual check overlaps", C, "        while !appUpdateSchedule.begin(.manual, now: Date()) {", "        while false {", "[no overlap]", "pins"),
+    ("manual check overlaps", C, "        if !holdsSlot, let running = appUpdateCheckRunning {\n            await running.value\n", "        if false, let running = appUpdateCheckRunning {\n            await running.value\n", "[no overlap]", "wiring"),
+    # The code QA found (2026-10-09), both sites at once: the slot freed after the value, and a manual loop on it.
+    ("the original spin (both sites)", C, [("""            await self?.checkForAppUpdate()
+            self?.appUpdateCheckRunning = nil
+            self?.appUpdateSchedule.finish()
+        }
+        // No suspension between the Task above and this line, so the task cannot have finished yet.
+        appUpdateCheckRunning = check
+        await check.value
+""", """            await self?.checkForAppUpdate()
+        }
+        appUpdateCheckRunning = check
+        await check.value
+        appUpdateCheckRunning = nil
+        appUpdateSchedule.finish()
+"""), ("""        var holdsSlot = appUpdateSchedule.begin(.manual, now: Date())
+        if !holdsSlot, let running = appUpdateCheckRunning {
+            await running.value
+            holdsSlot = appUpdateSchedule.begin(.manual, now: Date())
+        }
+        defer { if holdsSlot { appUpdateSchedule.finish() } }
+""", """        while !appUpdateSchedule.begin(.manual, now: Date()) {
+            if let running = appUpdateCheckRunning { await running.value } else { await Task.yield() }
+        }
+        defer { appUpdateSchedule.finish() }
+""")], None, "[manual check spin]", "wiring"),
+    ("manual frees a slot it does not hold", C, "        defer { if holdsSlot { appUpdateSchedule.finish() } }", "        defer { appUpdateSchedule.finish() }", "[", "pins"),
+    ("dot on the lens, canvas kept", M, "            let dot = NSRect(x: rect.maxX - dotDiameter, y:", "            let dot = NSRect(x: rect.maxX - dotDiameter - dotRoom - 1, y:", "[icon dot", "checks"),  # [icon dot]: drawn in the corner; [icon dot clear]: that corner is clear of the glyph
     ("appUpdate does not move the flow", C, "        didSet { appUpdateFlow.offer(appUpdate, currentVersion: Self.currentVersion, currentBuild: Self.currentBuild) }\n", "", "[model wiring]", "pins"),
     ("label reads the raw result", A, "let variant = MenuBarIcon.variant(for: model.appUpdateFlow.phase)", "let variant: MenuBarIcon.Variant = model.appUpdate.shouldSurface ? .updateReady : .normal", "[icon follows state]", "pins"),
 ]
@@ -91,6 +118,12 @@ def run(lane, copy):
             return 124, "the checks did not finish"
         finally:
             shutil.rmtree(out, ignore_errors=True)
+    if lane == "wiring":
+        while True:
+            p = subprocess.run(["/bin/zsh", str(copy / "Tests/run-app-update-badge.sh"), "wiring"], capture_output=True, text=True, timeout=1800)
+            if p.returncode != 75:
+                return p.returncode, p.stdout + p.stderr
+            time.sleep(30)
     p = subprocess.run(["/usr/bin/python3", str(copy / "Tests/app-update-badge-pins.py"), str(copy)], capture_output=True, text=True)
     return p.returncode, p.stdout + p.stderr
 
@@ -102,7 +135,7 @@ def main():
     if copy.exists():
         shutil.rmtree(copy)
     shutil.copytree(src, copy, ignore=shutil.ignore_patterns(".git", "dist", "*.zip"))
-    for lane in ("checks", "pins"):
+    for lane in ("checks", "wiring", "pins"):
         code, out = run(lane, copy)
         if code != 0:
             sys.exit(f"baseline {lane} lane is RED; no mutant can be judged:\n{out[-3000:]}")
@@ -113,13 +146,17 @@ def main():
             continue
         path = copy / rel
         text = path.read_text(encoding="utf-8")
-        n = text.count(original)
-        if n != 1:
-            results.append(f"MISSED TARGET ({n}x) {name}")
+        edits = original if isinstance(original, list) else [(original, mutant)]
+        missed = [text.count(o) for o, _ in edits if text.count(o) != 1]
+        if missed:
+            results.append(f"MISSED TARGET ({missed}x) {name}")
             survived.append(name)
             print(results[-1], flush=True)
             continue
-        path.write_text(text.replace(original, mutant), encoding="utf-8")
+        mutated = text
+        for o, m in edits:
+            mutated = mutated.replace(o, m)
+        path.write_text(mutated, encoding="utf-8")
         started = time.time()
         try:
             code, out = run(lane, copy)

@@ -3,6 +3,7 @@
 # time.
 #   run-app-update-badge.sh                the gate: the version rule, the schedule, the phases and the icon against
 #                                          Models.swift alone, then the model wiring with the whole app compiled
+#   run-app-update-badge.sh wiring         the model wiring alone (the mutation lane's app compile)
 #   run-app-update-badge.sh render <dir>   by hand: PNGs of the banner, the panel and the menu-bar glasses
 # The binaries carry this build's version and build (Resources/Info.plist), run with a scratch home, never reach the
 # helper, the appcast or the server, never order a window in and never become the active app.
@@ -38,8 +39,19 @@ fi
 "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "${SOURCES[@]}" "$ROOT/Tests/AppUpdateBadgeRender.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement "${PLIST_FLAGS[@]}" -o "$DIR/badge-render"
-if [[ "$MODE" == "check" ]]; then
-  env "${RUN_ENV[@]}" "$DIR/badge-render" check
+if [[ "$MODE" == "check" || "$MODE" == "wiring" ]]; then
+  # A stand-in helper: the first check-app-update waits for a release file (up to 10 s), every call is logged.
+  mkdir -p "$DIR/fake"
+  cat > "$DIR/fake/helper" <<'SH'
+#!/bin/sh
+D="$(cd "$(dirname "$0")" && pwd)"
+echo "$1" >> "$D/calls.log"
+n=$(grep -c . "$D/calls.log")
+if [ "$n" -eq 1 ]; then i=0; while [ ! -f "$D/release" ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done; fi
+printf '{"ok":true,"message":"COS Control is up to date","details":{"updateAvailable":false,"reason":"upToDate"}}\n'
+SH
+  chmod +x "$DIR/fake/helper"
+  env "${RUN_ENV[@]}" "$DIR/badge-render" check "$DIR/fake/helper"
 elif [[ "$MODE" == "render" ]]; then
   OUT="${2:?usage: run-app-update-badge.sh render <folder for the PNGs>}"
   env "${RUN_ENV[@]}" "$DIR/badge-render" render "$OUT" 2>"$DIR/stderr.log" || { cat "$DIR/stderr.log" >&2; exit 1; }

@@ -45,8 +45,13 @@ for needle, behaviour in (("appUpdateFlow.beginInstall()", "install phases"), ("
     pin(needle in install, behaviour, f"installAppUpdate must call {needle}")
 pin("didSet { appUpdateFlow.offer(appUpdate," in model, "model wiring", "every write of appUpdate moves the flow")
 manual = code(model[model.index("func checkForAppUpdateManually()"):model.index("func completeAppUpdateIfNeeded()")])
-pin("appUpdateSchedule.begin(.manual" in manual and "appUpdateSchedule.finish()" in manual, "no overlap",
-    "Check for updates waits for a running check and holds the slot while it runs")
+pin("appUpdateSchedule.begin(.manual" in manual and "if holdsSlot { appUpdateSchedule.finish() }" in manual
+    and "while " not in manual.split("var holdsSlot", 1)[-1].split("do {", 1)[0], "no overlap",
+    "Check for updates waits once for a running check, holds the slot while it runs, and never loops on it")
+scheduled = code(model[model.index("func runScheduledAppUpdateCheck"):model.index("func panelOpenedForUpdates")])
+child = scheduled.split("let check = Task", 1)[1].split("appUpdateCheckRunning = check", 1)[0]
+pin("self?.appUpdateSchedule.finish()" in child and "self?.appUpdateCheckRunning = nil" in child, "slot freed in task",
+    "the background check frees its slot inside its task, before its value resolves")
 pin("timeout: AppUpdateCheckSchedule.helperTimeout" in manual, "check timeout", "the manual check is bounded")
 background = code(model[model.index("    func checkForAppUpdate() async {"):model.index("func runScheduledAppUpdateCheck")])
 pin("timeout: AppUpdateCheckSchedule.helperTimeout" in background, "check timeout", "the background check is bounded")
