@@ -194,7 +194,12 @@ import Foundation
         let ready = MenuBarIcon.compose(systemName: "eyeglasses", variant: .updateReady)
         check(plain.isTemplate, "icon template", "the plain glasses follow the menu bar")
         check(!ready.isTemplate, "icon color", "the ready glasses are not a template (a menu bar drops a template's color)")
-        check(plain.size == ready.size && ready.size.width > ready.size.height + 1, "icon size", "same size, still landscape")
+        check(ready.size.height == plain.size.height && ready.size.width == plain.size.width + MenuBarIcon.dotRoom
+              && ready.size.width > ready.size.height + 1, "icon size", "the glyph 1:1, the dot's room on the right, still landscape")
+        for name in ["eyeglasses", "eyeglasses.slash"] {
+            let gap = dotClearance(MenuBarIcon.compose(systemName: name, variant: .normal))
+            check(gap >= 0.75, "icon dot clear", "\(name): the dot must sit outside the glyph, at least 0.75 pt from its ink (\(String(format: "%.2f", gap)) pt)")
+        }
         check(MenuBarIcon.image(systemName: "eyeglasses", variant: .updateReady) === MenuBarIcon.image(systemName: "eyeglasses", variant: .updateReady),
               "icon cache", "made once per variant")
 
@@ -221,6 +226,34 @@ import Foundation
         let light = luminance((0.537, 0.400, 0.176)), dark = luminance((0.788, 0.659, 0.431))
         check(1.05 / (light + 0.05) >= 4 && (light + 0.05) / 0.05 >= 3.5, "icon contrast", "light gold on white and on black")
         check((dark + 0.05) / (luminance((0.12, 0.12, 0.12)) + 0.05) >= 4.5, "icon contrast", "dark gold on a dark bar")
+    }
+
+    /// The plain glyph at 8x; the shortest distance (pt) from any of its ink to the edge of the ready image's dot, which
+    /// sits in the top-right corner of a canvas `dotRoom` wider. Negative when they overlap.
+    static func dotClearance(_ glyph: NSImage) -> Double {
+        let scale: CGFloat = 8
+        let w = Int(glyph.size.width * scale), h = Int(glyph.size.height * scale)
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4,
+                                         hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        else { return -1 }
+        rep.size = glyph.size
+        guard let context = NSGraphicsContext(bitmapImageRep: rep) else { return -1 }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        glyph.draw(in: NSRect(origin: .zero, size: glyph.size))
+        NSGraphicsContext.restoreGraphicsState()
+        let r = Double(MenuBarIcon.dotDiameter) / 2
+        // Dot centre, in points from the top-left of the glyph's own canvas.
+        let cx = Double(glyph.size.width + MenuBarIcon.dotRoom) - r, cy = r
+        var nearest = Double.infinity
+        for y in 0..<h {
+            for x in 0..<w {
+                guard let c = rep.colorAt(x: x, y: y), c.alphaComponent > 0.05 else { continue }
+                let px = (Double(x) + 0.5) / Double(scale), py = (Double(y) + 0.5) / Double(scale)
+                nearest = min(nearest, ((px - cx) * (px - cx) + (py - cy) * (py - cy)).squareRoot() - r)
+            }
+        }
+        return nearest
     }
 
     /// Draws the image at 4x into a clear bitmap and counts opaque pixels that are (or are not) the expected gold, and

@@ -4070,7 +4070,8 @@ struct AppUpdateCheckSchedule: Equatable, Sendable {
 ///
 /// `.normal` is a template image, so the menu bar tints it (black, white, or the highlight) exactly as before.
 /// `.updateReady` is NOT a template: a menu bar ignores color in a template image, so this one is drawn in COS gold
-/// with a dot at its corner, a ring knocked out around the dot so it reads apart from the lens. The gold is resolved
+/// with a dot above-right of the right lens, in a canvas `dotRoom` wider so the dot never touches the glyph (no knockout:
+/// 2026-10-09 QA, a ring cut the lens into a broken "C"). The gold is resolved
 /// when the menu bar draws the image, against the menu bar's own appearance: #89662d on a light bar, #c9a86e on a dark
 /// one (COSInk.accentNS; Tests/AppUpdateBadgeRender.swift compares the two). The light value alone is above 4:1 against
 /// white and black, so the icon stays legible even where the appearance is resolved differently. Drawn 1:1 at the
@@ -4081,8 +4082,10 @@ enum MenuBarIcon {
     }
 
     static let pointSize: CGFloat = 16
-    static let dotDiameter: CGFloat = 5
-    static let dotRing: CGFloat = 1.25
+    static let dotDiameter: CGFloat = 4.5
+    /// Extra width on the right of the ready image, so the dot sits outside the glyph's ink. The glyph is still drawn
+    /// 1:1 at its own size (never stretched: the 0.5.90 squash).
+    static let dotRoom: CGFloat = 2
 
     static let updateTint = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
@@ -4121,7 +4124,8 @@ enum MenuBarIcon {
             return empty
         }
         let ready = variant == .updateReady
-        let composed = NSImage(size: glyph, flipped: false) { rect in
+        let canvas = ready ? NSSize(width: glyph.width + dotRoom, height: glyph.height) : glyph
+        let composed = NSImage(size: canvas, flipped: false) { rect in
             base.draw(in: NSRect(origin: .zero, size: glyph))
             guard ready, let context = NSGraphicsContext.current else { return true }
             context.saveGraphicsState()
@@ -4129,10 +4133,8 @@ enum MenuBarIcon {
             context.compositingOperation = .sourceAtop
             updateTint.setFill()
             rect.fill()
-            // The dot, with a clear ring between it and the lens.
+            // The dot in the canvas's top-right corner, clear of the lens (Tests/AppUpdateBadgeChecks.swift measures it).
             let dot = NSRect(x: rect.maxX - dotDiameter, y: rect.maxY - dotDiameter, width: dotDiameter, height: dotDiameter)
-            context.compositingOperation = .clear
-            NSBezierPath(ovalIn: dot.insetBy(dx: -dotRing, dy: -dotRing)).fill()
             context.compositingOperation = .sourceOver
             updateTint.setFill()
             NSBezierPath(ovalIn: dot).fill()

@@ -2726,7 +2726,8 @@ struct ModelsContract {
         // template, which a menu bar would draw in one color).
         precondition(running.isTemplate && down.isTemplate, "the plain glasses stay a template image")
         precondition(!runningBadge.isTemplate && !downBadge.isTemplate, "the update-ready glasses carry their own color")
-        precondition(running.size == runningBadge.size, "the dot must not change the status item's size")
+        precondition(runningBadge.size.height == running.size.height && runningBadge.size.width == running.size.width + MenuBarIcon.dotRoom,
+                     "the ready glasses are the glyph 1:1 plus the dot's room on the right")
         precondition(running.size.width > running.size.height + 1,
                      "eyeglasses must stay landscape; a square canvas is the 0.5.90 skew")
         print("COS Control: MenuBarIcon compose distinctness passed")

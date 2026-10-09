@@ -51,6 +51,7 @@ MUTANTS = [
     # The icon.
     ("icon tints only when ready", M, "        phase == .none ? .normal : .updateReady", "        phase == .ready ? .updateReady : .normal", "[icon follows state]", "checks"),
     ("ready icon is a template", M, "        composed.isTemplate = !ready", "        composed.isTemplate = true", "[icon", "checks"),
+    ("dot back on the lens", M, "        let canvas = ready ? NSSize(width: glyph.width + dotRoom, height: glyph.height) : glyph\n", "        let canvas = glyph\n", "[icon", "checks"),
     ("no dot", M, "            NSBezierPath(ovalIn: dot).fill()\n", "", "[icon dot]", "checks"),
     ("no gold", M, "            context.compositingOperation = .sourceAtop\n            updateTint.setFill()\n            rect.fill()\n", "", "[icon color]", "checks"),
     ("pale gold on light bars", M, "            : NSColor(red: 0.537, green: 0.400, blue: 0.176, alpha: 1)", "            : NSColor(red: 0.788, green: 0.659, blue: 0.431, alpha: 1)", "[icon", "checks"),
