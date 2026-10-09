@@ -4363,9 +4363,18 @@ enum WhatsNewAfterUpdate {
         case seen
     }
 
-    static func launch(lastSeen: Int?, running: Int) -> Launch {
-        guard let lastSeen else { return .firstRun }
+    /// `installedByUpdater` is the build in the updater's success record (updates/success.json, written by the swap).
+    /// QA round 2: 0.5.274 never stored a build, so a launch with nothing remembered is an UPDATE when the updater just
+    /// installed this very build, and a first run otherwise (a fresh install, or a record of another build).
+    static func launch(lastSeen: Int?, running: Int, installedByUpdater: Int? = nil) -> Launch {
+        guard let lastSeen else { return installedByUpdater == running ? .updated : .firstRun }
         return lastSeen < running ? .updated : .seen
+    }
+
+    /// The build in updates/success.json (`{"version": "0.5.275", "build": 328, "appliedAt": "…"}`); nil for anything else.
+    static func updaterBuild(_ data: Data?) -> Int? {
+        guard let data, let value = try? JSONDecoder().decode(JSONValue.self, from: data) else { return nil }
+        return value.object?["build"]?.int
     }
 
     /// Show now? Only for an update, after a check that reached the feed, with no meeting recording.

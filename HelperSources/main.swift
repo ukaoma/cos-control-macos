@@ -8662,10 +8662,21 @@ final class COSControlHelper {
         emit(ok: true, message: "Update \(latestVersion) verified and staged", details: details)
     }
 
+    /// Up to 60 s for the Control that asked for the swap to finish quitting.
+    private func waitForLiveToQuit(_ live: URL) {
+        let deadline = Date().addingTimeInterval(60)
+        while bundleHasRunningProcess(live), Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+    }
+
     private func bundleHasRunningProcess(_ bundle: URL) -> Bool {
         let exe = bundle.appendingPathComponent("Contents/MacOS/COS Control")
-        guard let result = try? execute("/usr/sbin/lsof", ["-t", exe.path], timeout: 5) else { return false }
-        return !result.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // QA round 2: lsof's own error (no such file) is not a running process. Only its success (exit 0, one PID per
+        // line) is, or the quit wait spins its full minute.
+        guard fm.fileExists(atPath: exe.path),
+              let result = try? execute("/usr/sbin/lsof", ["-t", exe.path], timeout: 5), result.code == 0 else { return false }
+        return result.output.split(whereSeparator: \.isNewline).contains { Int($0.trimmingCharacters(in: .whitespaces)) != nil }
     }
 
     private func spawnDetached(executable: URL, arguments: [String]) throws -> pid_t {
@@ -8759,12 +8770,14 @@ final class COSControlHelper {
             (staged, version, build) = try requireStagedUpdate(expectedBuild: expectedBuild)
             try verifyStagedControlApp(staged, version: version, build: build)
         } catch {
-            // Control has already quit: put it back up on the build it was, so a refusal never leaves it closed.
+            // Put Control back up on the build it was, so a refusal never leaves it closed. Wait for the old one to finish
+            // quitting first (QA round 2), or `open` just brings forward an app that is about to exit.
             try? writeAppUpdateJSON(updatesFailureURL, [
                 "reason": "notStaged",
                 "message": "\(error)",
                 "at": ISO8601DateFormatter().string(from: Date()),
             ])
+            waitForLiveToQuit(live)
             if ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] == nil {
                 _ = try? execute("/usr/bin/open", [live.path], timeout: 10)
             }
@@ -8778,16 +8791,14 @@ final class COSControlHelper {
                 "blockers": blockers,
                 "at": ISO8601DateFormatter().string(from: Date()),
             ])
+            waitForLiveToQuit(live)
             if ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] == nil {
                 _ = try? execute("/usr/bin/open", [live.path], timeout: 10)
             }
             throw HelperError.message("Finish this first, then install: \(blockers.joined(separator: ", ")).")
         }
 
-        let deadline = Date().addingTimeInterval(60)
-        while bundleHasRunningProcess(live), Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.2)
-        }
+        waitForLiveToQuit(live)
         if bundleHasRunningProcess(live) {
             try writeAppUpdateJSON(updatesFailureURL, [
                 "reason": "quitTimeout",

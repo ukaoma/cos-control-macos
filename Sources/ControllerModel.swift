@@ -200,6 +200,9 @@ final class ControllerModel: ObservableObject {
     /// The last build that showed (or, on a first run, skipped) the after-update window. UserDefaults in the app,
     /// memory in a test or render model; a check may replace it.
     var whatsNewSeen = WhatsNewSeenStore(defaults: nil)
+    /// The updater's success record (the swap writes it; complete-app-update keeps it). A check may point it elsewhere.
+    var updateSuccessRecord = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/COS Control/updates/success.json")
     /// This launch's after-update decision (WhatsNewAfterUpdate.launch), made by beginPostUpdateWhatsNew.
     private(set) var postUpdateLaunch: WhatsNewAfterUpdate.Launch = .seen
     /// A check this launch reached the feed (not unreachable or malformed), so the after-update window can show.
@@ -830,10 +833,13 @@ final class ControllerModel: ObservableObject {
         considerPostUpdateWhatsNew()
     }
 
-    /// At launch: the first launch ever remembers this build and shows nothing; a newer build than the one remembered
+    /// At launch: the first launch ever remembers this build and shows nothing; a newer build than the one remembered,
+    /// or nothing remembered but the updater's record says it just installed this build (every update from 0.5.274),
     /// waits for considerPostUpdateWhatsNew; the same build does nothing.
     func beginPostUpdateWhatsNew() {
-        postUpdateLaunch = WhatsNewAfterUpdate.launch(lastSeen: whatsNewSeen.lastSeenBuild, running: Self.currentBuild)
+        let updater = WhatsNewAfterUpdate.updaterBuild(try? Data(contentsOf: updateSuccessRecord))
+        postUpdateLaunch = WhatsNewAfterUpdate.launch(lastSeen: whatsNewSeen.lastSeenBuild, running: Self.currentBuild,
+                                                      installedByUpdater: updater)
         if postUpdateLaunch == .firstRun { whatsNewSeen.lastSeenBuild = Self.currentBuild }
     }
 

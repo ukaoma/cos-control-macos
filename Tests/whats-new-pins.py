@@ -134,6 +134,16 @@ pin("_ = try requireStagedUpdate(expectedBuild: expectedBuild)" in detach
     and detach.index("requireStagedUpdate") < detach.index("spawnDetached"), "apply needs a stage", "apply --detach proves the stage before it spawns")
 pin('childArgs += ["--expected-build", String(expectedBuild)]' in detach, "apply expected build", "the detached swap gets the build too")
 
+# QA round 2: a swap that refuses waits for the old Control to quit before reopening it.
+swap = code(between(helper, "private func swapStagedApp(live: URL, expectedBuild: Int?) throws {", "private func emitCompleteAppUpdate"))
+for marker in ('"reason": "notStaged"', '"reason": "busy"'):
+    part = swap.split(marker, 1)[1]
+    pin("waitForLiveToQuit(live)" in part and part.index("waitForLiveToQuit(live)") < part.index('"/usr/bin/open"'), "swap waits",
+        f"after {marker}, wait for the old Control to quit, then reopen it")
+begin = code(between(model, "func beginPostUpdateWhatsNew() {", "func considerPostUpdateWhatsNew()"))
+pin("WhatsNewAfterUpdate.updaterBuild(try? Data(contentsOf: updateSuccessRecord))" in begin and "installedByUpdater: updater" in begin,
+    "after update updater", "the launch decision reads the updater's success record")
+
 # The helper passes whatsNew through check-app-update only after cleaning it.
 check_verb = code(between(helper, "private func emitAppUpdateCheck(args: [String]) throws {", "static func macOSAtLeast"))
 pin('if let whatsNew = Self.sanitizedWhatsNew(stable["whatsNew"]) { details["whatsNew"] = whatsNew }' in check_verb, "helper whatsNew",

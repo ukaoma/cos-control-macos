@@ -340,6 +340,19 @@ import Foundation
         check(WhatsNewAfterUpdate.launch(lastSeen: 327, running: 328) == .updated, "after update launch", "an older build remembered: updated")
         check(WhatsNewAfterUpdate.launch(lastSeen: 328, running: 328) == .seen, "after update launch", "the same build: seen")
         check(WhatsNewAfterUpdate.launch(lastSeen: 330, running: 328) == .seen, "after update launch", "a rollback: seen, never shown")
+        // QA round 2: 0.5.274 stored nothing, so the updater's record decides a launch with nothing remembered.
+        check(WhatsNewAfterUpdate.launch(lastSeen: nil, running: 328, installedByUpdater: 328) == .updated, "after update updater",
+              "nothing remembered, the updater just installed this build: an update")
+        check(WhatsNewAfterUpdate.launch(lastSeen: nil, running: 328, installedByUpdater: 327) == .firstRun, "after update updater",
+              "a record of another build: a fresh install")
+        check(WhatsNewAfterUpdate.launch(lastSeen: nil, running: 328, installedByUpdater: nil) == .firstRun, "after update updater",
+              "no record: a fresh install")
+        check(WhatsNewAfterUpdate.launch(lastSeen: 328, running: 328, installedByUpdater: 328) == .seen, "after update updater",
+              "a build remembered wins over the record (never twice)")
+        check(WhatsNewAfterUpdate.updaterBuild(Data(#"{"version":"0.5.275","build":328,"appliedAt":"2026-10-09T20:00:00Z"}"#.utf8)) == 328,
+              "after update updater", "reads the swap's success record")
+        check(WhatsNewAfterUpdate.updaterBuild(Data(#"{"version":"0.5.275"}"#.utf8)) == nil && WhatsNewAfterUpdate.updaterBuild(Data("x".utf8)) == nil
+              && WhatsNewAfterUpdate.updaterBuild(nil) == nil, "after update updater", "no build, junk or no file: nil")
         check(WhatsNewAfterUpdate.shouldShow(.updated, checkReached: true, meetingActive: false), "after update show", "updated, reached, no meeting")
         check(!WhatsNewAfterUpdate.shouldShow(.updated, checkReached: false, meetingActive: false), "after update show", "waits for a check")
         check(!WhatsNewAfterUpdate.shouldShow(.updated, checkReached: true, meetingActive: true), "after update meeting", "waits for the meeting")
