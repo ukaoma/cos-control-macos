@@ -7,7 +7,8 @@
         "Update opens this window instead of a small alert. The release, a summary and what changed, in light or dark.",
         "Download and install is the confirmation. The window shows Downloading, Checking and Installing as they happen.",
         "If the install cannot run, for example during a meeting, the window says why and offers Try again.",
-        "Closing the window does not stop an install that has started. COS Control still reopens on the new version."
+        "Closing the window does not stop an install that has started. COS Control still reopens on the new version.",
+        "After an update, this window shows once on the first launch, with what changed and a Done button. Never during a meeting."
       ]
     },
     {
@@ -30,7 +31,8 @@
     {
       "title": "Fixed",
       "items": [
-        "Check for updates no longer waits forever when a background check is already running."
+        "Check for updates no longer waits forever when a background check is already running.",
+        "If an update cannot be downloaded or checked, COS Control now says why and stays open. Before, it could quit and not reopen."
       ]
     }
   ]
