@@ -8116,6 +8116,71 @@ final class COSControlHelper {
         latestBuild > currentBuild
     }
 
+    /// 2026-10-09: `channels.stable.whatsNew`, `{ "summary": "…", "sections": [ { "title": "…", "items": ["…"] } ] }`,
+    /// for the app's What's New window. Untrusted: wrong types are dropped one by one, a summary is at most 1200
+    /// characters, at most 8 sections of at most 12 items, an item at most 400 characters and a title 80; control
+    /// characters become spaces (a newline survives only in the summary) and bidi controls go. A section needs a title
+    /// and an item; nil when no summary and no section is left. The same rules as AppUpdateWhatsNew in the app's
+    /// Models.swift; Tests/whats-new-helper-checks.py runs this compiled helper against fixtures.
+    static let whatsNewSummaryLimit = 1200, whatsNewSectionLimit = 8, whatsNewItemLimit = 12
+    static let whatsNewItemLength = 400, whatsNewTitleLength = 80
+
+    static func sanitizedWhatsNew(_ value: Any?) -> [String: Any]? {
+        guard let object = value as? [String: Any] else { return nil }
+        var result: [String: Any] = [:]
+        if let summary = (object["summary"] as? String).flatMap({ cleanWhatsNewText($0, limit: whatsNewSummaryLimit, keepNewlines: true) }) {
+            result["summary"] = summary
+        }
+        var sections: [[String: Any]] = []
+        for entry in object["sections"] as? [Any] ?? [] {
+            guard sections.count < whatsNewSectionLimit else { break }
+            guard let section = entry as? [String: Any],
+                  let title = (section["title"] as? String).flatMap({ cleanWhatsNewText($0, limit: whatsNewTitleLength, keepNewlines: false) })
+            else { continue }
+            var items: [String] = []
+            for item in section["items"] as? [Any] ?? [] {
+                guard items.count < whatsNewItemLimit else { break }
+                if let text = item as? String, let cleaned = cleanWhatsNewText(text, limit: whatsNewItemLength, keepNewlines: false) {
+                    items.append(cleaned)
+                }
+            }
+            if !items.isEmpty { sections.append(["title": title, "items": items]) }
+        }
+        if !sections.isEmpty { result["sections"] = sections }
+        return result.isEmpty ? nil : result
+    }
+
+    private static let whatsNewBidiControls: Set<UInt32> = [0x061C, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
+                                                            0x2066, 0x2067, 0x2068, 0x2069]
+
+    static func cleanWhatsNewText(_ text: String, limit: Int, keepNewlines: Bool) -> String? {
+        var scalars = String.UnicodeScalarView()
+        var previous: Unicode.Scalar?
+        for scalar in text.unicodeScalars {
+            defer { previous = scalar }
+            if scalar == "\n" && previous == "\r" { continue }
+            let breaks = scalar == "\n" || scalar == "\r" || scalar.value == 0x2028 || scalar.value == 0x2029
+            if breaks {
+                scalars.append(keepNewlines ? "\n" : " ")
+            } else if scalar.properties.generalCategory == .control {
+                scalars.append(" ")
+            } else if !whatsNewBidiControls.contains(scalar.value) {
+                scalars.append(scalar)
+            }
+        }
+        var lines: [String] = []
+        for line in String(scalars).split(separator: "\n", omittingEmptySubsequences: false) {
+            let words = line.split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
+            if words.isEmpty && (lines.last?.isEmpty ?? true) { continue }
+            lines.append(words)
+        }
+        while lines.last?.isEmpty == true { lines.removeLast() }
+        let result = lines.joined(separator: "\n")
+        guard !result.isEmpty else { return nil }
+        guard result.count > limit else { return result }
+        return String(result.prefix(max(0, limit - 1))).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+    }
+
     static let openPetsCatalogURL = URL(string: "https://openpets.dev/pets/catalog.v2.json")!
     static let openPetsCatalogTTL: TimeInterval = 24 * 60 * 60
     static let openPetsThumbMaxBytes = 512 * 1024
@@ -8347,6 +8412,9 @@ final class COSControlHelper {
         details["url"] = url
         if let sha = stable["sha256"] as? String { details["sha256"] = sha }
         if let notes = stable["notes"] as? String { details["notes"] = notes }
+        // 2026-10-09: the What's New window's content. Optional; typed, capped and cleaned here (the app does it again).
+        // An older Control never asks for it: it reads the keys it knows and ignores this one.
+        if let whatsNew = Self.sanitizedWhatsNew(stable["whatsNew"]) { details["whatsNew"] = whatsNew }
         if let minMacOS = stable["minMacOS"] as? String {
             details["minMacOS"] = minMacOS
             if !Self.macOSAtLeast(minMacOS) {

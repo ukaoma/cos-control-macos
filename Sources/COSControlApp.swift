@@ -25,6 +25,10 @@ struct COSControlApp: App {
         HotKeyCenter.shared.register(model.activityHotKey)
         model.openActivity = { section in activityWindow.show(model: model, section: section) }
         model.openSetup = { setupWindow.show(model: model) }
+        // 2026-10-09: Update (the banner) and Check for updates (when it finds one) open What's New, one window at a
+        // time. The closure keeps the presenter alive for the life of the app.
+        let whatsNewWindow = WhatsNewWindowPresenter()
+        model.showWhatsNew = { whatsNewWindow.show(model: model) }
         // The setup guide and Settings, from the Dock menu, Help, the panel and the pet (Miles 2026-10-08 10:52).
         model.showSetupGuide = { setupWindow.show(model: model) }
         // Settings…: the open panel scrolls, a visible menu-bar icon opens the panel, anything else (a hidden icon,
