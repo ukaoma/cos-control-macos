@@ -68,17 +68,14 @@ struct COSControlApp: App {
                 activityWindow.show(model: model, section: section)
             }
         } label: {
-            Image(systemName: model.status.running ? "eyeglasses" : "eyeglasses.slash")
+            // 2026-10-09 (Miles, like Vorssant): gold glasses with a dot while an update is ready, the template glasses
+            // otherwise. A menu bar ignores color in a template image, so the ready icon is an NSImage that is not
+            // one (MenuBarIcon), drawn as itself (.original). It follows appUpdateFlow, so a failed check never tints.
+            let variant = MenuBarIcon.variant(for: model.appUpdateFlow.phase)
+            Image(nsImage: MenuBarIcon.image(systemName: model.status.running ? "eyeglasses" : "eyeglasses.slash", variant: variant))
+                .renderingMode(variant == .updateReady ? .original : .template)
                 .fixedSize()
-                .overlay(alignment: .topTrailing) {
-                    if model.appUpdate.shouldSurface {
-                        Circle()
-                            .fill(.primary)
-                            .frame(width: 5, height: 5)
-                            .offset(x: 2, y: -1)
-                    }
-                }
-                .accessibilityLabel("COS Control")
+                .accessibilityLabel(MenuBarIcon.accessibilityLabel(variant))
         }
         .menuBarExtraStyle(.window)
         .commands {

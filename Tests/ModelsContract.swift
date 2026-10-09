@@ -2715,14 +2715,18 @@ struct ModelsContract {
     }
 
     private static func checkMenuBarIcon() {
-        let running = MenuBarIcon.compose(systemName: "eyeglasses", updateAvailable: false)
-        let runningBadge = MenuBarIcon.compose(systemName: "eyeglasses", updateAvailable: true)
-        let down = MenuBarIcon.compose(systemName: "eyeglasses.slash", updateAvailable: false)
-        let downBadge = MenuBarIcon.compose(systemName: "eyeglasses.slash", updateAvailable: true)
+        let running = MenuBarIcon.compose(systemName: "eyeglasses", variant: .normal)
+        let runningBadge = MenuBarIcon.compose(systemName: "eyeglasses", variant: .updateReady)
+        let down = MenuBarIcon.compose(systemName: "eyeglasses.slash", variant: .normal)
+        let downBadge = MenuBarIcon.compose(systemName: "eyeglasses.slash", variant: .updateReady)
         let tiffs = [running, runningBadge, down, downBadge].map { $0.tiffRepresentation ?? Data() }
         precondition(tiffs.allSatisfy { !$0.isEmpty }, "composed status images must have pixels")
-        precondition(Set(tiffs).count == 4, "running x update must produce 4 distinct template images")
-        precondition(running.isTemplate && runningBadge.isTemplate)
+        precondition(Set(tiffs).count == 4, "running x update must produce 4 distinct images")
+        // 2026-10-09: the plain glasses follow the menu bar (template); the update-ready glasses are gold (not a
+        // template, which a menu bar would draw in one color).
+        precondition(running.isTemplate && down.isTemplate, "the plain glasses stay a template image")
+        precondition(!runningBadge.isTemplate && !downBadge.isTemplate, "the update-ready glasses carry their own color")
+        precondition(running.size == runningBadge.size, "the dot must not change the status item's size")
         precondition(running.size.width > running.size.height + 1,
                      "eyeglasses must stay landscape; a square canvas is the 0.5.90 skew")
         print("COS Control: MenuBarIcon compose distinctness passed")

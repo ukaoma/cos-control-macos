@@ -152,7 +152,16 @@ final class ControllerModel: ObservableObject {
     @Published var recentGlassesExpanded = false
     @Published var recentGlassesStatus: RecentGlassesStatus = .idle
     @Published var recentGlassesDate: String?
-    @Published var appUpdate = AppUpdateInfo()
+    /// Every writer of the check result goes through here, so the banner and the icon (appUpdateFlow) follow each one.
+    @Published var appUpdate = AppUpdateInfo() {
+        didSet { appUpdateFlow.offer(appUpdate, currentVersion: Self.currentVersion, currentBuild: Self.currentBuild) }
+    }
+    /// 2026-10-09 (Miles, like Vorssant): none, ready, staging, applying or failed. The panel's top banner and the
+    /// menu-bar glasses read this, never `appUpdate` directly.
+    @Published private(set) var appUpdateFlow = AppUpdateFlow()
+    /// Launch, every 6 hours, panel open after 15 minutes, Check for updates: one check at a time.
+    private var appUpdateSchedule = AppUpdateCheckSchedule()
+    private var appUpdateCheckRunning: Task<Void, Never>?
 
     /// Dismissed notice ids. Keyed by id so a NEW notice appears even though an
     /// older one was dismissed, and re-reading the same one never nags.
@@ -481,14 +490,17 @@ final class ControllerModel: ObservableObject {
                 await self?.refresh(quiet: true)
             }
         }
-        // Update check: once at launch, then every 6h. Deliberately NOT on the 12s
-        // status loop -- this is a network call to a static file, not live state.
+        // Update check: once at launch, then every 6h (and on panel open after 15 minutes, panelOpenedForUpdates).
+        // Deliberately NOT on the 12s status loop -- this is a network call to a static file, not live state. The loop
+        // naps at most 15 minutes and asks the schedule, so a check from the panel pushes the next periodic one back
+        // and a Mac that slept through the 6-hour mark checks soon after it wakes.
         updateCheckTask = Task { [weak self] in
             await self?.completeAppUpdateIfNeeded()
-            await self?.checkForAppUpdate()
+            await self?.runScheduledAppUpdateCheck(.launch)
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(6 * 60 * 60))
-                await self?.checkForAppUpdate()
+                guard let nap = self?.appUpdateSchedule.nextNap(now: Date()) else { return }
+                try? await Task.sleep(for: .seconds(nap))
+                await self?.runScheduledAppUpdateCheck(.periodic)
             }
         }
         loadPetDismissals()
@@ -769,11 +781,31 @@ final class ControllerModel: ObservableObject {
                 "check-app-update",
                 "--current-version", Self.currentVersion,
                 "--current-build", String(Self.currentBuild),
-            ])
+            ], timeout: AppUpdateCheckSchedule.helperTimeout)
             appUpdate = AppUpdateInfo.merging(previous: appUpdate, incoming: AppUpdateInfo(response.details))
         } catch {
             // Intentionally swallowed: a helper crash is not a user-facing problem.
         }
+    }
+
+    /// The background checks (launch, periodic, panel open). Dropped when one is already running or the schedule says
+    /// it is not due; silent either way, so a failed check never tints the icon and never raises anything.
+    func runScheduledAppUpdateCheck(_ trigger: AppUpdateCheckSchedule.Trigger) async {
+        guard appUpdateSchedule.begin(trigger, now: Date()) else { return }
+        let check = Task { @MainActor [weak self] () -> Void in
+            await self?.checkForAppUpdate()
+        }
+        appUpdateCheckRunning = check
+        await check.value
+        appUpdateCheckRunning = nil
+        appUpdateSchedule.finish()
+    }
+
+    /// The panel (or the Settings window) opened. Checks again only when the last check is older than 15 minutes, and
+    /// never in a test or render model (no background work).
+    func panelOpenedForUpdates() {
+        guard backgroundWorkEnabled, appUpdateSchedule.shouldStart(.panelOpen, now: Date()) else { return }
+        Task { await runScheduledAppUpdateCheck(.panelOpen) }
     }
 
     /// The same check, but ASKED FOR — so it must answer.
@@ -796,12 +828,17 @@ final class ControllerModel: ObservableObject {
         notice = nil
         error = nil
         defer { updateCheckInFlight = false }
+        // Never two checks at once: a background check in flight finishes first, then this one asks for itself.
+        while !appUpdateSchedule.begin(.manual, now: Date()) {
+            if let running = appUpdateCheckRunning { await running.value } else { await Task.yield() }
+        }
+        defer { appUpdateSchedule.finish() }
         do {
             let response = try await helper.run([
                 "check-app-update",
                 "--current-version", Self.currentVersion,
                 "--current-build", String(Self.currentBuild),
-            ])
+            ], timeout: AppUpdateCheckSchedule.helperTimeout)
             let incoming = AppUpdateInfo(response.details)
             if incoming.reason == "unreachable" || incoming.reason == "malformed" {
                 appUpdate = AppUpdateInfo.merging(previous: appUpdate, incoming: incoming)
@@ -840,8 +877,12 @@ final class ControllerModel: ObservableObject {
 
     /// Download, SHA-256, unpack, then detach the swap and quit. The glasses server
     /// stays running. The detached helper reopens this app.
+    ///
+    /// 2026-10-09: the banner shows each step (appUpdateFlow: staging with the helper's progress line, applying) and a
+    /// failure in the helper's own words with Try again, which calls this again. The failure is not raised as an alert
+    /// as well: the banner already says it, where the Update button was.
     func installAppUpdate() {
-        guard !busy else { return }
+        guard !busy, appUpdateFlow.beginInstall() else { return }
         busy = true
         operationProgress = "Downloading update…"
         notice = nil
@@ -855,9 +896,13 @@ final class ControllerModel: ObservableObject {
                     "--current-build", String(Self.currentBuild),
                     "--live-bundle", live,
                 ]) { [weak self] message in
-                    Task { @MainActor in self?.operationProgress = message }
+                    Task { @MainActor in
+                        self?.operationProgress = message
+                        self?.appUpdateFlow.progress(message)
+                    }
                 }
                 operationProgress = "Installing…"
+                appUpdateFlow.staged()
                 _ = try await helper.run([
                     "apply-app-update",
                     "--detach",
@@ -868,7 +913,7 @@ final class ControllerModel: ObservableObject {
                 notice = "Installing. Control will reopen."
                 NSApplication.shared.terminate(nil)
             } catch {
-                self.error = error.localizedDescription
+                appUpdateFlow.fail(error.localizedDescription)
                 busy = false
                 operationProgress = nil
             }

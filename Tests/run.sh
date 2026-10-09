@@ -1457,11 +1457,15 @@ assert m is not None, "MenuBarExtra no longer opens ControlPanel"
 before = re.sub(r"//[^\n]*", "", m.group(1))
 assert before.strip() == "", "something sits above ControlPanel in the menu-bar window: " + before.strip()[:80]
 PY
-/usr/bin/grep -q 'model.appUpdate.shouldSurface' "$ROOT/Sources/COSControlApp.swift"
+/usr/bin/grep -q -F 'MenuBarIcon.variant(for: model.appUpdateFlow.phase)' "$ROOT/Sources/COSControlApp.swift"
 ! /usr/bin/grep -q 'hasNotice' "$ROOT/Sources/COSControlApp.swift"
 /usr/bin/grep -q 'AppUpdateInfo.merging(previous: appUpdate, incoming:' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'static func merging(previous: AppUpdateInfo, incoming: AppUpdateInfo)' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'enum MenuBarIcon' "$ROOT/Sources/Models.swift"
+# 2026-10-09 (Miles, like Vorssant): the update-ready badge. The version rule, the check schedule (launch, 6 h, 15 min on
+# panel open, never two at once), the banner's phases and the gold glasses, executed; then the model wiring with the app.
+"$ROOT/Tests/run-app-update-badge.sh"
+/usr/bin/python3 "$ROOT/Tests/app-update-badge-pins.py" "$ROOT"
 /usr/bin/grep -q 'case "openpets-catalog"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "openpets-thumb"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'static func isAllowedThumbURL' "$ROOT/HelperSources/main.swift"
@@ -2429,7 +2433,7 @@ fi
 /usr/bin/grep -q 'case "stage-app-update"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "apply-app-update"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "complete-app-update"' "$ROOT/HelperSources/main.swift"
-/usr/bin/grep -q 'Button("Install")' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q -F 'Button("Update", action: onUpdate)' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'func installAppUpdate' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'preferStable: true' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'completeAppUpdateIfNeeded' "$ROOT/Sources/ControllerModel.swift"
