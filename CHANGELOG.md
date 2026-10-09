@@ -1,3 +1,9 @@
+## 0.5.274 (build 327)
+
+- **Connect your glasses in one scan.** The Setup guide has a new Glasses section. It checks Tailscale on this Mac and on your iPhone (with an App Store code for the phone), then shows a pairing code. Scan it with COS Glasses 6.10.621 (Scan code on your Mac), tap Allow here, and the phone is connected. Codes last 5 minutes and work once; Allow names the device, and warns when it is not on your Tailscale account. Pairing on home Wi-Fi is an opt-in 10-minute switch.
+- **Update ready, at a glance.** When a new COS Control is out, the menu-bar glasses turn gold with a dot, and the panel opens with an Update available banner that installs it. COS checks at launch, every 6 hours, and when you open the panel.
+- Pairs with server 6.67.0 (glasses pairing). Older glasses keep working by pasting the pairing token.
+
 ## 0.5.273 — 2026-10-08 — Guided setup and Activity Settings
 
 - Open Settings inside Activity, using the same controls and saved state as the menu-bar panel.
