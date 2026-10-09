@@ -793,6 +793,8 @@ enum VoiceTier {
 
 enum SetupRowID: String, CaseIterable, Sendable {
     case claude, codex, cursor, ollama, voice, sessions, continueThreads, jev, permissions
+    /// The Glasses section (contract 2026-10-09). Optional and never counted in Finish setup (G2 is optional).
+    case tailscaleMac, tailscalePhone, glassesPair
 }
 
 enum SetupAction: Sendable, Equatable {
@@ -806,6 +808,8 @@ enum SetupAction: Sendable, Equatable {
     case turnOnContinue
     case addJevKey
     case openPermissions
+    case getTailscale                  // the Mac download page
+    case openTailscale                 // the installed app, to sign in
     case none
 }
 
@@ -821,6 +825,8 @@ struct SetupRow: Identifiable, Sendable, Equatable {
     var skipped = false
     var action: SetupAction = .none
     var actionTitle: String?
+    /// False for the Glasses rows: shown and live, never part of "Finish setup · N of M" or its "Next:".
+    var counted = true
     var handled: Bool { done || skipped }
 }
 
@@ -841,6 +847,8 @@ struct SetupFacts: Sendable, Equatable {
     var voiceUnavailable = false
     var whisperReady = false
     var requestedTier: String?
+    /// The Glasses section's own facts (GlassesPairingState). Its rows are uncounted.
+    var glasses = GlassesFacts()
 }
 
 enum SetupGuideRules {
@@ -893,6 +901,7 @@ enum SetupGuideRules {
                                  detail: nil, done: need == 0, skipped: skipped.contains(.permissions),
                                  action: need == 0 ? .none : .openPermissions, actionTitle: need == 0 ? nil : "Review"))
         }
+        rows += GlassesRules.rows(facts.glasses)
         return rows
     }
 
@@ -987,7 +996,7 @@ enum SetupGuideRules {
 
     /// (handled, total): handled is done or skipped. Rows that need the server first are not counted yet.
     static func progress(_ rows: [SetupRow]) -> (handled: Int, total: Int) {
-        let counted = rows.filter { !$0.afterSetup }
+        let counted = rows.filter { !$0.afterSetup && $0.counted }
         return (counted.filter(\.handled).count, counted.count)
     }
 
@@ -1008,6 +1017,9 @@ enum SetupGuideRules {
         let p = progress(rows)
         return "Finish setup · \(p.handled) of \(p.total)"
     }
+
+    /// The card's "Next:": the first counted row still open. Never a Glasses row.
+    static func next(_ rows: [SetupRow]) -> SetupRow? { rows.first { !$0.handled && !$0.afterSetup && $0.counted } }
 }
 
 @MainActor
@@ -1118,5 +1130,675 @@ enum VoiceSetupGate {
     static func canStart(_ voice: VoiceFacts?, tier: String) -> Bool {
         guard let voice, tier == "auto" || VoiceTier.all.contains(tier) else { return false }
         return (voice.runtimeDownloadAvailable || (voice.whisperCli && voice.whisperServer)) && voice.setupAvailable && voice.enoughDisk[tier == "auto" ? (voice.explicitTier ?? "balanced") : tier] != false
+    }
+}
+
+// MARK: - Glasses pairing (contract CONTRACT_glasses_pairing_2026-10-09, server 6.67.0)
+//
+// The setup guide's "Glasses" section: Tailscale on this Mac, Tailscale on the iPhone, and a pairing QR the phone
+// scans. Facts come only from `cos-control-helper tailscale-status | tailscale-whois | pairing-code | pairing-status |
+// pairing-decision` (HelperSources/PairingCore.swift). None of its rows count toward Finish setup. A code is made only
+// while the section is on screen (GlassesPairingState.run is the section's task), and the token never reaches the app.
+
+enum PairingJSON {
+    static func object(_ data: Data) -> [String: Any]? { try? JSONSerialization.jsonObject(with: data) as? [String: Any] }
+
+    /// ISO 8601 with or without milliseconds (the server sends "2026-10-09T12:40:00.000Z"); unix seconds or
+    /// milliseconds are read too, so a later server choice cannot blank the row.
+    static func date(_ value: Any?) -> Date? {
+        if let text = value as? String, !text.isEmpty {
+            let fractional = ISO8601DateFormatter()
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = fractional.date(from: text) { return date }
+            return ISO8601DateFormatter().date(from: text)
+        }
+        if let number = value as? NSNumber, !(value is Bool) {
+            let raw = number.doubleValue
+            guard raw > 0 else { return nil }
+            return Date(timeIntervalSince1970: raw > 100_000_000_000 ? raw / 1000 : raw)
+        }
+        return nil
+    }
+
+    static func string(_ value: Any?) -> String? { (value as? String).flatMap { $0.isEmpty ? nil : $0 } }
+}
+
+struct TailscalePeerFacts: Equatable, Sendable {
+    var os: String
+    var dns: String
+    var ipv4: String?
+    var online: Bool
+    var sameUser: Bool
+    /// The node's own label: "example-iphone" of "example-iphone.tail00000a.ts.net". Never HostName.
+    var name: String { String(dns.split(separator: ".").first ?? Substring(dns)) }
+}
+
+struct TailscaleFacts: Equatable, Sendable {
+    var installed = false
+    var running = false
+    var backendState: String?
+    var selfIPv4: String?
+    var selfDNS: String?
+    var peers: [TailscalePeerFacts] = []
+    var error: String?
+
+    /// `tailscale-status` details.
+    static func decode(_ data: Data) -> TailscaleFacts? {
+        guard let object = PairingJSON.object(data) else { return nil }
+        var facts = TailscaleFacts()
+        facts.installed = object["installed"] as? Bool ?? false
+        facts.running = object["running"] as? Bool ?? false
+        facts.backendState = PairingJSON.string(object["backendState"])
+        facts.selfIPv4 = PairingJSON.string(object["selfIPv4"])
+        facts.selfDNS = PairingJSON.string(object["selfDNS"])
+        facts.error = PairingJSON.string(object["error"])
+        facts.peers = (object["peers"] as? [[String: Any]] ?? []).compactMap { peer in
+            guard let dns = PairingJSON.string(peer["dns"]) else { return nil }
+            return TailscalePeerFacts(os: peer["os"] as? String ?? "", dns: dns, ipv4: PairingJSON.string(peer["ipv4"]),
+                                      online: peer["online"] as? Bool == true, sameUser: peer["sameUser"] as? Bool == true)
+        }
+        return facts
+    }
+
+    /// An online iPhone signed in as this Mac's own user. Someone else's phone on a shared tailnet never counts.
+    var phone: TailscalePeerFacts? {
+        peers.first { $0.sameUser && $0.online && $0.os.lowercased() == "ios" }
+    }
+}
+
+struct PairingHost: Equatable, Sendable {
+    var host: String
+    var port: Int
+    var kind: String
+    var text: String { "\(host):\(port)" }
+}
+
+/// `pairing-code` details (POST /api/pairing/code).
+struct PairingCode: Equatable, Sendable {
+    var display: String
+    /// Null when the Mac has no Tailscale address and Wi-Fi pairing is off: a QR with no host would be unusable.
+    var qr: String?
+    var expiresAt: Date
+    var bootId: String
+    var hosts: [PairingHost]
+    var lanArmedUntil: Date?
+
+    static func decode(_ object: [String: Any]) -> PairingCode? {
+        guard let display = PairingJSON.string(object["display"]), let expiresAt = PairingJSON.date(object["expiresAt"]),
+              let bootId = PairingJSON.string(object["bootId"]) else { return nil }
+        let hosts = (object["hosts"] as? [[String: Any]] ?? []).compactMap { host -> PairingHost? in
+            guard let name = PairingJSON.string(host["host"]), let port = (host["port"] as? NSNumber)?.intValue else { return nil }
+            return PairingHost(host: name, port: port, kind: host["kind"] as? String ?? "")
+        }
+        return PairingCode(display: display, qr: PairingJSON.string(object["qr"]), expiresAt: expiresAt, bootId: bootId,
+                           hosts: hosts, lanArmedUntil: PairingJSON.date(object["lanArmedUntil"]))
+    }
+}
+
+/// `pairing-status` details (GET /api/pairing/status).
+struct PairingStatusFacts: Equatable, Sendable {
+    struct Pending: Equatable, Sendable { var nonce: String; var ip: String; var at: Date? }
+    struct Claim: Equatable, Sendable { var ip: String; var at: Date?; var allowed: Bool }
+    var codeDisplay: String?
+    var codeExpiresAt: Date?
+    /// 'active', 'used' or 'locked' (server 6.67.0); nil when the server does not say.
+    var codeState: String?
+    var pending: Pending?
+    var lastClaim: Claim?
+    var firstAuthAfterClaimAt: Date?
+    var lanArmedUntil: Date?
+    var bootId: String?
+
+    static func decode(_ object: [String: Any]) -> PairingStatusFacts {
+        var facts = PairingStatusFacts()
+        if let code = object["code"] as? [String: Any] {
+            facts.codeDisplay = PairingJSON.string(code["display"])
+            facts.codeExpiresAt = PairingJSON.date(code["expiresAt"])
+            facts.codeState = PairingJSON.string(code["state"])
+        }
+        if let pending = object["pending"] as? [String: Any], let nonce = PairingJSON.string(pending["nonce"]),
+           let ip = PairingJSON.string(pending["ip"]) {
+            facts.pending = Pending(nonce: nonce, ip: ip, at: PairingJSON.date(pending["at"]))
+        }
+        if let claim = object["lastClaim"] as? [String: Any], let ip = PairingJSON.string(claim["ip"]) {
+            facts.lastClaim = Claim(ip: ip, at: PairingJSON.date(claim["at"]), allowed: claim["allowed"] as? Bool == true)
+        }
+        facts.firstAuthAfterClaimAt = PairingJSON.date(object["firstAuthAfterClaimAt"])
+        facts.lanArmedUntil = PairingJSON.date(object["lanArmedUntil"])
+        facts.bootId = PairingJSON.string(object["bootId"])
+        return facts
+    }
+}
+
+struct WhoisFacts: Equatable, Sendable {
+    var found = false
+    var node: String?
+    var os: String?
+    var user: String?
+    /// The device's Tailscale account is this Mac's own (whois UserProfile.ID == status Self.UserID). False when the
+    /// helper could not tell: an unknown account is never presented as yours.
+    var sameUser = false
+
+    static func decode(_ data: Data) -> WhoisFacts? {
+        guard let object = PairingJSON.object(data) else { return nil }
+        return WhoisFacts(found: object["found"] as? Bool == true, node: PairingJSON.string(object["node"]),
+                          os: PairingJSON.string(object["os"]), user: PairingJSON.string(object["user"]),
+                          sameUser: object["sameUser"] as? Bool == true)
+    }
+}
+
+/// One helper answer: its `ok`, its message and the details as JSON.
+struct PairingHelperAnswer: Sendable {
+    var ok: Bool
+    var message: String
+    var details: Data
+}
+
+/// What the section's poll needs to know about the moment, read from the model and the window on every poll.
+struct GlassesGate: Sendable, Equatable {
+    var serverRunning: Bool
+    var pairingSupported: Bool
+    var serverVersion: String? = nil
+    /// The section is on screen: the menu-bar panel is open, or its window is visible and not covered or minimized.
+    var visible = true
+}
+
+/// What the Glasses rows read.
+struct GlassesFacts: Equatable, Sendable {
+    var serverRunning = false
+    /// capabilities.pairing on the running server, and no helper answer saying it is too old.
+    var pairingSupported = false
+    var tailscale: TailscaleFacts?
+    var code: PairingCode?
+    var status: PairingStatusFacts?
+    var whois: [String: WhoisFacts] = [:]
+    var failure: String?
+    /// Set by "Pair another phone": an older pairing no longer turns the row green.
+    var pairAnotherSince: Date?
+    /// Whether Tailscale was up (running, with a Self IPv4) when the current code was made. A code made without it has
+    /// no Tailscale host, so it is made again once Tailscale comes up (server /qa 2026-10-09, fix 1).
+    var codeMintedWithTailscale = false
+    /// Our code was replaced on the server twice: another client is making codes. The section stops and says so.
+    var madeElsewhere = false
+    var now = Date()
+
+    var tailscaleUp: Bool { tailscale?.running == true && tailscale?.selfIPv4 != nil }
+}
+
+enum GlassesRules {
+    static let tailscaleDownload = URL(string: "https://tailscale.com/download/mac")!
+    static let tailscaleAppStore = "https://apps.apple.com/app/tailscale/id1470499037"
+    static let tailscaleBundles = ["io.tailscale.ipn.macsys", "io.tailscale.ipn.macos"]
+    /// After Allow, the phone has this long to make its first authenticated call before the row offers a new code.
+    /// Control's own choice: the server holds a pending claim 60 s and has no limit after delivery.
+    static let allowedWait: TimeInterval = 180
+    /// Names from Tailscale are shown at most this long, with control characters removed.
+    static let nameLimit = 40
+
+    enum Stage: Equatable, Sendable {
+        case serverOff, updateServer, checking, failed(String), noHosts, code, pending, allowedWaiting, paired, madeElsewhere
+    }
+
+    /// Why the section makes a code now. `.replaced`: the server shows a code that is not ours (a code made elsewhere
+    /// cancelled it). Made once at most; a second replacement stops the section (madeElsewhere).
+    enum CodeNeed: Equatable, Sendable { case none, mint, replaced }
+
+    /// 100.64.0.0/10, with every octet a plain decimal 0 to 255 (the helper's TailscaleCore.isTailnet, for the app).
+    static func isTailnet(_ ip: String) -> Bool {
+        let parts = ip.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return false }
+        var octets: [Int] = []
+        for part in parts {
+            guard !part.isEmpty, part.count <= 3, part.unicodeScalars.allSatisfy({ $0.value >= 48 && $0.value <= 57 }),
+                  !(part.count > 1 && part.first == "0"), let value = Int(part), value <= 255 else { return false }
+            octets.append(value)
+        }
+        return octets[0] == 100 && (64...127).contains(octets[1])
+    }
+
+    /// A Tailscale-supplied name, safe to show: control and format characters removed (newlines included), runs of
+    /// space collapsed, at most `nameLimit` characters.
+    static func clean(_ value: String) -> String {
+        // Control characters (newlines, tabs, escapes) become spaces; format characters (bidi overrides, zero-width) go.
+        var kept = String.UnicodeScalarView()
+        for scalar in value.unicodeScalars where scalar.properties.generalCategory != .format && !CharacterSet.illegalCharacters.contains(scalar) {
+            kept.append(CharacterSet.controlCharacters.contains(scalar) ? " " : scalar)
+        }
+        let text = String(kept).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return text.count > nameLimit ? String(text.prefix(nameLimit - 1)) + "…" : text
+    }
+
+    static func paired(_ facts: GlassesFacts) -> Bool {
+        guard let status = facts.status, let first = status.firstAuthAfterClaimAt, status.lastClaim?.allowed == true else { return false }
+        return first > (facts.pairAnotherSince ?? .distantPast)
+    }
+
+    static func allowedWaiting(_ facts: GlassesFacts) -> Bool {
+        guard let claim = facts.status?.lastClaim, claim.allowed, !paired(facts) else { return false }
+        guard let at = claim.at, at > (facts.pairAnotherSince ?? .distantPast) else { return false }
+        return facts.now.timeIntervalSince(at) < allowedWait
+    }
+
+    static func stage(_ facts: GlassesFacts) -> Stage {
+        guard facts.serverRunning else { return .serverOff }
+        guard facts.pairingSupported else { return .updateServer }
+        if facts.status?.pending != nil { return .pending }
+        if paired(facts) { return .paired }
+        if allowedWaiting(facts) { return .allowedWaiting }
+        if facts.madeElsewhere { return .madeElsewhere }
+        guard let code = facts.code, code.expiresAt > facts.now else {
+            return facts.failure.map(Stage.failed) ?? .checking
+        }
+        return code.qr == nil || code.hosts.isEmpty ? .noHosts : .code
+    }
+
+    /// Whether the section should make a code now: none yet, it expired (at expiry, never before: a scan may be in
+    /// flight in its last seconds), the server restarted (bootId), the server's code is another one, the server's code
+    /// was used or locked, or the code has no host and Tailscale has since come up. Never while a claim waits, after
+    /// Allow while the phone connects, once paired, or after a code was made elsewhere.
+    static func codeNeed(_ facts: GlassesFacts) -> CodeNeed {
+        switch stage(facts) {
+        case .serverOff, .updateServer, .pending, .allowedWaiting, .paired, .madeElsewhere: return .none
+        case .checking, .failed, .noHosts, .code: break
+        }
+        guard let code = facts.code else { return .mint }
+        if code.expiresAt <= facts.now { return .mint }
+        if (code.qr == nil || code.hosts.isEmpty) && facts.tailscaleUp && !facts.codeMintedWithTailscale { return .mint }
+        guard let status = facts.status else { return .none }
+        if let boot = status.bootId, boot != code.bootId { return .mint }
+        guard let shown = status.codeDisplay else { return .mint }
+        // Server /qa 2026-10-09, fix 2: never keep drawing a QR the server already cancelled.
+        if shown != code.display { return .replaced }
+        if let state = status.codeState, state == "used" || state == "locked" { return .mint }
+        return .none
+    }
+
+    static func needsCode(_ facts: GlassesFacts) -> Bool { codeNeed(facts) != .none }
+
+    /// "example-iphone (Alex Example)", or "Device on Wi-Fi 192.168.1.20". Names are cleaned and capped.
+    static func requester(ip: String, whois: WhoisFacts?) -> String {
+        guard isTailnet(ip) else { return "Device on Wi-Fi \(clean(ip))" }
+        guard let whois, whois.found, let node = whois.node else { return "Tailnet device \(ip)" }
+        return whois.user.map { "\(clean(node)) (\(clean($0)))" } ?? clean(node)
+    }
+
+    /// The Allow card's warning: a tailnet device on another Tailscale account, or one Tailscale cannot name.
+    static func accountWarning(ip: String, whois: WhoisFacts?) -> String? {
+        guard isTailnet(ip), let whois else { return nil }
+        guard whois.found else { return "Tailscale cannot name this device. Deny unless you know it." }
+        return whois.sameUser ? nil : "Not your Tailscale account"
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
+    static func time(_ date: Date) -> String { timeFormatter.string(from: date) }
+
+    static func pairedLine(_ facts: GlassesFacts) -> String? {
+        guard paired(facts), let status = facts.status, let claim = status.lastClaim, let first = status.firstAuthAfterClaimAt else { return nil }
+        let who = facts.whois[claim.ip].flatMap { $0.found ? $0.node.map(clean) : nil } ?? requester(ip: claim.ip, whois: nil)
+        return "Paired: \(who), \(time(first))"
+    }
+
+    static func macRow(_ facts: GlassesFacts) -> SetupRow {
+        var row = SetupRow(id: .tailscaleMac, title: "Tailscale on this Mac", status: "Checking…",
+                           unlocks: "Lets your phone reach this Mac from anywhere, not only at home.", detail: nil, done: false)
+        row.counted = false
+        guard let ts = facts.tailscale else { return row }
+        if !ts.installed {
+            row.status = "Not installed"
+            row.detail = "Free for personal use. Install it, then sign in."
+            row.action = .getTailscale
+            row.actionTitle = "Get Tailscale"
+        } else if ts.running {
+            row.status = "Running"
+            row.done = true
+            row.detail = [ts.selfIPv4, ts.selfDNS.map(clean)].compactMap { $0 }.joined(separator: " · ")
+        } else {
+            row.status = ts.backendState == "NeedsLogin" ? "Signed out" : "Not running"
+            row.detail = ts.error ?? "Open Tailscale and sign in."
+            row.action = .openTailscale
+            row.actionTitle = "Open Tailscale"
+        }
+        return row
+    }
+
+    static func phoneRow(_ facts: GlassesFacts) -> SetupRow {
+        var row = SetupRow(id: .tailscalePhone, title: "Tailscale on your iPhone", status: "Checking…",
+                           unlocks: "Sign in with the same account as this Mac", detail: nil, done: false)
+        row.counted = false
+        guard let ts = facts.tailscale else { return row }
+        if let phone = ts.phone {
+            row.status = "On your tailnet"
+            row.detail = "\(clean(phone.name)) is on your tailnet"
+            row.done = true
+        } else if !ts.running {
+            row.status = "Mac first"
+            row.detail = "Set up Tailscale on this Mac first, then on your iPhone."
+        } else {
+            row.status = "Not seen yet"
+            row.detail = "Get Tailscale from the App Store and sign in. This turns green when your iPhone is online."
+        }
+        return row
+    }
+
+    static func connectRow(_ facts: GlassesFacts) -> SetupRow {
+        var row = SetupRow(id: .glassesPair, title: "Connect your glasses", status: "Checking…",
+                           unlocks: "Scan the code with the COS app on your phone. Nothing to type.", detail: nil, done: false)
+        row.counted = false
+        switch stage(facts) {
+        case .serverOff: row.status = "After Get started"; row.afterSetup = true
+        case .updateServer: row.status = "Update the server"; row.detail = "Pairing needs server 6.67 or newer."
+        case .checking: row.status = "Making a code…"
+        case .failed(let message): row.status = "Could not make a code"; row.detail = message
+        case .noHosts: row.status = "Needs Tailscale"; row.detail = "Turn on Tailscale or allow pairing on this Wi-Fi."
+        case .code: row.status = "Ready to scan"
+        case .pending: row.status = "Waiting for you"
+        case .allowedWaiting: row.status = "Allowed"; row.detail = "Waiting for the phone to connect…"
+        case .paired: row.status = "Paired"; row.done = true; row.detail = pairedLine(facts)
+        case .madeElsewhere: row.status = "Code made elsewhere"; row.detail = "A code was made elsewhere, so this one stopped working. Show a new code to use this Mac's."
+        }
+        return row
+    }
+
+    static func rows(_ facts: GlassesFacts) -> [SetupRow] { [macRow(facts), phoneRow(facts), connectRow(facts)] }
+
+    /// A short name for a stage, for the log (no code, nonce, token, address or name).
+    static func stageName(_ stage: Stage) -> String {
+        switch stage {
+        case .serverOff: "serverOff"
+        case .updateServer: "updateServer"
+        case .checking: "checking"
+        case .failed: "failed"
+        case .noHosts: "noHosts"
+        case .code: "code"
+        case .pending: "pending"
+        case .allowedWaiting: "allowed"
+        case .paired: "paired"
+        case .madeElsewhere: "madeElsewhere"
+        }
+    }
+}
+
+@MainActor
+final class GlassesPairingState: ObservableObject {
+    @Published private(set) var tailscale: TailscaleFacts?
+    @Published private(set) var code: PairingCode?
+    @Published private(set) var status: PairingStatusFacts?
+    @Published private(set) var whois: [String: WhoisFacts] = [:]
+    @Published private(set) var failure: String?
+    /// A helper answer said the server is too old, whatever its health said. Cleared when the server's version or its
+    /// pairing capability changes (QA 2026-10-09 W2).
+    @Published private(set) var serverTooOld = false
+    @Published private(set) var deciding = false
+    @Published private(set) var pairAnotherSince: Date?
+    @Published private(set) var madeElsewhere = false
+    private var codeMintedWithTailscale = false
+    private var replacedOnce = false
+
+    // "Allow pairing on this Wi-Fi (home only)": off by default, never remembered. The SERVER's lanArmedUntil is what
+    // the toggle shows; the person's request only shows while its code is being made (QA 2026-10-09 W7).
+    /// The person's last choice, used for the next code.
+    @Published private(set) var lanWanted = false
+    /// When the person's 10 minutes end: later codes re-arm Wi-Fi only until then, so the window never stretches.
+    private var lanWantedUntil: Date?
+    /// The server's latest lanArmedUntil (from a code or an accepted status).
+    @Published private(set) var lanArmedUntil: Date?
+    /// A toggle's code is being made or waits for the one in flight.
+    @Published private(set) var lanChangePending = false
+    static let lanWindow: TimeInterval = 600
+
+    private(set) var mintCount = 0
+    private(set) var statusCount = 0
+    private var lastMintAttempt: Date?
+    private var minting = false
+    private var mintQueued = false
+    /// Bumped at the start and end of every code request: a status read that began before a code was made is stale.
+    private(set) var mintGeneration = 0
+    private(set) var droppedStatusReplies = 0
+    private var statusFailures = 0
+    private var statusRetryAt: Date?
+    private var whoisFailedAt: [String: Date] = [:]
+    private var lastStage: String?
+    private var gateKey: String?
+    private(set) var tickCount = 0
+    private var ticking = false
+    private var lastTickUptime: TimeInterval?
+
+    /// `cos-control-helper <args>`: its ok, message and details.
+    var runHelper: @MainActor ([String]) async throws -> PairingHelperAnswer = { _ in throw ProviderGuideError.unreadable }
+    var log: @MainActor (String) -> Void = { _ in }
+    var now: @MainActor () -> Date = Date.init
+    /// A monotonic clock for the poll's pacing (never the wall clock a check may freeze).
+    var uptime: @MainActor () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    /// Seconds between polls (2 s; a check shortens it).
+    var pollInterval: TimeInterval = 2
+
+    /// Tailscale is read every third poll (6 s): a process per read, and the rows need not be faster.
+    static let tailscaleEvery = 3
+    /// A failed mint waits this long before the next try; a mint never repeats faster than this.
+    static let mintBackoff: TimeInterval = 10
+    /// Status errors back off from one poll to at most this long.
+    static let statusBackoffLimit: TimeInterval = 10
+    /// A whois that failed is not asked again for this long.
+    static let whoisRetry: TimeInterval = 60
+
+    var lanArmed: Bool { (lanArmedUntil ?? .distantPast) > now() }
+    /// What the toggle shows.
+    var lanToggleOn: Bool { lanChangePending ? lanWanted : lanArmed }
+
+    func facts(serverRunning: Bool, pairingSupported: Bool) -> GlassesFacts {
+        GlassesFacts(serverRunning: serverRunning, pairingSupported: pairingSupported && !serverTooOld, tailscale: tailscale,
+                     code: code, status: status, whois: whois, failure: failure, pairAnotherSince: pairAnotherSince,
+                     codeMintedWithTailscale: codeMintedWithTailscale, madeElsewhere: madeElsewhere, now: now())
+    }
+
+    func refreshTailscale() async {
+        do {
+            let answer = try await runHelper(["tailscale-status"])
+            guard answer.ok else { throw PairingStateError.helper(answer.message) }
+            guard let facts = TailscaleFacts.decode(answer.details) else { throw PairingStateError.unreadable("tailscale-status") }
+            tailscale = facts
+        } catch {
+            if tailscale == nil { tailscale = TailscaleFacts(installed: true, error: "COS could not read Tailscale: \(error.localizedDescription)") }
+            log("tailscale-status failed error=\(error.localizedDescription)")
+        }
+    }
+
+    /// Runs a pairing verb and returns its details, or nil with `failure` set. A reason of server_too_old flips the gate.
+    private func pairingCall(_ arguments: [String]) async -> [String: Any]? {
+        do {
+            let answer = try await runHelper(arguments)
+            guard answer.ok else { throw PairingStateError.helper(answer.message) }
+            guard let details = PairingJSON.object(answer.details) else { throw PairingStateError.unreadable(arguments[0]) }
+            if let reason = details["reason"] as? String {
+                if reason == "server_too_old" { serverTooOld = true }
+                failure = (details["message"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Pairing was refused (\(reason))."
+                log("\(arguments[0]) refused reason=\(reason) http=\((details["httpStatus"] as? NSNumber)?.intValue ?? 0)")
+                return nil
+            }
+            return details
+        } catch {
+            failure = "COS could not reach pairing: \(error.localizedDescription)"
+            log("\(arguments[0]) failed error=\(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// A new code (cancelling the old one and any waiting claim on the server). A request made while one is in flight
+    /// is queued, never dropped: the toggle's choice always reaches the server.
+    func mint() async {
+        if minting { mintQueued = true; return }
+        minting = true
+        defer { minting = false }
+        repeat {
+            mintQueued = false
+            await mintOnce()
+        } while mintQueued
+    }
+
+    private func mintOnce() async {
+        lastMintAttempt = now()
+        mintCount += 1
+        mintGeneration += 1
+        defer { mintGeneration += 1 }
+        let tailscaleUp = tailscale?.running == true && tailscale?.selfIPv4 != nil
+        let lan = lanWanted && (lanWantedUntil ?? .distantPast) > now()
+        let details = await pairingCall(["pairing-code"] + (lan ? ["--allow-lan"] : []))
+        // The toggle's own code is the last one in the queue; a choice made while this one was in flight stays pending.
+        if lanChangePending && !mintQueued { lanChangePending = false }
+        guard let details else {
+            // The toggle shows the server's truth again: a refused code changed nothing there.
+            if !lanChangePending { lanWanted = lanArmed }
+            return
+        }
+        guard let next = PairingCode.decode(details) else { failure = "The server's code could not be read."; return }
+        let replacedCode = code != nil
+        code = next
+        codeMintedWithTailscale = tailscaleUp
+        lanArmedUntil = next.lanArmedUntil
+        if !lan && !lanChangePending { lanWanted = false; lanWantedUntil = nil }
+        failure = nil
+        log("pairing-code minted hosts=\(next.hosts.count) qr=\(next.qr != nil) lan=\(lan) replaced=\(replacedCode)")
+    }
+
+    func refreshStatus() async {
+        if let retry = statusRetryAt, retry > now() { return }
+        statusCount += 1
+        let generation = mintGeneration
+        guard let details = await pairingCall(["pairing-status"]) else {
+            statusFailures += 1
+            statusRetryAt = now().addingTimeInterval(min(Self.statusBackoffLimit, pollInterval * pow(2, Double(statusFailures - 1))))
+            return
+        }
+        statusFailures = 0
+        statusRetryAt = nil
+        // A code was made while this read was in flight: the reply describes the code before it. Drop it.
+        guard generation == mintGeneration, !minting else { droppedStatusReplies += 1; return }
+        let next = PairingStatusFacts.decode(details)
+        status = next
+        lanArmedUntil = next.lanArmedUntil
+        if !lanChangePending { lanWanted = lanArmed }
+    }
+
+    /// Names a waiting or last device with `tailscale whois` (tailnet addresses only, once per address; a failure is
+    /// asked again after a minute).
+    func lookUpRequesters() async {
+        for ip in [status?.pending?.ip, status?.lastClaim?.ip].compactMap({ $0 }) where GlassesRules.isTailnet(ip) && whois[ip] == nil {
+            if let failed = whoisFailedAt[ip], now().timeIntervalSince(failed) < Self.whoisRetry { continue }
+            guard let answer = try? await runHelper(["tailscale-whois", ip]), answer.ok, let facts = WhoisFacts.decode(answer.details) else {
+                whoisFailedAt[ip] = now()
+                log("tailscale-whois failed")
+                continue
+            }
+            whois[ip] = facts
+        }
+    }
+
+    func decide(allow: Bool) async {
+        guard let pending = status?.pending, !deciding else { return }
+        deciding = true
+        defer { deciding = false }
+        if await pairingCall(["pairing-decision", pending.nonce, allow ? "allow" : "deny"]) != nil {
+            failure = nil
+            log("pairing-decision sent allow=\(allow)")
+        }
+        statusRetryAt = nil
+        await refreshStatus()
+        if !allow { await mint() }
+    }
+
+    func showNewCode() async {
+        lastMintAttempt = nil
+        replacedOnce = false
+        madeElsewhere = false
+        await mint()
+    }
+
+    func pairAnother() async {
+        pairAnotherSince = now()
+        await showNewCode()
+    }
+
+    func setAllowLan(_ on: Bool) async {
+        guard on != lanToggleOn else { return }
+        lanWanted = on
+        lanWantedUntil = on ? now().addingTimeInterval(Self.lanWindow) : nil
+        lanChangePending = true
+        await showNewCode()
+    }
+
+    /// One poll: status, a new code when needed, names for any device, and Tailscale every third time.
+    func tick(index: Int, serverRunning: Bool, pairingSupported: Bool, serverVersion: String? = nil) async {
+        // A new server version, or its capability changing, means the old "too old" answer no longer holds.
+        let key = "\(serverRunning)|\(pairingSupported)|\(serverVersion ?? "")"
+        if let previous = gateKey, previous != key, serverTooOld {
+            serverTooOld = false
+            failure = nil
+            log("pairing gate reopened (server changed)")
+        }
+        gateKey = key
+        if index % Self.tailscaleEvery == 0 { await refreshTailscale() }
+        guard serverRunning, pairingSupported, !serverTooOld else { noteStage(serverRunning: serverRunning, pairingSupported: pairingSupported); return }
+        await refreshStatus()
+        guard !serverTooOld else { noteStage(serverRunning: serverRunning, pairingSupported: pairingSupported); return }
+        let current = facts(serverRunning: serverRunning, pairingSupported: pairingSupported)
+        let allowed = lastMintAttempt.map { now().timeIntervalSince($0) >= Self.mintBackoff } ?? true
+        switch GlassesRules.codeNeed(current) {
+        case .none: break
+        case .mint: if allowed { await mint() }
+        case .replaced:
+            if replacedOnce {
+                madeElsewhere = true
+                log("pairing code replaced again: made elsewhere, stopped")
+            } else if allowed {
+                replacedOnce = true
+                log("pairing code replaced on the server: one new code")
+                await mint()
+            }
+        }
+        await lookUpRequesters()
+        noteStage(serverRunning: serverRunning, pairingSupported: pairingSupported)
+    }
+
+    /// One log line per stage change (pending seen, allowed, paired, replaced): stage names only, never a secret.
+    private func noteStage(serverRunning: Bool, pairingSupported: Bool) {
+        let name = GlassesRules.stageName(GlassesRules.stage(facts(serverRunning: serverRunning, pairingSupported: pairingSupported)))
+        if name != lastStage { log("pairing stage \(lastStage ?? "start") -> \(name)"); lastStage = name }
+    }
+
+    /// The section's task. Every view showing the section runs one; a poll happens only while that view is visible,
+    /// and only once per interval however many views run (the first to wake polls, the rest see it was just done). A
+    /// cancelled view's loop ends; any other visible one keeps polling.
+    func run(gate: @escaping @MainActor () -> GlassesGate,
+             sleep: (@MainActor (TimeInterval) async -> Bool)? = nil) async {
+        let pause = sleep ?? { seconds in (try? await Task.sleep(for: .seconds(seconds))) != nil }
+        while !Task.isCancelled {
+            let g = gate()
+            let due = lastTickUptime.map { uptime() - $0 >= pollInterval * 0.8 } ?? true
+            if g.visible && due && !ticking {
+                ticking = true
+                lastTickUptime = uptime()
+                await tick(index: tickCount, serverRunning: g.serverRunning, pairingSupported: g.pairingSupported, serverVersion: g.serverVersion)
+                tickCount += 1
+                ticking = false
+            }
+            guard await pause(pollInterval), !Task.isCancelled else { return }
+        }
+    }
+}
+
+enum PairingStateError: LocalizedError {
+    case helper(String)
+    case unreadable(String)
+    var errorDescription: String? {
+        switch self {
+        case .helper(let message): message.isEmpty ? "the helper refused" : message
+        case .unreadable(let verb): "the helper's \(verb) answer could not be read"
+        }
     }
 }

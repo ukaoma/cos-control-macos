@@ -95,7 +95,7 @@ struct ControlSetupView: View {
                     Text("Finish setting up").font(COSType.body(18, weight: .semibold))
                     Text("Skip anything for now. This guide stays in the Dock menu, Help, the menu-bar panel and the pet's menu.")
                         .font(COSType.body(13)).foregroundStyle(.secondary)
-                    SetupGuideView(model: model, provider: model.providerGuide, guide: model.setupGuide, permissions: model.permissionGuide)
+                    SetupGuideView(model: model, provider: model.providerGuide, guide: model.setupGuide, permissions: model.permissionGuide, pairing: model.glassesPairing)
                 }
                 if model.busy {
                     HStack(spacing: 12) {

@@ -1,4 +1,6 @@
 import AppKit
+import CoreImage
+import CoreImage.CIFilterBuiltins
 import SwiftUI
 
 // Connect your AI's views (onboarding P1): the rows, the Welcome step, the card the menu-bar panel shows in place,
@@ -325,7 +327,7 @@ struct ProviderConnectCard: View {
                 Text(error).font(COSType.body(11)).foregroundStyle(COSPalette.danger)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            SetupGuideView(model: model, provider: guide, guide: model.setupGuide, permissions: model.permissionGuide)
+            SetupGuideView(model: model, provider: guide, guide: model.setupGuide, permissions: model.permissionGuide, pairing: model.glassesPairing)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(13)
@@ -368,21 +370,263 @@ struct PanelConnectAIRow: View {
     }
 }
 
-/// F5: the glasses steps already on gotcos.com. No pairing logic here.
-struct GlassesGuideRow: View {
-    let openURL: (URL) -> Void
+/// A QR from CoreImage's CIQRCodeGenerator at correction level Q (contract, correction Q): one pixel per module, scaled
+/// by a whole number so every module stays a square, and shown with interpolation off so it is crisp at any size.
+@MainActor enum QRImage {
+    private static var cache: [String: NSImage] = [:]
+
+    static func make(_ text: String) -> NSImage? {
+        if let hit = cache[text] { return hit }
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(text.utf8)
+        filter.correctionLevel = "Q"
+        guard let output = filter.outputImage else { return nil }
+        let scaled = output.transformed(by: CGAffineTransform(scaleX: 10, y: 10))
+        guard let image = CIContext().createCGImage(scaled, from: scaled.extent) else { return nil }
+        let result = NSImage(cgImage: image, size: NSSize(width: scaled.extent.width, height: scaled.extent.height))
+        if cache.count > 8 { cache.removeAll() }
+        cache[text] = result
+        return result
+    }
+
+    /// Modules per side (the generator's own margin included), for checks.
+    static func modules(_ text: String) -> Int? {
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(text.utf8)
+        filter.correctionLevel = "Q"
+        return filter.outputImage.map { Int($0.extent.width) }
+    }
+}
+
+/// A QR on white, so it scans in dark mode too.
+struct QRCodeView: View {
+    let text: String
+    let side: CGFloat
+    /// What VoiceOver says (never the QR's own text, which carries the code and the address).
+    var label = "QR code"
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("COS Glasses").font(COSType.body(12.5, weight: .semibold))
-            Text("Optional. If your Even G2 says something needs setup, follow the glasses steps: install the COS app on your phone, then pair it with this Mac.")
-                .font(COSType.body(11)).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Button("Open the glasses steps") { openURL(GuideExtras.glassesWizardURL) }
-                .buttonStyle(COSTextButtonStyle())
+        Group {
+            if let image = QRImage.make(text) {
+                Image(nsImage: image).interpolation(.none).resizable().aspectRatio(1, contentMode: .fit)
+            } else {
+                Color.clear
+            }
         }
-        .padding(.vertical, 7)
+        .frame(width: side, height: side)
+        .padding(12)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
     }
+}
+
+/// The setup guide's Glasses section (contract 2026-10-09): Tailscale on this Mac, Tailscale on the iPhone, and the
+/// pairing QR. Uncounted in Finish setup. Its task is the only thing that makes a code, so codes exist only while it
+/// is on screen.
+struct GlassesSetupRows: View {
+    @ObservedObject var model: ControllerModel
+    @ObservedObject var pairing: GlassesPairingState
+    let openURL: (URL) -> Void
+    /// Off in offscreen renders, which seed the state themselves.
+    var polls = true
+
+    var body: some View {
+        let facts = pairing.facts(serverRunning: model.status.running, pairingSupported: model.status.pairingSupported)
+        let rows = GlassesRules.rows(facts)
+        VStack(alignment: .leading, spacing: 0) {
+            GlassesRowView(row: rows[0]) {
+                if rows[0].action == .getTailscale {
+                    Button("Get Tailscale") { openURL(GlassesRules.tailscaleDownload) }.buttonStyle(COSPrimaryButtonStyle())
+                } else if rows[0].action == .openTailscale {
+                    Button("Open Tailscale") { openTailscale() }.buttonStyle(COSPrimaryButtonStyle())
+                }
+            }
+            Divider()
+            GlassesRowView(row: rows[1]) {
+                if !rows[1].done {
+                    HStack(alignment: .center, spacing: 12) {
+                        QRCodeView(text: GlassesRules.tailscaleAppStore, side: 112, label: "Tailscale App Store link")
+                        Text("Point your iPhone Camera here to open Tailscale in the App Store.")
+                            .font(COSType.body(10.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            Divider()
+            GlassesRowView(row: rows[2]) { connectBody(facts) }
+        }
+        .background(WindowProbe(holder: windowHolder))
+        .task(id: polls) {
+            guard polls else { return }
+            // Polls (and makes codes) only while this copy of the section is on screen: the menu-bar panel open, or its
+            // window visible, not minimized and not covered (QA 2026-10-09 W3).
+            await pairing.run(gate: { [model, windowHolder] in
+                GlassesGate(serverRunning: model.status.running, pairingSupported: model.status.pairingSupported,
+                            serverVersion: model.status.version, visible: windowHolder.onScreen(panelVisible: model.panelVisible))
+            })
+        }
+    }
+
+    @StateObject private var windowHolder = GlassesWindowHolder()
+
+    @ViewBuilder private func connectBody(_ facts: GlassesFacts) -> some View {
+        switch GlassesRules.stage(facts) {
+        case .serverOff, .checking, .allowedWaiting:
+            EmptyView()
+        case .updateServer:
+            // The panel's own server update, with its gates (Views.swift, Update Server).
+            if model.status.installed && model.status.managedContract && model.status.ownershipVerified {
+                Button("Update Server") { model.perform("update") }
+                    .buttonStyle(COSPrimaryButtonStyle())
+                    .disabled(model.status.meetingWorkBlockingRestart || model.busy)
+            }
+        case .madeElsewhere:
+            Button("Show a new code") { Task { await pairing.showNewCode() } }.buttonStyle(COSPrimaryButtonStyle())
+        case .failed:
+            Button("Try again") { Task { await pairing.showNewCode() } }.buttonStyle(COSPrimaryButtonStyle())
+        case .noHosts:
+            VStack(alignment: .leading, spacing: 8) {
+                lanToggle
+                Button("Show a new code") { Task { await pairing.showNewCode() } }.buttonStyle(COSTextButtonStyle())
+            }
+        case .code:
+            if let code = facts.code { codeCard(code) }
+        case .pending:
+            if let pending = facts.status?.pending { allowCard(pending, facts: facts) }
+        case .paired:
+            Button("Pair another phone") { Task { await pairing.pairAnother() } }.buttonStyle(COSTextButtonStyle())
+        }
+    }
+
+    @ViewBuilder private func codeCard(_ code: PairingCode) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let qr = code.qr {
+                QRCodeView(text: qr, side: 228, label: "Pairing code \(code.display)").frame(maxWidth: .infinity)
+            }
+            Text("Hold your phone so the code fills the screen")
+                .font(COSType.body(11)).foregroundStyle(.secondary).frame(maxWidth: .infinity)
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(code.display).font(COSType.mono(17, weight: .bold)).textSelection(.enabled)
+                if let host = code.hosts.first {
+                    Text(host.text).font(COSType.mono(10.5)).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+                Spacer(minLength: 0)
+            }
+            Text("Works once, until \(GlassesRules.time(code.expiresAt)).").font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
+            HStack(spacing: 12) {
+                Button("Show a new code") { Task { await pairing.showNewCode() } }.buttonStyle(COSTextButtonStyle())
+                Spacer(minLength: 0)
+            }
+            lanToggle
+        }
+    }
+
+    private var lanToggle: some View {
+        Toggle("Allow pairing on this Wi-Fi (home only)", isOn: Binding(get: { pairing.lanToggleOn },
+                                                                       set: { on in Task { await pairing.setAllowLan(on) } }))
+            .toggleStyle(COSSwitchStyle())
+            .font(COSType.body(11))
+            .help("Lets a phone on this Wi-Fi pair without Tailscale for the next 10 minutes. Use it only at home.")
+    }
+
+    @ViewBuilder private func allowCard(_ pending: PairingStatusFacts.Pending, facts: GlassesFacts) -> some View {
+        let who = GlassesRules.requester(ip: pending.ip, whois: facts.whois[pending.ip])
+        let warning = GlassesRules.accountWarning(ip: pending.ip, whois: facts.whois[pending.ip])
+        VStack(alignment: .leading, spacing: 8) {
+            if let warning {
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(COSType.body(12, weight: .semibold)).foregroundStyle(COSPalette.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text("\(who) wants to pair")
+                .font(COSType.body(12, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+            Text("Allow only if this is your phone. It gets full access to COS on this Mac.")
+                .font(COSType.body(10.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 12) {
+                Button("Allow") { Task { await pairing.decide(allow: true) } }.buttonStyle(COSPrimaryButtonStyle())
+                    .accessibilityLabel("Allow \(who) to pair")
+                Button("Deny") { Task { await pairing.decide(allow: false) } }.buttonStyle(COSTextButtonStyle())
+                    .accessibilityLabel("Deny \(who)")
+                Spacer(minLength: 0)
+            }
+            .disabled(pairing.deciding)
+        }
+        .padding(10)
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke((warning == nil ? COSPalette.amber : COSPalette.danger).opacity(0.6), lineWidth: 1))
+    }
+
+    private func openTailscale() { if !GlassesWindowHolder.openTailscaleApp() { openURL(GlassesRules.tailscaleDownload) } }
+}
+
+/// The window this copy of the Glasses section is drawn in, for its visibility gate.
+@MainActor final class GlassesWindowHolder: ObservableObject {
+    weak var window: NSWindow?
+
+    /// On screen: its window visible, not minimized and not covered; or, before the window is known, the menu-bar panel open.
+    func onScreen(panelVisible: Bool) -> Bool {
+        guard let window else { return panelVisible }
+        return window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible)
+    }
+
+    /// Opens the installed Tailscale app (standalone or App Store build). False when neither is installed.
+    static func openTailscaleApp() -> Bool {
+        for id in GlassesRules.tailscaleBundles {
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) {
+                NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+                return true
+            }
+        }
+        return false
+    }
+}
+
+/// Reports the hosting window into a holder (no window is ordered, made key or moved).
+struct WindowProbe: NSViewRepresentable {
+    let holder: GlassesWindowHolder
+    func makeNSView(context: Context) -> NSView {
+        let view = ProbeView()
+        view.holder = holder
+        return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) { holder.window = nsView.window }
+
+    final class ProbeView: NSView {
+        weak var holder: GlassesWindowHolder?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            holder?.window = window
+        }
+    }
+}
+
+/// One Glasses row: title, a status dot, what it is for, a detail line, then its own controls.
+struct GlassesRowView<Controls: View>: View {
+    let row: SetupRow
+    @ViewBuilder let controls: () -> Controls
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(row.title).font(COSType.body(12.5, weight: .semibold))
+                Spacer(minLength: 6)
+                HStack(spacing: 5) {
+                    Circle().fill(color).frame(width: 7, height: 7)
+                    Text(row.status).font(COSType.body(11, weight: row.done || row.afterSetup ? .regular : .semibold)).foregroundStyle(color)
+                }.fixedSize()
+            }
+            Text(row.unlocks).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let detail = row.detail, !detail.isEmpty {
+                Text(detail).font(COSType.body(10.5)).foregroundStyle(row.done ? COSPalette.green : COSPalette.muted)
+                    .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            }
+            controls().padding(.top, 2)
+        }
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var color: Color { row.done ? COSPalette.green : row.afterSetup ? COSPalette.muted : COSPalette.amber }
 }
 
 /// F4: one line that introduces the session pet, once, with Keep, Calm and Hide.
@@ -475,6 +719,7 @@ extension ControllerModel {
         facts.jevConfigured = jevStatus?.configured
         facts.permissionsNeedCount = permissionGuide.needCount
         facts.ollamaPinnedModel = status.ollamaConfiguredModel
+        facts.glasses = glassesPairing.facts(serverRunning: status.running, pairingSupported: status.pairingSupported)
         return facts
     }
 }
@@ -582,6 +827,9 @@ struct SetupRowView: View {
         case .turnOnContinue: model.setThreadAttachEnabled(true)
         case .addJevKey: model.showSettings?()
         case .openPermissions: model.permissionGuide.openInPanel()
+        // The Glasses rows draw their own buttons (GlassesSetupRows); these never reach a SetupRowView.
+        case .getTailscale: _ = model.providerGuide.openURL(GlassesRules.tailscaleDownload)
+        case .openTailscale: if !GlassesWindowHolder.openTailscaleApp() { _ = model.providerGuide.openURL(GlassesRules.tailscaleDownload) }
         }
     }
 }
@@ -593,6 +841,9 @@ struct SetupGuideView: View {
     @ObservedObject var provider: ProviderGuide
     @ObservedObject var guide: SetupGuideState
     @ObservedObject var permissions: PermissionGuide
+    @ObservedObject var pairing: GlassesPairingState
+    /// Off in offscreen renders only.
+    var pollsGlasses = true
 
     var body: some View {
         let rows = SetupGuideRules.rows(model.setupFacts(provider: provider, guide: guide), skipped: guide.skipped)
@@ -626,7 +877,12 @@ struct SetupGuideView: View {
             if let notice = provider.notice {
                 Text(notice).font(COSType.body(11)).foregroundStyle(COSPalette.accent).fixedSize(horizontal: false, vertical: true)
             }
-            GlassesGuideRow(openURL: { _ = provider.openURL($0) })
+            section("Glasses") {
+                GlassesSetupRows(model: model, pairing: pairing, openURL: { _ = provider.openURL($0) }, polls: pollsGlasses)
+            }
+            Button("The COS app for your glasses") { _ = provider.openURL(GuideExtras.glassesWizardURL) }
+                .buttonStyle(COSTextButtonStyle())
+                .help("Install COS on your phone from the Even app, then scan the code above")
             HStack(spacing: 14) {
                 if guide.hidden {
                     Button("Show Finish setup at the top again") { guide.show() }.buttonStyle(COSTextButtonStyle())
@@ -679,7 +935,7 @@ struct FinishSetupCard: View {
         let facts = model.setupFacts(provider: provider, guide: guide)
         let rows = SetupGuideRules.rows(facts, skipped: guide.skipped)
         if SetupGuideRules.showFinishCard(rows, hidden: guide.hidden, loaded: SetupGuideRules.loaded(facts)) {
-            let next = rows.first { !$0.handled && !$0.afterSetup }
+            let next = SetupGuideRules.next(rows)
             let p = SetupGuideRules.progress(rows)
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .firstTextBaseline) {

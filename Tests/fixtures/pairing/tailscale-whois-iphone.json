@@ -1,0 +1,22 @@
+{
+ "CapMap": {},
+ "Node": {
+  "Addresses": [
+   "100.64.0.11/32",
+   "fd7a:115c:a1e0::b/128"
+  ],
+  "ComputedName": "example-iphone",
+  "ComputedNameWithHost": "example-iphone (localhost)",
+  "Hostinfo": {
+   "Hostname": "localhost",
+   "OS": "iOS"
+  },
+  "ID": 1,
+  "Name": "example-iphone.tail00000a.ts.net."
+ },
+ "UserProfile": {
+  "DisplayName": "Alex Example",
+  "ID": 1001,
+  "LoginName": "someone@example.com"
+ }
+}

@@ -571,6 +571,12 @@ final class COSControlHelper {
         case "ollama-tags": try emitOllamaTags()
         case "provider-status": try emitProviderStatus(args: args)
         case "voice-status": emitVoiceStatus()
+        // Glasses pairing (contract 2026-10-09, server 6.67.0): read-only Tailscale facts and the loopback pairing routes.
+        case "tailscale-status": emitTailscaleStatus()
+        case "tailscale-whois": try emitTailscaleWhois(args: args)
+        case "pairing-code": try emitPairingCall("/api/pairing/code", method: "POST", body: PairingCore.codeBody(allowLan: args.contains("--allow-lan")))
+        case "pairing-status": try emitPairingCall("/api/pairing/status")
+        case "pairing-decision": try emitPairingDecision(args: args)
         case "self-test-whisper-runtime":
             guard let isolated = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"], isolated.hasPrefix("/tmp/"),
                   let archive = args.dropFirst().first else { throw HelperError.message("An isolated temporary home and archive are required.") }
@@ -2829,6 +2835,7 @@ final class COSControlHelper {
             "tasksGate": tasksCapability?["gate"] ?? NSNull(),
             "claudeSessionsEnabled": claudeSessionsEnabled ?? NSNull(),
             "threadAttachSupported": threadAttachSupported,
+            "pairingSupported": PairingCore.supported(health: health),
             "threadAttachEnabled": threadAttachEnabled ?? NSNull(),
             "threadAttachProviders": threadAttachProviders,
             "videoUploadV2Supported": videoUploadV2Supported,
@@ -5222,6 +5229,62 @@ final class COSControlHelper {
             return review && status == 400 && code == "invalid_recommendation_request" ? "server_too_old" : code
         }
         return status == 404 ? "server_too_old" : "http_\(status)"
+    }
+
+    // MARK: Glasses pairing (contract 2026-10-09)
+
+    /// `tailscale status --json` through the bundle binary, with SHLVL=1 in the child (TailscaleCore.childEnvironment).
+    /// Read-only, bounded by TailscaleCore.timeout. Never fails: a missing app or an unreadable answer is in the details.
+    private func emitTailscaleStatus() {
+        let environment = ProcessInfo.processInfo.environment
+        let app = TailscaleCore.app(environment: environment)
+        let binary = TailscaleCore.binary(app: app)
+        let installed = fm.isExecutableFile(atPath: binary)
+        let plist = NSDictionary(contentsOfFile: (app as NSString).appendingPathComponent("Contents/Info.plist"))
+        let bundleID = plist?["CFBundleIdentifier"] as? String
+        let bundle = bundleID.map { TailscaleCore.bundles[$0] ?? "other" }
+        var output: String?
+        if installed {
+            output = ProbeRunner.run(binary, ["status", "--json"], environment: TailscaleCore.childEnvironment(from: environment),
+                                     timeout: TailscaleCore.timeout)?.output
+        }
+        let status = TailscaleCore.parseStatus(installed: installed, bundle: bundle, output: output)
+        emit(ok: true, message: status.running ? "Tailscale is running" : status.installed ? "Tailscale is not running" : "Tailscale is not installed",
+             details: status.json)
+    }
+
+    /// `tailscale whois --json <ip>`: {found, node, os, user}. IPv4 only; anything else never reaches the CLI.
+    private func emitTailscaleWhois(args: [String]) throws {
+        guard let ip = args.dropFirst().first, TailscaleCore.isIPv4(ip) else { throw HelperError.message("tailscale-whois needs an IPv4 address.") }
+        let environment = ProcessInfo.processInfo.environment
+        let binary = TailscaleCore.binary(app: TailscaleCore.app(environment: environment))
+        guard fm.isExecutableFile(atPath: binary) else {
+            emit(ok: true, message: "Tailscale is not installed", details: ["found": false, "sameUser": false]); return
+        }
+        let child = TailscaleCore.childEnvironment(from: environment)
+        // This Mac's own account, so the Allow card can say when a device is someone else's.
+        let me = ProbeRunner.run(binary, ["status", "--json"], environment: child, timeout: TailscaleCore.timeout)
+        let result = ProbeRunner.run(binary, ["whois", "--json", ip], environment: child, timeout: TailscaleCore.timeout)
+        emit(ok: true, message: "whois ready", details: TailscaleCore.parseWhois(code: result?.code, output: result?.output,
+                                                                               selfUser: TailscaleCore.selfUserID(statusOutput: me?.output)))
+    }
+
+    /// One pairing route over loopback with the token. The answer always has `reason` (null on success): a refusal is
+    /// data the app shows, never a thrown error. Nothing of the body (code, QR, nonce) is logged.
+    private func emitPairingCall(_ path: String, method: String = "GET", body: String? = nil) throws {
+        let token = try readToken()
+        let response = request(path, method: method, token: token, body: body, timeout: 5)
+        let details = PairingCore.answer(status: response?.status, body: response?.body)
+        emit(ok: true, message: (details["reason"] as? String).map { PairingCore.message($0) } ?? "Pairing answer ready", details: details)
+    }
+
+    private func emitPairingDecision(args: [String]) throws {
+        let rest = Array(args.dropFirst())
+        guard rest.count == 2, let allow = PairingCore.decision(rest[1]),
+              let body = PairingCore.decisionBody(nonce: rest[0], allow: allow) else {
+            throw HelperError.message("pairing-decision needs a request id and allow or deny.")
+        }
+        try emitPairingCall("/api/pairing/decision", method: "POST", body: body)
     }
 
     /// Jev key status (never the key). An older server (404) reads as "not available", not an error.

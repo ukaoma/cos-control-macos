@@ -19,6 +19,8 @@ mkdir -p "$TMP/home"
 "$ROOT/Tests/run-onboarding.sh"
 # Onboarding P1, Connect your AI: provider-status against fixtures, the app model alone, and the wiring pins.
 "$ROOT/Tests/run-provider-connect.sh"
+# Glasses pairing (contract 2026-10-09): the Tailscale and pairing core against real-shape fixtures.
+"$ROOT/Tests/run-pairing.sh"
 
 # 0.5.254 (Miles, 2026-10-01 08:44: resizing Work with 268 tasks lagged; the board was rebuilt 27 times on each step).
 # A hard gate on counts, never milliseconds: over a 1200 to 1900 pt sweep of a 268-task board the rows are rebuilt 0
@@ -38,7 +40,7 @@ node "$ROOT/Tests/MemoriesAppliedCanary.cjs"
 node "$ROOT/Tests/MemoriesQuarantineCanary.cjs"
 
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
-  "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" \
+  "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" \
   -framework Security -framework AppKit \
   -o "$TMP/cos-control-helper"
 
@@ -94,6 +96,8 @@ python3 "$ROOT/Tests/work-search-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-requests-helper-checks.py" "$TMP/cos-control-helper"
 # Onboarding P1: provider-status through the compiled helper (stand-in CLIs in a /tmp home, a loopback Ollama).
 python3 "$ROOT/Tests/provider-status-helper-checks.py" "$TMP/cos-control-helper"
+# Glasses pairing: tailscale-status (SHLVL in the child), whois and the pairing verbs through the compiled helper.
+python3 "$ROOT/Tests/pairing-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/HeldNamingGuardMutations.py"
 
 # THE APP ITSELF MUST COMPILE.

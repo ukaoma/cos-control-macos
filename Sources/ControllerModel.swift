@@ -445,6 +445,8 @@ final class ControllerModel: ObservableObject {
     lazy var providerGuide: ProviderGuide = makeProviderGuide()
     /// The setup guide's own state (skips, Hide, the in-app voice setup). Rows come from SetupGuideRules.
     lazy var setupGuide: SetupGuideState = makeSetupGuide()
+    /// The setup guide's Glasses section (Tailscale rows and the pairing QR). Inert in a model built by a check.
+    lazy var glassesPairing: GlassesPairingState = makeGlassesPairing()
     /// Opens the setup guide window (the Welcome window, which shows the full guide once COS is set up).
     var showSetupGuide: (() -> Void)?
     /// Opens the menu-bar panel on its settings (the pet's and the Dock's Settings…).
@@ -576,6 +578,20 @@ final class ControllerModel: ObservableObject {
         }
         guide.log = { line in onboardingLog.info("\(line, privacy: .public)") }
         return guide
+    }
+
+    private func makeGlassesPairing() -> GlassesPairingState {
+        let pairing = GlassesPairingState()
+        let bundleURL = Bundle.main.bundleURL.standardizedFileURL
+        guard bundleURL.pathExtension == "app", Bundle.main.bundleIdentifier != nil, backgroundWorkEnabled else { return pairing }
+        let helper = self.helper
+        pairing.runHelper = { arguments in
+            // The helper bounds each call itself (Tailscale 6 s, the server 5 s); 20 s covers a slow start.
+            let response = try await helper.run(arguments, timeout: 20)
+            return PairingHelperAnswer(ok: response.ok, message: response.message, details: try JSONEncoder().encode(response.details))
+        }
+        pairing.log = { line in onboardingLog.info("pairing \(line, privacy: .public)") }
+        return pairing
     }
 
     /// F4: shown once, while the pet is on, to anyone who never changed a pet setting.
