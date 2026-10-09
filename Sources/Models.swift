@@ -3844,6 +3844,9 @@ struct AppUpdateInfo: Sendable {
     var noticeId: String?
     var noticeTitle: String?
     var noticeBody: String?
+    /// 2026-10-09: the stable channel's optional `whatsNew` (summary and sections), already cleaned by the helper and
+    /// cleaned again here. Nil when the appcast has none; the What's New window then shows `notes` as its summary.
+    var whatsNew: AppUpdateWhatsNew?
     /// newer / upToDate / killSwitch / unreachable / malformed / idle / requiresMacOS
     var reason: String = "idle"
 
@@ -3859,6 +3862,7 @@ struct AppUpdateInfo: Sendable {
         noticeId = details["noticeId"]?.string
         noticeTitle = details["noticeTitle"]?.string
         noticeBody = details["noticeBody"]?.string
+        whatsNew = AppUpdateWhatsNew(details["whatsNew"])
         reason = details["reason"]?.string ?? "idle"
     }
 
@@ -4018,6 +4022,201 @@ struct AppUpdateFlow: Equatable, Sendable {
     var versionLine: String {
         guard let version else { return "" }
         return build.map { "Version \(version) (build \($0))" } ?? "Version \(version)"
+    }
+
+    /// "0.5.275 (build 328)", the accent line at the top of the What's New window; the build only when the appcast
+    /// names one.
+    var releaseLine: String {
+        guard let version else { return "" }
+        return build.map { "\(version) (build \($0))" } ?? version
+    }
+}
+
+// MARK: - What's New (Miles, 2026-10-09 13:09, with screenshots of Vorssant)
+//
+// "When an update is ready and the user clicks Update, show a proper What's New window." Update in the banner, and Check
+// for updates when it finds one, open a real window (WhatsNewWindowPresenter in Views.swift): the release, a summary,
+// sections of bullets, and a footer with Cancel and Download and install. That click IS the confirmation: the small
+// "Install COS Control X?" alert is gone. Pure pieces here, so Tests/WhatsNewChecks.swift runs them with Models.swift
+// alone:
+//   AppUpdateWhatsNew   the appcast's optional whatsNew, typed, capped and cleaned (the helper already did; again here)
+//   WhatsNewContent     what the window shows: whatsNew, or the old `notes` as the summary with no sections
+//   WhatsNewFooter      the footer for each phase of AppUpdateFlow: buttons, progress words, the failure, Try again
+
+/// `channels.stable.whatsNew` in the appcast: `{ "summary": "…", "sections": [ { "title": "…", "items": ["…"] } ] }`.
+/// Untrusted text from the network. HelperSources/main.swift (`sanitizedWhatsNew`) applies the same rules before it
+/// passes the object on, and this applies them again, so a helper from another build can never put more on screen.
+/// A section needs a title and at least one item; a whatsNew needs a summary or at least one section.
+struct AppUpdateWhatsNew: Equatable, Sendable {
+    struct Section: Equatable, Sendable {
+        let title: String
+        let items: [String]
+    }
+
+    static let summaryLimit = 1200
+    static let sectionLimit = 8
+    static let itemLimit = 12
+    static let itemLength = 400
+    static let titleLength = 80
+
+    let summary: String?
+    let sections: [Section]
+
+    init(summary: String?, sections: [Section]) {
+        self.summary = summary
+        self.sections = sections
+    }
+
+    /// Nil for anything that is not an object, and for an object with no usable summary and no usable section. Wrong
+    /// types are dropped one by one (a number for an item drops that item, not the section).
+    init?(_ value: JSONValue?) {
+        guard let object = value?.object else { return nil }
+        let summary = object["summary"]?.string.flatMap { Self.clean($0, limit: Self.summaryLimit, keepNewlines: true) }
+        var sections: [Section] = []
+        for entry in object["sections"]?.array ?? [] {
+            guard sections.count < Self.sectionLimit else { break }
+            guard let section = entry.object,
+                  let title = section["title"]?.string.flatMap({ Self.clean($0, limit: Self.titleLength, keepNewlines: false) })
+            else { continue }
+            var items: [String] = []
+            for item in section["items"]?.array ?? [] {
+                guard items.count < Self.itemLimit else { break }
+                if let text = item.string, let cleaned = Self.clean(text, limit: Self.itemLength, keepNewlines: false) {
+                    items.append(cleaned)
+                }
+            }
+            if !items.isEmpty { sections.append(Section(title: title, items: items)) }
+        }
+        guard summary != nil || !sections.isEmpty else { return nil }
+        self.summary = summary
+        self.sections = sections
+    }
+
+    /// Bidi overrides and isolates (and the marks), which can make a line read differently from what it says.
+    private static let bidiControls: Set<UInt32> = [0x061C, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
+                                                    0x2066, 0x2067, 0x2068, 0x2069]
+
+    /// Control characters become spaces (a newline stays one only in the summary, at most one blank line in a row),
+    /// bidi controls go, runs of spaces close up, the ends are trimmed. Nil when nothing is left. Longer than `limit`
+    /// characters: cut, with an ellipsis as the last of the `limit`.
+    static func clean(_ text: String, limit: Int, keepNewlines: Bool) -> String? {
+        var scalars = String.UnicodeScalarView()
+        var previous: Unicode.Scalar?
+        for scalar in text.unicodeScalars {
+            defer { previous = scalar }
+            if scalar == "\n" && previous == "\r" { continue }  // CR LF is one line break
+            let breaks = scalar == "\n" || scalar == "\r" || scalar.value == 0x2028 || scalar.value == 0x2029
+            if breaks {
+                scalars.append(keepNewlines ? "\n" : " ")
+            } else if scalar.properties.generalCategory == .control {
+                scalars.append(" ")
+            } else if !bidiControls.contains(scalar.value) {
+                scalars.append(scalar)
+            }
+        }
+        var lines: [String] = []
+        for line in String(scalars).split(separator: "\n", omittingEmptySubsequences: false) {
+            let words = line.split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
+            if words.isEmpty && (lines.last?.isEmpty ?? true) { continue }
+            lines.append(words)
+        }
+        while lines.last?.isEmpty == true { lines.removeLast() }
+        let result = lines.joined(separator: "\n")
+        guard !result.isEmpty else { return nil }
+        guard result.count > limit else { return result }
+        let cut = String(result.prefix(max(0, limit - 1))).trimmingCharacters(in: .whitespacesAndNewlines)
+        return cut + "…"
+    }
+}
+
+/// What the What's New window shows for the current offer.
+struct WhatsNewContent: Equatable, Sendable {
+    let summary: String?
+    let sections: [AppUpdateWhatsNew.Section]
+
+    /// The appcast's whatsNew when it has one. Without it (every appcast before 0.5.275, or one whose whatsNew was all
+    /// wrong types) the old `notes` string is the summary and there are no sections. A whatsNew with sections but no
+    /// summary takes `notes` as its summary.
+    init(_ info: AppUpdateInfo) {
+        let notes = info.notes.flatMap { AppUpdateWhatsNew.clean($0, limit: AppUpdateWhatsNew.summaryLimit, keepNewlines: true) }
+        summary = info.whatsNew?.summary ?? notes
+        sections = info.whatsNew?.sections ?? []
+    }
+
+    /// The summary paragraph, or a plain line when the appcast published no words at all.
+    var summaryText: String { summary ?? "No release notes were published with this update." }
+}
+
+/// The What's New footer for each phase of AppUpdateFlow. Download and install runs installAppUpdate, the existing
+/// path (busy refusal, the helper's meeting and drain refusals, the SHA-256 check); the window only reflects it.
+struct WhatsNewFooter: Equatable, Sendable {
+    enum Primary: Equatable, Sendable {
+        /// Ready: Download and install.
+        case install
+        /// The install failed: Try again (the same path again).
+        case tryAgain
+        /// Nothing to install (the offer went away while the window was open).
+        case hidden
+    }
+
+    static let installTitle = "Download and install"
+    static let retryTitle = "Try again"
+    /// Under the buttons, always: what an install does to Control and to the glasses server.
+    static let reassurance = "COS Control quits and reopens by itself. The glasses server keeps running."
+    /// While an install runs: closing the window is allowed and stops nothing.
+    static let closeNote = "Closing this window does not stop the install."
+
+    let primary: Primary
+    let primaryEnabled: Bool
+    let cancelTitle: String
+    let cancelEnabled: Bool
+    /// The progress word, the failure in the helper's own words, or why Download and install is waiting.
+    let status: String?
+    let failed: Bool
+    let working: Bool
+
+    var primaryTitle: String? {
+        switch primary {
+        case .install: return Self.installTitle
+        case .tryAgain: return Self.retryTitle
+        case .hidden: return nil
+        }
+    }
+
+    init(_ phase: AppUpdatePhase, busy: Bool) {
+        let waiting = "COS Control is finishing another task. Download and install is available when it is done."
+        switch phase {
+        case .none:
+            primary = .hidden; primaryEnabled = false
+            cancelTitle = "Close"; cancelEnabled = true
+            status = "COS Control is up to date."; failed = false; working = false
+        case .ready:
+            primary = .install; primaryEnabled = !busy
+            cancelTitle = "Cancel"; cancelEnabled = true
+            status = busy ? waiting : nil; failed = false; working = false
+        case .staging(let line):
+            primary = .install; primaryEnabled = false
+            cancelTitle = "Cancel"; cancelEnabled = false
+            status = Self.progressWord(line); failed = false; working = true
+        case .applying:
+            primary = .install; primaryEnabled = false
+            cancelTitle = "Cancel"; cancelEnabled = false
+            status = "Installing, COS Control will reopen"; failed = false; working = true
+        case .failed(let message):
+            primary = .tryAgain; primaryEnabled = !busy
+            cancelTitle = "Cancel"; cancelEnabled = true
+            status = message; failed = true; working = false
+        }
+    }
+
+    /// The helper's staging lines ("Downloading COS Control update…", "Checking SHA-256…", "Unpacking update…") as one
+    /// short word each; any other line as itself.
+    static func progressWord(_ line: String?) -> String {
+        guard let line, !line.isEmpty else { return "Downloading…" }
+        if line.contains("Downloading") { return "Downloading…" }
+        if line.contains("SHA-256") || line.hasPrefix("Checking") { return "Checking…" }
+        if line.contains("Unpacking") { return "Unpacking…" }
+        return line
     }
 }
 

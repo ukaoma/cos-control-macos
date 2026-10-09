@@ -1477,6 +1477,9 @@ PY
 # panel open, never two at once), the banner's phases and the gold glasses, executed; then the model wiring with the app.
 "$ROOT/Tests/run-app-update-badge.sh"
 /usr/bin/python3 "$ROOT/Tests/app-update-badge-pins.py" "$ROOT"
+# 2026-10-09: the What's New window (Update opens it; Download and install is the confirmation). Pins, the pure pieces,
+# the compiled helper's whatsNew against fixtures, and the window and install path against a stand-in helper.
+"$ROOT/Tests/run-whats-new.sh"
 /usr/bin/grep -q 'case "openpets-catalog"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'case "openpets-thumb"' "$ROOT/HelperSources/main.swift"
 /usr/bin/grep -q 'static func isAllowedThumbURL' "$ROOT/HelperSources/main.swift"

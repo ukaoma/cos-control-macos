@@ -1,0 +1,37 @@
+{
+  "summary": "Updates now open a What's New window. Click Update in the menu-bar panel, or Check for updates when one is waiting, to see what changed before you install. Download and install shows each step in the window, and COS Control quits and reopens by itself while the glasses server keeps running. This release also carries the glasses pairing and update badge from 0.5.274.",
+  "sections": [
+    {
+      "title": "What's New window",
+      "items": [
+        "Update opens this window instead of a small alert. The release, a summary and what changed, in light or dark.",
+        "Download and install is the confirmation. The window shows Downloading, Checking and Installing as they happen.",
+        "If the install cannot run, for example during a meeting, the window says why and offers Try again.",
+        "Closing the window does not stop an install that has started. COS Control still reopens on the new version."
+      ]
+    },
+    {
+      "title": "Connect your glasses in one scan",
+      "items": [
+        "The Setup guide has a Glasses section that checks Tailscale on this Mac and on your iPhone.",
+        "Scan the pairing code with COS Glasses 6.10.621, tap Allow on the Mac, and the phone is connected.",
+        "Codes last 5 minutes and work once. Allow names the device and warns when it is not on your Tailscale account.",
+        "Pairing on home Wi-Fi is an opt-in 10 minute switch. Older glasses keep working with the pairing token."
+      ]
+    },
+    {
+      "title": "Update ready, at a glance",
+      "items": [
+        "When a new COS Control is out, the menu-bar glasses turn gold with a dot.",
+        "The panel opens with an Update available banner at the top.",
+        "COS checks at launch, every 6 hours, and when you open the panel after 15 minutes."
+      ]
+    },
+    {
+      "title": "Fixed",
+      "items": [
+        "Check for updates no longer waits forever when a background check is already running."
+      ]
+    }
+  ]
+}

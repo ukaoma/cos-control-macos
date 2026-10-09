@@ -195,7 +195,7 @@ struct AppUpdateBanner: View {
             Button("Update", action: onUpdate)
                 .buttonStyle(AppUpdateBannerButtonStyle())
                 .disabled(disabled)
-                .help(notes ?? "Install this update. Control quits and reopens; the glasses server keeps running.")
+                .help("See what is new in this update, then download and install it.")
         case .failed:
             Button("Try again", action: onUpdate)
                 .buttonStyle(COSPrimaryButtonStyle())
@@ -221,6 +221,236 @@ private struct AppUpdateBannerButtonStyle: ButtonStyle {
     }
 }
 
+/// 2026-10-09 (Miles, 13:09, with screenshots of Vorssant): "show a proper What's New window" when Update is clicked.
+/// A real window, never a sheet on the panel or an alert: the panel is a MenuBarExtra that closes as soon as focus
+/// moves, and an install that is running must stay visible. One window at a time: opening it again brings the same
+/// window forward. Closing it stops nothing; an install already running carries on and Control reopens by itself.
+@MainActor
+final class WhatsNewWindowPresenter {
+    private(set) var controller: NSWindowController?
+    /// How many windows this presenter has made. One for the life of the app (Tests/WhatsNewRender.swift).
+    private(set) var windowsMade = 0
+
+    /// The window, made once and kept (`isReleasedWhenClosed` is false); never ordered in here. `show` orders it in.
+    @discardableResult
+    func prepare(model: ControllerModel) -> NSWindow {
+        if let window = controller?.window { return window }
+        let host = NSHostingController(rootView: WhatsNewWindowRoot(model: model) { [weak self] in self?.close() })
+        let window = NSWindow(contentViewController: host)
+        window.title = "What's New in COS Control"
+        window.styleMask = [.titled, .closable, .fullSizeContentView]
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
+        window.backgroundColor = COSInk.cardNS
+        window.setContentSize(NSSize(width: WhatsNewView.width, height: WhatsNewView.height))
+        window.isReleasedWhenClosed = false
+        window.center()
+        controller = NSWindowController(window: window)
+        windowsMade += 1
+        return window
+    }
+
+    func show(model: ControllerModel) {
+        let window = prepare(model: model)
+        controller?.showWindow(nil)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Cancel, Close, and the window's close button. The install flow is the model's, so this never touches it.
+    func close() {
+        controller?.window?.close()
+    }
+}
+
+/// The window's root: the model's offer and flow, with Download and install wired to installAppUpdate.
+struct WhatsNewWindowRoot: View {
+    @ObservedObject var model: ControllerModel
+    let close: () -> Void
+
+    var body: some View {
+        WhatsNewView(content: WhatsNewContent(model.appUpdate), flow: model.appUpdateFlow, busy: model.busy,
+                     onInstall: { model.installAppUpdate() }, onCancel: close)
+    }
+}
+
+/// The What's New layout, as the reference: a large title, a rule, a scrolling body (the release in the accent, the
+/// summary, each section as a sentence-case heading with dotted rows), and a footer pinned to the bottom with Cancel on
+/// the left and Download and install on the right. Card and raised tokens, so it follows light and dark.
+struct WhatsNewView: View {
+    static let width: CGFloat = 620
+    static let height: CGFloat = 620
+
+    let content: WhatsNewContent
+    let flow: AppUpdateFlow
+    var busy = false
+    let onInstall: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        let footer = WhatsNewFooter(flow.phase, busy: busy)
+        VStack(spacing: 0) {
+            Text("What's New")
+                .font(COSType.display(30, weight: .bold))
+                .foregroundStyle(Color.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 32)
+                .padding(.top, 38)
+                .padding(.bottom, 16)
+                .accessibilityAddTraits(.isHeader)
+            Rectangle().fill(COSPalette.line).frame(height: 1)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    if !flow.releaseLine.isEmpty {
+                        Text(flow.releaseLine)
+                            .font(COSType.body(15, weight: .semibold))
+                            .foregroundStyle(COSPalette.accent)
+                    }
+                    WhatsNewSection(title: "Summary") {
+                        Text(content.summaryText)
+                            .font(COSType.body(13.5))
+                            .lineSpacing(3)
+                            .foregroundStyle(Color.primary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                    ForEach(Array(content.sections.enumerated()), id: \.offset) { _, section in
+                        WhatsNewSection(title: section.title) {
+                            VStack(alignment: .leading, spacing: 9) {
+                                ForEach(Array(section.items.enumerated()), id: \.offset) { _, item in
+                                    WhatsNewBullet(text: item)
+                                }
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 32)
+                .padding(.vertical, 24)
+            }
+            Rectangle().fill(COSPalette.line).frame(height: 1)
+            footerBar(footer)
+        }
+        .frame(width: Self.width, height: Self.height)
+        .background(COSPalette.card)
+        .cosControlTheme()
+    }
+
+    private func footerBar(_ footer: WhatsNewFooter) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let status = footer.status {
+                HStack(alignment: .top, spacing: 8) {
+                    if footer.working {
+                        COSSpinner(size: 13)
+                    } else if footer.failed {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(COSPalette.danger)
+                    }
+                    Text(status)
+                        .font(COSType.body(12.5, weight: footer.working ? .medium : .regular))
+                        .foregroundStyle(footer.failed ? COSPalette.danger : Color.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(4)
+                }
+                .accessibilityElement(children: .combine)
+            }
+            HStack(spacing: 12) {
+                Button(footer.cancelTitle, action: onCancel)
+                    .buttonStyle(WhatsNewButtonStyle(prominent: false))
+                    .disabled(!footer.cancelEnabled)
+                    .keyboardShortcut(.cancelAction)
+                Spacer(minLength: 12)
+                if let title = footer.primaryTitle {
+                    Button(title, action: onInstall)
+                        .buttonStyle(WhatsNewButtonStyle(prominent: true))
+                        .disabled(!footer.primaryEnabled)
+                }
+            }
+            Text(footer.working ? "\(WhatsNewFooter.reassurance) \(WhatsNewFooter.closeNote)" : WhatsNewFooter.reassurance)
+                .font(COSType.body(11.5))
+                .foregroundStyle(COSPalette.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 16)
+        .background(COSPalette.raised)
+    }
+}
+
+/// A sentence-case heading (semibold, never tracked caps: no eyebrow kickers) over its content.
+private struct WhatsNewSection<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(COSType.body(16, weight: .semibold))
+                .foregroundStyle(Color.primary)
+                .accessibilityAddTraits(.isHeader)
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// One row: a small accent dot on the first line, then the words.
+private struct WhatsNewBullet: View {
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 11) {
+            Circle()
+                .fill(COSPalette.accent)
+                .frame(width: 6, height: 6)
+                .padding(.top, 7)
+                .accessibilityHidden(true)
+            Text(text)
+                .font(COSType.body(13.5))
+                .lineSpacing(2)
+                .foregroundStyle(Color.primary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+    }
+}
+
+/// The footer's two buttons, a size up from the panel's chips for a 620 pt window: Download and install in gold with
+/// ink words, Cancel on the card with a hairline.
+private struct WhatsNewButtonStyle: ButtonStyle {
+    let prominent: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        ButtonBody(configuration: configuration, prominent: prominent)
+    }
+
+    private struct ButtonBody: View {
+        let configuration: Configuration
+        let prominent: Bool
+        @State private var hovered = false
+        @Environment(\.isEnabled) private var isEnabled
+
+        var body: some View {
+            let hot = (hovered || configuration.isPressed) && isEnabled
+            configuration.label
+                .font(COSType.body(13, weight: .semibold))
+                .foregroundStyle(prominent ? COSPalette.ink : (hot ? COSPalette.accent : Color.primary))
+                .padding(.horizontal, 18)
+                .padding(.vertical, 8)
+                .background(prominent ? COSPalette.gold.opacity(configuration.isPressed ? 0.8 : 1) : COSPalette.card,
+                            in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .stroke(prominent ? Color.clear : (hot ? COSPalette.accent : COSPalette.line), lineWidth: 1))
+                .opacity(isEnabled ? 1 : 0.5)
+                .contentShape(RoundedRectangle(cornerRadius: 8))
+                .onHover { hovered = $0 }
+        }
+    }
+}
+
 struct ControlPanel: View {
     @ObservedObject var model: ControllerModel
     let openActivity: (ActivitySection?) -> Void
@@ -231,7 +461,6 @@ struct ControlPanel: View {
     var hostedInActivity = false
     @State private var confirmLegacyRestart = false
     @State private var confirmInstallManaged = false
-    @State private var confirmInstallAppUpdate = false
     @State private var showGuidedSetupTier = false
     @State private var selectedTranscriptionTier = "balanced"
     @State private var selectedBackgroundJobs = true
@@ -436,15 +665,6 @@ struct ControlPanel: View {
             message: "This stops your checkout LaunchAgent, then installs the current npm latest (@gotcos/glasses-server@latest). Finish active glasses work first. Prefer Manage in place if you only want status/restart without replacing the server.",
             actions: [
                 .destructive("Stop legacy and install") { model.installLatestManagedFromLegacy() },
-                .cancel(),
-            ]
-        )
-        .cosConfirm(
-            "Install COS Control \(model.appUpdate.latestVersion ?? "")?",
-            isPresented: $confirmInstallAppUpdate,
-            message: "Control will quit, verify the download SHA-256, replace itself, and reopen. The glasses server stays running.",
-            actions: [
-                .normal("Install and reopen") { model.installAppUpdate() },
                 .cancel(),
             ]
         )
@@ -2459,11 +2679,12 @@ struct ControlPanel: View {
     }
 
     /// Renders ONLY while appUpdateFlow has something to say: ready, staging, applying, failed. Update (and Try again)
-    /// open the same inline confirmation as before, then installAppUpdate, the existing stage then apply path.
+    /// open the What's New window (2026-10-09; it replaced the small "Install COS Control X?" alert). Its Download and
+    /// install is the confirmation, and runs installAppUpdate, the existing stage then apply path.
     @ViewBuilder private var updateBanner: some View {
         if model.appUpdateFlow.showsBanner {
             AppUpdateBanner(flow: model.appUpdateFlow, notes: model.appUpdate.notes, disabled: model.busy) {
-                confirmInstallAppUpdate = true
+                model.presentWhatsNew()
             }
         }
     }

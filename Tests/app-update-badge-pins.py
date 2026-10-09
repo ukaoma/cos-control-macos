@@ -29,10 +29,10 @@ row = views.split("private var updateRow")[1].split("private var updateBanner")[
 pin("if !model.appUpdateFlow.showsBanner {" in row and 'Button("Check for updates"' in row, "version card",
     "the version card (Check for updates) shows exactly when the banner does not")
 banner = views.split("private var updateBanner")[1].split("private var footer")[0]
-pin("if model.appUpdateFlow.showsBanner {" in banner and "confirmInstallAppUpdate = true" in banner, "update path",
-    "Update and Try again open the existing install confirmation")
-pin(".normal(\"Install and reopen\") { model.installAppUpdate() }" in views, "update path",
-    "the confirmation runs installAppUpdate (stage-app-update, then apply-app-update)")
+pin("if model.appUpdateFlow.showsBanner {" in banner and "model.presentWhatsNew()" in banner, "update path",
+    "Update and Try again open the What's New window (2026-10-09; it replaced the install confirmation alert)")
+pin("onInstall: { model.installAppUpdate() }" in views, "update path",
+    "What's New's Download and install runs installAppUpdate (stage-app-update, then apply-app-update)")
 pin("model.panelOpenedForUpdates()" in code(views), "panel open check", "opening the panel asks the schedule for a check")
 init = model[model.index("updateCheckTask = Task { [weak self] in"):]
 init = code(init[:init.index("loadPetDismissals()")])

@@ -189,6 +189,9 @@ final class ControllerModel: ObservableObject {
     /// Opens the Activity window at a section. Set by the app, which owns the window presenter.
     var openActivity: ((ActivitySection?) -> Void)?
     var openSetup: (() -> Void)?
+    /// 2026-10-09: the What's New window (WhatsNewWindowPresenter, wired in COSControlApp). Nil in a test or render
+    /// model, so nothing there can open a window; a check sets its own to count the requests.
+    var showWhatsNew: (() -> Void)?
     private var firstRunPresented = false
     /// The Welcome window opened for a first run in this launch (the Permissions step follows Get started only then).
     var firstRunPresentedThisLaunch: Bool { firstRunPresented }
@@ -875,6 +878,9 @@ final class ControllerModel: ObservableObject {
                 // The banner is already rendering the offer; do not duplicate it
                 // in the notice line.
                 notice = nil
+                // 2026-10-09: a check that was ASKED for and found an update opens What's New right away (the
+                // background checks never do; they only tint the glasses and raise the banner).
+                if appUpdateFlow.phase == .ready { presentWhatsNew() }
             } else {
                 notice = "COS Control \(Self.currentVersion) is the latest version."
             }
@@ -899,12 +905,19 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    /// The banner's Update (and Try again), and Check for updates when it finds an update: the What's New window. Its
+    /// Download and install is the confirmation, and runs installAppUpdate below.
+    func presentWhatsNew() {
+        showWhatsNew?()
+    }
+
     /// Download, SHA-256, unpack, then detach the swap and quit. The glasses server
     /// stays running. The detached helper reopens this app.
     ///
     /// 2026-10-09: the banner shows each step (appUpdateFlow: staging with the helper's progress line, applying) and a
     /// failure in the helper's own words with Try again, which calls this again. The failure is not raised as an alert
-    /// as well: the banner already says it, where the Update button was.
+    /// as well: the banner already says it, where the Update button was. The What's New window's footer follows the
+    /// same flow, so closing that window never stops an install that is already running.
     func installAppUpdate() {
         guard !busy, appUpdateFlow.beginInstall() else { return }
         busy = true
