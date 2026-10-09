@@ -42,7 +42,8 @@ def run(document, name):
     out = subprocess.run([helper, "check-app-update", "--current-version", "0.5.274", "--current-build", "327",
                           "--appcast-url", path.as_uri()], capture_output=True, text=True, env=env, timeout=60)
     try:
-        value = json.loads(out.stdout.strip().splitlines()[-1])
+        # split("\n"), never splitlines(): that also splits on U+0085 and U+2028, which a leaking helper would emit raw.
+        value = json.loads([l for l in out.stdout.split("\n") if l.strip()][-1])
     except (ValueError, IndexError):
         fail("helper output", f"{name}: no JSON (exit {out.returncode}): {out.stdout[-400:]} {out.stderr[-400:]}")
     check(value.get("ok") is True, "helper output", f"{name}: {value}")

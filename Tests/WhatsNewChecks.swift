@@ -89,11 +89,11 @@ import Foundation
             }),
         ]))
         guard let parsed, let summary = parsed.summary else { return check(false, "whatsNew oversize", "oversize content must still parse") }
-        check(summary.count == AppUpdateWhatsNew.summaryLimit && summary.hasSuffix("…"), "whatsNew oversize",
+        check(summary.count == 1200 && summary.hasSuffix("…"), "whatsNew oversize",
               "summary cut to \(AppUpdateWhatsNew.summaryLimit) with an ellipsis, got \(summary.count)")
-        check(parsed.sections.count == AppUpdateWhatsNew.sectionLimit, "whatsNew oversize", "at most 8 sections, got \(parsed.sections.count)")
-        check(parsed.sections.allSatisfy { $0.items.count == AppUpdateWhatsNew.itemLimit }, "whatsNew oversize", "at most 12 items each")
-        check(parsed.sections.allSatisfy { $0.items.allSatisfy { $0.count == AppUpdateWhatsNew.itemLength } }, "whatsNew oversize",
+        check(parsed.sections.count == 8, "whatsNew oversize", "at most 8 sections, got \(parsed.sections.count)")
+        check(parsed.sections.allSatisfy { $0.items.count == 12 }, "whatsNew oversize", "at most 12 items each")
+        check(parsed.sections.allSatisfy { $0.items.allSatisfy { $0.count == 400 } }, "whatsNew oversize",
               "an item at most 400 characters")
         check(parsed.sections.allSatisfy { $0.title.count == AppUpdateWhatsNew.titleLength }, "whatsNew oversize", "a title at most 80 characters")
         check(parsed.sections.first?.title.hasPrefix("Section 0 ") == true && parsed.sections.last?.title.hasPrefix("Section 7 ") == true,

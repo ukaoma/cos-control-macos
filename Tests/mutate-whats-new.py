@@ -55,7 +55,7 @@ MUTANTS = [
      "            } else if false {\n                scalars.append(\" \")\n            } else if !whatsNewBidi", "[whatsNew control chars]", "helper"),
     ("helper bidi kept", H, "            } else if !whatsNewBidiControls.contains(scalar.value) {", "            } else if true {", "[whatsNew control chars]", "helper"),
     ("helper empty section kept", H, "            if !items.isEmpty { sections.append([\"title\": title, \"items\": items]) }", "            sections.append([\"title\": title, \"items\": items])", "[whatsNew wrong types]", "helper"),
-    ("helper summary loses lines", H, "cleanWhatsNewText($0, limit: whatsNewSummaryLimit, keepNewlines: true)", "cleanWhatsNewText($0, limit: whatsNewSummaryLimit, keepNewlines: false)", "[whatsNew control chars]", "helper"),
+    ("helper summary loses lines", H, "cleanWhatsNewText($0, limit: whatsNewSummaryLimit, keepNewlines: true)", "cleanWhatsNewText($0, limit: whatsNewSummaryLimit, keepNewlines: false)", "[whatsNew valid]", "helper"),  # the valid summary has a line break
     # The window and who opens it, executed.
     ("Check for updates does not open", C, "                if appUpdateFlow.phase == .ready { presentWhatsNew() }\n", "", "[check for updates opens]", "wiring"),
     ("background check opens", C, "            appUpdate = AppUpdateInfo.merging(previous: appUpdate, incoming: AppUpdateInfo(response.details))\n",
