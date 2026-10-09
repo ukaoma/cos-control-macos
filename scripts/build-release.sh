@@ -53,6 +53,9 @@ mkdir -p "$BUILD_DIR" "$APP/Contents/MacOS" "$APP/Contents/Resources" "$DIST_DIR
   -o "$APP/Contents/MacOS/COS Control"
 
 cp "$ROOT/Resources/whisper-runtime.json" "$APP/Contents/Resources/"
+# 2026-10-09: this build's own What's New, shown once after an update when the appcast has moved on (used only when
+# its "version" is this build's; WhatsNewAfterUpdate.bundledWhatsNew).
+cp "$ROOT/Resources/WhatsNew.json" "$APP/Contents/Resources/"
 cp -R "$ROOT/Resources/VoiceBenchmark" "$APP/Contents/Resources/"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"

@@ -8118,12 +8118,14 @@ final class COSControlHelper {
 
     /// 2026-10-09: `channels.stable.whatsNew`, `{ "summary": "…", "sections": [ { "title": "…", "items": ["…"] } ] }`,
     /// for the app's What's New window. Untrusted: wrong types are dropped one by one, a summary is at most 1200
-    /// characters, at most 8 sections of at most 12 items, an item at most 400 characters and a title 80; control
-    /// characters become spaces (a newline survives only in the summary) and bidi controls go. A section needs a title
-    /// and an item; nil when no summary and no section is left. The same rules as AppUpdateWhatsNew in the app's
-    /// Models.swift; Tests/whats-new-helper-checks.py runs this compiled helper against fixtures.
+    /// characters, at most 8 sections of at most 12 items, an item at most 400 characters and a title 80, and none more
+    /// than 4 Unicode scalars per allowed character (a combining-mark bomb); control characters become spaces (a newline
+    /// survives only in the summary) and format characters (bidi controls, zero-width characters, the BOM, word
+    /// joiners, tags) go. A summary or title empty after that is absent; a section needs a title and an item; nil when
+    /// no summary and no section is left. The same rules as AppUpdateWhatsNew in the app's Models.swift;
+    /// Tests/whats-new-helper-checks.py runs this compiled helper against fixtures.
     static let whatsNewSummaryLimit = 1200, whatsNewSectionLimit = 8, whatsNewItemLimit = 12
-    static let whatsNewItemLength = 400, whatsNewTitleLength = 80
+    static let whatsNewItemLength = 400, whatsNewTitleLength = 80, whatsNewScalarsPerCharacter = 4
 
     static func sanitizedWhatsNew(_ value: Any?) -> [String: Any]? {
         guard let object = value as? [String: Any] else { return nil }
@@ -8150,9 +8152,6 @@ final class COSControlHelper {
         return result.isEmpty ? nil : result
     }
 
-    private static let whatsNewBidiControls: Set<UInt32> = [0x061C, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
-                                                            0x2066, 0x2067, 0x2068, 0x2069]
-
     static func cleanWhatsNewText(_ text: String, limit: Int, keepNewlines: Bool) -> String? {
         var scalars = String.UnicodeScalarView()
         var previous: Unicode.Scalar?
@@ -8164,7 +8163,7 @@ final class COSControlHelper {
                 scalars.append(keepNewlines ? "\n" : " ")
             } else if scalar.properties.generalCategory == .control {
                 scalars.append(" ")
-            } else if !whatsNewBidiControls.contains(scalar.value) {
+            } else if scalar.properties.generalCategory != .format {
                 scalars.append(scalar)
             }
         }
@@ -8175,10 +8174,17 @@ final class COSControlHelper {
             lines.append(words)
         }
         while lines.last?.isEmpty == true { lines.removeLast() }
-        let result = lines.joined(separator: "\n")
+        var result = lines.joined(separator: "\n")
         guard !result.isEmpty else { return nil }
-        guard result.count > limit else { return result }
-        return String(result.prefix(max(0, limit - 1))).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+        if result.count > limit {
+            result = String(result.prefix(max(0, limit - 1))).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+        }
+        let scalarLimit = limit * whatsNewScalarsPerCharacter
+        if result.unicodeScalars.count > scalarLimit {
+            let kept = String(String.UnicodeScalarView(result.unicodeScalars.prefix(max(0, scalarLimit - 1))))
+            result = kept.trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+        }
+        return result
     }
 
     static let openPetsCatalogURL = URL(string: "https://openpets.dev/pets/catalog.v2.json")!
@@ -8582,15 +8588,14 @@ final class COSControlHelper {
             throw HelperError.message("Finish this first, then install: \(blockers.joined(separator: ", ")). The glasses server was not touched.")
         }
 
+        // QA 2026-10-09 (live in 0.5.274): every path that does not stage is a REFUSAL (ok:false), never ok:true. The
+        // app applied after any ok:true stage, quit, and the detached swap found nothing to install, so Control never
+        // reopened. The app now also checks the reason, the staged path and the build (AppUpdateStageCheck).
         guard let appcast = fetchAppcast(source) else {
-            details["reason"] = "unreachable"
-            emit(ok: true, message: "Update check unavailable", details: details)
-            return
+            throw HelperError.message("COS Control could not reach the update feed. Nothing was installed.")
         }
         if let kill = appcast["killSwitch"] as? [String: Any], kill["disableAutoUpdate"] as? Bool == true {
-            details["reason"] = "killSwitch"
-            emit(ok: true, message: "Update checks paused by publisher", details: details)
-            return
+            throw HelperError.message("Updates are paused by the publisher right now. Nothing was installed.")
         }
         guard let channels = appcast["channels"] as? [String: Any],
               let stable = channels["stable"] as? [String: Any],
@@ -8601,9 +8606,7 @@ final class COSControlHelper {
               expectedSHA.count == 64,
               expectedSHA.allSatisfy({ "0123456789abcdef".contains($0) }),
               let url = URL(string: urlString) else {
-            details["reason"] = "malformed"
-            emit(ok: true, message: "Update listing is missing a SHA-256. Refusing to install.", details: details)
-            return
+            throw HelperError.message("The update listing is missing a SHA-256. Nothing was installed.")
         }
         details["latestVersion"] = latestVersion
         details["latestBuild"] = latestBuild
@@ -8611,9 +8614,7 @@ final class COSControlHelper {
         details["sha256"] = expectedSHA
 
         guard Self.appUpdateIsNewer(latestBuild: latestBuild, currentBuild: currentBuild) else {
-            details["reason"] = "upToDate"
-            emit(ok: true, message: "COS Control is up to date", details: details)
-            return
+            throw HelperError.message("COS Control is already up to date. Nothing was installed.")
         }
         if let minMacOS = stable["minMacOS"] as? String, !Self.macOSAtLeast(minMacOS) {
             details["reason"] = "requiresMacOS"
@@ -8706,13 +8707,17 @@ final class COSControlHelper {
         }
 
         if args.contains("--swap") {
-            try swapStagedApp(live: live)
+            try swapStagedApp(live: live, expectedBuild: option("--expected-build", in: args).flatMap { Int($0) })
             return
         }
         guard args.contains("--detach") else {
             throw HelperError.message("apply-app-update requires --detach")
         }
 
+        // QA 2026-10-09: refuse BEFORE Control quits when nothing (or another build) is staged, so the app shows the
+        // failure instead of quitting into a swap that cannot run.
+        let expectedBuild = option("--expected-build", in: args).flatMap { Int($0) }
+        _ = try requireStagedUpdate(expectedBuild: expectedBuild)
         try ensureAppUpdateDirectories()
         try installStableHelper()
         let selfPath = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.path
@@ -8724,11 +8729,14 @@ final class COSControlHelper {
         if let build = option("--current-build", in: args) {
             childArgs += ["--current-build", build]
         }
+        if let expectedBuild { childArgs += ["--expected-build", String(expectedBuild)] }
         let pid = try spawnDetached(executable: applier, arguments: childArgs)
         emit(ok: true, message: "detached", details: ["pid": Int(pid), "liveBundle": live.path])
     }
 
-    private func swapStagedApp(live: URL) throws {
+    /// The pending stage, proven: pending.json names a staged app that exists, and (when the caller names one) is the
+    /// build it expects. A pending.json left by an older stage never installs in place of the offered build.
+    private func requireStagedUpdate(expectedBuild: Int?) throws -> (staged: URL, version: String, build: Int) {
         guard let pending = appUpdatePending(),
               let stagedPath = pending["stagedAppPath"] as? String,
               let version = pending["version"] as? String,
@@ -8739,7 +8747,29 @@ final class COSControlHelper {
         guard fm.fileExists(atPath: staged.path) else {
             throw HelperError.message("The staged update is missing.")
         }
-        try verifyStagedControlApp(staged, version: version, build: build)
+        if let expectedBuild, build != expectedBuild {
+            throw HelperError.message("The staged update is build \(build), not build \(expectedBuild). Nothing was installed.")
+        }
+        return (staged, version, build)
+    }
+
+    private func swapStagedApp(live: URL, expectedBuild: Int?) throws {
+        let staged: URL, version: String, build: Int
+        do {
+            (staged, version, build) = try requireStagedUpdate(expectedBuild: expectedBuild)
+            try verifyStagedControlApp(staged, version: version, build: build)
+        } catch {
+            // Control has already quit: put it back up on the build it was, so a refusal never leaves it closed.
+            try? writeAppUpdateJSON(updatesFailureURL, [
+                "reason": "notStaged",
+                "message": "\(error)",
+                "at": ISO8601DateFormatter().string(from: Date()),
+            ])
+            if ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] == nil {
+                _ = try? execute("/usr/bin/open", [live.path], timeout: 10)
+            }
+            throw error
+        }
 
         let blockers = appUpdateWorkBlockers()
         if !blockers.isEmpty {

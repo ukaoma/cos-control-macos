@@ -119,7 +119,6 @@ private enum CharacterGallery {
 /// the panel's card with a danger edge when the install failed, with the helper's own words and Try again.
 struct AppUpdateBanner: View {
     let flow: AppUpdateFlow
-    var notes: String?
     var disabled = false
     let onUpdate: () -> Void
 
@@ -253,6 +252,8 @@ final class WhatsNewWindowPresenter {
 
     func show(model: ControllerModel) {
         let window = prepare(model: model)
+        // Centered again whenever it is not already on screen, so a reopen never lands where it was last dragged off to.
+        if !window.isVisible { window.center() }
         controller?.showWindow(nil)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -264,36 +265,40 @@ final class WhatsNewWindowPresenter {
     }
 }
 
-/// The window's root: the model's offer and flow, with Download and install wired to installAppUpdate.
+/// The window's root: the model's mode, offer, flow and frozen words, with Download and install wired to
+/// installAppUpdate.
 struct WhatsNewWindowRoot: View {
     @ObservedObject var model: ControllerModel
     let close: () -> Void
 
     var body: some View {
-        WhatsNewView(content: WhatsNewContent(model.appUpdate), flow: model.appUpdateFlow, busy: model.busy,
+        WhatsNewView(presentation: WhatsNewPresentation.present(model.whatsNewMode, info: model.appUpdate, flow: model.appUpdateFlow,
+                                                                frozen: model.whatsNewFrozen, busy: model.busy),
                      onInstall: { model.installAppUpdate() }, onCancel: close)
     }
 }
 
-/// The What's New layout, as the reference: a large title, a rule, a scrolling body (the release in the accent, the
-/// summary, each section as a sentence-case heading with dotted rows), and a footer pinned to the bottom with Cancel on
-/// the left and Download and install on the right. Card and raised tokens, so it follows light and dark.
+/// The What's New layout, as the reference: a large title naming the release, a rule, the build as a small byline, a
+/// scrolling body (the summary, then each section as a sentence-case heading with dotted rows), and a footer pinned to
+/// the bottom with Cancel on the left and Download and install on the right (Done alone after an update). Card and
+/// raised tokens, so it follows light and dark. Every string is drawn verbatim (no Markdown, no links).
 struct WhatsNewView: View {
     static let width: CGFloat = 620
     static let height: CGFloat = 620
 
-    let content: WhatsNewContent
-    let flow: AppUpdateFlow
-    var busy = false
+    let presentation: WhatsNewPresentation
     let onInstall: () -> Void
     let onCancel: () -> Void
 
     var body: some View {
-        let footer = WhatsNewFooter(flow.phase, busy: busy)
+        let footer = presentation.footer
+        let content = presentation.content
         VStack(spacing: 0) {
-            Text("What's New")
+            Text(verbatim: presentation.title)
                 .font(COSType.display(30, weight: .bold))
                 .foregroundStyle(Color.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 32)
                 .padding(.top, 38)
@@ -302,13 +307,14 @@ struct WhatsNewView: View {
             Rectangle().fill(COSPalette.line).frame(height: 1)
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    if !flow.releaseLine.isEmpty {
-                        Text(flow.releaseLine)
-                            .font(COSType.body(15, weight: .semibold))
-                            .foregroundStyle(COSPalette.accent)
+                    if let byline = presentation.byline {
+                        Text(verbatim: byline)
+                            .font(COSType.body(12))
+                            .foregroundStyle(COSPalette.muted)
+                            .padding(.bottom, -10)
                     }
                     WhatsNewSection(title: "Summary") {
-                        Text(content.summaryText)
+                        Text(verbatim: content.summaryText)
                             .font(COSType.body(13.5))
                             .lineSpacing(3)
                             .foregroundStyle(Color.primary)
@@ -348,7 +354,7 @@ struct WhatsNewView: View {
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(COSPalette.danger)
                     }
-                    Text(status)
+                    Text(verbatim: status)
                         .font(COSType.body(12.5, weight: footer.working ? .medium : .regular))
                         .foregroundStyle(footer.failed ? COSPalette.danger : Color.primary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -357,21 +363,26 @@ struct WhatsNewView: View {
                 .accessibilityElement(children: .combine)
             }
             HStack(spacing: 12) {
+                // Alone (Done after an update, Close with nothing to install) it takes the primary's place on the right.
+                if footer.primaryTitle == nil { Spacer(minLength: 12) }
                 Button(footer.cancelTitle, action: onCancel)
-                    .buttonStyle(WhatsNewButtonStyle(prominent: false))
+                    .buttonStyle(WhatsNewButtonStyle(prominent: footer.primaryTitle == nil))
                     .disabled(!footer.cancelEnabled)
                     .keyboardShortcut(.cancelAction)
-                Spacer(minLength: 12)
+                if footer.primaryTitle != nil { Spacer(minLength: 12) }
                 if let title = footer.primaryTitle {
+                    // Never the default action: Return must not install. The click is the confirmation.
                     Button(title, action: onInstall)
                         .buttonStyle(WhatsNewButtonStyle(prominent: true))
                         .disabled(!footer.primaryEnabled)
                 }
             }
-            Text(footer.working ? "\(WhatsNewFooter.reassurance) \(WhatsNewFooter.closeNote)" : WhatsNewFooter.reassurance)
-                .font(COSType.body(11.5))
-                .foregroundStyle(COSPalette.muted)
-                .fixedSize(horizontal: false, vertical: true)
+            if footer.showsReassurance {
+                Text(verbatim: footer.working ? "\(WhatsNewFooter.reassurance) \(WhatsNewFooter.closeNote)" : WhatsNewFooter.reassurance)
+                    .font(COSType.body(11.5))
+                    .foregroundStyle(COSPalette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 24)
@@ -387,7 +398,7 @@ private struct WhatsNewSection<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title)
+            Text(verbatim: title)
                 .font(COSType.body(16, weight: .semibold))
                 .foregroundStyle(Color.primary)
                 .accessibilityAddTraits(.isHeader)
@@ -408,7 +419,7 @@ private struct WhatsNewBullet: View {
                 .frame(width: 6, height: 6)
                 .padding(.top, 7)
                 .accessibilityHidden(true)
-            Text(text)
+            Text(verbatim: text)
                 .font(COSType.body(13.5))
                 .lineSpacing(2)
                 .foregroundStyle(Color.primary)
@@ -2683,7 +2694,7 @@ struct ControlPanel: View {
     /// install is the confirmation, and runs installAppUpdate, the existing stage then apply path.
     @ViewBuilder private var updateBanner: some View {
         if model.appUpdateFlow.showsBanner {
-            AppUpdateBanner(flow: model.appUpdateFlow, notes: model.appUpdate.notes, disabled: model.busy) {
+            AppUpdateBanner(flow: model.appUpdateFlow, disabled: model.busy) {
                 model.presentWhatsNew()
             }
         }

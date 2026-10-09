@@ -192,6 +192,18 @@ final class ControllerModel: ObservableObject {
     /// 2026-10-09: the What's New window (WhatsNewWindowPresenter, wired in COSControlApp). Nil in a test or render
     /// model, so nothing there can open a window; a check sets its own to count the requests.
     var showWhatsNew: (() -> Void)?
+    /// Which What's New: an offer (Update, Check for updates) or the build just installed (once, after an update).
+    @Published private(set) var whatsNewMode: WhatsNewMode = .offer
+    /// The words on screen when Download and install was pressed, shown until the install ends, so a check that lands
+    /// mid-install cannot swap them (QA 2026-10-09).
+    @Published private(set) var whatsNewFrozen: WhatsNewContent?
+    /// The last build that showed (or, on a first run, skipped) the after-update window. UserDefaults in the app,
+    /// memory in a test or render model; a check may replace it.
+    var whatsNewSeen = WhatsNewSeenStore(defaults: nil)
+    /// This launch's after-update decision (WhatsNewAfterUpdate.launch), made by beginPostUpdateWhatsNew.
+    private(set) var postUpdateLaunch: WhatsNewAfterUpdate.Launch = .seen
+    /// A check this launch reached the feed (not unreachable or malformed), so the after-update window can show.
+    private(set) var postUpdateCheckReached = false
     private var firstRunPresented = false
     /// The Welcome window opened for a first run in this launch (the Permissions step follows Get started only then).
     var firstRunPresentedThisLaunch: Bool { firstRunPresented }
@@ -487,6 +499,8 @@ final class ControllerModel: ObservableObject {
         activityLoadsEnabled = startBackgroundWork || allowActivityLoads
         workActivity = WorkActivityJournal(url: WorkActivityJournal.defaultURL(background: startBackgroundWork))
         guard startBackgroundWork else { return }
+        whatsNewSeen = WhatsNewSeenStore(defaults: .standard)
+        beginPostUpdateWhatsNew()
         try? Self.pruneMediaHandoffs()
         refreshTask = Task { [weak self] in
             await self?.refresh()
@@ -801,10 +815,41 @@ final class ControllerModel: ObservableObject {
                 "--current-version", Self.currentVersion,
                 "--current-build", String(Self.currentBuild),
             ], timeout: AppUpdateCheckSchedule.helperTimeout)
-            appUpdate = AppUpdateInfo.merging(previous: appUpdate, incoming: AppUpdateInfo(response.details))
+            let incoming = AppUpdateInfo(response.details)
+            appUpdate = AppUpdateInfo.merging(previous: appUpdate, incoming: incoming)
+            noteCheckReached(incoming)
         } catch {
             // Intentionally swallowed: a helper crash is not a user-facing problem.
         }
+    }
+
+    /// A check answered from the feed: the after-update window may show now (it still waits for a meeting to end).
+    private func noteCheckReached(_ incoming: AppUpdateInfo) {
+        guard incoming.reason != "unreachable", incoming.reason != "malformed", incoming.reason != "idle" else { return }
+        postUpdateCheckReached = true
+        considerPostUpdateWhatsNew()
+    }
+
+    /// At launch: the first launch ever remembers this build and shows nothing; a newer build than the one remembered
+    /// waits for considerPostUpdateWhatsNew; the same build does nothing.
+    func beginPostUpdateWhatsNew() {
+        postUpdateLaunch = WhatsNewAfterUpdate.launch(lastSeen: whatsNewSeen.lastSeenBuild, running: Self.currentBuild)
+        if postUpdateLaunch == .firstRun { whatsNewSeen.lastSeenBuild = Self.currentBuild }
+    }
+
+    /// After a check reached the feed, and on every status refresh (so a window held back by a meeting shows once the
+    /// meeting ends): What's New for the build that is running, once. The build is remembered as it shows, so it can
+    /// never show twice. Not while an install runs.
+    func considerPostUpdateWhatsNew() {
+        let meeting = (status.activeTranscriptionSessions ?? 0) > 0
+        guard WhatsNewAfterUpdate.shouldShow(postUpdateLaunch, checkReached: postUpdateCheckReached, meetingActive: meeting),
+              !appUpdateFlow.installing else { return }
+        postUpdateLaunch = .seen
+        whatsNewSeen.lastSeenBuild = Self.currentBuild
+        let bundled = Bundle.main.url(forResource: "WhatsNew", withExtension: "json").flatMap { try? Data(contentsOf: $0) }
+        let content = WhatsNewAfterUpdate.content(appcast: appUpdate, bundled: bundled, version: Self.currentVersion, build: Self.currentBuild)
+        whatsNewMode = .installed(content: content, version: Self.currentVersion, build: Self.currentBuild)
+        showWhatsNew?()
     }
 
     /// The background checks (launch, periodic, panel open). Dropped when one is already running or the schedule says
@@ -874,6 +919,7 @@ final class ControllerModel: ObservableObject {
                 return
             }
             appUpdate = incoming
+            noteCheckReached(incoming)
             if appUpdate.shouldSurface {
                 // The banner is already rendering the offer; do not duplicate it
                 // in the notice line.
@@ -908,6 +954,7 @@ final class ControllerModel: ObservableObject {
     /// The banner's Update (and Try again), and Check for updates when it finds an update: the What's New window. Its
     /// Download and install is the confirmation, and runs installAppUpdate below.
     func presentWhatsNew() {
+        whatsNewMode = .offer
         showWhatsNew?()
     }
 
@@ -924,10 +971,13 @@ final class ControllerModel: ObservableObject {
         operationProgress = "Downloading update…"
         notice = nil
         error = nil
+        whatsNewMode = .offer
+        whatsNewFrozen = WhatsNewContent(appUpdate)
+        let offeredBuild = appUpdateFlow.build
         let live = Bundle.main.bundleURL.path
         Task {
             do {
-                _ = try await helper.run([
+                let staged = try await helper.run([
                     "stage-app-update",
                     "--current-version", Self.currentVersion,
                     "--current-build", String(Self.currentBuild),
@@ -938,15 +988,26 @@ final class ControllerModel: ObservableObject {
                         self?.appUpdateFlow.progress(message)
                     }
                 }
+                // QA 2026-10-09: only a stage that proves it staged the offered build is applied. Otherwise the
+                // failure in words, no apply and no quit (0.5.274 quit here and never reopened).
+                if let refusal = AppUpdateStageCheck.refusal(staged.details, offeredBuild: offeredBuild) {
+                    appUpdateFlow.fail(refusal)
+                    busy = false
+                    operationProgress = nil
+                    return
+                }
                 operationProgress = "Installing…"
                 appUpdateFlow.staged()
-                _ = try await helper.run([
+                var apply = [
                     "apply-app-update",
                     "--detach",
                     "--live-bundle", live,
                     "--current-version", Self.currentVersion,
                     "--current-build", String(Self.currentBuild),
-                ], preferStable: true)
+                ]
+                // The helper refuses a pending stage of any other build (a stale pending.json never installs).
+                if let stagedBuild = staged.details["latestBuild"]?.int { apply += ["--expected-build", String(stagedBuild)] }
+                _ = try await helper.run(apply, preferStable: true)
                 notice = "Installing. Control will reopen."
                 NSApplication.shared.terminate(nil)
             } catch {
@@ -991,6 +1052,8 @@ final class ControllerModel: ObservableObject {
             let response = try await helper.run(["status"], timeout: 45)
             status = ServerStatus(response.details)
             statusReadOnce = true
+            // A What's New held back by a recording meeting shows once the meeting ends (cheap when nothing waits).
+            considerPostUpdateWhatsNew()
             if status.needsFirstRun && !firstRunPresented, let openSetup {
                 firstRunPresented = true
                 openSetup()

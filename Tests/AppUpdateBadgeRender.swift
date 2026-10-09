@@ -121,7 +121,7 @@ import SwiftUI
         var failed = staging
         failed.fail("The download did not match the published SHA-256. The file was discarded.")
         for (name, flow) in [("banner-ready", ready), ("banner-staging", staging), ("banner-applying", applying), ("banner-failed", failed)] {
-            try render(AppUpdateBanner(flow: flow, notes: nil, onUpdate: {}).padding(16), width: 390, name: name, out: out)
+            try render(AppUpdateBanner(flow: flow, onUpdate: {}).padding(16), width: 390, name: name, out: out)
         }
         // The real panel: an update ready, and none.
         for (name, info) in [("panel-update-ready", offer(true, "0.5.274", 327, reason: "newer")),

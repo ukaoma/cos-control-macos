@@ -3847,6 +3847,8 @@ struct AppUpdateInfo: Sendable {
     /// 2026-10-09: the stable channel's optional `whatsNew` (summary and sections), already cleaned by the helper and
     /// cleaned again here. Nil when the appcast has none; the What's New window then shows `notes` as its summary.
     var whatsNew: AppUpdateWhatsNew?
+    /// The stable entry's minMacOS, so "This update needs macOS 15.0 or later." can say which.
+    var minMacOS: String?
     /// newer / upToDate / killSwitch / unreachable / malformed / idle / requiresMacOS
     var reason: String = "idle"
 
@@ -3863,6 +3865,7 @@ struct AppUpdateInfo: Sendable {
         noticeTitle = details["noticeTitle"]?.string
         noticeBody = details["noticeBody"]?.string
         whatsNew = AppUpdateWhatsNew(details["whatsNew"])
+        minMacOS = details["minMacOS"]?.string
         reason = details["reason"]?.string ?? "idle"
     }
 
@@ -4023,25 +4026,22 @@ struct AppUpdateFlow: Equatable, Sendable {
         guard let version else { return "" }
         return build.map { "Version \(version) (build \($0))" } ?? "Version \(version)"
     }
-
-    /// "0.5.275 (build 328)", the accent line at the top of the What's New window; the build only when the appcast
-    /// names one.
-    var releaseLine: String {
-        guard let version else { return "" }
-        return build.map { "\(version) (build \($0))" } ?? version
-    }
 }
 
 // MARK: - What's New (Miles, 2026-10-09 13:09, with screenshots of Vorssant)
 //
 // "When an update is ready and the user clicks Update, show a proper What's New window." Update in the banner, and Check
-// for updates when it finds one, open a real window (WhatsNewWindowPresenter in Views.swift): the release, a summary,
-// sections of bullets, and a footer with Cancel and Download and install. That click IS the confirmation: the small
-// "Install COS Control X?" alert is gone. Pure pieces here, so Tests/WhatsNewChecks.swift runs them with Models.swift
-// alone:
-//   AppUpdateWhatsNew   the appcast's optional whatsNew, typed, capped and cleaned (the helper already did; again here)
-//   WhatsNewContent     what the window shows: whatsNew, or the old `notes` as the summary with no sections
-//   WhatsNewFooter      the footer for each phase of AppUpdateFlow: buttons, progress words, the failure, Try again
+// for updates when it finds one, open a real window (WhatsNewWindowPresenter in Views.swift): a title naming the
+// release, a byline with its build, a summary, sections of bullets, and a footer with Cancel and Download and install.
+// That click IS the confirmation: the small "Install COS Control X?" alert is gone. After an update the same window
+// shows once on the first launch of the new build, with Done only. Pure pieces here, so Tests/WhatsNewChecks.swift runs
+// them with Models.swift alone:
+//   AppUpdateWhatsNew      the appcast's optional whatsNew, typed, capped and cleaned (the helper already did; again here)
+//   WhatsNewContent        what the window shows: whatsNew, or the old `notes` as the summary with no sections
+//   WhatsNewFooter         the footer for each phase of AppUpdateFlow, and Done after an update
+//   WhatsNewPresentation   title, byline, content and footer, for an offer or for the build just installed
+//   AppUpdateStageCheck    QA 2026-10-09: only a stage that proves it staged the offered build may be applied
+//   WhatsNewAfterUpdate    the once-per-build window after an update (first run, deferral, which notes)
 
 /// `channels.stable.whatsNew` in the appcast: `{ "summary": "…", "sections": [ { "title": "…", "items": ["…"] } ] }`.
 /// Untrusted text from the network. HelperSources/main.swift (`sanitizedWhatsNew`) applies the same rules before it
@@ -4058,6 +4058,8 @@ struct AppUpdateWhatsNew: Equatable, Sendable {
     static let itemLimit = 12
     static let itemLength = 400
     static let titleLength = 80
+    /// Unicode scalars per character allowed (QA 2026-10-09: a combining-mark bomb is one character of thousands).
+    static let scalarsPerCharacter = 4
 
     let summary: String?
     let sections: [Section]
@@ -4068,7 +4070,8 @@ struct AppUpdateWhatsNew: Equatable, Sendable {
     }
 
     /// Nil for anything that is not an object, and for an object with no usable summary and no usable section. Wrong
-    /// types are dropped one by one (a number for an item drops that item, not the section).
+    /// types are dropped one by one (a number for an item drops that item, not the section). A summary or a title that
+    /// is empty after cleaning is absent.
     init?(_ value: JSONValue?) {
         guard let object = value?.object else { return nil }
         let summary = object["summary"]?.string.flatMap { Self.clean($0, limit: Self.summaryLimit, keepNewlines: true) }
@@ -4092,13 +4095,10 @@ struct AppUpdateWhatsNew: Equatable, Sendable {
         self.sections = sections
     }
 
-    /// Bidi overrides and isolates (and the marks), which can make a line read differently from what it says.
-    private static let bidiControls: Set<UInt32> = [0x061C, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
-                                                    0x2066, 0x2067, 0x2068, 0x2069]
-
-    /// Control characters become spaces (a newline stays one only in the summary, at most one blank line in a row),
-    /// bidi controls go, runs of spaces close up, the ends are trimmed. Nil when nothing is left. Longer than `limit`
-    /// characters: cut, with an ellipsis as the last of the `limit`.
+    /// Control characters (Cc) become spaces (a newline stays one only in the summary, at most one blank line in a
+    /// row); format characters (Cf: bidi overrides and isolates, zero-width spaces and joiners, the BOM, word joiners,
+    /// tags) go; runs of spaces close up; the ends are trimmed. Nil when nothing is left. Longer than `limit`
+    /// characters, or than `scalarsPerCharacter` times that in Unicode scalars: cut, with an ellipsis as the last.
     static func clean(_ text: String, limit: Int, keepNewlines: Bool) -> String? {
         var scalars = String.UnicodeScalarView()
         var previous: Unicode.Scalar?
@@ -4110,7 +4110,7 @@ struct AppUpdateWhatsNew: Equatable, Sendable {
                 scalars.append(keepNewlines ? "\n" : " ")
             } else if scalar.properties.generalCategory == .control {
                 scalars.append(" ")
-            } else if !bidiControls.contains(scalar.value) {
+            } else if scalar.properties.generalCategory != .format {
                 scalars.append(scalar)
             }
         }
@@ -4121,18 +4121,29 @@ struct AppUpdateWhatsNew: Equatable, Sendable {
             lines.append(words)
         }
         while lines.last?.isEmpty == true { lines.removeLast() }
-        let result = lines.joined(separator: "\n")
+        var result = lines.joined(separator: "\n")
         guard !result.isEmpty else { return nil }
-        guard result.count > limit else { return result }
-        let cut = String(result.prefix(max(0, limit - 1))).trimmingCharacters(in: .whitespacesAndNewlines)
-        return cut + "…"
+        if result.count > limit {
+            result = String(result.prefix(max(0, limit - 1))).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+        }
+        let scalarLimit = limit * scalarsPerCharacter
+        if result.unicodeScalars.count > scalarLimit {
+            let kept = String(String.UnicodeScalarView(result.unicodeScalars.prefix(max(0, scalarLimit - 1))))
+            result = kept.trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+        }
+        return result
     }
 }
 
-/// What the What's New window shows for the current offer.
+/// What the What's New window shows.
 struct WhatsNewContent: Equatable, Sendable {
     let summary: String?
     let sections: [AppUpdateWhatsNew.Section]
+
+    init(summary: String?, sections: [AppUpdateWhatsNew.Section]) {
+        self.summary = summary
+        self.sections = sections
+    }
 
     /// The appcast's whatsNew when it has one. Without it (every appcast before 0.5.275, or one whose whatsNew was all
     /// wrong types) the old `notes` string is the summary and there are no sections. A whatsNew with sections but no
@@ -4147,21 +4158,22 @@ struct WhatsNewContent: Equatable, Sendable {
     var summaryText: String { summary ?? "No release notes were published with this update." }
 }
 
-/// The What's New footer for each phase of AppUpdateFlow. Download and install runs installAppUpdate, the existing
-/// path (busy refusal, the helper's meeting and drain refusals, the SHA-256 check); the window only reflects it.
+/// The What's New footer for each phase of AppUpdateFlow, and after an update. Download and install runs
+/// installAppUpdate, the existing path (busy refusal, the helper's meeting and drain refusals, the SHA-256 check, and
+/// AppUpdateStageCheck); the window only reflects it.
 struct WhatsNewFooter: Equatable, Sendable {
     enum Primary: Equatable, Sendable {
         /// Ready: Download and install.
         case install
         /// The install failed: Try again (the same path again).
         case tryAgain
-        /// Nothing to install (the offer went away while the window was open).
+        /// Nothing to install: the offer went away, or this is the window after an update.
         case hidden
     }
 
     static let installTitle = "Download and install"
     static let retryTitle = "Try again"
-    /// Under the buttons, always: what an install does to Control and to the glasses server.
+    /// Under the buttons while there is something to install: what an install does to Control and to the server.
     static let reassurance = "COS Control quits and reopens by itself. The glasses server keeps running."
     /// While an install runs: closing the window is allowed and stops nothing.
     static let closeNote = "Closing this window does not stop the install."
@@ -4170,10 +4182,12 @@ struct WhatsNewFooter: Equatable, Sendable {
     let primaryEnabled: Bool
     let cancelTitle: String
     let cancelEnabled: Bool
-    /// The progress word, the failure in the helper's own words, or why Download and install is waiting.
+    /// The progress word, the failure in plain words, or why Download and install is waiting.
     let status: String?
     let failed: Bool
     let working: Bool
+    /// The reassurance line under the buttons; not on the window after an update.
+    let showsReassurance: Bool
 
     var primaryTitle: String? {
         switch primary {
@@ -4183,29 +4197,48 @@ struct WhatsNewFooter: Equatable, Sendable {
         }
     }
 
-    init(_ phase: AppUpdatePhase, busy: Bool) {
+    private init(primary: Primary, primaryEnabled: Bool, cancelTitle: String, cancelEnabled: Bool, status: String?,
+                 failed: Bool, working: Bool, showsReassurance: Bool) {
+        self.primary = primary; self.primaryEnabled = primaryEnabled
+        self.cancelTitle = cancelTitle; self.cancelEnabled = cancelEnabled
+        self.status = status; self.failed = failed; self.working = working; self.showsReassurance = showsReassurance
+    }
+
+    /// The window after an update: Done, and nothing to install.
+    static let installed = WhatsNewFooter(primary: .hidden, primaryEnabled: false, cancelTitle: "Done", cancelEnabled: true,
+                                          status: nil, failed: false, working: false, showsReassurance: false)
+
+    /// `reason` and `minMacOS` are the last check's (AppUpdateInfo), for the words when nothing is offered.
+    init(_ phase: AppUpdatePhase, busy: Bool, reason: String? = nil, minMacOS: String? = nil) {
         let waiting = "COS Control is finishing another task. Download and install is available when it is done."
         switch phase {
         case .none:
-            primary = .hidden; primaryEnabled = false
-            cancelTitle = "Close"; cancelEnabled = true
-            status = "COS Control is up to date."; failed = false; working = false
+            self.init(primary: .hidden, primaryEnabled: false, cancelTitle: "Close", cancelEnabled: true,
+                      status: Self.noOfferWords(reason: reason, minMacOS: minMacOS), failed: false, working: false, showsReassurance: false)
         case .ready:
-            primary = .install; primaryEnabled = !busy
-            cancelTitle = "Cancel"; cancelEnabled = true
-            status = busy ? waiting : nil; failed = false; working = false
+            self.init(primary: .install, primaryEnabled: !busy, cancelTitle: "Cancel", cancelEnabled: true,
+                      status: busy ? waiting : nil, failed: false, working: false, showsReassurance: true)
         case .staging(let line):
-            primary = .install; primaryEnabled = false
-            cancelTitle = "Cancel"; cancelEnabled = false
-            status = Self.progressWord(line); failed = false; working = true
+            // Close, enabled: closing the window stops nothing (the close note says so).
+            self.init(primary: .install, primaryEnabled: false, cancelTitle: "Close", cancelEnabled: true,
+                      status: Self.progressWord(line), failed: false, working: true, showsReassurance: true)
         case .applying:
-            primary = .install; primaryEnabled = false
-            cancelTitle = "Cancel"; cancelEnabled = false
-            status = "Installing, COS Control will reopen"; failed = false; working = true
+            self.init(primary: .install, primaryEnabled: false, cancelTitle: "Close", cancelEnabled: true,
+                      status: "Installing, COS Control will reopen", failed: false, working: true, showsReassurance: true)
         case .failed(let message):
-            primary = .tryAgain; primaryEnabled = !busy
-            cancelTitle = "Cancel"; cancelEnabled = true
-            status = message; failed = true; working = false
+            self.init(primary: .tryAgain, primaryEnabled: !busy, cancelTitle: "Cancel", cancelEnabled: true,
+                      status: Self.words(message), failed: true, working: false, showsReassurance: true)
+        }
+    }
+
+    /// Nothing offered: why, in words. A paused feed or a newer macOS is never "up to date".
+    static func noOfferWords(reason: String?, minMacOS: String?) -> String {
+        switch reason {
+        case "killSwitch": return "Updates are paused by the publisher right now."
+        case "requiresMacOS":
+            return minMacOS.map { "This update needs macOS \($0) or later." } ?? "This update needs a newer version of macOS."
+        case "unreachable", "malformed": return "COS Control could not reach the update feed."
+        default: return "COS Control is up to date."
         }
     }
 
@@ -4217,6 +4250,170 @@ struct WhatsNewFooter: Equatable, Sendable {
         if line.contains("SHA-256") || line.hasPrefix("Checking") { return "Checking…" }
         if line.contains("Unpacking") { return "Unpacking…" }
         return line
+    }
+
+    /// The helper's refusal while COS is busy ("Finish this first, then install: meeting=1, video upload. The glasses
+    /// server was not touched.") in words: "Finish your meeting and the video upload first, then install. The glasses
+    /// server was not touched." Any other message as itself.
+    static func words(_ message: String) -> String {
+        let prefix = "Finish this first, then install: "
+        guard message.hasPrefix(prefix) else { return message }
+        let tail = "The glasses server was not touched."
+        var list = String(message.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+        let untouched = list.hasSuffix(tail)
+        if untouched { list = String(list.dropLast(tail.count)).trimmingCharacters(in: .whitespaces) }
+        if list.hasSuffix(".") { list.removeLast() }
+        var names: [String] = []
+        for key in list.split(separator: ",").map({ $0.trimmingCharacters(in: .whitespaces).lowercased() }) where !key.isEmpty {
+            let kind = key.split(separator: "=").first.map(String.init) ?? key
+            let name: String
+            if kind.contains("meeting") || kind.contains("recording") || kind.contains("transcri") { name = "your meeting" }
+            else if kind.contains("video") { name = "the video upload" }
+            else if kind.contains("agent") || kind.contains("job") || kind.contains("turn") { name = "the agent work" }
+            else { name = "the active COS work" }
+            if !names.contains(name) { names.append(name) }
+        }
+        let joined: String
+        switch names.count {
+        case 0: joined = "the active COS work"
+        case 1: joined = names[0]
+        default: joined = names.dropLast().joined(separator: ", ") + " and " + names[names.count - 1]
+        }
+        return "Finish \(joined) first, then install." + (untouched ? " \(tail)" : "")
+    }
+}
+
+/// Which window: an offer to install, or the build just installed (once, after an update).
+enum WhatsNewMode: Equatable, Sendable {
+    case offer
+    case installed(content: WhatsNewContent, version: String, build: Int)
+}
+
+/// Everything the window draws, for either mode.
+struct WhatsNewPresentation: Equatable, Sendable {
+    /// "What's New in 0.5.275"; "What's New" when no version is known.
+    let title: String
+    /// "Build 328", a small line under the rule; nil when the appcast names no build.
+    let byline: String?
+    let content: WhatsNewContent
+    let footer: WhatsNewFooter
+
+    static func title(_ version: String?) -> String { version.map { "What's New in \($0)" } ?? "What's New" }
+
+    /// An offer. While an install runs, `frozen` (the content when Download and install was pressed) is shown, so a
+    /// check that lands mid-install cannot swap the words; the version and build are the flow's, which an install
+    /// also holds.
+    static func offer(_ info: AppUpdateInfo, flow: AppUpdateFlow, frozen: WhatsNewContent?, busy: Bool) -> WhatsNewPresentation {
+        let content = flow.installing ? (frozen ?? WhatsNewContent(info)) : WhatsNewContent(info)
+        return WhatsNewPresentation(title: title(flow.version), byline: flow.build.map { "Build \($0)" }, content: content,
+                                    footer: WhatsNewFooter(flow.phase, busy: busy, reason: info.reason, minMacOS: info.minMacOS))
+    }
+
+    static func present(_ mode: WhatsNewMode, info: AppUpdateInfo, flow: AppUpdateFlow, frozen: WhatsNewContent?, busy: Bool) -> WhatsNewPresentation {
+        switch mode {
+        case .offer:
+            return offer(info, flow: flow, frozen: frozen, busy: busy)
+        case let .installed(content, version, build):
+            return WhatsNewPresentation(title: title(version), byline: "Build \(build)", content: content, footer: .installed)
+        }
+    }
+}
+
+/// QA 2026-10-09 (live in 0.5.274): stage-app-update answered ok:true WITHOUT staging when the feed was unreachable,
+/// paused, malformed or already up to date, and installAppUpdate then applied, quit, and the detached swap found
+/// nothing to install, so Control never reopened. The helper now refuses those (ok:false), and the app asks again: only
+/// a stage that says it staged (reason "staged", or none from a helper that names none), names the staged app, and
+/// staged the build that was offered may be applied. Anything else is a failure in words, with no apply and no quit.
+enum AppUpdateStageCheck {
+    static func refusal(_ details: [String: JSONValue], offeredBuild: Int?) -> String? {
+        let reason = details["reason"]?.string
+        switch reason {
+        case nil, "staged": break
+        case "unreachable": return "COS Control could not reach the update feed. Nothing was installed."
+        case "killSwitch": return "Updates are paused by the publisher right now. Nothing was installed."
+        case "malformed": return "The update listing is missing a SHA-256. Nothing was installed."
+        case "upToDate": return "COS Control is already up to date. Nothing was installed."
+        default: return "The update was not staged. Nothing was installed."
+        }
+        guard let path = details["stagedAppPath"]?.string, !path.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return "The update was not staged. Nothing was installed."
+        }
+        if let offeredBuild {
+            guard let staged = details["latestBuild"]?.int else { return "The update was not staged. Nothing was installed." }
+            if staged != offeredBuild {
+                return "The staged update is build \(staged), not the offered build \(offeredBuild). Nothing was installed."
+            }
+        }
+        return nil
+    }
+}
+
+/// The window after an update: once, on the first launch of a new build. The first launch ever only remembers the
+/// build. The window waits for a check that reached the feed (so it can show this build's whatsNew), and while a
+/// meeting is recording it waits for the meeting to end, so it never takes the focus mid-meeting.
+enum WhatsNewAfterUpdate {
+    static let defaultsKey = "cos.whatsNew.lastSeenBuild"
+
+    enum Launch: Equatable, Sendable {
+        /// No build remembered: remember this one, show nothing.
+        case firstRun
+        /// A newer build than the one remembered: show once.
+        case updated
+        /// The same build (or an older one, after a rollback): nothing.
+        case seen
+    }
+
+    static func launch(lastSeen: Int?, running: Int) -> Launch {
+        guard let lastSeen else { return .firstRun }
+        return lastSeen < running ? .updated : .seen
+    }
+
+    /// Show now? Only for an update, after a check that reached the feed, with no meeting recording.
+    static func shouldShow(_ launch: Launch, checkReached: Bool, meetingActive: Bool) -> Bool {
+        launch == .updated && checkReached && !meetingActive
+    }
+
+    /// The words for the build that is running: the appcast's when its stable entry IS this build, else the copy that
+    /// shipped inside this build (Resources/WhatsNew.json, used only when its version is this one), else one line.
+    static func content(appcast info: AppUpdateInfo, bundled: Data?, version: String, build: Int) -> WhatsNewContent {
+        if info.latestBuild == build, info.latestVersion == version, info.whatsNew != nil || info.notes != nil {
+            return WhatsNewContent(info)
+        }
+        if let bundled, let shipped = bundledWhatsNew(bundled, version: version) {
+            return WhatsNewContent(summary: shipped.summary, sections: shipped.sections)
+        }
+        return WhatsNewContent(summary: "COS Control \(version) is installed.", sections: [])
+    }
+
+    /// Resources/WhatsNew.json: `{ "version": "0.5.275", "whatsNew": { … } }`. Nil unless the version is `version`, so
+    /// a file left over from an older release is never shown as this one's.
+    static func bundledWhatsNew(_ data: Data, version: String) -> AppUpdateWhatsNew? {
+        guard let value = try? JSONDecoder().decode(JSONValue.self, from: data), let object = value.object,
+              object["version"]?.string == version else { return nil }
+        return AppUpdateWhatsNew(object["whatsNew"])
+    }
+}
+
+/// Where the last build that showed (or skipped) the window is remembered. UserDefaults in the app; memory in a test
+/// or render model, so a check never writes the real defaults.
+final class WhatsNewSeenStore: @unchecked Sendable {
+    private let defaults: UserDefaults?
+    private var memory: Int?
+
+    init(defaults: UserDefaults?, initial: Int? = nil) {
+        self.defaults = defaults
+        memory = initial
+    }
+
+    var lastSeenBuild: Int? {
+        get {
+            guard let defaults else { return memory }
+            return defaults.object(forKey: WhatsNewAfterUpdate.defaultsKey) as? Int
+        }
+        set {
+            guard let defaults else { memory = newValue; return }
+            defaults.set(newValue, forKey: WhatsNewAfterUpdate.defaultsKey)
+        }
     }
 }
 

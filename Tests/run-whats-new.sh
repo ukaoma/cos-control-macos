@@ -44,7 +44,7 @@ if [[ "$MODE" == "render" ]]; then
   OUT="${2:?usage: run-whats-new.sh render <folder for the PNGs> [whatsNew.json]}"
   JSON="${3:-$ROOT/Tests/fixtures/whats-new/whats-new-0.5.275.json}"
   app_binary
-  env "${RUN_ENV[@]}" "$DIR/whats-new-render" render "$OUT" "$JSON" 2>"$DIR/stderr.log" || { cat "$DIR/stderr.log" >&2; exit 1; }
+  env "${RUN_ENV[@]}" "$DIR/whats-new-render" render "$OUT" "$JSON" "$ROOT/Resources/WhatsNew.json" 2>"$DIR/stderr.log" || { cat "$DIR/stderr.log" >&2; exit 1; }
   exit 0
 fi
 [[ "$MODE" == "check" ]] || { print -u2 "usage: run-whats-new.sh [check | render <dir> [whatsNew.json]]"; exit 64; }
@@ -60,7 +60,7 @@ if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
   print -r -- "$OUT"
   # A floor on the count: a check that silently stops running must fail this.
   COUNT="${${OUT##*checks: }%% passed*}"
-  (( COUNT >= 81 )) || { print -u2 "What's New checks ran only $COUNT (expected at least 81)"; exit 1; }
+  (( COUNT >= 153 )) || { print -u2 "What's New checks ran only $COUNT (expected at least 153)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "helper" ]]; then
@@ -70,27 +70,36 @@ if [[ "$LANE" == "all" || "$LANE" == "helper" ]]; then
   OUT="$(/usr/bin/python3 "$ROOT/Tests/whats-new-helper-checks.py" "$DIR/cos-control-helper")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*checks: }%% passed*}"
-  (( COUNT >= 44 )) || { print -u2 "whatsNew helper checks ran only $COUNT (expected at least 44)"; exit 1; }
+  (( COUNT >= 68 )) || { print -u2 "whatsNew helper checks ran only $COUNT (expected at least 68)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "wiring" ]]; then
   app_binary
-  # A stand-in helper. check-app-update offers 9.9.9 with a whatsNew (or says up to date once "mode" says so);
-  # stage-app-update sends the real helper's progress lines, waits for a release file (consumed), then refuses the way
-  # the real one does during a meeting. It never answers apply-app-update, so Control is never asked to quit.
+  # A stand-in helper. Every call is logged (verb, and the whole argument line). check-app-update answers check.json
+  # when the check writes one, else offers 9.9.9 with a whatsNew (or says up to date once "mode" says so);
+  # stage-app-update answers stage.json when the check writes one, else sends the real helper's progress lines, waits
+  # for a release file (consumed) and refuses the way the real one does during a meeting. apply-app-update is always
+  # refused, so Control is never asked to quit, even by a regression.
   mkdir -p "$DIR/fake"
   cat > "$DIR/fake/helper" <<'SH'
 #!/bin/sh
 D="$(cd "$(dirname "$0")" && pwd)"
 echo "$1" >> "$D/calls.log"
+echo "$*" >> "$D/args.log"
 case "$1" in
   check-app-update)
+    if [ -f "$D/check.json" ]; then cat "$D/check.json"; printf '\n'; exit 0; fi
     if [ "$(cat "$D/mode" 2>/dev/null)" = "uptodate" ]; then
       printf '{"ok":true,"message":"COS Control is up to date","details":{"updateAvailable":false,"reason":"upToDate","latestVersion":"0.5.274","latestBuild":1}}\n'
     else
       printf '{"ok":true,"message":"Update available: 9.9.9","details":{"updateAvailable":true,"reason":"newer","latestVersion":"9.9.9","latestBuild":999999,"url":"https://example.invalid/COS-Control.zip","sha256":"%s","notes":"Old notes.","whatsNew":{"summary":"From the stand-in.","sections":[{"title":"Added","items":["One"]},{"title":"Fixed","items":["Two"]}]}}}\n' "0000000000000000000000000000000000000000000000000000000000000000"
     fi ;;
   stage-app-update)
+    if [ -f "$D/stage.json" ]; then
+      cat "$D/stage.json"; printf '\n'
+      grep -q '"ok":false' "$D/stage.json" && exit 1
+      exit 0
+    fi
     printf 'Downloading COS Control update\342\200\246\n' >&2
     sleep 0.3
     printf 'Checking SHA-256\342\200\246\n' >&2
@@ -98,11 +107,17 @@ case "$1" in
     rm -f "$D/release"
     printf '{"ok":false,"message":"Finish this first, then install: meeting=1. The glasses server was not touched.","details":{"reason":"busy"}}\n'
     exit 1 ;;
+  apply-app-update)
+    printf '{"ok":false,"message":"the stand-in never applies","details":{}}\n'
+    exit 1 ;;
   *)
     printf '{"ok":false,"message":"the stand-in does not answer %s","details":{}}\n' "$1"
     exit 1 ;;
 esac
 SH
   chmod +x "$DIR/fake/helper"
-  env "${RUN_ENV[@]}" "$DIR/whats-new-render" check "$DIR/fake/helper"
+  # The last line must be the binary's own: a quit (NSApp.terminate exits 0) must never pass for a pass.
+  OUT="$(env "${RUN_ENV[@]}" "$DIR/whats-new-render" check "$DIR/fake/helper")" || { print -r -- "$OUT"; exit 1; }
+  print -r -- "$OUT"
+  [[ "$OUT" == *"PASS: What's New checks complete" ]] || { print -u2 "the What's New wiring checks did not finish"; exit 1; }
 fi
